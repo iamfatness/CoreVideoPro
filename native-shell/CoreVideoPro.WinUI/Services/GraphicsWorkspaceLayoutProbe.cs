@@ -95,11 +95,12 @@ internal static class GraphicsWorkspaceLayoutProbe
             checks.Add("Returning to individual graphics from a starter exits sample-set mode and preserves the original library workflow");
             studio.GraphicsWorkspace.Browse(catalog.Single(t=>t.TemplateId=="corner-logo"));
             await Task.Delay(100); Invoke(Button(workspace,"Customize layout & motion")); Invoke(Button(workspace,"Content")); await Task.Delay(80);page.UpdateLayout();
-            Require(Button(workspace,"Upload logo PNG / JPEG…").IsEnabled,"Declarative logo uploader is missing or disabled");
+            Require(Button(workspace,"Upload logo PNG / JPEG…").IsEnabled && Button(workspace,"Upload logo PNG / JPEG…").ActualHeight > 0,"Declarative logo uploader is missing or disabled");
             Require(Descendants(workspace).OfType<GraphicsImageControl>().Any(),"Logo template only offers bundled asset IDs");
             Require(Descendants(workspace).OfType<ComboBox>().Count(c=>c.Header as string == "Logo")==1,"Logo uploader is duplicated by an asset-ID-only selector");
             Require(studio.GraphicsWorkspace.Selected is null && studio.GraphicsLibrary.Document.StudioLowerThird is null,"Logo editing implicitly created or assigned a cue");
             checks.Add("Declarative logo template exposes an enabled PNG/JPEG uploader in Content without creating or showing a cue");
+            Invoke(Button(workspace,"Use simple controls"));
             studio.GraphicsWorkspace.Browse(catalog[0]);
             var state = new NativeGraphicsState { CoreEpoch="isolated-layout", SchemaVersion=1, Templates=catalog,
                 Instances=Enumerable.Range(1,8).Select(n=>new NativeGraphicsInstance { InstanceId=$"fixture-{n}", Label=n==1?"Guest introduction":$"Show cue {n}", TemplateId=template.TemplateId, TemplateVersion=1, Scope=n==8?"scene":"global", SceneId=n==8?"other-scene":"", Revision=1, Fields=new() { Name="Alex Rivera",Title="Producer · Office Hours" } }).ToArray() };
