@@ -3,10 +3,8 @@ import assert from 'node:assert/strict';
 import { judgeRedesignWorkload } from './redesign-workload-verdict.mjs';
 
 function completeEvidence() {
-  const requiredInputIds = Array.from({ length: 10 }, (_, i) => 'input-' + i);
-  for (let i = 0; i < 7; ++i) requiredInputIds[i] = 'zoom:guest-' + i;
-  requiredInputIds[7] = 'capture:camera';
-  const requiredIsoIds = requiredInputIds.slice(0, 8);
+  const requiredInputIds = [...Array.from({ length: 8 }, (_, i) => 'zoom:' + (1000 + i)), 'capture:camera', 'capture:screen:2'];
+  const requiredIsoIds = [...requiredInputIds.slice(0, 7), 'capture:camera'];
   const startTime = '2026-10-16T12:00:00Z', endTime = '2026-10-16T12:30:00Z';
   const enabledOutputs = ['recording:program', 'virtual-camera:program', ...requiredIsoIds.map(id => 'recording:iso:' + id)];
   const requiredPaths = ['cpu-submission', 'program-gpu', 'program-presentation', 'preview-presentation', 'multiview-presentation', ...enabledOutputs];
@@ -45,6 +43,23 @@ function completeEvidence() {
     } },
   };
 }
+
+test('seven Zoom feeds plus background media cannot qualify as eight remote feeds', () => {
+  const report = completeEvidence();
+  report.requiredInputIds[7] = 'background:media-show';
+  for (const row of report.samples) row.snapshot.realtimeEvidence.monitorWorker.inputs.sources[7].sourceId = 'background:media-show';
+  const result = judgeRedesignWorkload(report);
+  assert.equal(result.passed, false);
+  assert.ok(result.errors.some(error => error.includes('eight distinct Zoom')));
+});
+
+test('an unavailable declared eighth feed fails even when replacement background frames advance', () => {
+  const report = completeEvidence();
+  for (const row of report.samples) row.snapshot.realtimeEvidence.monitorWorker.inputs.sources[7].sourceId = 'background:media-show';
+  const result = judgeRedesignWorkload(report);
+  assert.equal(result.passed, false);
+  assert.ok(result.errors.some(error => error.includes('required input is not ready')));
+});
 
 test('advancing outputs cannot hide sampled capture arrivals or missing arrival evidence', () => {
   for (const change of [

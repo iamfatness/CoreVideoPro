@@ -13,6 +13,12 @@ export function judgeRedesignWorkload(report) {
     errors.push('Additional workload process names must be an array of nonempty names.');
   if (!Array.isArray(inputs) || inputs.length !== 10 || new Set(inputs).size !== 10)
     errors.push('Declare the eight remote inputs, webcam and screen source IDs.');
+  const declared = Array.isArray(inputs) ? inputs : [];
+  const remoteIds = declared.filter(id => typeof id === 'string' && /^(?:zoom:)?[1-9][0-9]*$/.test(id));
+  if (remoteIds.length !== 8 || new Set(remoteIds.map(id => id.replace(/^zoom:/, ''))).size !== 8 ||
+      declared.filter(id => typeof id === 'string' && id.startsWith('capture:screen:')).length !== 1 ||
+      declared.filter(id => typeof id === 'string' && id.startsWith('capture:') && !id.startsWith('capture:screen:')).length !== 1)
+    errors.push('Required workload must contain eight distinct Zoom participant IDs, one webcam and one screen; background media cannot substitute.');
   if (!Array.isArray(iso) || new Set(iso).size !== iso.length)
     errors.push('Declare the actual selected ISO outputs.');
   if (!Array.isArray(rows) || rows.length < 2 || rows.length > 100000)

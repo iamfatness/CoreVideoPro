@@ -63,8 +63,15 @@ every 10 seconds, after every required output is actually producing, for at
 least 30 minutes. Include the independent `cameraPixelVerdict`, the blocked-UI
 `monitorProbeVerdict`, and a `framePerformanceReport` following
 [the strict evidence schema](../../scripts/qa/frame-performance-evidence.md).
-`scripts/qa/collect-redesign-workload.ps1 -AppProcessId PID -OutputDirectory DIR`
-collects the workload observations into a fresh directory. It deliberately leaves
+`scripts/qa/collect-redesign-workload.ps1 -AppProcessId PID -OutputDirectory DIR
+-ExpectedZoomParticipantId ID1,ID2,ID3,ID4,ID5,ID6,ID7,ID8
+-ExpectedWebcamSourceId capture:CAMERA -ExpectedScreenSourceId capture:screen:DISPLAY
+-ExpectedIsoSourceId zoom:ID1,zoom:ID2,zoom:ID3,zoom:ID4,zoom:ID5,zoom:ID6,zoom:ID7,capture:CAMERA`
+collects the workload observations into a fresh directory. Supply the eight real
+remote participant IDs from the intended show, including any unavailable feed;
+the collector must not derive expectations from whichever sources currently
+deliver frames. Background media cannot substitute for a remote participant.
+It deliberately leaves
 uncollected pixel/display evidence absent; its report cannot pass by itself.
 
 The frame report must inventory `recording:program`, `virtual-camera:program`,

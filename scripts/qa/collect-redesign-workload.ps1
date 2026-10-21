@@ -2,6 +2,10 @@ param(
   [ValidateRange(30,7200)][int]$Seconds=1800,
   [Parameter(Mandatory=$true)][string]$OutputDirectory,
   [Parameter(Mandatory=$true)][int]$AppProcessId,
+  [Parameter(Mandatory=$true)][ValidateCount(8,8)][ValidatePattern('^[1-9][0-9]*$')][string[]]$ExpectedZoomParticipantId,
+  [Parameter(Mandatory=$true)][ValidatePattern('^capture:(?!screen:).+')][string]$ExpectedWebcamSourceId,
+  [Parameter(Mandatory=$true)][ValidatePattern('^capture:screen:.+')][string]$ExpectedScreenSourceId,
+  [Parameter(Mandatory=$true)][ValidateCount(1,8)][string[]]$ExpectedIsoSourceId,
   [string[]]$AdditionalProcessName=@()
 )
 $ErrorActionPreference='Stop'
@@ -38,8 +42,10 @@ if (-not $initial.recording.active -or $initial.recording.lifecycle.state -ne 'p
 $app=Get-Process -Id $AppProcessId
 if ($app.ProcessName -ne 'CoreVideoPro.WinUI') {throw 'Select the tested CoreVideo Pro app process'}
 $generation="$($app.Id):$($app.StartTime.ToUniversalTime().ToString('o'))"
-$inputs=@($initial.realtimeEvidence.monitorWorker.inputs.sources | ForEach-Object sourceId)
-$iso=@($initial.recording.streams | Where-Object kind -eq iso | ForEach-Object sourceId)
+# Expectations come from the declared show, never from whichever inputs happen to deliver.
+if (@($ExpectedZoomParticipantId | Select-Object -Unique).Count -ne 8) {throw 'Declare eight distinct remote Zoom participants.'}
+$inputs=@($ExpectedZoomParticipantId) + @($ExpectedWebcamSourceId,$ExpectedScreenSourceId)
+$iso=@($ExpectedIsoSourceId)
 $started=[DateTime]::UtcNow.ToString('o')
 $clock=[Diagnostics.Stopwatch]::StartNew()
 do {
