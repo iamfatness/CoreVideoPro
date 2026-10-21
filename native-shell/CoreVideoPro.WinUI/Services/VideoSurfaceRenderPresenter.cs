@@ -109,6 +109,8 @@ internal sealed class VideoSurfaceRenderPresenter : IDisposable
         _renderer.Wake();
     }
     private bool Active => Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _active) != 0;
+    private bool WantsRetry => Active && _interop?.WantsPresentationRetry == true &&
+        Environment.TickCount64 >= _retryAfter;
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
@@ -150,7 +152,7 @@ internal sealed class VideoSurfaceRenderPresenter : IDisposable
         })) Interlocked.Exchange(ref _notificationQueued, 0);
     }
     // Invoked exclusively by our assigned persistent render thread.
-    private bool Pump()
+    private bool Pump(bool retry = false)
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
@@ -177,13 +179,19 @@ internal sealed class VideoSurfaceRenderPresenter : IDisposable
                     _interop.AttachWorkerPresenter(AttachChain);
                 }
                 _interop.UpdateWorkerPanelSize(currentRequest.Width, currentRequest.Height, currentRequest.FillPanel);
-                _interop.TryPresentSharedTexture(currentRequest.Handle);
+                _interop.TryPresentSharedTexture(currentRequest.Handle, retry);
             }
             if (_interop is not null && Interlocked.Exchange(ref _readPixel, 0) != 0 && _current is { } current)
                 Volatile.Write(ref _pixel, new(current.Handle.NtHandle, _interop.ChainRevision, _interop.ReadPixelForProbe()));
             if (_interop is not null)
             {
                 var old = Volatile.Read(ref _state);
+                // Readiness polls that did not commit must not multiply immutable
+                // UI snapshots/diagnostic allocations. Periodic attempts still
+                // publish counters even while an idle source has no new frame.
+                if (retry && old is not null && old.Frames == _interop.PresentedFramesForProbe &&
+                    old.Revision == _interop.ChainRevision && old.Active == _interop.IsGpuPresenting)
+                    return true;
                 var state = new FrameState(_interop.PresentedFramesForProbe, _interop.LastPresentedHandle,
                     _interop.ChainRevision, _interop.IsReady, _interop.IsGpuPresenting,
                     Direct3D11InteropService.CollectProbeCounters ? _interop.DiagnosticsForProbe : null,
@@ -234,12 +242,15 @@ internal sealed class VideoSurfaceRenderPresenter : IDisposable
             while (true)
             {
                 while (_commands.TryDequeue(out var command)) command();
+                var retry = false;
                 if (!Hosts.Any(host => host.Active) ||
-                    cadence.ShouldSubmit(Stopwatch.GetTimestamp(), Stopwatch.Frequency, 60))
+                    cadence.TrySubmit(Stopwatch.GetTimestamp(), Stopwatch.Frequency, 60,
+                        Hosts.Any(host => host.WantsRetry), out retry))
                     for (var i = Hosts.Count - 1; i >= 0; i--)
-                        if (!Hosts[i].Pump()) Hosts.RemoveAt(i);
+                        if ((!retry || Hosts[i].WantsRetry) && !Hosts[i].Pump(retry)) Hosts.RemoveAt(i);
                 if (Hosts.Any(host => host.Active))
-                    timer.Wait(cadence.Delay100ns(Stopwatch.GetTimestamp(), Stopwatch.Frequency));
+                    timer.Wait(cadence.Delay100ns(Stopwatch.GetTimestamp(), Stopwatch.Frequency,
+                        Hosts.Any(host => host.WantsRetry)));
                 else
                     _wake.WaitOne(); // No active views: no polling or GPU work.
             }

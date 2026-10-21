@@ -293,7 +293,8 @@ public sealed class Direct3D11InteropService : IDisposable
     internal static bool CollectProbeCounters { get; set; } = MonitorDiagnosticsEnabled;
     private long _nextDiagnosticLog;
     internal static int PresentDelayForProbeMs;
-    private long _probeAttempts, _probePresentBusy;
+    private long _probeAttempts, _probeRetryAttempts, _probePresentBusy;
+    internal bool WantsPresentationRetry { get; private set; }
     private long _probeLastCommit;
     private double _probeMaxGapMs;
     internal long LastPresentationProbeCommit => _probeLastCommit;
@@ -312,7 +313,7 @@ public sealed class Direct3D11InteropService : IDisposable
             lock (CreationGate)
             {
                 s_ingests.TryGetValue(_ingestHandle, out var ingest);
-                return new { label = Label, attempts = _probeAttempts, presents = _presentCount,
+                return new { label = Label, attempts = _probeAttempts, retryAttempts = _probeRetryAttempts, presents = _presentCount,
                     maxGapMs = MaximumPresentationProbeGapMs, notReady = _probeNotReady, presentBusy = _probePresentBusy, presentMs = _probePresentMs, presentMaxMs = _probePresentMaxMs,
                     ingestMs = _probeIngestMs, totalMs = _probeTotalMs,
                     copyMs = _probeCopyMs, copyMaxMs = _probeCopyMaxMs, ingested = ingest?.Generation ?? 0,
@@ -392,9 +393,10 @@ public sealed class Direct3D11InteropService : IDisposable
         return true;
     }
 
-    public bool TryPresentSharedTexture(SharedTextureHandle handle)
+    public bool TryPresentSharedTexture(SharedTextureHandle handle, bool retry = false)
     {
-        if (CollectProbeCounters) _probeAttempts++;
+        WantsPresentationRetry = false;
+        if (CollectProbeCounters) { _probeAttempts++; if (retry) _probeRetryAttempts++; }
         if (_disposed || _presenting) return false;
         _presenting = true;
         var probeStarted = CollectProbeCounters ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
@@ -486,6 +488,10 @@ public sealed class Direct3D11InteropService : IDisposable
             // re-presenting the same backbuffer every vsync across N hosts destabilizes WinUI.
             if (_lastPresentedGeneration == ingest.Generation || ingest.Private is null)
             {
+                // A zero-time keyed-mutex poll says only "not ready now".
+                // The producer can finish inside this same presentation slot;
+                // do not defer that opportunity by a whole 16.667 ms period.
+                WantsPresentationRetry = true;
                 SetPresentationPath(PresentationPath.GpuActive);
                 return true;
             }
@@ -503,6 +509,7 @@ public sealed class Direct3D11InteropService : IDisposable
             // this swap chain, not the other monitors sharing the D3D device.
             if (_frameReady != 0 && !_presentationCredit.TryAcquire(() => WaitForSingleObject(_frameReady, 0) == 0))
             {
+                WantsPresentationRetry = true;
                 if (CollectProbeCounters) _probeNotReady++;
                 return _path == PresentationPath.GpuActive;
             }
@@ -555,8 +562,9 @@ public sealed class Direct3D11InteropService : IDisposable
                 }))
             {
                 if (CollectProbeCounters) _probePresentBusy++;
+                WantsPresentationRetry = true;
                 // Keep the prior GPU image if there is one, without claiming
-                // this newer generation was presented. Retry on the next tick.
+                // this newer generation was presented. Retry within this slot.
                 return _path == PresentationPath.GpuActive;
             }
             SetPresentationPath(PresentationPath.GpuActive);
