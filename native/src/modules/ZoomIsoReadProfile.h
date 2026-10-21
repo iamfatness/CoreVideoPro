@@ -36,7 +36,17 @@ struct Stamp {
   uint64_t cpu100ns = 0, cycles = 0;
   uint32_t thread = 0;
   bool cpuKnown = false, cyclesKnown = false;
+  uint32_t switches = 0, dispatchError = 0;
+  uint64_t waitReasons = 0, dispatchCycles = 0;
+  bool dispatchKnown = false;
 };
+#ifdef _WIN32
+struct ThreadDispatch {
+  HANDLE handle = nullptr;
+  DWORD error = EnableThreadProfiling(GetCurrentThread(), THREAD_PROFILING_FLAG_DISPATCH, 0, &handle);
+  ~ThreadDispatch() { if (error == ERROR_SUCCESS) DisableThreadProfiling(handle); }
+};
+#endif
 inline uint64_t frequency() {
 #ifdef _WIN32
   static const auto value = [] { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return static_cast<uint64_t>(f.QuadPart); }();
@@ -55,6 +65,14 @@ inline Stamp stamp() {
   if (s.cpuKnown) s.cpu100ns = (uint64_t(kernel.dwHighDateTime) << 32 | kernel.dwLowDateTime) +
       (uint64_t(user.dwHighDateTime) << 32 | user.dwLowDateTime);
   ULONG64 cycles = 0; s.cyclesKnown = QueryThreadCycleTime(GetCurrentThread(), &cycles) != FALSE; s.cycles = cycles;
+  thread_local ThreadDispatch dispatch;
+  s.dispatchError = dispatch.error;
+  if (dispatch.error == ERROR_SUCCESS) {
+    PERFORMANCE_DATA data{}; data.Size = sizeof(data); data.Version = PERFORMANCE_DATA_VERSION;
+    s.dispatchError = ReadThreadProfilingData(dispatch.handle, READ_THREAD_PROFILING_FLAG_DISPATCHING, &data);
+    s.dispatchKnown = s.dispatchError == ERROR_SUCCESS;
+    if (s.dispatchKnown) { s.switches = data.ContextSwitchCount; s.waitReasons = data.WaitReasonBitMap; s.dispatchCycles = data.CycleTime; }
+  }
 #else
   s.ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 #endif
@@ -65,6 +83,8 @@ struct Row {
   std::array<uint64_t, 9> histogram{}; // <= .25,.5,1,2,4,8,16,32ms, >32ms
   Stamp start, end;
   uint64_t bytes = 0, frame = 0;
+  uint64_t dispatchSamples = 0, switchedSamples = 0, switches = 0;
+  std::array<uint64_t, 64> waitReasons{};
 };
 struct Profile { std::mutex mutex; std::array<Row, StageCount> rows; };
 inline std::mutex registryMutex;
@@ -87,6 +107,15 @@ class Scope {
     const auto ns = static_cast<uint64_t>((end.ticks - begin_.ticks) * 1000000000.0 / frequency());
     std::lock_guard lock(owner_->mutex);
     auto& row = owner_->rows[stage_]; ++row.count; row.totalNs += ns;
+    if (begin_.dispatchKnown && end.dispatchKnown) {
+      ++row.dispatchSamples;
+      const auto switches = static_cast<uint32_t>(end.switches - begin_.switches);
+      row.switches += switches; if (switches) ++row.switchedSamples;
+      // Each nested probe resets the OS wait-reason bitmap. Iteration spans
+      // nested stage probes, so its bitmap would have incomplete coverage.
+      if (stage_ != Iteration) for (size_t bit = 0; bit < 64; ++bit)
+        if (end.waitReasons & (uint64_t{1} << bit)) ++row.waitReasons[bit];
+    }
     constexpr uint64_t bounds[] = {250000,500000,1000000,2000000,4000000,8000000,16000000,32000000};
     size_t bucket = 0; while (bucket < 8 && ns > bounds[bucket]) ++bucket; ++row.histogram[bucket];
     if (ns >= row.maxNs) { row.maxNs = ns; row.start = begin_; row.end = end; row.bytes = bytes_; row.frame = frame_; }
@@ -110,13 +139,26 @@ inline rpc::Json snapshot(const std::string& id) {
     rpc::Json::Object worst{{"startQpc", std::to_string(row.start.ticks)}, {"endQpc", std::to_string(row.end.ticks)},
         {"threadId", static_cast<double>(row.start.thread)}, {"bytes", static_cast<double>(row.bytes)}, {"frameId", static_cast<double>(row.frame)},
         {"cpuKnown", row.start.cpuKnown && row.end.cpuKnown}, {"cyclesKnown", row.start.cyclesKnown && row.end.cyclesKnown}};
+    worst.emplace("dispatchKnown", row.start.dispatchKnown && row.end.dispatchKnown);
+    worst.emplace("dispatchError", static_cast<double>(row.end.dispatchError));
+    if (row.start.dispatchKnown && row.end.dispatchKnown) {
+      worst.emplace("contextSwitches", static_cast<double>(static_cast<uint32_t>(row.end.switches - row.start.switches)));
+      worst.emplace("dispatchCycles", std::to_string(row.end.dispatchCycles - row.start.dispatchCycles));
+      if (i != Iteration) worst.emplace("waitReasonBits", std::to_string(row.end.waitReasons));
+    }
     if (row.start.cpuKnown && row.end.cpuKnown) worst.emplace("cpu100ns", static_cast<double>(row.end.cpu100ns - row.start.cpu100ns));
     if (row.start.cyclesKnown && row.end.cyclesKnown) worst.emplace("cycles", std::to_string(row.end.cycles - row.start.cycles));
+    rpc::Json::Array waits;
+    if (i != Iteration) for (size_t bit = 0; bit < 64; ++bit) if (row.waitReasons[bit])
+      waits.emplace_back(rpc::Json::Object{{"bit", static_cast<int>(bit)}, {"samples", static_cast<double>(row.waitReasons[bit])}});
     stages.emplace_back(rpc::Json::Object{{"stage", names[i]}, {"samples", static_cast<double>(row.count)},
         {"totalNs", static_cast<double>(row.totalNs)}, {"maxNs", static_cast<double>(row.maxNs)},
+        {"switchedSamples", static_cast<double>(row.switchedSamples)}, {"contextSwitches", static_cast<double>(row.switches)},
+        {"dispatchSamples", static_cast<double>(row.dispatchSamples)},
+        {"waitReasons", std::move(waits)},
         {"histogram", std::move(histogram)}, {"worst", std::move(worst)}});
   }
-  return rpc::Json::Object{{"schema", "zoom-iso-read-profile-v1"}, {"label", id},
+  return rpc::Json::Object{{"schema", "zoom-iso-read-profile-v2"}, {"label", id},
       {"qpcFrequency", std::to_string(frequency())}, {"stages", std::move(stages)},
       {"scope", "Elapsed stage time and raw thread CPU/cycle accounting; CPU counter resolution and scheduler waits require ETW correlation."}};
 }
