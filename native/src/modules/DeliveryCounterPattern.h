@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <algorithm>
 
 namespace corevideo::modules {
 // Explicit QA-only picture: 32 identity bits between two guard pairs. The
@@ -11,6 +12,21 @@ inline bool deliveryCounterBit(uint32_t sequence, int cell) {
   if (cell == 0 || cell == 35) return true;
   if (cell == 1 || cell == 34) return false;
   return ((sequence >> (cell - 2)) & 1u) != 0;
+}
+// Writes only the two luma guard bands; caller retains exclusive mutable ownership.
+inline bool paintDeliveryCounter(uint8_t* y, size_t bytes, int width, int height,
+    int stride, uint32_t sequence) {
+  const int cellWidth = (width / kDeliveryCounterCells) & ~1;
+  if (!y || cellWidth < 4 || height < 64 || stride < width ||
+      bytes < static_cast<size_t>(stride) * height) return false;
+  for (int cell = 0; cell < kDeliveryCounterCells; ++cell) {
+    const bool bit = deliveryCounterBit(sequence, cell);
+    for (int row = 0; row < 32; ++row) {
+      std::fill_n(y + static_cast<size_t>(row) * stride + cell * cellWidth, cellWidth, bit ? 235 : 16);
+      std::fill_n(y + static_cast<size_t>(height - 32 + row) * stride + cell * cellWidth, cellWidth, bit ? 16 : 235);
+    }
+  }
+  return true;
 }
 inline std::optional<uint32_t> decodeDeliveryCounter(const uint8_t* y, size_t bytes,
     int width, int height, int stride) {

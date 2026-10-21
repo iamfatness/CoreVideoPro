@@ -2,6 +2,7 @@
 #include "modules/ZoomEngineRuntime.h"
 #include "modules/ZoomHandoffCpuScope.h"
 #include "modules/ZoomIsoReadProfile.h"
+#include "modules/QaIsoIdentity.h"
 #include "modules/ZoomMeetingId.h"
 #include "modules/I420SourcePreparation.h"
 
@@ -1648,6 +1649,10 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     // is what "Phase 3 (locked, cheap)" always claimed to be.
     auto& result = thumbnailResult;
     if (result.frame && !result.frame->i420.empty()) {
+      if (job.ringHolder && qaIsoCounterEnabled())
+        paintDeliveryCounter(result.frame->i420.data(), result.frame->i420.size(),
+            result.frame->i420Width, result.frame->i420Height, result.frame->i420Width,
+            static_cast<uint32_t>(result.frame->frameId));
       result.i420Shared =
           std::make_shared<const std::vector<std::uint8_t>>(std::move(result.frame->i420));
       if (i420Preparation_ && !job.ringHolder) {
@@ -1767,6 +1772,9 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
       arrival.frameId = frame.frameId; arrival.sourceEpoch = ref.preparationLifetime;
       arrival.sourceGeneration = ref.sourceGeneration; arrival.i420 = std::move(i420);
       arrival.captureTimestamp100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(observedAt.time_since_epoch()).count() / 100;
+      if (qaIsoCounterEnabled())
+        traceQaIsoArrival("zoom:" + arrival.participantId, arrival.sourceEpoch, arrival.frameId,
+            arrival.captureTimestamp100ns, arrival.width, arrival.height);
       it->second->offer(arrival);
     }
     return;

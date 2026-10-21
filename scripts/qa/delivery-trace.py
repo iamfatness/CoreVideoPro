@@ -9,7 +9,7 @@ HEADER = struct.Struct("<8sIIQQQQQQqq")
 EVENT = struct.Struct("<QQQqqqqQII")
 STAGES = {1: "source-gpu-ready", 2: "source-draw-submitted", 3: "program-submitted",
           4: "program-gpu-ready", 5: "program-delivered", 6: "program-miss", 7: "source-requested", 8: "source-upload-started",
-          9: "source-upload-submitted", 10: "source-upload-refused"}
+          9: "source-upload-submitted", 10: "source-upload-refused", 11: "iso-arrival-offered"}
 
 
 def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require_source_ready=False, expected_source_ids=None):

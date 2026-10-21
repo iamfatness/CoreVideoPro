@@ -11,7 +11,8 @@ namespace corevideo::core {
 // Only these boundaries are observed in v1. Camera/monitor/shell remain unknown.
 enum class DeliveryStage : std::uint32_t {
   SourceGpuReady = 1, SourceAdmitted, ProgramSubmitted, ProgramGpuReady,
-  ProgramDelivered, ProgramMiss, SourceRequested, SourceUploadStarted, SourceUploadSubmitted, SourceUploadRefused
+  ProgramDelivered, ProgramMiss, SourceRequested, SourceUploadStarted, SourceUploadSubmitted, SourceUploadRefused,
+  IsoArrivalOffered
 };
 enum class DeliveryReason : std::uint32_t { None, Ready, Held, Unavailable, Failed };
 struct DeliveryTraceEvent {
@@ -33,7 +34,7 @@ struct DeliveryTraceHeader {
   std::int64_t started = 0, ended = 0;
 };
 static_assert(sizeof(DeliveryTraceHeader) == 80);
-enum class DeliveryTraceSelection { All, ProgramOnly };
+enum class DeliveryTraceSelection { All, ProgramOnly, ProgramAndIso };
 class DeliveryTraceCapture {
  public:
   static constexpr std::size_t kStorageBytes = 16 * 1024 * 1024;

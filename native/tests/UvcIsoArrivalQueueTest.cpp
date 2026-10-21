@@ -4,6 +4,22 @@
 #include <gtest/gtest.h>
 using namespace corevideo::modules;
 
+TEST(UvcIsoArrivalQueue, QaPixelsMatchArrivalIdentityWithoutMutatingExistingOwners) {
+  constexpr int width = 1920, height = 1080;
+  auto cpu = std::make_shared<std::vector<uint8_t>>(width * height * 3 / 2, 128);
+  I420CaptureArrival capture("capture:camera", {}, true);
+  const auto first = capture.publishMutable(cpu, width, height, false, false);
+  const auto second = capture.publishMutable(cpu, width, height, false, false);
+  EXPECT_EQ((*cpu)[16 * width], 128);
+  EXPECT_NE(first.i420, second.i420);
+  const auto decode = [&](const VideoFrame& frame) { return decodeDeliveryCounter(frame.i420->data(), frame.i420->size(), width, height, width); };
+  ASSERT_TRUE(decode(first).has_value()); ASSERT_TRUE(decode(second).has_value());
+  EXPECT_EQ(*decode(first), first.frameId); EXPECT_EQ(*decode(second), second.frameId);
+  I420CaptureArrival normal("capture:camera", {});
+  const auto original = normal.publishMutable(cpu, width, height, false, false);
+  EXPECT_EQ(original.i420, cpu); EXPECT_EQ((*cpu)[16 * width], 128);
+}
+
 TEST(UvcIsoArrivalQueue, DelayedRenderDrainsActualArrivalsInsteadOfSamplingLatest) {
   I420CaptureArrival capture("capture:camera", {});
   UvcIsoArrivalQueue queue;

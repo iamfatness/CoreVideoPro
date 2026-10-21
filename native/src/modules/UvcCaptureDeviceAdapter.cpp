@@ -151,7 +151,7 @@ class UvcCaptureSession {
         deviceName_(std::move(deviceName)),
         symbolicLink_(std::move(symbolicLink)),
         noFirstFrameTimeoutMs_(noFirstFrameTimeoutMs),
-        arrival_(std::move(sourceId), std::move(preparation)) {
+        arrival_(std::move(sourceId), std::move(preparation), qaIsoCounterEnabled()) {
     thread_ = std::thread([this] { run(); });
   }
 
@@ -512,9 +512,12 @@ class UvcCaptureSession {
       converted = std::vector<uint8_t>();
       // Offer once at the actual capture arrival, outside the snapshot lock.
       // The render/ISO consumers retain the authoritative CPU representation.
-      auto arrival = arrival_.publish(frame, width, height, fullRange_, bt601_);
+      auto arrival = arrival_.publishMutable(std::move(frame), width, height, fullRange_, bt601_);
       if (!arrival.hasContent()) continue;
       isoArrivals_.offer(arrival);
+      if (qaIsoCounterEnabled() && isoArrivals_.stats().demanded)
+        traceQaIsoArrival(arrival.participantId, arrival.sourceEpoch, arrival.frameId,
+            arrival.captureTimestamp100ns, arrival.width, arrival.height);
       {
         std::lock_guard<std::mutex> lock(mutex_);
         latestArrival_ = std::move(arrival);

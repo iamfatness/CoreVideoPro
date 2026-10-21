@@ -225,6 +225,26 @@ TEST(DeliveryTrace, ProgramOnlyRetainsAllProgramBoundariesWithoutCallingSourceEx
   std::error_code error; std::filesystem::remove(path, error);
 }
 
+TEST(DeliveryTrace, ProgramAndIsoSelectionPreservesIsoIdentityAndFiltersOnlyUnrequestedStages) {
+  const auto path = newPath();
+  DeliveryTraceCapture trace(path.string(), {}, DeliveryTraceSelection::ProgramAndIso);
+  for (int stage = 1; stage <= 11; ++stage) {
+    DeliveryTraceEvent event; event.stage = static_cast<DeliveryStage>(stage);
+    event.sourceTag = 123; event.sourceEpoch = 456; event.sourceFrameId = 789;
+    EXPECT_EQ(trace.record(event), (stage >= 3 && stage <= 6) || stage == 11);
+  }
+  ASSERT_TRUE(trace.close());
+  const auto header = readHeader(path);
+  EXPECT_EQ(header.exported, 5u); EXPECT_EQ(header.lost, 0u);
+  EXPECT_EQ(trace.snapshot().getString("stageSelection"), "program-and-iso");
+  std::ifstream input(path, std::ios::binary); input.seekg(sizeof(header));
+  DeliveryTraceEvent last;
+  for (int i = 0; i < 5; ++i) input.read(reinterpret_cast<char*>(&last), sizeof(last));
+  EXPECT_EQ(last.stage, DeliveryStage::IsoArrivalOffered);
+  EXPECT_EQ(last.sourceTag, 123u); EXPECT_EQ(last.sourceEpoch, 456u); EXPECT_EQ(last.sourceFrameId, 789);
+  std::error_code error; std::filesystem::remove(path, error);
+}
+
 TEST(DeliveryTrace, ExplicitStopFinalizesEvidenceWhileItsOwnerRemainsAlive) {
   Capture capture;
   ASSERT_TRUE(capture.trace.record({}));

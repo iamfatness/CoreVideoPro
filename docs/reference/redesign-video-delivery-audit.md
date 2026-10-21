@@ -83,6 +83,27 @@ and the final writer's `muxVideoFrameCount`. The gate requires 1920x1080 and mat
 positive packet counts. This file accounting supplements source-arrival and
 pixel/deadline proof; it does not replace them.
 
+For direct ISO arrival-to-file proof, explicitly enable `COREVIDEO_QA_ISO_COUNTER=1`
+and `COREVIDEO_DELIVERY_TRACE_STAGES=program-and-iso` together with a fresh
+`COREVIDEO_DELIVERY_TRACE_PATH`. This QA mode changes visible picture bands.
+Zoom stamps its privately copied ISO buffer; UVC stamps its mutable capture
+buffer before publication/preparation. Shared buffer owners are preserved.
+Normal launches leave this flag unset and do not paint or export ISO identities.
+The completed bounded binary trace includes stage 11, `iso-arrival-offered`,
+tagged by `iso:SOURCE_ID`, with source owner, actual frame identity, observed
+timestamp and actual geometry. It observes offers, so ring/FIFO losses still
+fail separately. The existing ten live cadence aggregates remain unchanged;
+ISO identity evidence is file-only, not an inferred aggregate success.
+
+After recording and capture finalize, run `scripts/qa/iso-pixel-verdict.py` with
+the ISO path, trace, source ID, explicit measured QPC bounds and the ffmpeg/
+ffprobe paths. Its default minimum is 1,800 seconds. It compares the decoded
+pictures with the exact ordered source-arrival identities, preserving source
+cadence rather than inventing 60-fps ISO slots. Missing/repeated/reordered/wrong
+identities, trace loss, source retirement or non-1080p payloads fail this proof.
+Shorter diagnostic intervals must be labeled partial. Decode after the live
+interval so verification does not contend with the workload.
+
 The frame report must inventory `recording:program`, `virtual-camera:program`,
 and `recording:iso:SOURCE_ID` for each selected ISO, plus
 `preview-presentation` and `multiview-presentation` in its required paths.
