@@ -376,6 +376,18 @@ Qualification compares cumulative endpoint deltas inside the measured interval,
 so a near-60 average cannot hide occasional long gaps. Missing counter fields
 are unknown evidence. These counters do not establish physical scanout.
 
+The native presentation chain uses three back buffers and a maximum two-frame
+latency credit. The third buffer covers DWM's retained image while two frames
+can be queued. With a controlled 1080p60 producer on the exact 60 Hz display,
+the three-buffer one-credit controls had 19 and 11 intervals above 25 ms;
+the intervening two-credit run accepted all 2,040 produced frames without a
+long interval. Two buffers with a two-credit limit still developed gaps.
+These are isolated native-commit observations, not physical-display or workload
+qualification. Program buffering remains separately measured; actual desktop
+camera/screen picture ages and final display timing must still pass. Creation
+records the actual buffer count/latency limit once for diagnostics, and the
+compiled changing-pixel/blocked-control probe checks the native configuration.
+
 ### Match the regular desktop launch during qualification
 
 Task Scheduler defaults to priority 7, which starts actions and their children

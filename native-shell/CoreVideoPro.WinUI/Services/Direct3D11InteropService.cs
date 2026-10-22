@@ -219,6 +219,7 @@ public sealed class Direct3D11InteropService : IDisposable
     private long _deviceGeneration = -1;
     private IDXGISwapChain1? _swapChain;
     private nint _frameReady;
+    private uint _swapChainBufferCount, _frameLatencyLimit;
     private readonly PresentationCredit _presentationCredit = new();
     private long _probeNotReady;
     private ID3D11Texture2D? _backBuffer;
@@ -342,6 +343,7 @@ public sealed class Direct3D11InteropService : IDisposable
         {
             if (TryNativeSnapshot(out var owner, out var native))
                 return new { label = Label, backend = "native-independent", attempts = native.Attempts,
+                    bufferCount = _swapChainBufferCount, frameLatencyLimit = _frameLatencyLimit,
                     swapChainAddress = owner.SwapChainAddress, chainRevision = owner.ChainRevision,
                     observedQpc = native.ObservedQpc.ToString(System.Globalization.CultureInfo.InvariantCulture),
                     retryAttempts = native.RetryAttempts, presents = owner.CountOffset + (long)native.Presents,
@@ -1297,6 +1299,7 @@ public sealed class Direct3D11InteropService : IDisposable
                 using var adapter = dxgiDevice.GetAdapter();
                 using var factory = adapter.GetParent<IDXGIFactory2>();
 
+                var independent = _workerChainCreated is not null && NativeMonitorPresentation.Available;
                 var swapChainDesc = new SwapChainDescription1
                 {
                     Width = (uint)targetWidth,
@@ -1305,22 +1308,26 @@ public sealed class Direct3D11InteropService : IDisposable
                     Stereo = false,
                     SampleDescription = new SampleDescription(1, 0),
                     BufferUsage = Usage.RenderTargetOutput,
-                    BufferCount = 2,
+                    BufferCount = independent ? 3u : 2u,
                     Scaling = Scaling.Stretch,
                     SwapEffect = SwapEffect.FlipSequential,
                     AlphaMode = AlphaMode.Premultiplied,
                     // Otherwise every chain shares the device's presentation
                     // limit, letting early rows starve later rows and Inspect.
-                    // One credit per chain bounds latency without a UI wait.
+                    // The native owner keeps two queued video frames plus the
+                    // buffer retained by DWM. A two-buffer/one-credit chain
+                    // develops phase bubbles even with a punctual producer.
                     Flags = SwapChainFlags.FrameLatencyWaitableObject
                 };
 
                 _swapChain = factory.CreateSwapChainForComposition(s_sharedDevice, swapChainDesc);
                 using (var latency = _swapChain.QueryInterface<IDXGISwapChain2>())
                 {
-                    latency.MaximumFrameLatency = 1;
+                    latency.MaximumFrameLatency = independent ? 2u : 1u;
+                    _frameLatencyLimit = latency.MaximumFrameLatency;
                     _frameReady = latency.FrameLatencyWaitableObject;
                 }
+                _swapChainBufferCount = _swapChain.Description1.BufferCount;
                 if (_panel is not null && !SwapChainPanelNativeInterop.TrySetSwapChain(_panel, _swapChain.NativePointer, out var attachFailure))
                 {
                     LaunchLog.Write($"d3d: panel attach failed: {attachFailure}");
@@ -1363,6 +1370,7 @@ public sealed class Direct3D11InteropService : IDisposable
         try { _swapChain?.Dispose(); } catch { }
         _backBuffer = null;
         _swapChain = null;
+        _swapChainBufferCount = _frameLatencyLimit = 0;
         _surfaceWidth = 0;
         _surfaceHeight = 0;
         _lastPresentedGeneration = -1;
