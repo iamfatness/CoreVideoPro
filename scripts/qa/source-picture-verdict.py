@@ -6,10 +6,11 @@ come from an independent desktop stimulus. Ordinary picture samples detect
 blank/slate output and provide a second view of actual content progression.
 """
 import bisect
-import importlib.util
 import json
 import pathlib
 import struct
+import subprocess
+import tempfile
 
 
 def decode_bands(values):
@@ -109,3 +110,67 @@ def camera_draws(path, source_id):
                 if r[3] in result: raise ValueError('Ambiguous source draws for Program identity')
                 result[r[3]] = {'sourceFrameId': r[4], 'observation100ns': r[6], 'reason': r[9]}
     return result
+
+
+def recording_samples(path, ffmpeg, points, receiver_rows):
+    """Decode every encoded frame; read only declared luma rows from FFmpeg."""
+    width = 1920
+    ys = sorted({16, 1064, *(p[1] for p in points)})
+    count = len(ys)
+    labels = ''.join(f'[r{i}]' for i in range(count))
+    crops = ';'.join(f'[r{i}]crop=1920:1:0:{y}[c{i}]' for i, y in enumerate(ys))
+    filtered = f'format=gray,split={count}{labels};{crops};' + ''.join(f'[c{i}]' for i in range(count)) + f'vstack=inputs={count}'
+    offsets = {y: i * width for i, y in enumerate(ys)}
+    by_program = {r['identity']: r for r in receiver_rows if isinstance(r.get('identity'), int)}
+    result = []
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen([ffmpeg, '-nostdin', '-v', 'error', '-i', str(path), '-filter_complex', filtered,
+                                    '-an', '-fps_mode', 'passthrough', '-enc_time_base', '-1',
+                                    '-pix_fmt', 'gray', '-f', 'rawvideo', 'pipe:1'], stdout=subprocess.PIPE, stderr=errors)
+        try:
+            for frame in range(2_000_000):
+                raw = process.stdout.read(width * count)
+                if not raw: break
+                if len(raw) != width * count: raise ValueError('Partial decoded recording picture')
+                marker = [raw[offsets[y] + cell * 52 + 26] for y in (16, 1064) for cell in range(36)]
+                identity = decode_bands(marker)
+                reference = by_program.get(identity)
+                if reference is not None:
+                    result.append({'sample': frame + 1, 'identity': identity,
+                                   'arrivalHostUs': reference['arrivalHostUs'],
+                                   'pictureLuma': bytes(raw[offsets[y] + x] for x, y in points).hex()})
+            else: raise ValueError('Recording exceeds bounded decoder capacity')
+            code = process.wait(timeout=30)
+            errors.seek(0)
+            detail = errors.read(4096).decode(errors='replace')
+            if code or detail: raise ValueError(f'Recording decoder failed: {code} {detail}')
+        finally:
+            if process.poll() is None: process.kill(); process.wait()
+    return result
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('manifest'); parser.add_argument('receiver'); parser.add_argument('trace')
+    parser.add_argument('stimulus'); parser.add_argument('output')
+    parser.add_argument('--recording'); parser.add_argument('--ffmpeg', default='ffmpeg')
+    args = parser.parse_args()
+    output = pathlib.Path(args.output)
+    if output.exists(): raise ValueError('Preserve existing verdict')
+    manifest = json.loads(pathlib.Path(args.manifest).read_text(encoding='utf-8-sig'))
+    rows = [json.loads(line) for line in pathlib.Path(args.receiver).read_text(encoding='utf-8-sig').splitlines()]
+    if rows[0].get('picturePoints') != manifest['points'] or rows[0].get('receiverMode') != 'os-camera' or not rows[-1].get('complete'):
+        raise ValueError('Complete registered camera capture with exact declared coordinates required')
+    stimulus = [json.loads(line) for line in pathlib.Path(args.stimulus).read_text(encoding='utf-8-sig').splitlines()]
+    if not stimulus[-1].get('complete'): raise ValueError('Independent stimulus did not finalize')
+    selected = [r for r in stimulus if 'identity' in r]
+    draws = camera_draws(args.trace, manifest['cameraSourceId'])
+    report = {'osCamera': judge_samples(rows, manifest, draws, selected), 'fullWorkloadPassed': False}
+    if args.recording:
+        decoded = recording_samples(args.recording, args.ffmpeg, manifest['points'], rows)
+        report['recording'] = judge_samples(decoded, manifest, draws, selected)
+    output.write_text(json.dumps(report, indent=2), encoding='utf8')
+    print(json.dumps(report, indent=2))
+    raise SystemExit(0 if report['osCamera']['sourcePicturesVerified'] and
+                     (not args.recording or report['recording']['sourcePicturesVerified']) else 1)
