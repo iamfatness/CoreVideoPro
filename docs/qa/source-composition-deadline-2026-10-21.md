@@ -200,3 +200,36 @@ are released before Present, and no display queue capacity is added. Concurrency
 late-completion and actual-pixel credit tests are required, followed by installed
 comparison and the full workload. No merge or publication is authorized by these
 changes alone.
+
+### Installed 9de30212 comparison: outputs pass, Studio still fails
+
+The declared 65.69-second interval retained all eight actual 1080p Zoom feeds,
+webcam, moving screen, nine hardware writers, and the registered OS camera.
+All eight decoded ISO streams, Program output markers, OS-camera continuity,
+original Program GPU deadlines, and actual camera/screen pictures passed. Both
+recording and OS-camera source checks found zero missing/reordered camera
+arrivals, four expected 59.94-to-60 repeats, and no stale screen samples
+(maximum 180.82 ms). This is short component evidence, not a full soak pass.
+
+Studio still failed: 49 of 656 desktop observations had Program-camera age
+above 100 ms, maximum 121.48 ms. That worst observation spent 93.01 ms after
+Program delivery; the median delivery-to-desktop delay was 55.26 ms. Native
+presentation had 217 commit gaps above 25 ms in the surrounding 70.01-second
+bracket. Physical display evidence remains independently required. CI and the
+1,858-test native suite passed the tested head, but cannot waive these failures.
+
+The optional Program display selector still intentionally chose the preceding
+delivery slot, a policy introduced with the October 11 immutable publications.
+The dedicated copy owner now waits for the exact current slot within the
+existing next-slot deadline, so the selector need not impose that extra frame.
+The correction selects the current delivered identity, retains exact lookup
+and the same deadline, and reports zero additional selection offset. It does
+not change Program buffering, publication capacity, or output timing. A real
+GPU regression test supplies two distinct delivered pictures, verifies the
+current slot's actual pixels, and rejects a future slot. Installed freshness
+and display cadence must still pass; this is not a claimed cure for DXGI gaps.
+
+Trial 11 stopped before measurement because its private OS-consumer launcher
+was missing the pixel coordinate file. The failure is retained. Trial 12 added
+coordinate/manifest preflight before starting outputs and used the same running
+candidate, with an explicit original-trace reference and hash-verified copy.

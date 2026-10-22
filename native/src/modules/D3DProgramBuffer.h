@@ -201,9 +201,11 @@ class D3DProgramBuffer {
       int64_t productionSlot = -1, bool exact = false) const {
     std::lock_guard<std::mutex> lock(mutex_);
     // Target the submitting render's scheduled slot, not its variable CPU
-    // arrival time. One explicit display frame behind the delivery timeline.
+    // arrival time. The dedicated copy owner can wait for this slot's completed
+    // publication until the existing next-slot deadline. Selecting the previous
+    // slot here adds a frame even when the current delivered image is ready.
     const auto target = productionSlot >= 0 && timeline_
-        ? timeline_->deadlineNs(productionSlot - depth_ - 1) / 100
+        ? timeline_->deadlineNs(productionSlot - depth_) / 100
         : now100ns() - D3DProgramDisplaySnapshots::PresentationOffset100ns;
     return displaySnapshots_.select(target, texture, owner, exact);
   }

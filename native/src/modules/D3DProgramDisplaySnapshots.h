@@ -25,7 +25,7 @@ class D3DProgramDisplaySnapshots {
   // Two timeline publications + construction + pending mailbox + executing
   // request + two GPU reads + writer. Duplicate holders share the same slot.
   static constexpr size_t Capacity = 8;
-  static constexpr int64_t PresentationOffset100ns = 10000000 / 60;
+  static constexpr int64_t PresentationOffset100ns = 0;
   struct Snapshot {
     ComPtrLite<ID3D11Texture2D> texture;
     ProgramFrame frame;

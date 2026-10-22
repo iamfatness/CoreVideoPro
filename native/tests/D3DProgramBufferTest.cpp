@@ -58,6 +58,61 @@ struct D3DProgramBufferTestAccess {
 };
 }
 
+TEST(D3DProgramBuffer, MultiviewSelectsCurrentDeliveredPixelsWithoutAnExtraFrameOffset) {
+  ProgramBufferTimerResolution timer;
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ComPtrLite<ID3D11Texture2D> input, staging;
+  ComPtrLite<ID3D11RenderTargetView> target;
+  ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, input.put())));
+  ASSERT_TRUE(SUCCEEDED(device->CreateRenderTargetView(input.get(), nullptr, target.put())));
+  desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, staging.put())));
+  D3DProgramBuffer buffer(device.get(), 64, 64, 2, 1, {});
+  ASSERT_TRUE(buffer.valid());
+  const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+  for (int slot = 0; slot < 2; ++slot) {
+    const float value = (40.f + slot * 160.f) / 255.f;
+    const float color[] = {value, value, value, 1};
+    context->ClearRenderTargetView(target.get(), color);
+    ProgramFrame frame; frame.frameNumber = slot + 1; frame.productionSlot = slot;
+    frame.productionAnchorNs = anchorNs; frame.width = frame.height = 64;
+    buffer.submit(context.get(), input.get(), std::move(frame), false); context->Flush();
+  }
+  ProgramFrame delivered;
+  ASSERT_TRUE(buffer.take(delivered, 1500)); ASSERT_EQ(delivered.frameNumber, 1);
+  ASSERT_TRUE(buffer.take(delivered, 1500)); ASSERT_EQ(delivered.frameNumber, 2);
+  ProgramFrameSharedTexture texture;
+  std::shared_ptr<const void> owner;
+  const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (std::chrono::steady_clock::now() < limit) {
+    if (buffer.multiview(texture, owner, 3, true) && texture.frameNumber == 2) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(owner != nullptr); ASSERT_EQ(texture.frameNumber, 2);
+  ComPtrLite<ID3D11Texture2D> imported;
+  const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::stoull(texture.sharedHandleHex, nullptr, 0)));
+  ASSERT_TRUE(SUCCEEDED(device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(imported.put()))));
+  context->CopyResource(staging.get(), imported.get());
+  D3D11_MAPPED_SUBRESOURCE mapped{};
+  ASSERT_TRUE(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)));
+  const auto pixel = static_cast<const uint8_t*>(mapped.pData)[32 * mapped.RowPitch + 32 * 4];
+  context->Unmap(staging.get(), 0);
+  EXPECT_EQ(pixel, 200);
+  owner.reset(); texture = {};
+  EXPECT_FALSE(buffer.multiview(texture, owner, 4, true)); // No future or relabelled image.
+  EXPECT_EQ(buffer.diagnostics().capacity, 5);
+  EXPECT_EQ(buffer.diagnostics().underruns, 0u);
+}
+
 TEST(D3DProgramBuffer, DeadlineCopiesContinueWhileOptionalOwnerIsBlockedAndKeepExactPixels) {
   ProgramBufferTimerResolution timer;
   using namespace corevideo::modules;

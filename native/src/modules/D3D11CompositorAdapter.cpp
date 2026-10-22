@@ -306,7 +306,7 @@ class D3D11Compositor final : public ICompositor {
     }
     if (auto buffer = currentProgramBuffer(); buffer && request.multiviewActive) {
       buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner, programProductionSlot_);
-      if (programProductionSlot_ >= programBufferFrames() + 1 && request.programDisplayDeadlineNs > 0)
+      if (programProductionSlot_ >= programBufferFrames() && request.programDisplayDeadlineNs > 0)
         request.acquireDeliveredProgram = [buffer, slot = programProductionSlot_](auto& texture, auto& owner) {
           return buffer->multiview(texture, owner, slot, true);
         };
