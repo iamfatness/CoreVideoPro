@@ -404,6 +404,50 @@ workload interval, source identity continuity and the unchanged picture-age
 bound must all pass. Fresh output counters or recording/camera pixels cannot
 waive omitted camera identities in those optional monitor paths.
 
+`scripts/qa/desktop-picture-cadence.py` audits the independent Desktop
+Duplication samples against the declared interval. It requires a finalized
+collector, matching QPC frequency, complete interval coverage, one accumulated
+update per sample and unmasked pixels. Marker groups are distinct from body
+groups even when their names match. Torn markers, omitted identities and
+reordered identities fail continuity. This tool deliberately never claims a
+physical display or full-workload pass; freshness, ordinary picture progression,
+visibility and the output-specific timing evidence remain separate requirements.
+
+Before collecting pixels, verify the actual window rectangle and sampling
+coordinates against the visible layout. A maximized or resized window invalidates
+fixed coordinates. Occlusion must be checked over the measured video region;
+an overlap outside that region does not invalidate the sampled pictures.
+
+A controlled live observer check on October 22 submitted a known 10 Hz sequence
+with two deliberately omitted identities and a five-tick hold. Desktop
+Duplication detected both omitted identities and a 565 ms hold with no unexpected
+missing identities, invalid marker pixels or accumulated updates. That validates
+this slow detection control, not 60 Hz collection or physical scanout. Higher-rate
+collection must independently retain complete observer coverage. Replays of the
+failed one-credit workload still report 171 Preview/input and 36 Program omissions;
+the corrected analyzer must not turn those retained failures into a pass.
+
+The October 22 short installed comparison with the independent capture clock
+reduced the earlier Preview-only omissions, but still failed with 16 omitted
+camera identities on each of Preview, Program and the input tile. All 14 omission
+events coincided across the three cells. The eight ISO files, Program recording,
+registered OS camera source pictures and Program GPU deadlines passed only that
+65-second component interval; this is not release qualification.
+
+An isolated known-pixel producer reproduced periodic omissions without the media
+core. Explicit output restriction and an HWND swap chain did not resolve them.
+Removing the extra refresh wait from the native Present call removed periodic
+native commit gaps in an 80-second control and reduced observed picture age, but
+one omission with complete observer coverage remained. The interval-zero candidate
+is therefore still unqualified. DXGI can discard queued pictures with interval
+zero; only actual source-picture and display-delivery evidence can accept it.
+
+With `COREVIDEO_MONITOR_DIAGNOSTICS=1`, the decoupled exporter now logs cumulative
+submitted/published counts, unread output replacements, prepared-frame replacements
+and refusal counts once per second on its existing owner. These counters identify
+handoff loss; they do not prove completed GPU copies or physical presentation.
+Their public numeric observation uses atomics, rather than racing owner counters.
+
 ### Match the regular desktop launch during qualification
 
 Task Scheduler defaults to priority 7, which starts actions and their children

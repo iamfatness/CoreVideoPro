@@ -34,6 +34,7 @@ jobs:
           python -m unittest discover -s scripts/qa -p test_delivery_trace.py -v
           python -m unittest discover -s scripts/qa -p test_display_timing_verdict.py -v
           python -m unittest discover -s scripts/qa -p test_source_pictures.py -v
+          python -m unittest discover -s scripts/qa -p test_desktop_picture_cadence.py -v
           python -m unittest discover -s scripts/qa -p test_render_work_evidence.py -v
       - name: Frame and recording QA harness tests
         run: npm run test:qa-harness

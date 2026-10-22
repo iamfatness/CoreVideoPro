@@ -215,11 +215,12 @@ struct Group : std::enable_shared_from_this<Group> {
     // presentation commits. Never map a fresh, unwritten post-flip buffer.
     const auto observedPixel = readPixelForProbe(surface);
     const auto presentStart = qpc();
-    // Flip-model interval zero permits DXGI to discard queued images. A
-    // successful submission is then not one displayed video frame. Retain one
-    // refresh for each accepted picture; the existing per-chain latency credit
-    // and nonblocking flag keep the queue bounded without adding a UI wait.
-    const auto result = surface.chain->Present(1, DXGI_PRESENT_DO_NOT_WAIT);
+    // The source has its own cadence and the queue has bounded per-chain credits.
+    // Adding a refresh wait here introduced a periodic beat in the isolated
+    // 60 Hz producer comparison. Interval zero removes that extra wait but may
+    // permit composition to discard pictures: accepted calls remain diagnostic,
+    // and independent source-picture/display evidence must still qualify it.
+    const auto result = surface.chain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
     const auto presentMs = milliseconds(presentStart);
     surface.stats.presentMs += presentMs; surface.stats.presentMaximumMs = std::max(surface.stats.presentMaximumMs, presentMs);
     if (result == DXGI_ERROR_WAS_STILL_DRAWING) {
