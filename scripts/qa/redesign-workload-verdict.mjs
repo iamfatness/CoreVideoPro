@@ -33,6 +33,11 @@ export function judgeRedesignWorkload(report) {
   if (!Array.isArray(rows) || rows.length < 2 || rows.length > 100000)
     errors.push('Bounded workload samples are required.');
   const samples = Array.isArray(rows) && rows.length <= 100000 ? rows : [];
+  const launch = report?.launchEvidence;
+  if (launch?.installed !== true || launch?.method !== 'desktop-shortcut' || launch?.elevated !== false ||
+      !samples[0]?.processGeneration || launch?.processGeneration !== samples[0].processGeneration ||
+      launch?.priorityClass !== 'Normal' || launch?.receiverPriorityClass !== 'Normal')
+    errors.push('Installed desktop-shortcut workload and camera consumer must have observed Normal process priority and matching process identity.');
   const counters = new Map();
   const progress = new Map();
   const additionalGenerations = new Map();

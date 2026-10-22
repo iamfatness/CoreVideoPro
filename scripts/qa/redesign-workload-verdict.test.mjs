@@ -26,6 +26,8 @@ function completeEvidence() {
     invalid: 0, rangeViolations: 0, firstMismatchIndex: null,
     coverage: { sourceEpoch: 1, durationSeconds: 1800 } });
   return { startTime, endTime, requiredInputIds, requiredIsoIds, monitorProbeVerdict: { functionalPassed: true },
+    launchEvidence: { installed: true, method: 'desktop-shortcut', elevated: false, processGeneration: 'one',
+      priorityClass: 'Normal', receiverPriorityClass: 'Normal' },
     sourcePictureVerdict: { osCamera: sourcePictures(), recording: sourcePictures() },
     qpcFrequency: intervalTicks.frequency,
     isoFileEvidence: requiredIsoIds.map(sourceId => ({ sourceId, path: 'fixture/' + sourceId + '.mp4',
@@ -98,6 +100,25 @@ test('ISO arrival fidelity requires decoded pictures over the exact workload clo
     const path = report.framePerformanceReport.performanceEvidence.paths.find(path => path.id.startsWith('recording:iso:'));
     change(path);
     assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
+});
+
+test('qualification rejects a mismatched launch or background/boosted process priorities', () => {
+  for (const change of [
+    r => { delete r.launchEvidence; },
+    r => { r.launchEvidence.installed = false; },
+    r => { r.launchEvidence.method = 'development-executable'; },
+    r => { r.launchEvidence.elevated = true; },
+    r => { r.launchEvidence.processGeneration = 'another-run'; },
+    r => { r.launchEvidence.priorityClass = 'BelowNormal'; },
+    r => { r.launchEvidence.priorityClass = 'High'; },
+    r => { r.launchEvidence.receiverPriorityClass = 'BelowNormal'; },
+    r => { r.launchEvidence.receiverPriorityClass = 'High'; },
+  ]) {
+    const report = completeEvidence(); change(report);
+    const verdict = judgeRedesignWorkload(report);
+    assert.equal(verdict.passed, false);
+    assert.ok(verdict.errors.some(error => error.includes('observed Normal process priority')));
   }
 });
 

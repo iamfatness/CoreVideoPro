@@ -375,3 +375,20 @@ Native observations also count accepted-commit intervals over 25, 33 and 50 ms.
 Qualification compares cumulative endpoint deltas inside the measured interval,
 so a near-60 average cannot hide occasional long gaps. Missing counter fields
 are unknown evidence. These counters do not establish physical scanout.
+
+### Match the regular desktop launch during qualification
+
+Task Scheduler defaults to priority 7, which starts actions and their children
+at Below Normal priority, with background I/O and memory policy. A normal-SID
+task alone therefore does not reproduce the owner's desktop launch. The local
+reproduction also confirmed inheritance through the shortcut's `cmd → start`
+pattern. Explicit task priority 5 produces Normal child priority; this is a
+launch-environment correction, not a high-priority product workaround.
+
+Qualification must record the installed shortcut launch, process generation,
+elevation state, actual app priority and actual Windows-camera consumer priority.
+`judgeRedesignWorkload` requires the matching process generation and Normal
+priority for both processes. Missing observations and background/boosted runs
+cannot establish acceptance of the regular installed launch. Preserve prior
+diagnostics with their original launch conditions. Normal priority alone does
+not qualify presentation: all source-picture and display-delivery gates remain.
