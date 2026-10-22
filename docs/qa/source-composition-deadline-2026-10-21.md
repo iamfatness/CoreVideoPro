@@ -112,3 +112,15 @@ judge now also accepts the workload's declared host-clock bounds and includes
 samples bracketing both endpoints; neither an interior nor a boundary repeat can
 pass. Raw capture completeness and timestamp-order checks remain global. No
 post-hoc selection of a convenient passing interval is permitted.
+### Sanitizer functional-test boundary
+
+The e0ac356 CI run retained a failure in
+`MediaCoreCommand.ARouteLoopFlagReachesTheMediaSourceOnBothBuses`: its initial
+wait depended on both sources reading `producing`, which includes the bus's
+200 ms wall-clock freshness rule. That is an inappropriate speed condition for
+a loop-command propagation test under ThreadSanitizer. The test now requires
+real ingested frames from both sources, and additional preview frames after the
+loop-only update, alongside the decoder's observed loop flag. Failure includes
+the core snapshot. The focused Windows test passed; hosted sanitizer validation
+is still required. No production timing bound or full-workload criterion changes.
+

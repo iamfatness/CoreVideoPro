@@ -7978,10 +7978,14 @@ TEST(MediaCoreCommand, ARouteLoopFlagReachesTheMediaSourceOnBothBuses) {
       corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
                                    {"routes", corevideo::rpc::Json::Array{loopRoute("pv-loop", false)}}},
   });
+  // This checks command propagation through actual decoded frames. The bus's
+  // "producing" health also imposes a 200 ms wall-clock freshness bound;
+  // sanitizer instrumentation can expire that bound while snapshotting the
+  // two buses. Frame arrival is the functional condition, not execution speed.
   ASSERT_TRUE(corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
-    return corevideo::testing::busSourceProducing(core, "media:bg-loop") &&
-           corevideo::testing::busSourceProducing(core, "media:pv-loop");
-  }));
+    return corevideo::testing::busFramesIngested(core, "media:bg-loop") > 0 &&
+           corevideo::testing::busFramesIngested(core, "media:pv-loop") > 0;
+  })) << mediaCore.sessionState().stringify();
   {
     const std::vector<std::string> expectedIds{"media:bg-loop", "media:pv-loop"};
     EXPECT_EQ(SolidMediaFrameSource::sortedSourceIds(), expectedIds);
@@ -7989,14 +7993,15 @@ TEST(MediaCoreCommand, ARouteLoopFlagReachesTheMediaSourceOnBothBuses) {
     EXPECT_FALSE(SolidMediaFrameSource::loopFor("media:pv-loop"));
   }
 
+  const auto previewFramesBefore = corevideo::testing::busFramesIngested(mediaCore, "media:pv-loop");
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
                                    {"routes", corevideo::rpc::Json::Array{loopRoute("pv-loop", true)}}},
   });
-  const bool previewLoops = corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
-    // Read through the CORE: the reopened preview transport must be back on the
-    // bus and producing before its loop flag is evidence of anything.
-    return corevideo::testing::busSourceProducing(core, "media:pv-loop") &&
+  const bool previewLoops = corevideo::testing::renderUntil(mediaCore, [previewFramesBefore](corevideo::core::MediaCore& core) {
+    // Require fresh decoded arrivals after the loop-only update, not just a
+    // worker flag or a frame left over from the earlier transport.
+    return corevideo::testing::busFramesIngested(core, "media:pv-loop") > previewFramesBefore &&
            SolidMediaFrameSource::loopFor("media:pv-loop");
   });
   EXPECT_TRUE(previewLoops) << "a loop-only change to the preview scene was not applied";
