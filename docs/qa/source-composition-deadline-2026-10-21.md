@@ -124,3 +124,27 @@ loop-only update, alongside the decoder's observed loop flag. Failure includes
 the core snapshot. The focused Windows test passed; hosted sanitizer validation
 is still required. No production timing bound or full-workload criterion changes.
 
+### Installed e0ac356 comparison: retained failure
+
+The next 65.71-second installed run preserved all eight ISO arrival streams,
+Program output counters, registered OS-camera counters, and original Program
+GPU deadlines. Screen pictures passed the unchanged 200 ms limit (maximum
+186.44 ms). It still failed exact camera pictures: one held source caused one
+omitted camera arrival in both Program recording and the OS receiver. The
+requested frame's GPU-ready event followed composition by 0.2362 ms.
+
+An isolated 1,000-sample wait comparison on this Windows host measured the
+preparation worker's requested 100 us condition-variable wait at 1,163 us
+median / 2,507 us p95. The existing high-resolution GPU-owner wait measured
+520 us median / 576 us p95. Preparation now uses that bounded yield while GPU
+queries are pending; idle arrival notifications remain interruptible. This is
+a measured wait correction, not proof of installed acceptance. No Program
+deadline, buffering, source-picture bound or quality setting changes.
+
+Independent 10 Hz desktop samples also found three Program-camera observations
+over the 100 ms bound (maximum 102.38 ms); these remain failures. Physical
+display timing still requires the finalized ETW capture. A remote source had
+a 240.54 ms offered-arrival gap, already 239.65 ms at the original observation
+with consecutive shared-memory identities; this is not an ISO writer omission.
+It does not establish whether the upstream pause arose in Zoom or its sender.
+No full-workload pass or beta publication is claimed.
