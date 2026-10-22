@@ -148,3 +148,20 @@ a 240.54 ms offered-arrival gap, already 239.65 ms at the original observation
 with consecutive shared-memory identities; this is not an ISO writer omission.
 It does not establish whether the upstream pause arose in Zoom or its sender.
 No full-workload pass or beta publication is claimed.
+
+### Native viewer presentation policy (#997)
+
+The retained installed e0ac356 interval has a failed PresentMon verdict on the
+exact named multiview swap chain: 3,047 captured presents, 2,001 not displayed,
+and 1,046 displayed versus 3,943 expected. Native submit counts and the 10 Hz
+desktop pictures disagree with a literal interpretation of the longest ETW gap;
+that discrepancy remains under investigation, not a display pass.
+
+The native presenter used flip-model `Present(0, DO_NOT_WAIT)`. Microsoft
+[documents](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present)
+that interval zero permits queued frames to be discarded. The comparison
+candidate uses interval one with the existing nonblocking flag and one-credit
+per-chain latency limit. Five actual-GPU presenter ownership/pixel tests pass;
+they use an offscreen HWND and do not establish physical display cadence. The
+installed comparison must prove whether this policy corrects the display
+result without harming latency, source pictures, recording or OS-camera output.

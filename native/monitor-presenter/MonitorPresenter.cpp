@@ -215,7 +215,11 @@ struct Group : std::enable_shared_from_this<Group> {
     // presentation commits. Never map a fresh, unwritten post-flip buffer.
     const auto observedPixel = readPixelForProbe(surface);
     const auto presentStart = qpc();
-    const auto result = surface.chain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+    // Flip-model interval zero permits DXGI to discard queued images. A
+    // successful submission is then not one displayed video frame. Retain one
+    // refresh for each accepted picture; the existing per-chain latency credit
+    // and nonblocking flag keep the queue bounded without adding a UI wait.
+    const auto result = surface.chain->Present(1, DXGI_PRESENT_DO_NOT_WAIT);
     const auto presentMs = milliseconds(presentStart);
     surface.stats.presentMs += presentMs; surface.stats.presentMaximumMs = std::max(surface.stats.presentMaximumMs, presentMs);
     if (result == DXGI_ERROR_WAS_STILL_DRAWING) {
