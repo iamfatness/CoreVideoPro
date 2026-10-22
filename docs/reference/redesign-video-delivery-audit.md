@@ -376,9 +376,9 @@ Qualification compares cumulative endpoint deltas inside the measured interval,
 so a near-60 average cannot hide occasional long gaps. Missing counter fields
 are unknown evidence. These counters do not establish physical scanout.
 
-The native presentation chain uses three back buffers and a maximum two-frame
-latency credit. The third buffer covers DWM's retained image while two frames
-can be queued. With a controlled 1080p60 producer on the exact 60 Hz display,
+The native presentation chain uses three back buffers, with one outstanding
+frame allowed by its latency credit. A two-credit candidate was tested after
+a controlled 1080p60 producer comparison on the exact 60 Hz display:
 the three-buffer one-credit controls had 19 and 11 intervals above 25 ms;
 the intervening two-credit run accepted all 2,040 produced frames without a
 long interval. Two buffers with a two-credit limit still developed gaps.
@@ -387,6 +387,13 @@ qualification. Program buffering remains separately measured; actual desktop
 camera/screen picture ages and final display timing must still pass. Creation
 records the actual buffer count/latency limit once for diagnostics, and the
 compiled changing-pixel/blocked-control probe checks the native configuration.
+The installed two-credit comparison subsequently failed actual picture age:
+`qualification-1008-17` measured a median 55.023 ms between Program delivery
+and the sampled desktop image update, and camera ages up to 123.343 ms against
+the unchanged 100 ms bound. The one-credit setting is being compared under
+that same real workload; the private producer's smoother submission intervals
+did not qualify the two-credit setting. Neither setting has a full workload
+pass. Queue size must satisfy both physical cadence and actual picture age.
 
 ### Match the regular desktop launch during qualification
 

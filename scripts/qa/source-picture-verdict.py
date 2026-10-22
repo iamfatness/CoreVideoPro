@@ -57,7 +57,7 @@ def judge_samples(rows, manifest, camera_draws, stimulus):
         body = bytes(raw[i] for i in manifest['cameraBody'])
         arrival_ns = row['arrivalHostUs'] * 1000
         drawn = camera_draws.get(row.get('identity'))
-        if camera is None or screen is None or drawn is None:
+        if camera is None or drawn is None:
             invalid += 1; continue
         if camera != drawn['sourceFrameId'] or drawn['reason'] != 1:
             mismatched += 1
@@ -70,6 +70,18 @@ def judge_samples(rows, manifest, camera_draws, stimulus):
         # Observation-to-consumer age, not sensor exposure latency.
         camera_age = (arrival_ns - drawn['observation100ns'] * 100) / 1e6
         camera_ages.append(camera_age)
+        if camera_age < 0 or camera_age > manifest['maximumCameraObservationAgeMs']:
+            stale += 1
+        if max(body) - min(body) < 12: invalid += 1
+        if previous is None or body != previous:
+            changes += previous is not None
+            hold_start = arrival_ns
+        longest_hold = max(longest_hold, (arrival_ns - hold_start) / 1e6)
+        previous = body
+        # An invalid screen marker still fails this interval, but cannot erase
+        # an independently decoded camera identity or invent camera frame loss.
+        if screen is None:
+            invalid += 1; continue
         selected_stimulus = by_identity.get(screen)
         if selected_stimulus is None or selected_stimulus['beforeNs'] > arrival_ns:
             invalid += 1; continue
@@ -78,14 +90,8 @@ def judge_samples(rows, manifest, camera_draws, stimulus):
         latest = bisect.bisect_right(times, arrival_ns) - 1
         if latest < 0 or stimulus[latest]['identity'] - screen > manifest['maximumScreenPictureLag']:
             stale += 1
-        if camera_age < 0 or camera_age > manifest['maximumCameraObservationAgeMs'] or screen_age > manifest['maximumScreenAgeMs']:
+        if screen_age > manifest['maximumScreenAgeMs']:
             stale += 1
-        if max(body) - min(body) < 12: invalid += 1
-        if previous is None or body != previous:
-            changes += previous is not None
-            hold_start = arrival_ns
-        longest_hold = max(longest_hold, (arrival_ns - hold_start) / 1e6)
-        previous = body
     if invalid: errors.append(f'{invalid} missing, torn, blank or unattributable source pictures')
     if mismatched: errors.append(f'{mismatched} camera pictures differ from the exact drawn source identity')
     if stale: errors.append(f'{stale} stale source pictures')

@@ -58,6 +58,18 @@ class SourcePictures(unittest.TestCase):
         for row in rows: row['pictureLuma'] = (bytes.fromhex(row['pictureLuma'])[:144] + body).hex()
         self.assertFalse(pictures.judge_samples(rows, manifest, draws, stimulus)['sourcePicturesVerified'])
 
+    def test_invalid_screen_markers_fail_without_inventing_camera_loss(self):
+        rows, manifest, draws, stimulus = fixture()
+        for index in (10, 11):
+            raw = bytearray.fromhex(rows[index]['pictureLuma'])
+            raw[72 + 8] = 157
+            rows[index]['pictureLuma'] = raw.hex()
+        verdict = pictures.judge_samples(rows, manifest, draws, stimulus)
+        self.assertFalse(verdict['sourcePicturesVerified'])
+        self.assertEqual(verdict['invalid'], 2)
+        self.assertEqual(verdict['cameraMissing'], 0)
+        self.assertEqual(verdict['cameraRepeated'], 0)
+
     def test_matching_draw_metadata_cannot_waive_capture_selection_repeat_and_skip(self):
         rows, manifest, draws, stimulus = fixture()
         raw = bytes.fromhex(rows[30]['pictureLuma'])
