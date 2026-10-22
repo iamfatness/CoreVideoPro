@@ -165,3 +165,38 @@ per-chain latency limit. Five actual-GPU presenter ownership/pixel tests pass;
 they use an offscreen HWND and do not establish physical display cadence. The
 installed comparison must prove whether this policy corrects the display
 result without harming latency, source pictures, recording or OS-camera output.
+
+### Installed bf04b6b comparison: ownership and pacing failures
+
+The retained 65.41-second interval kept eight actual 1080p remotes, both local
+captures, nine hardware writers and the registered OS camera. All eight ISO
+arrival streams and Program/OS-camera output markers passed. Actual source
+pictures failed: two unavailable camera draws, one held camera draw, and three
+screen observations above 200 ms (maximum 203.51 ms). Desktop Program-camera
+freshness failed 54 observations, maximum 115.57 ms. The surrounding 70.01-second
+native presentation bracket had 29 commit gaps over 25 ms; physical ETW remains
+pending. Interval-one presentation alone did not correct the viewer.
+
+Both unavailable camera identities had completed GPU preparation before the
+draw: one 22.15 ms earlier and one 9.67 ms earlier. Capture's try-lock publication
+can refuse a valid choice/resolution while its writer publishes. Completed CPU
+and direct-GPU publication had the same failure pattern. Readers now acquire
+immutable publications; capture retains three arrival identities and weak CPU
+preparation descriptors still cannot pin a reusable GPU slot.
+
+The held camera completed 0.593 ms after composition, despite the original
+Program deadline remaining ahead. Composition now checks exact readiness until
+the original deadline minus half an output period, reserved for composition and
+GPU completion. The measured draw-to-ready maximum in this failed run was
+5.946 ms; that observation does not guarantee the reserved 8.333 ms is sufficient
+under the full workload. Deadline and capacity gates remain unchanged and must
+reject any resulting overrun. Temporary readiness probes preserve source cadence
+and never relabel an older frame or extend its deadline.
+
+The native viewer now includes available DXGI frame-latency handles in its wait
+set. A display credit can trigger its bounded owner immediately, independently
+of the periodic source retry clock. Credits remain one per chain, producer keys
+are released before Present, and no display queue capacity is added. Concurrency,
+late-completion and actual-pixel credit tests are required, followed by installed
+comparison and the full workload. No merge or publication is authorized by these
+changes alone.

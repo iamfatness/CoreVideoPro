@@ -14,22 +14,21 @@ class ReadyCapturePublication {
         frame.gpuPixels->width != frame.width || frame.gpuPixels->height != frame.height) return;
     frame.readyCapture.reset(); frame.capturePresentation.reset();
     frame.pixels.reset(); frame.i420.reset(); frame.preparedGpu.reset(); frame.monitorGpuPixels.reset();
-    VideoFrame retired;
-    { std::lock_guard<std::mutex> lock(mutex_); retired = std::move(latest_); latest_ = std::move(frame); }
+    std::atomic_store(&latest_, std::make_shared<const VideoFrame>(std::move(frame)));
   }
   std::optional<VideoFrame> acquire(const VideoFrame& selected) const {
-    std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
-    if (!lock.owns_lock() || !latest_.gpuPixels || latest_.participantId != selected.participantId ||
-        latest_.sourceEpoch != selected.sourceEpoch || latest_.width != selected.width ||
-        latest_.height != selected.height || latest_.frameId < selected.frameId) return {};
-    return latest_;
+    const auto latest = std::atomic_load(&latest_);
+    if (!latest || !latest->gpuPixels || latest->participantId != selected.participantId ||
+        latest->sourceEpoch != selected.sourceEpoch || latest->width != selected.width ||
+        latest->height != selected.height || latest->frameId < selected.frameId) return {};
+    return *latest;
   }
   void clear() {
-    VideoFrame retired;
-    { std::lock_guard<std::mutex> lock(mutex_); retired = std::move(latest_); latest_ = {}; }
+    std::atomic_store(&latest_, std::shared_ptr<const VideoFrame>{});
   }
  private:
-  mutable std::mutex mutex_;
-  VideoFrame latest_;
+  // Atomic pointer exchange covers no copying, allocation or GPU work. Readers
+  // retain a completed immutable publication while its successor is prepared.
+  std::shared_ptr<const VideoFrame> latest_;
 };
 }

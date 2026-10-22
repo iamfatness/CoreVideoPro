@@ -3,6 +3,7 @@
 #include "modules/CpuSourceGpuView.h"
 #include "modules/CapturePresentationWindow.h"
 #include "modules/ReadyCapturePublication.h"
+#include "core/ProgramPlayoutTimeline.h"
 #include <optional>
 #include <algorithm>
 
@@ -27,20 +28,33 @@ struct PreparedProgramComposition {
     return std::any_of(captureChoices.begin(), captureChoices.end(),
         [index](const auto& choice) { return choice.index == index; });
   }
-  bool resolveCaptures() {
+  // Reserve half an output period for composition/submission/GPU completion.
+  // Readiness may use only time remaining before this original-slot boundary;
+  // it never changes the output deadline or creates another reservation.
+  int64_t readinessDeadlineNs(int bufferFrames) const {
+    const core::ProgramPlayoutTimeline timeline(bufferFrames, anchorNs);
+    return timeline.deadlineNs(productionSlot) - 8'333'334;
+  }
+  bool preparedSourcesReady() const {
+    for (const auto& frame : frames)
+      if (frame.preparedGpu && !frame.gpuPixels && !frame.preparedGpu->acquire(true)) return false;
+    return true;
+  }
+  bool resolveCaptures(bool final = true) {
     bool complete = true;
     for (const auto& pending : captureChoices) {
       auto& frame = frames[pending.index];
       auto resolved = pending.ready ? pending.ready->acquire(frame) :
-          pending.choice ? pending.owner->resolve(*pending.choice) : std::optional<VideoFrame>{};
+          pending.choice ? pending.owner->resolve(*pending.choice, final) : std::optional<VideoFrame>{};
       if (!resolved || resolved->participantId != frame.participantId || resolved->sourceEpoch != frame.sourceEpoch) {
+        complete = false;
+        if (!final) continue;
         // Never stamp a held image with the scheduled future identity.
         // Keep the weak producer token for lifecycle/error attribution. Its
         // identity cannot match the missing observation, so admission cannot
         // acquire its older pixels as the scheduled frame.
         frame.gpuPixels.reset(); frame.captureTimestamp100ns = 0;
         if (pending.choice) frame.frameId = pending.choice->frameId;
-        complete = false;
       } else {
         const auto sourceGeneration = frame.sourceGeneration;
         frame = std::move(*resolved); frame.sourceGeneration = sourceGeneration;

@@ -380,6 +380,16 @@ class D3D11Compositor final : public ICompositor {
     if (pendingComposition_) {
       auto job = std::move(*pendingComposition_); pendingComposition_.reset();
       if (job.buffer->claimComposition(job.reservation)) {
+        // A fixed next-tick poll can precede a selected upload's completion even
+        // though the original output slot still has ample composition budget.
+        // Yield only inside that existing budget, with no mutex or GPU read lease.
+        const auto readinessDeadline = job.inputs.readinessDeadlineNs(programBufferFrames());
+        while (!(job.inputs.resolveCaptures(false) && job.inputs.preparedSourcesReady())) {
+          const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count();
+          if (now >= readinessDeadline) break;
+          sourceReadinessWait_.pause(readinessDeadline - now);
+        }
         // A missing source is an unavailable layer, not permission to drop
         // the entire Program slot. Admission retains the failed identity and
         // reports degraded output; it cannot label old pixels as current.
@@ -3722,6 +3732,7 @@ class D3D11Compositor final : public ICompositor {
   const bool profileGpuSubmission_ = GpuSubmissionCpuScope::requested();
   uint64_t programBufferGeneration_ = 0;
   D3DProgramDisplayReader programDisplayReader_;
+  D3DDeadlineWait sourceReadinessWait_;
   int64_t monitorProgramTargetNs_ = 0, monitorProgramDeadlineNs_ = 0;
   const MonitorRenderRequest* monitorRequest_ = nullptr;
   ID3D11ShaderResourceView* monitorDeliveredView_ = nullptr; // Reader-owned, this owner thread only.

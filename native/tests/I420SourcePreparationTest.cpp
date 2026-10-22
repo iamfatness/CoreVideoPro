@@ -86,6 +86,47 @@ TEST(CapturePresentationWindow, UnqualifiedNativeRatesRetainExistingCaptureSelec
   EXPECT_FALSE(CapturePresentationWindow::supportedRate(120, 1));
   EXPECT_FALSE(CapturePresentationWindow::supportedRate(0, 0));
 }
+TEST(CapturePresentationWindow, ConcurrentPublicationNeverRefusesAnOtherwiseValidClockChoice) {
+  CapturePresentationWindow window; window.configure(60, 1);
+  auto observed = cadenceFrame(1); window.publish(observed);
+  std::atomic<bool> go{false};
+  std::jthread writer([&] {
+    while (!go.load()) std::this_thread::yield();
+    for (int id = 2; id < 10002; ++id) window.publish(cadenceFrame(id));
+  });
+  go.store(true);
+  int refused = 0;
+  for (int slot = 0; slot < 10000; ++slot) if (!window.choose(observed, slot, 1000)) ++refused;
+  EXPECT_EQ(refused, 0);
+}
+TEST(CapturePresentationWindow, ReadinessProbePreservesTheFutureChoiceUntilTheOriginalBudgetEnds) {
+  auto window = std::make_shared<CapturePresentationWindow>(); window->configure(60, 1);
+  auto observed = cadenceFrame(100); window->publish(observed); observed.capturePresentation = window;
+  ASSERT_TRUE(window->choose(observed, 0, 1000));
+  auto selected = PreparedProgramComposition::capture({}, {observed}, 2, 1, 1000);
+  ASSERT_TRUE(selected); EXPECT_FALSE(selected->resolveCaptures(false));
+  EXPECT_GT(selected->frames[0].captureTimestamp100ns, 0);
+  window->publish(cadenceFrame(101));
+  EXPECT_TRUE(selected->resolveCaptures(false)); EXPECT_EQ(selected->frames[0].frameId, 101);
+  auto next = window->choose(observed, 2, 1000); ASSERT_TRUE(next); EXPECT_EQ(next->frameId, 102);
+  corevideo::core::ProgramPlayoutTimeline original(2, 1000);
+  EXPECT_EQ(selected->readinessDeadlineNs(2), original.deadlineNs(1) - 8'333'334);
+}
+TEST(ReadyCapturePublication, ConcurrentReplacementNeverCreatesAnEmptyCompletedPublication) {
+  ReadyCapturePublication publication;
+  auto selected = cadenceFrame(1);
+  auto image = std::make_shared<GpuVideoFrame>(); image->width = image->height = 64;
+  selected.gpuPixels = image; publication.publish(selected);
+  std::atomic<bool> go{false};
+  std::jthread writer([&] {
+    while (!go.load()) std::this_thread::yield();
+    for (int id = 2; id < 10002; ++id) { auto next = selected; next.frameId = id; publication.publish(next); }
+  });
+  go.store(true);
+  int unavailable = 0;
+  for (int i = 0; i < 10000; ++i) if (!publication.acquire(selected)) ++unavailable;
+  EXPECT_EQ(unavailable, 0);
+}
 TEST(ReadyCapturePublication, SelectsCompletedImageAtCompositionAndFencesReplacementWithoutPinningOldCapture) {
   auto publication = std::make_shared<ReadyCapturePublication>();
   auto first = cadenceFrame(100);
@@ -1694,7 +1735,7 @@ TEST(I420SourcePreparation, StrictProgramHoldsActualPixelsAcrossInlinePreviewAnd
   EXPECT_NEAR(recovered.preview.bgra.front(), 210, 1);
 }
 
-static void checkCompositionDeadline(bool deferred, bool completesBeforeComposition, bool stopped) {
+static void checkCompositionDeadline(bool deferred, bool completesBeforeComposition, bool stopped, bool completesAfterTick = false) {
   PreparationFlags flags;
   _putenv_s("COREVIDEO_ISOLATE_MONITORS", "1");
   const char* raw = std::getenv("COREVIDEO_PREPARE_PROGRAM_WITHIN_BUDGET");
@@ -1732,6 +1773,11 @@ static void checkCompositionDeadline(bool deferred, bool completesBeforeComposit
   ASSERT_TRUE(enteredFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
   const auto anchor = std::chrono::steady_clock::now();
   const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+  std::jthread laterCompletion;
+  if (completesAfterTick) laterCompletion = std::jthread([&] {
+    std::this_thread::sleep_until(anchor + std::chrono::milliseconds(18));
+    unblock.now();
+  });
   compositor->setProgramProductionTiming(0, anchorNs);
   (void)compositor->render(plan, {frame}); // exact chosen image is still preparing
   if (completesBeforeComposition) {
@@ -1763,7 +1809,7 @@ static void checkCompositionDeadline(bool deferred, bool completesBeforeComposit
   ProgramFrame delivered;
   ASSERT_TRUE(compositor->takeDeliveredProgramFrame(delivered, 100));
   ASSERT_EQ(delivered.sourceAdmissions.size(), 1u);
-  const bool exact = deferred && completesBeforeComposition && !stopped;
+  const bool exact = deferred && (completesBeforeComposition || completesAfterTick) && !stopped;
   EXPECT_EQ(delivered.sourceAdmissions.front().state, exact ? "ready" : stopped ? "unavailable" : "held");
   EXPECT_EQ(delivered.sourceAdmissions.front().requestedFrameId, 2);
   EXPECT_EQ(delivered.sourceAdmissions.front().actualFrameId, exact ? 2 : stopped ? -1 : 1);
@@ -1779,6 +1825,9 @@ static void checkCompositionDeadline(bool deferred, bool completesBeforeComposit
 
 TEST(PreparedProgramComposition, SelectedImageCompletesWithinOriginalTwoFrameDeadlineWithoutSubstitution) {
   checkCompositionDeadline(true, true, false);
+}
+TEST(PreparedProgramComposition, CompletionAfterTheNextTickUsesRemainingBudgetWithoutMovingOutputDeadline) {
+  checkCompositionDeadline(true, false, false, true);
 }
 TEST(PreparedProgramComposition, LegacyControlCommitsOlderPixelsDespiteCompletionBeforeOutputDeadline) {
   checkCompositionDeadline(false, true, false);

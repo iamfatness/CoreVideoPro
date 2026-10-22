@@ -67,8 +67,8 @@ struct MonitorRig {
     owner = create();
     if (!owner) throw std::runtime_error("Native monitor lease failed");
   }
-  void* create(std::uint32_t flags = 1) {
-    return cv_monitor_create(consumer.Get(), consumerContext.Get(), chain.Get(), backBuffer.Get(), handle, nullptr, flags);
+  void* create(std::uint32_t flags = 1, HANDLE credit = nullptr) {
+    return cv_monitor_create(consumer.Get(), consumerContext.Get(), chain.Get(), backBuffer.Get(), handle, credit, flags);
   }
   void publish(bool blue) {
     auto acquired = mutex->AcquireSync(0, 0);
@@ -148,4 +148,21 @@ TEST(NativeMonitorPresenter, CrossDeviceResourceMixIsRefused) {
   MonitorRig rig;
   EXPECT_TRUE(cv_monitor_create(rig.producer.Get(), rig.consumerContext.Get(), rig.chain.Get(),
       rig.backBuffer.Get(), rig.handle, nullptr, 0) == nullptr);
+}
+TEST(NativeMonitorPresenter, DisplayCreditReleasesOneActualPictureAndRetainsNoCreditForItsSuccessor) {
+  MonitorRig rig;
+  cv_monitor_release(rig.owner); rig.owner = nullptr;
+  HANDLE credit = CreateEventW(nullptr, FALSE, FALSE, nullptr); ASSERT_NE(credit, nullptr);
+  rig.owner = rig.create(1, credit); ASSERT_NE(rig.owner, nullptr);
+  rig.publish(false);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_EQ(rig.stats().presents, 0u);
+  SetEvent(credit); EXPECT_TRUE(rig.pixel(0xffff0000));
+  const auto before = rig.stats().presents;
+  rig.publish(true);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_EQ(rig.stats().presents, before);
+  SetEvent(credit); EXPECT_TRUE(rig.pixel(0xff0000ff));
+  EXPECT_EQ(rig.stats().presents, before + 1);
+  CloseHandle(credit);
 }
