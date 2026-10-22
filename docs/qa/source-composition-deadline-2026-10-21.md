@@ -84,3 +84,31 @@ bound. Two camera body samples fell below the declared contrast bound; those
 observations require picture inspection rather than automatically attributing
 them to capture failure. The previous failed verdict is retained. No beta is
 qualified by these component successes or by a replay.
+
+## Installed cadence comparison, October 22
+
+Installed `1bbe0266` was measured for 65.8500867 seconds with eight actual 1080p
+remotes, both local captures, nine hardware recording writers and the registered
+Windows camera consumer. Actual camera pixels in recording and the OS receiver
+had zero missing or reordered pictures and four repeats, within the six-picture
+allowance for the negotiated 60000/1001 capture rate. All source marker checks
+were attributable and ordinary camera pixels advanced. All eight ISO arrival
+pixel sequences and original Program GPU deadlines passed their component checks.
+This short interval is not the required 30-minute qualification.
+
+Screen freshness still failed in three pictures, at 208.8711–209.3667 ms against
+the unchanged 200 ms bound. In every case, a newer GPU-complete screen image
+existed before composition but the reservation retained the image chosen a tick
+earlier. Those newer images were independently observed in the receiver and
+would have reduced the three ages to 109.3395–109.7316 ms. This is causal replay
+evidence, not an installed pass for the correction. `ReadyCapturePublication`
+selects the ready GPU image at composition while retaining the frozen source
+identity, epoch and geometry. It also avoids pinning the older capture surface
+throughout the CPU preparation interval.
+
+The whole receiver capture contained one repeated output frame before the
+predeclared workload interval. That failed report remains retained. The receiver
+judge now also accepts the workload's declared host-clock bounds and includes
+samples bracketing both endpoints; neither an interior nor a boundary repeat can
+pass. Raw capture completeness and timestamp-order checks remain global. No
+post-hoc selection of a convenient passing interval is permitted.

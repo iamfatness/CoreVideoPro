@@ -24,6 +24,7 @@
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 #include "modules/D3DVideoFrame.h"
+#include "modules/ReadyCapturePublication.h"
 #include "modules/CaptureFrameWorker.h"
 #include "modules/CaptureSessionLifecycle.h"
 #include "modules/D3DCaptureCpuBranch.h"
@@ -259,6 +260,7 @@ class WgcSession {
     // does NOT synchronize with one in flight on the free-threaded pool thread.
     { std::lock_guard<std::mutex> drain(frameMutex_); }
     if (worker_) worker_->stop();
+    readyCapture_->clear();
     if (session_) {
       auto closing = std::exchange(session_, nullptr);
       try { closing.Close(); }
@@ -297,6 +299,7 @@ class WgcSession {
   }
 
   int width() const { return width_; }
+  std::shared_ptr<ReadyCapturePublication> readyCapture() const { return readyCapture_; }
   int height() const { return height_; }
   void requireCpu(bool required) { cpuRequired_.store(required, std::memory_order_release); }
   std::vector<VideoFrame> takeCpuFrames() { if (auto cpu = cpuBranch()) return cpu->take(); return {}; }
@@ -556,6 +559,13 @@ class WgcSession {
     if (cpuMirror) ++cpuReadbacks_;
     if (monitorGpu) ++monitorFrames_;
     else if (monitorDemand_) ++monitorRefusedFrames_;
+    if (gpu) {
+      VideoFrame frame;
+      frame.participantId = sourceId_; frame.sourceEpoch = sourceEpoch_; frame.frameId = sequence;
+      frame.captureTimestamp100ns = capture100ns; frame.width = frame.naturalWidth = width;
+      frame.height = frame.naturalHeight = height; frame.gpuPixels = gpu;
+      readyCapture_->publish(std::move(frame));
+    } else readyCapture_->clear();
     {
       std::lock_guard<std::mutex> lock(latestMutex_);
       latestBgra_ = std::move(bgra);
@@ -615,6 +625,7 @@ class WgcSession {
   uint64_t gpuGeneration_ = 0, gpuConsumerRevision_ = 0, gpuFrames_ = 0, gpuFallbackFrames_ = 0;
   std::unique_ptr<D3DVideoFramePool> gpuPool_, retiredGpuPool_;
   std::shared_ptr<const GpuVideoFrame> latestGpu_;
+  std::shared_ptr<ReadyCapturePublication> readyCapture_ = std::make_shared<ReadyCapturePublication>();
   uint64_t monitorGeneration_ = 0, monitorConsumerRevision_ = 0;
   bool monitorDemand_ = false;
   uint64_t monitorFrames_ = 0, monitorRefusedFrames_ = 0;
@@ -743,6 +754,7 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
       frame.captureTimestamp100ns = capture100ns;
       frame.pixels = bgra;
       frame.gpuPixels = std::move(gpu);
+      if (frame.gpuPixels) frame.readyCapture = session->readyCapture();
       frame.monitorGpuPixels = std::move(monitorGpu);
       frame.pixelWidth = width;
       frame.pixelHeight = height;

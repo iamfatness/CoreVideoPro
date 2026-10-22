@@ -122,6 +122,16 @@ fixture checks actual NV12 content at the unchanged deadline. This is not a
 claim about long-run device-clock drift, other native capture rates, monitor
 source cadence, or the installed full-workload result.
 
+Direct-GPU WGC frames use `ReadyCapturePublication`, a capture-owner publication
+of one already completed image. The Program reservation freezes source identity,
+epoch and geometry, but selects this image immediately before composition;
+there is no CPU upload to begin a tick earlier. Its pending descriptor does not
+retain the earlier GPU surface. Publication owns no additional pool or queue,
+and optional monitors discard the production publication handle. Resolution
+cannot cross source replacement, dimensions or shutdown, and records the actual
+selected image in the requested/drawn trace. This addresses the measured stale
+screen choices without increasing the existing Program deadline or capacity.
+
 The overall redesign workload judge now also requires actual camera and screen
 picture proofs in both recorded Program and the registered camera receiver,
 over its exact measured clock interval. Output-counter continuity cannot waive

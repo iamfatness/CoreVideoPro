@@ -1495,7 +1495,8 @@ class D3D11Compositor final : public ICompositor {
       return nullptr;
     }
     for (const auto& frame : frames) {
-      if (frame.participantId == participantId && (frameHasContent(frame) || (frozenSources && frame.preparedGpu))) {
+      if (frame.participantId == participantId && (frameHasContent(frame) ||
+          (frozenSources && frame.sourceEpoch != 0 && frame.frameId > 0))) {
         return &frame;
       }
     }

@@ -27,6 +27,7 @@ inline bool prepareMonitorFrames(MonitorRenderRequest& request) {
     return !monitorRequestNeedsFrame(request, frame);
   }), request.frames.end());
   for (auto& frame : request.frames) {
+    frame.readyCapture.reset(); frame.capturePresentation.reset();
     const bool hadPrepared = static_cast<bool>(frame.preparedGpu);
     frame.preparedGpu.reset(); // optional jobs cannot acquire production slots later
     const bool hadGpu = frame.hasGpuPixels();

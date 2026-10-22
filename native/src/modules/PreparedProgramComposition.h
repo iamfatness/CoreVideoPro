@@ -2,6 +2,7 @@
 #include "modules/Interfaces.h"
 #include "modules/CpuSourceGpuView.h"
 #include "modules/CapturePresentationWindow.h"
+#include "modules/ReadyCapturePublication.h"
 #include <optional>
 #include <algorithm>
 
@@ -18,6 +19,7 @@ struct PreparedProgramComposition {
     size_t index;
     std::shared_ptr<CapturePresentationWindow> owner;
     std::optional<CapturePresentationWindow::Choice> choice;
+    std::shared_ptr<ReadyCapturePublication> ready;
   };
   std::vector<CaptureChoice> captureChoices;
 
@@ -28,15 +30,16 @@ struct PreparedProgramComposition {
   bool resolveCaptures() {
     bool complete = true;
     for (const auto& pending : captureChoices) {
-      auto resolved = pending.choice ? pending.owner->resolve(*pending.choice) : std::optional<VideoFrame>{};
       auto& frame = frames[pending.index];
+      auto resolved = pending.ready ? pending.ready->acquire(frame) :
+          pending.choice ? pending.owner->resolve(*pending.choice) : std::optional<VideoFrame>{};
       if (!resolved || resolved->participantId != frame.participantId || resolved->sourceEpoch != frame.sourceEpoch) {
         // Never stamp a held image with the scheduled future identity.
         // Keep the weak producer token for lifecycle/error attribution. Its
         // identity cannot match the missing observation, so admission cannot
         // acquire its older pixels as the scheduled frame.
         frame.gpuPixels.reset(); frame.captureTimestamp100ns = 0;
-        frame.frameId = pending.choice ? pending.choice->frameId : 0;
+        if (pending.choice) frame.frameId = pending.choice->frameId;
         complete = false;
       } else {
         const auto sourceGeneration = frame.sourceGeneration;
@@ -44,6 +47,7 @@ struct PreparedProgramComposition {
         frame.pixels.reset(); frame.i420.reset(); frame.monitorGpuPixels.reset();
       }
       frame.capturePresentation.reset();
+      frame.readyCapture.reset();
     }
     return complete;
   }
@@ -59,6 +63,9 @@ struct PreparedProgramComposition {
       const auto& token = frame.preparedGpu;
       if (frame.capturePresentation) {
         choices.push_back({index, frame.capturePresentation, frame.capturePresentation->choose(frame, slot, anchor)});
+      } else if (frame.readyCapture && frame.gpuPixels) {
+        choices.push_back({index, {}, {}, frame.readyCapture});
+        frame.gpuPixels.reset(); // do not pin an obsolete capture throughout CPU preparation
       } else if (token && token->sourceId == frame.participantId && token->sourceEpoch == frame.sourceEpoch &&
           token->frameId == frame.frameId && token->captureTimestamp100ns == frame.captureTimestamp100ns &&
           token->width == width && token->height == height)
@@ -66,6 +73,7 @@ struct PreparedProgramComposition {
       frame.width = width; frame.height = height;
       frame.pixels.reset(); frame.i420.reset(); frame.monitorGpuPixels.reset();
       frame.capturePresentation.reset();
+      frame.readyCapture.reset();
     }
     return PreparedProgramComposition{std::move(plan), std::move(selected), sequence, slot, anchor, std::move(choices)};
   }

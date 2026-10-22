@@ -86,6 +86,27 @@ TEST(CapturePresentationWindow, UnqualifiedNativeRatesRetainExistingCaptureSelec
   EXPECT_FALSE(CapturePresentationWindow::supportedRate(120, 1));
   EXPECT_FALSE(CapturePresentationWindow::supportedRate(0, 0));
 }
+TEST(ReadyCapturePublication, SelectsCompletedImageAtCompositionAndFencesReplacementWithoutPinningOldCapture) {
+  auto publication = std::make_shared<ReadyCapturePublication>();
+  auto first = cadenceFrame(100);
+  auto image = std::make_shared<GpuVideoFrame>(); image->width = image->height = 64;
+  std::weak_ptr<GpuVideoFrame> old = image;
+  first.gpuPixels = image; first.readyCapture = publication;
+  publication->publish(first);
+  auto pending = PreparedProgramComposition::capture({}, {first}, 1, 0, 1000); ASSERT_TRUE(pending);
+  EXPECT_FALSE(pending->frames[0].gpuPixels);
+  auto second = cadenceFrame(101);
+  auto newer = std::make_shared<GpuVideoFrame>(); newer->width = newer->height = 64;
+  second.gpuPixels = newer; publication->publish(second);
+  first.gpuPixels.reset(); image.reset(); EXPECT_TRUE(old.expired());
+  ASSERT_TRUE(pending->resolveCaptures()); EXPECT_EQ(pending->frames[0].frameId, 101);
+  EXPECT_EQ(pending->frames[0].gpuPixels.get(), newer.get());
+  EXPECT_FALSE(pending->frames[0].i420); EXPECT_FALSE(pending->frames[0].readyCapture);
+  auto selected = second;
+  second.sourceEpoch = 2; publication->publish(second);
+  EXPECT_FALSE(publication->acquire(selected));
+  publication->clear(); EXPECT_FALSE(publication->acquire(second));
+}
 TEST(PreparedProgramCompositionInputs, CapturesTakeAndSourceIdentityWithoutRetainingCpuOrMonitorPixels) {
   VideoFrame frame;
   frame.participantId = "capture:independent"; frame.sourceEpoch = 7; frame.frameId = 3;
@@ -1769,15 +1790,19 @@ TEST(PreparedProgramComposition, StoppedProducerCannotPublishAStalePreparedImage
   checkCompositionDeadline(true, true, true);
 }
 namespace {
-void checkClockedCaptureDeadline(bool publishSecond) {
+void checkClockedCaptureDeadline(bool publishSecond, bool readyDirect = false) {
   PreparationFlags flags;
   _putenv_s("COREVIDEO_ISOLATE_MONITORS", "1");
   auto owner = std::make_shared<CpuSourcePreparation>(true);
   auto compositor = createD3D11Compositor(true); ASSERT_TRUE(compositor);
   auto window = std::make_shared<CapturePresentationWindow>(); window->configure(60, 1);
+  auto publication = std::make_shared<ReadyCapturePublication>();
   auto first = sourceFrame("capture:clocked", 7, 1, 40); first.i420FullRange = false;
   offer(*owner, first); ASSERT_TRUE(await([&] { return bool(first.preparedGpu->acquire(true)); }));
-  window->publish(first); first.capturePresentation = window;
+  if (readyDirect) {
+    first.gpuPixels = first.preparedGpu->acquire(false);
+    publication->publish(first); first.readyCapture = publication;
+  } else { window->publish(first); first.capturePresentation = window; }
   auto plan = planFor(first.participantId); plan.skipCpuReadback = true; plan.fullProgramReadback = true;
   compositor->configureProgramBuffer(2); compositor->prepareProgramBuffer(64, 64);
   (void)compositor->render(plan, {first});
@@ -1802,6 +1827,7 @@ void checkClockedCaptureDeadline(bool publishSecond) {
   if (publishSecond) {
     offer(*owner, second); window->publish(second);
     ASSERT_TRUE(await([&] { return bool(second.preparedGpu->acquire(false)); }));
+    if (readyDirect) { second.gpuPixels = second.preparedGpu->acquire(false); publication->publish(second); }
   }
   auto third = sourceFrame("capture:clocked", 7, 3, 150); third.i420FullRange = false;
   offer(*owner, third); window->publish(third); third.capturePresentation = window;
@@ -1828,5 +1854,8 @@ TEST(PreparedProgramComposition, ClockedCaptureResolvesLatePictureAtOriginalDead
 }
 TEST(PreparedProgramComposition, MissingClockedCaptureStillDeliversProgramAtOriginalDeadlineWithUnavailableEvidence) {
   checkClockedCaptureDeadline(false);
+}
+TEST(PreparedProgramComposition, DirectGpuCaptureSelectsNewlyCompletedPixelsAtCompositionWithinOriginalDeadline) {
+  checkClockedCaptureDeadline(true, true);
 }
 #endif
