@@ -1323,7 +1323,7 @@ public sealed class Direct3D11InteropService : IDisposable
                 _swapChain = factory.CreateSwapChainForComposition(s_sharedDevice, swapChainDesc);
                 using (var latency = _swapChain.QueryInterface<IDXGISwapChain2>())
                 {
-                    latency.MaximumFrameLatency = 1;
+                    latency.MaximumFrameLatency = independent ? 2u : 1u;
                     _frameLatencyLimit = latency.MaximumFrameLatency;
                     _frameReady = latency.FrameLatencyWaitableObject;
                 }

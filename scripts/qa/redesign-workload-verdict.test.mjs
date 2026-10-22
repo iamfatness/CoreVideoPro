@@ -29,6 +29,11 @@ function completeEvidence() {
     launchEvidence: { installed: true, method: 'desktop-shortcut', elevated: false, processGeneration: 'one',
       priorityClass: 'Normal', receiverPriorityClass: 'Normal' },
     sourcePictureVerdict: { osCamera: sourcePictures(), recording: sourcePictures() },
+    desktopSourcePictureVerdict: { schema: 'desktop-source-picture-verdict-v1',
+      observerCoverageComplete: true, observedPicturesFresh: true, errors: [], durationSeconds: 1800,
+      startTicks: intervalTicks.start, endTicks: intervalTicks.end, qpcFrequency: intervalTicks.frequency,
+      surfaces: Object.fromEntries(['previewCamera', 'programCamera', 'inputCamera'].map(id => [id,
+        { samples: 108001, invalid: 0, missingSourceIdentities: 0, reordered: 0, maximumObservationAgeMs: 90 }])) },
     qpcFrequency: intervalTicks.frequency,
     isoFileEvidence: requiredIsoIds.map(sourceId => ({ sourceId, path: 'fixture/' + sourceId + '.mp4',
       measurement: 'ffprobe-count-packets', width: 1920, height: 1080, packets: isoCount(sourceId), muxVideoFrameCount: isoCount(sourceId) })),
@@ -68,6 +73,21 @@ function completeEvidence() {
   };
 }
 
+test('healthy output counters cannot qualify omitted Studio camera pictures', () => {
+  for (const surface of ['previewCamera', 'programCamera', 'inputCamera']) {
+    for (const mutate of [
+      report => { delete report.desktopSourcePictureVerdict; },
+      report => { report.desktopSourcePictureVerdict.surfaces[surface].missingSourceIdentities = 1; },
+      report => { report.desktopSourcePictureVerdict.surfaces[surface].invalid = 1; },
+      report => { report.desktopSourcePictureVerdict.surfaces[surface].maximumObservationAgeMs = 101; },
+      report => { report.desktopSourcePictureVerdict.observerCoverageComplete = false; },
+      report => { report.desktopSourcePictureVerdict.startTicks = '999'; },
+    ]) {
+      const report = completeEvidence(); mutate(report);
+      assert.equal(judgeRedesignWorkload(report).passed, false);
+    }
+  }
+});
 test('healthy output counters cannot qualify missing, stale or incomplete source pictures', () => {
   for (const destination of ['osCamera', 'recording']) {
     for (const mutate of [

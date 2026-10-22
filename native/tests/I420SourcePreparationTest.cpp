@@ -4,6 +4,7 @@
 #include "modules/Interfaces.h"
 #include "modules/MonitorFrameAdmission.h"
 #include "modules/PreparedProgramComposition.h"
+#include "modules/MonitorCaptureCadence.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cstdlib>
@@ -57,6 +58,54 @@ TEST(CapturePresentationWindow, RationalRateRepeatsOnlyAtItsDeclaredConversionCa
     previous = choice->frameId;
   }
   EXPECT_EQ(repeats, 6);
+}
+TEST(CapturePresentationWindow, AnchorsToPublishedCaptureRatherThanALaggingIngestDescriptor) {
+  CapturePresentationWindow window; window.configure(60, 1);
+  auto observed = cadenceFrame(100);
+  window.publish(observed); window.publish(cadenceFrame(101)); window.publish(cadenceFrame(102));
+  auto choice = window.choose(observed, 0, 1000); ASSERT_TRUE(choice);
+  EXPECT_EQ(choice->frameId, 102);
+  auto actual = window.resolve(*choice); ASSERT_TRUE(actual);
+  EXPECT_EQ(actual->frameId, 102);
+}
+TEST(MonitorCaptureCadence, IngestSamplingJitterCannotRepeatAndSkipFractionalCapturePictures) {
+  auto window = std::make_shared<CapturePresentationWindow>(); window->configure(60000, 1001);
+  MonitorCaptureCadence cadence;
+  int64_t published = -1, previous = -1; int repeats = 0;
+  for (int64_t slot = 0; slot <= 6006; ++slot) {
+    const auto expected = 100 + slot * 1000 / 1001;
+    if (expected != published) { window->publish(cadenceFrame(expected)); published = expected; }
+    auto observed = cadenceFrame(expected - (slot && slot % 7 == 0 ? 1 : 0));
+    observed.capturePresentation = window;
+    MonitorRenderRequest request; request.captureSlot = slot; request.captureAnchorNs = 1000;
+    request.frames = {observed};
+    cadence.prepare(request);
+    ASSERT_TRUE(request.unavailableInputs.empty());
+    EXPECT_EQ(request.frames[0].frameId, expected);
+    EXPECT_TRUE(request.frames[0].hasI420());
+    EXPECT_FALSE(request.frames[0].capturePresentation);
+    EXPECT_FALSE(request.frames[0].preparedGpu);
+    EXPECT_FALSE(request.frames[0].gpuPixels);
+    repeats += previous == expected; previous = expected;
+  }
+  EXPECT_EQ(repeats, 6);
+}
+TEST(MonitorCaptureCadence, OptionalSelectionCannotAdvanceProductionDemandOrRetainItsGpuView) {
+  auto window = std::make_shared<CapturePresentationWindow>(); window->configure(60, 1);
+  auto observed = cadenceFrame(100);
+  observed.preparedGpu = std::make_shared<CpuSourceGpuView>();
+  auto demand = observed.preparedGpu->demand = std::make_shared<CpuSourceGpuDemand>();
+  demand->selectedFrameId.store(17);
+  window->publish(observed); observed.capturePresentation = window;
+  MonitorRenderRequest request; request.captureSlot = 0; request.captureAnchorNs = 1000;
+  request.frames = {observed};
+  MonitorCaptureCadence cadence; cadence.prepare(request);
+  EXPECT_EQ(demand->selectedFrameId.load(), 17);
+  EXPECT_FALSE(request.frames[0].preparedGpu);
+  EXPECT_FALSE(request.frames[0].gpuPixels);
+  request.captureSlot = 1; request.frames = {observed}; cadence.prepare(request);
+  EXPECT_EQ(request.unavailableInputs.size(), 1u);
+  EXPECT_EQ(demand->selectedFrameId.load(), 17);
 }
 TEST(CapturePresentationWindow, FractionalCapturePhaseLeavesPreparationBudgetForLateArrivals) {
   CapturePresentationWindow window; window.configure(60000, 1001);

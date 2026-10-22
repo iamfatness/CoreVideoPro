@@ -1170,6 +1170,7 @@ struct MonitorRenderRequest {
   int64_t producerStartedNs = 0, producerPreparedNs = 0;
   std::function<bool(ProgramFrameSharedTexture&, std::shared_ptr<const void>&)> acquireDeliveredProgram;
   int64_t sequence = 0;
+  int64_t captureSlot = -1, captureAnchorNs = 0;
   int64_t programDisplayTargetNs = 0, programDisplayDeadlineNs = 0;
   int64_t programDisplayOffset100ns = 166666;
   CompositorRenderPlan programPlan;

@@ -182,6 +182,21 @@ export function judgeRedesignWorkload(report) {
     errors.push('Frame evidence omits Preview or multiview display.');
   if (report?.cameraPixelVerdict?.osCameraContinuityVerified !== true)
     errors.push('Independent Windows camera pixel continuity did not pass.');
+  const desktopPictures = report?.desktopSourcePictureVerdict;
+  if (desktopPictures?.schema !== 'desktop-source-picture-verdict-v1' ||
+      desktopPictures.observerCoverageComplete !== true || desktopPictures.observedPicturesFresh !== true ||
+      desktopPictures.startTicks !== interval?.start || desktopPictures.endTicks !== interval?.end ||
+      desktopPictures.qpcFrequency !== report?.qpcFrequency || !(desktopPictures.durationSeconds >= durationSeconds) ||
+      !Array.isArray(desktopPictures.errors) || desktopPictures.errors.length)
+    errors.push('Studio source-picture evidence is missing, incomplete or failed.');
+  for (const surface of ['previewCamera', 'programCamera', 'inputCamera']) {
+    const pictures = desktopPictures?.surfaces?.[surface];
+    if (!pictures || !Number.isSafeInteger(pictures.samples) || pictures.samples < durationSeconds * 60 - 1 ||
+        ['invalid', 'missingSourceIdentities', 'reordered'].some(key => pictures[key] !== 0) ||
+        !Number.isFinite(pictures.maximumObservationAgeMs) || pictures.maximumObservationAgeMs < 0 ||
+        pictures.maximumObservationAgeMs > 100)
+      errors.push(`${surface}: actual Studio camera pictures omitted identities or exceeded their age limit.`);
+  }
   for (const destination of ['osCamera', 'recording']) {
     const pictures = report?.sourcePictureVerdict?.[destination];
     const sourceRate = pictures?.cameraRateNumerator / pictures?.cameraRateDenominator;

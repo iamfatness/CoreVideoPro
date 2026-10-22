@@ -265,6 +265,8 @@ class D3D11Compositor final : public ICompositor {
   bool hasIsolatedMonitors() const override { return monitorWorker_ != nullptr; }
   void submitMonitors(MonitorRenderRequest request) override {
     if (!monitorWorker_) return;
+    request.captureSlot = programProductionSlot_;
+    request.captureAnchorNs = programProductionAnchorNs_;
     request.producerStartedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     prepareMonitorFrames(request);

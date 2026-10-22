@@ -376,8 +376,8 @@ Qualification compares cumulative endpoint deltas inside the measured interval,
 so a near-60 average cannot hide occasional long gaps. Missing counter fields
 are unknown evidence. These counters do not establish physical scanout.
 
-The native presentation chain uses three back buffers, with one outstanding
-frame allowed by its latency credit. A two-credit candidate was tested after
+The native presentation chain uses three back buffers and two latency credits.
+A two-credit candidate was tested after
 a controlled 1080p60 producer comparison on the exact 60 Hz display:
 the three-buffer one-credit controls had 19 and 11 intervals above 25 ms;
 the intervening two-credit run accepted all 2,040 produced frames without a
@@ -390,10 +390,19 @@ compiled changing-pixel/blocked-control probe checks the native configuration.
 The installed two-credit comparison subsequently failed actual picture age:
 `qualification-1008-17` measured a median 55.023 ms between Program delivery
 and the sampled desktop image update, and camera ages up to 123.343 ms against
-the unchanged 100 ms bound. The one-credit setting is being compared under
-that same real workload; the private producer's smoother submission intervals
-did not qualify the two-credit setting. Neither setting has a full workload
-pass. Queue size must satisfy both physical cadence and actual picture age.
+the unchanged 100 ms bound. The one-credit comparison in
+`qualification-1008-18` reduced age but omitted 36 Program camera identities
+over 65.938 seconds, versus three omissions with two credits in the earlier
+comparison. It was rejected and two credits restored while correcting source
+selection. The private producer's smoother submission intervals did not qualify
+either setting. Neither has a full workload pass. Queue size must satisfy both
+physical cadence and actual picture age.
+
+The workload verdict also requires independent Studio source-picture evidence
+for Preview, Program and the webcam input tile. Complete observation, exact
+workload interval, source identity continuity and the unchanged picture-age
+bound must all pass. Fresh output counters or recording/camera pixels cannot
+waive omitted camera identities in those optional monitor paths.
 
 ### Match the regular desktop launch during qualification
 

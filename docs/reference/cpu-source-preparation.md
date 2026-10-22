@@ -131,6 +131,21 @@ fixture checks actual NV12 content at the unchanged deadline. This is not a
 claim about long-run device-clock drift, other native capture rates, monitor
 source cadence, or the installed full-workload result.
 
+The source clock anchors to the capture owner's published head, rather than a
+potentially older ingest descriptor. `MonitorCaptureCadence` gives the optional
+monitor worker its own clock over that same bounded three-arrival CPU history.
+It never advances production GPU demand, retains a production GPU view, or
+changes Program buffering. Monitor selection can wait for CPU arrival only
+inside the current monitor slot's first half-period, preserving the remaining
+half for its independent uploads/render. Missing choices remain explicit input
+failures. Resolved descriptors drop the history owner before last-good retention;
+consumer clocks hold only weak owner references and are removed with demand.
+Source replacement and epoch changes fence old choices. A compiled D3D fixture
+independently reads exported Preview pixels with a deliberately lagging ingest
+descriptor; jitter tests check rational capture cadence and verify optional
+selection cannot alter production GPU demand. Installed qualification remains
+required.
+
 Direct-GPU WGC frames use `ReadyCapturePublication`, a capture-owner publication
 of one already completed image. The Program reservation freezes source identity,
 epoch and geometry, but selects this image immediately before composition;
