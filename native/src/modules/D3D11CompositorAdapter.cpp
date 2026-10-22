@@ -4,6 +4,7 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 #include "modules/CpuPreparationSelection.h"
+#include "modules/PreparedProgramComposition.h"
 
 // The GPU compositor is intentionally a dev-machine adapter. COREVIDEO_STUB
 // builds must stay portable and resolve this factory to nullptr unless all
@@ -142,6 +143,8 @@ class D3D11Compositor final : public ICompositor {
     const char* gpuCapture = std::getenv("COREVIDEO_GPU_CAPTURE");
     const bool cpuPreparation = cpuPreparationEnabled(prepareCpuSources);
     strictCpuSources_ = cpuPreparation && !monitorBackend;
+    const char* budget = std::getenv("COREVIDEO_PREPARE_PROGRAM_WITHIN_BUDGET");
+    sourceBudgetEnabled_ = strictCpuSources_ && (!budget || std::string(budget) != "0");
     if (enableGpuIngress || (gpuCapture && std::string(gpuCapture) == "1") ||
         cpuPreparation) {
       gpuConsumer_ = D3DVideoConsumers::add(device_.get(), monitorBackend);
@@ -238,6 +241,8 @@ class D3D11Compositor final : public ICompositor {
     gradeWorker_.reset();
     monitorWorker_.reset();
     auxiliaryMonitorWorker_.reset();
+    if (pendingComposition_) pendingComposition_->buffer->cancelComposition(pendingComposition_->reservation);
+    pendingComposition_.reset();
     gpuReadLeases_.reset();
     { std::lock_guard<std::mutex> lock(programBufferMutex_); programBuffer_.reset(); }
     stopVcamTap();
@@ -360,6 +365,76 @@ class D3D11Compositor final : public ICompositor {
   }
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
+    if (!sourceBudgetEnabled_ || programBufferFrames() <= 0 || programProductionSlot_ < 0 || programProductionAnchorNs_ <= 0)
+      return renderImmediate(renderPlan, frames);
+    auto buffer = ensureProgramBuffer(renderPlan.width, renderPlan.height);
+    ProgramFrame produced;
+    produced.width = renderPlan.width; produced.height = renderPlan.height;
+    produced.frameNumber = frameNumber_; produced.renderer = "d3d11"; produced.health = "warming";
+    if (pendingComposition_ && pendingComposition_->buffer != buffer) {
+      pendingComposition_->buffer->cancelComposition(pendingComposition_->reservation);
+      pendingComposition_.reset();
+    }
+    // Finish the previous choice before advancing demand to a newer CPU token.
+    // The original output anchor/deadline remains owned by its existing slot.
+    if (pendingComposition_) {
+      auto job = std::move(*pendingComposition_); pendingComposition_.reset();
+      if (job.buffer->claimComposition(job.reservation)) {
+        const auto slot = programProductionSlot_, anchor = programProductionAnchorNs_;
+        activeComposition_ = std::make_pair(job.buffer, job.reservation);
+        programProductionSlot_ = job.inputs.productionSlot; programProductionAnchorNs_ = job.inputs.anchorNs;
+        frameNumber_ = job.inputs.sequence - 1;
+        try { produced = renderImmediate(job.inputs.plan, job.inputs.frames); }
+        catch (...) {
+          job.buffer->cancelComposition(job.reservation); // only unused credits can retire
+          activeComposition_.reset(); programProductionSlot_ = slot; programProductionAnchorNs_ = anchor;
+          throw;
+        }
+        job.buffer->cancelComposition(job.reservation); // no-op after actual GPU submission
+        activeComposition_.reset(); programProductionSlot_ = slot; programProductionAnchorNs_ = anchor;
+      } else job.buffer->cancelComposition(job.reservation);
+    }
+    // Freeze the actual resolved sources, including legacy positional layers.
+    // Only source descriptors and existing GPU leases survive; no CPU pixels or
+    // optional monitor slots are kept by this pre-composition reservation.
+    auto frozen = sortCompositorRenderPlan(renderPlan);
+    const auto resolved = resolveLayers(frozen, frames);
+    frozen.layers.clear();
+    std::vector<VideoFrame> chosen;
+    for (const auto& layer : resolved) {
+      auto plan = layer.plan;
+      if (layer.frame && !compositorLayerIsOverlay(plan)) {
+        plan.participantId = layer.frame->participantId;
+        if (std::none_of(chosen.begin(), chosen.end(), [&](const auto& value) { return value.participantId == layer.frame->participantId; }))
+          chosen.push_back(*layer.frame);
+      }
+      frozen.layers.push_back(std::move(plan));
+    }
+    const auto sequence = ++compositionInputSequence_;
+    const auto signature = renderPlanSignature(frozen);
+    auto inputs = PreparedProgramComposition::capture(std::move(frozen), std::move(chosen), sequence,
+        programProductionSlot_, programProductionAnchorNs_);
+    if (inputs) {
+      ProgramFrame selected;
+      selected.width = renderPlan.width; selected.height = renderPlan.height; selected.frameNumber = sequence;
+      selected.productionSlot = programProductionSlot_; selected.productionAnchorNs = programProductionAnchorNs_;
+      selected.renderPlanSignature = signature;
+      if (auto reservation = buffer->reserveComposition(std::move(selected))) {
+        for (const auto& layer : resolveLayers(inputs->plan, inputs->frames, true)) {
+          if (!layer.frame || compositorLayerIsOverlay(layer.plan) || (layer.plan.tilesDecoration.enabled && layer.plan.tilesDecoration.glowPass)) continue;
+          core::DeliveryTraceEvent event;
+          event.stage = core::DeliveryStage::SourceRequested; event.programSequence = sequence; event.layoutTag = signature;
+          event.sourceTag = core::deliveryTraceTag(layer.frame->participantId); event.sourceEpoch = layer.frame->sourceEpoch;
+          event.sourceFrameId = layer.frame->frameId; event.sourceObservation100ns = layer.frame->captureTimestamp100ns;
+          core::recordDeliveryTrace(event);
+        }
+        pendingComposition_ = PendingComposition{std::move(*inputs), buffer, *reservation};
+      }
+    }
+    return produced;
+  }
+
+  ProgramFrame renderImmediate(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) {
     graphicsSourceDrawCount_ = 0;
     // Keep slow driver-stage evidence even when the operator has not enabled
     // verbose logging. CPU timestamps only; no GPU queries or extra flushes.
@@ -375,6 +450,7 @@ class D3D11Compositor final : public ICompositor {
       return static_cast<long long>(elapsed);
     };
     ++frameNumber_;
+    compositionInputSequence_ = (std::max)(compositionInputSequence_, frameNumber_);
     overlayRaster_.beginFrame();
     auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     ProgramFrame frame;
@@ -506,11 +582,12 @@ class D3D11Compositor final : public ICompositor {
     }
     const auto evictUs = stageUs();
     if (buffered) {
-      auto buffer = ensureProgramBuffer(frame.width, frame.height);
+      auto buffer = activeComposition_ ? activeComposition_->first : ensureProgramBuffer(frame.width, frame.height);
       frame.producedAt100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
       frame.productionSlot = programProductionSlot_; frame.productionAnchorNs = programProductionAnchorNs_;
       frame.renderPlanEvidence = std::make_shared<const CompositorRenderPlan>(std::move(deterministicPlan));
-      buffer->submit(context_.get(), renderTarget_.get(), frame, renderPlan.fullProgramReadback);
+      buffer->submit(context_.get(), renderTarget_.get(), frame, renderPlan.fullProgramReadback,
+          activeComposition_ ? &activeComposition_->second : nullptr);
     }
     else if(renderPlan.observeGraphicsSubjects) frame.renderPlanEvidence=std::make_shared<const CompositorRenderPlan>(deterministicPlan);
     if (gpuReadLeases_) gpuReadLeases_->finish();
@@ -1254,7 +1331,8 @@ class D3D11Compositor final : public ICompositor {
     return SUCCEEDED(device_->CreateTexture2D(&textureDesc, nullptr, stagingTexture_.put()));
   }
 
-  std::vector<ResolvedLayer> resolveLayers(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) const {
+  std::vector<ResolvedLayer> resolveLayers(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames,
+      bool frozenSources = false) const {
     std::vector<ResolvedLayer> layers;
     if (!renderPlan.layers.empty()) {
       layers.reserve(renderPlan.layers.size());
@@ -1283,14 +1361,14 @@ class D3D11Compositor final : public ICompositor {
           // bus health on air (#535 slice 4a): the ONE resolution rule, not a
           // per-kind placeholder. See CompositorLayout.h slateColorFor/blackOnStalled.
           layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
-          layer.frame = frameForParticipant(frames, layer.plan.participantId);
+          layer.frame = frameForParticipant(frames, layer.plan.participantId, frozenSources || activeComposition_.has_value());
           if (layer.frame == nullptr) {
             warnUnmatchedCaptureLayer(layer.plan.participantId, frames);
           }
         } else if (!layer.plan.mediaAssetId.empty()) {
           layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           const std::string frameSourceId = layer.plan.sourceId.empty() ? "media:" + layer.plan.mediaAssetId : layer.plan.sourceId;
-          layer.frame = frameForParticipant(frames, frameSourceId);
+          layer.frame = frameForParticipant(frames, frameSourceId, frozenSources || activeComposition_.has_value());
           if (layer.frame == nullptr) {
             warnUnmatchedCaptureLayer(frameSourceId, frames);
           }
@@ -1397,12 +1475,12 @@ class D3D11Compositor final : public ICompositor {
                  available.empty() ? "none" : available.c_str());
   }
 
-  static const VideoFrame* frameForParticipant(const std::vector<VideoFrame>& frames, const std::string& participantId) {
+  static const VideoFrame* frameForParticipant(const std::vector<VideoFrame>& frames, const std::string& participantId, bool frozenSources = false) {
     if (participantId.empty()) {
       return nullptr;
     }
     for (const auto& frame : frames) {
-      if (frame.participantId == participantId && frameHasContent(frame)) {
+      if (frame.participantId == participantId && (frameHasContent(frame) || (frozenSources && frame.preparedGpu))) {
         return &frame;
       }
     }
@@ -1602,7 +1680,7 @@ class D3D11Compositor final : public ICompositor {
     auto layer = requestedLayer;
     VideoFrame admittedImage;
     core::DeliveryReason traceReason = core::DeliveryReason::Ready;
-    if (traceFrame && requestedLayer.frame && !compositorLayerIsOverlay(layer.plan) &&
+    if (traceFrame && !activeComposition_ && requestedLayer.frame && !compositorLayerIsOverlay(layer.plan) &&
         !(layer.plan.tilesDecoration.enabled && layer.plan.tilesDecoration.glowPass)) {
       core::DeliveryTraceEvent requested;
       requested.stage = core::DeliveryStage::SourceRequested;
@@ -3614,6 +3692,15 @@ class D3D11Compositor final : public ICompositor {
   std::atomic<bool> encoderExporting_{false};
   std::atomic<int> requestedProgramFrames_{0};
   int64_t programProductionSlot_ = -1, programProductionAnchorNs_ = 0;
+  struct PendingComposition {
+    PreparedProgramComposition inputs;
+    std::shared_ptr<D3DProgramBuffer> buffer;
+    D3DProgramBuffer::CompositionReservation reservation;
+  };
+  std::optional<PendingComposition> pendingComposition_;
+  std::optional<std::pair<std::shared_ptr<D3DProgramBuffer>, D3DProgramBuffer::CompositionReservation>> activeComposition_;
+  int64_t compositionInputSequence_ = 0;
+  bool sourceBudgetEnabled_ = false;
   mutable std::mutex programBufferMutex_;
   std::shared_ptr<D3DProgramBuffer> programBuffer_;
   const bool profileGpuSubmission_ = GpuSubmissionCpuScope::requested();

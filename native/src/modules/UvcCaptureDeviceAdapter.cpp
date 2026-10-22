@@ -389,12 +389,14 @@ class UvcCaptureSession {
     }
     std::fprintf(
         stderr,
-        "[uvc-capture] '%s' negotiated %s %dx%d@%d -> %s (fullRange=%d bt601=%d)\n",
+        "[uvc-capture] '%s' negotiated %s %dx%d@%d (%d/%d fps) -> %s (fullRange=%d bt601=%d)\n",
         deviceId_.c_str(),
         chosen.fourcc.c_str(),
         chosen.width,
         chosen.height,
         static_cast<int>(fps + 0.5),
+        chosen.fpsNumerator,
+        chosen.fpsDenominator,
         outputIsNv12_ ? "NV12" : "YUY2",
         fullRange_ ? 1 : 0,
         bt601_ ? 1 : 0);

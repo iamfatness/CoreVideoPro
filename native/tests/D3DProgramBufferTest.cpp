@@ -32,7 +32,8 @@ struct ProgramBufferTimerResolution {
     const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(target - std::chrono::steady_clock::now()).count();
     if (remaining <= 0) return;
     LARGE_INTEGER due; due.QuadPart = -(std::max)(int64_t(1), (remaining + 99) / 100);
-    if (!timer || !SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE) || WaitForSingleObject(timer, 50) != WAIT_OBJECT_0)
+    const auto timeoutMs = static_cast<DWORD>((remaining + 999'999) / 1'000'000 + 50);
+    if (!timer || !SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE) || WaitForSingleObject(timer, timeoutMs) != WAIT_OBJECT_0)
       throw std::runtime_error("phase fixture high-resolution wait failed");
   }
 };
@@ -718,6 +719,36 @@ TEST(D3DProgramBuffer, DisplayReaderRetiresOldGenerationAndReusesItsImageAcrossS
   auto nextOwner = publish(newPool, 128, 2, 134); ASSERT_TRUE(nextOwner != nullptr);
   EXPECT_EQ(reader.copy(consumer.get(), readerContext.get(), nextOwner), resizedView);
   EXPECT_EQ(readPixel(newImage.get(), 128), 134);
+}
+
+TEST(D3DProgramBuffer, CompositionReservationsReuseExistingCapacityAndRejectExpiredOrCancelledTickets) {
+  ProgramBufferTimerResolution timer;
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+      device.put(), nullptr, context.put())));
+  D3DProgramBuffer buffer(device.get(), 64, 64, 2, 1, {}); ASSERT_TRUE(buffer.valid());
+  const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+  ProgramFrame first; first.frameNumber = 1; first.productionSlot = 0; first.productionAnchorNs = anchorNs;
+  auto cancelled = buffer.reserveComposition(first); ASSERT_TRUE(cancelled.has_value());
+  auto next = first; next.frameNumber = 2; next.productionSlot = 1;
+  EXPECT_FALSE(buffer.reserveComposition(next)); // a second pending source job is not another queue
+  EXPECT_EQ(buffer.diagnostics().capacity, 5); EXPECT_EQ(buffer.diagnostics().occupancy, 1);
+  buffer.cancelComposition(*cancelled);
+  auto active = buffer.reserveComposition(next); ASSERT_TRUE(active.has_value());
+  EXPECT_FALSE(buffer.claimComposition(*cancelled));
+  buffer.cancelComposition(*cancelled);
+  EXPECT_EQ(buffer.diagnostics().occupancy, 1); // old cancellation cannot release the replacement
+  timer.waitUntil(anchor + std::chrono::nanoseconds(50'000'001));
+  EXPECT_FALSE(buffer.claimComposition(*active)); // original two-frame deadline is never reset
+  buffer.cancelComposition(*active);
+  ProgramFrame missing;
+  EXPECT_FALSE(buffer.take(missing, 1));
+  EXPECT_EQ(buffer.diagnostics().capacity, 5);
+  EXPECT_EQ(buffer.diagnostics().occupancy, 0);
 }
 
 TEST(D3DProgramBuffer, SubmitsNextFrameWhileEarlierGpuCompletionIsPending) {

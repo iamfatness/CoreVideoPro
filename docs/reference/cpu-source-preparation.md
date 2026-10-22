@@ -78,11 +78,25 @@ Windows WGC now defaults to direct GPU capture; explicit
 `COREVIDEO_GPU_CAPTURE=0` retains the CPU comparison/rollback path. Its capture
 owner records exact GPU completion before publishing a source descriptor.
 Unsupported sharing retains the existing CPU fallback and measured counters.
-The CPU preparation GPU owner registers with the existing bounded Playback
-MMCSS class because its completions are required by Program, like the Program
-and virtual-camera workers. This does not change process priority, queue bounds,
-Program buffering or deadlines. Scheduling registration and actual source
-selection remain independently measured; registration alone is not qualification.
+The scheduling-only experiment did not remove exact webcam-selection holds.
+Buffered Program instead reserves one existing pool credit for an immutable
+source/Take choice, demands those exact preparation tokens, and composes that
+choice on the next production tick. Composition and preparation retain the
+original production slot and deadline. With a two-frame buffer this divides the
+existing budget between source preparation and composed-frame readiness; it does
+not add a third frame, expand the pool, or retain CPU/ISO or optional-monitor
+pixels. Expired or cancelled reservations cannot publish into reused credits.
+The normal prepared-source path enables this behavior; explicit
+`COREVIDEO_PREPARE_PROGRAM_WITHIN_BUDGET=0` retains the old immediate-composition
+control for diagnostic comparisons. Preparation that misses the composition
+portion still reports a held/unavailable source and fails exact-source
+qualification. It is not relabeled as ready or given a later deadline.
+
+The #1016 causal fixture delays a selected GPU image until after the original
+CPU choice. The old path delivers older pixels; the corrected path delivers the
+selected pixels at the same original deadline and capacity. This fixture is not
+full-workload acceptance. Installed source pixels, source cadence, recording,
+OS camera and physical display remain separate measured gates.
 
 Browser input uses one bounded reader thread with at most 64 sources when
 preparation is enabled. OS mapping, seqlock BGRA copying and preparation run
