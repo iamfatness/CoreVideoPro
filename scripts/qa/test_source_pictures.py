@@ -15,9 +15,10 @@ def bands(identity):
 
 def fixture():
     manifest = dict(startQpc=1_000_000_000, endQpc=1_010_000_000, qpcFrequency=10_000_000, minimumSeconds=1,
+                    cameraSourceId='capture:camera', screenSourceId='capture:screen:2',
                     points=[[0, 0]] * 160, cameraMarker=list(range(72)), screenMarker=list(range(72, 144)),
                     cameraBody=list(range(144, 160)), maximumScreenPictureLag=2, maximumCameraObservationAgeMs=100,
-                    maximumScreenAgeMs=200, maximumCameraBodyHoldMs=500)
+                    maximumScreenAgeMs=200, maximumCameraBodyHoldMs=500, cameraRateNumerator=60, cameraRateDenominator=1)
     stimulus = [dict(identity=i + 1, beforeNs=100_000_000_000 + i * 100_000_000,
                      afterNs=100_000_100_000 + i * 100_000_000) for i in range(11)]
     rows, draws = [], {}
@@ -56,6 +57,17 @@ class SourcePictures(unittest.TestCase):
         body = bytes.fromhex(rows[0]['pictureLuma'])[144:]
         for row in rows: row['pictureLuma'] = (bytes.fromhex(row['pictureLuma'])[:144] + body).hex()
         self.assertFalse(pictures.judge_samples(rows, manifest, draws, stimulus)['sourcePicturesVerified'])
+
+    def test_matching_draw_metadata_cannot_waive_capture_selection_repeat_and_skip(self):
+        rows, manifest, draws, stimulus = fixture()
+        raw = bytes.fromhex(rows[30]['pictureLuma'])
+        rows[30]['pictureLuma'] = (bytes(bands(129)) + raw[72:]).hex()
+        draws[31]['sourceFrameId'] = 129
+        verdict = pictures.judge_samples(rows, manifest, draws, stimulus)
+        self.assertEqual(verdict['mismatched'], 0)
+        self.assertEqual(verdict['cameraRepeated'], 1)
+        self.assertEqual(verdict['cameraMissing'], 1)
+        self.assertFalse(verdict['sourcePicturesVerified'])
 
     def test_torn_missing_and_unattributable_picture_samples_fail(self):
         for mode in ('torn', 'missing', 'unattributed'):

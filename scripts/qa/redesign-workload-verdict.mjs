@@ -177,6 +177,27 @@ export function judgeRedesignWorkload(report) {
     errors.push('Frame evidence omits Preview or multiview display.');
   if (report?.cameraPixelVerdict?.osCameraContinuityVerified !== true)
     errors.push('Independent Windows camera pixel continuity did not pass.');
+  for (const destination of ['osCamera', 'recording']) {
+    const pictures = report?.sourcePictureVerdict?.[destination];
+    const sourceRate = pictures?.cameraRateNumerator / pictures?.cameraRateDenominator;
+    const repeatLimit = Math.ceil((pictures?.samples - 1) * (1 - sourceRate / 60)) + (sourceRate < 60 ? 2 : 0);
+    if (pictures?.schema !== 'source-picture-verdict-v1' || pictures.sourcePicturesVerified !== true ||
+        !Array.isArray(pictures.errors) || pictures.errors.length ||
+        pictures.startTicks !== interval?.start || pictures.endTicks !== interval?.end ||
+        pictures.qpcFrequency !== report?.qpcFrequency || !(pictures.durationSeconds >= durationSeconds) ||
+        !Number.isSafeInteger(pictures.samples) || pictures.samples < durationSeconds * 60 - 1 ||
+        pictures.cameraSourceId !== declared.find(id => typeof id === 'string' && id.startsWith('capture:') && !id.startsWith('capture:screen:')) ||
+        pictures.screenSourceId !== declared.find(id => typeof id === 'string' && id.startsWith('capture:screen:')) ||
+        ['invalid', 'mismatched', 'stale', 'cameraMissing', 'cameraReordered'].some(key => pictures[key] !== 0) ||
+        !Number.isSafeInteger(pictures.cameraRepeated) || !Number.isSafeInteger(pictures.cameraPermittedRateConversionRepeats) ||
+        !Number.isFinite(sourceRate) || sourceRate <= 0 || sourceRate > 60 || pictures.cameraPermittedRateConversionRepeats !== repeatLimit ||
+        pictures.cameraRepeated < 0 || pictures.cameraRepeated > pictures.cameraPermittedRateConversionRepeats ||
+        !Number.isFinite(pictures.maximumCameraObservationAgeMs) || pictures.maximumCameraObservationAgeMs > 100 || pictures.maximumCameraObservationAgeMs < 0 ||
+        !Number.isFinite(pictures.maximumScreenPictureAgeMs) || pictures.maximumScreenPictureAgeMs > 200 || pictures.maximumScreenPictureAgeMs < 0 ||
+        !Number.isFinite(pictures.longestCameraBodyHoldMs) || pictures.longestCameraBodyHoldMs > 1000 || pictures.longestCameraBodyHoldMs < 0 ||
+        !(pictures.cameraBodyChanges > 0))
+      errors.push(`${destination}: actual source pictures did not pass over the full measured interval.`);
+  }
   const recorded = report?.recordingPixelVerdict, camera = report?.cameraPixelVerdict;
   if (recorded?.recordedPixelContinuityPassed !== true || recorded?.identityRangeComplete !== true ||
       !Number.isSafeInteger(camera?.firstIdentity) || !Number.isSafeInteger(camera?.lastIdentity) ||

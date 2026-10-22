@@ -55,3 +55,32 @@ actual source pictures must be evaluated separately from output cadence; a
 rounds its rate to 60. The UVC log now preserves the negotiated rational rate.
 Physical multiview/Preview presentation requires the exact native swapchain,
 process, declared interval and actual 60/1 display. No average-FPS waiver applies.
+
+## Installed diagnostic and remaining cadence defect
+
+Candidate `91b9fb02` ran eight actual 1080p Zoom remotes, the 1080p webcam,
+2560x1440 screen, local Program plus eight ISO recordings, and the registered
+Windows camera consumer. Overwatch was also running. The declared interval was
+65.792 seconds; this short diagnostic cannot qualify the required 30 minutes.
+The finalized trace, all eight decoded ISO arrival sequences, Program output
+markers and independent OS-camera output markers passed their component checks.
+Exact source preparation substituted no pictures in that interval.
+
+Actual source pixels still failed: both recorded Program and the OS camera had
+147 repeated webcam pictures and 142 skipped webcam pictures. The negotiated
+60000/1001 rate allowed six repeats. All 142 omitted arrivals were already GPU
+ready before the previous composition. Source-selection intervals varied from
+12.7461 to 21.0584 ms. Latest-arrival polling preserved this upstream selection
+error even after exact GPU preparation was corrected. #1019 tracks the fix.
+
+A counterfactual cadence replay selected 3,948 exact arrivals available before
+the original compositions, with at least 4.3608 ms of readiness slack. This is
+feasibility evidence only. The new bounded capture selection has a real-GPU
+fixture that delivers the expected NV12 picture at the original two-frame
+deadline; installed and sustained qualification remain required.
+
+Screen stimulus age also reached 217.7325 ms against the predeclared 200 ms
+bound. Two camera body samples fell below the declared contrast bound; those
+observations require picture inspection rather than automatically attributing
+them to capture failure. The previous failed verdict is retained. No beta is
+qualified by these component successes or by a replay.

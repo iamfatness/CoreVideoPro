@@ -11,6 +11,13 @@ function completeEvidence() {
   const intervalTicks = { start: '1000000', end: String(1000000 + 1800 * 10000000), frequency: 10000000 };
   const perSample = id => id.startsWith('zoom:') ? 450 : 600;
   const isoCount = id => perSample(id) * 180 + 1;
+  const sourcePictures = () => ({ schema: 'source-picture-verdict-v1', sourcePicturesVerified: true,
+    startTicks: intervalTicks.start, endTicks: intervalTicks.end, qpcFrequency: intervalTicks.frequency,
+    durationSeconds: 1800, samples: 108001, cameraSourceId: 'capture:camera', screenSourceId: 'capture:screen:2',
+    invalid: 0, mismatched: 0, stale: 0, cameraMissing: 0, cameraReordered: 0, cameraRepeated: 0,
+    cameraPermittedRateConversionRepeats: 0, cameraBodyChanges: 108000, errors: [],
+    cameraRateNumerator: 60, cameraRateDenominator: 1, maximumCameraObservationAgeMs: 75,
+    maximumScreenPictureAgeMs: 180, longestCameraBodyHoldMs: 0 });
   const pixelProof = sourceId => ({ schema: 'iso-pixel-arrival-verdict-v1', sourceId,
     path: 'fixture/' + sourceId + '.mp4', trace: 'fixture/arrival-trace.bin',
     startTicks: intervalTicks.start, endTicks: intervalTicks.end,
@@ -19,6 +26,7 @@ function completeEvidence() {
     invalid: 0, rangeViolations: 0, firstMismatchIndex: null,
     coverage: { sourceEpoch: 1, durationSeconds: 1800 } });
   return { startTime, endTime, requiredInputIds, requiredIsoIds, monitorProbeVerdict: { functionalPassed: true },
+    sourcePictureVerdict: { osCamera: sourcePictures(), recording: sourcePictures() },
     qpcFrequency: intervalTicks.frequency,
     isoFileEvidence: requiredIsoIds.map(sourceId => ({ sourceId, path: 'fixture/' + sourceId + '.mp4',
       measurement: 'ffprobe-count-packets', width: 1920, height: 1080, packets: isoCount(sourceId), muxVideoFrameCount: isoCount(sourceId) })),
@@ -57,6 +65,26 @@ function completeEvidence() {
     } },
   };
 }
+
+test('healthy output counters cannot qualify missing, stale or incomplete source pictures', () => {
+  for (const destination of ['osCamera', 'recording']) {
+    for (const mutate of [
+      report => { delete report.sourcePictureVerdict; },
+      report => { report.sourcePictureVerdict[destination].sourcePicturesVerified = false; },
+      report => { report.sourcePictureVerdict[destination].cameraMissing = 142; },
+      report => { report.sourcePictureVerdict[destination].cameraRepeated = 147; },
+      report => { report.sourcePictureVerdict[destination].cameraPermittedRateConversionRepeats = 1000; },
+      report => { report.sourcePictureVerdict[destination].maximumScreenPictureAgeMs = 217; },
+      report => { report.sourcePictureVerdict[destination].stale = 82; },
+      report => { report.sourcePictureVerdict[destination].startTicks = '999999'; },
+      report => { report.sourcePictureVerdict[destination].durationSeconds = 65; },
+      report => { report.sourcePictureVerdict[destination].cameraBodyChanges = 0; },
+    ]) {
+      const report = completeEvidence(); mutate(report);
+      assert.equal(judgeRedesignWorkload(report).passed, false);
+    }
+  }
+});
 
 test('ISO arrival fidelity requires decoded pictures over the exact workload clock interval', () => {
   for (const change of [

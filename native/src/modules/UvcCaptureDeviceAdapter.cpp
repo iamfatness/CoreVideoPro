@@ -4,6 +4,7 @@
 #include "modules/PeriodicDeviceDiscovery.h"
 #include "modules/UvcCaptureSupport.h"
 #include "modules/I420CaptureArrival.h"
+#include "modules/CapturePresentationWindow.h"
 #include "modules/UvcIsoArrivalQueue.h"
 
 #include <memory>
@@ -152,6 +153,7 @@ class UvcCaptureSession {
         deviceName_(std::move(deviceName)),
         symbolicLink_(std::move(symbolicLink)),
         noFirstFrameTimeoutMs_(noFirstFrameTimeoutMs),
+        presentation_(preparation ? std::make_shared<CapturePresentationWindow>() : nullptr),
         arrival_(std::move(sourceId), std::move(preparation), qaIsoCounterEnabled()) {
     thread_ = std::thread([this] { run(); });
   }
@@ -181,6 +183,7 @@ class UvcCaptureSession {
     std::lock_guard<std::mutex> lock(mutex_);
     Snapshot copy;
     copy.arrival = latestArrival_;
+    if (presentationEnabled_) copy.arrival.capturePresentation = presentation_;
     copy.negotiatedWidth = negotiatedWidth_;
     copy.negotiatedHeight = negotiatedHeight_;
     copy.negotiatedFps = negotiatedFps_;
@@ -225,11 +228,18 @@ class UvcCaptureSession {
     current->GetUINT32(MF_MT_YUV_MATRIX, &yuvMatrix);
     const auto hints = uvc::deriveYuvColorHints(
         static_cast<int>(nominalRange), static_cast<int>(yuvMatrix), height);
+    UINT32 rateNumerator = 0, rateDenominator = 0;
+    MFGetAttributeRatio(current.get(), MF_MT_FRAME_RATE, &rateNumerator, &rateDenominator);
+    const bool cadence = CapturePresentationWindow::supportedRate(
+        static_cast<int>(rateNumerator), static_cast<int>(rateDenominator));
+    if (presentation_) presentation_->configure(static_cast<int>(rateNumerator), static_cast<int>(rateDenominator));
 
     std::lock_guard<std::mutex> lock(mutex_);
     outputWidth_ = width;
     outputHeight_ = height;
     outputIsNv12_ = subtype == MFVideoFormat_NV12;
+    outputRateNumerator_ = rateNumerator; outputRateDenominator_ = rateDenominator;
+    presentationEnabled_ = cadence && static_cast<bool>(presentation_);
     fullRange_ = hints.fullRange;
     bt601_ = hints.bt601;
     return true;
@@ -395,8 +405,8 @@ class UvcCaptureSession {
         chosen.width,
         chosen.height,
         static_cast<int>(fps + 0.5),
-        chosen.fpsNumerator,
-        chosen.fpsDenominator,
+        static_cast<int>(outputRateNumerator_),
+        static_cast<int>(outputRateDenominator_),
         outputIsNv12_ ? "NV12" : "YUY2",
         fullRange_ ? 1 : 0,
         bt601_ ? 1 : 0);
@@ -523,6 +533,7 @@ class UvcCaptureSession {
       // The render/ISO consumers retain the authoritative CPU representation.
       auto arrival = arrival_.publishMutable(std::move(frame), width, height, fullRange_, bt601_);
       if (!arrival.hasContent()) continue;
+      if (presentation_) presentation_->publish(arrival);
       isoArrivals_.offer(arrival);
       if (qaIsoCounterEnabled() && isoArrivals_.stats().demanded)
         traceQaIsoArrival(arrival.participantId, arrival.sourceEpoch, arrival.frameId,
@@ -543,6 +554,7 @@ class UvcCaptureSession {
   const std::string deviceName_;
   const std::wstring symbolicLink_;
   const int64_t noFirstFrameTimeoutMs_;
+  std::shared_ptr<CapturePresentationWindow> presentation_;
   I420CaptureArrival arrival_;
   UvcIsoArrivalQueue isoArrivals_;
   std::thread thread_;
@@ -555,6 +567,8 @@ class UvcCaptureSession {
   int outputWidth_ = 0;
   int outputHeight_ = 0;
   bool outputIsNv12_ = true;
+  uint32_t outputRateNumerator_ = 0, outputRateDenominator_ = 0;
+  bool presentationEnabled_ = false;
   int negotiatedWidth_ = 0;
   int negotiatedHeight_ = 0;
   int negotiatedFps_ = 0;

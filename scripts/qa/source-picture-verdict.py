@@ -30,7 +30,7 @@ def decode_bands(values):
 
 def judge_samples(rows, manifest, camera_draws, stimulus):
     errors, camera_ages, screen_ages = [], [], []
-    invalid = mismatched = stale = 0
+    invalid = mismatched = stale = repeated = missing = reordered = 0
     start, end = int(manifest['startQpc']), int(manifest['endQpc'])
     frequency = int(manifest['qpcFrequency'])
     if frequency <= 0 or end <= start: raise ValueError('Invalid measurement clock')
@@ -47,7 +47,7 @@ def judge_samples(rows, manifest, camera_draws, stimulus):
         raise ValueError('Invalid independent stimulus sequence')
     measured = [r for r in rows if 'sample' in r and start <= r['arrivalHostUs'] * frequency // 1_000_000 <= end]
     if len(measured) < minimum * 60: errors.append('Insufficient received picture coverage')
-    previous, changes, longest_hold, hold_start = None, 0, 0, None
+    previous, previous_camera, changes, longest_hold, hold_start = None, None, 0, 0, None
     for row in measured:
         raw = bytes.fromhex(row.get('pictureLuma', ''))
         if len(raw) != len(points):
@@ -61,6 +61,12 @@ def judge_samples(rows, manifest, camera_draws, stimulus):
             invalid += 1; continue
         if camera != drawn['sourceFrameId'] or drawn['reason'] != 1:
             mismatched += 1
+        if previous_camera is not None:
+            delta = camera - previous_camera
+            repeated += delta == 0
+            missing += max(0, delta - 1)
+            reordered += delta < 0
+        previous_camera = camera
         # Observation-to-consumer age, not sensor exposure latency.
         camera_age = (arrival_ns - drawn['observation100ns'] * 100) / 1e6
         camera_ages.append(camera_age)
@@ -83,10 +89,24 @@ def judge_samples(rows, manifest, camera_draws, stimulus):
     if invalid: errors.append(f'{invalid} missing, torn, blank or unattributable source pictures')
     if mismatched: errors.append(f'{mismatched} camera pictures differ from the exact drawn source identity')
     if stale: errors.append(f'{stale} stale source pictures')
+    source_rate = manifest['cameraRateNumerator'] / manifest['cameraRateDenominator']
+    if not 0 < source_rate <= 60: raise ValueError('Declare the actual negotiated camera rate, up to 60 Hz')
+    # Native lower-rate sources legitimately repeat at 60 Hz. Captured identity
+    # gaps are still loss; sampling jitter must not be dismissed as conversion.
+    import math
+    permitted_repeats = math.ceil((len(measured) - 1) * (1 - source_rate / 60)) + (2 if source_rate < 60 else 0)
+    if missing or reordered or repeated > permitted_repeats:
+        errors.append(f'Camera picture cadence failed: repeated={repeated}, permitted={permitted_repeats}, missing={missing}, reordered={reordered}')
     if not changes or longest_hold > manifest['maximumCameraBodyHoldMs']:
         errors.append('Ordinary camera picture progression did not meet declared observation bound')
     return {'schema': 'source-picture-verdict-v1', 'sourcePicturesVerified': not errors,
+            'startTicks': str(start), 'endTicks': str(end), 'qpcFrequency': frequency,
+            'durationSeconds': (end - start) / frequency,
+            'cameraSourceId': manifest['cameraSourceId'], 'screenSourceId': manifest['screenSourceId'],
+            'cameraRateNumerator': manifest['cameraRateNumerator'], 'cameraRateDenominator': manifest['cameraRateDenominator'],
             'samples': len(measured), 'invalid': invalid, 'mismatched': mismatched, 'stale': stale,
+            'cameraRepeated': repeated, 'cameraMissing': missing, 'cameraReordered': reordered,
+            'cameraPermittedRateConversionRepeats': permitted_repeats,
             'cameraBodyChanges': changes, 'longestCameraBodyHoldMs': longest_hold,
             'maximumCameraObservationAgeMs': max(camera_ages, default=None),
             'maximumScreenPictureAgeMs': max(screen_ages, default=None), 'errors': errors,
@@ -125,7 +145,7 @@ def recording_samples(path, ffmpeg, points, receiver_rows):
     result = []
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen([ffmpeg, '-nostdin', '-v', 'error', '-i', str(path), '-filter_complex', filtered,
-                                    '-an', '-fps_mode', 'passthrough', '-enc_time_base', '-1',
+                                    '-an', '-fps_mode', 'passthrough', '-enc_time_base', '1/10000000',
                                     '-pix_fmt', 'gray', '-f', 'rawvideo', 'pipe:1'], stdout=subprocess.PIPE, stderr=errors)
         try:
             for frame in range(2_000_000):
@@ -166,7 +186,8 @@ if __name__ == '__main__':
     if not stimulus[-1].get('complete'): raise ValueError('Independent stimulus did not finalize')
     selected = [r for r in stimulus if 'identity' in r]
     draws = camera_draws(args.trace, manifest['cameraSourceId'])
-    report = {'osCamera': judge_samples(rows, manifest, draws, selected), 'fullWorkloadPassed': False}
+    report = {'osCamera': judge_samples(rows, manifest, draws, selected), 'fullWorkloadPassed': False,
+              'trace': args.trace, 'receiver': args.receiver, 'recordingPath': args.recording}
     if args.recording:
         decoded = recording_samples(args.recording, args.ffmpeg, manifest['points'], rows)
         report['recording'] = judge_samples(decoded, manifest, draws, selected)

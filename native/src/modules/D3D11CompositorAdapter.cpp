@@ -380,6 +380,21 @@ class D3D11Compositor final : public ICompositor {
     if (pendingComposition_) {
       auto job = std::move(*pendingComposition_); pendingComposition_.reset();
       if (job.buffer->claimComposition(job.reservation)) {
+        const bool capturesReady = job.inputs.resolveCaptures();
+        for (const auto& pending : job.inputs.captureChoices) {
+          const auto& source = job.inputs.frames[pending.index];
+          core::DeliveryTraceEvent event;
+          event.stage = core::DeliveryStage::SourceRequested; event.programSequence = job.inputs.sequence;
+          event.layoutTag = renderPlanSignature(job.inputs.plan);
+          event.sourceTag = core::deliveryTraceTag(source.participantId); event.sourceEpoch = source.sourceEpoch;
+          event.sourceFrameId = source.frameId; event.sourceObservation100ns = source.captureTimestamp100ns;
+          core::recordDeliveryTrace(event);
+        }
+        if (!capturesReady) {
+          // A missing scheduled capture cannot become a fresh picture by
+          // substituting the latest frame. Preserve the original failed slot.
+          job.buffer->cancelComposition(job.reservation);
+        } else {
         const auto slot = programProductionSlot_, anchor = programProductionAnchorNs_;
         activeComposition_ = std::make_pair(job.buffer, job.reservation);
         programProductionSlot_ = job.inputs.productionSlot; programProductionAnchorNs_ = job.inputs.anchorNs;
@@ -392,6 +407,7 @@ class D3D11Compositor final : public ICompositor {
         }
         job.buffer->cancelComposition(job.reservation); // no-op after actual GPU submission
         activeComposition_.reset(); programProductionSlot_ = slot; programProductionAnchorNs_ = anchor;
+        }
       } else job.buffer->cancelComposition(job.reservation);
     }
     // Freeze the actual resolved sources, including legacy positional layers.
@@ -422,6 +438,8 @@ class D3D11Compositor final : public ICompositor {
       if (auto reservation = buffer->reserveComposition(std::move(selected))) {
         for (const auto& layer : resolveLayers(inputs->plan, inputs->frames, true)) {
           if (!layer.frame || compositorLayerIsOverlay(layer.plan) || (layer.plan.tilesDecoration.enabled && layer.plan.tilesDecoration.glowPass)) continue;
+          const auto index = static_cast<size_t>(layer.frame - inputs->frames.data());
+          if (inputs->deferred(index)) continue; // exact capture observation arrives during the reserved preparation interval
           core::DeliveryTraceEvent event;
           event.stage = core::DeliveryStage::SourceRequested; event.programSequence = sequence; event.layoutTag = signature;
           event.sourceTag = core::deliveryTraceTag(layer.frame->participantId); event.sourceEpoch = layer.frame->sourceEpoch;

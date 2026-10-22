@@ -98,6 +98,34 @@ selected pixels at the same original deadline and capacity. This fixture is not
 full-workload acceptance. Installed source pixels, source cadence, recording,
 OS camera and physical display remain separate measured gates.
 
+The installed #1016 diagnostic exposed a separate selection defect (#1019):
+sampling UVC's latest arrival at variable ingest times repeated and omitted
+already prepared pictures. `CapturePresentationWindow` retains at most three
+original UVC arrivals without pinning prepared GPU slots. For negotiated 60 or
+60000/1001 output, the reserved Program choice names the source-frame sequence
+from its native cadence, including the required rational-rate repeat. The
+capture owner can publish that arrival during the existing preparation interval;
+composition resolves only the requested identity in that bounded history.
+Resolution preserves capture observation, epoch and pixels. It never copies the
+latest image into a missing identity. Missing/evicted/replaced choices fail their
+original output slot and reset the cadence anchor for recovery, instead of
+leaving an input permanently black. A new production anchor starts a new choice
+timeline. Other negotiated capture rates retain the previous selection path.
+
+The capture owner holds these CPU references; the pending Program job holds an
+owner/choice descriptor and no CPU or optional-monitor pixels. The existing
+preparation pool, Program pool capacity and two-frame output deadline do not
+grow. ISO keeps its independent ordered arrival consumer. The clocked-source
+fixture checks actual NV12 content at the unchanged deadline. This is not a
+claim about long-run device-clock drift, other native capture rates, monitor
+source cadence, or the installed full-workload result.
+
+The overall redesign workload judge now also requires actual camera and screen
+picture proofs in both recorded Program and the registered camera receiver,
+over its exact measured clock interval. Output-counter continuity cannot waive
+source repeats, omissions, stale screen content or frozen ordinary camera
+pixels. Native-rate conversion allowance is derived from the declared rate.
+
 Browser input uses one bounded reader thread with at most 64 sources when
 preparation is enabled. OS mapping, seqlock BGRA copying and preparation run
 outside the adapter's metadata lock. Program polls immutable descriptors.

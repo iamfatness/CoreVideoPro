@@ -25,6 +25,7 @@
 namespace corevideo::graphics { struct GraphicsTemplateInput; struct GraphicsAsset; }
 namespace corevideo::modules {
 class CpuSourcePreparation;
+class CapturePresentationWindow;
 
 struct VideoFrame {
   std::string participantId;
@@ -70,6 +71,9 @@ struct VideoFrame {
   // Resolved after authoritative source reserve/guest trim selection. The CPU
   // descriptor only holds a weak GPU publication, so ISO cannot pin the pool.
   std::shared_ptr<CpuSourceGpuView> preparedGpu;
+  // Bounded capture-owned arrivals for a scheduled selection inside Program's
+  // existing preparation interval. Neither the shell nor ISO consumes it.
+  std::shared_ptr<CapturePresentationWindow> capturePresentation;
   // Same source identity in a separate optional pool. Monitor requests must
   // never retain the production capture lease while waiting for their worker.
   std::shared_ptr<const GpuVideoFrame> monitorGpuPixels;
