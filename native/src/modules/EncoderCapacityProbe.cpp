@@ -37,11 +37,11 @@ namespace corevideo::modules {
 namespace {
 
 // How many concurrent hardware sessions the probe will try to create before it
-// stops asking. Deliberately modest: the number exists to bound an ISO
-// selection, and creating dozens of encoder sessions on a stranger's machine to
-// find an exact ceiling is not worth the churn. Overridable so a tester with an
-// unusual GPU can be asked to raise it in a support session.
-constexpr int kDefaultProbeSessionCap = 8;
+// stops asking. Cover the complete supported recording inventory (Program plus
+// eight ISOs), without creating dozens of sessions to find an exact ceiling.
+// Stopping below that inventory would force software placement even on a driver
+// with sufficient hardware sessions. Actual creation still determines capacity;
+// this is never a throughput guarantee. A bounded support override remains.
 
 // The reference workload the software budget is expressed against.
 constexpr double kReferencePixelRate = 1920.0 * 1080.0 * 30.0;
@@ -58,7 +58,7 @@ int envInt(const char* name, int fallback) {
 bool probeDisabledByEnv() { return envInt("COREVIDEO_ENCODER_PROBE", 1) == 0; }
 
 int probeSessionCap() {
-  const int cap = envInt("COREVIDEO_ENCODER_PROBE_MAX_SESSIONS", kDefaultProbeSessionCap);
+  const int cap = envInt("COREVIDEO_ENCODER_PROBE_MAX_SESSIONS", kDefaultEncoderProbeSessionCap);
   return (std::max)(1, (std::min)(cap, 32));
 }
 
