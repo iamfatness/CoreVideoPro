@@ -441,6 +441,11 @@ native commit gaps in an 80-second control and reduced observed picture age, but
 one omission with complete observer coverage remained. The interval-zero candidate
 is therefore still unqualified. DXGI can discard queued pictures with interval
 zero; only actual source-picture and display-delivery evidence can accept it.
+The installed interval-zero comparison subsequently failed with 541 omitted
+Preview/input camera identities and 538 Program identities in 65 seconds, despite
+no new active multiview exporter replacements or drops. It was rejected and
+refresh retention restored. Lower observation ages and smoother accepted calls
+did not justify discarding source pictures.
 
 With `COREVIDEO_MONITOR_DIAGNOSTICS=1`, the decoupled exporter now logs cumulative
 submitted/published counts, unread output replacements, prepared-frame replacements
