@@ -342,6 +342,7 @@ public sealed class Direct3D11InteropService : IDisposable
         {
             if (TryNativeSnapshot(out var owner, out var native))
                 return new { label = Label, backend = "native-independent", attempts = native.Attempts,
+                    swapChainAddress = owner.SwapChainAddress, chainRevision = owner.ChainRevision,
                     retryAttempts = native.RetryAttempts, presents = owner.CountOffset + (long)native.Presents,
                     maxGapMs = MaximumPresentationProbeGapMs, notReady = native.NotReady, presentBusy = native.PresentBusy,
                     presentMs = native.PresentMs, presentMaxMs = native.PresentMaximumMs,

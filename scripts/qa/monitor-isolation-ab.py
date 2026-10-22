@@ -595,6 +595,8 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 results[-1]["deliveryTrace"] = trace_judge.judge(trace_path, a.warmup,
                     max(1, a.duration - 1 / 60), trace_start, trace_end,
                     require_source_ready=a.cpu_source_preparation == "1",
+                    require_exact_source_selection=a.cpu_source_preparation == "1",
+                    require_program_deadlines=True,
                     expected_source_ids=["capture:" + route["captureDeviceId"] if route["mode"] == "capture-input" else route["participantId"] for route in program_routes(a.program_scene)])
             except Exception as error:
                 results[-1]["deliveryTrace"] = {"result": "INVALID", "error": str(error)}

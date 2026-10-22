@@ -1,6 +1,7 @@
 #include "modules/CpuSourcePreparation.h"
 #include "core/DeliveryTrace.h"
 #include "core/BoundedAsyncLog.h"
+#include "core/ScopedVideoScheduling.h"
 #include <algorithm>
 #include <condition_variable>
 #include <deque>
@@ -316,6 +317,10 @@ struct CpuSourcePreparation::Impl {
     }
   }
   void gpuLoop() {
+    // Program's exact selected image depends on this worker completing before
+    // its deadline. Register the existing owner with the same bounded MMCSS
+    // class as other video workers; never raise the whole process priority.
+    core::ScopedVideoScheduling scheduling("cpu-source-preparation");
     bool attempted = false;
     while (!stopping.load()) {
       const auto observedRevision = workRevision.load();

@@ -95,3 +95,13 @@ stage correlation, further per-source age distributions, explicit
 interactive capture, calibrated content latency and the matched <1% p95
 instrumentation-cost gate remain required by the parent spec. Until qualification,
 capture stays opt-in and its partial stage coverage cannot certify #517 or a beta.
+
+For full-workload source qualification, use `require_exact_source_selection=True`
+with the declared `expected_source_ids` inventory. This also requires exact
+preceding GPU completions and rejects each held/substituted requested source on
+every delivered Program frame. Native lower-cadence inputs may repeat when the
+requested and drawn identities match; an advancing Program counter cannot hide
+a pending newer selection. The CLI exposes these as
+`--require-exact-source-selection --expected-source <id>` (repeat per source).
+Missing inventory is invalid. Physical display and receiver evidence remain
+separate requirements.

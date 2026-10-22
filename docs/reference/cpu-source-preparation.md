@@ -74,6 +74,15 @@ changes fence the generation on the capture owner. Its idle callback refreshes
 stopped held tokens without new CPU bytes or a new observation time. CPU demand
 preserves pending capture order; capacity refusals remain reported as drops.
 Direct GPU capture and its separate CPU/ISO branch retain their own payloads.
+Windows WGC now defaults to direct GPU capture; explicit
+`COREVIDEO_GPU_CAPTURE=0` retains the CPU comparison/rollback path. Its capture
+owner records exact GPU completion before publishing a source descriptor.
+Unsupported sharing retains the existing CPU fallback and measured counters.
+The CPU preparation GPU owner registers with the existing bounded Playback
+MMCSS class because its completions are required by Program, like the Program
+and virtual-camera workers. This does not change process priority, queue bounds,
+Program buffering or deadlines. Scheduling registration and actual source
+selection remain independently measured; registration alone is not qualification.
 
 Browser input uses one bounded reader thread with at most 64 sources when
 preparation is enabled. OS mapping, seqlock BGRA copying and preparation run

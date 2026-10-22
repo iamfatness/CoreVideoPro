@@ -7,6 +7,7 @@
 // the UVC adapter; returns nullptr when the flag is off.
 
 #include "core/FrameAllocation.h"
+#include "core/DeliveryTrace.h"
 #include "modules/Interfaces.h"
 #include "modules/CpuSourcePreparation.h"
 
@@ -539,7 +540,18 @@ class WgcSession {
     if (preparation_ && bgra && !gpu)
       prepared = preparation_->offerBgra(sourceId_, sourceEpoch_, sequence, capture100ns,
           width, height, width * 4, bgra);
-    if (gpu) ++gpuFrames_;
+    if (gpu) {
+      ++gpuFrames_;
+      // Emitted only after the capture owner's exact copy/query completed.
+      // CPU fallback records its independent preparation completion instead.
+      core::DeliveryTraceEvent event;
+      event.stage = core::DeliveryStage::SourceGpuReady;
+      event.sourceTag = core::deliveryTraceTag(sourceId_);
+      event.sourceEpoch = sourceEpoch_;
+      event.sourceFrameId = sequence;
+      event.sourceObservation100ns = capture100ns;
+      core::recordDeliveryTrace(event);
+    }
     else if (gpuEnabled_) ++gpuFallbackFrames_;
     if (cpuMirror) ++cpuReadbacks_;
     if (monitorGpu) ++monitorFrames_;
@@ -633,7 +645,9 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
   explicit WgcScreenCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation)
       : preparation_(std::move(preparation)), gpuEnabled_([] {
     const char* value = std::getenv("COREVIDEO_GPU_CAPTURE");
-    return value && std::string(value) == "1";
+    // Compatible WGC images stay on the GPU. Explicit 0 retains the CPU path
+    // for rollback/comparisons; unsupported sharing retains measured fallback.
+    return !value || std::string(value) != "0";
   }()), lifecycle_([this](const std::string& id) {
     auto targets = enumerateMonitors();
     const auto windows = enumerateWindows();

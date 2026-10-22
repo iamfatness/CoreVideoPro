@@ -956,7 +956,7 @@ TEST(WgcCpuPreparation, OptInRealCpuCaptureMatchesReferencePixelsWithoutProgramU
   capture->disconnect(devices.front().id);
 }
 
-TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndIndependentCpuConsumers) {
+TEST(GpuCaptureIngress, DefaultRealWgcFrameUsesPreparedGpuViewAndIndependentCpuConsumers) {
   const char* enabled = std::getenv("COREVIDEO_CAPTURE_TESTS");
   if (!enabled || std::string(enabled) != "1") {
     std::fprintf(stderr, "[capture-test] SKIPPED real WGC capture; enable COREVIDEO_CAPTURE_TESTS=1 on an interactive rig\n");
@@ -967,7 +967,7 @@ TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndIndependentCpuCon
   corevideo::core::ComApartmentLifetime apartment;
   const char* raw = std::getenv("COREVIDEO_GPU_CAPTURE");
   const std::string previous = raw ? raw : "";
-  _putenv_s("COREVIDEO_GPU_CAPTURE", "1");
+  _putenv_s("COREVIDEO_GPU_CAPTURE", "");
   auto compositor = isolatedCompositor();
   auto capture = createWgcScreenCaptureDevice();
   ASSERT_TRUE(compositor != nullptr);

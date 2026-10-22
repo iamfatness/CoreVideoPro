@@ -40,6 +40,7 @@ internal sealed class NativeMonitorPresentation : IDisposable
     private readonly OwnerHandle _owner;
     internal ulong SharedHandle { get; }
     internal long ChainRevision { get; }
+    internal string SwapChainAddress { get; }
     internal long CountOffset { get; }
     internal NativeMonitorPresentation(nint device, nint context, nint chain, nint backBuffer,
         ulong handle, nint ready, long revision, long countOffset)
@@ -47,6 +48,7 @@ internal sealed class NativeMonitorPresentation : IDisposable
         var value = Library.Value!.Create(device, context, chain, backBuffer, handle, ready, 0);
         if (value == 0) throw new InvalidOperationException("Native monitor owner refused its resource lease.");
         _owner = new(value); SharedHandle = handle; ChainRevision = revision; CountOffset = countOffset;
+        SwapChainAddress = $"0x{(nuint)chain:X}";
     }
     internal bool TrySnapshot(out Stats result)
     {
