@@ -197,16 +197,19 @@ class D3DProgramBuffer {
     if (delivered_.empty()) return false;
     frame = std::move(delivered_.front()); delivered_.pop_front(); return true;
   }
+  enum class DisplaySlot { Previous, Current };
   bool multiview(ProgramFrameSharedTexture& texture, std::shared_ptr<const void>& owner,
-      int64_t productionSlot = -1, bool exact = false) const {
+      int64_t productionSlot = -1, bool exact = false, DisplaySlot selection = DisplaySlot::Previous) const {
     std::lock_guard<std::mutex> lock(mutex_);
     // Target the submitting render's scheduled slot, not its variable CPU
     // arrival time. The dedicated copy owner can wait for this slot's completed
     // publication until the existing next-slot deadline. Selecting the previous
     // slot here adds a frame even when the current delivered image is ready.
+    // Inline readers have no waiting owner and retain their preceding-slot policy.
+    const int offset = selection == DisplaySlot::Current ? 0 : 1;
     const auto target = productionSlot >= 0 && timeline_
-        ? timeline_->deadlineNs(productionSlot - depth_) / 100
-        : now100ns() - D3DProgramDisplaySnapshots::PresentationOffset100ns;
+        ? timeline_->deadlineNs(productionSlot - depth_ - offset) / 100
+        : now100ns() - offset * D3DProgramDisplaySnapshots::PresentationOffset100ns;
     return displaySnapshots_.select(target, texture, owner, exact);
   }
   ProgramBufferDiagnostics diagnostics() const {

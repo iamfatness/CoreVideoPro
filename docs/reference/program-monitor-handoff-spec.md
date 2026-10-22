@@ -3,10 +3,11 @@
 Issue: [#864](https://github.com/iamfatness/CoreVideoPro/issues/864).
 Work order remains in [BACKLOG](../BACKLOG.md).
 
-October 22 follow-up under #1016/#997: the dedicated copy owner now selects the
+October 22 follow-up under #1016/#997: the dedicated isolated copy owner now selects the
 current delivered slot and waits for its completed immutable publication within
 the existing next-slot deadline. The earlier explicit one-frame selection offset
-is removed; exact identity, lease ownership and Program playout timing remain.
+is removed for that path; exact identity, lease ownership and Program playout
+timing remain. Inline readers retain the preceding-slot selection.
 See the [measured comparison](../qa/source-composition-deadline-2026-10-21.md).
 
 ## Confirmed cause

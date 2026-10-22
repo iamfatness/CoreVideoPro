@@ -1171,6 +1171,7 @@ struct MonitorRenderRequest {
   std::function<bool(ProgramFrameSharedTexture&, std::shared_ptr<const void>&)> acquireDeliveredProgram;
   int64_t sequence = 0;
   int64_t programDisplayTargetNs = 0, programDisplayDeadlineNs = 0;
+  int64_t programDisplayOffset100ns = 166666;
   CompositorRenderPlan programPlan;
   CompositorRenderPlan multiviewPlan;
   CompositorRenderPlan previewPlan;
@@ -1216,6 +1217,7 @@ struct ProgramDisplayIncident {
 };
 struct ProgramDisplayObservation {
   bool observed = false;
+  int64_t presentationOffset100ns = 166666;
   uint64_t generation = 0, requestedSequence = 0, copiedSequence = 0;
   int64_t frameNumber = 0, timelineTimestamp100ns = 0, age100ns = 0;
   uint64_t copies = 0, completedCopies = 0, reused = 0, refused = 0, skipped = 0, reordered = 0;

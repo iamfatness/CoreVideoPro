@@ -222,12 +222,30 @@ The optional Program display selector still intentionally chose the preceding
 delivery slot, a policy introduced with the October 11 immutable publications.
 The dedicated copy owner now waits for the exact current slot within the
 existing next-slot deadline, so the selector need not impose that extra frame.
-The correction selects the current delivered identity, retains exact lookup
-and the same deadline, and reports zero additional selection offset. It does
+The isolated correction selects the current delivered identity, retains exact
+lookup and the same deadline, and reports zero additional selection offset. It does
 not change Program buffering, publication capacity, or output timing. A real
 GPU regression test supplies two distinct delivered pictures, verifies the
 current slot's actual pixels, and rejects a future slot. Installed freshness
 and display cadence must still pass; this is not a claimed cure for DXGI gaps.
+
+The first full suite after this change failed the inline fixed-phase regression
+(1,858 passed, one failed); packaging was blocked. The current-slot policy is now
+explicitly selected only by the isolated copy-owner path. Inline readers retain
+the preceding slot because they have no dedicated publication wait. Diagnostics
+carry the policy from the actual reader. The fixed-phase regression now checks
+the exact current pixels for isolated rendering and the exact previous pixels
+for inline rendering, retaining zero-repeat/zero-gap assertions and original
+absolute completion deadlines. Both that complete phase matrix and the focused
+current-slot pixel regression passed; the full suite must be rerun.
+
+The finalized administrator trace also fails trials 10 and 12. Trial 12 reports
+2,663 presents and 830 displayed frames versus 3,941 expected. Four of thirteen
+native last-gap Present timestamps have no matching CSV call within a millisecond,
+despite the same process and swap-chain identity. Its reported 1.13-second display
+gap conflicts with advancing 10 Hz desktop pictures. These results remain failed
+evidence; missing Present records and target association must be resolved before
+treating every reported gap as a real display freeze or qualifying presentation.
 
 Trial 11 stopped before measurement because its private OS-consumer launcher
 was missing the pixel coordinate file. The failure is retained. Trial 12 added

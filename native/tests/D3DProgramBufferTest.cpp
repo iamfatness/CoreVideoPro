@@ -94,7 +94,7 @@ TEST(D3DProgramBuffer, MultiviewSelectsCurrentDeliveredPixelsWithoutAnExtraFrame
   std::shared_ptr<const void> owner;
   const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(1);
   while (std::chrono::steady_clock::now() < limit) {
-    if (buffer.multiview(texture, owner, 3, true) && texture.frameNumber == 2) break;
+    if (buffer.multiview(texture, owner, 3, true, D3DProgramBuffer::DisplaySlot::Current) && texture.frameNumber == 2) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   ASSERT_TRUE(owner != nullptr); ASSERT_EQ(texture.frameNumber, 2);
@@ -108,7 +108,9 @@ TEST(D3DProgramBuffer, MultiviewSelectsCurrentDeliveredPixelsWithoutAnExtraFrame
   context->Unmap(staging.get(), 0);
   EXPECT_EQ(pixel, 200);
   owner.reset(); texture = {};
-  EXPECT_FALSE(buffer.multiview(texture, owner, 4, true)); // No future or relabelled image.
+  EXPECT_FALSE(buffer.multiview(texture, owner, 4, true, D3DProgramBuffer::DisplaySlot::Current)); // No future or relabelled image.
+  ASSERT_TRUE(buffer.multiview(texture, owner, 3, true)); // Inline compatibility keeps its earlier slot.
+  EXPECT_EQ(texture.frameNumber, 1);
   EXPECT_EQ(buffer.diagnostics().capacity, 5);
   EXPECT_EQ(buffer.diagnostics().underruns, 0u);
 }
@@ -1158,7 +1160,8 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
           timer.waitUntil(tick + std::chrono::milliseconds(15));
           const auto early = compositor->latestMonitors();
           ASSERT_TRUE(early != nullptr);
-          EXPECT_EQ(early->programDisplayReader.copiedSequence, static_cast<uint64_t>(n - depth));
+          EXPECT_EQ(early->programDisplayReader.copiedSequence, static_cast<uint64_t>(n - depth + 1));
+          EXPECT_EQ(early->programDisplayReader.presentationOffset100ns, 0);
           EXPECT_EQ(early->programDisplayReader.gpuReadinessDeadlineMisses, 0u);
           EXPECT_EQ(early->programDisplayReader.completedCopies, early->programDisplayReader.copies);
         }
@@ -1245,7 +1248,7 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
           depth, isolated, phaseMs, n, static_cast<long long>(exported.frameNumber), unsigned(pixel),
           us(tickStarted), us(productionReturned), us(monitorSubmitted), us(monitorReturned), us(consumerStarted), us(readbackComplete));
       if (n >= 20 && previous >= 0) {
-        EXPECT_EQ(unsigned(pixel), unsigned(30 + n - depth - 1));
+        EXPECT_EQ(unsigned(pixel), unsigned(30 + n - depth - (isolated ? 0 : 1)));
         if (pixel != previous) ++changes;
         if (pixel == previous) ++repeats;
         if (pixel != previous + 1) ++gaps;

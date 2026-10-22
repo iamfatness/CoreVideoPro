@@ -65,7 +65,7 @@ inline rpc::Json programDisplayObservationEvidence(const ProgramDisplayObservati
       {"traceCaptureFailures", static_cast<double>(value.traceCaptureFailures)},
       {"traceClock", "steady-clock-nanoseconds"}, {"traceAgeIsGpuDuration", false},
       {"allocatedBytes", static_cast<double>(value.allocatedBytes)},
-      {"presentationOffset100ns", 0}, {"displayPresentationVerified", false}};
+      {"presentationOffset100ns", static_cast<double>(value.presentationOffset100ns)}, {"displayPresentationVerified", false}};
 }
 inline rpc::Json programDisplayEvidence(const std::shared_ptr<const MonitorRenderResult>& result) {
   auto exported = programDisplayObservationEvidence(result ? result->programDisplay : ProgramDisplayObservation{}, false).asObject();

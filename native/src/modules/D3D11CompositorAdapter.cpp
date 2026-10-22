@@ -298,6 +298,7 @@ class D3D11Compositor final : public ICompositor {
   }
   void prepareProgramCopy(MonitorRenderRequest& request) {
     request.bufferedProgram = programBufferFrames() > 0;
+    request.programDisplayOffset100ns = 0;
     if (programProductionSlot_ >= 0 && programProductionAnchorNs_ > 0) {
       const int depth = programBufferFrames();
       const core::ProgramPlayoutTimeline timeline(depth, programProductionAnchorNs_);
@@ -305,10 +306,10 @@ class D3D11Compositor final : public ICompositor {
       request.programDisplayDeadlineNs = timeline.deadlineNs(programProductionSlot_ - depth + 1);
     }
     if (auto buffer = currentProgramBuffer(); buffer && request.multiviewActive) {
-      buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner, programProductionSlot_);
+      buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner, programProductionSlot_, false, D3DProgramBuffer::DisplaySlot::Current);
       if (programProductionSlot_ >= programBufferFrames() && request.programDisplayDeadlineNs > 0)
         request.acquireDeliveredProgram = [buffer, slot = programProductionSlot_](auto& texture, auto& owner) {
-          return buffer->multiview(texture, owner, slot, true);
+          return buffer->multiview(texture, owner, slot, true, D3DProgramBuffer::DisplaySlot::Current);
         };
     }
   }
