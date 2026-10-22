@@ -47,10 +47,12 @@ class CapturePresentationWindow {
     const int64_t delta = slot - firstSlot_;
     if (delta > (std::numeric_limits<int64_t>::max)() / state->numerator) return {};
     const int64_t scaled = delta * state->numerator, divisor = 60LL * state->denominator;
-    // Select the next capture at the earliest output slot whose existing
-    // preparation interval can contain it. Floor would insert an immediate
-    // extra source hold for 59.94 Hz and carry that avoidable age forward.
-    const int64_t advance = scaled / divisor + (scaled % divisor != 0);
+    // Sample the source clock at this production slot. Rounding forward names
+    // a future capture instead: near a 59.94/60 phase boundary, ordinary camera
+    // arrival jitter plus GPU preparation can then exceed the reserved budget.
+    // Floor places the required rate-conversion hold at the beginning of the
+    // cycle, keeping preparation lookahead inside the original output deadline.
+    const int64_t advance = scaled / divisor;
     if (firstId_ > (std::numeric_limits<int64_t>::max)() - advance) return {};
     const auto id = firstId_ + advance;
     // Demand is allowed to name the next arrival before capture publishes it.

@@ -51,11 +51,35 @@ TEST(CapturePresentationWindow, RationalRateRepeatsOnlyAtItsDeclaredConversionCa
   int64_t previous = -1; int repeats = 0;
   for (int64_t slot = 0; slot <= 6006; ++slot) {
     const auto choice = window.choose(observed, slot, 1000); ASSERT_TRUE(choice);
-    const auto expected = 100 + (slot * 1000 + 1000) / 1001;
+    const auto expected = 100 + slot * 1000 / 1001;
     EXPECT_EQ(choice->frameId, expected);
     if (previous == choice->frameId) ++repeats;
     previous = choice->frameId;
   }
+  EXPECT_EQ(repeats, 6);
+}
+TEST(CapturePresentationWindow, FractionalCapturePhaseLeavesPreparationBudgetForLateArrivals) {
+  CapturePresentationWindow window; window.configure(60000, 1001);
+  auto observed = cadenceFrame(100); window.publish(observed);
+  constexpr int64_t anchor = 1'000'000'000;
+  corevideo::core::ProgramPlayoutTimeline timeline(2, anchor);
+  int legacyLate = 0, repeats = 0;
+  int64_t previous = -1;
+  for (int64_t slot = 0; slot <= 6006; ++slot) {
+    const auto choice = window.choose(observed, slot, anchor); ASSERT_TRUE(choice);
+    // A source observed at the initial slot may subsequently arrive 7 ms late
+    // and take 5 ms to prepare. This stays inside the existing 25 ms source
+    // budget; selecting a future fractional frame must not consume that slack.
+    const auto readyAt = [&](int64_t frame) {
+      return anchor + (frame - 100) * 1'001'000'000 / 60 + 12'000'000;
+    };
+    const auto cutoff = timeline.deadlineNs(slot) - 8'333'334;
+    EXPECT_LE(readyAt(choice->frameId), cutoff);
+    const auto legacy = 100 + (slot * 1000 + 1000) / 1001;
+    legacyLate += readyAt(legacy) > cutoff;
+    repeats += previous == choice->frameId; previous = choice->frameId;
+  }
+  EXPECT_GT(legacyLate, 0);
   EXPECT_EQ(repeats, 6);
 }
 TEST(CapturePresentationWindow, MissingArrivalFailsWithoutSubstitutionAndNextChoiceCanRecover) {

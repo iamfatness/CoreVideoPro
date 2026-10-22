@@ -103,8 +103,17 @@ sampling UVC's latest arrival at variable ingest times repeated and omitted
 already prepared pictures. `CapturePresentationWindow` retains at most three
 original UVC arrivals without pinning prepared GPU slots. For negotiated 60 or
 60000/1001 output, the reserved Program choice names the source-frame sequence
-from its native cadence, including the required rational-rate repeat. The
-capture owner can publish that arrival during the existing preparation interval;
+from its native cadence, including the required rational-rate repeat.
+Fractional-rate conversion samples that clock with floor, placing the repeat
+at the beginning of the conversion cycle. Rounding forward can request the
+next capture near the cycle boundary, spending the preparation margin on a
+future observation. The installed 59.94 Hz camera comparison exposed this:
+15 selected images completed 1–3 ms after composition had already held the
+preceding image. The original output deadline and 8.333 ms composition reserve
+remain unchanged; the phase-sensitive fixture includes late capture arrival
+and GPU preparation rather than only counting rational-rate repeats. Installed
+picture and full-workload qualification remain separate requirements.
+The capture owner can publish that arrival during the existing preparation interval;
 composition resolves only the requested identity in that bounded history.
 Resolution preserves capture observation, epoch and pixels. It never copies the
 latest image into a missing identity. Missing/evicted/replaced choices mark that

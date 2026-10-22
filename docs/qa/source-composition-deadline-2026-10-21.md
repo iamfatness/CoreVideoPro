@@ -294,3 +294,26 @@ this declared short interval and was invalid. It is retained under
 minimum from the measurement file and writes `offline-bounded-65`. This changes
 no full-soak duration requirement. An early source judge also refused the still
 unfinished stimulus; the finalized stimulus was required before decoding.
+# Installed fractional-camera phase comparison, October 22
+
+`qualification-1008-16` tested installed `e2f6052b` from the desktop shortcut
+at Normal priority, with eight actual 1080p Zoom sources, webcam, screen,
+nine hardware recording writers and the registered OS camera consumer.
+The declared 65.519-second interval failed: both recording and camera had
+15 held camera selections, 14 omitted capture identities and 17 repeats
+(six permitted for 60000/1001 conversion). ISO arrival pixels passed.
+There were no Program GPU deadline misses; correct output counters therefore
+did not establish correct source pictures. Desktop picture freshness failed
+as well, with complete observer coverage. No release pass was awarded.
+
+The source trace associated those held selections with exact requested
+uploads that completed shortly after composition, while approximately 8 ms
+remained before output. The fractional capture clock rounded source advances
+up, selecting a future arrival near conversion boundaries. Sample-and-hold
+floor conversion restores preparation margin without moving the Program
+deadline, enlarging its pool or relaxing picture-age gates. The new phase
+fixture includes 7 ms arrival jitter plus 5 ms preparation across six rate
+conversion cycles, and exposes the previous selection's budget failures.
+Eight focused capture-clock tests passed. Installed verification and the
+full-workload rerun are still required; display faults remain unresolved.
+
