@@ -25,6 +25,7 @@
 #include <wrl/client.h>
 #include "modules/D3DVideoFrame.h"
 #include "modules/ReadyCapturePublication.h"
+#include "modules/DeferredCaptureGpuCopy.h"
 #include "modules/CaptureFrameWorker.h"
 #include "modules/CaptureSessionLifecycle.h"
 #include "modules/D3DCaptureCpuBranch.h"
@@ -215,6 +216,7 @@ class WgcSession {
           [this](const CapturedFrame& frame) { processFrame(frame); },
           [this] {
             pollCapturedRetirement();
+            pollDeferredGpuCopy();
             // A static screen may deliver no next OS frame. Retire the last
             // CPU copy on the capture owner rather than stranding its ISO view.
             if (auto cpu = cpuBranch()) cpu->publishReady(context_.Get());
@@ -343,6 +345,24 @@ class WgcSession {
     WgcSession& owner; const wgc::Direct3D11CaptureFrame& frame;
     ~CaptureCopyLease() { owner.retainUntilSourceCopiesComplete(frame); }
   };
+  void pollDeferredGpuCopy() {
+    if (!running_.load(std::memory_order_acquire)) { deferredGpuCopy_.cancel(); return; }
+    deferredGpuCopy_.poll(
+        [this](int slot) { return gpuPool_->completed(context_.Get(), slot); },
+        [this](const DeferredCaptureGpuCopy::Copy& copy, auto gpu) {
+          // No subsequent frame/pool replacement is admitted while this copy
+          // is pending, so both slots and the source epoch still name it.
+          if (copy.epoch != sourceEpoch_) { ++refusedFrames_; return; }
+          auto monitorGpu = monitorPool_ ? monitorPool_->completed(context_.Get(), copy.monitorSlot) : nullptr;
+          publish(copy.sequence, copy.width, copy.height, {}, std::move(gpu),
+              std::move(monitorGpu), false, copy.capture100ns);
+          ++gpuDeferredPublished_;
+        });
+    if (deferredGpuCopy_.pending() && FAILED(gpuPool_->failure())) {
+      deferredGpuCopy_.cancel();
+      ++refusedFrames_;
+    }
+  }
   void onFrame(const wgc::Direct3D11CaptureFramePool& pool) {
     // Stop drains this callback before stopping the owner worker. The callback
     // only transfers one OS frame when a preparation path is enabled.
@@ -367,6 +387,8 @@ class WgcSession {
     if (!running_.load(std::memory_order_acquire)) return;
     if (gpuEnabled_) {
       pollCapturedRetirement();
+      pollDeferredGpuCopy();
+      if (deferredGpuCopy_.pending()) { ++refusedFrames_; return; }
       if (retiringCapture_) { ++refusedFrames_; return; }
     }
     auto surface = captured.frame.Surface();
@@ -455,6 +477,13 @@ class WgcSession {
     if (gpuSlot >= 0) {
       captureLease.reset(); // fence all source copies in their submission batch
       context_->Flush();
+      core::DeliveryTraceEvent submitted;
+      submitted.stage = core::DeliveryStage::SourceUploadSubmitted;
+      submitted.sourceTag = core::deliveryTraceTag(sourceId_);
+      submitted.sourceEpoch = sourceEpoch_;
+      submitted.sourceFrameId = captured.sequence;
+      submitted.sourceObservation100ns = captured.capture100ns;
+      core::recordDeliveryTrace(submitted);
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
       do {
         gpu = gpuPool_->completed(context_.Get(), gpuSlot);
@@ -468,8 +497,12 @@ class WgcSession {
         return;
       }
       ++gpuNotReady_;
-      ++refusedFrames_;
-      return; // retain last completed GPU content; do not force a CPU round trip
+      // This short owner wait is a responsiveness budget, not frame expiry.
+      // Retire the exact copy from idle/next-frame polling when it completes.
+      if (!deferredGpuCopy_.defer({captured.sequence, captured.capture100ns, sourceEpoch_,
+              static_cast<int>(desc.Width), static_cast<int>(desc.Height), gpuSlot, monitorSlot}))
+        ++refusedFrames_;
+      return;
     }
     if (!running_.load(std::memory_order_acquire)) return;
     if (staging_ == nullptr || stagingWidth_ != static_cast<int>(desc.Width) ||
@@ -578,13 +611,14 @@ class WgcSession {
       latestSourceEpoch_ = sourceEpoch_;
       latestPrepared_ = std::move(prepared);
       if (gpuEnabled_ && latestFrameId_ % 120 == 0)
-        core::nativeLogf("[wgc-gpu-ingress] ready=%llu cpuFallback=%llu cpuMirror=%d cpuReadbacks=%llu residentBytes=%llu generation=%llu monitorCopied=%llu monitorRefused=%llu monitorResidentBytes=%llu gpuCapacityRefused=%llu gpuNotReady=%llu\n",
+        core::nativeLogf("[wgc-gpu-ingress] ready=%llu cpuFallback=%llu cpuMirror=%d cpuReadbacks=%llu residentBytes=%llu generation=%llu monitorCopied=%llu monitorRefused=%llu monitorResidentBytes=%llu gpuCapacityRefused=%llu gpuNotReady=%llu gpuDeferredPublished=%llu gpuPending=%d\n",
             static_cast<unsigned long long>(gpuFrames_), static_cast<unsigned long long>(gpuFallbackFrames_),
             cpuMirror ? 1 : 0, static_cast<unsigned long long>(cpuReadbacks_),
             static_cast<unsigned long long>(D3DVideoImage::residentBytes.load()), static_cast<unsigned long long>(gpuGeneration_),
             static_cast<unsigned long long>(monitorFrames_), static_cast<unsigned long long>(monitorRefusedFrames_),
             static_cast<unsigned long long>(D3DVideoImage::monitorResidentBytes.load()),
-            static_cast<unsigned long long>(gpuCapacityRefused_), static_cast<unsigned long long>(gpuNotReady_));
+            static_cast<unsigned long long>(gpuCapacityRefused_), static_cast<unsigned long long>(gpuNotReady_),
+            static_cast<unsigned long long>(gpuDeferredPublished_), deferredGpuCopy_.pending() ? 1 : 0);
     }
   }
 
@@ -611,6 +645,8 @@ class WgcSession {
   int64_t captureSequence_ = 0;
   uint64_t cpuReadbacks_ = 0;
   uint64_t gpuCapacityRefused_ = 0, gpuNotReady_ = 0;
+  uint64_t gpuDeferredPublished_ = 0;
+  DeferredCaptureGpuCopy deferredGpuCopy_;
   std::unique_ptr<CaptureFrameWorker<CapturedFrame>> worker_;
   mutable std::mutex cpuBranchMutex_;
   std::shared_ptr<D3DCaptureCpuBranch> cpuBranch_;

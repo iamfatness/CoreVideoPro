@@ -201,7 +201,7 @@ late-completion and actual-pixel credit tests are required, followed by installe
 comparison and the full workload. No merge or publication is authorized by these
 changes alone.
 
-### Installed 9de30212 comparison: outputs pass, Studio still fails
+### Installed 9de30212 comparison: outputs pass, Studio remains unqualified
 
 The declared 65.69-second interval retained all eight actual 1080p Zoom feeds,
 webcam, moving screen, nine hardware writers, and the registered OS camera.
@@ -211,12 +211,19 @@ recording and OS-camera source checks found zero missing/reordered camera
 arrivals, four expected 59.94-to-60 repeats, and no stale screen samples
 (maximum 180.82 ms). This is short component evidence, not a full soak pass.
 
-Studio still failed: 49 of 656 desktop observations had Program-camera age
-above 100 ms, maximum 121.48 ms. That worst observation spent 93.01 ms after
-Program delivery; the median delivery-to-desktop delay was 55.26 ms. Native
-presentation had 217 commit gaps above 25 ms in the surrounding 70.01-second
-bracket. Physical display evidence remains independently required. CI and the
-1,858-test native suite passed the tested head, but cannot waive these failures.
+The original GDI judge labeled 49 of 656 Program-camera observations older than
+100 ms (maximum 121.48 ms). A measurement audit invalidated that attribution:
+the judge used the screen read's finish time, not the image update time. All 49
+crossed the limit during the read; none exceeded it at read start (maximum
+90.50 ms). The worst apparent age included 31.81 ms inside the observer. The
+previously reported 93.01 ms after Program delivery therefore does not establish
+display latency. Original logs and verdicts are retained alongside
+`artifacts/qualification-1008-12/desktop-read-bounds-audit.json`; this correction
+does not award a pass. Desktop Duplication's OS `LastPresentTime` must accompany
+the actual sampled pixels, with accumulated updates treated as missing observer
+coverage. Native presentation still had 217 commit gaps above 25 ms in the
+surrounding 70.01-second bracket. Physical display evidence remains independently
+required; CI and native unit tests cannot waive it.
 
 The optional Program display selector still intentionally chose the preceding
 delivery slot, a policy introduced with the October 11 immutable publications.
@@ -237,7 +244,8 @@ carry the policy from the actual reader. The fixed-phase regression now checks
 the exact current pixels for isolated rendering and the exact previous pixels
 for inline rendering, retaining zero-repeat/zero-gap assertions and original
 absolute completion deadlines. Both that complete phase matrix and the focused
-current-slot pixel regression passed; the full suite must be rerun.
+current-slot pixel regression passed. The full Release suite at 17f3d6dd then
+passed all 1,859 tests; the engineering package also passed 55 compiled UI checks.
 
 The finalized administrator trace also fails trials 10 and 12. Trial 12 reports
 2,663 presents and 830 displayed frames versus 3,941 expected. Four of thirteen
@@ -251,3 +259,38 @@ Trial 11 stopped before measurement because its private OS-consumer launcher
 was missing the pixel coordinate file. The failure is retained. Trial 12 added
 coordinate/manifest preflight before starting outputs and used the same running
 candidate, with an explicit original-trace reference and hash-verified copy.
+
+### Installed 17f3d6dd comparison and deferred screen-copy loss
+
+Trial 14 retained eight actual 1080p remotes, camera, moving screen, nine hardware
+writers and the registered OS camera for 65.82 seconds. All ISO pixel identities,
+Program/OS-camera counter identities and original GPU deadlines passed. Actual
+source checks still failed: one screen picture reached 206.36 ms at both outputs.
+Desktop Duplication used the OS image-update timestamp rather than GDI read
+completion; it found late Program-camera and screen pictures, with three
+accumulated updates also leaving observer coverage incomplete. A separate
+20-second bracket with all outputs active but no desktop pixel readback still
+had 24 native presentation gaps above 25 ms. This is not a full pass.
+
+For Program 20530, the newest published screen frame was 13472, ready 52.69 ms
+before composition. Frame 13473 never reached GPU-ready publication; frame 13474
+arrived 5.79 ms after composition. The WGC log's GPU-not-ready count increased in
+this interval. Its owner discarded a submitted copy permanently if its query
+was not complete by the initial two-millisecond wait. This deadline controls
+owner responsiveness; it is not a source-frame expiry deadline.
+
+The correction retains one pending copy's metadata and polls its existing GPU
+slot on the capture owner, including idle periods with no new OS frame. Pool
+replacement/new writes wait for that pending metadata to resolve; Program and
+the capture callback do not wait. Existing GPU storage and OS-frame retirement
+remain bounded. Deferred-publication counters distinguish a completed late copy
+from an actual refusal. Three focused regressions passed, including original
+GPU pixels after source replacement and retirement/session fencing. Installed
+full-workload freshness and display cadence remain required.
+
+The first offline invocation mistakenly applied the 1,800-second default to
+this declared short interval and was invalid. It is retained under
+`qualification-1008-14/offline-bounded`; the corrected reader takes the declared
+minimum from the measurement file and writes `offline-bounded-65`. This changes
+no full-soak duration requirement. An early source judge also refused the still
+unfinished stimulus; the finalized stimulus was required before decoding.
