@@ -398,20 +398,32 @@ selection. The private producer's smoother submission intervals did not qualify
 either setting. Neither has a full workload pass. Queue size must satisfy both
 physical cadence and actual picture age.
 
-The workload verdict also requires independent Studio source-picture evidence
-for Preview, Program and the webcam input tile. Complete observation, exact
-workload interval, source identity continuity and the unchanged picture-age
-bound must all pass. Fresh output counters or recording/camera pixels cannot
-waive omitted camera identities in those optional monitor paths.
+**Owner ruling, 2026-10-22: the Studio cells are a UX metric, not the release
+gate.** The release gate is per-frame output identity: Program recording, every
+ISO, the registered OS camera and any stream, zero tolerance, over the 30-minute
+workload (see CLAUDE.md "What the release gate is, and is not"). The on-screen
+Preview, Program monitor and input tiles are windowed surfaces composed by the
+Desktop Window Manager. On a mixed-refresh multi-monitor desk Windows skips or
+repeats a windowed frame at the beat between the monitor clocks for every
+application; the 2026-10-22 app-less control (`display-handoff-control-20261022`,
+known generator, media core stopped) reproduced one omission every 19.95 s, the
+beat between 59.949 Hz and 59.999 Hz. In the last Present(1) full-load run
+(`qualification-1008-21`) three of the fourteen Studio omission events sat on
+that cadence and the remaining eleven were one 0.2 s presenter hiccup at 49 s,
+while recording and OS-camera pixels had zero omissions. A zero-omission desktop
+check cannot pass a 30-minute soak on any Windows machine and no longer blocks.
 
-`scripts/qa/desktop-picture-cadence.py` audits the independent Desktop
-Duplication samples against the declared interval. It requires a finalized
-collector, matching QPC frequency, complete interval coverage, one accumulated
-update per sample and unmasked pixels. Marker groups are distinct from body
-groups even when their names match. Torn markers, omitted identities and
-reordered identities fail continuity. This tool deliberately never claims a
-physical display or full-workload pass; freshness, ordinary picture progression,
-visibility and the output-specific timing evidence remain separate requirements.
+`scripts/qa/desktop-picture-cadence.py` (schema v2) audits the independent
+Desktop Duplication samples against the declared interval and reports the cells
+against a tolerance: longest hold of one identity at most 100 ms, omission ratio
+at most 1 %, no torn or reordered pictures, plus the unchanged coverage rules
+(finalized collector, matching QPC frequency, complete interval coverage, one
+accumulated update per sample, unmasked pixels; marker groups distinct from
+bodies even when names match). Omitted identities inside the tolerance are
+listed under `observations`; `sourceIdentityContinuityVerified` is retained as
+the strict informational flag. The tolerance still fails issue #997's original
+10 % UI loss and any operator-visible freeze. The tool never claims a physical
+display or full-workload pass, and `releaseGate` is always false.
 
 Before collecting pixels, verify the actual window rectangle and sampling
 coordinates against the visible layout. A maximized or resized window invalidates
