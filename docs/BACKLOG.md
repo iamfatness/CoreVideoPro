@@ -12,6 +12,8 @@
 
 **Qualification dependency — [#1014](https://github.com/iamfatness/CoreVideoPro/issues/1014):** remove the measured WGC CPU round trip and investigate remaining exact webcam-selection delays under recording load. Preserve source identities, bounded ownership and independent CPU/ISO consumers. Require per-frame source and mapped display evidence; advancing Program counters cannot qualify stale source pictures. This remains within the owner's #974/#1007 full-workload request.
 
+**Qualification test dependency — [#1015](https://github.com/iamfatness/CoreVideoPro/issues/1015):** scope browser mock environment and keep the native test runner's COM apartment alive across successive real capture fixtures, matching production lifetime. Retain the interrupted capture-enabled run; require actual WGC/browser pixels and the complete suite before accepting #1014.
+
 **Beta CI dependency — [#1006](https://github.com/iamfatness/CoreVideoPro/issues/1006):** initialize clock publication storage before launching its worker. Keep strict revision/visibility checks while distinguishing bounded controller-busy admission from configuration errors; validate the retained macOS failure and thread-sanitized clock lifetime before releasing #974.
 
 **Full-workload gray-source dependency — [#1003](https://github.com/iamfatness/CoreVideoPro/issues/1003):** Program can stamp consecutive output counters while Zoom/screen GPU preparation is refused and the actual source image is gray. Preserve the live `preparation-retiring-generation-capacity` failure, reproduce bounded generation ownership and require actual source admissions/pixels in qualification. Fix retirement without raising memory/lease limits; the display move is not established as its cause. No beta publication.

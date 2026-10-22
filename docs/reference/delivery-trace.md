@@ -105,3 +105,12 @@ a pending newer selection. The CLI exposes these as
 `--require-exact-source-selection --expected-source <id>` (repeat per source).
 Missing inventory is invalid. Physical display and receiver evidence remain
 separate requirements.
+
+`display-timing-verdict.py` separately joins a declared process, interval and
+named swap-chain leases to PresentMon display-change timestamps. Native lease
+observations must cover the interval without revision/address changes. Exact
+60 Hz rational mode inventory, displayed density and every display interval are
+checked; an unrelated UI chain or accepted-but-undisplayed presents cannot pass.
+Studio's combined Program/Preview grid uses one `multiview` video swap chain.
+Source pixels and output receivers remain separate boundaries even when this
+display component passes.

@@ -26,11 +26,11 @@
 namespace {
 using namespace corevideo::modules;
 
-std::unique_ptr<ICompositor> isolatedCompositor() {
+std::unique_ptr<ICompositor> isolatedCompositor(bool prepareCpuSources = false) {
   const char* raw = std::getenv("COREVIDEO_ISOLATE_MONITORS");
   const std::string previous = raw ? raw : "";
   _putenv_s("COREVIDEO_ISOLATE_MONITORS", "1");
-  auto result = createD3D11Compositor();
+  auto result = createD3D11Compositor(prepareCpuSources);
   _putenv_s("COREVIDEO_ISOLATE_MONITORS", previous.c_str());
   return result;
 }
@@ -968,7 +968,9 @@ TEST(GpuCaptureIngress, DefaultRealWgcFrameUsesPreparedGpuViewAndIndependentCpuC
   const char* raw = std::getenv("COREVIDEO_GPU_CAPTURE");
   const std::string previous = raw ? raw : "";
   _putenv_s("COREVIDEO_GPU_CAPTURE", "");
-  auto compositor = isolatedCompositor();
+  // Match production's preparation-enabled compositor consumer. The direct
+  // legacy fixture otherwise has no production GPU consumer to import into.
+  auto compositor = isolatedCompositor(true);
   auto capture = createWgcScreenCaptureDevice();
   ASSERT_TRUE(compositor != nullptr);
   ASSERT_TRUE(capture != nullptr);
