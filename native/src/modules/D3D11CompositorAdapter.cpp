@@ -380,7 +380,10 @@ class D3D11Compositor final : public ICompositor {
     if (pendingComposition_) {
       auto job = std::move(*pendingComposition_); pendingComposition_.reset();
       if (job.buffer->claimComposition(job.reservation)) {
-        const bool capturesReady = job.inputs.resolveCaptures();
+        // A missing source is an unavailable layer, not permission to drop
+        // the entire Program slot. Admission retains the failed identity and
+        // reports degraded output; it cannot label old pixels as current.
+        (void)job.inputs.resolveCaptures();
         for (const auto& pending : job.inputs.captureChoices) {
           const auto& source = job.inputs.frames[pending.index];
           core::DeliveryTraceEvent event;
@@ -390,11 +393,6 @@ class D3D11Compositor final : public ICompositor {
           event.sourceFrameId = source.frameId; event.sourceObservation100ns = source.captureTimestamp100ns;
           core::recordDeliveryTrace(event);
         }
-        if (!capturesReady) {
-          // A missing scheduled capture cannot become a fresh picture by
-          // substituting the latest frame. Preserve the original failed slot.
-          job.buffer->cancelComposition(job.reservation);
-        } else {
         const auto slot = programProductionSlot_, anchor = programProductionAnchorNs_;
         activeComposition_ = std::make_pair(job.buffer, job.reservation);
         programProductionSlot_ = job.inputs.productionSlot; programProductionAnchorNs_ = job.inputs.anchorNs;
@@ -407,7 +405,6 @@ class D3D11Compositor final : public ICompositor {
         }
         job.buffer->cancelComposition(job.reservation); // no-op after actual GPU submission
         activeComposition_.reset(); programProductionSlot_ = slot; programProductionAnchorNs_ = anchor;
-        }
       } else job.buffer->cancelComposition(job.reservation);
     }
     // Freeze the actual resolved sources, including legacy positional layers.

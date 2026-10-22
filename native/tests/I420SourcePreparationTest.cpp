@@ -1768,7 +1768,8 @@ TEST(PreparedProgramComposition, IncompletePreparationRemainsAHeldSourceFailure)
 TEST(PreparedProgramComposition, StoppedProducerCannotPublishAStalePreparedImage) {
   checkCompositionDeadline(true, true, true);
 }
-TEST(PreparedProgramComposition, ClockedCaptureResolvesLatePictureAtOriginalDeadlineWithActualPixels) {
+namespace {
+void checkClockedCaptureDeadline(bool publishSecond) {
   PreparationFlags flags;
   _putenv_s("COREVIDEO_ISOLATE_MONITORS", "1");
   auto owner = std::make_shared<CpuSourcePreparation>(true);
@@ -1798,8 +1799,10 @@ TEST(PreparedProgramComposition, ClockedCaptureResolvesLatePictureAtOriginalDead
   ASSERT_TRUE(waitSlot(1));
   compositor->setProgramProductionTiming(1, anchorNs); (void)compositor->render(plan, {first});
   auto second = sourceFrame("capture:clocked", 7, 2, 90); second.i420FullRange = false;
-  offer(*owner, second); window->publish(second);
-  ASSERT_TRUE(await([&] { return bool(second.preparedGpu->acquire(false)); }));
+  if (publishSecond) {
+    offer(*owner, second); window->publish(second);
+    ASSERT_TRUE(await([&] { return bool(second.preparedGpu->acquire(false)); }));
+  }
   auto third = sourceFrame("capture:clocked", 7, 3, 150); third.i420FullRange = false;
   offer(*owner, third); window->publish(third); third.capturePresentation = window;
   ASSERT_TRUE(waitSlot(2));
@@ -1808,13 +1811,22 @@ TEST(PreparedProgramComposition, ClockedCaptureResolvesLatePictureAtOriginalDead
   ASSERT_TRUE(compositor->takeDeliveredProgramFrame(delivered, 100));
   ASSERT_TRUE(compositor->takeDeliveredProgramFrame(delivered, 100));
   ASSERT_EQ(delivered.sourceAdmissions.size(), 1u);
-  EXPECT_EQ(delivered.sourceAdmissions[0].state, "ready");
+  EXPECT_EQ(delivered.sourceAdmissions[0].state, publishSecond ? "ready" : "unavailable");
   EXPECT_EQ(delivered.sourceAdmissions[0].requestedFrameId, 2);
-  EXPECT_EQ(delivered.sourceAdmissions[0].actualFrameId, 2);
+  EXPECT_EQ(delivered.sourceAdmissions[0].actualFrameId, publishSecond ? 2 : -1);
+  if (!publishSecond) EXPECT_EQ(delivered.health, "degraded");
   EXPECT_EQ(delivered.timelineTimestamp100ns, (anchorNs + 50'000'000) / 100);
   ASSERT_TRUE(delivered.programNv12Shared && delivered.programNv12Shared->size() >= 64u * 64u);
-  EXPECT_NEAR(delivered.programNv12Shared->at(32 * 64 + 32), 90, 3);
+  if (publishSecond) EXPECT_NEAR(delivered.programNv12Shared->at(32 * 64 + 32), 90, 3);
+  else EXPECT_TRUE(std::abs(int(delivered.programNv12Shared->at(32 * 64 + 32)) - 90) > 3);
   EXPECT_EQ(compositor->programBufferDiagnostics().capacity, 5);
   EXPECT_EQ(compositor->programBufferDiagnostics().activeFrames, 2);
+}
+}
+TEST(PreparedProgramComposition, ClockedCaptureResolvesLatePictureAtOriginalDeadlineWithActualPixels) {
+  checkClockedCaptureDeadline(true);
+}
+TEST(PreparedProgramComposition, MissingClockedCaptureStillDeliversProgramAtOriginalDeadlineWithUnavailableEvidence) {
+  checkClockedCaptureDeadline(false);
 }
 #endif

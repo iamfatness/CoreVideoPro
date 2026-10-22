@@ -107,9 +107,11 @@ from its native cadence, including the required rational-rate repeat. The
 capture owner can publish that arrival during the existing preparation interval;
 composition resolves only the requested identity in that bounded history.
 Resolution preserves capture observation, epoch and pixels. It never copies the
-latest image into a missing identity. Missing/evicted/replaced choices fail their
-original output slot and reset the cadence anchor for recovery, instead of
-leaving an input permanently black. A new production anchor starts a new choice
+latest image into a missing identity. Missing/evicted/replaced choices mark that
+layer unavailable and reset the cadence anchor for recovery. Program still
+composes the other layers at its original deadline; a source failure cannot
+cancel the whole output slot. The source-picture gate still fails that interval.
+A new production anchor starts a new choice
 timeline. Other negotiated capture rates retain the previous selection path.
 
 The capture owner holds these CPU references; the pending Program job holds an

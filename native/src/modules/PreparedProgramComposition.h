@@ -32,7 +32,10 @@ struct PreparedProgramComposition {
       auto& frame = frames[pending.index];
       if (!resolved || resolved->participantId != frame.participantId || resolved->sourceEpoch != frame.sourceEpoch) {
         // Never stamp a held image with the scheduled future identity.
-        frame.preparedGpu.reset(); frame.gpuPixels.reset(); frame.captureTimestamp100ns = 0;
+        // Keep the weak producer token for lifecycle/error attribution. Its
+        // identity cannot match the missing observation, so admission cannot
+        // acquire its older pixels as the scheduled frame.
+        frame.gpuPixels.reset(); frame.captureTimestamp100ns = 0;
         frame.frameId = pending.choice ? pending.choice->frameId : 0;
         complete = false;
       } else {
