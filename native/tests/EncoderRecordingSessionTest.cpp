@@ -1924,6 +1924,79 @@ TEST(EncoderRecordingSession, MediaFoundationVideoOnlyCaptureIsoHasNoAudioTrack)
   fs::remove_all(targetDir, ec);
 }
 
+// #551: the async independent ISO writers (the live app path) must report
+// framesWritten MID-recording. Only the synchronous path was covered, so a
+// status that stayed 0 until finalize slipped through while the files grew.
+TEST(EncoderRecordingSession, MediaFoundationIndependentIsoStatusAdvancesMidRecording) {
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) return;  // Media Foundation unavailable.
+  encoder->enableIndependentIsoWriters();
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() /
+      ("corevideo-iso-midstatus-" + std::to_string(GetCurrentProcessId()));
+  fs::remove_all(targetDir, ec);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso-midstatus";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4"; request.quality = "high";
+  request.width = 640; request.height = 360; request.fps = 30;
+  request.videoCodec = "h264"; request.audioCodec = "aac";
+  request.audioBitrateKbps = 128; request.targetBitrateMbps = 8;
+  request.isoSources = {{"zoom:1", "Alice", true}};
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  corevideo::modules::ProgramFrame frame;
+  frame.width = frame.preview.width = 640; frame.height = frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  encoder->submitIsoVideo({makeIsoI420("zoom:1", 640, 360, 0, 40)});
+  bool prepared = false;
+  for (int i = 0; i < 500 && !prepared; ++i) {
+    const auto s = encoder->session();
+    prepared = s.isoStreams.size() == 1 && s.isoStreams[0].trackOpen;
+    if (!prepared) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(prepared);
+  frame.frameNumber = 1;
+  encoder->submit(frame);
+  bool started = false;
+  for (int i = 0; i < 500 && !started; ++i) {
+    started = encoder->session().recordingMuxEpoch100ns > 0;
+    if (!started) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(started);
+
+  int64_t sourceFrames = 0;
+  for (int tick = 0; tick < 30; ++tick) {
+    frame.frameNumber = tick + 2;
+    encoder->submit(frame);
+    encoder->submitIsoVideo({makeIsoI420("zoom:1", 640, 360, tick, 40)});
+    encoder->submitIsoAudio({makeIsoTone("zoom:1", 960, 1, 220.0, sourceFrames)});
+    sourceFrames += 960;
+    std::this_thread::sleep_for(std::chrono::milliseconds(34));
+  }
+
+  // Deliberately NOT stopped: this is the live-recording read.
+  int64_t framesMid = 0, bytesMid = 0;
+  for (int i = 0; i < 200 && framesMid <= 0; ++i) {
+    const auto s = encoder->session();
+    ASSERT_EQ(s.isoStreams.size(), 1u);
+    framesMid = s.isoStreams[0].videoFrameCount;
+    bytesMid = s.isoStreams[0].bytesWritten;
+    if (framesMid <= 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_GT(framesMid, 0) << "async ISO writer reported framesWritten=0 mid-recording";
+  EXPECT_GT(bytesMid, 0) << "async ISO writer reported bytesWritten=0 mid-recording";
+
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
 #endif  // !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 
 namespace {
