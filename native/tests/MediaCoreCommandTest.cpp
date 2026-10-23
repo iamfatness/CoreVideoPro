@@ -3547,6 +3547,119 @@ TEST(MediaCoreCommand, DisablingEveryRoutedProgramSendWritesSilenceNotLegacyMix)
   EXPECT_EQ(monitor->framesRendered, monitorFramesBeforeMute) << "all-muted monitor must not replay legacy PCM";
 }
 
+namespace {
+
+// #766 fixture: a playing media clip with audio, a "media" send row on every
+// bus, and (optionally) a synced "media" console strip and/or a per-clip send.
+corevideo::rpc::Json::Array mediaAudioWarningShow(bool syncMediaStrip, bool clipHasOwnSend) {
+  using corevideo::rpc::Json;
+  Json::Array commands{
+      Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "media-audio-warning"},
+          {"routes",
+           Json::Array{
+               Json::Object{
+                   {"routeId", "media-main"},
+                   {"mode", "fixed"},
+                   {"mediaAssetId", "clip-intro"},
+                   {"mediaAssetName", "Intro"},
+                   {"mediaAssetKind", "video"},
+                   {"mediaAssetPath", "C:\\media\\intro.mp4"},
+                   {"mediaAssetPlaying", true},
+                   {"rect", Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}},
+               },
+           }},
+      },
+  };
+  Json::Array sends{
+      Json::Object{{"sourceId", "media"}, {"busId", "master"}, {"gainDb", 0}},
+      Json::Object{{"sourceId", "media"}, {"busId", "stream"}, {"gainDb", 0}},
+      Json::Object{{"sourceId", "media"}, {"busId", "mon"}, {"gainDb", 0}},
+  };
+  if (clipHasOwnSend) {
+    sends.emplace_back(Json::Object{{"sourceId", "media:clip-intro"}, {"busId", "master"}, {"gainDb", 0}});
+    sends.emplace_back(Json::Object{{"sourceId", "media:clip-intro"}, {"busId", "stream"}, {"gainDb", 0}});
+  }
+  commands.emplace_back(Json::Object{{"type", "sync-audio-routing-matrix"}, {"sends", sends}});
+  if (syncMediaStrip) {
+    commands.emplace_back(Json::Object{
+        {"type", "sync-participant-audio-mix"},
+        {"channels", Json::Array{Json::Object{{"participantId", "media"}, {"muted", false}, {"noiseSuppression", false}}}},
+    });
+  }
+  commands.emplace_back(Json::Object{{"type", "start-program-output"}, {"destinations", Json::Array{"rtmp"}}});
+  return commands;
+}
+
+float mediaWarningPeakOf(const std::vector<float>& samples) {
+  float peak = 0.f;
+  for (const auto sample : samples) peak = std::max(peak, std::abs(sample));
+  return peak;
+}
+
+bool hasMissingMediaPcmWarning(const corevideo::rpc::Json& state) {
+  const auto* mix = state.get("audioMixSession");
+  if (!mix || !mix->get("warnings")) return false;
+  const auto& warnings = mix->get("warnings")->asArray();
+  return std::any_of(warnings.begin(), warnings.end(), [](const corevideo::rpc::Json& warning) {
+    return warning.isString() && warning.asString().find("No native PCM has been mixed for media") != std::string::npos;
+  });
+}
+
+}  // namespace
+
+// #766: the "No native PCM has been mixed for media" warning must only be
+// raised when it is true. With the clip folded into the "media" pre-sum, the
+// strip meters the clip and no warning may appear while mixedFrameCount grows.
+TEST(MediaCoreCommand, MediaStripMeteringClipPcmRaisesNoMissingPcmWarning) {
+  auto modules = corevideo::modules::createStubModules();
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
+  modules.outputSender.reset(new CapturingOutputSender());
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommands(mediaAudioWarningShow(/*syncMediaStrip=*/true, /*clipHasOwnSend=*/false));
+
+  corevideo::rpc::Json state;
+  ASSERT_TRUE(corevideo::testing::applyUntil(mediaCore, [&](corevideo::core::MediaCore& core) {
+    return mediaWarningPeakOf(core.audioBusTapPcm("stream")) > 0.05f;
+  }, 3000, &state)) << "media PCM never reached the stream bus";
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_GT(mix->get("mixedFrameCount")->asNumber(), 0);
+  EXPECT_FALSE(hasMissingMediaPcmWarning(state));
+  const auto& participants = mix->get("participants")->asArray();
+  const auto media = std::find_if(participants.begin(), participants.end(), [](const corevideo::rpc::Json& participant) {
+    return participant.getString("participantId") == "media";
+  });
+  ASSERT_TRUE(media != participants.end());
+  EXPECT_NE(media->getString("status"), "waiting-for-pcm");
+  EXPECT_GT(media->get("outputLevel")->asNumber(), 0);
+}
+
+// #766: a clip routed by its own send rows bypasses the "media" pre-sum, so the
+// generic strip has no PCM of its own - but media audio IS being mixed and the
+// recording carries it, so the strip must not claim otherwise.
+TEST(MediaCoreCommand, MediaStripDoesNotClaimMissingPcmWhileAClipIsMixedOnItsOwnSends) {
+  auto modules = corevideo::modules::createStubModules();
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
+  modules.outputSender.reset(new CapturingOutputSender());
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommands(mediaAudioWarningShow(/*syncMediaStrip=*/true, /*clipHasOwnSend=*/true));
+
+  corevideo::rpc::Json state;
+  ASSERT_TRUE(corevideo::testing::applyUntil(mediaCore, [&](corevideo::core::MediaCore& core) {
+    return mediaWarningPeakOf(core.audioBusTapPcm("stream")) > 0.05f;
+  }, 3000, &state)) << "media PCM never reached the stream bus";
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_GT(mix->get("mixedFrameCount")->asNumber(), 0);
+  EXPECT_FALSE(hasMissingMediaPcmWarning(state));
+}
+
 TEST(MediaCoreCommand, SceneMediaAudioRoutesToStreamOutput) {
   auto modules = corevideo::modules::createStubModules();
   SolidMediaFrameSource::reset();

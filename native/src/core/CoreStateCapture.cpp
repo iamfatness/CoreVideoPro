@@ -1360,6 +1360,14 @@ rpc::Json CoreStateCapture::audioMixSessionState(const AudioOutputObservation& o
         clampInt(static_cast<int>(std::lround(mediaPreSumMetric.rmsLevel * 100.0)), 0, 100);
     mediaPreSumMetric.limiterActive = mediaPreSumMetric.peakLevel >= 0.92;
   }
+  // #766: a clip routed by its own send rows (or with its own strip) bypasses
+  // the "media" pre-sum and is metered under its own id. Media PCM IS being
+  // mixed then, so the generic "media" strip must not claim otherwise.
+  bool anyMediaClipPcmMixed = false;
+  for (const auto& [sourceId, metric] : nativeMetricsByParticipant) {
+    (void)metric;
+    if (isMediaClipAudioSourceId(sourceId)) { anyMediaClipPcmMixed = true; break; }
+  }
 
   for (const auto& channel : audioChannels_) {
     const auto nativeMetric = nativeMetricsByParticipant.find(channel.participantId);
@@ -1390,7 +1398,11 @@ rpc::Json CoreStateCapture::audioMixSessionState(const AudioOutputObservation& o
     if (!channel.pluginInserts.empty()) {
       insertCount += static_cast<int>(channel.pluginInserts.size());
     }
-    if (!hasPcm && !channel.muted && warningSet.insert("missing-pcm:" + channel.participantId).second) {
+    // Only a TRUE claim goes on the wire (#766): the media strip stays quiet
+    // while its clips are mixed under their own ids.
+    const bool mediaMixedElsewhere = channel.participantId == kMediaAudioControlSourceId && anyMediaClipPcmMixed;
+    if (!hasPcm && !channel.muted && !mediaMixedElsewhere &&
+        warningSet.insert("missing-pcm:" + channel.participantId).second) {
       warnings.emplace_back("No native PCM has been mixed for " + channel.participantId + "; meters are held at silence for that channel.");
     }
 
