@@ -46,16 +46,16 @@ export function buildTargets(env = {}) {
       name: "oauth-broker",
       // Default: the known broker start URL (reality doc) with NO return_uri, so
       // the broker rejects it before any OAuth state/redirect. Overridable.
-      url: env.OPS_BROKER_START_URL ?? "https://corevideo.iamfatness.us/oauth/start?probe=ops-monitor",
+      url: env.OPS_BROKER_START_URL ?? "https://auth.corevideo.io/oauth/start?probe=ops-monitor",
       readOnlyProbe: true
     },
     {
       name: "telemetry-ingest",
-      url: env.OPS_TELEMETRY_URL ?? "https://corevideo-telemetry-ingest.wallace-john-w.workers.dev/health"
+      url: env.OPS_TELEMETRY_URL ?? "https://telemetry.corevideo.io/health"
     },
     {
       name: "ops-monitor",
-      url: env.OPS_SELF_URL ?? "https://corevideo-ops-monitor.wallace-john-w.workers.dev/health"
+      url: env.OPS_SELF_URL ?? "https://ops.corevideo.io/health"
     }
   ];
   return raw.filter((t) => {

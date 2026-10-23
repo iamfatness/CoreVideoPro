@@ -42,6 +42,7 @@ internal sealed class CrashReportCoordinator
     internal static CrashReportCoordinator? CreateFromEnvironment()
     {
         var config = CrashReportingConfig.FromEnvironment();
+        LaunchLog.Write($"crash-report: telemetry endpoint host={config.EndpointHost} apiKeyPresent={!string.IsNullOrWhiteSpace(config.ApiKey)}");
         if (!config.Enabled)
         {
             return null;

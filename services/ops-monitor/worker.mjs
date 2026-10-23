@@ -2,7 +2,7 @@
  * CoreVideo Pro ops-monitor Worker (beta spec docs/beta-engineering-spec.md §S5).
  *
  * A Cron-triggered uptime check for the runtime dependencies beta makes hard:
- * the external OAuth broker (corevideo.iamfatness.us) and the in-repo Cloudflare
+ * the external OAuth broker (auth.corevideo.io) and the in-repo Cloudflare
  * worker (telemetry-ingest) + itself. On a
  * state CHANGE it alerts a generic webhook (Discord/Slack). It never spams
  * (state-change only, KV-backed flap-dampener) and never crashes on a probe
