@@ -75,12 +75,12 @@ npx wrangler r2 object get corevideo-telemetry-reports crashes/2026-07-18/<repor
 The WinUI shell's crash reporter (`CrashReportCoordinator` /
 `CrashReportUploader`, spec §S1) posts `application/zip` archives to
 `/v1/crashes` with the `X-CoreVideo-*` metadata headers. It is configured via
-two environment/settings keys — **both empty by default, which quietly
+two environment/settings keys — **only the API key is empty by default (the endpoint defaults to production), which quietly
 disables crash reporting** (dev builds); the beta config ships them:
 
 | Key | Meaning |
 |---|---|
-| `COREVIDEO_TELEMETRY_ENDPOINT` | Base URL of this worker, e.g. `https://corevideo-telemetry-ingest.<account>.workers.dev` |
+| `COREVIDEO_TELEMETRY_ENDPOINT` | OPTIONAL override (staging). Unset = the baked production default `https://telemetry.corevideo.io` |
 | `COREVIDEO_TELEMETRY_API_KEY` | The same value as the worker's `TELEMETRY_API_KEY` secret |
 
 Consent posture: dumps are detected against an offer-once watermark

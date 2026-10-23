@@ -175,4 +175,55 @@ public sealed class CrashReportUploaderTests : IDisposable
         Assert.False(new CrashReportingConfig { Endpoint = "not-a-url", ApiKey = "k" }.Enabled);
         Assert.True(new CrashReportingConfig { Endpoint = "https://x.example", ApiKey = "k" }.Enabled);
     }
+
+    [Fact]
+    public void Resolve_NoOverride_UsesBakedProductionEndpoint()
+    {
+        Assert.Equal("https://telemetry.corevideo.io", CrashReportingConfig.DefaultEndpoint);
+
+        foreach (var blank in new string?[] { null, "", "   " })
+        {
+            var config = CrashReportingConfig.Resolve(blank, "k");
+            Assert.Equal(CrashReportingConfig.DefaultEndpoint, config.Endpoint);
+            Assert.True(config.Enabled);
+        }
+    }
+
+    [Fact]
+    public void Resolve_Override_WinsAndIsTrimmed()
+    {
+        var config = CrashReportingConfig.Resolve("  https://staging.example.workers.dev ", " k ");
+
+        Assert.Equal("https://staging.example.workers.dev", config.Endpoint);
+        Assert.Equal("k", config.ApiKey);
+    }
+
+    [Fact]
+    public void Resolve_NoApiKey_StaysDisabledEvenWithBakedEndpoint()
+    {
+        // The key is a secret and is never baked into the build.
+        Assert.False(CrashReportingConfig.Resolve(null, null).Enabled);
+        Assert.False(CrashReportingConfig.Resolve(null, "  ").Enabled);
+    }
+
+    [Fact]
+    public void FromEnvironment_DefaultsToProductionAndHonoursOverride()
+    {
+        var oldEndpoint = Environment.GetEnvironmentVariable(CrashReportingConfig.EndpointEnvVar);
+        var oldKey = Environment.GetEnvironmentVariable(CrashReportingConfig.ApiKeyEnvVar);
+        try
+        {
+            Environment.SetEnvironmentVariable(CrashReportingConfig.EndpointEnvVar, null);
+            Environment.SetEnvironmentVariable(CrashReportingConfig.ApiKeyEnvVar, "k");
+            Assert.Equal(CrashReportingConfig.DefaultEndpoint, CrashReportingConfig.FromEnvironment().Endpoint);
+
+            Environment.SetEnvironmentVariable(CrashReportingConfig.EndpointEnvVar, "https://staging.example.test");
+            Assert.Equal("https://staging.example.test", CrashReportingConfig.FromEnvironment().Endpoint);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(CrashReportingConfig.EndpointEnvVar, oldEndpoint);
+            Environment.SetEnvironmentVariable(CrashReportingConfig.ApiKeyEnvVar, oldKey);
+        }
+    }
 }

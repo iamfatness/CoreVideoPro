@@ -167,7 +167,7 @@ public sealed class MediaCorePathsTests : IDisposable
         Assert.True(MediaCorePaths.IsZoomOAuthBrokerConfigured());
         var manifest = MediaCorePaths.LoadZoomOAuthManifest();
         Assert.Equal("https://corevideo.example.test/oauth/start", manifest.BrokerStartUrl);
-        Assert.Equal("https://corevideo.iamfatness.us/oauth/callback", manifest.BrokerCallbackUrl);
+        Assert.Equal("https://auth.corevideo.io/callback", manifest.BrokerCallbackUrl);
         Assert.Equal("y6sIWSwiTZe1JygMx4C9EQ", manifest.PublicClientId);
     }
 

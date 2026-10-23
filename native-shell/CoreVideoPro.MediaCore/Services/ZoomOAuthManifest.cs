@@ -4,9 +4,9 @@ namespace CoreVideoPro.MediaCore.Services;
 
 public sealed class ZoomOAuthManifest
 {
-    public const string DefaultBrokerStartUrl = "https://corevideo.iamfatness.us/oauth/start";
-    public const string DefaultBrokerCallbackUrl = "https://corevideo.iamfatness.us/oauth/callback";
-    // Pinned by the deployed broker: corevideo.iamfatness.us (site-worker.js,
+    public const string DefaultBrokerStartUrl = "https://auth.corevideo.io/oauth/start";
+    public const string DefaultBrokerCallbackUrl = "https://auth.corevideo.io/callback";
+    // Pinned by the deployed broker: auth.corevideo.io (site-worker.js,
     // handleOauthStart) rejects any return_uri other than exactly this value with
     // 400 "Unsupported OAuth return URI." — do NOT change without updating the
     // broker allowlist first. Package.appxmanifest declares the matching

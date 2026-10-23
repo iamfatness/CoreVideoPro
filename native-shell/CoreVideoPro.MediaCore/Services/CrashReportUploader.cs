@@ -5,12 +5,15 @@ using System.Text.Json;
 namespace CoreVideoPro.MediaCore.Services;
 
 /// <summary>
-/// Telemetry-ingest endpoint configuration. Both keys empty by default =
-/// crash reporting quietly disabled (dev builds); the beta config ships them.
+/// Telemetry-ingest endpoint configuration. The production endpoint is baked in
+/// (<see cref="DefaultEndpoint"/>); <c>COREVIDEO_TELEMETRY_ENDPOINT</c> overrides it
+/// (staging). The API key is a secret and is NEVER baked in: with no key the
+/// feature is quietly disabled (dev builds).
 /// </summary>
 public sealed class CrashReportingConfig
 {
     public const string EndpointEnvVar = "COREVIDEO_TELEMETRY_ENDPOINT";
+    public const string DefaultEndpoint = "https://telemetry.corevideo.io";
     public const string ApiKeyEnvVar = "COREVIDEO_TELEMETRY_API_KEY";
 
     public string? Endpoint { get; init; }
@@ -21,10 +24,16 @@ public sealed class CrashReportingConfig
         Uri.TryCreate(Endpoint, UriKind.Absolute, out var uri) &&
         (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
 
-    public static CrashReportingConfig FromEnvironment() => new()
+    public static CrashReportingConfig FromEnvironment() =>
+        Resolve(
+            Environment.GetEnvironmentVariable(EndpointEnvVar),
+            Environment.GetEnvironmentVariable(ApiKeyEnvVar));
+
+    /// <summary>Env value wins when non-blank; otherwise the baked production default.</summary>
+    public static CrashReportingConfig Resolve(string? endpointOverride, string? apiKey) => new()
     {
-        Endpoint = Environment.GetEnvironmentVariable(EndpointEnvVar)?.Trim(),
-        ApiKey = Environment.GetEnvironmentVariable(ApiKeyEnvVar)?.Trim()
+        Endpoint = string.IsNullOrWhiteSpace(endpointOverride) ? DefaultEndpoint : endpointOverride.Trim(),
+        ApiKey = apiKey?.Trim()
     };
 }
 
@@ -51,7 +60,7 @@ public sealed class CrashReportUploadResult
 
 public sealed class CrashReportUploadOptions
 {
-    /// <summary>Base endpoint, e.g. <c>https://corevideo-telemetry-ingest.example.workers.dev</c>.</summary>
+    /// <summary>Base endpoint, e.g. <c>https://telemetry.corevideo.io</c>.</summary>
     public required Uri Endpoint { get; init; }
     public required string ApiKey { get; init; }
     public string? Version { get; init; }

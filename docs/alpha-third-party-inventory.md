@@ -81,8 +81,8 @@ revision. Its release assets did not include a separately named source bundle.
 
 ## OAuth eligibility and package hygiene
 
-The production manifest configures `https://corevideo.iamfatness.us/oauth/start`,
-its `/oauth/callback`, and `corevideo://oauth/callback`. Source code uses the broker
+The production manifest configures `https://auth.corevideo.io/oauth/start`,
+its `/callback`, and `corevideo://oauth/callback`. Source code uses the broker
 for authorization and SDK JWT retrieval. A public URL and public client ID do not
 prove Zoom Marketplace publication or eligibility of unrelated friend accounts.
 No account-side publication or tester allowlist information was available in the

@@ -15,8 +15,8 @@ import Security
 actor ZoomOAuth {
     static let shared = ZoomOAuth()
 
-    static let brokerStart = "https://corevideo.iamfatness.us/oauth/start"
-    static let brokerBase = "https://corevideo.iamfatness.us"
+    static let brokerStart = "https://auth.corevideo.io/oauth/start"
+    static let brokerBase = "https://auth.corevideo.io"
     static let appReturnUri = "corevideo://oauth/callback"
 
     struct Tokens: Codable {

@@ -4,15 +4,18 @@
   "main": "worker.mjs",
   "compatibility_date": "2026-06-01",
   "workers_dev": true,
+  // Production hostname (#434). The owner activates the Cloudflare custom domain
+  // (zone corevideo.io must be on the same account); see docs/reference/production-endpoints.md.
+  "routes": [{ "pattern": "ops.corevideo.io", "custom_domain": true }],
   "preview_urls": false,
   "vars": {
     "ENVIRONMENT": "staging"
     // Optional probe-target overrides (see README). Left unset here so the
     // defaults in lib/checks.mjs (buildTargets) apply. Set to "off" to skip a
     // target:
-    //   "OPS_BROKER_START_URL": "https://corevideo.iamfatness.us/oauth/start?probe=ops-monitor",
-    //   "OPS_TELEMETRY_URL":    "https://corevideo-telemetry-ingest.<account>.workers.dev/health",
-    //   "OPS_SELF_URL":         "https://corevideo-ops-monitor.<account>.workers.dev/health"
+    //   "OPS_BROKER_START_URL": "https://auth.corevideo.io/oauth/start?probe=ops-monitor",
+    //   "OPS_TELEMETRY_URL":    "https://telemetry.corevideo.io/health",
+    //   "OPS_SELF_URL":         "https://ops.corevideo.io/health"
   },
   // Cron Trigger: probe every 5 minutes.
   "triggers": {

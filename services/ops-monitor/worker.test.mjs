@@ -243,9 +243,9 @@ describe("runChecks (multi-target aggregation)", () => {
     const fetchImpl = makeFetch(
       {
         "oauth-broker": 400, // broker up (expected 4xx)
-        "corevideo.iamfatness.us": 400,
+        "auth.corevideo.io": 400,
         "telemetry-ingest": 503, // DOWN
-        "ops-monitor": 200
+        "ops.corevideo": 200
       },
       capture
     );
@@ -270,7 +270,7 @@ describe("runChecks (multi-target aggregation)", () => {
     const kv = makeKv({ "oauth-broker": "up", "telemetry-ingest": "up", "ops-monitor": "up" });
     const capture = {};
     const fetchImpl = makeFetch(
-      { "iamfatness": 400, "telemetry": 200, "ops-monitor": 200 },
+      { "auth.corevideo": 400, "telemetry": 200, "ops.corevideo": 200 },
       capture
     );
     const summary = await runChecks({ OPS_ALERT_WEBHOOK_URL: "https://hooks.test/abc" }, { fetchImpl, kv, logger: quietLogger });
@@ -285,7 +285,7 @@ describe("runChecks (multi-target aggregation)", () => {
       },
       async put() {}
     };
-    const fetchImpl = makeFetch({ "iamfatness": "throw", "telemetry": 200, "ops-monitor": 200 });
+    const fetchImpl = makeFetch({ "auth.corevideo": "throw", "telemetry": 200, "ops.corevideo": 200 });
     const summary = await runChecks({}, { fetchImpl, kv: brokenKv, logger: quietLogger });
     // broker down; missing prior => baseline up => one down change; log-only (no webhook)
     expect(summary.changes.some((c) => c.name === "oauth-broker" && c.to === "down")).toBe(true);

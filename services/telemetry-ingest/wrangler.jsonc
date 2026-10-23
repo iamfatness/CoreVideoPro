@@ -4,6 +4,9 @@
   "main": "worker.mjs",
   "compatibility_date": "2026-06-01",
   "workers_dev": true,
+  // Production hostname (#434). The owner activates the Cloudflare custom domain
+  // (zone corevideo.io must be on the same account); see docs/reference/production-endpoints.md.
+  "routes": [{ "pattern": "telemetry.corevideo.io", "custom_domain": true }],
   "preview_urls": false,
   "vars": {
     "ENVIRONMENT": "staging"
