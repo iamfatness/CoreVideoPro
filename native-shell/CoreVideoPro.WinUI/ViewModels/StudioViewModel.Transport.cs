@@ -50,7 +50,9 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
         return _transportCoordinator.SetStreamingAsync(requested);
     }
     // T1.8: while "Stop and close" finishes the outputs, a START is refused (a stop is still allowed).
-    internal bool CanSetRecording(bool requested) => !_transportCoordinator.RecordingToggleInFlight && (!requested || (Settings.IsInMeeting && !_outputsClosing));
+    // #1009: no Zoom meeting term; local Program recording starts with Zoom offline.
+    internal bool CanSetRecording(bool requested) =>
+        RecordingControlPolicy.CanSet(requested, _transportCoordinator.RecordingToggleInFlight, _outputsClosing);
     internal bool CanSetStreaming(bool requested) => !_transportCoordinator.StreamToggleInFlight && (!requested || !_outputsClosing);
 
     // Called only on the UI thread, including the capture-independent polling path.

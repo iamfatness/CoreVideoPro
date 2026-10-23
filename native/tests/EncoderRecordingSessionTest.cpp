@@ -2,6 +2,7 @@
 #include "modules/Interfaces.h"
 #include "modules/AsyncEncoderSink.h"
 #include "modules/RecordingProgramContinuity.h"
+#include "rpc/JsonRpcServer.h"
 
 #include "EncoderCapacityProbeTestSupport.h"
 
@@ -1999,10 +2000,12 @@ class StartCountingEncoderSink final : public corevideo::modules::IEncoderSink {
   }
 
   void submit(const corevideo::modules::ProgramFrame&) override {}
+  void stopRecording() override { ++recordingStopCount; }
   corevideo::modules::OutputSession session() const override { return session_; }
 
   int startCount = 0;
   int recordingStartCount = 0;
+  int recordingStopCount = 0;
 
  private:
   corevideo::modules::OutputSession session_;
@@ -2073,6 +2076,68 @@ TEST(EncoderRecordingSession, RepeatedProgramSyncDoesNotRestartActiveRecordingWr
   EXPECT_EQ(encoder->startCount, 1)
       << "the recording writer generation also supplies the Program tap for outputs";
   EXPECT_EQ(encoder->session().recordingSessionId, "idempotent-show-host-guest");
+}
+
+// #1009: Program recording starts with Zoom offline, and a meeting joined, left and rejoined
+// while it records is a source change, not a recording stop. No stop reaches the writer, no
+// second writer generation opens, and the session keeps its id, whether or not the shell's
+// production sync (which carries the operator's Record intent) runs between the steps.
+TEST(EncoderRecordingSession, ZoomJoinLeaveRejoinDoesNotStopAnOfflineStartedRecording) {
+  auto modules = corevideo::modules::createStubModules();
+  auto countingSink = std::make_unique<StartCountingEncoderSink>();
+  auto* encoder = countingSink.get();
+  modules.encoder = std::move(countingSink);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+
+  const corevideo::rpc::Json startProgram = corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"recording"}},
+  };
+  const corevideo::rpc::Json setTargets = corevideo::rpc::Json::Object{
+      {"type", "set-recording-targets"},
+      {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+      {"filenamePrefix", "offline-show"},
+      {"format", "mp4"},
+  };
+  const corevideo::rpc::Json startRecording = corevideo::rpc::Json::Object{
+      {"type", "start-recording-session"},
+      {"sessionId", "offline-show-program"},
+  };
+
+  // Zoom offline: the core has never joined a meeting.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{setTargets, startRecording, startProgram});
+  ASSERT_EQ(encoder->recordingStartCount, 1);
+  ASSERT_EQ(encoder->session().recordingStatus, "recording");
+
+  const auto zoom = [&server](const std::string& id, const std::string& type) {
+    corevideo::rpc::Json::Object request{{"id", id}, {"type", type}};
+    if (type == "zoom-join") {
+      request.emplace("payload", corevideo::rpc::Json::Object{
+                                     {"meetingUrl", "https://zoom.us/j/123456789"},
+                                     {"displayName", "Operator"},
+                                     {"webinar", false},
+                                 });
+    }
+    return server.handle(corevideo::rpc::Json(request));
+  };
+
+  const std::vector<std::pair<std::string, std::string>> steps{
+      {"join-1", "zoom-join"}, {"leave-1", "zoom-leave"}, {"join-2", "zoom-join"}, {"leave-2", "zoom-leave"}};
+  for (const auto& [id, type] : steps) {
+    const auto response = zoom(id, type);
+    ASSERT_TRUE(response.get("ok") && response.get("ok")->asBool()) << id;
+    EXPECT_EQ(response.get("snapshot")->getString("meetingState"),
+              type == "zoom-join" ? "in_meeting" : "idle") << id;
+    EXPECT_EQ(encoder->recordingStopCount, 0) << id << " must not stop the recording";
+    EXPECT_EQ(encoder->session().recordingStatus, "recording") << id;
+
+    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{setTargets, startRecording, startProgram});
+    EXPECT_EQ(encoder->recordingStopCount, 0) << id;
+  }
+
+  EXPECT_EQ(encoder->recordingStartCount, 1) << "leave/rejoin must not open a new writer generation";
+  EXPECT_EQ(encoder->session().recordingSessionId, "offline-show-program");
 }
 
 // ISO-3: MediaCore resolves each ISO source's display name AND its audio-pairing

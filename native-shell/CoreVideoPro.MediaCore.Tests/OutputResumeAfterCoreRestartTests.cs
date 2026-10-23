@@ -9,7 +9,7 @@ public sealed class OutputResumeAfterCoreRestartTests
     [Fact]
     public void ARecordingLostToACrashIsResumedOnceZoomIsBack()
     {
-        var resume = new OutputResumeAfterCoreRestart(requiresMeeting: true);
+        var resume = new OutputResumeAfterCoreRestart(requiresZoomRejoin: true);
         resume.CoreCrashed(outputWasOn: true);
         Assert.True(resume.Owed);
 
@@ -21,7 +21,7 @@ public sealed class OutputResumeAfterCoreRestartTests
     [Fact]
     public void NothingIsStartedWhenNothingWasRecording()
     {
-        var resume = new OutputResumeAfterCoreRestart(requiresMeeting: true);
+        var resume = new OutputResumeAfterCoreRestart(requiresZoomRejoin: true);
         resume.CoreCrashed(outputWasOn: false);
         Assert.Equal(OutputResumeDecision.None, resume.RecoveryCompleted(MediaCoreRecoveryOutcome.ZoomRejoined));
     }
@@ -31,23 +31,34 @@ public sealed class OutputResumeAfterCoreRestartTests
     [Fact]
     public void ASecondCrashBeforeTheResumeDoesNotForgetTheRecording()
     {
-        var resume = new OutputResumeAfterCoreRestart(requiresMeeting: true);
+        var resume = new OutputResumeAfterCoreRestart(requiresZoomRejoin: true);
         resume.CoreCrashed(outputWasOn: true);
         resume.CoreCrashed(outputWasOn: false);
         Assert.Equal(OutputResumeDecision.Resume, resume.RecoveryCompleted(MediaCoreRecoveryOutcome.ZoomRejoined));
     }
 
     [Fact]
-    public void WithoutTheMeetingTheRecordingIsNotResumedAndSaysSo()
+    public void WhenZoomDoesNotRejoinTheRecordingIsNotResumedAndSaysSo()
     {
-        foreach (var outcome in new[] { MediaCoreRecoveryOutcome.ZoomRejoinFailed, MediaCoreRecoveryOutcome.CoreOnly })
-        {
-            var resume = new OutputResumeAfterCoreRestart(requiresMeeting: true);
-            resume.CoreCrashed(outputWasOn: true);
-            Assert.Equal(OutputResumeDecision.NotResumed, resume.RecoveryCompleted(outcome));
-            Assert.Contains("NOT resumed", OutputResumeAfterCoreRestart.DescribeRecordingNotResumed(outcome));
-            Assert.False(resume.Owed);
-        }
+        var resume = new OutputResumeAfterCoreRestart(requiresZoomRejoin: true);
+        resume.CoreCrashed(outputWasOn: true);
+        Assert.Equal(OutputResumeDecision.NotResumed, resume.RecoveryCompleted(MediaCoreRecoveryOutcome.ZoomRejoinFailed));
+        var reason = OutputResumeAfterCoreRestart.DescribeRecordingNotResumed(MediaCoreRecoveryOutcome.ZoomRejoinFailed);
+        Assert.Contains("NOT resumed", reason);
+        Assert.Contains("Zoom did not rejoin", reason);
+        Assert.False(resume.Owed);
+    }
+
+    // #1009: Program recording does not need a meeting. A recording of local sources made
+    // with Zoom offline (no meeting to rejoin) resumes like one made in a meeting.
+    [Fact]
+    public void ARecordingMadeWithZoomOfflineIsResumed()
+    {
+        var resume = new OutputResumeAfterCoreRestart(requiresZoomRejoin: true);
+        resume.CoreCrashed(outputWasOn: true);
+        Assert.Equal(OutputResumeDecision.Resume, resume.RecoveryCompleted(MediaCoreRecoveryOutcome.CoreOnly));
+        Assert.Equal(OutputResumeDecision.None, resume.RecoveryCompleted(MediaCoreRecoveryOutcome.CoreOnly));
+        Assert.False(resume.Owed);
     }
 
     // The operator stopping (or restarting) Record during the recovery is a decision. Nothing
@@ -55,7 +66,7 @@ public sealed class OutputResumeAfterCoreRestartTests
     [Fact]
     public void AnOperatorChoiceDuringRecoveryStands()
     {
-        var resume = new OutputResumeAfterCoreRestart(requiresMeeting: true);
+        var resume = new OutputResumeAfterCoreRestart(requiresZoomRejoin: true);
         resume.CoreCrashed(outputWasOn: true);
         resume.OperatorChose();
         Assert.Equal(OutputResumeDecision.None, resume.RecoveryCompleted(MediaCoreRecoveryOutcome.ZoomRejoined));
@@ -64,7 +75,7 @@ public sealed class OutputResumeAfterCoreRestartTests
     [Fact]
     public void ADeliberateCoreStopCancelsTheResume()
     {
-        var resume = new OutputResumeAfterCoreRestart(requiresMeeting: true);
+        var resume = new OutputResumeAfterCoreRestart(requiresZoomRejoin: true);
         resume.CoreCrashed(outputWasOn: true);
         resume.CoreStoppedDeliberately();
         Assert.Equal(OutputResumeDecision.None, resume.RecoveryCompleted(MediaCoreRecoveryOutcome.ZoomRejoined));
@@ -77,7 +88,7 @@ public sealed class OutputResumeAfterCoreRestartTests
     {
         foreach (var outcome in new[] { MediaCoreRecoveryOutcome.ZoomRejoined, MediaCoreRecoveryOutcome.ZoomRejoinFailed, MediaCoreRecoveryOutcome.CoreOnly })
         {
-            var resume = new OutputResumeAfterCoreRestart(requiresMeeting: false);
+            var resume = new OutputResumeAfterCoreRestart(requiresZoomRejoin: false);
             resume.CoreCrashed(outputWasOn: true);
             Assert.Equal(OutputResumeDecision.Resume, resume.RecoveryCompleted(outcome));
             Assert.Equal(OutputResumeDecision.None, resume.RecoveryCompleted(outcome));
@@ -87,7 +98,7 @@ public sealed class OutputResumeAfterCoreRestartTests
     [Fact]
     public void AStreamTheOperatorStoppedDuringRecoveryStaysStopped()
     {
-        var resume = new OutputResumeAfterCoreRestart(requiresMeeting: false);
+        var resume = new OutputResumeAfterCoreRestart(requiresZoomRejoin: false);
         resume.CoreCrashed(outputWasOn: true);
         resume.OperatorChose();
         Assert.Equal(OutputResumeDecision.None, resume.RecoveryCompleted(MediaCoreRecoveryOutcome.ZoomRejoined));

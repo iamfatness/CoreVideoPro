@@ -1684,9 +1684,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public bool CanToggleCapture => Settings.IsInMeeting;
 
-    // Recording rights can be requested in a breakout room without capture running,
-    // so recording only requires being in a meeting (NOT an active capture subscription).
-    public bool CanToggleRecording => Settings.IsInMeeting && !_transportCoordinator.RecordingToggleInFlight && !_outputsClosing;
+    // #1009: Program recording is a local output; it does not need a Zoom meeting or an
+    // active capture subscription. See RecordingControlPolicy.
+    public bool CanToggleRecording => RecordingControlPolicy.CanToggle(_transportCoordinator.RecordingToggleInFlight, _outputsClosing);
 
     public string CaptureEngineHint => CanToggleCapture
         ? "Turn the CoreVideo engine on or off for this Zoom meeting."
@@ -2678,14 +2678,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             var assigned = ShowInputs.Count(slot => slot.IsAssigned);
             var inShow = ShowInputs.Count(slot => slot.InShow && slot.IsAssigned);
-            if (!Settings.IsInMeeting)
-            {
-                return "Start by joining Zoom, then assign the live guests to Inputs 1-10.";
-            }
-
+            // #1009: a show of local sources (camera, screen, media) needs no Zoom meeting,
+            // so Zoom is one way to start, not a step every show must take before Record.
             if (assigned == 0)
             {
-                return "Zoom is live. Next: open Sources and assign guests, media, or a camera to Inputs 1-10.";
+                return Settings.IsInMeeting
+                    ? "Zoom is live. Next: open Sources and assign guests, media, or a camera to Inputs 1-10."
+                    : "Start by joining Zoom or adding a camera, screen, or media source, then assign sources to Inputs 1-10.";
             }
 
             if (inShow == 0)
@@ -10031,8 +10030,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RunOnUiThread(() => ApplyBridgeHealthChanged(health));
 
     // #732: a core crash mid-show must not cost the rest of the show's recording or stream.
-    private readonly OutputResumeAfterCoreRestart _recordingResume = new(requiresMeeting: true);
-    private readonly OutputResumeAfterCoreRestart _streamResume = new(requiresMeeting: false);
+    private readonly OutputResumeAfterCoreRestart _recordingResume = new(requiresZoomRejoin: true);
+    private readonly OutputResumeAfterCoreRestart _streamResume = new(requiresZoomRejoin: false);
 
     private void OnBridgeRecoveryCompleted(MediaCoreRecoveryOutcome outcome) =>
         RunOnUiThread(() =>
@@ -10129,7 +10128,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (recordingWasOn)
             {
                 LaunchLog.Write($"recording: interrupted by a media core restart (restart {health.RestartCount}); " +
-                                "the files written so far are kept, and recording resumes in a new folder once Zoom is back");
+                                "the files written so far are kept, and recording resumes in a new folder once the core is back " +
+                                "(and Zoom, if a meeting was live)");
             }
             if (streamWasOn)
             {

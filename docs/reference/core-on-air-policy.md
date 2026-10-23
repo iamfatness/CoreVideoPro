@@ -43,3 +43,20 @@ no `capabilityStates` (an older core) does not block Join.
 Tests: `MediaCoreOnAirPolicyTests` (shell), `JsonRpcServer.ARealCoreWithNoZoomEngineRefusesJoin`
 and `ARealCoreIgnoresTheBreakoutSimulator` (core, non-stub build only). The stub-session
 tests construct `MediaCore(createStubModules())` on purpose.
+
+## Record does not wait for Zoom (#1009)
+
+Program recording is a local output: it records whatever Program renders, webcam and screen
+capture included. The Record button and `transport.record.set` are gated only by
+`RecordingControlPolicy` (no toggle in flight; no start while "Stop and close" finishes the
+outputs). Engine on/off stays meeting-gated, and ISO of a Zoom guest still needs the guest in
+the roster (`ShowInputsCoordinator.BuildIsoSourceTargets`) and Zoom capture on
+(`IsoCapturePreflight`).
+
+With no meeting, the core may be down when Record is pressed. `SetRecordingAsync` starts it and
+then asks `RecordBlockReason` again of the started core, before any recording intent reaches it.
+Leaving or rejoining a meeting does not stop a recording: Leave turns Engine off and sends
+`zoom-leave`, neither of which touches the recording intent or the core's writer
+(`EncoderRecordingSession.ZoomJoinLeaveRejoinDoesNotStopAnOfflineStartedRecording`). After a
+core crash, a recording made with no meeting resumes (`OutputResumeAfterCoreRestart`); one made
+in a meeting that Zoom did not rejoin is not resumed, and says so.

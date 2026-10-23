@@ -354,6 +354,22 @@ public sealed class TransportCoordinator
         try
         {
             await _host.EnsureMediaCoreRunningAsync(starting ? "Starting media core for recording..." : "Updating media core...").ConfigureAwait(false);
+            // #1009: Record no longer waits for a Zoom meeting, which used to imply a running
+            // core. When the core was down at the press, the profile checked above was absent
+            // or the dead core's, so ask again of the core that will actually record, before
+            // any recording intent reaches it.
+            if (starting && MediaCoreOnAirPolicy.RecordBlockReason(_bridge.Profile) is { } startedCoreBlock)
+            {
+                LaunchLog.Write($"recording: start BLOCKED by the started core's profile — {startedCoreBlock}");
+                _dispatcher.RunOnUiThread(() =>
+                {
+                    _host.Recording = previousRecording;
+                    _host.RefreshOutputStatus();
+                    _host.OutputStatus = startedCoreBlock;
+                    _host.OutputSessionStatus = _host.OutputStatus;
+                });
+                return;
+            }
             if (needsFailedTakeStop)
             {
                 // The core deduplicates the repeated session request even after its
