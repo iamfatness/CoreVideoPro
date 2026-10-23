@@ -21,22 +21,17 @@ public sealed partial class OverlaysViewModel : ObservableObject
     {
         _studio = studio;
         BrandName = studio.BrandKit.Name;
-        BrandLogoText = studio.BrandKit.LogoText;
         BrandPrimaryColor = studio.BrandKit.BrandColor;
         BrandAccentColor = studio.BrandKit.AccentColor;
         BrandBackgroundColor = studio.BrandKit.BackgroundColor;
         BrandPrimaryPickerColor = ParseHexColorOrDefault(BrandPrimaryColor, Color.FromArgb(255, 68, 193, 161));
         BrandAccentPickerColor = ParseHexColorOrDefault(BrandAccentColor, Color.FromArgb(255, 240, 168, 92));
         BrandBackgroundPickerColor = ParseHexColorOrDefault(BrandBackgroundColor, Color.FromArgb(255, 12, 17, 24));
-        BrandLowerThirdStyle = studio.BrandKit.LowerThirdStyle;
         BrandDefaultOverlayBehavior = studio.BrandKit.DefaultOverlayBehavior;
     }
 
     [ObservableProperty]
     private string _brandName = string.Empty;
-
-    [ObservableProperty]
-    private string _brandLogoText = string.Empty;
 
     [ObservableProperty]
     private string _brandPrimaryColor = string.Empty;
@@ -57,9 +52,6 @@ public sealed partial class OverlaysViewModel : ObservableObject
     private Color _brandBackgroundPickerColor;
 
     [ObservableProperty]
-    private string _brandLowerThirdStyle = string.Empty;
-
-    [ObservableProperty]
     private string _brandDefaultOverlayBehavior = string.Empty;
 
     public ObservableCollection<GraphicOverlay> Graphics => _studio.Graphics;
@@ -71,8 +63,6 @@ public sealed partial class OverlaysViewModel : ObservableObject
     public IReadOnlyList<CaptionTranscriptEntry> CaptionTranscript => _studio.CaptionTranscript;
 
     public IReadOnlyList<string> LowerThirdPositionOptions => LowerThirdLayoutHelper.LowerThirdPositionOptions;
-
-    public IReadOnlyList<string> BrandLowerThirdStyleOptions { get; } = ["solid", "minimal", "gradient"];
 
     public IReadOnlyList<string> BrandDefaultOverlayBehaviorOptions { get; } = ["all-off", "manual"];
 
@@ -93,8 +83,6 @@ public sealed partial class OverlaysViewModel : ObservableObject
         LowerThirdLayoutHelper.LowerThirdAlignment(LowerThirdPosition).Vertical;
 
     partial void OnBrandNameChanged(string value) => UpdateBrandKit();
-
-    partial void OnBrandLogoTextChanged(string value) => UpdateBrandKit();
 
     partial void OnBrandPrimaryColorChanged(string value)
     {
@@ -159,8 +147,6 @@ public sealed partial class OverlaysViewModel : ObservableObject
         BrandBackgroundColor = ToHex(value);
     }
 
-    partial void OnBrandLowerThirdStyleChanged(string value) => UpdateBrandKit();
-
     partial void OnBrandDefaultOverlayBehaviorChanged(string value) => UpdateBrandKit();
 
     partial void OnLowerThirdPositionChanged(string value)
@@ -197,11 +183,9 @@ public sealed partial class OverlaysViewModel : ObservableObject
         OnPropertyChanged(nameof(AppliedAppearance));
         OnPropertyChanged(nameof(AppliedLookLabel));OnPropertyChanged(nameof(AppliedLookAnchor));
         BrandName = BrandKit.Name;
-        BrandLogoText = BrandKit.LogoText;
         BrandPrimaryColor = BrandKit.BrandColor;
         BrandAccentColor = BrandKit.AccentColor;
         BrandBackgroundColor = BrandKit.BackgroundColor;
-        BrandLowerThirdStyle = BrandKit.LowerThirdStyle;
         BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior;
         OnPropertyChanged(nameof(BrandKit));
         OnPropertyChanged(nameof(BrandColorSummary));
@@ -210,11 +194,9 @@ public sealed partial class OverlaysViewModel : ObservableObject
     private void UpdateBrandKit()
     {
         if (string.IsNullOrWhiteSpace(BrandName) ||
-            string.IsNullOrWhiteSpace(BrandLogoText) ||
             string.IsNullOrWhiteSpace(BrandPrimaryColor) ||
             string.IsNullOrWhiteSpace(BrandAccentColor) ||
             string.IsNullOrWhiteSpace(BrandBackgroundColor) ||
-            string.IsNullOrWhiteSpace(BrandLowerThirdStyle) ||
             string.IsNullOrWhiteSpace(BrandDefaultOverlayBehavior))
         {
             return;
@@ -230,7 +212,6 @@ public sealed partial class OverlaysViewModel : ObservableObject
         _studio.SetBrandKit(new BrandKit
         {
             Name = BrandName.Trim(),
-            LogoText = BrandLogoText.Trim(),
             LogoAssetId = BrandKit.LogoAssetId,
             LogoAssetName = BrandKit.LogoAssetName,
             LogoAssetPath = BrandKit.LogoAssetPath,
@@ -238,9 +219,7 @@ public sealed partial class OverlaysViewModel : ObservableObject
             AccentColor = BrandAccentColor.Trim(),
             BackgroundColor = BrandBackgroundColor.Trim(),
             FontFamily = BrandKit.FontFamily,
-            LowerThirdStyle = BrandLowerThirdStyle,
             LowerThirdAppearance = BrandKit.LowerThirdAppearance,
-            CaptionStyle = BrandKit.CaptionStyle,
             DefaultOverlayBehavior = BrandDefaultOverlayBehavior
         });
     }

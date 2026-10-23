@@ -422,31 +422,6 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
         return spine;
     }
 
-    public static IReadOnlyList<NativeMediaCoreCommand> BuildSceneGraphCommand(
-        string sceneId,
-        IReadOnlyList<(string RouteId, string Mode, string AudioRole, string? ParticipantId)> routes)
-    {
-        return
-        [
-            new NativeMediaCoreCommand
-            {
-                Type = "load-scene-graph",
-                ExtensionData = new Dictionary<string, System.Text.Json.JsonElement>
-                {
-                    ["sceneId"] = System.Text.Json.JsonSerializer.SerializeToElement(sceneId),
-                    ["routes"] = System.Text.Json.JsonSerializer.SerializeToElement(
-                        routes.Select(route => new
-                        {
-                            routeId = route.RouteId,
-                            mode = route.Mode,
-                            audioRole = route.AudioRole,
-                            participantId = route.ParticipantId
-                        }))
-                }
-            }
-        ];
-    }
-
     public static string SummarizeCaptureSnapshot(RawCaptureSnapshot snapshot, string verb)
     {
         if (!snapshot.MeetingState.Equals("in_meeting", StringComparison.OrdinalIgnoreCase))

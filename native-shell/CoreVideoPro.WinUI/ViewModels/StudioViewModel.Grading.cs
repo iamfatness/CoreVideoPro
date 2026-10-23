@@ -89,7 +89,7 @@ public sealed partial class StudioViewModel
             editorViewModel.EditStatus = "Saved grade loaded as a draft. Apply Live confirms this source binding.";
         }
         editorViewModel.ApplyGradeAsync = (grade,epoch,revision) => _bridge.ApplySourceGradeAsync(normalizedSourceId,epoch,revision,
-            new(grade.Lut,grade.Exposure,grade.Contrast,grade.Saturation,grade.Temperature,grade.Advanced?.Copy()));
+            new(grade.Exposure,grade.Contrast,grade.Saturation,grade.Temperature,grade.Advanced?.Copy()));
         editorViewModel.GradeChanged += OnSourceColorGradeChanged;
         editorViewModel.GradeAuthorityReset += OnSourceGradeAuthorityReset;
         editorViewModel.GradeSaved += OnSourceColorGradeSaved;
@@ -228,13 +228,12 @@ public sealed partial class StudioViewModel
         var grade = route.ColorGrade;
         if (sourceId is not null && _sourceColorGrades.TryGetValue(sourceId, out var stored))
         {
-            grade = _sourceGradeBindings.TryGetValue(sourceId,out var binding) && binding == GradeSessionBinding(sourceId) ? stored : new ColorGrade { Lut = "none" };
+            grade = _sourceGradeBindings.TryGetValue(sourceId,out var binding) && binding == GradeSessionBinding(sourceId) ? stored : new ColorGrade();
         }
 
         return grade is null
             ? null
             : new MediaCoreColorGradeWire(
-                grade.Lut,
                 grade.Exposure,
                 grade.Contrast,
                 grade.Saturation,

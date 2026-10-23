@@ -672,7 +672,6 @@ public sealed record LowerThirdKeyState
 public sealed class BrandKit
 {
     public required string Name { get; init; }
-    public required string LogoText { get; init; }
     public string? LogoAssetId { get; init; }
     public string? LogoAssetName { get; init; }
     public string? LogoAssetPath { get; init; }
@@ -680,20 +679,19 @@ public sealed class BrandKit
     public required string AccentColor { get; init; }
     public required string BackgroundColor { get; init; }
     public required string FontFamily { get; init; }
-    public required string LowerThirdStyle { get; init; }
     public CoreVideoPro.MediaCore.Models.LowerThirdAppearance? LowerThirdAppearance { get; init; }
-    public required string CaptionStyle { get; init; }
+    /// <summary>Applied shell-side (StudioViewModel.ApplyBrandOverlayDefaults); never sent to the core.</summary>
     public required string DefaultOverlayBehavior { get; init; }
 
     public string LogoAssetLabel =>
         string.IsNullOrWhiteSpace(LogoAssetName) ? "No logo asset selected" : LogoAssetName;
 
     public string Summary =>
-        $"{Name} · {FontFamily} · lower-third {LowerThirdStyle} · logo \"{LogoText}\"";
+        $"{Name} · {FontFamily} · {LogoAssetLabel}";
     public BrandKit WithAppearance(CoreVideoPro.MediaCore.Models.LowerThirdAppearance? appearance) => new() {
-        Name=Name,LogoText=LogoText,LogoAssetId=LogoAssetId,LogoAssetName=LogoAssetName,LogoAssetPath=LogoAssetPath,
+        Name=Name,LogoAssetId=LogoAssetId,LogoAssetName=LogoAssetName,LogoAssetPath=LogoAssetPath,
         BrandColor=BrandColor,AccentColor=AccentColor,BackgroundColor=BackgroundColor,FontFamily=FontFamily,
-        LowerThirdStyle=LowerThirdStyle,LowerThirdAppearance=appearance,CaptionStyle=CaptionStyle,DefaultOverlayBehavior=DefaultOverlayBehavior
+        LowerThirdAppearance=appearance,DefaultOverlayBehavior=DefaultOverlayBehavior
     };
 }
 
@@ -826,7 +824,6 @@ public sealed class AudioMixState
 
 public sealed class ColorGrade
 {
-    public required string Lut { get; init; }
     public int Exposure { get; init; }
     public int Contrast { get; init; }
     public int Saturation { get; init; }
@@ -834,7 +831,7 @@ public sealed class ColorGrade
     public CoreVideoPro.MediaCore.Models.AdvancedGradeDocument? Advanced { get; init; }
 
     public string Summary =>
-        $"Look {Lut} · exposure {FormatAxis(Exposure)} · contrast {FormatAxis(Contrast)} · saturation {FormatAxis(Saturation)}";
+        $"exposure {FormatAxis(Exposure)} · contrast {FormatAxis(Contrast)} · saturation {FormatAxis(Saturation)} · temperature {FormatAxis(Temperature)}";
 
     private static string FormatAxis(int value) => value > 0 ? $"+{value}" : value.ToString();
 }
@@ -932,19 +929,15 @@ public static class ProductionCatalog
     public static BrandKit BrandKit { get; } = new()
     {
         Name = "CoreVideo",
-        LogoText = "CoreVideo",
         BrandColor = "#44c1a1",
         AccentColor = "#f0a85c",
         BackgroundColor = "#0c1118",
         FontFamily = "Inter",
-        LowerThirdStyle = "gradient",
-        CaptionStyle = "medium sentence captions",
         DefaultOverlayBehavior = "all-off"
     };
 
     public static ColorGrade ColorGrade { get; } = new()
     {
-        Lut = "none",
         Exposure = 0,
         Contrast = 0,
         Saturation = 0,

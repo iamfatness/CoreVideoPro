@@ -75,7 +75,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         _attachedStudio = Studio; _attachedStudio.PropertyChanged += OnStudioProperty;
         _savedLibrary = Studio.GraphicsLibrary; _savedLibrary.Changed += OnLibraryChanged; _ = _savedLibrary.LoadAsync();
         _session.Changed += OnChanged; _session.PreviewChanged += OnPreviewChanged;
-        _editor = new("preview:lower-third", "Graphics private draft", new() { Lut = "none" }) { LiveEditing = false };
+        _editor = new("preview:lower-third", "Graphics private draft", new()) { LiveEditing = false };
         _editor.PropertyChanged += OnPreviewProperty;
         Refresh(); UpdatePreview();RequestThumbnails();
     }

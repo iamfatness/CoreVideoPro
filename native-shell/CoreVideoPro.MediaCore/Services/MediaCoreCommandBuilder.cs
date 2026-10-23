@@ -167,7 +167,6 @@ public static class MediaCoreCommandBuilder
                 ? null
                 : new Dictionary<string, object?>
                 {
-                    ["lut"] = colorGrade.Lut,
                     ["exposure"] = colorGrade.Exposure,
                     ["contrast"] = colorGrade.Contrast,
                     ["saturation"] = colorGrade.Saturation,
@@ -245,7 +244,8 @@ public static class MediaCoreCommandBuilder
         {
             ["routeId"] = route.RouteId,
             ["mode"] = route.Mode,
-            ["audioRole"] = route.AudioRole,
+            // #764: no audioRole. The core stores it on SceneRouteState and never reads it; the
+            // role is applied shell-side (SceneRoutingService: isolated routes drive ISO audio).
             ["participantId"] = route.ParticipantId,
             ["personId"] = route.PersonId,
             ["captureDeviceId"] = route.CaptureDeviceId,
@@ -258,12 +258,8 @@ public static class MediaCoreCommandBuilder
             ["sourceOffsetY"] = route.SourceOffsetY,
             ["opacity"] = route.Opacity,
             ["workspaceAuthored"] = route.WorkspaceAuthored,
-            ["ptz"] = new Dictionary<string, object?>
-            {
-                ["zoom"] = route.SourceScale,
-                ["pan"] = route.SourceOffsetX,
-                ["tilt"] = route.SourceOffsetY
-            },
+            // #764: no ptz{zoom,pan,tilt}. The core has no reader; sourceScale/sourceOffsetX/Y
+            // above are the fields it applies.
             ["mediaAssetId"] = route.MediaAssetId,
             ["mediaAssetName"] = route.MediaAssetName,
             ["mediaAssetKind"] = route.MediaAssetKind,
@@ -276,7 +272,6 @@ public static class MediaCoreCommandBuilder
                 ? null
                 : new Dictionary<string, object?>
                 {
-                    ["lut"] = route.ColorGrade.Lut,
                     ["exposure"] = route.ColorGrade.Exposure,
                     ["contrast"] = route.ColorGrade.Contrast,
                     ["saturation"] = route.ColorGrade.Saturation,
@@ -406,7 +401,6 @@ public static class MediaCoreCommandBuilder
     private static NativeMediaCoreCommand BuildColorGradeCommand(MediaCoreColorGradeWire colorGrade) =>
         Command("set-color-grade", new Dictionary<string, object?>
         {
-            ["lut"] = colorGrade.Lut,
             ["exposure"] = colorGrade.Exposure,
             ["contrast"] = colorGrade.Contrast,
             ["saturation"] = colorGrade.Saturation,
@@ -484,22 +478,19 @@ public static class MediaCoreCommandBuilder
             }).ToList()
         });
 
+    // #764: only what the core applies. logoAssetId/Name/Path had no reader at all; logoText,
+    // lowerThirdStyle, captionStyle and defaultOverlayBehavior were stored and echoed back,
+    // never rendered. The logo asset reaches the core on the lower-third overlay command
+    // (BuildOverlayCommands) and the default-overlay behaviour is applied shell-side.
     private static NativeMediaCoreCommand BuildBrandKitCommand(MediaCoreBrandKitWire brandKit) =>
         Command("set-brand-kit", new Dictionary<string, object?>
         {
             ["name"] = brandKit.Name,
-            ["logoText"] = brandKit.LogoText,
-            ["logoAssetId"] = brandKit.LogoAssetId,
-            ["logoAssetName"] = brandKit.LogoAssetName,
-            ["logoAssetPath"] = brandKit.LogoAssetPath,
             ["brandColor"] = brandKit.BrandColor,
             ["accentColor"] = brandKit.AccentColor,
             ["backgroundColor"] = brandKit.BackgroundColor,
             ["fontFamily"] = brandKit.FontFamily,
-            ["lowerThirdStyle"] = brandKit.LowerThirdStyle,
-            ["lowerThirdAppearance"] = brandKit.LowerThirdAppearance,
-            ["captionStyle"] = brandKit.CaptionStyle,
-            ["defaultOverlayBehavior"] = brandKit.DefaultOverlayBehavior
+            ["lowerThirdAppearance"] = brandKit.LowerThirdAppearance
         });
 
     private static NativeMediaCoreCommand BuildAudioMixCommand(MediaCoreProductionSyncContext context) =>
@@ -533,7 +524,8 @@ public static class MediaCoreCommandBuilder
             ["channels"] = context.AudioMixChannels.Select(channel => new
             {
                 participantId = channel.ParticipantId,
-                inputLevel = channel.InputLevel,
+                // #764: no inputLevel. The core clamps and stores it but its smart gain uses
+                // the level it MEASURES from PCM; echoing the measured level back was a no-op.
                 muted = channel.Muted,
                 noiseSuppression = channel.NoiseSuppression,
                 manualGainDb = channel.ManualGainDb,
@@ -840,12 +832,11 @@ public static class MediaCoreCommandBuilder
         };
 
     private static NativeMediaCoreCommand BuildVirtualCameraCommand(MediaCoreProductionSyncContext context) =>
+        // #764: no width/height/fps. The core pins the virtual camera to the DLL's fixed
+        // 1920x1080@60 media type and documents that it ignores any size the shell sends.
         Command("sync-virtual-camera", new Dictionary<string, object?>
         {
             ["on"] = context.VirtualCameraEnabled,
-            ["width"] = 1280,
-            ["height"] = 720,
-            ["fps"] = 30,
             ["mirror"] = context.VirtualCameraMirror,
             ["framerEnabled"] = context.VirtualCameraFramerEnabled,
             ["deviceName"] = context.VirtualCameraDeviceName

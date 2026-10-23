@@ -245,14 +245,8 @@
                                          PlaceholderText="Brand name" />
                             </StackPanel>
                         </Border>
+                        <!-- #764: "Logo text" is gone; the core stored it as a bug label it never rendered. -->
                         <Border Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="Logo text" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                <TextBox Text="{x:Bind ViewModel.Overlays.BrandLogoText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                         PlaceholderText="Logo text" />
-                            </StackPanel>
-                        </Border>
-                        <Border Grid.Row="1" Style="{StaticResource OperatorReadoutBorder}">
                             <StackPanel Spacing="2">
                                 <TextBlock Text="Logo asset" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                 <TextBlock Text="{x:Bind ViewModel.Overlays.BrandKit.LogoAssetLabel, Mode=OneWay}"
@@ -260,7 +254,7 @@
                                            TextTrimming="CharacterEllipsis" />
                             </StackPanel>
                         </Border>
-                        <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
+                        <Border Grid.Row="1" Style="{StaticResource OperatorReadoutBorder}">
                             <StackPanel Spacing="2">
                                 <TextBlock Text="Default overlay" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                 <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.BrandDefaultOverlayBehaviorOptions, Mode=OneWay}"

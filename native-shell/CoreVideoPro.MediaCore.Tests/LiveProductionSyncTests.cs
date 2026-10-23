@@ -633,14 +633,10 @@ public sealed class LiveProductionSyncTests
             BrandKit = new NativeMediaCoreBrandKit
             {
                 Name = "CoreVideo",
-                LogoText = "CV",
                 BrandColor = "#111111",
                 AccentColor = "#3366ff",
                 BackgroundColor = "#000000",
                 FontFamily = "Inter",
-                LowerThirdStyle = "solid",
-                CaptionStyle = "medium sentence captions",
-                DefaultOverlayBehavior = "brand-bug",
                 Summary = "Brand kit live"
             },
             Recording = recording,

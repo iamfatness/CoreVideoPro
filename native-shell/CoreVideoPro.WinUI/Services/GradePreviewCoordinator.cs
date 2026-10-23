@@ -48,7 +48,7 @@ public sealed class GradePreviewCoordinator : IDisposable
     private async Task SendAsync(Draft draft, bool enabled, bool renew = false)
     {
         try {
-            var wire = new MediaCoreColorGradeWire(draft.Grade.Lut, draft.Grade.Exposure, draft.Grade.Contrast, draft.Grade.Saturation,
+            var wire = new MediaCoreColorGradeWire(draft.Grade.Exposure, draft.Grade.Contrast, draft.Grade.Saturation,
                 draft.Grade.Temperature, draft.Grade.Advanced?.Copy(), draft.ScopesEnabled, draft.ScopesOriginal,
                 draft.HistogramMode, draft.WaveformMode, draft.CompareOriginal, draft.ScopeView, draft.Roi, draft.LowerThirdPreview);
             if (renew) await _bridge.RenewGradePreviewAsync(_editor.InstanceId,_editor.SourceId,draft.Revision,wire).ConfigureAwait(false);

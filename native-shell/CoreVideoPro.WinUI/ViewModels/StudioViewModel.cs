@@ -956,7 +956,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SetBrandKit(new BrandKit
         {
             Name = BrandKit.Name,
-            LogoText = BrandKit.LogoText,
             LogoAssetId = asset.Id,
             LogoAssetName = asset.Name,
             LogoAssetPath = asset.FilePath,
@@ -964,9 +963,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AccentColor = BrandKit.AccentColor,
             BackgroundColor = BrandKit.BackgroundColor,
             FontFamily = BrandKit.FontFamily,
-            LowerThirdStyle = BrandKit.LowerThirdStyle,
             LowerThirdAppearance = BrandKit.LowerThirdAppearance,
-            CaptionStyle = BrandKit.CaptionStyle,
             DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
         });
         CommandStatus = $"{asset.Name} assigned as brand logo";
@@ -5894,7 +5891,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         BrandKit = new BrandKit
         {
             Name = BrandKit.Name,
-            LogoText = BrandKit.LogoText,
             LogoAssetId = asset.Id,
             LogoAssetName = asset.Name,
             LogoAssetPath = asset.FilePath,
@@ -5902,9 +5898,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AccentColor = BrandKit.AccentColor,
             BackgroundColor = BrandKit.BackgroundColor,
             FontFamily = BrandKit.FontFamily,
-            LowerThirdStyle = BrandKit.LowerThirdStyle,
             LowerThirdAppearance = BrandKit.LowerThirdAppearance,
-            CaptionStyle = BrandKit.CaptionStyle,
             DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
         };
         Overlays.NotifyBrandKitChanged();
@@ -9045,7 +9039,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PreviewSceneBackground = BuildSceneBackgroundWire(PreviewSceneId,true),
             PreviewTilesLayer = previewTilesLayer,
             PreviewColorGrade = new MediaCoreColorGradeWire(
-                ColorGrade.Lut,
                 ColorGrade.Exposure,
                 ColorGrade.Contrast,
                 ColorGrade.Saturation,
@@ -9099,7 +9092,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     ProgramLowerThirdKey.BuildOutMs)
                 : null,
             ColorGrade = new MediaCoreColorGradeWire(
-                ColorGrade.Lut,
                 ColorGrade.Exposure,
                 ColorGrade.Contrast,
                 ColorGrade.Saturation,
@@ -9107,17 +9099,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SourcePolicies = BuildSourcePolicyWires(),
             BrandKit = new MediaCoreBrandKitWire(
                 BrandKit.Name,
-                BrandKit.LogoText,
-                BrandKit.LogoAssetId,
-                BrandKit.LogoAssetName,
                 BrandKit.LogoAssetPath,
                 BrandKit.BrandColor,
                 BrandKit.AccentColor,
                 BrandKit.BackgroundColor,
                 BrandKit.FontFamily,
-                BrandKit.LowerThirdStyle,
-                BrandKit.CaptionStyle,
-                BrandKit.DefaultOverlayBehavior, BrandKit.LowerThirdAppearance),
+                BrandKit.LowerThirdAppearance),
             AudioLimiterEnabled = MasterLimiterEnabled,
             AudioMasteringEnabled = MasteringEnabled,
             AudioMasteringTargetLufs = MasteringTargetLufs,
@@ -9475,7 +9462,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // serializing it here leaves an unmuted guest gated until the next sync.
         return new MediaCoreAudioMixChannelWire(
             sourceId,
-            Math.Clamp(participant?.AudioLevel ?? mix?.OutputLevel ?? 0, 0, 100),
             ResolveMixerMute(mix?.Muted),
             mix?.NoiseSuppression ?? false,
             Math.Abs(manualGain) < 0.05 ? null : manualGain,
@@ -10981,7 +10967,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             ColorGrade = new ColorGrade
             {
-                Lut = colorGradePatch.Lut,
                 Exposure = colorGradePatch.Exposure,
                 Contrast = colorGradePatch.Contrast,
                 Saturation = colorGradePatch.Saturation,
@@ -10995,7 +10980,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             BrandKit = new BrandKit
             {
                 Name = brandKitPatch.Name,
-                LogoText = brandKitPatch.LogoText,
                 LogoAssetId = BrandKit.LogoAssetId,
                 LogoAssetName = BrandKit.LogoAssetName,
                 LogoAssetPath = BrandKit.LogoAssetPath,
@@ -11003,9 +10987,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 AccentColor = brandKitPatch.AccentColor,
                 BackgroundColor = brandKitPatch.BackgroundColor,
                 FontFamily = brandKitPatch.FontFamily,
-                LowerThirdStyle = brandKitPatch.LowerThirdStyle,
                 LowerThirdAppearance = BrandKit.LowerThirdAppearance,
-                CaptionStyle = BrandKit.CaptionStyle,
                 DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
             };
             Overlays.NotifyBrandKitChanged();
@@ -11826,7 +11808,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdPosition = Overlays.LowerThirdPosition,
             LowerThirdBuildInMs = NormalizeLowerThirdTimingMs(LowerThirdBuildInMs),
             LowerThirdBuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
-            BrandLowerThirdStyle = BrandKit.LowerThirdStyle,
             LowerThirdAppearance = BrandKit.LowerThirdAppearance,
             LowerThirdPresets = Overlays.LowerThirdPresets.ToDictionary(p => p.Key,p => p.Value),
             BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior,
@@ -11973,13 +11954,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Overlays.LowerThirdPosition = preferences.LowerThirdPosition;
         }
 
-        if (!string.IsNullOrWhiteSpace(preferences.BrandLowerThirdStyle) ||
-            !string.IsNullOrWhiteSpace(preferences.BrandDefaultOverlayBehavior))
+        if (!string.IsNullOrWhiteSpace(preferences.BrandDefaultOverlayBehavior))
         {
             BrandKit = new BrandKit
             {
                 Name = BrandKit.Name,
-                LogoText = BrandKit.LogoText,
                 LogoAssetId = BrandKit.LogoAssetId,
                 LogoAssetName = BrandKit.LogoAssetName,
                 LogoAssetPath = BrandKit.LogoAssetPath,
@@ -11988,13 +11967,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BackgroundColor = BrandKit.BackgroundColor,
                 FontFamily = BrandKit.FontFamily,
                 LowerThirdAppearance = BrandKit.LowerThirdAppearance,
-                LowerThirdStyle = string.IsNullOrWhiteSpace(preferences.BrandLowerThirdStyle)
-                    ? BrandKit.LowerThirdStyle
-                    : preferences.BrandLowerThirdStyle,
-                CaptionStyle = BrandKit.CaptionStyle,
-                DefaultOverlayBehavior = string.IsNullOrWhiteSpace(preferences.BrandDefaultOverlayBehavior)
-                    ? BrandKit.DefaultOverlayBehavior
-                    : preferences.BrandDefaultOverlayBehavior
+                DefaultOverlayBehavior = preferences.BrandDefaultOverlayBehavior
             };
             Overlays.NotifyBrandKitChanged();
         }

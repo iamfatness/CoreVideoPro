@@ -9,13 +9,10 @@ namespace CoreVideoPro.WinUI.ViewModels;
 /// <summary>Grade controls and native observations only; never processes pixels.</summary>
 public sealed partial class ColorGradeEditorViewModel : ObservableObject
 {
-    public static IReadOnlyList<string> LutOptions { get; } =
-        ["none", "neutral", "warm-film", "cool-broadcast", "punch"];
-
     public ColorGradeEditorViewModel(string sourceId, string sourceName, ColorGrade grade, long appliedRevision = 0)
     {
         SourceId = sourceId; SourceName = sourceName; _appliedRevision = appliedRevision;
-        _lut = grade.Lut; _exposure = grade.Exposure; _contrast = grade.Contrast;
+        _exposure = grade.Exposure; _contrast = grade.Contrast;
         _saturation = grade.Saturation; _temperature = grade.Temperature;
         InitializeAdvancedGrade(grade.Advanced);
         _nativeSurface = WaitingSurface();
@@ -25,7 +22,6 @@ public sealed partial class ColorGradeEditorViewModel : ObservableObject
     public string SourceName { get; }
     public string HeaderTitle => $"Color grade - {SourceName}";
     public long Revision { get; private set; }
-    [ObservableProperty, NotifyPropertyChangedFor(nameof(Summary))] private string _lut;
     [ObservableProperty, NotifyPropertyChangedFor(nameof(Summary))] private int _exposure;
     [ObservableProperty, NotifyPropertyChangedFor(nameof(Summary))] private int _contrast;
     [ObservableProperty, NotifyPropertyChangedFor(nameof(Summary))] private int _saturation;
@@ -36,15 +32,13 @@ public sealed partial class ColorGradeEditorViewModel : ObservableObject
     [ObservableProperty] private string _previewStatus = "Waiting for native grading preview.";
     public string Summary => CurrentGrade.Summary;
     public bool HasPreview => NativeSurface.PendingSharedHandle is { IsValid: true };
-    public ColorGrade CurrentGrade => new() { Lut = Lut, Exposure = Exposure, Contrast = Contrast,
+    public ColorGrade CurrentGrade => new() { Exposure = Exposure, Contrast = Contrast,
         Saturation = Saturation, Temperature = Temperature, Advanced = GradeDocument?.Copy() };
-    public ColorGrade PreviewGrade => CompareOriginal ? new() { Lut = "none" } : CurrentGrade;
+    public ColorGrade PreviewGrade => CompareOriginal ? new() : CurrentGrade;
     public event EventHandler? PreviewRequested;
     public event EventHandler<ColorGrade>? GradeChanged;
     public event EventHandler<ColorGrade>? GradeSaved;
     public event EventHandler? Closed;
-    partial void OnLutChanging(string value) => RememberGrade();
-    partial void OnLutChanged(string value) => OnGradeEdited();
     partial void OnExposureChanging(int value) => RememberGrade();
     partial void OnExposureChanged(int value) => OnGradeEdited();
     partial void OnContrastChanging(int value) => RememberGrade();

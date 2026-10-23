@@ -1,5 +1,8 @@
 namespace CoreVideoPro.MediaCore.Models;
 
+/// <summary>#764: <paramref name="AudioRole"/> is the shell's route audio role (mix / isolated /
+/// audience). It is NOT serialized to the core, which never read it; the shell applies it itself
+/// (SceneRoutingService derives the isolated-audio participants from it).</summary>
 public sealed record MediaCoreSceneRouteWire(
     string RouteId,
     string Mode,
@@ -122,7 +125,6 @@ public sealed record MediaCoreLowerThirdKeyWire(
 
 public sealed record MediaCoreAudioMixChannelWire(
     string ParticipantId,
-    int InputLevel,
     bool Muted,
     bool NoiseSuppression,
     double? ManualGainDb,
@@ -170,7 +172,6 @@ public sealed record MediaCoreAudioMonitorWire(
     double Volume);
 
 public sealed record MediaCoreColorGradeWire(
-    string Lut,
     int Exposure,
     int Contrast,
     int Saturation,
@@ -193,19 +194,15 @@ public sealed record MediaCoreColorGradeWire(
 // DropoutPolicy and DisplayName are BOTH omitted from the command when null.
 public sealed record MediaCoreSourcePolicyWire(string SourceId, string? DropoutPolicy, string? DisplayName);
 
+/// <summary>The brand-kit fields the core applies. <paramref name="LogoAssetPath"/> is not part of
+/// set-brand-kit; it rides the lower-third overlay command when the look shows a logo.</summary>
 public sealed record MediaCoreBrandKitWire(
     string Name,
-    string LogoText,
-    string? LogoAssetId,
-    string? LogoAssetName,
     string? LogoAssetPath,
     string BrandColor,
     string AccentColor,
     string BackgroundColor,
     string FontFamily,
-    string LowerThirdStyle,
-    string CaptionStyle,
-    string DefaultOverlayBehavior,
     LowerThirdAppearance? LowerThirdAppearance = null);
 
 public sealed record MediaCoreRecordingTargetsWire(
@@ -417,7 +414,6 @@ public sealed record MediaCoreProductionSyncContext
         IsoParticipantIds: []);
 
     public static MediaCoreColorGradeWire NeutralColorGrade { get; } = new(
-        Lut: "none",
         Exposure: 0,
         Contrast: 0,
         Saturation: 0,
@@ -425,15 +421,9 @@ public sealed record MediaCoreProductionSyncContext
 
     public static MediaCoreBrandKitWire DefaultBrandKit { get; } = new(
         Name: "CoreVideo",
-        LogoText: "CoreVideo",
-        LogoAssetId: null,
-        LogoAssetName: null,
         LogoAssetPath: null,
         BrandColor: "#44c1a1",
         AccentColor: "#f0a85c",
         BackgroundColor: "#0c1118",
-        FontFamily: "Inter",
-        LowerThirdStyle: "gradient",
-        CaptionStyle: "medium sentence captions",
-        DefaultOverlayBehavior: "all-off");
+        FontFamily: "Inter");
 }

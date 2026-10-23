@@ -14,7 +14,7 @@ public sealed partial class MediaCoreSupervisor
         var advanced = grade.Advanced is not null ? await RegisterGradeDocumentAsync(grade.Advanced,cancellationToken).ConfigureAwait(false) : null;
         using var response = await SendAsync(new Dictionary<string,object?> {
             ["id"] = NextId(), ["type"] = "set-source-grade", ["sourceId"] = sourceId, ["sourceEpoch"] = sourceEpoch,
-            ["expectedRevision"] = expectedRevision, ["grade"] = new { lut = grade.Lut, exposure = grade.Exposure,
+            ["expectedRevision"] = expectedRevision, ["grade"] = new { exposure = grade.Exposure,
                 contrast = grade.Contrast, saturation = grade.Saturation, temperature = grade.Temperature, advanced }
         },cancellationToken).ConfigureAwait(false);
         ThrowIfRejected(response,"set-source-grade"); var root = response.RootElement;

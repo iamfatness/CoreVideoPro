@@ -12,7 +12,7 @@ public sealed partial class ColorGradeEditorViewModel
 {
     private AdvancedGradeDocument? GradeDocument;
     private bool _restoringGrade;
-    private static ColorGrade CopyGrade(ColorGrade grade) => new() { Lut=grade.Lut, Exposure=grade.Exposure, Contrast=grade.Contrast, Saturation=grade.Saturation, Temperature=grade.Temperature, Advanced=grade.Advanced?.Copy() };
+    private static ColorGrade CopyGrade(ColorGrade grade) => new() { Exposure=grade.Exposure, Contrast=grade.Contrast, Saturation=grade.Saturation, Temperature=grade.Temperature, Advanced=grade.Advanced?.Copy() };
     private bool _adjustmentGesture, _gestureRecorded;
     public void BeginAdjustmentGesture() { _adjustmentGesture = true; _gestureRecorded = false; }
     public void EndAdjustmentGesture() { _adjustmentGesture = false; _gestureRecorded = false; }
@@ -23,7 +23,7 @@ public sealed partial class ColorGradeEditorViewModel
     }
     private void RestoreGrade(ColorGrade grade) {
         _restoringGrade = true;
-        try { Lut = grade.Lut; Exposure = grade.Exposure; Contrast = grade.Contrast; Saturation = grade.Saturation; Temperature = grade.Temperature; SetDocument(grade.Advanced?.Copy()); }
+        try { Exposure = grade.Exposure; Contrast = grade.Contrast; Saturation = grade.Saturation; Temperature = grade.Temperature; SetDocument(grade.Advanced?.Copy()); }
         finally { _restoringGrade = false; }
         OnGradeEdited();
     }
@@ -163,7 +163,7 @@ public sealed partial class ColorGradeEditorViewModel
                 if (version.GetInt32()!=1 || !parsed.RootElement.TryGetProperty("grade",out var node)) throw new ArgumentException("Unsupported grade preset.");
                 var grade = node.Deserialize<CoreVideoPro.WinUI.Models.ColorGrade>(new JsonSerializerOptions(JsonSerializerDefaults.Web))
                     ?? throw new ArgumentException("Missing grade.");
-                if (!LutOptions.Contains(grade.Lut) || new[] { grade.Exposure,grade.Contrast,grade.Saturation,grade.Temperature }.Any(v=>v is < -100 or > 100))
+                if (new[] { grade.Exposure,grade.Contrast,grade.Saturation,grade.Temperature }.Any(v=>v is < -100 or > 100))
                     throw new ArgumentException("Unsupported Basic grade.");
                 grade.Advanced?.Validate();
                 // Load is one draft action; Basic live editing cannot leak intermediate values.

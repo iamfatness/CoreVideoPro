@@ -139,7 +139,7 @@ public sealed class LowerThirdDesignerControl : UserControl
     private void StartPreview()
     {
         if (Studio is null || _coordinator is not null) return;
-        _editor=new("preview:lower-third","Lower-third draft",new() { Lut="none" });_editor.LiveEditing=false;
+        _editor=new("preview:lower-third","Lower-third draft",new());_editor.LiveEditing=false;
         _editor.PropertyChanged+=(_,e)=> { if (_editor is not null && e.PropertyName==nameof(_editor.NativeSurface)) {_preview.SurfaceState=_editor.NativeSurface;_previewStatus.Text=_editor.NativeSurface.StatusLine;} };
         UpdatePreview();_coordinator=Studio.CreateAppearancePreview(_editor);
     }

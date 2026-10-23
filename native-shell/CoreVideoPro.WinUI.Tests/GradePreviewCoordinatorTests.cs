@@ -30,7 +30,7 @@ public sealed class GradePreviewCoordinatorTests
     }
     [Fact] public async Task CoalescesEditsAndSerializesCloseBehindPendingCommand()
     {
-        var bridge = new Transport(); var editor = new ColorGradeEditorViewModel("p1", "Camera", new() { Lut = "none" });
+        var bridge = new Transport(); var editor = new ColorGradeEditorViewModel("p1", "Camera", new());
         using var coordinator = new GradePreviewCoordinator(bridge, editor, action => action());
         await Until(() => bridge.Commands.Count == 1);
         for (var i = 1; i <= 20; ++i) editor.Exposure = i;
@@ -44,7 +44,7 @@ public sealed class GradePreviewCoordinatorTests
     }
     [Fact] public async Task DisposalWaitsForPendingEnableAndUnsubscribesObservations()
     {
-        var bridge = new Transport(); var editor = new ColorGradeEditorViewModel("p1", "Camera", new() { Lut = "none" });
+        var bridge = new Transport(); var editor = new ColorGradeEditorViewModel("p1", "Camera", new());
         using var coordinator = new GradePreviewCoordinator(bridge, editor, action => action());
         await Until(() => bridge.Commands.Count == 1);
         coordinator.Dispose(); Assert.Single(bridge.Commands);

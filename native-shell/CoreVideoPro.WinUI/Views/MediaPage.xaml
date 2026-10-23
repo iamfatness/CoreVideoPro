@@ -167,8 +167,8 @@
                         </Grid.RowDefinitions>
                         <Border Style="{StaticResource OperatorReadoutBorder}">
                             <StackPanel Spacing="2">
-                                <TextBlock Text="LUT preset" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                <TextBlock Text="{x:Bind ViewModel.ColorGrade.Lut, Mode=OneWay}" FontSize="12" />
+                                <TextBlock Text="Temperature" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.ColorGrade.Temperature, Mode=OneWay}" FontSize="12" />
                             </StackPanel>
                         </Border>
                         <Border Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">

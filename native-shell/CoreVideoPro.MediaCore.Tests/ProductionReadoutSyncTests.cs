@@ -22,8 +22,7 @@ public sealed class ProductionReadoutSyncTests
         var patch = ProductionReadoutSync.ResolveColorGradePatch(snapshot, engineRunning: true);
 
         Assert.NotNull(patch);
-        Assert.Equal("broadcast", patch!.Lut);
-        Assert.Equal(2, patch.Exposure);
+        Assert.Equal(2, patch!.Exposure);
         Assert.Equal(-1, patch.Contrast);
         Assert.Equal(4, patch.Saturation);
         Assert.Equal(-3, patch.Temperature);
@@ -46,14 +45,10 @@ public sealed class ProductionReadoutSyncTests
 
         Assert.NotNull(patch);
         Assert.Equal("Acme Live", patch!.Name);
-        Assert.Equal("ACME", patch.LogoText);
-        Assert.Equal("logo-1", patch.LogoAssetId);
-        Assert.Equal("Acme Logo", patch.LogoAssetName);
-        Assert.Equal(@"C:\media\logo.png", patch.LogoAssetPath);
         Assert.Equal("#112233", patch.BrandColor);
+        Assert.Equal("#445566", patch.AccentColor);
+        Assert.Equal("#000000", patch.BackgroundColor);
         Assert.Equal("Poppins", patch.FontFamily);
-        Assert.Equal("large uppercase captions", patch.CaptionStyle);
-        Assert.Equal("bug-and-live", patch.DefaultOverlayBehavior);
     }
 
     private static NativeMediaCoreStateSnapshot BuildSnapshotWithGrade(
@@ -68,7 +63,6 @@ public sealed class ProductionReadoutSyncTests
                 RenderPlanId = "test-plan",
                 ColorGrade = new NativeMediaCoreColorGrade
                 {
-                    Lut = "broadcast",
                     Exposure = exposure,
                     Contrast = contrast,
                     Saturation = saturation,
@@ -85,17 +79,10 @@ public sealed class ProductionReadoutSyncTests
             BrandKit = new NativeMediaCoreBrandKit
             {
                 Name = "Acme Live",
-                LogoText = "ACME",
-                LogoAssetId = "logo-1",
-                LogoAssetName = "Acme Logo",
-                LogoAssetPath = @"C:\media\logo.png",
                 BrandColor = "#112233",
                 AccentColor = "#445566",
                 BackgroundColor = "#000000",
                 FontFamily = "Poppins",
-                LowerThirdStyle = "solid",
-                CaptionStyle = "large uppercase captions",
-                DefaultOverlayBehavior = "bug-and-live",
                 Summary = "Acme kit live"
             }
         };
