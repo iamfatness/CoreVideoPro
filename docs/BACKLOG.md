@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 23 — first release candidate:** the credibility PRs, the engine host (#965) and dependabot were merged and beta-2026-10-23-1072a50 was published WITHOUT a rerun of the 30-minute outputs soak (the test meeting had no remote feeds). The owner then asked for the open-issue inventory before a first RC and chose to start on the code-only items. Merged the same morning: [#1026](https://github.com/iamfatness/CoreVideoPro/pull/1026) (#863/#888 short installer staging root), [#1027](https://github.com/iamfatness/CoreVideoPro/pull/1027) (#551 regression test; the defect was already fixed by #833), [#1024](https://github.com/iamfatness/CoreVideoPro/pull/1024) (#443 `scripts/qa/outputs-drill.ps1`, never run live yet), [#1025](https://github.com/iamfatness/CoreVideoPro/pull/1025) (#1009 local recording without a meeting; changes the #732 crash-resume rule to resume unless the Zoom rejoin failed, marked pending owner ruling in `docs/reference/core-restart-drill.md`). Still code-only and unstarted: #439 GPU-tier defaults (needs the tier policy), #781 Frame Server refresh on upgrade, #445 teardown audit, #434/#436 production endpoints (need the URL and domain), #433 crash-dump key (needs a yes on writing HKLM in the elevated step).
+
 **Owner direction, October 22 — credibility before the closed beta:** after the 30-minute outputs soak passed and beta-2026-10-22-f96a136 was published, the owner asked how far a public release is and chose to start on the credibility defects first: every panel, control or value is wired to something real or removed, never invented (rule in [honest-reporting](reference/honest-reporting.md)). Three lanes: shell [#1021](https://github.com/iamfatness/CoreVideoPro/pull/1021) (#767 #761 #766 #764), core [#1023](https://github.com/iamfatness/CoreVideoPro/pull/1023) (#765 #519 #763 #766 #764), services [#1020](https://github.com/iamfatness/CoreVideoPro/pull/1020) (#743). Merge #1021 before #1023. The public-release critical path stays tier 0 (#423 signing certificate, #424 Zoom SDK redistribution, #425 reference machines, #426 feedback channel, #427 rulings) and tier 2 plumbing (#433-#437); none of those are engineering-blocked.
 
 **Owner gate ruling, October 22 — release gate is outputs only:** Program recording, every ISO, the registered OS camera and any stream must deliver every source frame exactly once over the 30-minute workload (zero tolerance). The on-screen Studio cells are a UX metric judged by `scripts/qa/desktop-picture-cadence.py` v2 against a tolerance (no hold over 100 ms, omission ratio under 1 %), because Windows composes windowed surfaces at the beat between mixed-refresh monitors for every application; the app-less control reproduced the omission with the media core stopped. Qualify on the real mixed-refresh desk; never ask customers to match refresh rates. Retired: elevated PresentMon/ETW scanout proof, DXGI frame-statistics reconciliation, VBlank phase fitting, NVIDIA profile audits, and buffer/credit/alpha/Present(0) presenter experiments. Sequence: install a1e79e1 (Present(1) restored) → #1013 probe to twelve sessions reserving Program and stream → add a local SRT/RTMP stream to the workload harness → 30-minute soak judged on outputs → merge #1018/#1008, publish, desktop-shortcut acceptance. Detail in CLAUDE.md "What the release gate is, and is not".
@@ -471,7 +473,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 | [#592](https://github.com/iamfatness/CoreVideoPro/issues/592) | Lower-third second line refreshes as “Guest” / brief lowercase “g”. |
 | [#593](https://github.com/iamfatness/CoreVideoPro/issues/593) | Persist per-source lower-third name and editable secondary line. |
 | [#594](https://github.com/iamfatness/CoreVideoPro/issues/594) | Move Health into Settings; replace Diagnose label. |
-| [#595](https://github.com/iamfatness/CoreVideoPro/issues/595) | Hide OHG Show until explicitly enabled in Settings. |
+| [#595](https://github.com/iamfatness/CoreVideoPro/issues/595) | Shipped in PR #843 (Settings opt-in, off by default). Remaining: installed acceptance of restart, disable-while-selected and configured-show preservation. |
 | [#565](https://github.com/iamfatness/CoreVideoPro/issues/565) | AV1 streaming explicitly refused until a playable packaged receiver-side stream exists. |
 | [#588](https://github.com/iamfatness/CoreVideoPro/issues/588) | Local display/window capture as a first-class Program source. |
 | [#582](https://github.com/iamfatness/CoreVideoPro/issues/582) | Speaker-change brightness flashes. Content-aware range correction in live validation; CI and shipping remain. |
@@ -518,7 +520,7 @@ the sole work list. Their order in this table is not a priority assignment.
 | [#524](https://github.com/iamfatness/CoreVideoPro/issues/524), [#525](https://github.com/iamfatness/CoreVideoPro/issues/525) | GPU encode writer isolation and later recording/ISO/macOS adapter slices; separate from current edge I/O. |
 | [#505](https://github.com/iamfatness/CoreVideoPro/issues/505), [#512](https://github.com/iamfatness/CoreVideoPro/issues/512) | Vestigial Sources border controls and residual Tiles-wall polish. |
 | [#457](https://github.com/iamfatness/CoreVideoPro/issues/457), [#444](https://github.com/iamfatness/CoreVideoPro/issues/444), [#446](https://github.com/iamfatness/CoreVideoPro/issues/446) | Shell crash dump triage, churn/resize soak, and live Take soak evidence. |
-| [#443](https://github.com/iamfatness/CoreVideoPro/issues/443), [#445](https://github.com/iamfatness/CoreVideoPro/issues/445) | Combined record/stream/vcam drill and engine-off teardown audit. |
+| [#443](https://github.com/iamfatness/CoreVideoPro/issues/443), [#445](https://github.com/iamfatness/CoreVideoPro/issues/445) | #443: `scripts/qa/outputs-drill.ps1` merged in PR #1024 (unit-tested only; the live run and the preferences restore against a running app are unverified). #445 teardown audit not started. |
 | [#447](https://github.com/iamfatness/CoreVideoPro/issues/447) | Persistent-source migration reconciliation. |
 | [#450](https://github.com/iamfatness/CoreVideoPro/issues/450), [#451](https://github.com/iamfatness/CoreVideoPro/issues/451) | Deferred OHG screen integration and live scene-canvas editor design. |
 | [#439](https://github.com/iamfatness/CoreVideoPro/issues/439), [#442](https://github.com/iamfatness/CoreVideoPro/issues/442) | GPU-tier defaults and reference-hardware sweeps. |
@@ -531,7 +533,7 @@ the sole work list. Their order in this table is not a priority assignment.
 | Issue | Remaining work |
 |---|---|
 | [#562](https://github.com/iamfatness/CoreVideoPro/issues/562) | Capture dropout policy needs adapter liveness via `signalPresent`. |
-| [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | Async ISO writer status still omits live `framesWritten` / `bytesWritten`. |
+| [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | Already fixed on main by the #833 write-queue work (`publishIsoTrack` on every async write); PR #1027 adds the missing async-path regression test. Close after one live recording shows advancing counts. |
 | [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points; UI design still needed. |
 | [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct HEVC shipped in #566. AV1 refused pending #565. Raw fallback and recording/ISO on the encoder seam remain. |
 | [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | PR #1023: `bytesSent` measured at the FFmpeg stdin pipe; `latencyMs` removed from the wire. |
@@ -557,7 +559,7 @@ issue exists yet for this row; one will be filed, labeled `backlog`, when the
 
 | Issue | Item |
 |---|---|
-| [#1009](https://github.com/iamfatness/CoreVideoPro/issues/1009) | Local Program recording remains gated on a Zoom meeting; audit finding from #1007, needs owner ranking and installed output validation. |
+| [#1009](https://github.com/iamfatness/CoreVideoPro/issues/1009) | PR #1025: Record no longer requires a Zoom meeting; the core starts and the encoder is checked before the intent is armed. Leave/rejoin verified by reading the real paths; tests cover the coordinator, the snapshot merge and the stub core. Remaining: installed Studio start/stop with Zoom offline, a finalized playable offline file, and the owner ruling on the crash-resume rule. |
 | [#539](https://github.com/iamfatness/CoreVideoPro/issues/539) | MXL / ZoomISO Cloud / Kubernetes; parked until the source bus and plant I/O exist. |
 
 Parked from the 2026-09-24 architecture review (do not start from that document):
