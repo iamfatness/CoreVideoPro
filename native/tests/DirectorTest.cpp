@@ -159,7 +159,10 @@ TEST(Director, RosterWithoutLevelOrNetworkKeysInventsNothing) {
 TEST(Director, StubSampleRosterCarriesNoInventedMeters) {
   corevideo::core::MediaCore core;
   (void)core.joinZoom(corevideo::rpc::Json::Object{{"displayName", "Host"}});
-  const auto* participants = core.zoomSnapshot().get("participants");
+  // Hold the snapshot: get() returns a pointer INTO it, and a temporary would
+  // be gone before the loop (dangling pointer; SIGSEGV on the Linux stub CI).
+  const auto snapshot = core.zoomSnapshot();
+  const auto* participants = snapshot.get("participants");
   ASSERT_NE(participants, nullptr);
   // A dev build with the engine runtime configured publishes the engine's
   // (empty) roster here instead of the stub sample; nothing to check then.
