@@ -35,11 +35,11 @@ foreach ($service in $services) {
   Push-Location $serviceDir
   try {
     if ($secretValue) {
-      $secretValue | npx wrangler secret put $service.Secret
+      $secretValue | npx wrangler secret put $service.Secret --env staging
     } else {
       Write-Host "  (optional secret $($service.EnvVar) not set; deploying without it)"
     }
-    npx wrangler deploy
+    npx wrangler deploy --env staging
   } finally {
     Pop-Location
   }
