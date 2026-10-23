@@ -278,6 +278,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Installer upgrade retirement safety tests
         run: powershell.exe -NoProfile -File scripts/alpha/Test-PreviousInstallations.ps1
+      - name: Installer crash-dump (WER LocalDumps) tests
+        run: powershell.exe -NoProfile -File scripts/alpha/Test-CrashDumps.ps1
       - uses: actions/setup-node@v4
         with:
           node-version: 22

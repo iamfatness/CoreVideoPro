@@ -78,11 +78,44 @@ retries the same destination successfully.
 the existing real silent install / runtime probe / duplicate rejection /
 uninstall / user-file preservation.
 
-**T2.1 is PARTLY done, and the remainder is blocked by Windows, not by us.** The
-installer registers the virtual camera and creates the recording folder. It does
-NOT enable WER LocalDumps: that key is HKLM-only. Measured 2026-09-12 — an HKCU
-`LocalDumps` entry for a deliberately crashing test exe (exit `0xC0000005`)
-produced **zero** dumps, while the machine's HKLM configuration produced two. A
-per-user installer writing that key would ship a setting that does nothing. Full
-crash dumps on a tester's machine still need one elevated step
-(`scripts/setup-crash-dumps.ps1`); wiring that up is separate work.
+**T2.1 / #433 is implemented (PR #1033, 2026-10-23); installed acceptance is pending.** Setup now
+does all three:
+
+- **Virtual camera** - registered by `Install-VirtualCamera.ps1` (already so; unchanged).
+- **WER LocalDumps** - `Install-CrashDumps.ps1`, run in the `installed:` phase after the
+  payload and camera are committed. Windows reads LocalDumps from HKLM only (measured
+  2026-09-12: an HKCU key for a crashing test exe produced zero dumps), so this is the
+  elevated step. Owner ruling 2026-10-23 permits the HKLM write. For each of
+  `CoreVideoPro.WinUI.exe`, `corevideo-native.exe`, `corevideo-zoom-engine.exe` it writes
+  `HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\<exe>` with
+  `DumpFolder` = `%LOCALAPPDATA%\CoreVideoPro\crashes` (REG_EXPAND_SZ), `DumpType` = 2
+  (full), `DumpCount` = 5, plus a `CoreVideoProInstaller` marker value. Interactive setup
+  passes `-AllowElevation` (a RunAs child; this is a second UAC prompt after the camera's,
+  and the welcome page says so); silent `/S` setup must already
+  be elevated, exactly like the camera step. **It never fails setup**: a declined prompt
+  or refused write exits 2, is `DetailPrint`ed, appended to
+  `%LOCALAPPDATA%\CoreVideoPro\installer-logs\<release>-crashdumps.log`, shown in a
+  warning box (interactive) and setup continues. An existing key WITHOUT the marker (for
+  example one from `scripts/setup-crash-dumps.ps1`) is preserved, not overwritten.
+  Uninstall removes only marked keys, and keeps them while another CoreVideo Pro version
+  is still registered (the exe names are shared across versions).
+- **64-bit registry view is REQUIRED.** The installer is a 32-bit NSIS binary, so the
+  PowerShell it launches is the 32-bit SysWOW64 host, and the `HKLM:` PSDrive follows the
+  process view: it would write `HKLM\SOFTWARE\WOW6432Node\...`, which WerFault never reads
+  for 64-bit processes (zero dumps, silently). `Install-CrashDumps.ps1` therefore opens the
+  hive with `OpenBaseKey(LocalMachine, Registry64)` for every read, write, marker check and
+  removal, the same precedent as `Install-VirtualCamera.ps1` and
+  `VirtualCameraRegistration.psm1` (`Get-CameraRuntimeRoot`). Never use `HKLM:`,
+  `New-Item` or `Set-ItemProperty` against LocalDumps. An elevated child that reports no exit
+  code is treated as unknown and verified by reading the 64-bit keys back.
+- **Recording folder** - created if missing at the app's own default
+  (`RecordingFolderPolicy`: the user's Videos known folder + `CoreVideo Pro`, else
+  `%LOCALAPPDATA%\CoreVideo Pro`; NSIS `$VIDEOS`, so a redirected Videos folder is
+  honoured). `CreateDirectory` never clobbers; uninstall preserves it.
+
+Tests: `Test-CrashDumps.ps1` (runs unelevated against a throwaway HKCU key, including from the 32-bit SysWOW64 PowerShell to exercise WOW64 redirection; in CI
+`native-shell-windows`) covers values/kinds, idempotence, foreign-key preservation,
+shared-install retention, and the loud non-fatal refusal. `Test-AlphaInstaller.ps1` asserts
+the recording folder, and either the HKLM keys (elevated run) or the logged refusal
+(unelevated run). NOT verified without a real elevated install: the UAC RunAs path of
+`-AllowElevation`, and an actual WER dump landing in the crashes folder.
