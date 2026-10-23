@@ -2,7 +2,10 @@
 # launches the product App or changes an existing installation or user settings.
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$Installer,
-      [string]$CameraModulePath = (Join-Path $PSScriptRoot 'VirtualCameraRegistration.psm1'))
+      [string]$CameraModulePath = (Join-Path $PSScriptRoot 'VirtualCameraRegistration.psm1'),
+      # Short user-owned working root (#863/#888): the install directory must not inherit a long checkout path.
+      [string]$WorkRoot = (Join-Path (Join-Path $env:LOCALAPPDATA 'Temp\cvp-qa') ([Guid]::NewGuid().ToString('N').Substring(0, 8))),
+      [int]$MaxWorkPathLength = 120)
 $ErrorActionPreference = 'Stop'
 $installerPath = (Resolve-Path -LiteralPath $Installer).Path
 $releaseId = [IO.Path]::GetFileNameWithoutExtension($installerPath).Replace('CoreVideoPro-Setup-', '')
@@ -24,8 +27,11 @@ if ($hadStableDesktop -or $hadStableStart) {
     throw 'A CoreVideo Pro shortcut already exists; refusing to alter a real installation for testing.'
 }
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$work = Join-Path $repoRoot ('artifacts/installer-validation/' + [Guid]::NewGuid().ToString('N'))
+$work = [IO.Path]::GetFullPath($WorkRoot)
+if ($work.Length -gt $MaxWorkPathLength) { throw "Working root is $($work.Length) characters (limit $MaxWorkPathLength); use a shorter -WorkRoot: $work" }
+if ((Test-Path -LiteralPath $work) -and @(Get-ChildItem -LiteralPath $work -Force).Count -gt 0) { throw "Working root is not empty; refusing to reuse it: $work" }
 New-Item -ItemType Directory -Path $work -Force | Out-Null
+$evidenceCopy = Join-Path $repoRoot ('artifacts/installer-validation/' + (Split-Path -Leaf $work))
 $installRoot = Join-Path $work 'installed app'
 function Invoke-OwnedProcess([string]$executable, [string[]]$arguments) {
     $process = Start-Process -FilePath $executable -ArgumentList $arguments -WindowStyle Hidden -PassThru
@@ -142,3 +148,6 @@ if ((Get-Content -LiteralPath $sentinel -Raw) -ne 'preserve this user file') { t
     failedInstallRetry=$true; failedInstallCameraPreserved=$true; independentDesktopRegistration=$true
     desktopShortcutCameraDelivery='unverified'; desktopShortcutUnassign='unverified'
 } | ConvertTo-Json | Tee-Object -FilePath (Join-Path $work 'result.json')
+# Keep the evidence where it used to live, in the checkout's artifacts folder.
+New-Item -ItemType Directory -Path $evidenceCopy -Force | Out-Null
+Get-ChildItem -LiteralPath $work -Filter *.json | Copy-Item -Destination $evidenceCopy -Force
