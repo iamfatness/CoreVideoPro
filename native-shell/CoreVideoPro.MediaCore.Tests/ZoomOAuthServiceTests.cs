@@ -14,7 +14,7 @@ public sealed class ZoomOAuthServiceTests
         var service = new ZoomOAuthService(store, new ZoomOAuthManifest
         {
             BrokerStartUrl = "https://auth.corevideo.io/oauth/start",
-            BrokerCallbackUrl = "https://auth.corevideo.io/callback",
+            BrokerCallbackUrl = "https://auth.corevideo.io/oauth/callback",
             RedirectUri = "corevideo://oauth/callback"
         });
 
@@ -50,7 +50,7 @@ public sealed class ZoomOAuthServiceTests
             new ZoomOAuthManifest
             {
                 BrokerStartUrl = "https://auth.corevideo.io/oauth/start",
-                BrokerCallbackUrl = "https://auth.corevideo.io/callback",
+                BrokerCallbackUrl = "https://auth.corevideo.io/oauth/callback",
                 RedirectUri = "corevideo://oauth/callback"
             },
             new HttpClient(handler),
@@ -62,7 +62,7 @@ public sealed class ZoomOAuthServiceTests
             () => 1_000);
         await service2.BeginAuthorizationAsync();
         Assert.False(string.IsNullOrWhiteSpace(openUrl));
-        Assert.Contains("redirect_uri=https%3A%2F%2Fauth.corevideo.io%2Fcallback", openUrl, StringComparison.Ordinal);
+        Assert.Contains("redirect_uri=https%3A%2F%2Fauth.corevideo.io%2Foauth%2Fcallback", openUrl, StringComparison.Ordinal);
         Assert.Contains("return_uri=corevideo%3A%2F%2Foauth%2Fcallback", openUrl, StringComparison.Ordinal);
         var query = new Uri(openUrl).Query.TrimStart('?');
         var capturedState = query.Split('&', StringSplitOptions.RemoveEmptyEntries)
@@ -125,7 +125,7 @@ public sealed class ZoomOAuthServiceTests
             new ZoomOAuthManifest
             {
                 BrokerStartUrl = "https://auth.corevideo.io/oauth/start",
-                BrokerCallbackUrl = "https://auth.corevideo.io/callback",
+                BrokerCallbackUrl = "https://auth.corevideo.io/oauth/callback",
                 RedirectUri = "corevideo://oauth/callback"
             },
             new HttpClient(handler),
@@ -170,7 +170,7 @@ public sealed class ZoomOAuthServiceTests
             new ZoomOAuthManifest
             {
                 BrokerStartUrl = "https://auth.corevideo.io/oauth/start",
-                BrokerCallbackUrl = "https://auth.corevideo.io/callback",
+                BrokerCallbackUrl = "https://auth.corevideo.io/oauth/callback",
                 RedirectUri = "corevideo://oauth/callback"
             },
             new HttpClient(handler),
@@ -213,7 +213,7 @@ public sealed class ZoomOAuthServiceTests
             new ZoomOAuthManifest
             {
                 BrokerStartUrl = "https://auth.corevideo.io/oauth/start",
-                BrokerCallbackUrl = "https://auth.corevideo.io/callback",
+                BrokerCallbackUrl = "https://auth.corevideo.io/oauth/callback",
                 RedirectUri = "corevideo://oauth/callback"
             },
             new HttpClient(handler),

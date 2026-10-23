@@ -148,8 +148,8 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     /// <summary>Note shown when telemetry is unconfigured so the toggle isn't a silent no-op.</summary>
     public string TelemetryConfigStatus => TelemetryConfigured
-        ? "Telemetry endpoint configured."
-        : "No telemetry endpoint is configured in this build — nothing is sent even when enabled.";
+        ? "Telemetry endpoint and API key configured."
+        : "Telemetry API key is missing in this build (endpoint is configured) — nothing is sent even when enabled.";
 
     public bool ShowTelemetryPreview => !string.IsNullOrWhiteSpace(TelemetryPreviewJson);
 

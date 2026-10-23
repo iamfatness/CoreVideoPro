@@ -82,7 +82,7 @@ public sealed class ZoomOAuthService
         if (useBroker)
         {
             var brokerCallback = string.IsNullOrWhiteSpace(_manifest.BrokerCallbackUrl)
-                ? BrokerEndpoint(BrokerBaseUrl(_manifest.BrokerStartUrl), "/callback")
+                ? BrokerEndpoint(BrokerBaseUrl(_manifest.BrokerStartUrl), "/oauth/callback")
                 : _manifest.BrokerCallbackUrl;
             queryParts.Add(new("redirect_uri", brokerCallback));
             if (!string.IsNullOrWhiteSpace(_manifest.RedirectUri) &&

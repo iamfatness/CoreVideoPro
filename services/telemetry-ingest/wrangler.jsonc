@@ -9,7 +9,7 @@
   "routes": [{ "pattern": "telemetry.corevideo.io", "custom_domain": true }],
   "preview_urls": false,
   "vars": {
-    "ENVIRONMENT": "staging"
+    "ENVIRONMENT": "production"
   },
   // S0 storage bindings. The real Cloudflare resources must exist before
   // `wrangler deploy` (see README.md in this directory):

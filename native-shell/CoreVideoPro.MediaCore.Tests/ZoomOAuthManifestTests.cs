@@ -8,11 +8,9 @@ public sealed class ZoomOAuthManifestTests
     [Fact]
     public void DefaultAppReturnUri_IsPinnedToTheBrokerAllowlist()
     {
-        // The deployed broker (broker site-worker.js (auth.corevideo.io),
-        // handleOauthStart) rejects any return_uri other than EXACTLY
-        // corevideo://oauth/callback with 400 "Unsupported OAuth return URI."
-        // Changing this constant without updating the broker allowlist first
-        // breaks sign-in for every install. Package.appxmanifest declares the
+        // The deployed broker (site-worker.js, handleOauthStart) rejects any return_uri other than
+        // EXACTLY corevideo://oauth/callback with 400 "Unsupported OAuth return URI." Changing this
+        // constant without updating the broker allowlist first breaks sign-in for every install. Package.appxmanifest declares the
         // matching "corevideo" protocol.
         Assert.Equal("corevideo://oauth/callback", ZoomOAuthManifest.DefaultAppReturnUri);
     }
@@ -30,7 +28,7 @@ public sealed class ZoomOAuthManifestTests
     {
         Assert.Equal("https://auth.corevideo.io/oauth/start", ZoomOAuthManifest.DefaultBrokerStartUrl);
         // Must equal the Zoom Marketplace redirect allow-list entry.
-        Assert.Equal("https://auth.corevideo.io/callback", ZoomOAuthManifest.DefaultBrokerCallbackUrl);
+        Assert.Equal("https://auth.corevideo.io/oauth/callback", ZoomOAuthManifest.DefaultBrokerCallbackUrl);
     }
 
     [Fact]

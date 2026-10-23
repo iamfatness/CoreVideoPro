@@ -19,6 +19,10 @@ public sealed class CrashReportingConfig
     public string? Endpoint { get; init; }
     public string? ApiKey { get; init; }
 
+    /// <summary>Host of the resolved endpoint (for the startup log; never includes the key).</summary>
+    public string EndpointHost =>
+        Uri.TryCreate(Endpoint, UriKind.Absolute, out var u) ? u.Host : "(invalid)";
+
     public bool Enabled =>
         !string.IsNullOrWhiteSpace(ApiKey) &&
         Uri.TryCreate(Endpoint, UriKind.Absolute, out var uri) &&

@@ -9,7 +9,7 @@
   "routes": [{ "pattern": "ops.corevideo.io", "custom_domain": true }],
   "preview_urls": false,
   "vars": {
-    "ENVIRONMENT": "staging"
+    "ENVIRONMENT": "production"
     // Optional probe-target overrides (see README). Left unset here so the
     // defaults in lib/checks.mjs (buildTargets) apply. Set to "off" to skip a
     // target:

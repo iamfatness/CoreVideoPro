@@ -226,4 +226,11 @@ public sealed class CrashReportUploaderTests : IDisposable
             Environment.SetEnvironmentVariable(CrashReportingConfig.ApiKeyEnvVar, oldKey);
         }
     }
+
+    [Fact]
+    public void EndpointHost_ReportsHostOnly()
+    {
+        Assert.Equal("telemetry.corevideo.io", CrashReportingConfig.Resolve(null, "secret").EndpointHost);
+        Assert.Equal("(invalid)", new CrashReportingConfig { Endpoint = "nope" }.EndpointHost);
+    }
 }

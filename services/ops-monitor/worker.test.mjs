@@ -67,6 +67,16 @@ describe("statusIsUp", () => {
 });
 
 describe("buildTargets", () => {
+  it("pins the production defaults for the telemetry and self probes", () => {
+    const byName = Object.fromEntries(buildTargets({}).map((t) => [t.name, t.url]));
+    expect(byName["telemetry-ingest"]).toBe("https://telemetry.corevideo.io/health");
+    expect(byName["ops-monitor"]).toBe("https://ops.corevideo.io/health");
+    expect(byName["oauth-broker"]).toBe("https://auth.corevideo.io/oauth/start?probe=ops-monitor");
+    const o = buildTargets({ OPS_TELEMETRY_URL: "https://t.test/health", OPS_SELF_URL: "https://s.test/health" });
+    expect(o.find((t) => t.name === "telemetry-ingest").url).toBe("https://t.test/health");
+    expect(o.find((t) => t.name === "ops-monitor").url).toBe("https://s.test/health");
+  });
+
   it("defaults to the broker + telemetry worker + self", () => {
     const names = buildTargets({}).map((t) => t.name);
     expect(names).toEqual(["oauth-broker", "telemetry-ingest", "ops-monitor"]);
@@ -244,7 +254,7 @@ describe("runChecks (multi-target aggregation)", () => {
       {
         "oauth-broker": 400, // broker up (expected 4xx)
         "auth.corevideo.io": 400,
-        "telemetry-ingest": 503, // DOWN
+        "telemetry.corevideo.io": 503, // DOWN
         "ops.corevideo": 200
       },
       capture

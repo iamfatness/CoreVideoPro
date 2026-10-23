@@ -56,8 +56,8 @@ the worker is reachable). Once redeployed, `/health` returns a clean `200`.
 |---|---|---|---|
 | `OPS_ALERT_WEBHOOK_URL` | secret | *(unset)* | Discord/Slack incoming webhook. **Unset => log-only** (never crash, never spam). |
 | `OPS_BROKER_START_URL` | var | `https://auth.corevideo.io/oauth/start?probe=ops-monitor` | Broker probe URL (no `return_uri`). |
-| `OPS_TELEMETRY_URL` | var | `…/corevideo-telemetry-ingest.<acct>.workers.dev/health` | telemetry-ingest probe. |
-| `OPS_SELF_URL` | var | `…/corevideo-ops-monitor.<acct>.workers.dev/health` | self probe. |
+| `OPS_TELEMETRY_URL` | var | `https://telemetry.corevideo.io/health` | telemetry-ingest probe. |
+| `OPS_SELF_URL` | var | `https://ops.corevideo.io/health` | self probe. |
 
 Any target URL set to `""` or `"off"` is skipped. Set the `.workers.dev`
 defaults to your account subdomain via the `OPS_*_URL` vars if it differs from
@@ -112,3 +112,5 @@ Coverage: the flap-dampener (alerts only on state change, silent while a target
 stays down), multi-target aggregation (one webhook for N changed targets), the
 no-destination log-only path, the failed-target alert payload shape, the
 never-throw probe on transport failure, and KV-read-failure resilience.
+
+`vars.ENVIRONMENT` in `wrangler.jsonc` is `production` (served from the production hostname; echoed by `/health` and alert payloads). A staging deploy must override it with `--var ENVIRONMENT:staging`.

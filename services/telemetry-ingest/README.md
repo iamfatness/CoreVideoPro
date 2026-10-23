@@ -122,3 +122,5 @@ Vitest (repo root tooling), pure unit tests with in-memory KV/R2 fakes:
 ```powershell
 npx vitest run services/telemetry-ingest
 ```
+
+`vars.ENVIRONMENT` in `wrangler.jsonc` is `production` (echoed by `/health`). A staging deploy must override it with `--var ENVIRONMENT:staging`.

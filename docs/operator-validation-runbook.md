@@ -134,7 +134,7 @@ Embedded OAuth identity (same broker as [CoreVideo plugin](https://github.com/ia
 | Field | Value |
 |-------|-------|
 | Broker start | `https://auth.corevideo.io/oauth/start` |
-| Zoom redirect (broker) | `https://auth.corevideo.io/callback` |
+| Zoom redirect (broker) | `https://auth.corevideo.io/oauth/callback` |
 | App return URI | `corevideo://oauth/callback` (broker allowlists exactly this; `corevideopro://` is a legacy alias the app still accepts) |
 | Public Client ID | `y6sIWSwiTZe1JygMx4C9EQ` |
 
