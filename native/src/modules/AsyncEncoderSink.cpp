@@ -806,7 +806,11 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
             state->droppedVideo.load() > state->generationDroppedVideoBase ||
             state->droppedAudio.load() > state->generationDroppedAudioBase;
         if (mediaLost) {
-          const std::string loss = "Recording lost video frames or audio packets under encoder load.";
+          // #1030: name the mechanism, not a guess. A full queue means a file
+          // writer fell behind or was blocked (a departed ISO participant once
+          // wedged its writer); it is not evidence of encoder load.
+          const std::string loss = "Recording lost video frames or audio packets: a file writer's queue was full "
+                                   "(that writer was blocked or slower than real time).";
           if (fresh.recordingWarning.find(loss) == std::string::npos)
             fresh.recordingWarning = loss + (fresh.recordingWarning.empty() ? "" : " " + fresh.recordingWarning);
         }

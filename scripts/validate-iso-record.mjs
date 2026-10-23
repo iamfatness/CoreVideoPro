@@ -46,7 +46,7 @@ const evidencePath = argValue("evidence", "");
 const allowCapacityWarning = args.includes("--allow-capacity-warning");
 if (!Number.isInteger(sourceCount) || sourceCount < 2 || sourceCount > 8 ||
     !Number.isInteger(writeQueueDepth) || writeQueueDepth < 4 || writeQueueDepth > 30 ||
-    (stallSource && (stallMs < 1 || stallMs > 2000))) throw new Error("Invalid recording queue QA options");
+    (stallSource && (stallMs < 1 || stallMs > 10000))) throw new Error("Invalid recording queue QA options");
 const snapshots = [], probes = [];
 let stallBegin = false, stallEnd = false;
 let lossBaseline = null;

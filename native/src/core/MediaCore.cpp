@@ -6268,6 +6268,20 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   }
   work.recordingActive = (recordingStatus_ == "recording" || recordingStatus_ == "warning");
   work.recordingIsoParticipantIds = recordingIsoParticipantIds_;
+  // #1030: a Zoom ISO participant who left the meeting must stop being
+  // silence-filled. Writing silence to a stem whose video had stopped grew the
+  // file forever and wedged its Media Foundation writer. The roster is the
+  // departure signal (the same one the shell logs as roster-drop).
+  if (work.recordingActive && !recordingIsoParticipantIds_.empty() && zoomEngineRuntime_ &&
+      zoomEngineRuntime_->configured()) {
+    std::unordered_set<std::string> rosterIds;
+    for (const auto& participant : zoomEngineRuntime_->floorParticipants())
+      if (participant.id != 0) rosterIds.insert(std::to_string(participant.id));
+    std::vector<std::string> selected;
+    selected.reserve(recordingIsoParticipantIds_.size());
+    for (const auto& id : recordingIsoParticipantIds_) selected.push_back(normalizeIsoSourceId(id));
+    work.departedIsoSourceIds = core::departedIsoSources(selected, rosterIds);
+  }
   // ISO-1: pick the selected sources' latest frames (snapshotted under coreMutex
   // above in the render gather) into the work item — zero-copy shared_ptr refs.
   // ONLY for the direct/test path. When a video tick is running it owns the ISO
@@ -7116,6 +7130,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         modules::IsoSourceAudio stem;
         stem.sourceId = sourceId;
         stem.timelineTimestamp100ns = timelineTimestamp100ns;
+        stem.departed = work.departedIsoSourceIds.count(sourceId) > 0;
         const auto it = stemByCanonicalId.find(sourceId);
         if (it != stemByCanonicalId.end()) {
           const modules::AudioFrame& frame = *it->second;

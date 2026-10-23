@@ -20,6 +20,7 @@
 #include "core/RenderedSceneAttributionPolicy.h"
 #include "core/SourceBus.h"
 #include "core/IsoVideoIngress.h"
+#include "core/IsoDeparture.h"
 #include "core/AudioRouteControlState.h"
 #include "core/MediaTransports.h"
 #include "core/SourceContinuityLedger.h"
@@ -1248,6 +1249,9 @@ class MediaCore {
     std::vector<std::string> loopbackCaptureEndpointIds;
     bool recordingActive = false;
     std::vector<std::string> recordingIsoParticipantIds;
+    // #1030: selected Zoom ISO sources whose participant has left the meeting
+    // roster this tick (canonical ids). Their stems are not silence-filled.
+    std::unordered_set<std::string> departedIsoSourceIds;
     // Per-source ISO video for this tick (ISO-1), zero-copy shared_ptr refs
     // snapshotted from IsoVideoIngress under coreMutex at gather.
     std::vector<modules::IsoSourceVideoFrame> isoSources;
