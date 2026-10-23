@@ -781,6 +781,7 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
     const std::string rawMediaWarning = rawMediaDisabledWarningFor(payload, kind);
     const rpc::Json* videoOn = participant ? participant->get("videoOn") : nullptr;
     const bool videoOff = participant && (kind == "participant-video" || kind == "screen-share") && videoOn && !videoOn->asBool();
+    // #765: "low" only when the SDK reported it; an absent value is unknown, not a resolution claim.
     const bool lowResolution = participant && participant->getString("networkQuality") == "low";
     const std::string warning = !rawMediaWarning.empty()
                                     ? rawMediaWarning
@@ -1447,7 +1448,6 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
   int degradedCount = 0;
   int activeContributorCount = 0;
   int talkingCount = 0;
-  double audioLevelSum = 0.0;
   std::string lastTalkingId;
 
   for (const auto& participant : participants->asArray()) {
@@ -1460,8 +1460,10 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
     const bool talking = rawTalking ? rawTalking->asBool() :
         (participant.get("talking") && participant.get("talking")->asBool());
     const bool sharingScreen = participant.get("sharingScreen") && participant.get("sharingScreen")->asBool();
-    const double audioLevel = participant.getNumber("audioLevel", 0.0);
-    const std::string networkQuality = participant.getString("networkQuality", "good");
+    // #765: only the SDK-measured network quality counts. Absent means
+    // unknown and is never treated as "good" (or as degraded). The roster
+    // carries no audio level any more; nothing here may invent one.
+    const std::string networkQuality = participant.getString("networkQuality");
 
     if (sharingScreen) {
       signals.screenShareActive = true;
@@ -1482,7 +1484,6 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
     if (!muted || talking) {
       ++activeContributorCount;
     }
-    audioLevelSum += audioLevel;  // audioLevel is reported 0-100
     if (talking) {
       ++talkingCount;
       lastTalkingId = participant.getString("userId");
@@ -1492,7 +1493,6 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
   signals.liveCount = liveCount;
   signals.degradedCount = degradedCount;
   signals.activeContributorCount = activeContributorCount;
-  signals.meanAudioLevel = liveCount == 0 ? 0.0 : (audioLevelSum / liveCount) / 100.0;
   signals.hasDominantSpeaker = talkingCount == 1;
   signals.crossTalk = talkingCount >= 2;
   return signals;

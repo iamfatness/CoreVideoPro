@@ -2545,7 +2545,6 @@ DirectorSignals CoreStateCapture::deriveDirectorSignals() const {
   int degradedCount = 0;
   int activeContributorCount = 0;
   int talkingCount = 0;
-  double audioLevelSum = 0.0;
   std::string lastTalkingId;
 
   for (const auto& participant : participants->asArray()) {
@@ -2558,8 +2557,10 @@ DirectorSignals CoreStateCapture::deriveDirectorSignals() const {
     const bool talking = rawTalking ? rawTalking->asBool() :
         (participant.get("talking") && participant.get("talking")->asBool());
     const bool sharingScreen = participant.get("sharingScreen") && participant.get("sharingScreen")->asBool();
-    const double audioLevel = participant.getNumber("audioLevel", 0.0);
-    const std::string networkQuality = participant.getString("networkQuality", "good");
+    // #765: only the SDK-measured network quality counts. Absent means
+    // unknown and is never treated as "good" (or as degraded). The roster
+    // carries no audio level any more; nothing here may invent one.
+    const std::string networkQuality = participant.getString("networkQuality");
 
     if (sharingScreen) {
       signals.screenShareActive = true;
@@ -2580,7 +2581,6 @@ DirectorSignals CoreStateCapture::deriveDirectorSignals() const {
     if (!muted || talking) {
       ++activeContributorCount;
     }
-    audioLevelSum += audioLevel;  // audioLevel is reported 0-100
     if (talking) {
       ++talkingCount;
       lastTalkingId = participant.getString("userId");
@@ -2590,7 +2590,6 @@ DirectorSignals CoreStateCapture::deriveDirectorSignals() const {
   signals.liveCount = liveCount;
   signals.degradedCount = degradedCount;
   signals.activeContributorCount = activeContributorCount;
-  signals.meanAudioLevel = liveCount == 0 ? 0.0 : (audioLevelSum / liveCount) / 100.0;
   signals.hasDominantSpeaker = talkingCount == 1;
   signals.crossTalk = talkingCount >= 2;
   return signals;

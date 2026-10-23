@@ -114,4 +114,59 @@ TEST(Director, MediaCoreSurfacesRecommendationInSnapshot) {
   EXPECT_TRUE(autoProduction->get("slotBindings")->isArray());
 }
 
+
+// #765: the shell no longer sends audioLevel/networkQuality on the roster. The
+// core must not re-invent them: a roster without the keys yields no network
+// quality (unknown, not "good"), no degraded count, and no mean level at all.
+TEST(Director, RosterWithoutLevelOrNetworkKeysInventsNothing) {
+  corevideo::core::MediaCore core;
+  (void)core.joinZoom(corevideo::rpc::Json::Object{{"displayName", "Host"}});
+  (void)core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-zoom-source-roster"},
+      {"sources", corevideo::rpc::Json::Array{
+          corevideo::rpc::Json::Object{{"userId", "g1"}, {"displayName", "Guest 1"}, {"videoOn", true}, {"muted", false}, {"talking", true}},
+          corevideo::rpc::Json::Object{{"userId", "g2"}, {"displayName", "Guest 2"}, {"videoOn", true}, {"muted", true}, {"talking", false}},
+      }},
+  });
+
+  const auto snapshot = core.zoomSnapshot();
+  const auto* participants = snapshot.get("participants");
+  ASSERT_NE(participants, nullptr);
+  ASSERT_EQ(participants->asArray().size(), 2u);
+  for (const auto& participant : participants->asArray()) {
+    EXPECT_EQ(participant.get("audioLevel"), nullptr);
+    EXPECT_EQ(participant.get("networkQuality"), nullptr);
+  }
+
+  const auto signals = core.deriveDirectorSignals();
+  EXPECT_EQ(signals.liveCount, 2);
+  EXPECT_EQ(signals.degradedCount, 0);
+  EXPECT_EQ(signals.activeContributorCount, 1);
+
+  // Only an SDK-reported quality may count as degraded.
+  (void)core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-zoom-source-roster"},
+      {"sources", corevideo::rpc::Json::Array{
+          corevideo::rpc::Json::Object{{"userId", "g1"}, {"displayName", "Guest 1"}, {"videoOn", true}, {"networkQuality", "low"}},
+          corevideo::rpc::Json::Object{{"userId", "g2"}, {"displayName", "Guest 2"}, {"videoOn", true}},
+      }},
+  });
+  EXPECT_EQ(core.deriveDirectorSignals().degradedCount, 1);
+}
+
+// The stub's built-in sample roster (no shell roster synced) carries no
+// invented level or network quality either.
+TEST(Director, StubSampleRosterCarriesNoInventedMeters) {
+  corevideo::core::MediaCore core;
+  (void)core.joinZoom(corevideo::rpc::Json::Object{{"displayName", "Host"}});
+  const auto* participants = core.zoomSnapshot().get("participants");
+  ASSERT_NE(participants, nullptr);
+  // A dev build with the engine runtime configured publishes the engine's
+  // (empty) roster here instead of the stub sample; nothing to check then.
+  for (const auto& participant : participants->asArray()) {
+    EXPECT_EQ(participant.get("audioLevel"), nullptr);
+    EXPECT_EQ(participant.get("networkQuality"), nullptr);
+  }
+}
+
 }  // namespace
