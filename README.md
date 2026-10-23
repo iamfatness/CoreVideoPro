@@ -1,8 +1,8 @@
 # CoreVideo Pro
 
 CoreVideo Pro is a **native desktop production studio for Windows and macOS** for building polished
-live shows, recordings, and streams directly from Zoom participants — Magic Scene
-auto-layout, lower-thirds, captions, smart framing, audio leveling, and
+live shows, recordings, and streams from Zoom participants, cameras, screen capture and
+media: Magic Scene auto-layout, lower-thirds, graphics, audio leveling, and
 multi-destination output, in a single operator console.
 
 **Work order lives in one place:** [`docs/BACKLOG.md`](docs/BACKLOG.md). This README is
@@ -56,70 +56,72 @@ and hardware-transport code lives behind `COREVIDEO_ENABLE_DEV_ADAPTERS` plus a 
 `COREVIDEO_WITH_*` flag. Windows and macOS builds select their platform adapters;
 vendor integrations require the corresponding SDKs and runtimes.
 
-Windows **merge CI compiles that stub core** plus the WinUI shell. The production D3D11,
-Media Foundation, WASAPI, UVC, WGC, and virtual-camera configuration is a local-dev /
-packaged-candidate build, not the merge gate
-([#618](https://github.com/iamfatness/CoreVideoPro/issues/618)). macOS CI already builds
-the real Metal/AVFoundation configuration.
+Windows merge CI runs the stub core plus the WinUI shell, and a separate
+`native-production-windows` job compiles the D3D11 and Media Foundation adapters. The real
+Zoom SDK is still not compiled in CI ([#618](https://github.com/iamfatness/CoreVideoPro/issues/618)):
+Zoom, WASAPI, UVC, WGC and the virtual camera are proven only on local and packaged builds.
+macOS CI builds the real Metal/AVFoundation configuration.
 
 ## Capabilities & status
 
-Status legend: **Real** = implemented and exercised in the portable/CI build · **Dev-gated**
-= implemented behind a `COREVIDEO_WITH_*` flag, requires the relevant platform/runtime ·
-**In progress** = wired through the contract but the native pixel/PCM path is unfinished.
+As built on `main`, October 23, 2026. Three states, and only three:
+
+- **Proven** — shipped in a beta and measured on a real run, with the evidence named.
+- **Shipped, not live-verified** — in the beta, covered by unit or hosted tests, never
+  measured on a real show or installed run.
+- **Not shipped** — code exists behind a flag or on a branch, or only a probe exists.
+
+Every Windows beta is built with the production adapters on (D3D11, Media Foundation,
+WASAPI, Zoom, UVC, WGC, virtual camera). The stub core is a test configuration, not a
+product tier. The reference run below is the 30-minute outputs soak of October 22, 2026
+on `beta-2026-10-22-f96a136` (ruling and summary in [`docs/BACKLOG.md`](docs/BACKLOG.md), "Owner gate
+ruling, October 22"; raw evidence in the local `artifacts/qualification-1008-25`, not in git): eight 1080p Zoom feeds, webcam, moving screen capture,
+Program + eight ISO recordings on hardware encoders, the registered OS camera at 1080p60 and
+an SRT stream, with zero missing frame identities on every output. The later
+`beta-2026-10-23-1072a50` has not been soaked.
 
 | Area | Capability | Status |
 |---|---|---|
-| **Capture** | Zoom roster, active speaker, captions, feed health, breakout filters, producer roles | Real (simulated session) |
-| | Real Zoom Meeting SDK ingest via the vendored `corevideo-zoom-engine` (raw I420 over shared memory) | Dev-gated (`COREVIDEO_WITH_ZOOM`) |
-| | Test-pattern / local-camera source delivering real pixels into the core | Real |
-| | Native UVC camera capture inside the core (Media Foundation source reader, 1080p60-targeted NV12/YUY2/MJPG negotiation, I420 → GPU shader convert with per-frame range/matrix, hot-unplug safe; WinUI shm bridge stays the per-device fallback; native capture is default-on and can be disabled with `COREVIDEO_NATIVE_UVC=0`). Uses first-frame confirmation before committing the native path; errors/timeouts fall back to the managed bridge | Dev-gated (`COREVIDEO_WITH_UVC`), default-on when available |
-| | Live DeckLink/AJA frames reaching the core (not just WinUI preview) | In progress — probe/enumerate only; no pixels on the source bus ([#537](https://github.com/iamfatness/CoreVideoPro/issues/537)) |
-| **Compositor** | Route resolver, render-plan layers, program/preview parity math | Real |
-| | Per-source framing (fit/fill/stretch, zoom/pan, borders) | Real (D3D11 + CPU stub) |
-| | Overlay / lower-third / caption **text & image rasterization** — shared layout (`computeOverlayTileLayout`), signature-cached | Real (CPU full-ASCII bitmap-font tile) · Dev-gated (DirectWrite/D2D + WIC, zero-copy GPU raster) |
-| | D3D11 GPU compositor | Dev-gated (`COREVIDEO_WITH_D3D11`) |
-| | Core-composited GPU multiview (single shared texture, 4 layout modes, WinUI overlay labels/tally/meters/clock) | Real (layout/tiles) · Dev-gated (D3D11 render) |
-| **Audio** | PCM routing matrix, program/ISO taps, BS.1770 master meter, bus-insert dynamics, limiter | Real |
-| | WASAPI monitor output · ASIO capture · VST3 insert host | Dev-gated / In progress |
-| **Recording** | Program + ISO mux with real program audio, profile-driven resolution/fps | Implemented: Media Foundation on Windows, AVFoundation on macOS; candidate verification required |
-| **Streaming** | RTMP with real program-audio feed + H.264/AAC compatibility matrix | Dev-gated (`COREVIDEO_WITH_RTMP_OUTPUT`, FFmpeg) |
-| | NDI send/receive · SRT ingest decode | Dev-gated; NDI receive routes BGRA + PCM through the capture source bus. Installed operator check pending. |
-| | SRT **output** sender | Dev-gated; YouTube caller send verified ([#669](https://github.com/iamfatness/CoreVideoPro/issues/669)). |
-| | HLS Program push (H.264/AAC playlist and segments by HTTP PUT) | Dev-gated (`COREVIDEO_WITH_RTMP_OUTPUT`, FFmpeg); requires an HTTP PUT origin that serves uploaded files |
-| | **Virtual camera** — the program feed appears as a "CoreVideo Pro Camera" webcam in Zoom / Teams / OBS / the Windows Camera app, at native **1080p60** | Implemented on Windows; candidate verification required |
-| **Production** | Magic Scene, Set & Forget auto-director, presets, brand kit, media playback | Real (heuristic, no ML) |
-| **Diagnostics** | Support bundle with redacted secrets, output/recording health, crash events | Real |
+| **Zoom** | Join by link, roster, active speaker, raw 1080p video and PCM per participant through the vendored `corevideo-zoom-engine` subprocess (I420 over shared memory) | Proven: eight 1080p feeds for 30 minutes, and weekly live shows since September |
+| | Guest network quality in the roster | Shipped, not live-verified: read from the SDK callback since [#1023](https://github.com/iamfatness/CoreVideoPro/pull/1023), absent until reported |
+| **Capture** | Webcam and capture cards (Media Foundation in the core, 1080p60, hot-unplug safe; WinUI bridge fallback; opt out with `COREVIDEO_NATIVE_UVC=0`) | Proven: webcam in the soak with exact ISO identity |
+| | Screen and window capture (WGC) | Proven: moving screen in the soak |
+| | A disconnected capture device drops from Program instead of freezing | Not shipped ([#758](https://github.com/iamfatness/CoreVideoPro/issues/758), [#562](https://github.com/iamfatness/CoreVideoPro/issues/562)) |
+| | DeckLink / AJA | Not shipped: probe only ([#537](https://github.com/iamfatness/CoreVideoPro/issues/537)) |
+| **Media** | Local video and still playback with core-owned cue/live/pause | Shipped, not live-verified; ProRes fails to start in the installed build ([#473](https://github.com/iamfatness/CoreVideoPro/issues/473)); stutter reported ([#701](https://github.com/iamfatness/CoreVideoPro/issues/701)) |
+| **Compositor** | D3D11 Program/Preview/Multiview, per-source framing, borders, grade presets and curves, lower-thirds and graphics templates | Proven: Program render held every deadline in the soak (minimum slack 3.6 ms) |
+| | Set & Forget and Magic Scene automation driven by the core's slot bindings | Shipped, not live-verified: bound in [#1021](https://github.com/iamfatness/CoreVideoPro/pull/1021), unit-tested to the coordinator |
+| | Captions | Not shipped: the controls were removed in #1021 because no caption source exists; `push-caption-cue` remains for external cue feeds |
+| **Audio** | Routing matrix, Program and ISO taps, BS.1770 meter, bus dynamics and limiter, WASAPI monitor output | Proven on live shows; recorded Program A/V skew measured near -20 ms, live monitor skew -46 ms after [#655](https://github.com/iamfatness/CoreVideoPro/pull/655) ([#652](https://github.com/iamfatness/CoreVideoPro/issues/652) open on the limit) |
+| | Per-participant audio delay | Not shipped ([#627](https://github.com/iamfatness/CoreVideoPro/issues/627)) |
+| **Recording** | Program + ISO MP4 on Media Foundation with hardware encoders and isolated write queues; resumes after a core restart | Proven: Program and eight ISOs frame-exact for 30 minutes; resume proven on a drill, not a show |
+| | Local recording with no Zoom meeting | Shipped, not live-verified ([#1025](https://github.com/iamfatness/CoreVideoPro/pull/1025)) |
+| | macOS AVFoundation recording | Shipped, not live-verified |
+| **Streaming** | SRT caller with GPU-direct HEVC/H.264 NVENC | Proven: frame-exact for 30 minutes to a local sink; YouTube caller send verified once ([#669](https://github.com/iamfatness/CoreVideoPro/pull/669)) |
+| | RTMP (YouTube) | Shipped; full-show continuity unproven after the September 13 incident ([#615](https://github.com/iamfatness/CoreVideoPro/issues/615)); bytes sent are measured since #1023 |
+| | NDI send with group name · HLS push | Shipped, not live-verified: NDI group reaches the sender since #1023 but no receiver with a group filter has been tested; HLS needs an HTTP PUT origin |
+| | AV1 | Not shipped: refused until a playable receiver-side stream exists ([#565](https://github.com/iamfatness/CoreVideoPro/issues/565)) |
+| **Virtual camera** | "CoreVideo Pro Camera" through the Windows Frame Server at 1080p60, owned machine runtime with serving-DLL provenance | Proven: zero missing identities for 30 minutes; Frame Server can keep serving an old DLL after an upgrade ([#781](https://github.com/iamfatness/CoreVideoPro/issues/781)) |
+| **Operations** | Control API on loopback (`/snapshot`, `/state`, `/invoke`); LAN control requires a token | Proven: every soak and drill drives the app through it |
+| | Outputs drill as one command (`scripts/qa/outputs-drill.ps1`) | Shipped, not live-verified ([#1024](https://github.com/iamfatness/CoreVideoPro/pull/1024)) |
+| | Support bundle with redacted secrets | Shipped; sections that were always empty were removed in #1021 |
+| | Crash upload and telemetry | Not shipped: the uploader reads its endpoint from an environment variable only, so the beta uploads nowhere ([#434](https://github.com/iamfatness/CoreVideoPro/issues/434)) |
+| | Signed releases | Not shipped: the release workflow has both signing routes and no certificate ([#423](https://github.com/iamfatness/CoreVideoPro/issues/423), [#437](https://github.com/iamfatness/CoreVideoPro/issues/437)) |
+| **Survival** | Core restart with output resume; Zoom helper crash absorbed | Proven on drills; one unexplained helper exit in a real meeting ([#856](https://github.com/iamfatness/CoreVideoPro/issues/856)) |
+| | Production survives a WinUI crash (EngineHost) | Shipped off by default in [#965](https://github.com/iamfatness/CoreVideoPro/pull/965); not enabled, not live-verified |
+| | Idle WinUI finalizer crash after about an hour | Known, upstream ([#513](https://github.com/iamfatness/CoreVideoPro/issues/513)) |
 
-> **Release readiness.** The portable/CI contract surface is broad, but Windows production
-> media paths (D3D11, MF encode, WASAPI, real Zoom, UVC/WGC, vcam) are proven on a
-> packaged or dev-rig candidate, not by the stub merge job. Exact-candidate evidence
-> still required: real Zoom join, GPU/encoder, record-and-stream, clean-machine install.
-> See [`docs/alpha-plan.md`](docs/alpha-plan.md) and
-> [`docs/native-production-completion-plan.md`](docs/native-production-completion-plan.md).
+Every operator-visible value is measured or absent; a placeholder is never shown
+([honest reporting](docs/reference/honest-reporting.md)). The release gate is per-frame
+identity of every output over the full workload; on-screen Studio cells are a tolerance
+metric because Windows DWM skips frames at the mixed-refresh monitor beat for every
+application ([`scripts/qa/desktop-picture-cadence.py`](scripts/qa/desktop-picture-cadence.py)).
 
-> **Architecture hardening.** Process isolation (Zoom child, FFmpeg, vcam, browser, VST)
-> is the shipped shape; NDI remains in-process. Windows CI covers the WinUI suite and the
-> stub core. Configuration saves use atomic replacement and backup recovery; LAN HTTP
-> control requires authentication. Signed release candidates must pass automated checks
-> and controlled-rig evidence before publication:
-> [release evidence setup](docs/release-evidence.md). A green portable suite is not
-> verified live-media evidence.
-
-## Current priority (2026-09-26)
-
-Ranked work is only in [`docs/BACKLOG.md`](docs/BACKLOG.md).
-
-1. **Now:** make the wire honest ([#616](https://github.com/iamfatness/CoreVideoPro/issues/616) with [#619](https://github.com/iamfatness/CoreVideoPro/issues/619) and [#620](https://github.com/iamfatness/CoreVideoPro/issues/620)). [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) is closed. The source bus is how capture, media, Zoom pictures, Zoom audio, and the no-meeting slate reach the mix. Browser sources are still polled. Capture dropout liveness stays [#562](https://github.com/iamfatness/CoreVideoPro/issues/562).
-2. **Next:** constructed capabilities ([#617](https://github.com/iamfatness/CoreVideoPro/issues/617)), then a Windows production-native CI compile lane ([#618](https://github.com/iamfatness/CoreVideoPro/issues/618)), then [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) SRT/NDI edge I/O.
-3. Live incidents (#615, #608, #624, #597 acceptance) stay unranked until the owner promotes them; they can preempt this list on a show night. Per-participant audio delay is [#627](https://github.com/iamfatness/CoreVideoPro/issues/627), also unranked.
-
-Shipped on main since 2026-09-24, still waiting on a fleet show for [#601](https://github.com/iamfatness/CoreVideoPro/issues/601) and [#615](https://github.com/iamfatness/CoreVideoPro/issues/615):
-
-- The GPU encoder keeps the newest prepared frame when publish is busy, and the program buffer waits on a high-resolution timer (`61e83ed1`, [#614](https://github.com/iamfatness/CoreVideoPro/pull/614)). Unsigned beta `beta-2026-09-24-61e83ed`.
-- Capture polling is retired. Adapters push into a mailbox (`4519ade0`, [#625](https://github.com/iamfatness/CoreVideoPro/pull/625)). Unsigned beta `beta-2026-09-25-4519ade`.
-- `IMediaDecoder` takes one `MediaDecodeRequest` (`02e61c43`, [#626](https://github.com/iamfatness/CoreVideoPro/pull/626)). Unsigned beta `beta-2026-09-25-02e61c4`.
-- Zoom audio is drained from a mailbox outside the core lock. Headless clap on that build (`scripts/validate-av-clap.mjs`, 2026-09-25): 8 pairs, median skew -39.0 ms (audio lags video by 39 ms), spread 14.3 ms, inside the 50 ms gate. A person clapping in a live meeting was not recorded.
+What stands between this build and a release candidate is tracked only in
+[`docs/BACKLOG.md`](docs/BACKLOG.md). The non-engineering items are a code-signing
+certificate, the Zoom SDK redistribution answer, reference machines and a tester feedback
+channel ([#423](https://github.com/iamfatness/CoreVideoPro/issues/423) to [#427](https://github.com/iamfatness/CoreVideoPro/issues/427)); the controlled-rig two-hour soak in
+[`docs/release-evidence.md`](docs/release-evidence.md) has not been run.
 
 ## Repository layout
 
@@ -174,8 +176,8 @@ The first fully useful milestone:
 1. Join Zoom.
 2. See clean participant feeds and metadata.
 3. Click Magic Scene.
-4. Get a polished show with lower-thirds, captions, smart framing, audio leveling, and
-   RTMP / local-recording controls.
+4. Get a polished show with lower-thirds, graphics, audio leveling, and
+   stream / local-recording / virtual-camera controls.
 
 ## Further reading
 
