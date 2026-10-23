@@ -56,7 +56,11 @@ the roster (`ShowInputsCoordinator.BuildIsoSourceTargets`) and Zoom capture on
 With no meeting, the core may be down when Record is pressed. `SetRecordingAsync` starts it and
 then asks `RecordBlockReason` again of the started core, before any recording intent reaches it.
 Leaving or rejoining a meeting does not stop a recording: Leave turns Engine off and sends
-`zoom-leave`, neither of which touches the recording intent or the core's writer
-(`EncoderRecordingSession.ZoomJoinLeaveRejoinDoesNotStopAnOfflineStartedRecording`). After a
+`zoom-leave`, neither of which touches the recording intent or the core's writer. That was
+verified by reading the real paths (`SettingsViewModel.LeaveZoomAsync`, `UnsubscribeZoomCapture`,
+`MediaCore::leaveZoom`, `ZoomEngineRuntime::leave`); the tests cover only the coordinator's
+Engine-off path with a fake host, the snapshot merge, and the stub core
+(`EncoderRecordingSession.StubCoreZoomJoinLeaveRejoinDoesNotStopAnOfflineStartedRecording`). After a
 core crash, a recording made with no meeting resumes (`OutputResumeAfterCoreRestart`); one made
-in a meeting that Zoom did not rejoin is not resumed, and says so.
+in a meeting that Zoom did not rejoin is not resumed, and says so. That resume rule is PENDING
+OWNER RULING (it changes #732's "recording needs the meeting"; see `core-restart-drill.md`).

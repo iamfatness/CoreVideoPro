@@ -42,8 +42,11 @@ Control API plus one process kill; no keyboard or mouse input.
     operator pressing that output's button, or a deliberate core stop, cancels it.
   - The supervisor raises `RecoveryCompleted(CoreOnly | ZoomRejoined | ZoomRejoinFailed)`
     once per recovery, after the rejoin's roster is published.
-  - **Recording** needs the meeting: on `ZoomRejoined` a NEW session starts in a new folder;
-    otherwise the Output status line says why not.
+  - **Recording** (changed by PR #1025 for #1009, PENDING OWNER RULING): a NEW session starts
+    in a new folder on `ZoomRejoined` and on `CoreOnly` (no meeting was live, so a recording of
+    local sources resumes); on `ZoomRejoinFailed` it is not resumed and the Output status line
+    says why. The rule before #1025 was "recording needs the meeting": it resumed only on
+    `ZoomRejoined`. See `core-on-air-policy.md`, "Record does not wait for Zoom".
   - **Stream** does not: it reconnects on every outcome, because a destination left
     disconnected ends the broadcast.
   - Both start through the ordinary transport path (pre-flight, start proof, rollback, retry),

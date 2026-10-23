@@ -2078,11 +2078,14 @@ TEST(EncoderRecordingSession, RepeatedProgramSyncDoesNotRestartActiveRecordingWr
   EXPECT_EQ(encoder->session().recordingSessionId, "idempotent-show-host-guest");
 }
 
-// #1009: Program recording starts with Zoom offline, and a meeting joined, left and rejoined
-// while it records is a source change, not a recording stop. No stop reaches the writer, no
-// second writer generation opens, and the session keeps its id, whether or not the shell's
-// production sync (which carries the operator's Record intent) runs between the steps.
-TEST(EncoderRecordingSession, ZoomJoinLeaveRejoinDoesNotStopAnOfflineStartedRecording) {
+// #1009, STUB CORE ONLY. A recording started with Zoom offline survives zoom-join, zoom-leave
+// and a rejoin sent through the real JsonRpcServer handlers to MediaCore: no stop reaches the
+// writer, no second writer generation opens, and the session keeps its id, with or without the
+// shell's production sync (which carries the Record intent) between the steps. The modules are
+// the stub set, so MediaCore takes its stub-meeting branch: ZoomEngineRuntime::leave/join (the
+// real-engine path) are NOT exercised here; that they reset only Zoom state was checked by
+// reading them.
+TEST(EncoderRecordingSession, StubCoreZoomJoinLeaveRejoinDoesNotStopAnOfflineStartedRecording) {
   auto modules = corevideo::modules::createStubModules();
   auto countingSink = std::make_unique<StartCountingEncoderSink>();
   auto* encoder = countingSink.get();

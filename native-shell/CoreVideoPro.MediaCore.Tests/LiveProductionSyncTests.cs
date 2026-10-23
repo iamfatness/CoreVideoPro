@@ -85,11 +85,12 @@ public sealed class LiveProductionSyncTests
         Assert.Contains("recording", patch.OutputSessionStatus!, StringComparison.OrdinalIgnoreCase);
     }
 
-    // #1009: leaving the Zoom meeting (or rejoining it) is a roster fact. It must not end, or
-    // stop reporting, a Program recording: the merge carries the core's recording facts over,
-    // the operator's Record intent is not disarmed, and the output status still says Recording.
+    // #1009, SNAPSHOT MERGE + PATCH MAPPING ONLY. A leave/rejoin capture snapshot merged over a
+    // core snapshot that is recording keeps the core's recording facts, does not disarm the
+    // operator's Record intent, and the output status still says Recording. This does not run
+    // the leave itself (shell or core); it pins how the shell READS a recording across one.
     [Fact]
-    public void LeavingAndRejoiningZoomKeepsTheProgramRecordingObservedAndArmed()
+    public void LeaveAndRejoinSnapshotsKeepTheProgramRecordingObservedAndArmed()
     {
         var recordingSnapshot = BuildSnapshot(recordingActive: true);
         var inMeeting = ZoomCaptureSnapshotMerger.Merge(recordingSnapshot with

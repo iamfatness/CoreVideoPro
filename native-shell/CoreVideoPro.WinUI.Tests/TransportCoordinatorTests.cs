@@ -145,11 +145,15 @@ public sealed class TransportCoordinatorTests
         Assert.Contains("Recording start requested.", host.OutputStatus);
     }
 
-    // Leave turns Engine off first (StudioViewModel's onBeforeLeaveMeeting ->
-    // UnsubscribeZoomCapture), then sends zoom-leave. Neither is a recording stop: the intent
-    // stays armed and no sync carrying recording=false is sent.
+    // COORDINATOR PATH ONLY. Leave turns Engine off first (SettingsViewModel.LeaveZoomAsync ->
+    // StudioViewModel's onBeforeLeaveMeeting -> UnsubscribeZoomCapture), then sends zoom-leave.
+    // This pins only that TransportCoordinator's Engine-off path leaves an armed recording armed
+    // and sends no recording=false sync. The host here is a fake: StudioViewModel's real
+    // UnsubscribeZoomCapture and SettingsViewModel.LeaveZoomAsync are NOT exercised (neither is
+    // constructible in this test project); that they do not touch the recording was checked by
+    // reading them (#1009).
     [Fact]
-    public async Task EngineOffForLeave_DoesNotStopAnActiveRecording()
+    public async Task CoordinatorEngineOff_DoesNotStopAnArmedRecording_FakeHost()
     {
         var (coordinator, _, host) = Build();
         await coordinator.SetRecordingAsync(true);
@@ -199,6 +203,29 @@ public sealed class TransportCoordinatorTests
         Assert.Equal(0, host.SyncCallCount);
         Assert.Contains("no recording encoder", host.OutputStatus);
         Assert.False(coordinator.RecordingToggleInFlight);
+    }
+
+    // The core is brought up and its profile asked BEFORE the Record intent is armed, so no
+    // production sync can carry recording=true to a core that is then refused.
+    [Fact]
+    public async Task OfflineStart_StartsTheCoreBeforeArming()
+    {
+        var (coordinator, bridge, host) = Build();
+        bridge.Running = false;
+        bool? armedWhenTheCoreStarted = null;
+        host.OnEnsureMediaCoreRunning = () =>
+        {
+            armedWhenTheCoreStarted ??= host.Recording;
+            bridge.Running = true;
+            return Task.CompletedTask;
+        };
+
+        await coordinator.SetRecordingAsync(true);
+
+        Assert.False(armedWhenTheCoreStarted);
+        Assert.True(host.Recording);
+        Assert.Equal([true], host.AppliedRecordingIntents);
+        Assert.Contains("Recording start requested.", host.OutputStatus);
     }
 
     [Fact]
