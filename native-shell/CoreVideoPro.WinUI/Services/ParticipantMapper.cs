@@ -19,7 +19,6 @@ public static class ParticipantMapper
             IsActiveSpeaker = context.IsActiveSpeaker,
             IsMuted = context.IsMuted,
             IsScreenSharing = context.IsScreenSharing,
-            AudioLevel = context.AudioLevel,
             Health = ParseHealth(context.HealthLabel)
         };
 

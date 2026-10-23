@@ -19,7 +19,6 @@ public static class LiveProductionSync
         public bool IsActiveSpeaker { get; init; }
         public bool IsScreenSharing { get; init; }
         public bool IsMuted { get; init; }
-        public int AudioLevel { get; init; }
         public string HealthLabel { get; init; } = "live";
         public string? PersistentId { get; init; }
         public long SourceGeneration { get; init; }
@@ -144,9 +143,6 @@ public static class LiveProductionSync
                 var isActiveSpeaker = !string.IsNullOrWhiteSpace(normalizedActiveSpeakerId)
                     ? id.Equals(normalizedActiveSpeakerId, StringComparison.Ordinal)
                     : participant.Talking == true;
-                var audioLevel = participant.AudioLevel ?? (participant.Talking == true ? 78 : 22);
-                audioLevel = Math.Clamp(audioLevel, 0, 100);
-
                 return new LiveProductionParticipantContext
                 {
                     Id = id,
@@ -164,7 +160,6 @@ public static class LiveProductionSync
                     IsActiveSpeaker = isActiveSpeaker,
                     IsScreenSharing = participant.SharingScreen == true,
                     IsMuted = participant.Muted == true,
-                    AudioLevel = audioLevel,
                     HealthLabel = healthLabel,
                     PersistentId = string.IsNullOrWhiteSpace(participant.PersistentId)
                         ? null

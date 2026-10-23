@@ -305,7 +305,6 @@ public sealed class NativeMediaCoreOutputSender
     public int? LastFrameNumber { get; init; }
     public int FramesSent { get; init; }
     public int RetryCount { get; init; }
-    public double LatencyMs { get; init; }
     public double BitrateMbps { get; init; }
     public long AudioFramesSent { get; init; }
     public long AudioBytesSent { get; init; }
@@ -632,7 +631,6 @@ public sealed class NativeMediaCoreCaptionCue
     public required string Text { get; init; }
     public string? Speaker { get; init; }
     public double AtMs { get; init; }
-    public double Confidence { get; init; }
 }
 
 public sealed class NativeMediaCoreCaptionTrack
@@ -640,7 +638,6 @@ public sealed class NativeMediaCoreCaptionTrack
     public bool Enabled { get; init; }
     public required string Status { get; init; }
     public NativeMediaCoreCaptionCue? CurrentCue { get; init; }
-    public double LatencyMs { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 

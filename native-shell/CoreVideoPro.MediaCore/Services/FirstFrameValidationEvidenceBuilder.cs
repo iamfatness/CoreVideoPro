@@ -174,7 +174,6 @@ public static class FirstFrameValidationEvidenceBuilder
         var audioActiveParticipantCount = Math.Max(
             existing.AudioActiveParticipantCount,
             spine.Participants.Count(participant =>
-                participant.AudioLevel > 0 ||
                 participant.Talking ||
                 !participant.Muted));
 

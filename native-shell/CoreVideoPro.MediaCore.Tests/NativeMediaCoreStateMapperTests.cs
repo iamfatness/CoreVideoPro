@@ -114,7 +114,6 @@ public sealed class NativeMediaCoreStateMapperTests
                         Status = "live",
                         FramesSent = 12,
                         RetryCount = 0,
-                        LatencyMs = 2100,
                         BitrateMbps = 6
                     }
                 ]
@@ -211,7 +210,6 @@ public sealed class NativeMediaCoreStateMapperTests
                         Status = "failed",
                         FramesSent = 0,
                         RetryCount = 0,
-                        LatencyMs = 0,
                         BitrateMbps = 6,
                         LastError = "Failed to start FFmpeg process. Win32 error 2."
                     }
@@ -243,7 +241,6 @@ public sealed class NativeMediaCoreStateMapperTests
                         Status = "warning",
                         FramesSent = 0,
                         RetryCount = 0,
-                        LatencyMs = 0,
                         BitrateMbps = 0,
                         LastResultCode = "ndi-output-unavailable",
                         RuntimeDetail = "LibNDI runtime-missing on this machine."
@@ -361,9 +358,7 @@ public sealed class NativeMediaCoreStateMapperTests
                     Text = "Welcome to the webinar.",
                     Speaker = "Sophia Martinez",
                     AtMs = 2800,
-                    Confidence = 95
                 },
-                LatencyMs = 180,
                 Warnings = []
             },
             OverlayState = new NativeMediaCoreOverlayState

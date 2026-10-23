@@ -369,7 +369,6 @@ public static class MediaCoreCommandBuilder
                 isMuted = participant.IsMuted,
                 isActiveSpeaker = participant.IsActiveSpeaker,
                 isScreenSharing = participant.IsScreenSharing,
-                audioLevel = participant.AudioLevel,
                 health = participant.Health
             }).ToList()
         });

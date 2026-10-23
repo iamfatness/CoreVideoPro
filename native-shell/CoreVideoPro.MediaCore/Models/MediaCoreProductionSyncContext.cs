@@ -102,7 +102,6 @@ public sealed record MediaCoreParticipantWire(
     bool IsActiveSpeaker,
     bool IsMuted,
     bool IsScreenSharing,
-    int AudioLevel,
     string Health);
 
 public sealed record MediaCoreGraphicWire(

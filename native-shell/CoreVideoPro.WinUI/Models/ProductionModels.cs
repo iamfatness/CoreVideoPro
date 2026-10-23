@@ -50,7 +50,6 @@ public sealed class Participant
     public bool IsActiveSpeaker { get; init; }
     public bool IsMuted { get; init; }
     public bool IsScreenSharing { get; init; }
-    public int AudioLevel { get; init; }
     public FeedHealth Health { get; init; }
 
     public string RoleBadge => Role switch
@@ -701,7 +700,6 @@ public sealed class CaptionTranscriptEntry
     public required string SpeakerName { get; init; }
     public required string Role { get; init; }
     public required string Text { get; init; }
-    public required int Confidence { get; init; }
 }
 
 public sealed class AudioParticipantRow : ObservableObject

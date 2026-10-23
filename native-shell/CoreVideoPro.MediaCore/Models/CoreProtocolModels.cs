@@ -344,7 +344,7 @@ public sealed class RawParticipantEvent
     public bool? VideoOn { get; init; }
     public bool? Talking { get; init; }
     public bool? SharingScreen { get; init; }
-    public int? AudioLevel { get; init; }
+    /// <summary>Absent until the SDK reports it (core PR #1023); null means "unknown", never "good".</summary>
     public string? NetworkQuality { get; init; }
 }
 

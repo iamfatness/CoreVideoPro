@@ -291,9 +291,9 @@ public static class ZoomMediaSpinePayloadBuilder
             ["videoOn"] = participant.Health != "video-off",
             ["muted"] = participant.IsMuted,
             ["talking"] = participant.IsActiveSpeaker,
-            ["sharingScreen"] = participant.IsScreenSharing,
-            ["audioLevel"] = participant.AudioLevel,
-            ["networkQuality"] = MapNetworkQuality(participant.Health)
+            ["sharingScreen"] = participant.IsScreenSharing
+            // #765: no audioLevel (the core measures its own) and no networkQuality (the
+            // shell only ever had a health label to invent "good" from; the SDK reports it).
         };
     }
 
@@ -302,13 +302,6 @@ public static class ZoomMediaSpinePayloadBuilder
         "host" => "host",
         "presenter" or "panelist" => "panelist",
         _ => "guest"
-    };
-
-    private static string MapNetworkQuality(string health) => health switch
-    {
-        "low-resolution" => "low",
-        "recovering" => "recovering",
-        _ => "good"
     };
 
     private static List<Dictionary<string, object?>> BuildSubscriptions(

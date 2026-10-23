@@ -56,9 +56,9 @@ public sealed class ParticipantMuteRefreshTests
     [Fact]
     public void ReorderingOrLevelChangesDoNotTriggerMuteRefresh()
     {
-        Participant Guest(string id, int level) => new() { Id = id, AudioLevel = level };
+        Participant Guest(string id, bool talking) => new() { Id = id, IsActiveSpeaker = talking };
         Assert.False(ParticipantMapper.HasMuteChanges(
-            [Guest("a", 0), Guest("b", 30)], [Guest("b", 70), Guest("a", 10)]));
+            [Guest("a", false), Guest("b", true)], [Guest("b", false), Guest("a", true)]));
     }
 
     [Fact]

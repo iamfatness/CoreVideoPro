@@ -26,13 +26,13 @@ public sealed class StudioViewModelAudioStatusTests
             NoiseSuppression = false, Status = "native-pcm", Muted = false
         };
         var strips = new Dictionary<string, ParticipantAudioMix> { [sourceId] = strip };
-        var guest = new Participant { Id = sourceId, IsMuted = true, AudioLevel = 12 };
+        var guest = new Participant { Id = sourceId, IsMuted = true };
         var roster = new Dictionary<string, Participant> { [sourceId] = guest };
 
         // The sync made while Zoom says muted must not latch that source state
         // into the core mixer. A later unmute can resume on the next PCM packet.
         Assert.False(StudioViewModel.BuildAudioMixChannelWire(sourceId, strips, roster).Muted);
-        roster[sourceId] = new Participant { Id = sourceId, IsMuted = false, AudioLevel = 78 };
+        roster[sourceId] = new Participant { Id = sourceId, IsMuted = false };
         Assert.False(StudioViewModel.BuildAudioMixChannelWire(sourceId, strips, roster).Muted);
 
         strip.Muted = true; // The operator's own mute still gates this channel.

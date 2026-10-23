@@ -46,7 +46,6 @@ public sealed class MediaCoreCommandBuilderTests
             IsActiveSpeaker: false,
             IsMuted: false,
             IsScreenSharing: false,
-            AudioLevel: 54,
             Health: "live"),
         new(
             Id: "p2",
@@ -57,7 +56,6 @@ public sealed class MediaCoreCommandBuilderTests
             IsActiveSpeaker: true,
             IsMuted: false,
             IsScreenSharing: true,
-            AudioLevel: 82,
             Health: "live")
     ];
 

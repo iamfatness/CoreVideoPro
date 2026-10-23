@@ -240,7 +240,6 @@ public sealed class TransportMappingTests
                         Status = "failed",
                         FramesSent = 0,
                         RetryCount = 0,
-                        LatencyMs = 0,
                         BitrateMbps = 6,
                         Warning = "FFmpeg stdin write failed; the RTMP process stopped or rejected frames."
                     }
@@ -271,7 +270,6 @@ public sealed class TransportMappingTests
                         Status = "failed",
                         FramesSent = 0,
                         RetryCount = 0,
-                        LatencyMs = 0,
                         BitrateMbps = 6,
                         LastError = "Failed to start FFmpeg process. Win32 error 2."
                     }
@@ -302,7 +300,6 @@ public sealed class TransportMappingTests
                         Status = "failed",
                         FramesSent = 0,
                         RetryCount = 0,
-                        LatencyMs = 0,
                         BitrateMbps = 6,
                         Warning = "media-core request failed: output sender failed during sync: RTMP sender failed: FFmpeg stdin write failed."
                     }
@@ -374,7 +371,6 @@ public sealed class TransportMappingTests
                         Status = "live",
                         FramesSent = 12,
                         RetryCount = 0,
-                        LatencyMs = 2100,
                         BitrateMbps = 6
                     }
                 ]

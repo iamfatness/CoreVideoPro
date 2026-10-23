@@ -31,7 +31,6 @@ public sealed partial class MultiviewInputRow : ObservableObject
     [ObservableProperty] private bool _hasPreviewTile;
     [ObservableProperty] private CoreVideoPro.WinUI.Models.VideoSurfaceState? _previewSurface;
     [ObservableProperty] private string _previewTally = "none";
-    [ObservableProperty] private double _meterWidth;
 
     // Presentation of the same observed fact; a request ceiling is never an FPS measurement.
     public string ResolutionLabel => FormatLabel.Split('@')[0];

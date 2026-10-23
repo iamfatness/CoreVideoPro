@@ -252,7 +252,6 @@ public static class SupportBundleBuilder
                         LastFrameNumber = sender.LastFrameNumber,
                         FramesSent = sender.FramesSent,
                         RetryCount = sender.RetryCount,
-                        LatencyMs = sender.LatencyMs,
                         BitrateMbps = sender.BitrateMbps,
                         AudioFramesSent = sender.AudioFramesSent,
                         AudioBytesSent = sender.AudioBytesSent,

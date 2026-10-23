@@ -21,7 +21,6 @@ public sealed class FirstFrameValidationEvidenceBuilderTests
                 {
                     SdkUserId = "p1",
                     DisplayName = "Host",
-                    AudioLevel = 71,
                     Talking = true
                 }
             ],
@@ -81,7 +80,6 @@ public sealed class FirstFrameValidationEvidenceBuilderTests
                         SdkUserId = "p1",
                         DisplayName = "Host",
                         Muted = true,
-                        AudioLevel = 0,
                         Talking = false
                     }
                 ]
@@ -108,8 +106,7 @@ public sealed class FirstFrameValidationEvidenceBuilderTests
                 new RawParticipantEvent
                 {
                     UserId = "p1",
-                    DisplayName = "Host",
-                    AudioLevel = 64
+                    DisplayName = "Host"
                 }
             ],
             SourceSnapshot = new NativeMediaCoreFrameSourceSnapshot

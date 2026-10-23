@@ -80,10 +80,8 @@ public static class ZoomCaptureSnapshotMerger
             CurrentCue = new NativeMediaCoreCaptionCue
             {
                 Text = caption.Trim(),
-                AtMs = 0,
-                Confidence = 95
+                AtMs = 0
             },
-            LatencyMs = captionTrack.LatencyMs,
             Warnings = captionTrack.Warnings
         };
     }

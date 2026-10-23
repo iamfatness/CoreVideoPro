@@ -133,7 +133,6 @@ public static class ZoomMediaSpineSnapshotMerger
                     VideoOn = participant.VideoOn,
                     Talking = participant.Talking,
                     SharingScreen = participant.SharingScreen,
-                    AudioLevel = participant.AudioLevel,
                     NetworkQuality = participant.NetworkQuality
                 })
                 .ToList()

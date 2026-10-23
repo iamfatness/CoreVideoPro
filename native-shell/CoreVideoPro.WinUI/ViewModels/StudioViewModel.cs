@@ -2014,8 +2014,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string SelectedMuteButtonLabel =>
         SelectedAudioMix?.Muted == true ? "Unmute in mix" : "Mute in mix";
 
-    public int SelectedOutputLevel =>
-        SelectedAudioMix?.OutputLevel ?? SelectedParticipant?.AudioLevel ?? 0;
+    // #765: the only level is the one the core measures per mixer channel.
+    public int SelectedOutputLevel => SelectedAudioMix?.OutputLevel ?? 0;
 
     public string SelectedInsertChainLabel =>
         SelectedAudioMix is { PluginInserts.Count: > 0 } mix
@@ -8699,7 +8699,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                         : participant.Talking == true,
                     participant.Muted == true,
                     participant.SharingScreen == true,
-                    participant.AudioLevel ?? 0,
                     // #478: VideoOn must reach the spine, or a camera-off guest reads as live
                     // and spends a capped video subscription on no frames.
                     LiveProductionSync.NormalizeFeedHealthLabel(participant)))
@@ -8897,7 +8896,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 participant.IsActiveSpeaker,
                 participant.IsMuted,
                 participant.IsScreenSharing,
-                participant.AudioLevel,
                 MapParticipantHealth(participant.Health)))
             .ToList();
 
@@ -11020,8 +11018,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Id = entry.Id,
                 SpeakerName = entry.SpeakerName,
                 Role = entry.Role,
-                Text = entry.Text,
-                Confidence = entry.Confidence
+                Text = entry.Text
             })
             .ToList();
         OnPropertyChanged(nameof(CaptionTranscript));
@@ -11063,7 +11060,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     Role = ParticipantRole.Guest,
                     BreakoutRoomName = "Native PCM",
                     Health = mix.OutputLevel > 0 ? FeedHealth.Live : FeedHealth.Recovering,
-                    AudioLevel = mix.OutputLevel,
                     IsMuted = mix.Muted || mix.SourceMuted
                 };
 
@@ -11143,7 +11139,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Role = ParticipantRole.Guest,
                 BreakoutRoomName = "Native PCM",
                 Health = mix.OutputLevel > 0 ? FeedHealth.Live : FeedHealth.Recovering,
-                AudioLevel = mix.OutputLevel,
                 IsMuted = mix.Muted || mix.SourceMuted
             };
         var gain = NormalizeMixerGain(mix.ManualGainDb);
