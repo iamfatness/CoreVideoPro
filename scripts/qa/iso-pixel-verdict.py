@@ -86,8 +86,14 @@ def compare_identities(expected, decoded):
             ended = True
             continue
         actual.append(identity)
+    # Additive per-identity accounting for the outputs drill summary (#443).
+    # The pass rule below is unchanged: exact ordered equality with expected.
+    present = [identity for identity in actual if identity is not None]
+    seen = set(present)
     return {'isoPixelArrivalFidelityPassed': actual == expected and range_violations == 0,
             'expectedSamples': len(expected), 'recordedSamples': len(actual),
+            'missing': sum(1 for identity in expected if identity not in seen),
+            'repeated': len(present) - len(seen),
             'firstIdentity': first, 'lastIdentity': last, 'invalid': actual.count(None),
             'rangeViolations': range_violations,
             'firstMismatchIndex': next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b),
