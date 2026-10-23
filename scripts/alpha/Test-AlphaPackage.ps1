@@ -41,7 +41,7 @@ try {
         'zoom-runtime/windows/x64/h/rawdata/rawdata_renderer_interface.h','zoom-runtime/windows/x64/h/rawdata/rawdata_audio_helper_interface.h',
         'StartCoreVideo.cmd','Install-MediaRuntime.ps1','build-manifest.json',
         'corevideo-virtualcam.dll','corevideo-monitor-presenter.dll','Install-VirtualCamera.ps1','VirtualCameraRegistration.psm1','CameraUserSession.ps1',
-        'Register-VirtualCamera.cmd','Unregister-VirtualCamera.cmd','Remove-OwnedShortcuts.ps1',
+        'Register-VirtualCamera.cmd','Unregister-VirtualCamera.cmd','Remove-OwnedShortcuts.ps1','Install-CrashDumps.ps1',
         'Remove-PreviousInstallations.ps1','PreviousInstallations.psm1',
         'msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.dll','vcruntime140_1.dll',
         'node/node.exe','show-engine/dist/host/main.js','show-engine/package.json',
