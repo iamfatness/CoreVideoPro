@@ -2716,7 +2716,6 @@ rpc::Json CoreStateCapture::outputSenderSessionState(const AudioOutputObservatio
         {"status", core::publishedSenderStatus(sender.status, lifecycleState, sender.supervisor)},
         {"framesSent", static_cast<double>(sender.framesSent)},
         {"retryCount", sender.retryCount},
-        {"latencyMs", sender.latencyMs},
         {"bitrateMbps", sender.bitrateMbps},
         {"destinationHealth", core::publishedSenderDestinationHealth(sender.destinationHealth, lifecycleState, sender.supervisor)},
         {"lastResultCode", sender.lastResultCode},
@@ -2727,6 +2726,10 @@ rpc::Json CoreStateCapture::outputSenderSessionState(const AudioOutputObservatio
         {"audioChannels", sender.audioChannels},
         {"audioSampleRate", sender.audioSampleRate},
     };
+    // #519: only a MEASURED latency goes on the wire; no adapter fakes one.
+    if (sender.latencyMs.has_value()) {
+      senderJson.emplace("latencyMs", *sender.latencyMs);
+    }
     if (sender.startedAtMs > 0) {
       senderJson.emplace("startedAtMs", sender.startedAtMs);
     }

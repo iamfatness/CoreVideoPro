@@ -127,5 +127,67 @@ TEST(FfmpegChildRetirement, SenderStopReapsItsActualTransportChild) {
 #endif
 }
 
+// #519: bytesSent is the byte count the FFmpeg child's stdin pipe actually
+// accepted, not a configured-bitrate estimate that assumed 30 fps.
+TEST(FfmpegChildRetirement, BytesSentCountsBytesWrittenToTransportStdin) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  namespace fs = std::filesystem;
+  const fs::path folder = fs::temp_directory_path() /
+      ("corevideo-bytes-sent-" + std::to_string(::GetCurrentProcessId()));
+  std::error_code error;
+  fs::create_directories(folder, error);
+  ASSERT_FALSE(error) << error.message();
+  const fs::path ffmpeg = folder / "ffmpeg.exe";
+  fs::copy_file(COREVIDEO_STUBBORN_FFMPEG_PATH, ffmpeg, fs::copy_options::overwrite_existing, error);
+  ASSERT_FALSE(error) << error.message();
+  // Raw CPU path: the bytes on stdin are then exactly the BGRA frames we hand over.
+  ASSERT_TRUE(::SetEnvironmentVariableA("COREVIDEO_GPU_ENCODE", "0"));
+
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+  corevideo::modules::OutputDestinationSettings settings;
+  settings.id = "rtmp";
+  settings.label = "RTMP";
+  settings.protocol = "rtmp";
+  settings.url = "rtmp://127.0.0.1:1/live";
+  settings.streamKey = "bytes-sent";
+  settings.ffmpegBinDirectory = folder.string();
+  settings.videoCodec = "h264";
+  constexpr int kWidth = 16, kHeight = 16;
+  constexpr int64_t kFrameBytes = int64_t{kWidth} * kHeight * 4;
+
+  // The stubborn child never drains stdin, so stay well inside the pipe buffer:
+  // two frames are 2 KiB.
+  constexpr auto kWaitBound = std::chrono::seconds(60);
+  const auto deadline = std::chrono::steady_clock::now() + kWaitBound;
+  corevideo::modules::OutputSenderSession session;
+  int64_t frameNumber = 1;
+  double elapsedMs = 0;
+  while (std::chrono::steady_clock::now() < deadline) {
+    corevideo::modules::ProgramFrame frame{kWidth, kHeight, frameNumber, 7, "bytes-sent", "d3d11"};
+    frame.programFullBgra.width = kWidth;
+    frame.programFullBgra.height = kHeight;
+    frame.programFullBgra.bgra.assign(static_cast<size_t>(kFrameBytes), 0x10);
+    session = sender->sync({"rtmp"}, &frame, elapsedMs, {settings});
+    ++frameNumber;
+    elapsedMs += 33.3;
+    if (!session.senders.empty() && session.senders.front().framesSent >= 2) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_FALSE(session.senders.empty());
+  const auto& rtmp = session.senders.front();
+  EXPECT_GE(rtmp.framesSent, 2) << "the sender never accepted two frames: " << rtmp.lastResultCode
+                                << " " << rtmp.warning;
+  EXPECT_EQ(rtmp.bytesSent, rtmp.framesSent * kFrameBytes);
+  EXPECT_FALSE(rtmp.latencyMs.has_value());
+
+  sender->sync({}, nullptr, elapsedMs + 1);
+  sender.reset();
+  ::SetEnvironmentVariableA("COREVIDEO_GPU_ENCODE", nullptr);
+  fs::remove(ffmpeg, error);
+  fs::remove(folder, error);
+#endif
+}
+
 }  // namespace
 #endif

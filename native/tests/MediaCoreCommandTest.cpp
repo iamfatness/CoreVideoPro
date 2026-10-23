@@ -3272,6 +3272,9 @@ TEST(MediaCoreCommand, SyncsNetworkOutputSenderSession) {
   EXPECT_EQ(sender.getString("destinationHealth"), "ok");
   EXPECT_EQ(sender.getString("lastResultCode"), "ok");
   EXPECT_GE(sender.get("bytesSent")->asNumber(), 1);
+  // #519: no adapter measures transport latency, so the key is absent rather
+  // than a constant that reads like a measurement.
+  EXPECT_EQ(sender.get("latencyMs"), nullptr);
 #endif
 }
 

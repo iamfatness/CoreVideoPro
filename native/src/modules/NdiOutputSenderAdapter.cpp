@@ -262,11 +262,6 @@ void convertBgraToUyvy(const uint8_t* bgra, int width, int height, std::vector<u
   }
 }
 
-int64_t estimatedFrameBytes(double bitrateMbps, int fps) {
-  const int safeFps = (std::max)(1, fps);
-  return static_cast<int64_t>((bitrateMbps * 1000000.0 / 8.0 / static_cast<double>(safeFps)) + 0.5);
-}
-
 class NdiOutputSender final : public IOutputSender {
  public:
   explicit NdiOutputSender(RuntimeProbe runtimeProbe, LibraryHandle library, NdiApi api)
@@ -396,7 +391,7 @@ class NdiOutputSender final : public IOutputSender {
     sender_.warning.clear();
     sender_.lastFrameNumber = frame->frameNumber;
     ++sender_.framesSent;
-    sender_.bytesSent += estimatedFrameBytes(sender_.bitrateMbps, configuredFps_);
+    sender_.bytesSent += lastSubmittedVideoBytes_;  // UYVY bytes handed to libNDI (#519)
     sender_.destinationHealth = connectionCount_ > 0 ? "ok" : "starting";
     sender_.lastResultCode = "ok";
     return snapshot();
@@ -445,7 +440,7 @@ class NdiOutputSender final : public IOutputSender {
     sender_.destination = "ndi";
     sender_.status = "starting";
     sender_.startedAtMs = elapsedMs;
-    sender_.latencyMs = 16;  // NDI is a near-zero-latency LAN transport.
+    // No latencyMs: libNDI exposes no transport latency to measure (#519).
     sender_.bitrateMbps = 125.0;  // 1080p60 SpeedHQ estimate (matches ndiOutput.ts).
     sender_.runtimeDetail = runtimeDetail_;
     sender_.destinationHealth = "starting";
@@ -524,6 +519,7 @@ class NdiOutputSender final : public IOutputSender {
     video.p_metadata = nullptr;
     video.timestamp = 0;
     api_.send_video(sendInstance_, &video);
+    lastSubmittedVideoBytes_ = static_cast<std::int64_t>(video.line_stride_in_bytes) * height;
   }
 
   // The program-audio tap is interleaved float; NDI audio_frame_v2 is planar.
@@ -602,6 +598,7 @@ class NdiOutputSender final : public IOutputSender {
   std::string configuredSourceNameError_;
   std::string activeSourceName_;
   int configuredFps_ = 30;
+  std::int64_t lastSubmittedVideoBytes_ = 0;
   int connectionCount_ = 0;
   std::vector<uint8_t> uyvyBuffer_;
   // Which program source the last frame came from. Surfaced in the snapshot so
