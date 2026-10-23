@@ -27,12 +27,14 @@ if ($hadStableDesktop -or $hadStableStart) {
     throw 'A CoreVideo Pro shortcut already exists; refusing to alter a real installation for testing.'
 }
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$work = [IO.Path]::GetFullPath($WorkRoot)
+$work = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkRoot)
 if ($work.Length -gt $MaxWorkPathLength) { throw "Working root is $($work.Length) characters (limit $MaxWorkPathLength); use a shorter -WorkRoot: $work" }
 if ((Test-Path -LiteralPath $work) -and @(Get-ChildItem -LiteralPath $work -Force).Count -gt 0) { throw "Working root is not empty; refusing to reuse it: $work" }
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $evidenceCopy = Join-Path $repoRoot ('artifacts/installer-validation/' + (Split-Path -Leaf $work))
 $installRoot = Join-Path $work 'installed app'
+$succeeded = $false
+try {
 function Invoke-OwnedProcess([string]$executable, [string[]]$arguments) {
     $process = Start-Process -FilePath $executable -ArgumentList $arguments -WindowStyle Hidden -PassThru
     if (-not $process.WaitForExit(180000)) {
@@ -144,10 +146,18 @@ if ((Get-Content -LiteralPath $sentinel -Raw) -ne 'preserve this user file') { t
 [ordered]@{ success=$true; releaseId=$releaseId; payloadFilesVerified=$manifest.files.Count
     silentInstall=$true; runtimeProbe=$true; shortcutTargets=$true; duplicateInstallRejected=$true
     invalidMarkerRejected=$true; silentUninstall=$true; userFilePreserved=$true
-    stableShortcutOnly=$true; mediaRuntimeRemoved=$true; manifestEscapeRefused=$true; evidence=$work
+    stableShortcutOnly=$true; mediaRuntimeRemoved=$true; manifestEscapeRefused=$true; evidence=$evidenceCopy; workDirectory=$work
     failedInstallRetry=$true; failedInstallCameraPreserved=$true; independentDesktopRegistration=$true
     desktopShortcutCameraDelivery='unverified'; desktopShortcutUnassign='unverified'
 } | ConvertTo-Json | Tee-Object -FilePath (Join-Path $work 'result.json')
-# Keep the evidence where it used to live, in the checkout's artifacts folder.
-New-Item -ItemType Directory -Path $evidenceCopy -Force | Out-Null
-Get-ChildItem -LiteralPath $work -Filter *.json | Copy-Item -Destination $evidenceCopy -Force
+$succeeded = $true
+} finally {
+    # Keep the evidence where it used to live (the CI workflow uploads artifacts/installer-validation
+    # with if: always()), whether the run passed or failed.
+    New-Item -ItemType Directory -Path $evidenceCopy -Force | Out-Null
+    Get-ChildItem -LiteralPath $work -Filter *.json -ErrorAction SilentlyContinue | Copy-Item -Destination $evidenceCopy -Force
+    foreach ($extra in @('test-uninstaller.exe', 'escape-attempt.txt')) {
+        if (Test-Path -LiteralPath (Join-Path $work $extra)) { Copy-Item -LiteralPath (Join-Path $work $extra) -Destination $evidenceCopy -Force }
+    }
+    if (-not $succeeded) { Write-Warning "Installer test failed. Working folder: $work; evidence copy: $evidenceCopy" }
+}

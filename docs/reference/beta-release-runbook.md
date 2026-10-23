@@ -20,6 +20,10 @@ beta path. Steps:
      The copy in Downloads is too old.
    - `scripts/alpha/Test-AlphaPackage.ps1` and `Test-AlphaInstaller.ps1`, which does a real silent
      install, runs the startup probe, then uninstalls.
+   Both scripts stage under short user-owned roots so a long checkout path cannot break NSIS:
+   `-StagingRoot` (default `%LOCALAPPDATA%\Temp\cvp-pkg\<8 hex>`) for packaging and `-WorkRoot`
+   (default `%LOCALAPPDATA%\Temp\cvp-qa\<8 hex>`) for the installer test. `artifacts/installer-build/<id>/`
+   now holds only `makensis.log` and the generated `.nsh` files; staging is deleted on success.
    On a workstation with existing CoreVideo shortcuts, this test deliberately
    refuses to overwrite them. Upload the six assets to a draft release and run
    the `Beta package qualification` workflow with its tag and full source SHA.

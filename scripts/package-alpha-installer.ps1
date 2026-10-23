@@ -18,13 +18,21 @@ if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notm
     throw 'VC redistributable must have a valid Microsoft signature.'
 }
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$work = [IO.Path]::GetFullPath($StagingRoot)
+$archiveName = [IO.Path]::GetFileNameWithoutExtension($archivePath)
+if ($archiveName -notmatch '^CoreVideoPro-win-x64-((alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+)$') { throw 'Unexpected prerelease archive name.' }
+$archiveReleaseId = $Matches[1]
+# Cheap preconditions first, so a refusal never stages 600 MB or leaves directories behind.
+$output = Join-Path (Split-Path -Parent $archivePath) "CoreVideoPro-Setup-$archiveReleaseId.exe"
+if (Test-Path -LiteralPath $output) { throw 'Installer already exists; do not replace an immutable release asset.' }
+# Resolve against PowerShell's location, not the process CWD (this path is later deleted recursively).
+$work = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($StagingRoot)
 if ((Test-Path -LiteralPath $work) -and @(Get-ChildItem -LiteralPath $work -Force).Count -gt 0) {
     throw "Staging root is not empty; refusing to reuse it: $work"
 }
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $evidence = Join-Path $repoRoot ('artifacts/installer-build/' + (Split-Path -Leaf $work))
 $succeeded = $false
+$keepStaging = $false
 try {
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 # Check before extracting: Windows PowerShell 5.1 cannot create over-long paths at all.
@@ -48,13 +56,12 @@ $payload = $payload[0].FullName
 $manifest = Get-Content -LiteralPath (Join-Path $payload 'build-manifest.json') -Raw | ConvertFrom-Json
 $releaseId = $manifest.releaseId
 if ($releaseId -notmatch '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { throw 'Invalid release ID.' }
+if ($releaseId -ne $archiveReleaseId) { throw 'Manifest release ID does not match the archive name.' }
 $channel = $Matches[1].ToLowerInvariant()
 $channelTitle = (Get-Culture).TextInfo.ToTitleCase($channel)
 if ((Split-Path -Leaf $payload) -ne "CoreVideoPro-$channelTitle") { throw 'Payload root does not match the manifest channel.' }
 $redistVersion = [version]((Get-Item -LiteralPath $redistPath).VersionInfo.FileVersion -replace '[^0-9.].*$', '')
 if ($redistVersion -lt [version]$manifest.vcRuntimeVersion) { throw 'VC redistributable is older than the packaged native runtime.' }
-$output = Join-Path (Split-Path -Parent $archivePath) "CoreVideoPro-Setup-$releaseId.exe"
-if (Test-Path -LiteralPath $output) { throw 'Installer already exists; do not replace an immutable release asset.' }
 function Escape-Nsis([string]$value) { return $value.Replace('$', '$$').Replace('"', '$\"') }
 $files = @(Get-ChildItem -LiteralPath $payload -Recurse -File | Sort-Object FullName)
 $install = [Collections.Generic.List[string]]::new()
@@ -94,7 +101,7 @@ $nsisExit = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 $nsisOutput + "makensis exit code: $nsisExit" | Set-Content -LiteralPath (Join-Path $work 'makensis.log') -Encoding UTF8
 $nsisOutput | Write-Host
-if ($nsisExit -ne 0) { throw 'NSIS compilation failed.' }
+if ($nsisExit -ne 0) { $keepStaging = $true; throw 'NSIS compilation failed.' }
 $hash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  $([IO.Path]::GetFileName($output))" | Set-Content -LiteralPath ($output + '.sha256') -Encoding ASCII
 [ordered]@{
@@ -108,11 +115,13 @@ $hash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvari
 Write-Output $output
 $succeeded = $true
 } finally {
-    # Evidence stays where it always was: artifacts/installer-build/<id>.
-    New-Item -ItemType Directory -Path $evidence -Force | Out-Null
-    foreach ($log in @('makensis.log', 'generated.nsh', 'install-files.nsh', 'uninstall-files.nsh')) {
-        if (Test-Path -LiteralPath (Join-Path $work $log)) { Copy-Item -LiteralPath (Join-Path $work $log) -Destination $evidence -Force }
+    # Evidence stays where it always was: artifacts/installer-build/<id>. Only created when there is something to copy.
+    $logs = @('makensis.log', 'generated.nsh', 'install-files.nsh', 'uninstall-files.nsh') |
+        ForEach-Object { Join-Path $work $_ } | Where-Object { Test-Path -LiteralPath $_ }
+    if ($logs) {
+        New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+        Copy-Item -LiteralPath $logs -Destination $evidence -Force
     }
-    if ($succeeded) { Remove-Item -LiteralPath $work -Recurse -Force }
-    else { Write-Warning "Packaging failed; staging folder kept for inspection: $work (evidence: $evidence)" }
+    if ($keepStaging) { Write-Warning "NSIS failed; staging folder kept for inspection: $work (evidence: $evidence)" }
+    elseif (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 }
