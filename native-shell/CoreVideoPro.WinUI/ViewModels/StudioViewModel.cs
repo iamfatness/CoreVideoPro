@@ -3457,12 +3457,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(value))
         {
             // A ComboBox re-bind can write null; never let it reach the profile.
-            CanvasResolution = _lastGoodCanvasResolution;
+            // Backing field, not the setter: no save, scene sync or log for an identical profile.
+            _canvasResolution = _lastGoodCanvasResolution;
+            OnPropertyChanged(nameof(CanvasResolution));
             return;
         }
 
         _lastGoodCanvasResolution = value;
-        if (GpuTierPolicy.FormatCanvasChangeLog(value) is { } line) LaunchLog.Write(line);
+        if (!_applyingGpuTierDefaults && GpuTierPolicy.FormatCanvasChangeLog(value) is { } line) LaunchLog.Write(line);
         OnOutputProfileChanged();
     }
 
@@ -11902,6 +11904,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private bool _allowAboveGpuTier;
 
+    private bool _applyingGpuTierDefaults;
     private string _lastGoodCanvasResolution = MediaCoreProductionSyncContext.DefaultCanvasOutputProfile.Resolution;
     private IReadOnlyList<RouteSelectOption>? _canvasResolutionOptions;
 
@@ -11960,7 +11963,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _allowAboveGpuTier = r.SwitchOn;
         OnPropertyChanged(nameof(AllowAboveGpuTier));
 
-        CanvasResolution = r.Canvas;
+        _applyingGpuTierDefaults = true;
+        try { CanvasResolution = r.Canvas; }
+        finally { _applyingGpuTierDefaults = false; }
         MultiviewTileCount = ClampMultiviewTileCount(r.TileCount);
 
         LaunchLog.Write(policy.FormatStartupLog(r));
