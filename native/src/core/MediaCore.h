@@ -297,6 +297,7 @@ class MediaCore {
   void setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
+  [[nodiscard]] modules::ZoomEngineRuntime* zoomEngineRuntimeForTest() { return zoomEngineRuntime_.get(); }
 
   // Test seam (#535 slice 0): register an ISource with the core's SourceBus.
   // Nothing outside native/tests/ calls this — production has no registered
@@ -1295,8 +1296,13 @@ class MediaCore {
   // published members. The caller owns the locking (so the same trio serves both the
   // worker — phased/locked — and the synchronous test path — single-threaded, no locks).
   [[nodiscard]] std::vector<modules::AudioFrame> pollZoomAudioUnlocked();
+  // #1030: the meeting roster's ids for ISO departure, read BEFORE coreMutex
+  // for the same reason as pollZoomAudioUnlocked (the engine mutex is held
+  // across event handling and the ingest poll). nullopt = no engine.
+  [[nodiscard]] std::optional<std::unordered_set<std::string>> readZoomRosterIdsUnlocked();
   [[nodiscard]] AudioOutputWorkItem gatherAudioOutputWork(
-      std::vector<modules::AudioFrame> prePolledZoomAudio);
+      std::vector<modules::AudioFrame> prePolledZoomAudio,
+      std::optional<std::unordered_set<std::string>> prePolledRosterIds = std::nullopt);
   [[nodiscard]] AudioOutputResults runAudioOutputWork(AudioOutputWorkItem& work);
   void publishAudioOutputResults(const AudioOutputResults& results);
   // INNER lock guarding the audio/output module state (mixer, monitorOutput, encoder,

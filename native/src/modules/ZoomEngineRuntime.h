@@ -7,6 +7,7 @@
 #include "modules/ZoomPlayoutTiming.h"
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomEngineState.h"
+#include "modules/EngineMutexGuardrail.h"
 #include "modules/ZoomSubscriptionChurnPolicy.h"
 #include "rpc/Json.h"
 #include <atomic>
@@ -17,6 +18,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -62,6 +64,10 @@ class ZoomEngineRuntime {
   // follow-speaker route binding (#478 R2).
   [[nodiscard]] std::string directedSpeakerId();
   [[nodiscard]] std::vector<ZoomEngineParticipant> floorParticipants();
+  // #1030: the meeting roster's SDK ids, or nullopt when no engine is
+  // configured. Takes mutex_: call it OUTSIDE coreMutex (the audio worker reads
+  // it before its gather, like pollCompositorAudioFrames).
+  [[nodiscard]] std::optional<std::vector<std::uint32_t>> rosterIdsIfConfigured();
   // Moves whenever the meeting session changes under the core: join, leave,
   // Engine off (stopCapture) and every new engine process. A follow-speaker
   // route forgets its speaker history when it moves (#478 N2). Lock-free.
@@ -175,7 +181,9 @@ class ZoomEngineRuntime {
   // client is destroyed only when the last reference drops.
   std::shared_ptr<ZoomEngineProcessClient> process_;
   ZoomEngineRuntimeState state_;
-  mutable std::mutex mutex_;
+  mutable EngineMutex mutex_;
+  // Lock-free mirror of !config_.executablePath.empty() for configured() (#1030).
+  std::atomic<bool> configuredMirror_{false};
   std::thread reader_;
   bool readerRunning_ = false;
   bool initialized_ = false;

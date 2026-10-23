@@ -78,6 +78,7 @@ std::atomic<uint64_t> nextVideoSourceEpoch{1};
 ZoomEngineRuntime::ZoomEngineRuntime(std::shared_ptr<CpuSourcePreparation> preparation)
     : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()),
       profileVideoHandoff_(envString("COREVIDEO_QA_ZOOM_HANDOFF_TIMING") == "1") {
+  configuredMirror_.store(!config_.executablePath.empty(), std::memory_order_release);
   if (profileVideoHandoff_) ::corevideo::core::nativeLogf(
       "[zoom-handoff-scope-v1] enabled=1 clock=steady-nanoseconds threshold_ns=8000000\n");
   // Frame sync is ON by default (owner decision 2026-08-06: behave like a
@@ -111,7 +112,7 @@ ZoomEngineRuntime::~ZoomEngineRuntime() {
 }
 
 void ZoomEngineRuntime::beginShutdown() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   // The reader can still finish an in-flight event until stopReader joins it.
   // Publish terminal state before clearing the run flag, so that event cannot
   // replace the still-joinable ingest thread. All joins remain outside mutex_.
@@ -137,15 +138,19 @@ ZoomEngineRuntime::Config ZoomEngineRuntime::loadConfig() {
 }
 
 bool ZoomEngineRuntime::configured() const {
+  // #1030: lock-free. MediaCore asks this under coreMutex on the sub-ms audio
+  // gather; taking mutex_ there (held across event handling and the ingest
+  // poll) is the 8.5 ms stall pollZoomAudioUnlocked exists to avoid. The
+  // mirror is refreshed wherever config_ is (re)loaded.
   ZoomHandoffCpuScope timing(profileVideoHandoff_, "configured");
-  std::lock_guard<std::mutex> lock(mutex_);
   timing.acquired();
-  return !config_.executablePath.empty();
+  return configuredMirror_.load(std::memory_order_acquire);
 }
 
 void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   config_ = loadConfig();
+  configuredMirror_.store(!config_.executablePath.empty(), std::memory_order_release);
   const auto payloadJwt = payload.getString("sdkJwt");
   const auto payloadZak = payload.getString("userZak");
   if (!payloadJwt.empty()) {
@@ -186,7 +191,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   const auto meetingId = meetingIdFromJoinInput(
       payload.getString("meetingNumber"), payload.getString("meetingUrl"));
   if (meetingId.empty()) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<EngineMutex> lock(mutex_);
     if (cancelled && cancelled()) return nullptr;
     return rpc::Json::Object{
         {"meetingState", "error"},
@@ -197,7 +202,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   }
   bool replacingActiveMeeting;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<EngineMutex> lock(mutex_);
     replacingActiveMeeting = state_.snapshot().meetingState == "in-meeting";
   }
   if (replacingActiveMeeting) {
@@ -210,7 +215,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   speakerEpoch_.fetch_add(1, std::memory_order_relaxed);  // a join is a new meeting
   bool restart;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<EngineMutex> lock(mutex_);
     restart = restartBeforeJoin_;
     if (restart) {
       ++processGeneration_;
@@ -221,7 +226,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     // Rejoin uses a fresh SDK process. Old callbacks have no operation identity,
     // so they must be retired before accepting results for the next meeting.
     stopReader(); // no coreMutex or runtime mutex held while terminating/joining
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<EngineMutex> lock(mutex_);
     process_.reset();
     initialized_ = false;
     state_.reset();
@@ -245,20 +250,20 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
         static_cast<int>(std::clamp(requested->asNumber(), 0.0, 60.0)));
   }
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<EngineMutex> lock(mutex_);
     cameraMaxResolution_ = cameraMax;
     cameraMaxFps_ = cameraMaxFps;
   }
 
   if (!ensureStarted(cancelled)) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<EngineMutex> lock(mutex_);
     if (cancelled && cancelled()) return nullptr;
     return rawCaptureSnapshotLocked();
   }
 
   bool waitForAuth = false;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<EngineMutex> lock(mutex_);
     if (cancelled && cancelled()) return nullptr;
     acceptJoinEvents_ = true;
     if (!process_ || !process_->running()) {
@@ -286,7 +291,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     const auto authDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(config_.joinWaitMs);
     while (std::chrono::steady_clock::now() < authDeadline) {
       {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<EngineMutex> lock(mutex_);
         if (cancelled && cancelled()) return nullptr;
         if (state_.sdkAuthenticated()) {
           authReady = true;
@@ -299,7 +304,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     if (!authReady) {
-      std::lock_guard<std::mutex> lock(mutex_);
+      std::lock_guard<EngineMutex> lock(mutex_);
       if (cancelled && cancelled()) return nullptr;
       retireTimedOutJoinLocked("auth", "Timed out waiting for Zoom SDK authentication.");
       return rawCaptureSnapshotLocked();
@@ -307,7 +312,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   }
 
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<EngineMutex> lock(mutex_);
     if (cancelled && cancelled()) return nullptr;
     ZoomEngineJoinCommand command;
     command.meetingId = meetingId;
@@ -335,7 +340,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(config_.joinWaitMs);
   while (std::chrono::steady_clock::now() < deadline) {
     {
-      std::lock_guard<std::mutex> lock(mutex_);
+      std::lock_guard<EngineMutex> lock(mutex_);
       if (cancelled && cancelled()) return nullptr;
       const auto snapshot = state_.snapshot();
       if (snapshot.meetingState == "in-meeting" || snapshot.meetingState == "error") {
@@ -345,7 +350,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   if (cancelled && cancelled()) return nullptr;
   retireTimedOutJoinLocked("join", "Timed out waiting for Zoom meeting join result.");
   return rawCaptureSnapshotLocked();
@@ -366,7 +371,7 @@ rpc::Json ZoomEngineRuntime::leave() {
     return nullptr;
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   acceptJoinEvents_ = false;
   restartBeforeJoin_ = true;
   if (process_ && process_->running()) {
@@ -395,7 +400,7 @@ rpc::Json ZoomEngineRuntime::stopCapture() {
     return nullptr;
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   // Operator no longer wants raw capture; a later spine sync with
   // startCapture=true (or a Joined event) re-arms via ensureMediaStartedLocked.
   captureRequested_ = false;
@@ -416,7 +421,7 @@ rpc::Json ZoomEngineRuntime::snapshot() {
     return nullptr;
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   return rawCaptureSnapshotLocked();
 }
 
@@ -425,7 +430,7 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
     return nullptr;
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   // Raw capture (StartRawRecording / recording-privilege request) must wait for an
   // explicit operator action — the Studio "Engine On" toggle sets startCapture.
   // Previously this started unconditionally on the first spine sync after join,
@@ -643,13 +648,13 @@ std::vector<VideoFrame> ZoomEngineRuntime::pollCompositorVideoFrames(int64_t tim
   // returns published state (pixel work on the render tick collapsed the
   // audio worker to 8 ticks/s in soak run 15).
   ZoomHandoffCpuScope timing(profileVideoHandoff_, "poll-compositor");
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   timing.acquired();
   return state_.pollCompositorVideoFrames(timestampMs);
 }
 
 std::vector<AudioFrame> ZoomEngineRuntime::pollCompositorAudioFrames(int64_t timestampMs) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   // Z2b: steady-state ring drains happen HERE at the poll cadence (50Hz),
   // with regions held open - decoupled from pipe-event timing entirely.
   for (auto& [uuid, ref] : audioStreams_) {
@@ -693,7 +698,7 @@ std::vector<AudioFrame> ZoomEngineRuntime::pollCompositorAudioFrames(int64_t tim
 }
 
 std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   auto events = std::move(pendingFrameEvents_);
   pendingFrameEvents_.clear();
   for (auto& [_, fact] : pendingSourceFormatEvents_) events.push_back(std::move(fact));
@@ -707,7 +712,7 @@ std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
 
 void ZoomEngineRuntime::setVideoConsumerDemand(const std::vector<SourceVideoDemand>& demands) {
   if (!independentIsoVideoSupported()) return;
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   std::unordered_set<std::string> ids;
   for (const auto& demand : demands)
     if (demand.representation == SourceVideoRepresentation::Cpu && demand.sourceId.rfind("zoom:", 0) == 0)
@@ -742,7 +747,7 @@ void ZoomEngineRuntime::setVideoConsumerDemand(const std::vector<SourceVideoDema
 }
 
 void ZoomEngineRuntime::appendCpuVideoFrames(std::vector<VideoFrame>& destination) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   for (auto& [_, queue] : isoArrivalQueues_) {
     auto frames = queue->take();
     destination.insert(destination.end(), std::make_move_iterator(frames.begin()), std::make_move_iterator(frames.end()));
@@ -751,7 +756,7 @@ void ZoomEngineRuntime::appendCpuVideoFrames(std::vector<VideoFrame>& destinatio
 
 std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t timestampMs) {
   ZoomHandoffCpuScope timing(profileVideoHandoff_, "latest-decoded");
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   timing.acquired();
   // INGEST -> RENDER HANDOFF LATENCY. This is called from the render thread, so
   // `now - observedAt` is exactly how long a decoded frame waited between the
@@ -850,7 +855,7 @@ bool ZoomEngineRuntime::ensureStarted(const std::function<bool()>& cancelled) {
   int connectTimeoutMs = 0;
   std::uint64_t generationAtStart = 0;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<EngineMutex> lock(mutex_);
     if (process_ && process_->running()) {
       return true;
     }
@@ -878,7 +883,7 @@ bool ZoomEngineRuntime::ensureStarted(const std::function<bool()>& cancelled) {
   // "whole studio freezes for the length of every join" P0.
   const bool started = client->start({executablePath, connectTimeoutMs, {}, cancelled});
 
-  std::unique_lock<std::mutex> lock(mutex_);
+  std::unique_lock<EngineMutex> lock(mutex_);
   if ((cancelled && cancelled()) || processGeneration_ != generationAtStart) {
     // Superseded mid-start (test process installed / another restart): discard
     // the freshly spawned process rather than clobbering the newer one.
@@ -913,7 +918,7 @@ void ZoomEngineRuntime::readerLoop() {
     std::shared_ptr<ZoomEngineProcessClient> process;
     std::uint64_t generation;
     {
-      std::lock_guard<std::mutex> lock(mutex_);
+      std::lock_guard<EngineMutex> lock(mutex_);
       if (!readerRunning_ || restartBeforeJoin_ || !process_) {
         return;
       }
@@ -927,7 +932,7 @@ void ZoomEngineRuntime::readerLoop() {
 
     auto event = process->readEvent();
     if (!event) {
-      std::lock_guard<std::mutex> lock(mutex_);
+      std::lock_guard<EngineMutex> lock(mutex_);
       if (readerRunning_ && !restartBeforeJoin_ && generation == processGeneration_) {
         reportEngineLossLocked("Zoom SDK helper connection lost. Rejoin the meeting to restore Zoom media.");
       }
@@ -956,7 +961,7 @@ void ZoomEngineRuntime::reportEngineLossLocked(const std::string& message) {
 }
 
 void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<std::uint64_t> generation) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   if (shuttingDown_ || restartBeforeJoin_ || (generation && *generation != processGeneration_)) return;
   if (event.kind == ZoomEngineEventKind::Joined && !acceptJoinEvents_) {
     // An SDK callback may arrive after Leave was accepted. Keep the current
@@ -996,7 +1001,7 @@ void ZoomEngineRuntime::applyEngineEventForTest(const ZoomEngineEvent& event) { 
 void ZoomEngineRuntime::stopReader() {
   std::shared_ptr<ZoomEngineProcessClient> process;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<EngineMutex> lock(mutex_);
     readerRunning_ = false;
     process = std::move(process_);
   }
@@ -1046,7 +1051,7 @@ void ZoomEngineRuntime::senderLoop() {
     // is replaced concurrently by a restart.
     std::shared_ptr<ZoomEngineProcessClient> process;
     {
-      std::lock_guard<std::mutex> lock(mutex_);
+      std::lock_guard<EngineMutex> lock(mutex_);
       if (item.generation == processGeneration_ && process_) {
         process = process_;
       }
@@ -1065,7 +1070,7 @@ void ZoomEngineRuntime::senderLoop() {
     // in-flight write fail rather than hang.
     const bool sent = process->sendLine(item.line);
     if (!sent) {
-      std::lock_guard<std::mutex> lock(mutex_);
+      std::lock_guard<EngineMutex> lock(mutex_);
       if (item.generation == processGeneration_) {
         state_.apply({ZoomEngineEventKind::Error, "error", "", item.context, process->lastError()});
       }
@@ -1134,7 +1139,7 @@ void ZoomEngineRuntime::noteDroppedEngineSends(std::size_t count, const char* re
 }
 
 void ZoomEngineRuntime::installEngineProcessForTest(std::shared_ptr<ZoomEngineProcessClient> process) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   ++processGeneration_;
   purgeQueuedEngineSendsLocked("engine restart");
   sentSubscriptions_.clear();
@@ -1158,13 +1163,19 @@ std::string ZoomEngineRuntime::directedSpeakerId() {
   if (!configured()) {
     return {};
   }
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   return state_.directedSpeakerIdString();
+}
+
+std::optional<std::vector<std::uint32_t>> ZoomEngineRuntime::rosterIdsIfConfigured() {
+  std::lock_guard<EngineMutex> lock(mutex_);
+  if (config_.executablePath.empty()) return std::nullopt;
+  return state_.participantIds();
 }
 
 std::vector<ZoomEngineParticipant> ZoomEngineRuntime::floorParticipants() {
   if (!configured()) return {};
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   return state_.floorParticipants();
 }
 
@@ -1178,7 +1189,7 @@ void ZoomEngineRuntime::resetSubscriptionChurnLocked() {
 }
 
 rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   // Keep the three video-delivery boundaries visible in the same diagnostic
   // snapshot: engine frame beacons, the shared-memory writer sequence, and the
   // last sequence the core actually published. A subscribed source can retain
@@ -1521,7 +1532,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
   const auto profileLabel = branch == VideoDrain::Iso ? "iso-worker:" + std::to_string(isoWorker) : "latest";
   {
     iso_profile::Scope waiting(profileLabel, iso_profile::CaptureWait);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<EngineMutex> lock(mutex_);
     waiting.finish();
     iso_profile::Scope holding(profileLabel, iso_profile::CaptureHold);
     for (auto& [uuid, ref] : videoStreams_) {
@@ -1680,7 +1691,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
   // Phase 3 (locked, cheap): publish only into the captured stream generation.
   ZoomHandoffCpuScope timing(profileVideoHandoff_, "publish-batch");
   iso_profile::Scope waiting(profileLabel, iso_profile::PublishWait);
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<EngineMutex> lock(mutex_);
   waiting.finish();
   iso_profile::Scope holding(profileLabel, iso_profile::PublishHold);
   timing.acquired();

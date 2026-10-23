@@ -6087,7 +6087,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (!videoOnly && !audioWorkerActive_) {
     // Single-threaded test/sync path: already under coreMutex and nothing else
     // is running, so there is no contention to avoid — poll inline.
-    auto work = gatherAudioOutputWork(pollZoomAudioUnlocked());
+    auto work = gatherAudioOutputWork(pollZoomAudioUnlocked(), readZoomRosterIdsUnlocked());
     const auto results = runAudioOutputWork(work);
     publishAudioOutputResults(results);
   }
@@ -6220,8 +6220,24 @@ std::vector<modules::AudioFrame> MediaCore::pollZoomAudioUnlocked() {
   return audioFrames;
 }
 
+std::optional<std::unordered_set<std::string>> MediaCore::readZoomRosterIdsUnlocked() {
+  if (!zoomEngineRuntime_) return std::nullopt;
+  auto ids = zoomEngineRuntime_->rosterIdsIfConfigured();
+  if (!ids) return std::nullopt;
+  std::unordered_set<std::string> result;
+  result.reserve(ids->size());
+  for (const auto id : *ids)
+    if (id != 0) result.insert(std::to_string(id));
+  return result;
+}
+
 MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
-    std::vector<modules::AudioFrame> prePolledZoomAudio) {
+    std::vector<modules::AudioFrame> prePolledZoomAudio,
+    std::optional<std::unordered_set<std::string>> prePolledRosterIds) {
+  // #1030 guardrail: this runs under coreMutex on a sub-ms budget. Any engine
+  // mutex acquisition in here is counted (EngineMutexGuardrail) and fails
+  // MediaCoreCommandTest's gather guardrail test.
+  modules::ForbidEngineMutexScope noEngineMutex("audio.gather");
   AudioOutputWorkItem work;
   work.controlRevision = appliedControlRevision_;
   work.valid = true;
@@ -6271,12 +6287,10 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   // #1030: a Zoom ISO participant who left the meeting must stop being
   // silence-filled. Writing silence to a stem whose video had stopped grew the
   // file forever and wedged its Media Foundation writer. The roster is the
-  // departure signal (the same one the shell logs as roster-drop).
-  if (work.recordingActive && !recordingIsoParticipantIds_.empty() && zoomEngineRuntime_ &&
-      zoomEngineRuntime_->configured()) {
-    std::unordered_set<std::string> rosterIds;
-    for (const auto& participant : zoomEngineRuntime_->floorParticipants())
-      if (participant.id != 0) rosterIds.insert(std::to_string(participant.id));
+  // departure signal (the same one the shell logs as roster-drop). It was read
+  // by the caller BEFORE coreMutex; nothing here touches the engine mutex.
+  if (work.recordingActive && !recordingIsoParticipantIds_.empty() && prePolledRosterIds) {
+    const auto& rosterIds = *prePolledRosterIds;
     std::vector<std::string> selected;
     selected.reserve(recordingIsoParticipantIds_.size());
     for (const auto& id : recordingIsoParticipantIds_) selected.push_back(normalizeIsoSourceId(id));
@@ -7393,6 +7407,7 @@ void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
   // OUTSIDE the lock: blocking on the engine mutex while holding coreMutex is
   // what put this site 8x over its sub-ms budget.
   auto zoomAudio = pollZoomAudioUnlocked();
+  auto rosterIds = readZoomRosterIdsUnlocked();
   AudioOutputWorkItem work;
   {
     std::lock_guard<std::mutex> lock(coreMutex);
@@ -7401,7 +7416,7 @@ void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
     // audioOutputMutex_ only. An over-budget hold here means blocking work
     // crept back under the big lock.
     ScopedLockHoldTimer holdTimer("audio.gather", LockHoldGuardrail::kDefaultBudgetUs);
-    work = gatherAudioOutputWork(std::move(zoomAudio));
+    work = gatherAudioOutputWork(std::move(zoomAudio), std::move(rosterIds));
   }
   AudioOutputResults results;
   {

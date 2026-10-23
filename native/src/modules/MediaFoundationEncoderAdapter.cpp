@@ -255,6 +255,9 @@ class Mp4Writer {
     lastVideoEnd100ns_ = 0;
     lastAudioEnd100ns_ = 0;
     maxAudioPtsEnd100ns_ = 0;
+    lastVideoTick100ns_ = 0;
+    videoStreamTicks_ = 0;
+    videoTickFailureLogged_ = false;
     path_ = path;
     videoInput_ = videoInput;
     // NV12 requires even luma dimensions; floor to even (Zoom I420 is already even).
@@ -703,9 +706,11 @@ class Mp4Writer {
       errorOut = "write audio sample: " + hresultString(result);
       return false;
     }
+    logWriterDiagnosticIfDue(std::chrono::steady_clock::now(), "audio");
     ++audioPacketCount_;
     audioSampleCount_ += frameCount;
     muxAudioSampleCount_ += frameCount;
+    tickStalledVideo(muxPts100ns + duration100ns);
     // Media Foundation's AAC transform emits one continuous sample-counted
     // stream (including synthetic silence) even when input PTS are sparse.
     // This cumulative endpoint therefore matches the finalized container;
@@ -838,13 +843,14 @@ class Mp4Writer {
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
         } while (std::chrono::steady_clock::now() < deadline);
         ::corevideo::core::nativeLogf("[recording] drain file=%s received=%llu encoded=%llu processed=%llu "
-                     "lastReceived=%.3fs lastProcessed=%.3fs\n",
+                     "lastReceived=%.3fs lastProcessed=%.3fs queued_bytes=%llu\n",
                      path_.filename().string().c_str(),
                      static_cast<unsigned long long>(stats.qwNumSamplesReceived),
                      static_cast<unsigned long long>(stats.qwNumSamplesEncoded),
                      static_cast<unsigned long long>(stats.qwNumSamplesProcessed),
                      stats.llLastTimestampReceived / 10'000'000.0,
-                     stats.llLastTimestampProcessed / 10'000'000.0);
+                     stats.llLastTimestampProcessed / 10'000'000.0,
+                     static_cast<unsigned long long>(sinkQueuedBytes()));
       }
       const auto closeResult = sinkWriter_->Finalize();
       if (SUCCEEDED(finalizeResult)) finalizeResult = closeResult;
@@ -951,6 +957,34 @@ class Mp4Writer {
     return S_OK;
   }
 
+  // #1030: with throttling disabled, audio that runs ahead of a stopped video
+  // stream is accepted but the fragmented-MP4 sink holds it for interleave, so
+  // it accumulated in memory (measured: 30 s of audio, 4.7 MB queued, zero
+  // bytes on disk). MF's own signal for a sparse stream is a stream tick: it
+  // tells the sink there is no video up to that time so audio-only fragments
+  // can be written. Sent at most once per second of media while video is
+  // more than one second behind.
+  void tickStalledVideo(LONGLONG audioEnd100ns) {
+    if (!sinkWriter_ || videoFrameCount_ <= 0) return;
+    constexpr LONGLONG kBehind100ns = 10'000'000LL;
+    const LONGLONG videoEnd = (std::max)(lastVideoEnd100ns_, lastVideoTick100ns_ + kBehind100ns / 2);
+    if (audioEnd100ns - videoEnd < kBehind100ns) return;
+    // The held VFR frame cannot follow a tick (its PTS would be behind it):
+    // give it its nominal duration now. The tick trails audio by 0.5 s so a
+    // camera that resumes is never stamped behind the gap marker.
+    if (FAILED(flushPendingVideoSample())) return;
+    const LONGLONG tickAt = audioEnd100ns - kBehind100ns / 2;
+    const HRESULT hr = sinkWriter_->SendStreamTick(videoStreamIndex_, tickAt);
+    if (SUCCEEDED(hr)) {
+      lastVideoTick100ns_ = tickAt;
+      ++videoStreamTicks_;
+    } else if (!videoTickFailureLogged_) {
+      videoTickFailureLogged_ = true;
+      ::corevideo::core::nativeLogf("[recording] video stream tick FAILED hr=%s file=%s\n",
+                                    hresultString(hr).c_str(), path_.filename().string().c_str());
+    }
+  }
+
   HRESULT flushPendingVideoSample() {
     if (!pendingVideoSample_) return S_OK;
     const auto hr = submitVideoSample(pendingVideoSample_.Get());
@@ -965,19 +999,46 @@ class Mp4Writer {
     const auto us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
     sampleWriteUs_ += us;
     sampleWriteMaxUs_ = std::max(sampleWriteMaxUs_, us);
-    if (end >= nextWriterDiagnostic_) {
-      nextWriterDiagnostic_ = end + std::chrono::seconds(10);
-      MF_SINK_WRITER_STATISTICS stats{}; stats.cb = sizeof(stats);
-      sinkWriter_->GetStatistics(videoStreamIndex_, &stats);
-      ::corevideo::core::nativeLogf("[recording-writer] file=%s samples=%llu encoded=%llu processed=%llu queued_bytes=%lu write_us=%llu max_write_us=%llu length_us=%llu received_pts=%.3f encoded_pts=%.3f\n",
-          path_.filename().string().c_str(), static_cast<unsigned long long>(stats.qwNumSamplesReceived),
-          static_cast<unsigned long long>(stats.qwNumSamplesEncoded), static_cast<unsigned long long>(stats.qwNumSamplesProcessed),
-          static_cast<unsigned long>(stats.dwByteCountQueued), static_cast<unsigned long long>(sampleWriteUs_),
-          static_cast<unsigned long long>(sampleWriteMaxUs_), static_cast<unsigned long long>(lengthReadUs_),
-          stats.llLastTimestampReceived / 10000000.0, stats.llLastTimestampEncoded / 10000000.0);
-    }
+    logWriterDiagnosticIfDue(end, "video");
     return result;
   }
+
+  // #1030: with MF throttling disabled nothing blocks a stream that runs ahead
+  // of its sibling, so this is the evidence that samples reach disk instead of
+  // accumulating inside the sink writer. Called from BOTH the video and the
+  // audio write path: an ISO whose video stopped must still report.
+  // queued_bytes is the sink writer's total across streams.
+  void logWriterDiagnosticIfDue(std::chrono::steady_clock::time_point now, const char* path) {
+    if (now < nextWriterDiagnostic_ || !sinkWriter_) return;
+    nextWriterDiagnostic_ = now + std::chrono::seconds(10);
+    MF_SINK_WRITER_STATISTICS stats{}; stats.cb = sizeof(stats);
+    sinkWriter_->GetStatistics(videoStreamIndex_, &stats);
+    const auto queued = sinkQueuedBytes();
+    ::corevideo::core::nativeLogf("[recording-writer] file=%s via=%s samples=%llu encoded=%llu processed=%llu queued_bytes=%llu write_us=%llu max_write_us=%llu length_us=%llu received_pts=%.3f encoded_pts=%.3f audio_end=%.3f\n",
+        path_.filename().string().c_str(), path, static_cast<unsigned long long>(stats.qwNumSamplesReceived),
+        static_cast<unsigned long long>(stats.qwNumSamplesEncoded), static_cast<unsigned long long>(stats.qwNumSamplesProcessed),
+        static_cast<unsigned long long>(queued), static_cast<unsigned long long>(sampleWriteUs_),
+        static_cast<unsigned long long>(sampleWriteMaxUs_), static_cast<unsigned long long>(lengthReadUs_),
+        stats.llLastTimestampReceived / 10000000.0, stats.llLastTimestampEncoded / 10000000.0,
+        lastAudioEnd100ns_ / 10000000.0);
+  }
+
+ public:
+  // Bytes the sink writer holds that have not reached the media sink, summed
+  // over every stream (MF_SINK_WRITER_STATISTICS::dwByteCountQueued). 0 when
+  // not writing.
+  [[nodiscard]] uint64_t sinkQueuedBytes() const {
+    if (!sinkWriter_) return 0;
+    uint64_t total = 0;
+    for (DWORD stream : {videoStreamIndex_, audioStreamIndex_}) {
+      if (stream == audioStreamIndex_ && !audioConfigured_) continue;
+      MF_SINK_WRITER_STATISTICS stats{}; stats.cb = sizeof(stats);
+      if (SUCCEEDED(sinkWriter_->GetStatistics(stream, &stats))) total += stats.dwByteCountQueued;
+    }
+    return total;
+  }
+
+ private:
 
   HRESULT createFragmentedSink(std::string& errorOut) {
     HRESULT result = MFCreateFile(MF_ACCESSMODE_WRITE, MF_OPENMODE_DELETE_IF_EXIST,
@@ -1083,6 +1144,9 @@ class Mp4Writer {
   LONGLONG lastVideoEnd100ns_ = 0;
   LONGLONG lastAudioEnd100ns_ = 0;
   LONGLONG maxAudioPtsEnd100ns_ = 0;
+  LONGLONG lastVideoTick100ns_ = 0;  // #1030 last SendStreamTick on video
+  int64_t videoStreamTicks_ = 0;
+  bool videoTickFailureLogged_ = false;
   bool open_ = false;
   bool variableVideoDurations_ = false;
   ComPtr<IMFSample> pendingVideoSample_;
@@ -1447,6 +1511,15 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
             "restart the media core to record again.");
       }
       ::corevideo::core::nativeLogf("[recording] abandoned Program writer exited late; recording available again\n");
+      // Its late finalize published the final snapshot; adopt it so the take's
+      // terminal state reads "stopped", never the abandoned thread's "recording".
+      {
+        std::lock_guard<std::mutex> lock(programSnapshotMutex_);
+        if (programSnapshot_.recordingStatus == "recording" || programSnapshot_.recordingStatus == "warning")
+          programSnapshot_.recordingStatus = "stopped";
+      }
+      session_ = session();
+      session_.recordingStatus = "stopped";
       programWorker_.reset();
       programAbandoned_ = false;
     }
@@ -1518,7 +1591,25 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         programWorker_ = std::make_unique<RecordingTrackWorker>([this] {
           programWorkerComInitialized_ = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
         }, [this] {
-          finalizeProgram(); publishProgramSnapshot();
+          finalizeProgram();
+          if (programWorker_ && programWorker_->abandoned()) {
+            // #1030: a LATE finalize after the lane abandoned this worker. Stop
+            // already returned (and skipped session_), so settle the terminal
+            // state here, on the thread that owns session_, and keep saying
+            // what happened instead of reverting to "recording".
+            if (session_.recordingStatus == "recording" || session_.recordingStatus == "warning")
+              session_.recordingStatus = "stopped";
+            session_.recordingWarning =
+                "The Program recording writer stopped responding at Stop and finalized late; "
+                "Program.mp4 is complete.";
+            std::lock_guard<std::mutex> lock(programSnapshotMutex_);
+            // Keep the ISO outcomes the lane published beside the abandoned
+            // Program; Program's own abandonment no longer applies.
+            session_.isoStreams = programSnapshot_.isoStreams;
+            session_.recordingError = abandonedIsoNote_;
+            if (!abandonedIsoNote_.empty()) session_.recordingWarning += " " + abandonedIsoNote_;
+          }
+          publishProgramSnapshot();
           if (programWorkerComInitialized_) CoUninitialize();
         }, activeRequest_.writeQueueDepth, 96, 96,
            true, static_cast<uint64_t>(48000) * activeRequest_.writeQueueDepth /
@@ -2485,10 +2576,17 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // of the show and kept the core from exiting. One shared deadline covers
     // every join; a worker still running at the deadline is abandoned, logged
     // loudly, and parked (never destroyed under its thread).
-    const auto joinDeadline = std::chrono::steady_clock::now() + trackJoinBound_;
+    const auto joinBegin = std::chrono::steady_clock::now();
+    const auto joinDeadline = joinBegin + trackJoinBound_;
+    const auto sinceJoinBegin = [&] {
+      return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - joinBegin).count());
+    };
     if (programWorker_) {
       programWorker_->close();
       if (programWorker_->joinFor(remainingUntil(joinDeadline))) {
+        ::corevideo::core::nativeLogf("[recording] close program joined at %lldms (bound %lldms)\n",
+            sinceJoinBegin(), static_cast<long long>(trackJoinBound_.count()));
         session_ = session();
         programWorker_.reset();
       } else {
@@ -2513,9 +2611,14 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
               static_cast<unsigned long long>(e.abandonedItems), static_cast<unsigned long long>(e.completedVideo));
           const std::string warning = "ISO writer for " + iso->displayName +
               " stopped responding and was abandoned at Stop; the file keeps the fragments written before that.";
+          // Name EVERY abandoned file, including beside an abandoned Program.
           if (report.recordingError.empty()) report.recordingError = warning;
+          else if (report.recordingError.find(warning) == std::string::npos)
+            report.recordingError += " " + warning;
           continue;
         }
+        ::corevideo::core::nativeLogf("[recording] close iso %s joined at %lldms (bound %lldms)\n",
+            iso->sourceId.c_str(), sinceJoinBegin(), static_cast<long long>(trackJoinBound_.count()));
         const auto e = iso->worker->evidence();
         ::corevideo::core::nativeLogf("[iso-writer] source=%s path=%s accepted=%llu written=%lld dropped_video=%llu dropped_audio=%llu video_work_us=%llu audio_work_us=%llu max_work_us=%llu\n",
             iso->sourceId.c_str(), isoEncoderPathId(iso->encoderPath),
@@ -2533,6 +2636,13 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       // snapshot; session_ still belongs to the abandoned Program thread.
       std::lock_guard<std::mutex> lock(programSnapshotMutex_);
       programSnapshot_.isoStreams = report.isoStreams;
+      programSnapshot_.recordingError = report.recordingError;
+      programSnapshot_.recordingWarning = report.recordingError;
+      abandonedIsoNote_.clear();
+      for (const auto& iso : isoWriters_)
+        if (iso->abandoned.load(std::memory_order_acquire))
+          abandonedIsoNote_ += (abandonedIsoNote_.empty() ? "" : " ") + std::string("ISO writer for ") +
+              iso->displayName + " stopped responding and was abandoned at Stop; the file keeps the fragments written before that.";
     } else if (session_.recordingWarning.empty()) {
       // Surface the finalized on-disk size of the program file.
       updateBytesWritten();
@@ -2598,6 +2708,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   std::chrono::milliseconds trackJoinBound_ = trackJoinBoundFromEnvironment();
   bool programAbandoned_ = false;
   std::vector<std::unique_ptr<IsoWriterEntry>> abandonedIsoWriters_;
+  // ISO abandonments that happened beside an abandoned Program; read by its
+  // late finalize. Guarded by programSnapshotMutex_.
+  std::string abandonedIsoNote_;
   bool dispatchActive_ = false;
   std::atomic<int64_t> muxEpoch_{0};
   std::mutex epochMutex_;

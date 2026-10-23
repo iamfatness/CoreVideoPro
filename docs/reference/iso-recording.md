@@ -117,40 +117,78 @@ dump and symbolized stacks are in `D:\CoreVideo-QA\soak-20261023-01\`.
 
 Four guards, each sufficient for a different failure:
 
-1. **No throttling.** `Mp4Writer::createFragmentedSink` is the single creation
-   path for Program.mp4 and every ISO file; it sets
-   `MF_SINK_WRITER_DISABLE_THROTTLING = TRUE` (a failed set fails the open
-   loudly). The adapter paces itself with bounded per-file queues on the shared
-   capture epoch, so throttling only converted a stalled sibling stream into an
-   indefinite block. This applies to Program too: Program audio outrunning its
-   video would have hit the same block.
-2. **No silence for a departed participant.** At audio gather (under
-   coreMutex) the core compares the selected `zoom:` ISO ids against the
-   engine's floor roster (`core::departedIsoSources`, `core/IsoDeparture.h`) and
-   marks `IsoSourceAudio::departed`. The MF sink neither queues nor writes a
-   departed tick that carries no PCM, and logs the departure once. The stem ends
-   at its last real media and the close-time tail reconcile aligns it with the
-   last video frame, so the file finalizes with the real duration. An empty
-   roster is "unknown", never "everyone left". Real PCM is still written, and a
+1. **No throttling, and a replacement for its back-pressure.**
+   `Mp4Writer::createFragmentedSink` is the single creation path for
+   Program.mp4 and every ISO file; it sets `MF_SINK_WRITER_DISABLE_THROTTLING =
+   TRUE` (a failed set fails the open loudly). Throttling only converted a
+   stalled sibling stream into an indefinite block (Program included). BUT it
+   was the only thing stopping audio from running ahead of video, and the
+   fragmented-MP4 sink holds audio for interleave: measured with throttling off
+   and nothing else, 30 s of audio-only after the video stopped left **4.7 MB
+   queued inside the sink writer and zero bytes on disk** (PCM accumulating,
+   ~690 MB per hour of camera-off). That is the case a present participant
+   with the camera off produces (IsoVideoIngress submits only distinct frames,
+   and they keep their stem). The fix is MF's own sparse-stream signal:
+   `Mp4Writer::tickStalledVideo` sends `IMFSinkWriter::SendStreamTick` on the
+   video stream once per second of media while video is more than 1 s behind
+   the audio (trailing audio by 0.5 s so a resumed camera is never stamped
+   behind the gap marker; the held VFR frame is flushed first). Measured with
+   it: the same 30 s reached disk as audio-only fragments before Stop
+   (+522 KB, about 63 MB per hour of audio-only on disk), `queued_bytes=0` at
+   the Finalize drain, and a camera that resumed afterwards muxed every frame
+   with no dropped-video warning. In memory the sink holds at most about 1.5 s
+   of PCM per stalled file (~290 KB) between ticks. Evidence: the
+   `[recording-writer] ... queued_bytes=` diagnostic now fires from the audio
+   path too (`via=audio`), so it no longer goes silent exactly when video
+   stops, and the Finalize `drain` line reports `queued_bytes`.
+2. **No silence for a departed participant.** The audio worker reads the
+   meeting roster's ids BEFORE taking coreMutex
+   (`MediaCore::readZoomRosterIdsUnlocked`, through
+   `ZoomEngineRuntime::rosterIdsIfConfigured`), exactly like
+   `pollZoomAudioUnlocked`: the engine mutex is held across event handling and
+   the ingest poll, and taking it under coreMutex on the sub-ms gather measured
+   8.5 ms. The gather compares the selected `zoom:` ISO ids with that set
+   (`core::departedIsoSources`, `core/IsoDeparture.h`) and marks
+   `IsoSourceAudio::departed`. The MF sink neither queues nor writes a departed
+   tick that carries no PCM, and logs the departure once. The stem ends at its
+   last real media and the close-time tail reconcile aligns it with the last
+   video frame, so the file finalizes with the real duration. An empty roster
+   is "unknown", never "everyone left". Real PCM is still written, and a
    participant who returns resumes the stem; `isoAudioAdvance` bridges the gap
    with silence at that moment, so sync is unchanged. Camera-off participants
    still in the meeting are deliberately NOT treated as departed: their stems
-   keep full length.
+   keep full length (guard 1 keeps that bounded).
+   **Lock guardrail:** `ZoomEngineRuntime::mutex_` is an `EngineMutex`
+   (`modules/EngineMutexGuardrail.h`); `gatherAudioOutputWork` opens a
+   `ForbidEngineMutexScope`, and any engine-mutex acquisition inside it is
+   counted and logged once. Adding it found a pre-existing violation:
+   `ZoomEngineRuntime::configured()` took the engine mutex on every gather (via
+   `observeZoomGuestAvEpoch`). `configured()` is now lock-free (an atomic
+   mirror refreshed wherever `config_` is loaded).
+   `MediaCoreIsoDeparture.RosterDropMarksTheIsoDepartedThroughTheGatherWithoutTheEngineMutex`
+   drives a real roster drop through the gather and asserts the counter.
 3. **Bounded joins.** `RecordingTrackWorker::joinFor(bound)` waits for the
    thread to finish (finalize included); `abandon()` discards queued work (it
    may reference the sink), detaches the thread, and lets a write that returns
    late still run the finalize. `closeWriters()` gives all joins one shared
-   deadline, 4000 ms after the last close (`Mp4Writer::finalize` alone may spend
-   its full 2 s encoder drain; the hardware H.264 MFT held 20 of 51 frames in
-   the tests)
+   deadline, 4000 ms after the last close
    (`COREVIDEO_RECORDING_TRACK_JOIN_BOUND_MS`, 50..60000, overrides it for
-   drills and tests). An ISO that misses it is logged `[iso-writer] ABANDONED`,
-   named in the ISO status warning and `recordingError`, and parked in
-   `abandonedIsoWriters_` (reaped once its thread exits, leaked at sink
-   destruction if it never does; `MFShutdown` is skipped while any abandoned
-   writer still runs). A Program writer that misses it poisons the sink: new
-   Starts throw a named error until that thread exits (then recording recovers
-   by itself), and `IEncoderSink::mustOutliveTeardown()` makes
+   drills and tests). Each join logs `[recording] close ... joined at Nms`.
+   Measured with `validate-iso-record.mjs --sources 8 --seconds 20` (1080p60,
+   RTX 4090, 7 hardware + 1 software ISO): every ISO finalized during the
+   8 x 100 ms close stagger and was joined at 38 ms of the deadline, Program at
+   20-38 ms, so 4 s keeps a wide margin and was not raised. A Finalize can
+   still legitimately spend its own 2 s encoder drain (the tiny 640x360 test
+   files hit it: the H.264 MFT held 20 of 51 frames), which is why the bound is
+   not lower. An ISO that misses it is logged `[iso-writer] ABANDONED`, named in
+   the ISO status warning and in `recordingError` (every abandoned file,
+   including beside an abandoned Program), and parked in `abandonedIsoWriters_`
+   (reaped once its thread exits, leaked at sink destruction if it never does;
+   `MFShutdown` is skipped while any abandoned writer still runs). A Program
+   writer that misses it poisons the sink: new Starts throw a named error until
+   that thread exits; its late finalize settles the take as `stopped` with a
+   "finalized late" warning (keeping any ISO abandonment notes), and recording
+   then recovers by itself. `IEncoderSink::mustOutliveTeardown()` makes
    `AsyncEncoderSink::State` leak the sink at teardown instead of destroying it
    under the live thread. **Lifetime rule:** never destroy an abandoned worker,
    or anything its in-flight work or finalize references, before `exited()`.
@@ -160,19 +198,21 @@ Four guards, each sufficient for a different failure:
    same about that file.
 
 Tests: `RecordingTrackWorker.BoundedJoin*` (healthy join, blocked write
-abandoned and finalized late, writer stuck in finalize),
-`IsoDeparture.*`, and, Windows MF only,
+abandoned and finalized late, writer stuck in finalize), `IsoDeparture.*`,
+`MediaCoreIsoDeparture.*` (roster drop through the real gather, guardrail),
+and, Windows MF only,
 `EncoderRecordingSession.MediaFoundationIsoWhoseVideoStopsWhileAudioContinuesClosesWithinBound`
-(30 s of post-departure silence ahead of stopped video; Stop must finish inside
-3.5 s and never by abandonment), `...DepartedIsoParticipantIsNotSilenceFilled`
-(the stem stays under 3 s instead of 31 s) and
-`...StopAbandonsAnIsoWriterThatMissesTheJoinBound` (the stall QA seam held past
-a 3 s bound: Stop returns, the file is named, the next take runs, the late
-writer is reaped) and `...AbandonedProgramWriterRefusesThenRecovers` (Program
-stalled past the bound: Start is refused by name, then recovers once the late
-finalize exits). With the throttling attribute removed, the first test fails:
-the writer blocks in the silence write and is abandoned at the 4 s bound, which
-is the live wedge minus the unbounded join. The live show itself was not
+(30 s of silence ahead of stopped video must reach disk before Stop, the
+camera then resumes cleanly, Stop finishes inside 3.5 s and never by
+abandonment), `...DepartedIsoParticipantIsNotSilenceFilled` (the stem stays
+under 3 s instead of 31 s), `...StopAbandonsAnIsoWriterThatMissesTheJoinBound`
+(the stall QA seam held past a 3 s bound: Stop returns, the file is named, the
+next take runs, the late writer is reaped) and
+`...AbandonedProgramWriterRefusesThenRecovers` (Program stalled past the bound:
+Start is refused by name, the late finalize settles "stopped", then recording
+recovers). With the throttling attribute removed, the first test fails: the
+writer blocks in the silence write and is abandoned at the 4 s bound, which is
+the live wedge minus the unbounded join. The live show itself was not
 reproduced; these tests prove each guard, not the show.
 
 ## ISO recording — ISO-1 (per-source Zoom VIDEO ISO, 2026-07-20)

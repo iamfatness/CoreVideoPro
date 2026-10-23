@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -2063,7 +2064,8 @@ void submitProgramTick(corevideo::modules::IEncoderSink& encoder, int64_t at) {
 // `silentTicks` audio-only ticks with NO video: the participant has left. The
 // timeline runs ahead of the wall clock so 30 s of departure costs ~1.5 s.
 void driveDeparture(corevideo::modules::IEncoderSink& encoder, int64_t base,
-                    corevideo::modules::ProgramFrame& frame, int silentTicks, bool markDeparted) {
+                    corevideo::modules::ProgramFrame& frame, int silentTicks, bool markDeparted,
+                    const std::function<void()>& afterLivePhase = {}) {
   constexpr int kLiveTicks = 50;
   constexpr int64_t kTick100ns = 200'000;  // 20 ms
   int64_t sourceFrames = 0;
@@ -2082,6 +2084,7 @@ void driveDeparture(corevideo::modules::IEncoderSink& encoder, int64_t base,
     sourceFrames += 960;
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
+  if (afterLivePhase) afterLivePhase();
   for (int tick = kLiveTicks + 1; tick <= kLiveTicks + silentTicks; ++tick) {
     corevideo::modules::IsoSourceAudio silent;  // the core's empty tick: no PCM
     silent.sourceId = "zoom:1";
@@ -2091,6 +2094,23 @@ void driveDeparture(corevideo::modules::IEncoderSink& encoder, int64_t base,
     encoder.submitIsoAudio({silent});
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
+}
+
+// Waits until the ISO's file worker has drained, then returns the on-disk
+// size of its fragmented MP4 (fragments are written as the sink emits them).
+uint64_t drainedIsoFileBytes(corevideo::modules::IEncoderSink& encoder) {
+  std::string path;
+  for (int i = 0; i < 500; ++i) {
+    const auto s = encoder.session();
+    if (s.isoStreams.size() == 1 && s.isoStreams[0].queuedAudioPackets == 0 &&
+        s.isoStreams[0].queuedVideoFrames == 0) { path = s.isoStreams[0].path; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  // Give the fragment writer (>= 1 s fragments of media time) its moment.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::error_code ec;
+  const auto size = path.empty() ? 0 : std::filesystem::file_size(path, ec);
+  return ec ? 0 : static_cast<uint64_t>(size);
 }
 
 int64_t elapsedMs(std::chrono::steady_clock::time_point begin) {
@@ -2118,13 +2138,36 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWhoseVideoStopsWhileAudioContinu
   int64_t base = 0;
   ASSERT_TRUE(openDepartureTake(*encoder, base, frame));
 
-  driveDeparture(*encoder, base, frame, 1500, /*markDeparted=*/false);
+  uint64_t bytesAtDeparture = 0;
+  driveDeparture(*encoder, base, frame, 1500, /*markDeparted=*/false,
+                 [&] { bytesAtDeparture = drainedIsoFileBytes(*encoder); });
   // Let the file worker reach the silence; a throttled writer stops here.
-  for (int i = 0; i < 300; ++i) {
-    const auto s = encoder->session();
-    if (s.isoStreams.size() == 1 && s.isoStreams[0].queuedAudioPackets == 0) break;
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  const uint64_t bytesAfterSilence = drainedIsoFileBytes(*encoder);
+  // Blocker 2 of the #1030 review: with throttling off nothing blocks audio
+  // that runs ahead of stopped video, so prove it is not merely accumulating
+  // inside the sink writer: 30 s of AAC (128 kbps nominal) must reach disk as
+  // audio-only fragments BEFORE Stop, not appear only at Finalize.
+  std::printf("[iso-departure-growth] bytes_at_departure=%llu bytes_after_30s_silence=%llu growth=%llu\n",
+              static_cast<unsigned long long>(bytesAtDeparture),
+              static_cast<unsigned long long>(bytesAfterSilence),
+              static_cast<unsigned long long>(bytesAfterSilence - (std::min)(bytesAfterSilence, bytesAtDeparture)));
+  EXPECT_GT(bytesAtDeparture, 0u);
+  EXPECT_GT(bytesAfterSilence, bytesAtDeparture + 100'000)
+      << "audio after the video stopped did not reach disk; the sink writer is holding it";
+
+  // The camera comes back after the gap: frames stamped after the video
+  // stream ticks are accepted (no dropped-video warning) and muxed.
+  constexpr int64_t kTick = 200'000;
+  for (int tick = 1551; tick <= 1560; ++tick) {
+    const int64_t at = base + tick * kTick;
+    auto video = makeIsoI420("zoom:1", 640, 360, tick, 40);
+    video.timelineTimestamp100ns = at;
+    encoder->submitIsoVideo({video});
+    auto tone = makeIsoTone("zoom:1", 960, 1, 220.0, tick * 960LL);
+    tone.timelineTimestamp100ns = at;
+    encoder->submitIsoAudio({tone});
   }
+  (void)drainedIsoFileBytes(*encoder);
 
   const auto stopBegin = std::chrono::steady_clock::now();
   encoder->stopRecording();
@@ -2139,6 +2182,8 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWhoseVideoStopsWhileAudioContinu
   // The scenario really reached the writer: ~30 s of silence after one second
   // of real audio was muxed, ahead of a video track that had stopped.
   EXPECT_GT(s.isoStreams[0].audioSampleCount, 48000LL * 20);
+  EXPECT_EQ(s.isoStreams[0].warning.find("dropped video"), std::string::npos) << s.isoStreams[0].warning;
+  EXPECT_GE(s.isoStreams[0].videoFrameCount, 60) << "resumed camera frames must be muxed after the stall";
   encoder.reset();
   fs::remove_all(targetDir, ec);
 }
@@ -2315,6 +2360,10 @@ TEST(EncoderRecordingSession, MediaFoundationAbandonedProgramWriterRefusesThenRe
 
   // The stall ends; Program finalizes late and the sink recovers on its own.
   std::this_thread::sleep_for(std::chrono::milliseconds(7000));
+  // The late finalize settles the take: "stopped", and it says what happened.
+  const auto settled = encoder->session();
+  EXPECT_EQ(settled.recordingStatus, "stopped");
+  EXPECT_NE(settled.recordingWarning.find("finalized late"), std::string::npos) << settled.recordingWarning;
   bool recovered = true;
   try { encoder->start({"recording"}, {}); } catch (...) { recovered = false; }
   ASSERT_TRUE(recovered) << "recording must recover once the abandoned writer has exited";
