@@ -78,7 +78,7 @@ retries the same destination successfully.
 the existing real silent install / runtime probe / duplicate rejection /
 uninstall / user-file preservation.
 
-**T2.1 / #433 is DONE in code (2026-10-23), pending installed acceptance.** Setup now
+**T2.1 / #433 is implemented (PR #1033, 2026-10-23); installed acceptance is pending.** Setup now
 does all three:
 
 - **Virtual camera** - registered by `Install-VirtualCamera.ps1` (already so; unchanged).
@@ -90,7 +90,8 @@ does all three:
   `HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\<exe>` with
   `DumpFolder` = `%LOCALAPPDATA%\CoreVideoPro\crashes` (REG_EXPAND_SZ), `DumpType` = 2
   (full), `DumpCount` = 5, plus a `CoreVideoProInstaller` marker value. Interactive setup
-  passes `-AllowElevation` (a RunAs child, one UAC prompt); silent `/S` setup must already
+  passes `-AllowElevation` (a RunAs child; this is a second UAC prompt after the camera's,
+  and the welcome page says so); silent `/S` setup must already
   be elevated, exactly like the camera step. **It never fails setup**: a declined prompt
   or refused write exits 2, is `DetailPrint`ed, appended to
   `%LOCALAPPDATA%\CoreVideoPro\installer-logs\<release>-crashdumps.log`, shown in a
@@ -98,12 +99,21 @@ does all three:
   example one from `scripts/setup-crash-dumps.ps1`) is preserved, not overwritten.
   Uninstall removes only marked keys, and keeps them while another CoreVideo Pro version
   is still registered (the exe names are shared across versions).
+- **64-bit registry view is REQUIRED.** The installer is a 32-bit NSIS binary, so the
+  PowerShell it launches is the 32-bit SysWOW64 host, and the `HKLM:` PSDrive follows the
+  process view: it would write `HKLM\SOFTWARE\WOW6432Node\...`, which WerFault never reads
+  for 64-bit processes (zero dumps, silently). `Install-CrashDumps.ps1` therefore opens the
+  hive with `OpenBaseKey(LocalMachine, Registry64)` for every read, write, marker check and
+  removal, the same precedent as `Install-VirtualCamera.ps1` and
+  `VirtualCameraRegistration.psm1` (`Get-CameraRuntimeRoot`). Never use `HKLM:`,
+  `New-Item` or `Set-ItemProperty` against LocalDumps. An elevated child that reports no exit
+  code is treated as unknown and verified by reading the 64-bit keys back.
 - **Recording folder** - created if missing at the app's own default
   (`RecordingFolderPolicy`: the user's Videos known folder + `CoreVideo Pro`, else
   `%LOCALAPPDATA%\CoreVideo Pro`; NSIS `$VIDEOS`, so a redirected Videos folder is
   honoured). `CreateDirectory` never clobbers; uninstall preserves it.
 
-Tests: `Test-CrashDumps.ps1` (runs unelevated against a throwaway HKCU key; in CI
+Tests: `Test-CrashDumps.ps1` (runs unelevated against a throwaway HKCU key, including from the 32-bit SysWOW64 PowerShell to exercise WOW64 redirection; in CI
 `native-shell-windows`) covers values/kinds, idempotence, foreign-key preservation,
 shared-install retention, and the loud non-fatal refusal. `Test-AlphaInstaller.ps1` asserts
 the recording folder, and either the HKLM keys (elevated run) or the logged refusal

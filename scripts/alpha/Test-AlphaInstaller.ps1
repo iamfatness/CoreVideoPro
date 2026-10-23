@@ -27,11 +27,33 @@ if ($hadStableDesktop -or $hadStableStart) {
     throw 'A CoreVideo Pro shortcut already exists; refusing to alter a real installation for testing.'
 }
 # T2.1 / #433 baseline: never alter a LocalDumps configuration this test did not write.
-$dumpRoot = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps'
+# Read through the 64-bit registry view: the installer is 32-bit, but WerFault reads the 64-bit view, and
+# the HKLM: PSDrive would follow THIS process's view and could show the wrong hive.
+function Get-DumpKey64([string]$exe) {
+    $b = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+    try {
+        $k = $b.OpenSubKey("SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\$exe")
+        if (-not $k) { return $null }
+        try {
+            [pscustomobject]@{ Managed = ($null -ne $k.GetValue('CoreVideoProInstaller')); DumpType = $k.GetValue('DumpType'); DumpCount = $k.GetValue('DumpCount')
+                DumpFolder = $k.GetValue('DumpFolder', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                DumpFolderKind = $k.GetValueKind('DumpFolder').ToString() }
+        } finally { $k.Dispose() }
+    } finally { $b.Dispose() }
+}
+# Same retention rule as Install-CrashDumps.ps1: keys stay while another registered version still exists.
+function Test-OtherCvpInstallRegistered {
+    foreach ($k in Get-ChildItem 'HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall' -ErrorAction SilentlyContinue) {
+        if ($k.PSChildName -notlike 'CoreVideoPro-*' -or $k.PSChildName -eq "CoreVideoPro-$releaseId") { continue }
+        $loc = (Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue).InstallLocation
+        if ($loc -and (Test-Path -LiteralPath $loc)) { return $true }
+    }
+    return $false
+}
 $dumpExecutables = 'CoreVideoPro.WinUI.exe', 'corevideo-native.exe', 'corevideo-zoom-engine.exe'
 $isAdmin = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $priorDumps = @{}
-foreach ($exe in $dumpExecutables) { $priorDumps[$exe] = Test-Path -LiteralPath "$dumpRoot\$exe" }
+foreach ($exe in $dumpExecutables) { $priorDumps[$exe] = Get-DumpKey64 $exe }
 $videosFolder = [Environment]::GetFolderPath('MyVideos')
 $recordingFolderExisted = Test-Path -LiteralPath $(if ($videosFolder) { Join-Path $videosFolder 'CoreVideo Pro' } else { Join-Path $env:LOCALAPPDATA 'CoreVideo Pro' })
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -77,13 +99,11 @@ $crashDumpsExpected = $null
 if ($isAdmin) {
     # Silent setup is elevated here, so the HKLM write must have happened (or an existing foreign config was preserved).
     foreach ($exe in $dumpExecutables) {
-        $key = "$dumpRoot\$exe"
-        if (-not (Test-Path -LiteralPath $key)) { throw "LocalDumps key missing after elevated install: $exe" }
-        $item = Get-Item -LiteralPath $key
-        if ($priorDumps[$exe]) { continue }   # pre-existing foreign config: must be untouched (checked after uninstall)
-        if ($item.GetValue('DumpType') -ne 2 -or $item.GetValue('DumpCount') -ne 5 -or
-            $item.GetValue('DumpFolder', $null, 'DoNotExpandEnvironmentNames') -ne '%LOCALAPPDATA%\CoreVideoPro\crashes' -or
-            $item.GetValueKind('DumpFolder') -ne 'ExpandString') { throw "LocalDumps values wrong for $exe" }
+        $item = Get-DumpKey64 $exe
+        if (-not $item) { throw "LocalDumps key missing from the 64-bit registry view after elevated install: $exe" }
+        if ($priorDumps[$exe] -and -not $priorDumps[$exe].Managed) { continue }   # foreign config: must be untouched (checked after uninstall)
+        if ($item.DumpType -ne 2 -or $item.DumpCount -ne 5 -or $item.DumpFolder -ne '%LOCALAPPDATA%\CoreVideoPro\crashes' -or
+            $item.DumpFolderKind -ne 'ExpandString') { throw "LocalDumps values wrong for $exe" }
     }
     $crashDumpsExpected = 'configured'
 } else {
@@ -176,11 +196,14 @@ foreach ($file in $manifest.files) {
     if (Test-Path -LiteralPath (Join-Path $installRoot $file.path)) { throw "Delivered file remained after uninstall: $($file.path)" }
 }
 if (-not (Test-Path -LiteralPath $recordingFolder)) { throw 'Uninstall removed the recording folder.' }
+$keepForOtherInstall = Test-OtherCvpInstallRegistered
 foreach ($exe in $dumpExecutables) {
-    # Keys this installer wrote are gone; a configuration that pre-existed is exactly as it was.
-    if (Test-Path -LiteralPath "$dumpRoot\$exe") {
-        if ($isAdmin -and -not $priorDumps[$exe]) { throw "Uninstall left the LocalDumps key for $exe." }
-    } elseif ($priorDumps[$exe]) { throw "Uninstall removed a LocalDumps key it did not write: $exe" }
+    # Keys this installer wrote are gone (unless another registered version still needs them);
+    # a configuration that pre-existed and was not ours is exactly as it was.
+    $after = Get-DumpKey64 $exe
+    if ($after) {
+        if ($isAdmin -and -not $keepForOtherInstall -and $after.Managed) { throw "Uninstall left the LocalDumps key for $exe." }
+    } elseif ($priorDumps[$exe] -and ($keepForOtherInstall -or -not $priorDumps[$exe].Managed)) { throw "Uninstall removed a LocalDumps key it must keep: $exe" }
 }
 if (-not $recordingFolderExisted -and @(Get-ChildItem -LiteralPath $recordingFolder -Force).Count -eq 0) { Remove-Item -LiteralPath $recordingFolder }
 if ((Get-Content -LiteralPath $sentinel -Raw) -ne 'preserve this user file') { throw 'Uninstall did not preserve the user file.' }
