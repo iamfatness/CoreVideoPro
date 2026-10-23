@@ -30,6 +30,37 @@ prove presentation; duplicated/padded output must not conceal missed rendering.
 Report missing evidence as unverified, and record exact tested hardware, workload,
 duration, and failures. A finite soak cannot establish an unlimited guarantee.
 
+### What the release gate is, and is not (owner ruling, 2026-10-22)
+
+**Outputs are the release gate.** Program recording, every ISO recording, the
+registered OS virtual camera, and any live stream must deliver every source
+frame exactly once with bounded latency, judged per frame by pixel identity
+(`scripts/qa/source-picture-verdict.py`, `iso-pixel-verdict.py`) over the
+30-minute full workload. Zero tolerance. These are what a viewer, a file, or a
+downstream app can see, and they are what "beat vMix" means.
+
+**The on-screen Studio cells (Preview, Program monitor, input tiles) are a UX
+metric with a tolerance, not a release gate.** They are windowed surfaces
+composed by the Desktop Window Manager. On a multi-monitor desk with mixed
+refresh rates, which is the common customer rig, Windows skips or repeats a
+windowed frame at the beat between monitor clocks for every application; the
+2026-10-22 app-less control reproduced a one-frame omission every 19.95 s with
+the media core stopped. A zero-omission desktop check therefore cannot pass a
+30-minute soak on any Windows machine and must not block a release.
+`scripts/qa/desktop-picture-cadence.py` reports the cells against: no hold
+longer than 100 ms, omission ratio under 1 %, no torn or reordered pictures.
+Qualify on the owner's real mixed-refresh desk; never ask customers to match
+refresh rates. Add a high-refresh (120 Hz+) Studio placement as a short UI
+check, not a soak.
+
+**Retired lines of investigation (do not pick back up):** elevated PresentMon
+or ETW scanout proof, DXGI frame-statistics reconciliation, VBlank phase
+fitting, NVIDIA profile audits, and buffer/credit/alpha/Present(0) presenter
+experiments driven by smoother counters. The Present(0) candidate shipped to
+the installed app and multiplied Studio omissions by 30 while every counter
+looked better. Issue #997's original 10 % UI loss was a real bug and was fixed;
+the tolerance above still catches a regression of that size.
+
 ### Test interaction preference (user instruction, 2026-09-07)
 
 Use the local control API and headless test processes to manipulate CoreVideo
