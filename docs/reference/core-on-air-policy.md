@@ -62,5 +62,5 @@ verified by reading the real paths (`SettingsViewModel.LeaveZoomAsync`, `Unsubsc
 Engine-off path with a fake host, the snapshot merge, and the stub core
 (`EncoderRecordingSession.StubCoreZoomJoinLeaveRejoinDoesNotStopAnOfflineStartedRecording`). After a
 core crash, a recording made with no meeting resumes (`OutputResumeAfterCoreRestart`); one made
-in a meeting that Zoom did not rejoin is not resumed, and says so. That resume rule is PENDING
-OWNER RULING (it changes #732's "recording needs the meeting"; see `core-restart-drill.md`).
+in a meeting that Zoom did not rejoin is not resumed, and says so. The owner confirmed that rule on
+2026-10-23 (it replaces #732's "recording needs the meeting"; see `core-restart-drill.md`).
