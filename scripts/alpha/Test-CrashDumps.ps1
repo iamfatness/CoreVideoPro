@@ -70,6 +70,12 @@ try {
     Remove-Item -LiteralPath "HKCU:\$dumps" -Recurse -Force
     # WOW64: the 32-bit host (what the 32-bit NSIS installer launches) must still use the 64-bit view.
     if (Test-Path -LiteralPath $ps32) {
+        # Software\Classes\CLSID IS redirected for 32-bit processes (a default-view write from SysWOW64
+        # PowerShell lands under Classes\WOW6432Node\CLSID). A shared path like Software\CoreVideoProInstallerTests
+        # is NOT redirected and would pass even with the old HKLM:-drive code, so use CLSID here.
+        $clsid = '{' + [Guid]::NewGuid().ToString() + '}'
+        $clsidRoot = "Software\Classes\CLSID\$clsid"
+        $dumps = "$clsidRoot\LocalDumps"
         $r = Run @('-Action', 'Install', '-ReleaseId', 'beta-2026-01-01-aaaaaaa') $ps32
         Assert ($r.Code -eq 0) "32-bit host install exited $($r.Code): $($r.Out)"
         Assert ((KeyNames).Count -eq 3) '32-bit host install not visible from the 64-bit view (WOW64 redirection).'
@@ -82,6 +88,7 @@ try {
         $r = Run @('-Action', 'Install') $ps32
         Assert ($r.Out -match 'PRESERVED') '32-bit host did not see the 64-bit foreign key.'
         $hosted32 = $true
+        $dumps = "$base\LocalDumps"
     } else { Write-Output 'SKIP: SysWOW64 PowerShell not present; WOW64 case not exercised.'; $hosted32 = $false }
     # A refused write is loud and non-fatal for the caller: exit 2, message, no throw.
     # A key name over the 255-character registry limit makes the write throw.
@@ -97,5 +104,17 @@ try {
     Write-Output "Test-CrashDumps passed ($checks checks; wow64 host exercised: $hosted32)."
 } finally {
     Remove-Item -LiteralPath "HKCU:\$base" -Recurse -Force -ErrorAction SilentlyContinue
+    # The shared parent goes too, but only when nothing else (another run) is using it.
+    $parent = 'HKCU:\Software\CoreVideoProInstallerTests'
+    if ((Test-Path -LiteralPath $parent) -and -not (Get-ChildItem -LiteralPath $parent -ErrorAction SilentlyContinue) -and
+        -not (Get-Item -LiteralPath $parent).ValueCount) { Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue }
+    # CLSID test key, in the 64-bit view (the 32-bit host's redirected copy, if any, is under WOW6432Node).
+    if ($clsidRoot) {
+        $b64 = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
+        try {
+            $b64.DeleteSubKeyTree($clsidRoot, $false)
+            $b64.DeleteSubKeyTree("Software\Classes\WOW6432Node\CLSID\$clsid", $false)
+        } catch { } finally { $b64.Dispose() }
+    }
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
