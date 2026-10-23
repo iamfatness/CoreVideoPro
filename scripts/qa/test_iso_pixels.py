@@ -14,6 +14,12 @@ class IsoPixelsTest(unittest.TestCase):
         result = iso.compare_identities(expected, [90, 90, 94, *expected, 114, 114])
         self.assertTrue(result['isoPixelArrivalFidelityPassed'])
         self.assertEqual(result['recordedSamples'], 4)
+        self.assertEqual((result['missing'], result['repeated']), (0, 0))
+
+    def test_missing_and_repeated_counts_are_per_identity(self):
+        result = iso.compare_identities([100, 102, 108, 110], [100, 102, 102, 110])
+        self.assertFalse(result['isoPixelArrivalFidelityPassed'])
+        self.assertEqual((result['missing'], result['repeated']), (1, 1))
 
     def test_missing_repeat_reorder_invalid_and_wrong_picture_fail(self):
         for decoded in ([100, 108, 110], [100, 102, 102, 108, 110], [100, 108, 102, 110],
