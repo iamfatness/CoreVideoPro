@@ -11,8 +11,8 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $secretsFile = Join-Path $PSScriptRoot ".staging-secrets.local"
 $exampleFile = Join-Path $PSScriptRoot "staging-services.env.example"
 
-$env:COREVIDEO_TELEMETRY_ENDPOINT = "https://corevideo-telemetry-ingest.wallace-john-w.workers.dev"
-$env:COREVIDEO_OPS_MONITOR_ENDPOINT = "https://corevideo-ops-monitor.wallace-john-w.workers.dev"
+$env:COREVIDEO_TELEMETRY_ENDPOINT = "https://corevideo-telemetry-ingest-staging.wallace-john-w.workers.dev"
+$env:COREVIDEO_OPS_MONITOR_ENDPOINT = "https://corevideo-ops-monitor-staging.wallace-john-w.workers.dev"
 
 if (-not (Test-Path $secretsFile)) {
   Write-Warning "Missing $secretsFile - copy $exampleFile and add the Cloudflare worker API keys."

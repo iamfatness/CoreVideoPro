@@ -123,4 +123,4 @@ Vitest (repo root tooling), pure unit tests with in-memory KV/R2 fakes:
 npx vitest run services/telemetry-ingest
 ```
 
-`vars.ENVIRONMENT` in `wrangler.jsonc` is `production` (echoed by `/health`). A staging deploy must override it with `--var ENVIRONMENT:staging`.
+`vars.ENVIRONMENT` in the top-level `wrangler.jsonc` config is `production` (the production custom domain). Staging is the `env.staging` block: a separate `corevideo-telemetry-ingest-staging` worker on workers.dev with `ENVIRONMENT=staging` and NO routes, deployed with `npx wrangler deploy --env staging` (what `scripts/deploy-staging-workers.ps1` does). A production deploy is `npx wrangler deploy --env=""` and attaches the custom domain.

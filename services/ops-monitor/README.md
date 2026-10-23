@@ -59,9 +59,7 @@ the worker is reachable). Once redeployed, `/health` returns a clean `200`.
 | `OPS_TELEMETRY_URL` | var | `https://telemetry.corevideo.io/health` | telemetry-ingest probe. |
 | `OPS_SELF_URL` | var | `https://ops.corevideo.io/health` | self probe. |
 
-Any target URL set to `""` or `"off"` is skipped. Set the `.workers.dev`
-defaults to your account subdomain via the `OPS_*_URL` vars if it differs from
-`wallace-john-w`. Production custom domains: `telemetry.corevideo.io`, `ops.corevideo.io` (routes in `wrangler.jsonc`).
+Any target URL set to `""` or `"off"` is skipped. Production custom domains: `telemetry.corevideo.io`, `ops.corevideo.io` (routes in `wrangler.jsonc`). The `env.staging` block overrides `OPS_TELEMETRY_URL` / `OPS_SELF_URL` to the `-staging` workers.dev workers.
 
 **Alert destination is deliberately deferred to the owner.** Set
 `OPS_ALERT_WEBHOOK_URL` whenever a Discord or Slack channel exists — no decision
@@ -96,7 +94,7 @@ Then deploy with the rest of the staging workers:
 npm run deploy:staging-workers   # includes ops-monitor (optional webhook secret)
 ```
 
-Verify: `curl https://corevideo-ops-monitor.<account>.workers.dev/health`, or
+Verify: `curl https://corevideo-ops-monitor-staging.<account>.workers.dev/health` (staging) or `curl https://ops.corevideo.io/health` (production), or
 force a check with `curl -X POST …/run` and read the JSON summary. Cron runs are
 visible in `npx wrangler tail` (each tick logs the checked/down/changed counts).
 
@@ -113,4 +111,4 @@ stays down), multi-target aggregation (one webhook for N changed targets), the
 no-destination log-only path, the failed-target alert payload shape, the
 never-throw probe on transport failure, and KV-read-failure resilience.
 
-`vars.ENVIRONMENT` in `wrangler.jsonc` is `production` (served from the production hostname; echoed by `/health` and alert payloads). A staging deploy must override it with `--var ENVIRONMENT:staging`.
+`vars.ENVIRONMENT` in the top-level `wrangler.jsonc` config is `production` (the production custom domain). Staging is the `env.staging` block: a separate `corevideo-ops-monitor-staging` worker on workers.dev with `ENVIRONMENT=staging` and NO routes, deployed with `npx wrangler deploy --env staging` (what `scripts/deploy-staging-workers.ps1` does). A production deploy is `npx wrangler deploy --env=""` and attaches the custom domain.
