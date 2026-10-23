@@ -67,6 +67,7 @@ class MediaTransports final {
     std::deque<modules::AudioFrame> audio;
     int64_t audioNextTime = 0;
     bool audioEverProduced = false;
+    uint64_t audioMissingWindows = 0;
     std::vector<std::string> warnings;
     // Published by the worker for snapshot(); -1 when the decoder cannot say
     // — which is what they START as, because a transport that has not yet run
@@ -427,8 +428,9 @@ class MediaTransports final {
       std::lock_guard<std::mutex> entryLock(entry.mutex);
       if (clock->second.skipped() != skippedBefore &&
           (skippedBefore == 0 || clock->second.skipped() / 100 != skippedBefore / 100))
-        ::corevideo::core::nativeLogf("[media-playback] audio_windows_expired=%llu source=%s\n",
-            static_cast<unsigned long long>(clock->second.skipped()), entry.desired.assetId.c_str());
+        ::corevideo::core::nativeLogf("[media-playback] audio_windows_expired=%llu source=%s demand_ms=%lld target_ms=%lld\n",
+            static_cast<unsigned long long>(clock->second.skipped()), entry.desired.assetId.c_str(),
+            static_cast<long long>(nowMs), static_cast<long long>(target));
       entry.wake = true;
       entry.changed.notify_all();
       // No PCM, not even silence, while this clip is not rolling (or while
@@ -442,6 +444,11 @@ class MediaTransports final {
         result.push_back(std::move(entry.audio.front())); entry.audio.pop_front();
       } else {
         if (!entry.audioEverProduced) { entry.audioNextTime = clock->second.nextTimeMs(); continue; }
+        if (entry.audioMissingWindows++ % 100 == 0)
+          ::corevideo::core::nativeLogf("[media-playback] audio_missing_windows=%llu source=%s target_ms=%lld queued=%zu front_ms=%lld\n",
+              static_cast<unsigned long long>(entry.audioMissingWindows), entry.desired.assetId.c_str(),
+              static_cast<long long>(target), entry.audio.size(),
+              static_cast<long long>(entry.audio.empty() ? -1 : entry.audio.front().timestampMs));
         modules::AudioFrame silence;
         silence.participantId = entry.desired.sourceId;
         silence.sampleRate = 48000; silence.channels = 2; silence.sampleCount = 960; silence.pcm.resize(1920, 0.f);

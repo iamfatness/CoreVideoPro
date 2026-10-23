@@ -63,7 +63,9 @@ public enum MediaCoreExitOutcome
     ExitedOnItsOwn,
 
     /// <summary>The core was still running (no grace, or the grace ran out); the tree was killed.</summary>
-    Killed
+    Killed,
+    /// <summary>The console detached; EngineHost and production remain running.</summary>
+    Detached
 }
 
 /// <summary>

@@ -9,6 +9,8 @@ namespace CoreVideoPro.MediaCore.Services;
 
 public sealed class MediaCoreSupervisorOptions
 {
+    public EngineHostClientOptions? EngineHost { get; init; }
+    public bool PublishHostResources { get; init; }
     public string? Command { get; init; }
     public IReadOnlyList<string>? Args { get; init; }
     public string? WorkingDirectory { get; init; }
@@ -78,6 +80,11 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
     public MediaCoreSupervisor(MediaCoreSupervisorOptions? options = null)
     {
         _options = options ?? new MediaCoreSupervisorOptions();
+        if (_options.EngineHost is { } hostOptions)
+        {
+            _hostClient = new EngineHostClient(hostOptions);
+            _hostClient.Resource += PublishHostedResource;
+        }
     }
 
     public event Action<MediaCoreHealth>? HealthChanged;
@@ -118,6 +125,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
     {
         get
         {
+            if (_hostClient is not null) return _hostClient.Running;
             lock (_gate)
             {
                 return !_stopped && _process is not null && _processAlive;
@@ -140,6 +148,17 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
 
     public async Task<NativeMediaCoreProfile?> StartAsync(CancellationToken cancellationToken = default)
     {
+        if (_hostClient is not null)
+        {
+            await _hostClient.StartAsync(_hostBufferFrames, cancellationToken).ConfigureAwait(false);
+            var first = _profile is null;
+            _profile = _hostClient.Profile;
+            _stopped = false;
+            if (first && _profile is not null) ProfileChanged?.Invoke(_profile);
+            RaiseHealth();
+            StatusChanged?.Invoke(_hostClient.ReadOnly ? "Attached to running show — read-only" : "Engine host connected");
+            return _profile;
+        }
         lock (_gate)
         {
             if (_handshakeFailure is not null) throw new InvalidOperationException(_handshakeFailure);
@@ -163,6 +182,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
 
     public void ConfigureProgramBufferFrames(int frames)
     {
+        _hostBufferFrames = frames;
         lock (_gate) _programBufferStartup.Configure(frames);
     }
 
@@ -172,7 +192,16 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
 
     /// <summary>Stops the core immediately: close stdin, then kill the process tree. Used by
     /// leave-meeting, respawn and every other non-exit stop.</summary>
-    public void Stop() => StopChild(TimeSpan.Zero);
+    public void Stop()
+    {
+        if (_hostClient is not null)
+        {
+            _hostClient.ControlAsync("shutdown", CancellationToken.None).GetAwaiter().GetResult();
+            _stopped = true;
+            return;
+        }
+        StopChild(TimeSpan.Zero);
+    }
 
     /// <summary>
     /// App-exit stop ONLY (T1.8, #461). Closes the core's stdin, which is its quit signal: the
@@ -183,7 +212,12 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
     /// blocked stdout pipe would wedge the core's writer join), and only then falls back to the
     /// existing kill-tree. Leave-meeting and respawn keep <see cref="Stop"/>.
     /// </summary>
-    public MediaCoreExitOutcome StopForAppExit(TimeSpan exitGrace) => StopChild(exitGrace);
+    public MediaCoreExitOutcome StopForAppExit(TimeSpan exitGrace)
+    {
+        if (_hostClient is null) return StopChild(exitGrace);
+        _hostClient.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        return MediaCoreExitOutcome.Detached;
+    }
 
     private MediaCoreExitOutcome StopChild(TimeSpan exitGrace)
     {
@@ -715,7 +749,8 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
     {
         // UI submissions and the polling timer can arrive concurrently. Acquire
         // the slot atomically so both cannot pass a check-then-set boolean gate.
-        if (Interlocked.CompareExchange(ref _syncInFlight, 1, 0) != 0)
+        var hostedUrgent = Hosted && commands.Count > 0 && commands.All(command => EngineHostWire.IsUrgentType(command.Type));
+        if (!hostedUrgent && Interlocked.CompareExchange(ref _syncInFlight, 1, 0) != 0)
         {
             throw new MediaCoreSyncInFlightException();
         }
@@ -753,7 +788,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
                 var wire = CoreProtocolParser.TryParseWireState(response);
                 if (wire is not null)
                 {
-                    _syncFrameNumber += 1;
+                    var syncFrameNumber = Interlocked.Increment(ref _syncFrameNumber);
                     // The wire path maps onto a neutral base snapshot, so the mapped record
                     // is a projection by construction. Tag it with the core's own JSON so an
                     // observer can still see every node the mapping drops (encoder evidence,
@@ -761,7 +796,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
                     // path on a real core — the typed branch above is the stub/test one.
                     return NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(
                         elapsedMs,
-                        _syncFrameNumber,
+                        syncFrameNumber,
                         wire) with
                     {
                         RawJson = CoreProtocolParser.TryGetStateJson(response),
@@ -774,7 +809,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
         }
         finally
         {
-            Interlocked.Exchange(ref _syncInFlight, 0);
+            if (!hostedUrgent) Interlocked.Exchange(ref _syncInFlight, 0);
         }
     }
 
@@ -1055,6 +1090,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
 
     private void SpawnChild()
     {
+        lock (_hostResourcesGate) _hostResources.Clear();
         _processAlive = false;
         // A profile identifies one native-core generation. Keeping the old value
         // makes HandshakeAsync return before the replacement process is ready and
@@ -1233,6 +1269,8 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
             {
                 continue;
             }
+
+            if (_options.PublishHostResources) CacheHostedResource(line);
 
             var rosterFact = CoreProtocolParser.TryParseZoomRosterFact(line);
             if (rosterFact is not null)
@@ -1665,6 +1703,8 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
         int? timeoutMs = null,
         Process? expectedProcess = null)
     {
+        if (_hostClient is not null)
+            return await _hostClient.SendAsync(payload, cancellationToken).ConfigureAwait(false);
         if (!payload.TryGetValue("id", out var idValue) || idValue is not string id)
         {
             throw new InvalidOperationException("Request id missing.");
@@ -1936,6 +1976,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
+        if (_hostClient is not null) return _hostClient.DisposeAsync();
         Stop();
         return ValueTask.CompletedTask;
     }

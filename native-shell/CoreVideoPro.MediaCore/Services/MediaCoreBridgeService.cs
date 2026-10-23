@@ -127,6 +127,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
     {
         var profile = await _supervisor.StartAsync(cancellationToken).ConfigureAwait(false);
         lock (_gate) { _sessionStartedAt ??= _time.GetTimestamp(); }
+        if (_supervisor.Hosted) await PollSnapshotAsync(cancellationToken).ConfigureAwait(false);
         StartPolling();
         return profile;
     }
@@ -366,9 +367,11 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
         ArgumentNullException.ThrowIfNull(commands);
         // A queued one-shot must retain exactly the command the caller submitted.
         var submittedCommands = commands.ToArray();
+        var hostedUrgent = _supervisor.Hosted && submittedCommands.Length > 0 &&
+            submittedCommands.All(command => EngineHostWire.IsUrgentType(command.Type));
         return _syncScheduler.RunCommandAsync(
             () => SyncCoreAsync(submittedCommands, elapsedMs, cancellationToken),
-            cancellationToken, stopCommand: stopIntent);
+            cancellationToken, stopCommand: stopIntent || hostedUrgent, independentStopLane: hostedUrgent);
     }
 
     public Task<AudioMonitorControlOutcome> SetAudioMonitorControlAsync(

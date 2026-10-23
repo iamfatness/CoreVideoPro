@@ -45,6 +45,14 @@
 **Full-workload qualification dependency — [#984](https://github.com/iamfatness/CoreVideoPro/issues/984):** the owner's requested full-workload checks exposed 1,668 camera arrivals skipped before ISO admission while recording drop counters stayed zero. Preserve actual selected camera arrivals through a bounded ref-only CPU branch, account for pre-ingest loss and rerun the installed workload. Passing Program counter bands cannot substitute for camera source fidelity. This is part of the authorized keep-fixing-failures qualification work; publication remains blocked.
 **Owner-approved UIUX batch, October 20 — [#978](https://github.com/iamfatness/CoreVideoPro/issues/978):** audit shipped Graphics/starter/source-text behavior, then finish template-to-Studio guidance, default/custom/hidden guest text and guarded automation editing under #927/#593/#929. Preserve the installed app, GPU, profile and camera registration while the other chat validates #975. Source work, CPU-only tests and hosted CI only; installed/native output acceptance stays separate. #955 owns footer status/alignment.
 
+**Owner follow-up, October 21 — #968 within #960:** diagnose and fix the decoded audio gaps, then rerun full Studio crash-survival validation for PR #965. This is a blocker in the active #960 lane, not an additional WIP item. Retain failed evidence and require decoded recording and received-stream continuity.
+
+**Owner implementation direction, October 19 — #960:** merge #964 and start the
+reconnectable EngineHost vertical slice. #960 is the active stability item;
+#961–#963 remain dependent. Keep the installed app and live show untouched and
+use isolated candidate validation. Planning-only language below is superseded
+for #960, not for default enablement or production rollout.
+
 **Owner priority, October 20 — [#974](https://github.com/iamfatness/CoreVideoPro/issues/974):** fix camera ISO re-arm synchronization after Unassign, then complete the eight-Zoom/webcam/screen workload with Multiview, Preview, local recording and virtual camera. Retain failed runs and require per-frame delivery evidence before calling qualification passed. Only then build, publish and install the corrected beta using the established local process.
 
 **Qualification dependency — [#976](https://github.com/iamfatness/CoreVideoPro/issues/976):** recording retry reaches a new requested/preparing session then is cancelled before any frame is written after an earlier failed take. Scope terminal observations to the explicit request's native session; preserve real new-session failure reporting and verify actual Program/ISO progress before resuming #974 combined qualification.
@@ -266,6 +274,10 @@ Preserve the existing session while building; restart/rejoin for candidate valid
 
 ## Now — owner-accepted order (2026-10-08)
 
+Owner-directed active stability work: [#960](https://github.com/iamfatness/CoreVideoPro/issues/960),
+reconnectable EngineHost with real opt-in WinUI/native consumer. This is one active
+item; dependent #961–#963 do not start concurrently.
+
 Owner approved the [cross-subsystem isolation plan](reference/realtime-isolation-audit.md)
 on October 12. Start its first real status/observation consumer under #870,
 then the focused #872/#873 crossings. Keep the existing #517/#823 installed
@@ -378,7 +390,7 @@ work and the previously ranked Next rows below retain their relative order.
 | Stability dependency | Issue | Remaining work |
 |---|---|---|
 | Outcome / acceptance parent | [#959](https://github.com/iamfatness/CoreVideoPro/issues/959) | Keep the committed show running across UI failure; close only after all child gates, not on a plan or a process staying alive. |
-| First slice | [#960](https://github.com/iamfatness/CoreVideoPro/issues/960) | On-demand EngineHost, bounded reconnectable control and real opt-in WinUI/native consumer; preserve epochs and output sessions across UI termination. |
+| Active in Now by October 19 owner direction | [#960](https://github.com/iamfatness/CoreVideoPro/issues/960) | On-demand EngineHost, bounded reconnectable control and real opt-in WinUI/native consumer; preserve epochs and output sessions across UI termination. |
 | Depends on #960 | [#961](https://github.com/iamfatness/CoreVideoPro/issues/961) | Move live synchronization, committed state, control ingress and recovery authority outside WinUI; reuse #657 contracts. |
 | Depends on #960/#961 | [#962](https://github.com/iamfatness/CoreVideoPro/issues/962) | Move compatibility camera capture into a host-owned helper and prove actual fallback media survives UI death. |
 | Depends on #960–#962 | [#963](https://github.com/iamfatness/CoreVideoPro/issues/963) | Matched packaging, safe stop/update/rollback and receiver-verified full-workload crash qualification; cross-gate #930/#517/#904/#908/#857. |
@@ -398,6 +410,8 @@ October 14 follow-through: [#873](https://github.com/iamfatness/CoreVideoPro/iss
 Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/issues/743) with [#767](https://github.com/iamfatness/CoreVideoPro/issues/767) (owner direction 2026-10-02: remove the mock licensing and caption panels and the stub services for beta; deployed workers are deleted only on explicit confirmation), [#750](https://github.com/iamfatness/CoreVideoPro/issues/750), [#427](https://github.com/iamfatness/CoreVideoPro/issues/427), [#425](https://github.com/iamfatness/CoreVideoPro/issues/425), [#426](https://github.com/iamfatness/CoreVideoPro/issues/426).
 
 ## Unranked — show survival and operator findings
+
+- [#968](https://github.com/iamfatness/CoreVideoPro/issues/968): intermittent decoded PCM gaps found during #960 full Studio crash qualification; blocks its audio-continuity evidence. Owner-authorized October 21 within active #960; retain failed trials.
 
 | [#908](https://github.com/iamfatness/CoreVideoPro/issues/908) | Owner-ranked October 14: follows the #517 camera-reader repair in the active delivery lane. Retained Program frames report unavailable/preparation-stopped source pixels during real SDK epoch transitions; preserve pixels through replacement readiness without retaining removed/reassigned guests. |
 

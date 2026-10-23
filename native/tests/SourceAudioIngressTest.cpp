@@ -197,3 +197,38 @@ TEST(SourceAudioIngress, MediaCoreMixerGatherPublishesCapturePcmCounters) {
   }
   EXPECT_TRUE(found);
 }
+
+TEST(SourceAudioIngress, ScheduledMediaDemandPreservesEveryBlockThroughWakeJitterAndCatchup) {
+  class QuietDecoder final : public modules::IMediaDecoder {
+   public:
+    std::vector<modules::VideoFrame> pollMediaFrames(const modules::MediaDecodeRequest&, int64_t) override { return {}; }
+    std::vector<std::string> warnings() const override { return {}; }
+  };
+  core::SourceBus bus;
+  bus.add(std::make_shared<core::MediaAssetSource>("media:clock", "media", 640, 360));
+  core::MediaTransports media([] { return std::make_unique<QuietDecoder>(); });
+  core::MediaTransportDesired desired;
+  desired.sourceId = "media:clock"; desired.assetId = "clock";
+  desired.kind = "video"; desired.path = "clock.wav"; desired.onProgram = true;
+  auto changes = media.apply({desired}, 0);
+  ASSERT_EQ(changes.size(), 1u);
+  auto entry = changes.front().entry;
+  // The first wake is 7ms late. Following wakes cross that phase boundary,
+  // then two catch-up ticks execute at the same wall time. None may omit or
+  // expire a scheduled source block.
+  const int64_t wakeMs[] = {107, 121, 144, 191, 191, 201};
+  for (int i = 0; i < 6; ++i) {
+    const auto scheduledMs = 100 + i * 20;
+    auto expected = pcm(desired.sourceId, scheduledMs, .1f * (i + 1));
+    expected.sampleCount = 960; expected.pcm.assign(1920, .1f * (i + 1));
+    {
+      std::lock_guard<std::mutex> lock(entry->mutex);
+      entry->audio.push_back(expected);
+      entry->audioEverProduced = true;
+    }
+    auto out = core::ingestSourceAudio(bus, {}, nullptr, nullptr, &media, {},
+        -1000, wakeMs[i] * 10000, wakeMs[i] * 1000000, scheduledMs * 10000);
+    ASSERT_EQ(out.size(), 1u) << "tick " << i;
+    EXPECT_EQ(out.front().pcm, expected.pcm) << "tick " << i;
+  }
+}

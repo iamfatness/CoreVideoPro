@@ -6237,7 +6237,7 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   auto audioFrames = core::ingestSourceAudio(*sourceBus_, std::move(prePolledZoomAudio),
       modules_.audioCapture.get(), modules_.captureDevice.get(), mediaTransports_.get(),
       lastCaptureAudioSourceConfigs_, frameTimestampMs,
-      work.outputTimestamp100ns, work.outputTimestamp100ns * 100);
+      work.outputTimestamp100ns, work.outputTimestamp100ns * 100, work.outputScheduled100ns);
 
   // One contiguous PCM frame per source per tick: multiple 10ms packets drained
   // in one tick must CONCATENATE, not overlap-sum in the bus mixers (spec R3).
