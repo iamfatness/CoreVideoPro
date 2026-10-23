@@ -358,7 +358,7 @@ std::vector<VideoFrame> ZoomEngineRuntimeState::pollCompositorVideoFrames(int64_
 rpc::Json::Array ZoomEngineRuntimeState::participantsJson() const {
   rpc::Json::Array result;
   for (const auto& [id, participant] : participants_) {
-    result.emplace_back(rpc::Json::Object{
+    rpc::Json::Object entry{
         {"sdkUserId", participantIdString(id)},
         {"displayName", participant.displayName},
         {"persistentId", participant.persistentId},
@@ -368,13 +368,16 @@ rpc::Json::Array ZoomEngineRuntimeState::participantsJson() const {
         {"muted", participant.isMuted},
         {"talking", participant.isTalking || id == activeSpeakerId_},
         {"sharingScreen", participant.isSharingScreen},
-        {"audioLevel", participant.isTalking || id == activeSpeakerId_ ? 70 : 0},
-        {"networkQuality", "good"},
         {"isHost", participant.isHost},
         {"isMe", participant.isMe},
         {"directorExcluded", speakerDirector_.isExcluded(id)},
         {"rawTalking", participant.isTalking},
-    });
+    };
+    // Measured only (#765): the SDK network callback, when it has reported.
+    if (!participant.networkQuality.empty()) {
+      entry.emplace("networkQuality", participant.networkQuality);
+    }
+    result.emplace_back(std::move(entry));
   }
   return result;
 }

@@ -10,7 +10,7 @@ public sealed record GraphicsImportedImage(GraphicsPackageInput Package,NativeGr
 /// verifies hash/header/dimensions before any image can be previewed or aired.</summary>
 public static class GraphicsImageImport
 {
-    public static Task<GraphicsImportedImage> StageAsync(string path,string root,CancellationToken cancellation=default)=>Task.Run(()=> {
+    public static Task<GraphicsImportedImage> StageAsync(string path,string root,CancellationToken cancellation=default,bool fullCanvas=false)=>Task.Run(()=> {
         root=Path.GetFullPath(root);path=Path.GetFullPath(path);GraphicsPackageReader.NoReparse(root);GraphicsPackageReader.NoReparse(path);
         var extension=Path.GetExtension(path).ToLowerInvariant();if(extension is not (".png" or ".jpg" or ".jpeg")) throw new InvalidDataException("Choose a local PNG or JPEG image.");
         if(extension==".jpeg") extension=".jpg";
@@ -29,15 +29,21 @@ public static class GraphicsImageImport
             try {using(var output=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None)) {output.Write(bytes);output.Flush(true);}GraphicsPackageReader.NoReparse(directory);File.Move(temporary,destination);}
             finally {if(File.Exists(temporary)) File.Delete(temporary);}
         }
-        var id="image-"+hash[..32];
+        var id=(fullCanvas?"graphic-":"image-")+hash[..32];
+        var width=fullCanvas?1920:192;var height=fullCanvas?1080:192;
         // A real bug consumer makes the image package independently reusable;
         // compatibility lower thirds reference these same verified asset bytes.
         const string nodeType="type";
-        var manifest=JsonSerializer.Serialize(new {schemaVersion=1,templateId=id,templateVersion=1,name="Imported logo "+hash[..8],family="bug",
-            canvas=new {width=1920,height=1080},bounds=new {width=192,height=192},brandTokens=Array.Empty<string>(),fields=Array.Empty<object>(),
+        var manifest=JsonSerializer.Serialize(new {schemaVersion=1,templateId=id,templateVersion=1,name=(fullCanvas?"Imported graphic ":"Imported logo ")+hash[..8],family="bug",
+            canvas=new {width=1920,height=1080},bounds=new {width,height},brandTokens=Array.Empty<string>(),fields=Array.Empty<object>(),
             animations=new { @in=new {type="none",durationMs=0,easing="linear"}, @out=new {type="none",durationMs=0,easing="linear"} },
-            layers=new[] {new Dictionary<string,object> { ["id"]="logo-image",[nodeType]="image",["asset"]="logo",["x"]=0,["y"]=0,["width"]=192,["height"]=192,["fit"]="contain"}},
+            layers=new[] {new Dictionary<string,object> { ["id"]="logo-image",[nodeType]="image",["asset"]="logo",["x"]=0,["y"]=0,["width"]=width,["height"]=height,["fit"]="contain"}},
             assets=new[] {new {id="logo",file=fileName,sha256=hash}}});
+        if(fullCanvas) {
+            var definition=System.Text.Json.Nodes.JsonNode.Parse(manifest)!.AsObject();
+            definition["defaultPlacement"]=JsonSerializer.SerializeToNode(new {anchor="upper-left",x=0,y=0,scale=1});
+            manifest=definition.ToJsonString();
+        }
         return new GraphicsImportedImage(new(manifest,root),new(id,1,"logo"));
     },cancellation);
 }

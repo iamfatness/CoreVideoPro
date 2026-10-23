@@ -414,6 +414,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     public void ApplyLowerThirdText(string name, string secondary, bool useDefault)
     {
         _applyText(SourceId, name.Trim() == DefaultDisplayName ? null : name, useDefault ? null : secondary);
+        OnPropertyChanged(nameof(SecondaryLine));
+        OnPropertyChanged(nameof(UsesDefaultSecondaryLine));
         OnPropertyChanged(nameof(DisplayName));
         OnPropertyChanged(nameof(OverviewName));
         OnPropertyChanged(nameof(AudioSummary));

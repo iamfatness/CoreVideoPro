@@ -7,13 +7,17 @@ import struct
 
 HEADER = struct.Struct("<8sIIQQQQQQqq")
 EVENT = struct.Struct("<QQQqqqqQII")
+EVENT_V2 = struct.Struct("<QQQqqqqQIIqq")
 STAGES = {1: "source-gpu-ready", 2: "source-draw-submitted", 3: "program-submitted",
           4: "program-gpu-ready", 5: "program-delivered", 6: "program-miss", 7: "source-requested", 8: "source-upload-started",
-          9: "source-upload-submitted", 10: "source-upload-refused"}
+          9: "source-upload-submitted", 10: "source-upload-refused", 11: "iso-arrival-offered"}
 
 
-def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require_source_ready=False, expected_source_ids=None):
+def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require_source_ready=False, expected_source_ids=None, require_program_deadlines=False, require_exact_source_selection=False):
     errors = []
+    if require_exact_source_selection and not expected_source_ids:
+        raise ValueError("exact source selection requires the declared source inventory")
+    require_source_ready = require_source_ready or require_exact_source_selection
     if not 0 <= warmup <= 30 or minimum < 1:
         raise ValueError("warmup must be 0..30 and minimum >=1")
     if pathlib.Path(path).stat().st_size > 256 * 1024 * 1024:
@@ -23,11 +27,12 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
         if len(raw) != HEADER.size:
             raise ValueError("partial header")
         magic, version, size, frequency, epoch, count, lost, failures, complete, started, ended = HEADER.unpack(raw)
-        if magic != b"CVTRACE1" or version != 1 or size != EVENT.size:
+        event_format = EVENT if (magic, version) == (b'CVTRACE1', 1) else EVENT_V2 if (magic, version) == (b'CVTRACE2', 2) else None
+        if event_format is None or size != event_format.size:
             raise ValueError("unknown format")
         if frequency <= 0 or epoch <= 0 or ended <= started or complete != 1:
             raise ValueError("unfinalized or invalid capture clock/epoch")
-        if pathlib.Path(path).stat().st_size != HEADER.size + count * EVENT.size:
+        if pathlib.Path(path).stat().st_size != HEADER.size + count * event_format.size:
             raise ValueError("partial/trailing capture")
         if lost or failures:
             errors.append("trace loss or export failure invalidates boundary acceptance")
@@ -38,11 +43,13 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
         stages, deliveries, misses, sources = {}, [], 0, {}
         gpu_ready, selected, requested, selection_age, drawn = {}, [], {}, [], {}
         upload_started, upload_submitted, upload_duration, refusals, source_metrics = {}, {}, {}, {}, {}
+        program_deadlines = {}
         for _ in range(count):
-            record = source.read(EVENT.size)
-            if len(record) != EVENT.size:
+            record = source.read(event_format.size)
+            if len(record) != event_format.size:
                 raise ValueError("partial event")
-            event_epoch, tag, source_epoch, program, frame, timestamp, observed, layout, stage, reason = EVENT.unpack(record)
+            values = event_format.unpack(record)
+            event_epoch, tag, source_epoch, program, frame, timestamp, observed, layout, stage, reason = values[:10]
             if event_epoch != epoch or stage not in STAGES or reason not in range(5) or not started <= timestamp <= ended:
                 raise ValueError("malformed event identity/time/stage")
             if stage in (3, 4, 5):
@@ -50,6 +57,8 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
                 if source_epoch == 0 or program < 0 or key in stages:
                     errors.append("duplicate or invalid Program boundary identity")
                 stages[key] = (timestamp, layout)
+                if stage == 4 and version == 2:
+                    program_deadlines[(source_epoch, program)] = values[10:]
                 if stage == 5 and baseline <= timestamp <= end:
                     deliveries.append((source_epoch, program, timestamp))
             elif stage == 7:
@@ -97,6 +106,8 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
                 else:
                     selection_age.append((wanted[1] - observed) / 10000)
                     metrics["ages"].append((wanted[1] - observed) / 10000)
+                    if require_exact_source_selection and (wanted[0] != frame or wanted[1] != observed or reason != 1):
+                        errors.append("delivered Program held or substituted its requested source")
         if require_source_ready:
             for key, timestamp in selected:
                 if key not in gpu_ready or gpu_ready[key] > timestamp:
@@ -104,6 +115,8 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
         # Arrival order between threads is not timestamp order. Join all exact
         # stage keys, including submissions before the measured warmup edge.
         qualified = []
+        deadline_observed = deadline_late = 0
+        deadline_slacks = []
         for generation, program, timestamp in deliveries:
             submitted = stages.get((generation, program, 3))
             ready = stages.get((generation, program, 4))
@@ -111,6 +124,11 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
                 errors.append("delivery missing preceding submission/GPU completion")
             elif submitted[1] != ready[1] or ready[1] != stages[(generation, program, 5)][1]:
                 errors.append("layout attribution changed between Program stages")
+            gpu_ns, deadline_ns = program_deadlines.get((generation, program), (0, 0))
+            if gpu_ns > 0 and deadline_ns > 0:
+                deadline_observed += 1
+                deadline_late += gpu_ns > deadline_ns
+                deadline_slacks.append((deadline_ns - gpu_ns) / 1e6)
             qualified.append((generation, program, timestamp))
         qualified.sort(key=lambda row: row[2])
         gaps = sum(max(0, b[1] - a[1] - 1) for a, b in zip(qualified, qualified[1:]) if a[0] == b[0])
@@ -120,6 +138,9 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
             errors.append("insufficient measured Program interval")
         if gaps or reordered or misses:
             errors.append("Program gaps/reordering/misses")
+        deadlines_verified = bool(qualified) and deadline_observed == len(qualified) and deadline_late == 0
+        if require_program_deadlines and not deadlines_verified:
+            errors.append("scheduled Program GPU-readiness deadline evidence missing or late")
         # Counter identity alone could falsely pass 50fps under a 60fps label.
         if abs(len(qualified) - (round(seconds * 60) + 1)) > 1:
             errors.append("Program delivery differs from required 60/1 cadence")
@@ -142,8 +163,12 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
                 "exported": count, "lost": lost, "exportFailures": failures,
                 "measuredSeconds": seconds, "measurementStartTicks": baseline, "measurementEndTicks": end, "delivered": len(qualified), "gaps": gaps,
                 "reordered": reordered, "misses": misses,
+                "programGpuReadinessDeadlineVerified": deadlines_verified,
+                "programGpuDeadlineObservations": deadline_observed, "programGpuReadinessObservedLate": deadline_late,
+                "minimumProgramGpuDeadlineSlackMs": min(deadline_slacks) if deadline_slacks else None,
                 "sourceSelectionObservationAgeMs": {"samples": len(selection_age), "p50": percentile(.5), "p95": percentile(.95), "maximum": selection_age[-1] if selection_age else None, "scope": "Requested CPU selection versus actual drawn source observation; not acquisition-to-receiver content latency"},
                 "sourceGpuCompletionRequired": require_source_ready,
+                "exactSourceSelectionRequired": require_exact_source_selection,
                 "sourceStageDistributions": per_source,
                 "selectedSources": {str(tag): len(frames) for tag, frames in sources.items()},
                 "errors": sorted(set(errors)), "releaseQualification": "MISSING_EVIDENCE",
@@ -155,9 +180,15 @@ if __name__ == "__main__":
     parser.add_argument("path", type=pathlib.Path)
     parser.add_argument("--warmup", type=float, default=15)
     parser.add_argument("--minimum", type=float, default=30)
+    parser.add_argument("--require-program-deadlines", action="store_true")
+    parser.add_argument("--require-source-ready", action="store_true")
+    parser.add_argument("--require-exact-source-selection", action="store_true")
+    parser.add_argument("--expected-source", action="append", default=[])
     args = parser.parse_args()
     try:
-        report = judge(args.path, args.warmup, args.minimum)
+        report = judge(args.path, args.warmup, args.minimum, require_program_deadlines=args.require_program_deadlines,
+                       require_source_ready=args.require_source_ready, expected_source_ids=args.expected_source,
+                       require_exact_source_selection=args.require_exact_source_selection)
     except Exception as error:
         report = {"result": "INVALID", "error": str(error)}
     print(json.dumps(report, indent=2))

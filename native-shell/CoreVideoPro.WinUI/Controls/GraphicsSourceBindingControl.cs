@@ -31,10 +31,10 @@ public sealed class GraphicsSourceBindingControl : UserControl
         _loading=true;
         try {
             var sources=(_session.State?.Sources ?? []).Where(s=>s.VideoOn && s.Identity is not null).ToArray();
-            var signature=string.Join('|',sources.Select(s=>$"{s.Identity}:{s.DisplayName}"));
+            var signature=string.Join('|',sources.Select(s=>$"{s.Identity}:{_studio.GraphicsSourceText(s.Identity!.SourceId,s.DisplayName).Name}"));
             if(signature!=_signature || _source.Items.Count==0) {
                 _signature=signature;_sources=sources;_source.Items.Clear();_source.Items.Add("Unbound — show in selected scope");
-                foreach(var source in sources) _source.Items.Add(source.DisplayName+" · "+source.Identity!.SourceId);
+                foreach(var source in sources) _source.Items.Add(_studio.GraphicsSourceText(source.Identity!.SourceId,source.DisplayName).Name+" · "+source.Identity.SourceId);
             }
             var binding=_session.Draft?.Binding;
             _source.SelectedIndex=binding is null?0:Array.FindIndex(_sources,s=>s.Identity==binding)+1;

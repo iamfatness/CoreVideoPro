@@ -3,7 +3,7 @@
  *
  * A Cron-triggered uptime check for the runtime dependencies beta makes hard:
  * the external OAuth broker (corevideo.iamfatness.us) and the in-repo Cloudflare
- * workers (licensing-api, telemetry-ingest, caption-broker) + itself. On a
+ * worker (telemetry-ingest) + itself. On a
  * state CHANGE it alerts a generic webhook (Discord/Slack). It never spams
  * (state-change only, KV-backed flap-dampener) and never crashes on a probe
  * failure — the thing it monitors is expected to fail.
@@ -12,8 +12,7 @@
  * - OPS_STATE (KV): last up/down state per target for the flap-dampener.
  * - OPS_ALERT_WEBHOOK_URL (secret, OPTIONAL): Discord/Slack incoming webhook.
  *   Unset => log-only (never crash, never spam).
- * - OPS_BROKER_START_URL / OPS_LICENSING_URL / OPS_TELEMETRY_URL /
- *   OPS_CAPTION_URL / OPS_SELF_URL (vars, OPTIONAL): override any probe target;
+ * - OPS_BROKER_START_URL / OPS_TELEMETRY_URL / OPS_SELF_URL (vars, OPTIONAL): override any probe target;
  *   "" or "off" skips it.
  */
 import { runChecks } from "./lib/checks.mjs";

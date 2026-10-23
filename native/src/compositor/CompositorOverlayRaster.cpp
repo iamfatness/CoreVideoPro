@@ -369,7 +369,7 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   if (overlay.graphicsTemplate) {
     std::string error;
     if (!overlay.graphicsTemplate->definition->resolve(overlay.graphicsTemplate->fields,
-        overlay.graphicsTemplate->brand, drawing, error)) return {{}, 0, error};
+        overlay.graphicsTemplate->brand, drawing, error, overlay.graphicsTemplate->logo)) return {{}, 0, error};
     if (!drawing.warnings.empty()) workerWarning_ = drawing.warnings.front();
     for (const auto& primitive : drawing.primitives) if (primitive.image && !images.count(primitive.image->id)) {
       auto image = openPackagedImage(*primitive.image);

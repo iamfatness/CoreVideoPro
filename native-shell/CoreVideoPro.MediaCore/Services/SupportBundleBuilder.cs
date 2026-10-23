@@ -204,14 +204,13 @@ public static class SupportBundleBuilder
             MonitorIsolation = MonitorIsolationObservation.FromSnapshot(snapshot),
             CapturePreparation = CapturePreparationObservation.FromSnapshot(snapshot),
             SceneId = snapshot.SceneId,
-            RenderPlanId = snapshot.RenderPlan.RenderPlanId,
+            RenderPlanId = ResolveRenderPlanId(snapshot),
             Source = new SupportBundleMediaCoreSource
             {
                 AdapterId = source.AdapterId,
                 Kind = source.Kind,
                 Status = source.Status,
                 SubscribedSourceCount = source.SubscribedSourceCount,
-                DeliveredFrameCount = snapshot.FrameCount,
                 LiveFrameCount = source.LiveFrameCount,
                 StaleFrameCount = source.StaleFrameCount,
                 Backing = SourceBacking(source),
@@ -253,7 +252,6 @@ public static class SupportBundleBuilder
                         LastFrameNumber = sender.LastFrameNumber,
                         FramesSent = sender.FramesSent,
                         RetryCount = sender.RetryCount,
-                        LatencyMs = sender.LatencyMs,
                         BitrateMbps = sender.BitrateMbps,
                         AudioFramesSent = sender.AudioFramesSent,
                         AudioBytesSent = sender.AudioBytesSent,
@@ -313,31 +311,6 @@ public static class SupportBundleBuilder
                         .ToArray()
                 }
                 : null,
-            OperatorActions = snapshot.OperatorActions
-                .Select(action => new SupportBundleOperatorAction
-                {
-                    ActionId = action.ActionId,
-                    Severity = action.Severity,
-                    Area = action.Area,
-                    Title = action.Title,
-                    Detail = action.Detail,
-                    Command = action.Command,
-                    RelatedId = action.RelatedId
-                })
-                .ToArray(),
-            EventLog = snapshot.EventLog
-                .Select(entry => new SupportBundleEvent
-                {
-                    EventId = entry.EventId,
-                    AtMs = entry.AtMs,
-                    Severity = entry.Severity,
-                    Area = entry.Area,
-                    Title = entry.Title,
-                    Detail = entry.Detail,
-                    RelatedId = entry.RelatedId,
-                    CommandType = entry.CommandType
-                })
-                .ToArray(),
             Warnings = snapshot.Warnings.ToArray()
         };
     }
@@ -517,9 +490,9 @@ public static class SupportBundleBuilder
 
         if (snapshot is not null)
         {
-            lines.Add($"Program scene: {snapshot.SceneId ?? "none"}; render plan: {snapshot.RenderPlan.RenderPlanId}");
+            lines.Add($"Program scene: {snapshot.SceneId ?? "none"}; render plan: {ResolveRenderPlanId(snapshot) ?? "none"}");
             lines.Add(
-                $"Video source: {SourceBacking(snapshot.SourceSnapshot)}; subscribed {snapshot.SourceSnapshot.SubscribedSourceCount}; delivered {snapshot.FrameCount}; stale {snapshot.SourceSnapshot.StaleFrameCount}");
+                $"Video source: {SourceBacking(snapshot.SourceSnapshot)}; subscribed {snapshot.SourceSnapshot.SubscribedSourceCount}; live frames {snapshot.SourceSnapshot.LiveFrameCount}; stale {snapshot.SourceSnapshot.StaleFrameCount}");
             lines.Add($"Output warnings: {snapshot.Warnings.Count}");
             var isolation = mediaCore?.MonitorIsolation ?? new MonitorIsolationObservation();
             lines.Add($"Monitor isolation: requested {isolation.RequestedMode}; effective {isolation.EffectiveMode}; selection {isolation.SelectionSource}; readiness {isolation.Readiness}; reason {(isolation.FailureReason.Length == 0 ? "none" : isolation.FailureReason)}; delivery epoch {isolation.DeliveryEpoch?.ToString() ?? "unknown"}");
@@ -726,6 +699,19 @@ public static class SupportBundleBuilder
                 Finalized = lifecycle.Finalized,
                 Error = string.IsNullOrWhiteSpace(lifecycle.Error) ? null : RedactEndpoint(lifecycle.Error)
             };
+
+    /// <summary>
+    /// #766: the render plan the core actually rendered (programFrame / compositor), never the
+    /// neutral "idle" placeholder of the snapshot's RenderPlan node, which a real core never
+    /// publishes. Null when the core reported no rendered plan.
+    /// </summary>
+    internal static string? ResolveRenderPlanId(NativeMediaCoreStateSnapshot snapshot)
+    {
+        var rendered = snapshot.ProgramFrame?.RenderPlanId ?? snapshot.Compositor.RenderPlanId;
+        if (!string.IsNullOrWhiteSpace(rendered)) return rendered;
+        var declared = snapshot.RenderPlan.RenderPlanId;
+        return string.IsNullOrWhiteSpace(declared) || declared == "idle" ? null : declared;
+    }
 
     public static string RedactEndpoint(string? endpoint)
     {

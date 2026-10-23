@@ -145,8 +145,8 @@ GraphicsBox intersect(GraphicsBox a, GraphicsBox b) {
 }
 class Layout {
  public:
-  Layout(const Json& document, const Json& fields, const Json& brand, const GraphicsAssets& assets, bool validate = false)
-      : document_(document), fields_(fields), brand_(brand), assets_(assets), validate_(validate) {
+  Layout(const Json& document, const Json& fields, const Json& brand, const GraphicsAssets& assets, bool validate = false, std::shared_ptr<const GraphicsAsset> logo = {})
+      : document_(document), fields_(fields), brand_(brand), assets_(assets), validate_(validate), logo_(std::move(logo)) {
     for (const auto& item : document.get("brandTokens")->asArray()) declared_.insert(item.asString());
   }
   GraphicsDrawing run() {
@@ -242,7 +242,8 @@ class Layout {
         need(!visible || (boolean(*declared, "optional") && missing == "hide"), "template-image-asset-missing");
         if (visible) draw_->warnings.push_back("Optional graphics asset omitted: " + assetId); draw_->nodes.back().visible=false; return false;
       }
-      if (asset != assets_.end()) p.image = asset->second;
+      if (assetId == "logo" && logo_) p.image = logo_;
+      else if (asset != assets_.end()) p.image = asset->second;
     } else {
       const auto text = resolve(node.get("text"), "string"), font = resolve(node.get("font"), "string");
       need(text.isString() && font.isString() && text.asString().size() <= 4096 && !font.asString().empty() && font.asString().size() <= 128 && utf8(font.asString()), "template-text-or-font");
@@ -258,6 +259,7 @@ class Layout {
     draw_->primitives.push_back(std::move(p)); return true;
   }
   const Json& document_; const Json& fields_; const Json& brand_; const GraphicsAssets& assets_; bool validate_;
+  std::shared_ptr<const GraphicsAsset> logo_;
   std::set<std::string> declared_, ids_; size_t nodes_ = 0; GraphicsDrawing* draw_ = nullptr;
 };
 } // namespace
@@ -286,10 +288,10 @@ bool GraphicsTemplate::validateFields(const Json& values, bool requireValues, st
     error.clear(); return true;
   } catch (const std::exception& e) { error = e.what(); return false; }
 }
-bool GraphicsTemplate::resolve(const Json& fields, const Json& brand, GraphicsDrawing& drawing, std::string& error) const {
+bool GraphicsTemplate::resolve(const Json& fields, const Json& brand, GraphicsDrawing& drawing, std::string& error, std::shared_ptr<const GraphicsAsset> logo) const {
   try {
     if (!validateFields(fields, true, error)) throw std::runtime_error(error);
-    need(brand.isObject(), "template-brand-required"); drawing = Layout(document_, fields, brand, assets_).run(); error.clear(); return true;
+    need(brand.isObject(), "template-brand-required"); drawing = Layout(document_, fields, brand, assets_, false, std::move(logo)).run(); error.clear(); return true;
   } catch (const std::exception& e) { error = e.what(); return false; }
 }
 std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::load(const std::string& manifest, std::string& error, GraphicsAssets assets) {

@@ -17,6 +17,15 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/VoltLogoAsset.h"
   "#pragma once\nstatic constexpr unsigned char voltLogoPng[] = {${VOLT_LOGO_BYTES}};\n")
 
 if(WIN32)
+  add_library(corevideo-monitor-presenter SHARED monitor-presenter/MonitorPresenter.cpp)
+  target_compile_features(corevideo-monitor-presenter PRIVATE cxx_std_20)
+  target_compile_definitions(corevideo-monitor-presenter PRIVATE COREVIDEO_MONITOR_EXPORTS=1 WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+  target_link_libraries(corevideo-monitor-presenter PRIVATE d3d11 dxgi ole32)
+  set_target_properties(corevideo-monitor-presenter PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR})
   add_executable(corevideo-vcam-publication-qa EXCLUDE_FROM_ALL ../tools/camera-publication-qa.cpp)
   target_compile_features(corevideo-vcam-publication-qa PRIVATE cxx_std_20)
   target_compile_definitions(corevideo-vcam-publication-qa PRIVATE
@@ -123,6 +132,7 @@ add_library(corevideo_native
   src/graphics/GraphicsAutomation.cpp
   src/graphics/GraphicsClock.cpp
   src/core/MediaCore.cpp
+  src/core/MediaCoreMonitors.cpp
   src/core/CoreStateCapture.cpp
   src/core/ComApartmentLifetime.cpp
   src/core/SourceRegistry.cpp
@@ -790,6 +800,8 @@ if(BUILD_TESTING)
     tests/BrowserHostExitMessageTest.cpp
     tests/IsoFrameConformTest.cpp
     tests/IsoVideoIngressTest.cpp
+    tests/UvcIsoArrivalQueueTest.cpp
+    tests/UvcAsyncReadTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp
@@ -913,6 +925,11 @@ if(BUILD_TESTING)
     tests/ZoomEngineStateTest.cpp
   )
   target_link_libraries(corevideo-native-tests PRIVATE corevideo_native)
+  if(WIN32)
+    target_sources(corevideo-native-tests PRIVATE tests/NativeMonitorPresenterTest.cpp)
+    target_include_directories(corevideo-native-tests PRIVATE monitor-presenter)
+    target_link_libraries(corevideo-native-tests PRIVATE corevideo-monitor-presenter d3d11 dxgi user32)
+  endif()
   if(WIN32 AND COREVIDEO_WITH_VIRTUALCAM)
     target_compile_definitions(corevideo-native-tests PRIVATE
       COREVIDEO_VCAM_DLL_PATH="$<TARGET_FILE:corevideo-virtualcam>")

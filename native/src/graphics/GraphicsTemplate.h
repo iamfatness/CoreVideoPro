@@ -49,7 +49,7 @@ class GraphicsTemplate {
   rpc::Json defaultFields() const;
   std::optional<GraphicsPlacement> defaultPlacement() const { std::optional<GraphicsPlacement> value; if (const auto* p = document_.get("defaultPlacement")) GraphicsPlacement::read(*p,value); return value; }
   bool validateFields(const rpc::Json& fields, bool requireValues, std::string& error) const;
-  bool resolve(const rpc::Json& fields, const rpc::Json& brand, GraphicsDrawing& drawing, std::string& error) const;
+  bool resolve(const rpc::Json& fields, const rpc::Json& brand, GraphicsDrawing& drawing, std::string& error, std::shared_ptr<const GraphicsAsset> logo = {}) const;
  private:
   rpc::Json document_;
   std::array<uint8_t, 32> hash_{};
@@ -59,6 +59,7 @@ class GraphicsTemplate {
 struct GraphicsTemplateInput {
   std::shared_ptr<const GraphicsTemplate> definition;
   rpc::Json fields, brand;
+  std::shared_ptr<const GraphicsAsset> logo;
   std::optional<GraphicsPlacement> placement;
   std::shared_ptr<GraphicsTemplateDraft> draft;
   std::string draftKey;

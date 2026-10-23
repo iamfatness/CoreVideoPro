@@ -11,8 +11,13 @@ public static class RenderedLowerThirdSourceResolver
     {
         if (frame is null || frame.FrameNumber <= 0 || frame.SceneId != activeSceneId || frame.VideoSources is null)
             return null;
+        // Transition attribution legitimately contains both pictures. Sticky
+        // selection must not keep the outgoing subject after this Take ends.
+        // These are native rendered layer selectors, not guessed route intent.
+        var incomingTake = frame.RenderPlanId?.StartsWith("take:", StringComparison.Ordinal) == true;
         var eligible = frame.VideoSources.Where(source =>
         {
+            if (incomingTake && source.LayerId?.StartsWith("take-in:", StringComparison.Ordinal) != true) return false;
             if (source.Kind is not ("participant-video" or "screen-share")) return false;
             if (source.SourceId.StartsWith("capture:", StringComparison.Ordinal))
                 return captureDevices.Any(device => "capture:" + device.Id == source.SourceId);

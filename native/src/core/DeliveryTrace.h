@@ -11,7 +11,8 @@ namespace corevideo::core {
 // Only these boundaries are observed in v1. Camera/monitor/shell remain unknown.
 enum class DeliveryStage : std::uint32_t {
   SourceGpuReady = 1, SourceAdmitted, ProgramSubmitted, ProgramGpuReady,
-  ProgramDelivered, ProgramMiss, SourceRequested, SourceUploadStarted, SourceUploadSubmitted, SourceUploadRefused
+  ProgramDelivered, ProgramMiss, SourceRequested, SourceUploadStarted, SourceUploadSubmitted, SourceUploadRefused,
+  IsoArrivalOffered
 };
 enum class DeliveryReason : std::uint32_t { None, Ready, Held, Unavailable, Failed };
 struct DeliveryTraceEvent {
@@ -23,17 +24,20 @@ struct DeliveryTraceEvent {
   std::uint64_t layoutTag = 0;
   DeliveryStage stage = DeliveryStage::ProgramSubmitted;
   DeliveryReason reason = DeliveryReason::None;
+  // v2: same steady-clock nanosecond domain, not QPC ticks. On ProgramGpuReady,
+  // record the actual observed GPU completion and its original scheduled target.
+  std::int64_t programGpuReadyNs = 0, programDeadlineNs = 0;
 };
-static_assert(sizeof(DeliveryTraceEvent) == 72);
+static_assert(sizeof(DeliveryTraceEvent) == 88);
 struct DeliveryTraceHeader {
-  char magic[8] = {'C','V','T','R','A','C','E','1'};
-  std::uint32_t version = 1, eventBytes = sizeof(DeliveryTraceEvent);
+  char magic[8] = {'C','V','T','R','A','C','E','2'};
+  std::uint32_t version = 2, eventBytes = sizeof(DeliveryTraceEvent);
   std::uint64_t clockFrequency = 0, sessionEpoch = 0, exported = 0, lost = 0;
   std::uint64_t failures = 0, complete = 0;
   std::int64_t started = 0, ended = 0;
 };
 static_assert(sizeof(DeliveryTraceHeader) == 80);
-enum class DeliveryTraceSelection { All, ProgramOnly };
+enum class DeliveryTraceSelection { All, ProgramOnly, ProgramAndIso };
 class DeliveryTraceCapture {
  public:
   static constexpr std::size_t kStorageBytes = 16 * 1024 * 1024;

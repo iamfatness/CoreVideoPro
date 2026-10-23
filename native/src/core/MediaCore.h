@@ -531,7 +531,6 @@ class MediaCore {
     // derive person identity from their Zoom user id in SpeakerFloor.
     std::string personId;
     std::string captureDeviceId;
-    std::string audioRole;
     std::string mediaAssetId;
     std::string mediaAssetName;
     std::string mediaAssetKind;
@@ -584,6 +583,8 @@ class MediaCore {
   // current activeSpeakerId. Reuses the same source-id conventions as the
   // program plan so resolveLayers/frameForParticipant match the same frames.
   [[nodiscard]] modules::CompositorRenderPlan buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
+  void submitIsolatedMonitorTick(const modules::CompositorRenderPlan& renderPlan,
+      const std::vector<modules::VideoFrame>& videoFrames, int64_t sequence);
   // Builds the per-tile rect list (geometry + role + tally + label) for the
   // current multiview layout mode, matching the geometry buildMultiviewRenderPlan
   // places its layers into. Includes the PGM/PVW cells for the pgmPvw modes.
@@ -1064,7 +1065,6 @@ class MediaCore {
   std::string breakoutRoomName_ = "Main room";
   struct ParticipantAudioChannelInput {
     std::string participantId;
-    int inputLevel = 0;
     bool muted = false;
     bool noiseSuppression = false;
     double manualGainDb = 0;
@@ -1337,18 +1337,13 @@ class MediaCore {
   std::string captionText_;
   std::string captionSpeaker_;
   double captionAtMs_ = 0;
-  int captionConfidence_ = 0;
   std::vector<std::string> captionWarnings_;
   std::string brandName_ = "CoreVideo Pro House";
-  std::string brandLogoText_ = "CoreVideo Pro";
   std::string brandColor_ = "#44c1a1";
   std::string brandAccentColor_ = "#f0a85c";
   std::string brandBackgroundColor_ = "#0c1118";
   std::string brandFontFamily_ = "Inter";
-  std::string brandLowerThirdStyle_ = "gradient";
   compositor::LowerThirdAppearance lowerThirdAppearance_;
-  std::string brandCaptionStyle_ = "medium sentence captions";
-  std::string brandDefaultOverlayBehavior_ = "all-off";
   std::vector<std::string> brandWarnings_;
   std::string mediaPlaybackAssetId_;
   std::string mediaPlaybackAssetName_;

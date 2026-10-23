@@ -344,7 +344,7 @@ public sealed class RawParticipantEvent
     public bool? VideoOn { get; init; }
     public bool? Talking { get; init; }
     public bool? SharingScreen { get; init; }
-    public int? AudioLevel { get; init; }
+    /// <summary>Absent until the SDK reports it (core PR #1023); null means "unknown", never "good".</summary>
     public string? NetworkQuality { get; init; }
 }
 
@@ -381,6 +381,11 @@ public sealed class NativeMediaCoreWireState
     public NativeMediaCoreBrandKit? BrandKit { get; init; }
     public NativeMediaCoreOverlayState? OverlayState { get; init; }
     public NativeGraphicsState? Graphics { get; init; }
+    /// <summary>The core's deterministic director recommendation (snapshot node "autoProduction":
+    /// ruleId, recommendedSceneId, confidence, rationale, slotBindings). #761: this was never bound,
+    /// so Set &amp; Forget and Magic Scene only ever saw the shell's count-only fallback, whose
+    /// SlotBindings are always empty, and never acted. Null means the core published no node.</summary>
+    public NativeMediaCoreAutoProduction? AutoProduction { get; init; }
     public NativeMediaCoreMediaPlaybackState? MediaPlayback { get; init; }
     /// <summary>The core's per-source media transport rows (#535 slice 3b, snapshot node
     /// "mediaSources"). Published unconditionally by the core, so null here means an OLD core,
@@ -394,6 +399,14 @@ public sealed class NativeMediaCoreWireState
     public string? BreakoutRoomName { get; init; }
     public string? ActiveSpeakerId { get; init; }
     public IReadOnlyList<RawParticipantEvent>? Participants { get; init; }
+    /// <summary>The roster authority of the participants above (top-level snapshot keys
+    /// "rosterEpoch" = "&lt;engine process&gt;:&lt;meeting generation&gt;:&lt;token&gt;" and
+    /// "rosterRevision"). #766: these were never bound, so every sync snapshot reached
+    /// <see cref="Services.ZoomRosterSnapshotPolicy"/> with no epoch, was rejected against the
+    /// capture-merged barrier, and RosterStaleSnapshots climbed on every poll. Null/0 means the
+    /// core published no roster fact (idle engine, or no roster yet for this epoch).</summary>
+    public string? RosterEpoch { get; init; }
+    public long? RosterRevision { get; init; }
 
     /// <summary>The core's capture-device list (snapshot node "captureDevices": UVC, screens,
     /// SRT/RTMP/NDI ingest, with per-device connection, signal, decode and RTT facts). Not bound

@@ -8,6 +8,16 @@ namespace CoreVideoPro.MediaCore.Services;
 /// </summary>
 public static class ZoomRosterSnapshotPolicy
 {
+    /// <summary>
+    /// #766: does this snapshot carry a roster fact at all? The engine publishes
+    /// <c>rosterRevision</c> 0 until its first versioned roster for an epoch (and a sync
+    /// snapshot from an idle core has no epoch). Such a snapshot states nothing about the
+    /// roster: it must not install a barrier, must not be counted as a stale snapshot, and the
+    /// installed roster is carried. Only revision 1+ with an epoch is an observation.
+    /// </summary>
+    public static bool HasRosterFact(string? epoch, long revision) =>
+        !string.IsNullOrEmpty(epoch) && revision > 0;
+
     public static bool IsNewerFact(RawCaptureSnapshot current, RawCaptureSnapshot candidate)
     {
         if (current.RosterEpoch == candidate.RosterEpoch)

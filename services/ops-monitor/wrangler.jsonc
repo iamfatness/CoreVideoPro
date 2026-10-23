@@ -11,9 +11,7 @@
     // defaults in lib/checks.mjs (buildTargets) apply. Set to "off" to skip a
     // target:
     //   "OPS_BROKER_START_URL": "https://corevideo.iamfatness.us/oauth/start?probe=ops-monitor",
-    //   "OPS_LICENSING_URL":    "https://corevideo-licensing-api.<account>.workers.dev/health",
     //   "OPS_TELEMETRY_URL":    "https://corevideo-telemetry-ingest.<account>.workers.dev/health",
-    //   "OPS_CAPTION_URL":      "https://corevideo-caption-broker.<account>.workers.dev/health",
     //   "OPS_SELF_URL":         "https://corevideo-ops-monitor.<account>.workers.dev/health"
   },
   // Cron Trigger: probe every 5 minutes.

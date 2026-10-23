@@ -188,7 +188,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
             if (restarts == _rosterBarrierRestartCount) return;
             _rosterBarrierRestartCount = restarts;
             if (_lastSnapshot is not null)
-                _lastSnapshot = _lastSnapshot with { RosterEpoch = null, RosterRevision = 0 };
+                _lastSnapshot = _lastSnapshot with { RosterEpoch = null, RosterRevision = 0, RawMediaActive = null };
             _controlRecovery.ResetProcess();
             _rosterRecoveryGeneration++;
             _rosterRecoveryInFlight = false;
@@ -423,31 +423,6 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
             .ConfigureAwait(false);
         PublishSpineSnapshot(spine);
         return spine;
-    }
-
-    public static IReadOnlyList<NativeMediaCoreCommand> BuildSceneGraphCommand(
-        string sceneId,
-        IReadOnlyList<(string RouteId, string Mode, string AudioRole, string? ParticipantId)> routes)
-    {
-        return
-        [
-            new NativeMediaCoreCommand
-            {
-                Type = "load-scene-graph",
-                ExtensionData = new Dictionary<string, System.Text.Json.JsonElement>
-                {
-                    ["sceneId"] = System.Text.Json.JsonSerializer.SerializeToElement(sceneId),
-                    ["routes"] = System.Text.Json.JsonSerializer.SerializeToElement(
-                        routes.Select(route => new
-                        {
-                            routeId = route.RouteId,
-                            mode = route.Mode,
-                            audioRole = route.AudioRole,
-                            participantId = route.ParticipantId
-                        }))
-                }
-            }
-        ];
     }
 
     public static string SummarizeCaptureSnapshot(RawCaptureSnapshot snapshot, string verb)
@@ -802,8 +777,12 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
         lock (_gate)
         {
             if (!CoreSnapshotRevisionPolicy.Accept(_lastSnapshot, snapshot)) return;
-            _controlRecovery.ObserveRoster(snapshot.RosterEpoch, snapshot.RosterRevision,
-                ZoomRosterSnapshotPolicy.Accept(_lastSnapshot, snapshot.RosterEpoch, snapshot.RosterRevision));
+            // #766: a snapshot without a roster fact (idle engine, or revision 0 before the
+            // first roster of an epoch) is not a roster observation: neither a barrier nor
+            // stale. CarrySubscriptions below keeps the installed roster for it.
+            if (ZoomRosterSnapshotPolicy.HasRosterFact(snapshot.RosterEpoch, snapshot.RosterRevision))
+                _controlRecovery.ObserveRoster(snapshot.RosterEpoch, snapshot.RosterRevision,
+                    ZoomRosterSnapshotPolicy.Accept(_lastSnapshot, snapshot.RosterEpoch, snapshot.RosterRevision));
             _controlRecovery.ObserveMonitor(snapshot.AudioMixSession.MonitorControl?.AuthorityEpoch,
                 snapshot.AudioMixSession.MonitorControl?.Revision ?? 0);
             _controlRecovery.ObserveAudioRoute(snapshot.AudioRoutingMatrix.Control?.AuthorityEpoch,
@@ -817,6 +796,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
                     MeetingState = priorRoster.MeetingState,
                     RosterEpoch = priorRoster.RosterEpoch,
                     RosterRevision = priorRoster.RosterRevision,
+                    RawMediaActive = priorRoster.RawMediaActive,
                     ActiveSpeakerId = priorRoster.ActiveSpeakerId,
                     Participants = priorRoster.Participants,
                     ZoomSubscriptions = priorRoster.ZoomSubscriptions

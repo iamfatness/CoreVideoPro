@@ -207,6 +207,13 @@ bool resolveNdiApi(LibraryHandle handle, NdiApi& api) {
   return api.complete();
 }
 
+std::string trimAscii(const std::string& value) {
+  const auto first = value.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return {};
+  const auto last = value.find_last_not_of(" \t\r\n");
+  return value.substr(first, last - first + 1);
+}
+
 const OutputDestinationSettings* findNdiSettings(const std::vector<OutputDestinationSettings>& destinationSettings) {
   for (const auto& settings : destinationSettings) {
     if (settings.id == "ndi" || settings.protocol == "ndi") {
@@ -260,11 +267,6 @@ void convertBgraToUyvy(const uint8_t* bgra, int width, int height, std::vector<u
       uyvy[out++] = rgbToY(b0, g0, r0);
     }
   }
-}
-
-int64_t estimatedFrameBytes(double bitrateMbps, int fps) {
-  const int safeFps = (std::max)(1, fps);
-  return static_cast<int64_t>((bitrateMbps * 1000000.0 / 8.0 / static_cast<double>(safeFps)) + 0.5);
 }
 
 class NdiOutputSender final : public IOutputSender {
@@ -329,6 +331,9 @@ class NdiOutputSender final : public IOutputSender {
         configuredSourceNameError_ = parsed.errors.front();
       }
       configuredFps_ = (std::max)(1, settings->fps);
+      // #763: the operator's NDI group(s). libNDI takes a comma-separated
+      // list; empty means the default "public" group.
+      configuredGroup_ = trimAscii(settings->ndiGroup);
       sender_.bitrateMbps = (std::max)(0.5, settings->targetBitrateMbps);
     }
     if (configuredSourceName_.empty()) {
@@ -396,7 +401,7 @@ class NdiOutputSender final : public IOutputSender {
     sender_.warning.clear();
     sender_.lastFrameNumber = frame->frameNumber;
     ++sender_.framesSent;
-    sender_.bytesSent += estimatedFrameBytes(sender_.bitrateMbps, configuredFps_);
+    sender_.bytesSent += lastSubmittedVideoBytes_;  // UYVY bytes handed to libNDI (#519)
     sender_.destinationHealth = connectionCount_ > 0 ? "ok" : "starting";
     sender_.lastResultCode = "ok";
     return snapshot();
@@ -445,7 +450,7 @@ class NdiOutputSender final : public IOutputSender {
     sender_.destination = "ndi";
     sender_.status = "starting";
     sender_.startedAtMs = elapsedMs;
-    sender_.latencyMs = 16;  // NDI is a near-zero-latency LAN transport.
+    // No latencyMs: libNDI exposes no transport latency to measure (#519).
     sender_.bitrateMbps = 125.0;  // 1080p60 SpeedHQ estimate (matches ndiOutput.ts).
     sender_.runtimeDetail = runtimeDetail_;
     sender_.destinationHealth = "starting";
@@ -453,7 +458,7 @@ class NdiOutputSender final : public IOutputSender {
   }
 
   bool ensureSenderInstance() {
-    if (sendInstance_ && activeSourceName_ == configuredSourceName_) {
+    if (sendInstance_ && activeSourceName_ == configuredSourceName_ && activeGroup_ == configuredGroup_) {
       return true;
     }
     destroySender();
@@ -467,7 +472,8 @@ class NdiOutputSender final : public IOutputSender {
     // libNDI adds this machine's name to discovery automatically. Passing the
     // canonical MACHINE (Program) string here advertises HOST (MACHINE (Program)).
     create.p_ndi_name = configuredProgramName_.c_str();
-    create.p_groups = nullptr;
+    // #763: advertise in the configured group(s); nullptr = libNDI default ("public").
+    create.p_groups = configuredGroup_.empty() ? nullptr : configuredGroup_.c_str();
     create.clock_video = true;
     create.clock_audio = true;
     sendInstance_ = api_.send_create(&create);
@@ -475,6 +481,8 @@ class NdiOutputSender final : public IOutputSender {
       return false;
     }
     activeSourceName_ = configuredSourceName_;
+    activeGroup_ = configuredGroup_;
+    ++sendCreateCount_;
     return true;
   }
 
@@ -524,6 +532,7 @@ class NdiOutputSender final : public IOutputSender {
     video.p_metadata = nullptr;
     video.timestamp = 0;
     api_.send_video(sendInstance_, &video);
+    lastSubmittedVideoBytes_ = static_cast<std::int64_t>(video.line_stride_in_bytes) * height;
   }
 
   // The program-audio tap is interleaved float; NDI audio_frame_v2 is planar.
@@ -562,6 +571,7 @@ class NdiOutputSender final : public IOutputSender {
     }
     sendInstance_ = nullptr;
     activeSourceName_.clear();
+    activeGroup_.clear();
     connectionCount_ = 0;
   }
 
@@ -574,6 +584,8 @@ class NdiOutputSender final : public IOutputSender {
       // real connection counter without a protocol change.
       sender.runtimeDetail = runtimeDetail_ + " connections=" + std::to_string(connectionCount_) +
                              " program=\"" + configuredProgramName_ + "\"" +
+                             " groups=\"" + (sendInstance_ ? activeGroup_ : configuredGroup_) + "\"" +
+                             " instance=" + std::to_string(sendCreateCount_) +
                              " video=" + videoSourceDetail_;
       session.senders.push_back(sender);
       if (sender.status == "live" || sender.status == "warning" || sender.status == "starting") {
@@ -601,7 +613,11 @@ class NdiOutputSender final : public IOutputSender {
   std::string configuredProgramName_;
   std::string configuredSourceNameError_;
   std::string activeSourceName_;
+  std::string configuredGroup_;  // #763: operator NDI group(s), "" = libNDI default
+  std::string activeGroup_;      // group(s) the live NDIlib_send instance was created with
+  int sendCreateCount_ = 0;      // NDIlib_send_create calls this adapter made (recreate evidence)
   int configuredFps_ = 30;
+  std::int64_t lastSubmittedVideoBytes_ = 0;
   int connectionCount_ = 0;
   std::vector<uint8_t> uyvyBuffer_;
   // Which program source the last frame came from. Surfaced in the snapshot so

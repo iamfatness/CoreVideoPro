@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-export function judgeCameraPixels(text, { warmupSeconds = 30, minimumSeconds = 30 } = {}) {
+export function judgeCameraPixels(text, { warmupSeconds = 30, minimumSeconds = 30, startHostUs, endHostUs } = {}) {
   const errors = [], rows = [];
   let header, completion;
   for (const line of text.split(/\r?\n/).filter(Boolean)) {
@@ -34,7 +34,25 @@ export function judgeCameraPixels(text, { warmupSeconds = 30, minimumSeconds = 3
       errors.push('Missing/reordered receiver samples or timestamps.');
     previous = row;
   }
-  const measured = rows.filter(row => row.arrivalUs >= warmupSeconds * 1e6);
+  const hasWindow = startHostUs !== undefined || endHostUs !== undefined;
+  let measured = rows.filter(row => row.arrivalUs >= warmupSeconds * 1e6);
+  if (hasWindow) {
+    if (!Number.isSafeInteger(startHostUs) || !Number.isSafeInteger(endHostUs) || startHostUs < 0 ||
+        endHostUs <= startHostUs || (endHostUs - startHostUs) / 1e6 < minimumSeconds)
+      errors.push('Invalid or insufficient declared receiver interval.');
+    if (rows.some((row, i) => !Number.isSafeInteger(row.arrivalHostUs) || row.arrivalHostUs < 0 ||
+        (i > 0 && row.arrivalHostUs <= rows[i - 1].arrivalHostUs)))
+      errors.push('Missing/reordered receiver host clock.');
+    // Include the adjacent samples bracketing both declared endpoints. This
+    // proves continuity across the entire workload, rather than picking a
+    // convenient contiguous interior or silently discarding a boundary loss.
+    const before = rows.findLastIndex(row => row.arrivalHostUs <= startHostUs);
+    const after = rows.findIndex(row => row.arrivalHostUs >= endHostUs);
+    if (before < 0 || after < before) {
+      errors.push('Receiver does not bracket the declared workload interval.');
+      measured = [];
+    } else measured = rows.slice(before, after + 1);
+  }
   let invalid = 0, repeated = 0, missing = 0, reordered = 0;
   const intervals = [];
   previous = null;
@@ -74,7 +92,9 @@ export function judgeCameraPixels(text, { warmupSeconds = 30, minimumSeconds = 3
   return { schema: 'camera-pixel-verdict-v1', receiverPixelContinuityPassed: errors.length === 0,
     receiverScheduling: header?.receiverScheduling ?? 'ordinary',
     receiverMode, osCameraContinuityVerified: errors.length === 0 && receiverMode === 'os-camera',
-    physicalDisplayVerified: false, warmupSeconds, durationSeconds, samples: measured.length, coverage,
+    physicalDisplayVerified: false, warmupSeconds: hasWindow ? null : warmupSeconds,
+    ...(hasWindow ? { measurement: { startHostUs, endHostUs, includesEndpointBrackets: true } } : {}),
+    durationSeconds, samples: measured.length, coverage,
     firstIdentity: measured[0]?.identity ?? null, lastIdentity: measured.at(-1)?.identity ?? null,
     invalid, repeated, missing, reordered, p50IntervalMs: percentile(.5), p99IntervalMs: percentile(.99), maximumIntervalMs,
     errors: [...new Set(errors)], limitation: receiverMode === 'direct-dll'

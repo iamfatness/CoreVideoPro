@@ -2,6 +2,7 @@
 
 #include "modules/Interfaces.h"
 #include "modules/MonitorInputCache.h"
+#include "modules/MonitorCaptureCadence.h"
 #include "core/BoundedAsyncLog.h"
 #include "core/ComApartmentLifetime.h"
 #include "core/ScopedVideoScheduling.h"
@@ -146,6 +147,7 @@ class MonitorRenderWorker {
     initialized_.notify_all();
     auto lastLog = std::chrono::steady_clock::now();
     MonitorInputCache inputs;
+    MonitorCaptureCadence captureCadence;
     bool retirementPending = false;
     for (;;) {
       std::shared_ptr<const MonitorRenderRequest> job;
@@ -163,7 +165,10 @@ class MonitorRenderWorker {
         auto prepared = *job;
         prepared.workerStartedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count();
         MonitorRenderResult observation;
-        if (prepareInputs) inputs.prepare(prepared, observation);
+        if (prepareInputs) {
+          captureCadence.prepare(prepared);
+          inputs.prepare(prepared, observation);
+        }
         prepared.inputsPreparedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         auto result = std::make_shared<MonitorRenderResult>(render(prepared));

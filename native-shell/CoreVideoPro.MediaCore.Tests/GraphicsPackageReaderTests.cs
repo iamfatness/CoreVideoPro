@@ -13,6 +13,32 @@ public sealed class GraphicsPackageReaderTests : IDisposable
     private static readonly byte[] Image = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==");
     private static string Hash => Convert.ToHexString(SHA256.HashData(Image)).ToLowerInvariant();
     [Fact]
+    public async Task FullCanvasPngImportKeepsExactAlphaBytesAndExportsPinnedPackage()
+    {
+        Directory.CreateDirectory(_directory);
+        var path=Path.Combine(_directory,"transparent.png");
+        var bytes=Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAD0lEQVR4nGP4zwAE/xkaAAt+An+rqPSSAAAAAElFTkSuQmCC");
+        await File.WriteAllBytesAsync(path,bytes);
+        var logo=await GraphicsImageImport.StageAsync(path,Cache);
+        var graphic=await GraphicsImageImport.StageAsync(path,Cache,fullCanvas:true);
+        Assert.NotEqual(logo.Reference.TemplateId,graphic.Reference.TemplateId);
+        using var logoDocument=JsonDocument.Parse(logo.Package.Manifest);
+        Assert.False(logoDocument.RootElement.TryGetProperty("defaultPlacement",out _)); // existing immutable logo versions remain identical
+        using var document=System.Text.Json.JsonDocument.Parse(graphic.Package.Manifest);
+        var root=document.RootElement;
+        Assert.Equal(1920,root.GetProperty("bounds").GetProperty("width").GetInt32());
+        Assert.Equal(1080,root.GetProperty("bounds").GetProperty("height").GetInt32());
+        Assert.Equal("upper-left",root.GetProperty("defaultPlacement").GetProperty("anchor").GetString());
+        var file=root.GetProperty("assets")[0].GetProperty("file").GetString()!;
+        Assert.Equal(bytes,await File.ReadAllBytesAsync(Path.Combine(Cache,file)));
+        var template=new CoreVideoPro.MediaCore.Models.NativeGraphicsTemplate {Runtime="declarative",PackageRoot=Cache,Definition=root.Clone()};
+        var archive=Path.Combine(_directory,"transparent.cvgraphics");
+        await GraphicsPackageWriter.WriteAsync(template,archive);
+        var pinned=await new GraphicsPackageReader(Path.Combine(_directory,"reopened")).ReadAsync(archive);
+        Assert.Equal(bytes,await File.ReadAllBytesAsync(Path.Combine(pinned.PackageRoot,file)));
+    }
+
+    [Fact]
     public async Task VerifiedPackageExportRoundTripsAndFailedRepairRetainsExistingDestination()
     {
         var source=Package(("template.json",Encoding.UTF8.GetBytes(Manifest),0),("assets/"+Hash+".png",Image,0));

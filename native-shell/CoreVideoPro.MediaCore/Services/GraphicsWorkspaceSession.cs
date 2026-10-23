@@ -12,6 +12,7 @@ public sealed partial class GraphicsWorkspaceSession
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly Func<string, string, CancellationToken, Task<NativeGraphicsOperationResult>> _invoke;
     private readonly Func<NativeGraphicsState?> _observe;
+    private readonly string? _assetRoot;
     private readonly List<NativeGraphicsDraft> _undo = [];
     private NativeGraphicsDraft? _gesture, _original;
     private string _statusSignature = "";
@@ -27,7 +28,7 @@ public sealed partial class GraphicsWorkspaceSession
     }
 
     public GraphicsWorkspaceSession(Func<string, string, CancellationToken, Task<NativeGraphicsOperationResult>> invoke,
-        Func<NativeGraphicsState?> observe) => (_invoke, _observe) = (invoke, observe);
+        Func<NativeGraphicsState?> observe, string? assetRoot = null) => (_invoke, _observe, _assetRoot) = (invoke, observe, assetRoot);
 
     public event EventHandler? Changed;
     public event EventHandler? PreviewChanged;
@@ -344,13 +345,13 @@ public sealed partial class GraphicsWorkspaceSession
         catch (Exception ex) when (ex is not OutOfMemoryException) { ImportStatus = ex.Message; return false; }
         finally { ImportBusy = false; Changed?.Invoke(this, EventArgs.Empty); }
     }
-    public async Task<NativeGraphicsImageReference?> ImportImageAsync(string path,CancellationToken cancellation=default)
+    public async Task<NativeGraphicsImageReference?> ImportImageAsync(string path,CancellationToken cancellation=default,bool fullCanvas=false)
     {
         if(ImportBusy) return null;ImportBusy=true;ImportStatus="Verifying local image package. Program is unchanged.";Changed?.Invoke(this,EventArgs.Empty);
         var epoch=State?.CoreEpoch;
         try {
-            var root=Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_ASSET_ROOT") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CoreVideoPro","graphics");
-            var staged=await GraphicsImageImport.StageAsync(path,root,cancellation);
+            var root=_assetRoot ?? Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_ASSET_ROOT") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CoreVideoPro","graphics");
+            var staged=await GraphicsImageImport.StageAsync(path,root,cancellation,fullCanvas);
             if(State?.CoreEpoch!=epoch) {ImportStatus="Native core restarted; image import cancelled.";return null;}
             if(!await Send("graphics.template.install",new() {["manifest"]=staged.Package.Manifest,["packageRoot"]=staged.Package.PackageRoot},cancellation)) {ImportStatus=Status;return null;}
             var until=DateTime.UtcNow.AddSeconds(5);
@@ -419,7 +420,7 @@ public sealed partial class GraphicsWorkspaceSession
     {
         if (Busy) return false;
         Busy = true; Changed?.Invoke(this, EventArgs.Empty);
-        try { return await action(); }
+        try { Observe(_observe()); return await action(); }
         catch (Exception ex) when (ex is not OutOfMemoryException) { Status = ex.Message; return false; }
         finally { Busy = false; Changed?.Invoke(this, EventArgs.Empty); }
     }

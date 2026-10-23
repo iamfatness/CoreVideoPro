@@ -125,7 +125,6 @@ public sealed class ProductionOutputPreferences
     public string? LowerThirdPosition { get; set; }
     public double LowerThirdBuildInMs { get; set; }
     public double LowerThirdBuildOutMs { get; set; }
-    public string? BrandLowerThirdStyle { get; set; }
     public CoreVideoPro.MediaCore.Models.LowerThirdAppearance? LowerThirdAppearance { get; set; }
     public Dictionary<string,CoreVideoPro.MediaCore.Models.LowerThirdAppearance> LowerThirdPresets { get; set; } = new();
     public string? BrandDefaultOverlayBehavior { get; set; }

@@ -256,7 +256,6 @@ public sealed class LiveProductionSyncTests
                 BreakoutRoomName = "Green Room",
                 Talking = false,
                 SharingScreen = true,
-                AudioLevel = 91,
                 NetworkQuality = "good"
             },
             new RawParticipantEvent
@@ -338,8 +337,7 @@ public sealed class LiveProductionSyncTests
                     BreakoutRoomName = "Main room",
                     Talking = true,
                     VideoOn = true,
-                    SharingScreen = true,
-                    AudioLevel = 82
+                    SharingScreen = true
                 }
             ]
         });
@@ -420,7 +418,6 @@ public sealed class LiveProductionSyncTests
                         Status = "live",
                         FramesSent = 4,
                         RetryCount = 0,
-                        LatencyMs = 1800,
                         BitrateMbps = 6
                     }
                 ]
@@ -490,7 +487,6 @@ public sealed class LiveProductionSyncTests
                         Status = "warning",
                         FramesSent = 0,
                         RetryCount = 0,
-                        LatencyMs = 0,
                         BitrateMbps = 8.2,
                         Warning = "ffmpeg.exe was not found in C:\\ffmpeg\\bin."
                     }
@@ -604,7 +600,6 @@ public sealed class LiveProductionSyncTests
                         Status = "live",
                         FramesSent = 12,
                         RetryCount = 0,
-                        LatencyMs = 2100,
                         BitrateMbps = 6
                     }
                 ]
@@ -618,7 +613,6 @@ public sealed class LiveProductionSyncTests
                 Text = captionText ?? string.Empty,
                 Speaker = captionSpeaker,
                 AtMs = 1000,
-                Confidence = 95
             };
 
         return new NativeMediaCoreStateSnapshot
@@ -627,20 +621,15 @@ public sealed class LiveProductionSyncTests
             {
                 Enabled = cue is not null,
                 Status = cue is null ? "idle" : "live",
-                CurrentCue = cue,
-                LatencyMs = 180
+                CurrentCue = cue
             },
             BrandKit = new NativeMediaCoreBrandKit
             {
                 Name = "CoreVideo",
-                LogoText = "CV",
                 BrandColor = "#111111",
                 AccentColor = "#3366ff",
                 BackgroundColor = "#000000",
                 FontFamily = "Inter",
-                LowerThirdStyle = "solid",
-                CaptionStyle = "medium sentence captions",
-                DefaultOverlayBehavior = "brand-bug",
                 Summary = "Brand kit live"
             },
             Recording = recording,

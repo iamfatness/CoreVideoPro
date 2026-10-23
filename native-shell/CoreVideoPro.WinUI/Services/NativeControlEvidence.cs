@@ -11,7 +11,7 @@ internal static class NativeControlEvidence
     {
         var lowerThird = snapshot?.OverlayState.Overlays.FirstOrDefault(
             overlay => string.Equals(overlay.OverlayId, "key:lower-third", StringComparison.Ordinal));
-        return state with
+        return (state with
         {
             NativeActiveSceneId = snapshot?.SceneId,
             NativeRenderedSceneId = snapshot?.ProgramFrame?.SceneId,
@@ -26,10 +26,9 @@ internal static class NativeControlEvidence
             NativePreviewSceneId = snapshot?.PreviewScene?.SceneId,
             NativeProgramFrameCount = snapshot?.ProgramFrameCount,
             NativeProgramBuffer = snapshot?.ProgramBuffer is { ValueKind: System.Text.Json.JsonValueKind.Object } buffer ? buffer.Clone() : null,
-            NativeObservation = Observe(snapshot),
             NativeLowerThirdPhase = lowerThird?.KeyPhase,
             NativeLowerThirdVisible = snapshot is null ? null : lowerThird?.Visible ?? false
-        };
+        }).WithNativeObservation(() => Observe(snapshot));
     }
 
     private static JsonElement? Observe(NativeMediaCoreStateSnapshot? snapshot)

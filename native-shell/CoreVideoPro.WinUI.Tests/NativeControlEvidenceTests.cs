@@ -10,6 +10,30 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class NativeControlEvidenceTests
 {
     [Fact]
+    public void FeedbackWithoutDiagnosticReaderDoesNotRebuildLargeObservation()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            RawJson = JsonSerializer.Serialize(new { realtimeEvidence = Enumerable.Range(0, 2000)
+                    .Select(index => new { sequence = index, worker = "render", state = "ready", elapsedNs = 12345 }),
+                browserSources = new { url = "https://example.com/?access_token=secret123" } })
+        };
+        _ = NativeControlEvidence.Apply(ControlState.Empty, snapshot); // JIT/warm-up outside budget.
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        ControlState state = ControlState.Empty;
+        for (var i = 0; i < 100; i++)
+        {
+            state = NativeControlEvidence.Apply(ControlState.Empty, snapshot);
+            Assert.False(state.Recording); // Ordinary feedback does not request diagnostics.
+        }
+        Assert.InRange(GC.GetAllocatedBytesForCurrentThread() - before, 0, 1_000_000);
+        var native = state.NativeObservation!.Value; // Still complete and redacted when requested.
+        Assert.Equal(2000, native.GetProperty("realtimeEvidence").GetArrayLength());
+        Assert.DoesNotContain("secret123", native.GetRawText());
+        Assert.Null(NativeControlEvidence.Apply(state, null).NativeObservation);
+    }
+
+    [Fact]
     public void ControlStateCarriesCompleteRedactedNativeObservation()
     {
         var snapshot = new NativeMediaCoreStateSnapshot

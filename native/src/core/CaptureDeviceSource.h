@@ -1,6 +1,7 @@
 // native/src/core/CaptureDeviceSource.h
 #pragma once
 #include "core/SourceBus.h"
+#include <atomic>
 
 namespace corevideo::core {
 
@@ -22,6 +23,10 @@ class CaptureDeviceSource final : public ISource {
   const SourceDescriptor& descriptor() const override { return descriptor_; }
 
   void setLatest(modules::VideoFrame frame) {
+    // The bus source owns this video incarnation. Format/pixel epochs may change
+    // without changing the subject; clearVideo or a new source starts a new one.
+    if (!hasFrame_) generation_ = ++nextGeneration_;
+    frame.sourceGeneration = generation_;
     latest_ = std::move(frame);  // shared_ptr payload: no pixel copy
     hasFrame_ = true;
     descriptor_.hasVideo = true;
@@ -78,6 +83,8 @@ class CaptureDeviceSource final : public ISource {
   }
 
  private:
+  inline static std::atomic<uint64_t> nextGeneration_{0};
+  uint64_t generation_ = 0;
   SourceDescriptor descriptor_;
   modules::VideoFrame latest_;
   bool hasFrame_ = false;

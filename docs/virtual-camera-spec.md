@@ -9,6 +9,26 @@ shape, but the consumer is the OS camera stack instead of a network protocol.
 
 ## 1. The platform decision
 
+The current native producer also publishes four retained NV12 pictures in
+`vcam-history-v1.shm`. Updated media sources consume the next publication once
+per original request window. A latest-only reader can skip a picture when its
+request crosses the producer's publication phase, even while all requests
+report fresh content. Retention recovers that picture without an unbounded
+queue or a new deadline. Overflow resynchronizes to the latest picture and
+increments explicit skipped-publication evidence; it is a continuity failure.
+
+The retained transport uses a new epoch for each producer start, binds to the
+actual legacy pixel file identity/volume, and fences the committed legacy
+sequence/publication. Each slot has its own seqlock, so copying a retained
+picture cannot return torn pixels. A reader advances its cursor only after a
+successful copy within the existing shared copy budget. Restart, foreign-file,
+overflow, budget and older-publisher regressions exercise these boundaries.
+The shipping 32-byte latest-slot layout remains available to older DLLs; a new
+DLL reading an older publisher uses that legacy path and does not claim retained
+delivery. Camera-source sequence logs expose retained reads, overflows, skipped
+publications and maximum lag. Neither these facts nor fresh MF event counts
+replace actual registered OS-camera pixel continuity qualification.
+
 **Windows 11 Media Foundation Virtual Camera** (`MFCreateVirtualCamera`,
 `MFVirtualCameraType_SoftwareCameraSource`, added Win11 22000). This is the modern,
 correct path: a registered software camera the OS Frame Server serves to ANY app that

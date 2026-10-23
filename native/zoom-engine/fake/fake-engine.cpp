@@ -52,6 +52,8 @@
 #endif
 
 #include "engine-ipc.h"
+#include "iso-video-ring.h"
+#include "iso-video-demand.h"
 #include "engine-writer.h"  // EngineIpc::init / EngineIpc::write (thread-safe)
 
 #include <atomic>
@@ -197,6 +199,7 @@ struct Target {
     uint32_t resolution = 2;
     std::string source_uuid;
     ShmRegion shm;
+    ShmRegion iso_shm;
     uint64_t frame_count = 0;
     bool is_auto = false;  // created by auto-subscribe vs explicit `subscribe`
     // Precomputed luma plane. Generating the gradient per pixel per frame costs
@@ -302,7 +305,7 @@ static bool has_explicit_target_locked(uint32_t pid) {
 static void retire_auto_targets_locked(uint32_t pid) {
     for (auto it = g_targets.begin(); it != g_targets.end();) {
         if (it->second.is_auto && it->second.participant_id == pid) {
-            shm_region_destroy(it->second.shm);
+            shm_region_destroy(it->second.shm); shm_region_destroy(it->second.iso_shm);
             diag("auto-retire " + it->first + " (explicit subscribe owns participant " +
                  std::to_string(pid) + ")");
             it = g_targets.erase(it);
@@ -360,7 +363,7 @@ static void sync_auto_targets_locked() {
     for (auto it = g_targets.begin(); it != g_targets.end();) {
         if (it->second.is_auto && (!roster_has(it->second.participant_id) ||
                                    has_explicit_target_locked(it->second.participant_id))) {
-            shm_region_destroy(it->second.shm);
+            shm_region_destroy(it->second.shm); shm_region_destroy(it->second.iso_shm);
             diag("auto-unsubscribe " + it->first);
             it = g_targets.erase(it);
         } else {
@@ -482,6 +485,19 @@ static void produce_frame_locked(Target& t, uint64_t tick) {
     // (planes already written above)
     std::atomic_thread_fence(std::memory_order_release);
     hdr->sequence = seq + 1;
+
+    const auto iso_epoch = IsoVideoDemand::instance().get(t.source_uuid);
+    if (!iso_epoch) {
+        if (t.iso_shm.ptr) shm_region_destroy(t.iso_shm);
+    } else {
+        const auto name = EngineIpc::shm_prefix() + t.source_uuid + "-iso";
+        const bool mapped = t.iso_shm.ptr || shm_region_create(t.iso_shm, name, zoom_iso::bytes);
+        const auto captured = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+        if (!mapped || !zoom_iso::write(t.iso_shm.ptr, t.iso_shm.size, iso_epoch, seq + 1,
+                w, h, yp, up, vp, captured))
+            EngineIpc::write("{\"cmd\":\"error\",\"stage\":\"iso_video\",\"reason\":\"arrival_ring_write_failed\"}");
+    }
 
     ++t.frame_count;
     if (t.frame_count == 1 || t.frame_count % 120 == 0) {
@@ -914,7 +930,7 @@ int main(int argc, char** argv) {
                 g_joined = false;
                 g_roster.clear();
                 g_active_speaker = 0;
-                for (auto& [uuid, t] : g_targets) shm_region_destroy(t.shm);
+                for (auto& [uuid, t] : g_targets) { shm_region_destroy(t.shm); shm_region_destroy(t.iso_shm); }
                 g_targets.clear();
                 for (auto& [auuid, atarget] : g_audioTargets) shm_region_destroy(atarget.shm);
                 g_audioTargets.clear();
@@ -984,12 +1000,16 @@ int main(int argc, char** argv) {
                 R"(,"requested":)" + std::to_string(res) +
                 R"(,"mode":")" + json_escape(mode) + "\"}");
 
+        } else if (ipc_command_is(line, "iso_video")) {
+            const auto uuid = json_str(line, "source_uuid");
+            if (!IsoVideoDemand::instance().set(uuid, json_uint(line, "epoch")))
+                EngineIpc::write("{\"cmd\":\"error\",\"stage\":\"iso_video\",\"reason\":\"arrival_ring_capacity\"}");
         } else if (ipc_command_is(line, IPC_CMD_UNSUBSCRIBE)) {
             std::string uuid = json_str(line, "source_uuid");
             std::lock_guard<std::mutex> lk(g_mtx);
             auto it = g_targets.find(uuid);
             if (it != g_targets.end()) {
-                shm_region_destroy(it->second.shm);
+                shm_region_destroy(it->second.shm); shm_region_destroy(it->second.iso_shm);
                 g_targets.erase(it);
             }
             auto audioIt = g_audioTargets.find(uuid);
@@ -1011,7 +1031,7 @@ int main(int argc, char** argv) {
 
     {
         std::lock_guard<std::mutex> lk(g_mtx);
-        for (auto& [uuid, t] : g_targets) shm_region_destroy(t.shm);
+        for (auto& [uuid, t] : g_targets) { shm_region_destroy(t.shm); shm_region_destroy(t.iso_shm); }
         g_targets.clear();
     }
     ipc_teardown(p2e, e2p, ipc_token);

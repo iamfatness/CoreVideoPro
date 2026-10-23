@@ -1596,6 +1596,23 @@ TEST(MediaCoreCommand, OverlayAssetRastersAnimatedLowerThirdIntoProgramFrame) {
   EXPECT_TRUE(settledColors >= earlyColors);
 }
 
+TEST(MediaCoreCommand, CaptionTrackCarriesNoInventedLatencyOrConfidence) {
+  // #765: the 180 ms latency and the text-length "confidence" were never measured.
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "push-caption-cue"}, {"text", "Measured only"}, {"speaker", "ADA"}, {"atMs", 1200}},
+  });
+  const auto* captions = state.get("captionTrack");
+  ASSERT_NE(captions, nullptr);
+  EXPECT_TRUE(captions->get("enabled")->asBool());
+  EXPECT_EQ(captions->get("latencyMs"), nullptr);
+  const auto* cue = captions->get("currentCue");
+  ASSERT_NE(cue, nullptr);
+  EXPECT_EQ(cue->getString("text"), "Measured only");
+  EXPECT_EQ(cue->get("atMs")->asNumber(), 1200);
+  EXPECT_EQ(cue->get("confidence"), nullptr);
+}
+
 TEST(MediaCoreCommand, CaptionCueRastersStyledLowerBand) {
   corevideo::core::MediaCore mediaCore;
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -2151,8 +2168,11 @@ TEST(MediaCoreCommand, BrandKitSnapshotIncludesFullWinUiContract) {
   const auto idle = mediaCore.sessionState();
   const auto* idleBrandKit = idle.get("brandKit");
   ASSERT_NE(idleBrandKit, nullptr);
-  EXPECT_EQ(idleBrandKit->getString("captionStyle"), "medium sentence captions");
-  EXPECT_EQ(idleBrandKit->getString("defaultOverlayBehavior"), "all-off");
+  // #764: fields the compositor never applied are no longer echoed as if set.
+  EXPECT_EQ(idleBrandKit->get("captionStyle"), nullptr);
+  EXPECT_EQ(idleBrandKit->get("defaultOverlayBehavior"), nullptr);
+  EXPECT_EQ(idleBrandKit->get("logoText"), nullptr);
+  EXPECT_EQ(idleBrandKit->get("lowerThirdStyle"), nullptr);
 
   const auto branded = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "set-brand-kit"},
@@ -2170,14 +2190,15 @@ TEST(MediaCoreCommand, BrandKitSnapshotIncludesFullWinUiContract) {
   const auto* brandKit = branded.get("brandKit");
   ASSERT_NE(brandKit, nullptr);
   EXPECT_EQ(brandKit->getString("name"), "Launch Night");
-  EXPECT_EQ(brandKit->getString("logoText"), "CVP");
+  EXPECT_EQ(brandKit->get("logoText"), nullptr);
   EXPECT_EQ(brandKit->getString("brandColor"), "#102030");
   EXPECT_EQ(brandKit->getString("accentColor"), "#405060");
   EXPECT_EQ(brandKit->getString("backgroundColor"), "#070809");
   EXPECT_EQ(brandKit->getString("fontFamily"), "Poppins");
-  EXPECT_EQ(brandKit->getString("lowerThirdStyle"), "minimal");
-  EXPECT_EQ(brandKit->getString("captionStyle"), "boxed");
-  EXPECT_EQ(brandKit->getString("defaultOverlayBehavior"), "auto");
+  EXPECT_EQ(brandKit->get("lowerThirdStyle"), nullptr);
+  EXPECT_EQ(brandKit->get("captionStyle"), nullptr);
+  EXPECT_EQ(brandKit->get("defaultOverlayBehavior"), nullptr);
+  // Sent but never applied: silently ignored, never echoed.
 }
 
 TEST(MediaCoreCommand, AudioMixSessionDoesNotFakeMetersWithoutPcm) {
@@ -3255,6 +3276,9 @@ TEST(MediaCoreCommand, SyncsNetworkOutputSenderSession) {
   EXPECT_EQ(sender.getString("destinationHealth"), "ok");
   EXPECT_EQ(sender.getString("lastResultCode"), "ok");
   EXPECT_GE(sender.get("bytesSent")->asNumber(), 1);
+  // #519: no adapter measures transport latency, so the key is absent rather
+  // than a constant that reads like a measurement.
+  EXPECT_EQ(sender.get("latencyMs"), nullptr);
 #endif
 }
 
@@ -3525,6 +3549,119 @@ TEST(MediaCoreCommand, DisablingEveryRoutedProgramSendWritesSilenceNotLegacyMix)
   EXPECT_GT(outputSender->audioFramesSent_, 0) << "stream PCM must keep its sample clock through a mute";
   EXPECT_EQ(outputSender->maxAudioSample_, 0.f) << "legacy mixer must not bypass an explicitly empty route matrix";
   EXPECT_EQ(monitor->framesRendered, monitorFramesBeforeMute) << "all-muted monitor must not replay legacy PCM";
+}
+
+namespace {
+
+// #766 fixture: a playing media clip with audio, a "media" send row on every
+// bus, and (optionally) a synced "media" console strip and/or a per-clip send.
+corevideo::rpc::Json::Array mediaAudioWarningShow(bool syncMediaStrip, bool clipHasOwnSend) {
+  using corevideo::rpc::Json;
+  Json::Array commands{
+      Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "media-audio-warning"},
+          {"routes",
+           Json::Array{
+               Json::Object{
+                   {"routeId", "media-main"},
+                   {"mode", "fixed"},
+                   {"mediaAssetId", "clip-intro"},
+                   {"mediaAssetName", "Intro"},
+                   {"mediaAssetKind", "video"},
+                   {"mediaAssetPath", "C:\\media\\intro.mp4"},
+                   {"mediaAssetPlaying", true},
+                   {"rect", Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}},
+               },
+           }},
+      },
+  };
+  Json::Array sends{
+      Json::Object{{"sourceId", "media"}, {"busId", "master"}, {"gainDb", 0}},
+      Json::Object{{"sourceId", "media"}, {"busId", "stream"}, {"gainDb", 0}},
+      Json::Object{{"sourceId", "media"}, {"busId", "mon"}, {"gainDb", 0}},
+  };
+  if (clipHasOwnSend) {
+    sends.emplace_back(Json::Object{{"sourceId", "media:clip-intro"}, {"busId", "master"}, {"gainDb", 0}});
+    sends.emplace_back(Json::Object{{"sourceId", "media:clip-intro"}, {"busId", "stream"}, {"gainDb", 0}});
+  }
+  commands.emplace_back(Json::Object{{"type", "sync-audio-routing-matrix"}, {"sends", sends}});
+  if (syncMediaStrip) {
+    commands.emplace_back(Json::Object{
+        {"type", "sync-participant-audio-mix"},
+        {"channels", Json::Array{Json::Object{{"participantId", "media"}, {"muted", false}, {"noiseSuppression", false}}}},
+    });
+  }
+  commands.emplace_back(Json::Object{{"type", "start-program-output"}, {"destinations", Json::Array{"rtmp"}}});
+  return commands;
+}
+
+float mediaWarningPeakOf(const std::vector<float>& samples) {
+  float peak = 0.f;
+  for (const auto sample : samples) peak = std::max(peak, std::abs(sample));
+  return peak;
+}
+
+bool hasMissingMediaPcmWarning(const corevideo::rpc::Json& state) {
+  const auto* mix = state.get("audioMixSession");
+  if (!mix || !mix->get("warnings")) return false;
+  const auto& warnings = mix->get("warnings")->asArray();
+  return std::any_of(warnings.begin(), warnings.end(), [](const corevideo::rpc::Json& warning) {
+    return warning.isString() && warning.asString().find("No native PCM has been mixed for media") != std::string::npos;
+  });
+}
+
+}  // namespace
+
+// #766: the "No native PCM has been mixed for media" warning must only be
+// raised when it is true. With the clip folded into the "media" pre-sum, the
+// strip meters the clip and no warning may appear while mixedFrameCount grows.
+TEST(MediaCoreCommand, MediaStripMeteringClipPcmRaisesNoMissingPcmWarning) {
+  auto modules = corevideo::modules::createStubModules();
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
+  modules.outputSender.reset(new CapturingOutputSender());
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommands(mediaAudioWarningShow(/*syncMediaStrip=*/true, /*clipHasOwnSend=*/false));
+
+  corevideo::rpc::Json state;
+  ASSERT_TRUE(corevideo::testing::applyUntil(mediaCore, [&](corevideo::core::MediaCore& core) {
+    return mediaWarningPeakOf(core.audioBusTapPcm("stream")) > 0.05f;
+  }, 3000, &state)) << "media PCM never reached the stream bus";
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_GT(mix->get("mixedFrameCount")->asNumber(), 0);
+  EXPECT_FALSE(hasMissingMediaPcmWarning(state));
+  const auto& participants = mix->get("participants")->asArray();
+  const auto media = std::find_if(participants.begin(), participants.end(), [](const corevideo::rpc::Json& participant) {
+    return participant.getString("participantId") == "media";
+  });
+  ASSERT_TRUE(media != participants.end());
+  EXPECT_NE(media->getString("status"), "waiting-for-pcm");
+  EXPECT_GT(media->get("outputLevel")->asNumber(), 0);
+}
+
+// #766: a clip routed by its own send rows bypasses the "media" pre-sum, so the
+// generic strip has no PCM of its own - but media audio IS being mixed and the
+// recording carries it, so the strip must not claim otherwise.
+TEST(MediaCoreCommand, MediaStripDoesNotClaimMissingPcmWhileAClipIsMixedOnItsOwnSends) {
+  auto modules = corevideo::modules::createStubModules();
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
+  modules.outputSender.reset(new CapturingOutputSender());
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommands(mediaAudioWarningShow(/*syncMediaStrip=*/true, /*clipHasOwnSend=*/true));
+
+  corevideo::rpc::Json state;
+  ASSERT_TRUE(corevideo::testing::applyUntil(mediaCore, [&](corevideo::core::MediaCore& core) {
+    return mediaWarningPeakOf(core.audioBusTapPcm("stream")) > 0.05f;
+  }, 3000, &state)) << "media PCM never reached the stream bus";
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_GT(mix->get("mixedFrameCount")->asNumber(), 0);
+  EXPECT_FALSE(hasMissingMediaPcmWarning(state));
 }
 
 TEST(MediaCoreCommand, SceneMediaAudioRoutesToStreamOutput) {
@@ -7978,10 +8115,14 @@ TEST(MediaCoreCommand, ARouteLoopFlagReachesTheMediaSourceOnBothBuses) {
       corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
                                    {"routes", corevideo::rpc::Json::Array{loopRoute("pv-loop", false)}}},
   });
+  // This checks command propagation through actual decoded frames. The bus's
+  // "producing" health also imposes a 200 ms wall-clock freshness bound;
+  // sanitizer instrumentation can expire that bound while snapshotting the
+  // two buses. Frame arrival is the functional condition, not execution speed.
   ASSERT_TRUE(corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
-    return corevideo::testing::busSourceProducing(core, "media:bg-loop") &&
-           corevideo::testing::busSourceProducing(core, "media:pv-loop");
-  }));
+    return corevideo::testing::busFramesIngested(core, "media:bg-loop") > 0 &&
+           corevideo::testing::busFramesIngested(core, "media:pv-loop") > 0;
+  })) << mediaCore.sessionState().stringify();
   {
     const std::vector<std::string> expectedIds{"media:bg-loop", "media:pv-loop"};
     EXPECT_EQ(SolidMediaFrameSource::sortedSourceIds(), expectedIds);
@@ -7989,14 +8130,15 @@ TEST(MediaCoreCommand, ARouteLoopFlagReachesTheMediaSourceOnBothBuses) {
     EXPECT_FALSE(SolidMediaFrameSource::loopFor("media:pv-loop"));
   }
 
+  const auto previewFramesBefore = corevideo::testing::busFramesIngested(mediaCore, "media:pv-loop");
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
                                    {"routes", corevideo::rpc::Json::Array{loopRoute("pv-loop", true)}}},
   });
-  const bool previewLoops = corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
-    // Read through the CORE: the reopened preview transport must be back on the
-    // bus and producing before its loop flag is evidence of anything.
-    return corevideo::testing::busSourceProducing(core, "media:pv-loop") &&
+  const bool previewLoops = corevideo::testing::renderUntil(mediaCore, [previewFramesBefore](corevideo::core::MediaCore& core) {
+    // Require fresh decoded arrivals after the loop-only update, not just a
+    // worker flag or a frame left over from the earlier transport.
+    return corevideo::testing::busFramesIngested(core, "media:pv-loop") > previewFramesBefore &&
            SolidMediaFrameSource::loopFor("media:pv-loop");
   });
   EXPECT_TRUE(previewLoops) << "a loop-only change to the preview scene was not applied";

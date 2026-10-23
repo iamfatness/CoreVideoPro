@@ -46,7 +46,7 @@ $nodeManifest = [ordered]@{
     nodeSource=$nodePin.url; entry='show-engine/dist/host/main.js'
 }
 $nodeManifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $app 'corevideo-show-engine-runtime.json') -Encoding UTF8
-$nativeFiles = @('corevideo-native.exe','corevideo-browser-host.exe','corevideo-plugin-host.exe','corevideo-virtualcam.dll')
+$nativeFiles = @('corevideo-native.exe','corevideo-browser-host.exe','corevideo-plugin-host.exe','corevideo-virtualcam.dll','corevideo-monitor-presenter.dll')
 foreach ($file in $nativeFiles) {
     $source = Join-Path $native $file
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Production native component missing: $file" }

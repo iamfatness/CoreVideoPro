@@ -11,8 +11,8 @@ public sealed class ZoomMediaSpineParticipant
     public bool Muted { get; init; }
     public bool Talking { get; init; }
     public bool SharingScreen { get; init; }
-    public int AudioLevel { get; init; }
-    public string NetworkQuality { get; init; } = "good";
+    /// <summary>Absent until the SDK reports it; null means unknown, never "good".</summary>
+    public string? NetworkQuality { get; init; }
 }
 
 public sealed class ZoomMediaSpineSubscription
@@ -44,6 +44,7 @@ public sealed class ZoomMediaSpineSubscription
 
 public sealed class ZoomMediaSpineNativeSnapshot
 {
+    public bool? RawMediaActive { get; init; }
     public string? RosterEpoch { get; init; }
     public long RosterRevision { get; init; }
     public string MeetingState { get; init; } = "idle";

@@ -32,7 +32,6 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
@@ -246,14 +245,8 @@
                                          PlaceholderText="Brand name" />
                             </StackPanel>
                         </Border>
+                        <!-- #764: "Logo text" is gone; the core stored it as a bug label it never rendered. -->
                         <Border Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="Logo text" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                <TextBox Text="{x:Bind ViewModel.Overlays.BrandLogoText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                         PlaceholderText="Logo text" />
-                            </StackPanel>
-                        </Border>
-                        <Border Grid.Row="1" Style="{StaticResource OperatorReadoutBorder}">
                             <StackPanel Spacing="2">
                                 <TextBlock Text="Logo asset" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                 <TextBlock Text="{x:Bind ViewModel.Overlays.BrandKit.LogoAssetLabel, Mode=OneWay}"
@@ -261,7 +254,7 @@
                                            TextTrimming="CharacterEllipsis" />
                             </StackPanel>
                         </Border>
-                        <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
+                        <Border Grid.Row="1" Style="{StaticResource OperatorReadoutBorder}">
                             <StackPanel Spacing="2">
                                 <TextBlock Text="Default overlay" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                 <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.BrandDefaultOverlayBehaviorOptions, Mode=OneWay}"
@@ -440,89 +433,10 @@
             </Border>
 
             <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
-                <Grid ColumnSpacing="12" RowSpacing="10">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="1.2*" />
-                        <ColumnDefinition Width="1.2*" />
-                        <ColumnDefinition Width="1.2*" />
-                        <ColumnDefinition Width="2*" />
-                    </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-
-                    <TextBlock Text="Captions" Style="{StaticResource OperatorSectionTitle}" />
-                    <StackPanel Grid.Row="1" Spacing="4">
-                        <TextBlock Text="Position" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                        <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.CaptionPositionOptions, Mode=OneWay}"
-                                  SelectedItem="{x:Bind ViewModel.Overlays.CaptionPosition, Mode=TwoWay}"
-                                  HorizontalAlignment="Stretch" />
-                    </StackPanel>
-                    <StackPanel Grid.Row="1" Grid.Column="1" Spacing="4">
-                        <TextBlock Text="Size" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                        <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.CaptionFontSizeOptions, Mode=OneWay}"
-                                  SelectedItem="{x:Bind ViewModel.Overlays.CaptionFontSize, Mode=TwoWay}"
-                                  HorizontalAlignment="Stretch" />
-                    </StackPanel>
-                    <StackPanel Grid.Row="1" Grid.Column="2" Spacing="4">
-                        <TextBlock Text="Text color" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                        <!-- #476: the hex box stays, with a picker beside it. -->
-                        <Grid ColumnSpacing="6">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="24" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBox Text="{x:Bind ViewModel.Overlays.CaptionTextColor, Mode=TwoWay}"
-                                     PlaceholderText="#F7FBF8" />
-                            <Border Grid.Column="1" Width="22" Height="22" CornerRadius="4"
-                                    VerticalAlignment="Center"
-                                    Background="{x:Bind ViewModel.Overlays.CaptionTextBrush, Mode=OneWay}" />
-                            <Button Grid.Column="2" Content="Pick"
-                                    Style="{StaticResource OperatorGhostButton}"
-                                    AutomationProperties.Name="Pick caption text color">
-                                <Button.Flyout>
-                                    <Flyout>
-                                        <ColorPicker Color="{x:Bind ViewModel.Overlays.CaptionTextPickerColor, Mode=TwoWay}"
-                                                     IsAlphaEnabled="False"
-                                                     IsAlphaSliderVisible="False"
-                                                     IsAlphaTextInputVisible="False"
-                                                     IsColorChannelTextInputVisible="False"
-                                                     IsHexInputVisible="False" />
-                                    </Flyout>
-                                </Button.Flyout>
-                            </Button>
-                        </Grid>
-                    </StackPanel>
-                    <StackPanel Grid.Row="1" Grid.Column="3" Spacing="4">
-                        <TextBlock FontSize="10" Foreground="{StaticResource StudioMutedBrush}">
-                            <Run Text="Backdrop opacity (" />
-                            <Run Text="{x:Bind ViewModel.Overlays.CaptionBackgroundOpacity, Mode=OneWay}" />
-                            <Run Text="%)" />
-                        </TextBlock>
-                        <Slider Minimum="0" Maximum="100" StepFrequency="5"
-                                Value="{x:Bind ViewModel.Overlays.CaptionBackgroundOpacity, Mode=TwoWay}" />
-                        <CheckBox Content="Uppercase captions"
-                                  IsChecked="{x:Bind ViewModel.Overlays.CaptionUppercase, Mode=TwoWay}" />
-                    </StackPanel>
-                </Grid>
-            </Border>
-
-            <Border Grid.Row="3" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
-                    <Grid ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Speaker captions" Style="{StaticResource OperatorSectionTitle}" />
-                        <TextBlock Grid.Column="1"
-                                   Text="{x:Bind ViewModel.Overlays.CaptionQualitySummary, Mode=OneWay}"
-                                   FontSize="11"
-                                   Foreground="{StaticResource StudioAccentBrush}"
-                                   VerticalAlignment="Center" />
-                    </Grid>
+                    <!-- #767: there is no speech-to-text. Cues reach the caption track only when the
+                         show engine sets a question (setQuestion) or a control client pushes one. -->
+                    <TextBlock Text="Caption cues" Style="{StaticResource OperatorSectionTitle}" />
                     <TextBlock Text="{x:Bind ViewModel.CaptionTranscriptEmptyGuidance, Mode=OneWay}"
                                FontSize="11"
                                Foreground="{StaticResource StudioMutedBrush}"
@@ -545,12 +459,8 @@
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Text="{x:Bind SpeakerName}" FontWeight="SemiBold" FontSize="12" />
-                                            <TextBlock Grid.Column="1" FontSize="10" Foreground="{StaticResource StudioMutedBrush}">
-                                                <Run Text="{x:Bind Role}" />
-                                                <Run Text=" / " />
-                                                <Run Text="{x:Bind Confidence}" />
-                                                <Run Text="%" />
-                                            </TextBlock>
+                                            <TextBlock Grid.Column="1" FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                                       Text="{x:Bind Role}" />
                                         </Grid>
                                         <TextBlock Text="{x:Bind Text}" FontSize="11" TextWrapping="WrapWholeWords" />
                                     </StackPanel>

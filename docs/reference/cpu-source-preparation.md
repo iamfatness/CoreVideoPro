@@ -74,6 +74,93 @@ changes fence the generation on the capture owner. Its idle callback refreshes
 stopped held tokens without new CPU bytes or a new observation time. CPU demand
 preserves pending capture order; capacity refusals remain reported as drops.
 Direct GPU capture and its separate CPU/ISO branch retain their own payloads.
+Windows WGC now defaults to direct GPU capture; explicit
+`COREVIDEO_GPU_CAPTURE=0` retains the CPU comparison/rollback path. Its capture
+owner records exact GPU completion before publishing a source descriptor.
+Unsupported sharing retains the existing CPU fallback and measured counters.
+The scheduling-only experiment did not remove exact webcam-selection holds.
+Buffered Program instead reserves one existing pool credit for an immutable
+source/Take choice, demands those exact preparation tokens, and composes that
+choice on the next production tick. Composition and preparation retain the
+original production slot and deadline. With a two-frame buffer this divides the
+existing budget between source preparation and composed-frame readiness; it does
+not add a third frame, expand the pool, or retain CPU/ISO or optional-monitor
+pixels. Expired or cancelled reservations cannot publish into reused credits.
+The normal prepared-source path enables this behavior; explicit
+`COREVIDEO_PREPARE_PROGRAM_WITHIN_BUDGET=0` retains the old immediate-composition
+control for diagnostic comparisons. Preparation that misses the composition
+portion still reports a held/unavailable source and fails exact-source
+qualification. It is not relabeled as ready or given a later deadline.
+
+The #1016 causal fixture delays a selected GPU image until after the original
+CPU choice. The old path delivers older pixels; the corrected path delivers the
+selected pixels at the same original deadline and capacity. This fixture is not
+full-workload acceptance. Installed source pixels, source cadence, recording,
+OS camera and physical display remain separate measured gates.
+
+The installed #1016 diagnostic exposed a separate selection defect (#1019):
+sampling UVC's latest arrival at variable ingest times repeated and omitted
+already prepared pictures. `CapturePresentationWindow` retains at most three
+original UVC arrivals without pinning prepared GPU slots. For negotiated 60 or
+60000/1001 output, the reserved Program choice names the source-frame sequence
+from its native cadence, including the required rational-rate repeat.
+Fractional-rate conversion samples that clock with floor, placing the repeat
+at the beginning of the conversion cycle. Rounding forward can request the
+next capture near the cycle boundary, spending the preparation margin on a
+future observation. The installed 59.94 Hz camera comparison exposed this:
+15 selected images completed 1–3 ms after composition had already held the
+preceding image. The original output deadline and 8.333 ms composition reserve
+remain unchanged; the phase-sensitive fixture includes late capture arrival
+and GPU preparation rather than only counting rational-rate repeats. Installed
+picture and full-workload qualification remain separate requirements.
+The capture owner can publish that arrival during the existing preparation interval;
+composition resolves only the requested identity in that bounded history.
+Resolution preserves capture observation, epoch and pixels. It never copies the
+latest image into a missing identity. Missing/evicted/replaced choices mark that
+layer unavailable and reset the cadence anchor for recovery. Program still
+composes the other layers at its original deadline; a source failure cannot
+cancel the whole output slot. The source-picture gate still fails that interval.
+A new production anchor starts a new choice
+timeline. Other negotiated capture rates retain the previous selection path.
+
+The capture owner holds these CPU references; the pending Program job holds an
+owner/choice descriptor and no CPU or optional-monitor pixels. The existing
+preparation pool, Program pool capacity and two-frame output deadline do not
+grow. ISO keeps its independent ordered arrival consumer. The clocked-source
+fixture checks actual NV12 content at the unchanged deadline. This is not a
+claim about long-run device-clock drift, other native capture rates, monitor
+source cadence, or the installed full-workload result.
+
+The source clock anchors to the capture owner's published head, rather than a
+potentially older ingest descriptor. `MonitorCaptureCadence` gives the optional
+monitor worker its own clock over that same bounded three-arrival CPU history.
+It never advances production GPU demand, retains a production GPU view, or
+changes Program buffering. Monitor selection can wait for CPU arrival only
+inside the current monitor slot's first half-period, preserving the remaining
+half for its independent uploads/render. Missing choices remain explicit input
+failures. Resolved descriptors drop the history owner before last-good retention;
+consumer clocks hold only weak owner references and are removed with demand.
+Source replacement and epoch changes fence old choices. A compiled D3D fixture
+independently reads exported Preview pixels with a deliberately lagging ingest
+descriptor; jitter tests check rational capture cadence and verify optional
+selection cannot alter production GPU demand. Installed qualification remains
+required.
+
+Direct-GPU WGC frames use `ReadyCapturePublication`, a capture-owner publication
+of one already completed image. The Program reservation freezes source identity,
+epoch and geometry, but selects this image immediately before composition;
+there is no CPU upload to begin a tick earlier. Its pending descriptor does not
+retain the earlier GPU surface. Publication owns no additional pool or queue,
+and optional monitors discard the production publication handle. Resolution
+cannot cross source replacement, dimensions or shutdown, and records the actual
+selected image in the requested/drawn trace. This addresses the measured stale
+screen choices without increasing the existing Program deadline or capacity.
+
+The overall redesign workload judge now also requires actual camera and screen
+picture proofs in both recorded Program and the registered camera receiver,
+over its exact measured clock interval. Output-counter continuity cannot waive
+source repeats, omissions, stale screen content or frozen ordinary camera
+pixels. Native-rate conversion allowance is derived from the declared rate.
 
 Browser input uses one bounded reader thread with at most 64 sources when
 preparation is enabled. OS mapping, seqlock BGRA copying and preparation run

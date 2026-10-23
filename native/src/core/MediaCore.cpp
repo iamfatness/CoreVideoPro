@@ -1,6 +1,7 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/RecordingQueuePolicy.h"
 #include "core/MediaCore.h"
+#include "core/MultiviewFeed.h"
 #include "core/CoreStateCapture.h"
 #include "core/AudioObservationFootprint.h"
 #include "core/DeliveryTrace.h"
@@ -273,6 +274,15 @@ rpc::Json captureDeviceJson(const modules::CaptureDeviceInfo& device) {
     result.emplace("warning", device.warning);
   }
   if (device.decodedFrames) result.emplace("decodedFrames", static_cast<double>(*device.decodedFrames));
+  if (device.isoCpuArrivals) {
+    const auto& a = *device.isoCpuArrivals;
+    result.emplace("isoCpuArrivals", rpc::Json::Object{
+        {"sourceId", a.sourceId}, {"observed", static_cast<double>(a.observed)},
+        {"demanded", a.demanded}, {"accepted", static_cast<double>(a.accepted)},
+        {"drained", static_cast<double>(a.drained)}, {"overflowed", static_cast<double>(a.overflowed)},
+        {"released", static_cast<double>(a.released)}, {"pending", static_cast<double>(a.pending)},
+        {"bytes", static_cast<double>(a.bytes)}});
+  }
   if (device.decodedAudioSamples) result.emplace("decodedAudioSamples", static_cast<double>(*device.decodedAudioSamples));
   if (device.lastFrameAgeMs) result.emplace("lastFrameAgeMs", static_cast<double>(*device.lastFrameAgeMs));
   if (device.decoderFailures) result.emplace("decoderFailures", static_cast<double>(*device.decoderFailures));
@@ -682,8 +692,6 @@ rpc::Json MediaCore::zoomSnapshot() const {
                {"videoOn", true},
                {"muted", false},
                {"talking", true},
-               {"audioLevel", 76},
-               {"networkQuality", "good"},
            },
            rpc::Json::Object{
                {"userId", "guest-1"},
@@ -692,8 +700,6 @@ rpc::Json MediaCore::zoomSnapshot() const {
                {"videoOn", true},
                {"muted", false},
                {"talking", false},
-               {"audioLevel", 22},
-               {"networkQuality", "good"},
            },
        };
   return rpc::Json::Object{
@@ -775,6 +781,7 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
     const std::string rawMediaWarning = rawMediaDisabledWarningFor(payload, kind);
     const rpc::Json* videoOn = participant ? participant->get("videoOn") : nullptr;
     const bool videoOff = participant && (kind == "participant-video" || kind == "screen-share") && videoOn && !videoOn->asBool();
+    // #765: "low" only when the SDK reported it; an absent value is unknown, not a resolution claim.
     const bool lowResolution = participant && participant->getString("networkQuality") == "low";
     const std::string warning = !rawMediaWarning.empty()
                                     ? rawMediaWarning
@@ -1441,7 +1448,6 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
   int degradedCount = 0;
   int activeContributorCount = 0;
   int talkingCount = 0;
-  double audioLevelSum = 0.0;
   std::string lastTalkingId;
 
   for (const auto& participant : participants->asArray()) {
@@ -1454,8 +1460,10 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
     const bool talking = rawTalking ? rawTalking->asBool() :
         (participant.get("talking") && participant.get("talking")->asBool());
     const bool sharingScreen = participant.get("sharingScreen") && participant.get("sharingScreen")->asBool();
-    const double audioLevel = participant.getNumber("audioLevel", 0.0);
-    const std::string networkQuality = participant.getString("networkQuality", "good");
+    // #765: only the SDK-measured network quality counts. Absent means
+    // unknown and is never treated as "good" (or as degraded). The roster
+    // carries no audio level any more; nothing here may invent one.
+    const std::string networkQuality = participant.getString("networkQuality");
 
     if (sharingScreen) {
       signals.screenShareActive = true;
@@ -1476,7 +1484,6 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
     if (!muted || talking) {
       ++activeContributorCount;
     }
-    audioLevelSum += audioLevel;  // audioLevel is reported 0-100
     if (talking) {
       ++talkingCount;
       lastTalkingId = participant.getString("userId");
@@ -1486,7 +1493,6 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
   signals.liveCount = liveCount;
   signals.degradedCount = degradedCount;
   signals.activeContributorCount = activeContributorCount;
-  signals.meanAudioLevel = liveCount == 0 ? 0.0 : (audioLevelSum / liveCount) / 100.0;
   signals.hasDominantSpeaker = talkingCount == 1;
   signals.crossTalk = talkingCount >= 2;
   return signals;
@@ -2087,7 +2093,6 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.participantId = route.getString("participantId");
       state.personId = route.getString("personId");
       state.captureDeviceId = route.getString("captureDeviceId");
-      state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
       state.mediaAssetName = route.getString("mediaAssetName");
       state.mediaAssetKind = route.getString("mediaAssetKind");
@@ -2849,7 +2854,8 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
   for (const auto& channel : channels->asArray()) {
     ParticipantAudioChannelInput input;
     input.participantId = channel.getString("participantId");
-    input.inputLevel = std::max(0, std::min(100, static_cast<int>(channel.get("inputLevel") ? channel.get("inputLevel")->asNumber() : 0)));
+    // `inputLevel` is deliberately NOT read (#764): the strip meters off the
+    // measured PCM, never off a level the shell sends.
     input.muted = channel.get("muted") && channel.get("muted")->asBool();
     input.noiseSuppression = channel.get("noiseSuppression") && channel.get("noiseSuppression")->asBool();
     if (const rpc::Json* manualGain = channel.get("manualGainDb")) {
@@ -3333,7 +3339,6 @@ void MediaCore::pushCaptionCue(const rpc::Json& command) {
   captionText_ = text;
   captionSpeaker_ = command.getString("speaker");
   captionAtMs_ = command.get("atMs") ? command.get("atMs")->asNumber() : 0;
-  captionConfidence_ = std::max(82, 97 - static_cast<int>(text.size() / 28));
   if (text.size() > 96) {
     captionWarnings_.push_back("Caption line is long; compact mode enabled.");
   }
@@ -3357,19 +3362,15 @@ void MediaCore::setBrandKit(const rpc::Json& command) {
       else brandWarnings_.push_back("Invalid lower-third appearance; previous look retained.");
     }
   }
+  // #764: only the fields the compositor actually applies are kept. logoText,
+  // lowerThirdStyle, captionStyle and defaultOverlayBehavior were stored and
+  // echoed only (no bug label is ever drawn), so they are neither read nor
+  // published any more.
   brandName_ = command.getString("name", brandName_);
-  brandLogoText_ = command.getString("logoText", brandLogoText_);
   brandColor_ = command.getString("brandColor", brandColor_);
   brandAccentColor_ = command.getString("accentColor", brandAccentColor_);
   brandBackgroundColor_ = command.getString("backgroundColor", brandBackgroundColor_);
   brandFontFamily_ = command.getString("fontFamily", brandFontFamily_);
-  brandLowerThirdStyle_ = command.getString("lowerThirdStyle", brandLowerThirdStyle_);
-  brandCaptionStyle_ = command.getString("captionStyle", brandCaptionStyle_);
-  brandDefaultOverlayBehavior_ = command.getString("defaultOverlayBehavior", brandDefaultOverlayBehavior_);
-  if (brandLogoText_.empty()) {
-    brandLogoText_ = "CoreVideo Pro";
-    brandWarnings_.push_back("Brand logo text was empty; using default bug label.");
-  }
 }
 
 // #535 slice 3b: SELECTION ONLY. `playing` and `mediaPlaybackKey` still ride
@@ -3573,7 +3574,6 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       state.participantId = route.getString("participantId");
       state.personId = route.getString("personId");
       state.captureDeviceId = route.getString("captureDeviceId");
-      state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
       state.mediaAssetName = route.getString("mediaAssetName");
       state.mediaAssetKind = route.getString("mediaAssetKind");
@@ -3725,42 +3725,6 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
 }
 
 namespace {
-
-// The feed-resolution result for one multiview source: the same source-id
-// conventions the program plan uses so resolveLayers/frameForParticipant match
-// the same decoded frames.
-struct ResolvedMultiviewFeed {
-  std::string kind;
-  std::string sourceId;
-  std::string participantId;
-  std::string mediaAssetId;
-};
-
-ResolvedMultiviewFeed resolveMultiviewFeed(
-    const std::string& srcKind,
-    const std::string& sourceId,
-    const std::string& participantId,
-    const std::string& captureDeviceId,
-    const std::string& mediaAssetId) {
-  ResolvedMultiviewFeed feed;
-  if (srcKind == "media" && !mediaAssetId.empty()) {
-    feed.kind = "media-video";
-    feed.sourceId = "media:" + mediaAssetId;
-    feed.mediaAssetId = mediaAssetId;
-  } else if (srcKind == "capture" && !captureDeviceId.empty()) {
-    feed.kind = "participant-video";
-    feed.participantId = "capture:" + captureDeviceId;
-    feed.sourceId = feed.participantId;
-  } else if (!participantId.empty()) {
-    feed.kind = "participant-video";
-    feed.participantId = participantId;
-    feed.sourceId = "zoom:" + participantId;
-  } else {
-    feed.kind = "participant-video";
-    feed.sourceId = sourceId;
-  }
-  return feed;
-}
 
 // #535 slice 4a final review, R3: the "black" dropout policy is a PROGRAM-only
 // cut. Preview and multiview must keep showing the held (last) frame for a
@@ -4138,44 +4102,6 @@ std::string audioStatusFor(bool muted, int gainDb) {
   return "balanced";
 }
 
-// DETERMINISTIC dBFS derivation for the participant-audio contract.
-//
-// The stub core has no real PCM (the real DSP graph is F2, gated behind the dev
-// adapters), so it cannot MEASURE rms/peak the way the TS simulators do from
-// synthesized samples. Instead we DERIVE the two metrics from the existing
-// 0-100 `outputLevel` using the same sine model the renderer/native-core mirrors
-// assume: a participant tone whose PEAK amplitude tracks level/100 of full
-// scale. Then peakDbfs = 20*log10(level/100) and, for a sine, rmsDbfs is one
-// crest-factor (~3.0103 dB) below the peak. Level 0 (or muted) reports the
-// digital-silence floor. This keeps the values consistent and stable for the
-// same input, matching the TS measured-from-silence behaviour for muted/silent
-// channels (both floor to -120 dBFS).
-constexpr double kAudioDbfsFloor = -120.0;
-constexpr double kSineCrestFactorDb = 3.0102999566398121;  // 20*log10(sqrt(2))
-
-double levelToDbfs(int level) {
-  if (level <= 0) {
-    return kAudioDbfsFloor;
-  }
-  const double db = 20.0 * std::log10(static_cast<double>(level) / 100.0);
-  return db < kAudioDbfsFloor ? kAudioDbfsFloor : db;
-}
-
-double round1Dbfs(double value) {
-  return std::round(value * 10.0) / 10.0;
-}
-
-double derivePeakDbfs(int outputLevel) {
-  return round1Dbfs(levelToDbfs(outputLevel));
-}
-
-double deriveRmsDbfs(int outputLevel) {
-  if (outputLevel <= 0) {
-    return round1Dbfs(kAudioDbfsFloor);
-  }
-  const double rms = levelToDbfs(outputLevel) - kSineCrestFactorDb;
-  return round1Dbfs(rms < kAudioDbfsFloor ? kAudioDbfsFloor : rms);
-}
 
 std::string protocolAudioStatusForDsp(const modules::AudioParticipantMixMetrics& participant) {
   if (participant.muted) return "muted";
@@ -5232,6 +5158,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
           "recording", modules::SourceVideoRepresentation::Cpu});
   }
   modules_.captureDevice->setVideoConsumerDemand(captureDemands);
+  if (engineLive) zoomEngineRuntime_->setVideoConsumerDemand(captureDemands);
   modules_.captureDevice->deliverVideo(captureVideo, frameTimestampMs);
   std::vector<modules::VideoFrame> browserFrames;
   if (!browserSources_->empty()) {
@@ -5293,11 +5220,19 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
             return frame.participantId == id && frame.hasContent();
           });
     };
+    // Read already-accepted native metadata, never enumerate devices or consult
+    // the shell on the render path. A reconnect changes video identity, not the
+    // stable source label. The view is copied only if catalog metadata changes.
+    const auto captureLabel = [this](const std::string& id) -> std::string_view {
+      const auto found = sourcePolicies_.find(id);
+      return found != sourcePolicies_.end() && !found->second.displayName.empty()
+          ? std::string_view(found->second.displayName) : std::string_view(id);
+    };
     if (engineLive) {
       const auto graphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
       const auto roster = zoomEngineRuntime_->floorParticipants();
       const auto confirmedGraphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
-      graphicsInstances_.observeZoomSources(roster, graphicsSourceEpoch == confirmedGraphicsSourceEpoch ? graphicsSourceEpoch : 0, videoFrames);
+      graphicsInstances_.observeSources(roster, graphicsSourceEpoch == confirmedGraphicsSourceEpoch ? graphicsSourceEpoch : 0, videoFrames, captureLabel);
       // A manual trim belongs to this participant incarnation, not to a
       // numeric SDK id that a later join could reuse inside the same meeting.
       if (!zoomGuestAvOffsets_.empty()) {
@@ -5323,7 +5258,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
             hasContent(id), participant.isTalking});
       }
     } else {
-      graphicsInstances_.observeZoomSources({}, 0);
+      graphicsInstances_.observeSources({}, 0, videoFrames, captureLabel);
       const auto capture = zoomSnapshot();
       const auto* roster = capture.get("participants");
       if (roster && roster->isArray()) for (const auto& participant : roster->asArray()) {
@@ -5354,9 +5289,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // Conversion has its own bounded arrival stream. Metadata/ref transfers only:
   // no readback or conversion may run on this gather/Program thread.
   auto captureCpuFrames = modules_.captureDevice->takeCpuVideoFrames();
+  if (engineLive) zoomEngineRuntime_->appendCpuVideoFrames(captureCpuFrames);
   if ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
       !recordingIsoParticipantIds_.empty()) {
-    isoVideoIngress_.observe(recordingIsoParticipantIds_, videoFrames, captureCpuFrames, monotonic100ns());
+    isoVideoIngress_.observe(recordingIsoParticipantIds_, videoFrames, captureCpuFrames, monotonic100ns(),
+        engineLive && modules::ZoomEngineRuntime::independentIsoVideoSupported());
   } else { isoVideoIngress_.clear(); }
   markStage(s_stageIngestUs, 0);
 
@@ -5755,6 +5692,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (pendingTakeRecord_ && !takeTransition_.waitingForColdMedia) {
     completeTakeRecord(renderPlan, wallContinuous, videoFrames);
   }
+  // The independent monitor owner needs this tick's immutable input/plan
+  // payload before current Program work can stall. Its buffered Program image
+  // is acquired by beginMonitorTick(), from the earlier scheduled slot.
+  if (modules_.compositor->hasIsolatedMonitors())
+    submitIsolatedMonitorTick(renderPlan, videoFrames, lastProducedFrameNumber_ + 1);
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
   graphicsInstances_.observe(producedFrame);
@@ -5848,49 +5790,6 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   markStage(s_stageProgramUs, 2);
   const auto monitorStartTp = std::chrono::steady_clock::now();
   if (modules_.compositor->hasIsolatedMonitors()) {
-    modules::MonitorRenderRequest request;
-    request.sequence = lastProducedFrameNumber_;
-    request.programPlan = renderPlan;
-    request.frames = videoFrames;
-    request.multiviewActive = !multiviewSources_.empty() || multiviewLayoutMode_ != "grid";
-    request.previewActive = hasPreviewScene();
-    // WinUI presents Program/Preview/Multiview composites. Its only individual
-    // GPU-source consumer is the legacy Preview fallback before a scene sync;
-    // scene-editor layers consume CPU thumbnails. Keep that compatibility
-    // demand until a composite Preview takes ownership, then stop those exports.
-    if (!request.previewActive) {
-      for (const auto& frame : videoFrames)
-        request.sourceExports.push_back({frame.participantId,
-            modules::SourceMonitorConsumer::PreviewFallback, "preview-fallback"});
-    }
-    // Sources inspectors need identity-safe full-source exports even while
-    // composite Preview is active. Bound demand to ten assigned input rows;
-    // never export every participant. programPlan carries off-air source grades.
-    int inspectorRows = 0;
-    for (const auto& source : multiviewSources_) {
-      if (!sourcePreviewDemand_.active() || inspectorRows++ >= 10) break;
-      const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
-          source.captureDeviceId, source.mediaAssetId);
-      const auto nativeId = feed.participantId.empty() ? feed.sourceId : feed.participantId;
-      if (nativeId.empty()) continue;
-      if (std::none_of(request.sourceExports.begin(), request.sourceExports.end(),
-          [&](const auto& demand) { return demand.sourceId == nativeId; }))
-        request.sourceExports.push_back({nativeId, modules::SourceMonitorConsumer::Inspector,
-            "source-thumbnail:" + feed.sourceId});
-    }
-    if (request.multiviewActive) {
-      request.multiviewPlan = buildMultiviewRenderPlan(videoFrames);
-      request.multiviewPlan.skipCpuReadback = true;
-      request.tiles = buildMultiviewTiles(zoomSnapshot().getString("activeSpeakerId"));
-    }
-    if (request.previewActive) {
-      request.previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
-      if (const auto* wall = tilesWallSources_.find(previewTilesLayer_.layerId))
-        wall->applyLatest(request.previewPlan, previewTilesLayer_.layerId);
-      request.previewPlan.skipCpuReadback = true;
-      lastPreviewPlanLayerCount_ = static_cast<int>(request.previewPlan.layers.size());
-    }
-    modules_.compositor->submitMonitors(std::move(request));
     if (const auto result = modules_.compositor->latestMonitors()) {
       lastProgramFrame_.participantSharedTextures = result->sources;
       lastProgramFrame_.multiviewSharedTexture = result->multiview;

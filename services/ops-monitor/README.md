@@ -2,8 +2,7 @@
 
 Cron-triggered Cloudflare Worker that watches the runtime dependencies beta
 makes hard (beta spec `docs/beta-engineering-spec.md` §S5): the external OAuth
-broker and the in-repo workers (`licensing-api`, `telemetry-ingest`,
-`caption-broker`) plus itself. On a **state change** it alerts a generic webhook
+broker and the in-repo `telemetry-ingest` worker plus itself. On a **state change** it alerts a generic webhook
 (Discord/Slack). It never alert-spams (state-change only), never crashes on a
 probe failure (the thing it monitors is expected to fail), and probes the broker
 **read-only**.
@@ -44,9 +43,9 @@ dedicated health endpoint — point it there and delete the query marker.
 
 ## In-repo worker probes
 
-Each in-repo worker now serves an unauthenticated `GET /health` -> `200
-{status:"ok", service, environment}` (added in this same change, placed before
-the auth gate). The monitor hits `/health` on each. Because "up" only requires a
+Each in-repo worker serves an unauthenticated `GET /health` -> `200
+{status:"ok", service, environment}` (placed before the auth gate). The monitor
+hits `/health` on each. Because "up" only requires a
 `< 500` response, the monitor still reports **up** even against a worker that
 hasn't been redeployed with `/health` yet (it returns `404`, which is `< 500` =
 the worker is reachable). Once redeployed, `/health` returns a clean `200`.
@@ -57,9 +56,7 @@ the worker is reachable). Once redeployed, `/health` returns a clean `200`.
 |---|---|---|---|
 | `OPS_ALERT_WEBHOOK_URL` | secret | *(unset)* | Discord/Slack incoming webhook. **Unset => log-only** (never crash, never spam). |
 | `OPS_BROKER_START_URL` | var | `https://corevideo.iamfatness.us/oauth/start?probe=ops-monitor` | Broker probe URL (no `return_uri`). |
-| `OPS_LICENSING_URL` | var | `…/corevideo-licensing-api.<acct>.workers.dev/health` | licensing-api probe. |
 | `OPS_TELEMETRY_URL` | var | `…/corevideo-telemetry-ingest.<acct>.workers.dev/health` | telemetry-ingest probe. |
-| `OPS_CAPTION_URL` | var | `…/corevideo-caption-broker.<acct>.workers.dev/health` | caption-broker probe. |
 | `OPS_SELF_URL` | var | `…/corevideo-ops-monitor.<acct>.workers.dev/health` | self probe. |
 
 Any target URL set to `""` or `"off"` is skipped. Set the `.workers.dev`

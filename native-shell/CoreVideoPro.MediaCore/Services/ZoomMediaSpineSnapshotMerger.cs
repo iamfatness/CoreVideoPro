@@ -22,23 +22,28 @@ public static class ZoomMediaSpineSnapshotMerger
                 subscription.Kind == "participant-video" &&
                 !subscription.Status.Equals("failed", StringComparison.Ordinal));
 
+        // #766: the spine's per-subscription counters are the only source of these numbers.
+        var subscribedSourceCount = inMeeting
+            ? Math.Max(subscribedVideoFeeds, merged.SourceSnapshot.SubscribedSourceCount)
+            : 0;
+        var liveFrameCount = inMeeting
+            ? Math.Max(
+                spine.Subscriptions.Sum(subscription => subscription.FramesReceived),
+                merged.SourceSnapshot.LiveFrameCount)
+            : 0;
         var sourceSnapshot = new NativeMediaCoreFrameSourceSnapshot
         {
             AdapterId = merged.SourceSnapshot.AdapterId,
             Kind = merged.SourceSnapshot.Kind,
-            Status = merged.SourceSnapshot.Status,
-            SubscribedSourceCount = inMeeting
-                ? Math.Max(subscribedVideoFeeds, merged.SourceSnapshot.SubscribedSourceCount)
-                : 0,
-            LiveFrameCount = inMeeting
-                ? Math.Max(
-                    spine.Subscriptions.Sum(subscription => subscription.FramesReceived),
-                    merged.SourceSnapshot.LiveFrameCount)
-                : 0,
+            Status = !inMeeting ? "idle" : subscribedSourceCount > 0 ? "subscribed" : "joined",
+            SubscribedSourceCount = subscribedSourceCount,
+            LiveFrameCount = liveFrameCount,
             StaleFrameCount = merged.SourceSnapshot.StaleFrameCount,
             DroppedFrameCount = merged.SourceSnapshot.DroppedFrameCount,
             LowResolutionFrameCount = merged.SourceSnapshot.LowResolutionFrameCount,
-            LastFrameTimestampMs = merged.SourceSnapshot.LastFrameTimestampMs,
+            LastFrameTimestampMs = liveFrameCount > merged.SourceSnapshot.LiveFrameCount
+                ? merged.Diagnostics.GeneratedAtMs
+                : merged.SourceSnapshot.LastFrameTimestampMs,
             Warnings = merged.SourceSnapshot.Warnings
         };
 
@@ -74,9 +79,16 @@ public static class ZoomMediaSpineSnapshotMerger
                 Participants = existing.Participants,
                 RosterEpoch = existing.RosterEpoch,
                 RosterRevision = existing.RosterRevision,
+                RawMediaActive = existing.RawMediaActive,
                 ZoomSubscriptions = existing.ZoomSubscriptions
             };
         }
+        // Ordinary session-state polls omit this engine fact. Retain it only in
+        // the same meeting authority; a reconnect must not inherit old capture.
+        if (incoming.RawMediaActive is null && existing is not null &&
+            incoming.RosterEpoch == existing.RosterEpoch &&
+            NormalizeMeetingState(incoming.MeetingState) == "in_meeting")
+            incoming = incoming with { RawMediaActive = existing.RawMediaActive };
         if (incoming.ZoomSubscriptions.Count > 0 || existing is null || existing.ZoomSubscriptions.Count == 0)
         {
             return incoming;
@@ -86,7 +98,15 @@ public static class ZoomMediaSpineSnapshotMerger
         {
             return incoming;
         }
-        return incoming with { ZoomSubscriptions = existing.ZoomSubscriptions };
+        // #766: the Zoom source row (Settings "Feeds") is derived from the same spine
+        // evidence, and the mapper's sync snapshot starts from the neutral idle row, so the
+        // row flickered idle/subscribed on every poll. Carry it with the subscriptions.
+        return incoming with
+        {
+            ZoomSubscriptions = existing.ZoomSubscriptions,
+            SourceSnapshot = existing.SourceSnapshot,
+            Diagnostics = incoming.Diagnostics with { SourceSnapshot = existing.SourceSnapshot }
+        };
     }
 
     public static RawCaptureSnapshot ToCaptureSnapshot(
@@ -96,6 +116,7 @@ public static class ZoomMediaSpineSnapshotMerger
         var meetingState = meetingStateOverride ?? NormalizeMeetingState(spine.MeetingState);
         return new RawCaptureSnapshot
         {
+            RawMediaActive = spine.RawMediaActive,
             MeetingState = meetingState,
             RosterEpoch = spine.RosterEpoch,
             RosterRevision = spine.RosterRevision,
@@ -112,7 +133,6 @@ public static class ZoomMediaSpineSnapshotMerger
                     VideoOn = participant.VideoOn,
                     Talking = participant.Talking,
                     SharingScreen = participant.SharingScreen,
-                    AudioLevel = participant.AudioLevel,
                     NetworkQuality = participant.NetworkQuality
                 })
                 .ToList()

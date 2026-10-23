@@ -1,6 +1,7 @@
 #pragma once
 #include "modules/I420SourcePreparation.h"
 #include "modules/Interfaces.h"
+#include "modules/QaIsoIdentity.h"
 #include <atomic>
 #include <chrono>
 
@@ -9,8 +10,25 @@ namespace corevideo::modules {
 // the resulting descriptor; it never offers the same arrival a second time.
 class I420CaptureArrival {
  public:
-  I420CaptureArrival(std::string sourceId, std::shared_ptr<I420SourcePreparation> preparation)
-      : sourceId_(std::move(sourceId)), preparation_(std::move(preparation)), epoch_(nextEpoch_.fetch_add(1)) {}
+  I420CaptureArrival(std::string sourceId, std::shared_ptr<I420SourcePreparation> preparation, bool qaCounter = false)
+      : sourceId_(std::move(sourceId)), preparation_(std::move(preparation)), epoch_(nextEpoch_.fetch_add(1)), qaCounter_(qaCounter) {}
+  VideoFrame publishMutable(std::shared_ptr<std::vector<uint8_t>> cpu,
+      int width, int height, bool fullRange, bool bt601) {
+    if (qaCounter_ && cpu) {
+      if (cpu.use_count() != 1) cpu = std::make_shared<std::vector<uint8_t>>(*cpu);
+      paintDeliveryCounter(cpu->data(), cpu->size(), width, height, width,
+          static_cast<uint32_t>(frameId_ + 1));
+      // Source identity must survive Program's separate output counter bands.
+      // Paint before GPU preparation so stale source textures retain stale bits.
+      if (height >= 96) {
+        const int markerWidth = (std::min)(width, 720);
+        const int offset = (width - markerWidth) / 2;
+        paintDeliveryCounter(cpu->data() + offset, cpu->size() - offset, markerWidth, height, width,
+            static_cast<uint32_t>(frameId_ + 1), true);
+      }
+    }
+    return publish(std::move(cpu), width, height, fullRange, bt601);
+  }
   VideoFrame publish(std::shared_ptr<const std::vector<uint8_t>> cpu,
       int width, int height, bool fullRange, bool bt601) {
     VideoFrame frame;
@@ -37,5 +55,6 @@ class I420CaptureArrival {
   uint64_t epoch_;
   int64_t frameId_ = 0;
   int width_ = 0, height_ = 0;
+  bool qaCounter_ = false;
 };
 }

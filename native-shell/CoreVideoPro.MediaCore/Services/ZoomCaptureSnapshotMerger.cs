@@ -17,24 +17,29 @@ public static class ZoomCaptureSnapshotMerger
         var baseSnapshot = existing ?? new NativeMediaCoreStateSnapshot();
         var meetingState = ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(capture.MeetingState);
         var inMeeting = meetingState.Equals("in_meeting", StringComparison.Ordinal);
-        var participantCount = capture.Participants.Count;
-        var sourceStatus = inMeeting ? "subscribed" : "idle";
+        // #766: a roster is not video evidence. Subscription and frame counts come only from
+        // the spine's per-subscription counters (ZoomMediaSpineSnapshotMerger); this merger
+        // used to write the PARTICIPANT count into both, so one participant read as one
+        // subscribed feed with one live frame before any raw media had started. In a meeting
+        // the counts the spine already proved are kept; leaving clears them. Status says
+        // "subscribed" only once a feed really is.
+        var subscribedSourceCount = inMeeting ? baseSnapshot.SourceSnapshot.SubscribedSourceCount : 0;
+        var liveFrameCount = inMeeting ? baseSnapshot.SourceSnapshot.LiveFrameCount : 0;
+        var sourceStatus = !inMeeting ? "idle" : subscribedSourceCount > 0 ? "subscribed" : "joined";
 
         var sourceSnapshot = new NativeMediaCoreFrameSourceSnapshot
         {
             AdapterId = baseSnapshot.SourceSnapshot.AdapterId,
             Kind = "zoom-sdk",
             Status = sourceStatus,
-            SubscribedSourceCount = inMeeting
-                ? Math.Max(participantCount, baseSnapshot.SourceSnapshot.SubscribedSourceCount)
-                : 0,
-            LiveFrameCount = inMeeting
-                ? Math.Max(participantCount, baseSnapshot.SourceSnapshot.LiveFrameCount)
-                : 0,
+            SubscribedSourceCount = subscribedSourceCount,
+            LiveFrameCount = liveFrameCount,
             StaleFrameCount = baseSnapshot.SourceSnapshot.StaleFrameCount,
             DroppedFrameCount = baseSnapshot.SourceSnapshot.DroppedFrameCount,
             LowResolutionFrameCount = baseSnapshot.SourceSnapshot.LowResolutionFrameCount,
-            LastFrameTimestampMs = inMeeting ? baseSnapshot.Diagnostics.GeneratedAtMs : null,
+            LastFrameTimestampMs = inMeeting && liveFrameCount > 0
+                ? baseSnapshot.SourceSnapshot.LastFrameTimestampMs
+                : null,
             Warnings = baseSnapshot.SourceSnapshot.Warnings
         };
 
@@ -48,6 +53,7 @@ public static class ZoomCaptureSnapshotMerger
         return baseSnapshot with
         {
             MeetingState = meetingState,
+            RawMediaActive = capture.RawMediaActive,
             RosterEpoch = capture.RosterEpoch,
             RosterRevision = capture.RosterRevision,
             ActiveSpeakerId = inMeeting ? capture.ActiveSpeakerId : null,
@@ -74,10 +80,8 @@ public static class ZoomCaptureSnapshotMerger
             CurrentCue = new NativeMediaCoreCaptionCue
             {
                 Text = caption.Trim(),
-                AtMs = 0,
-                Confidence = 95
+                AtMs = 0
             },
-            LatencyMs = captionTrack.LatencyMs,
             Warnings = captionTrack.Warnings
         };
     }

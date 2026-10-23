@@ -66,12 +66,14 @@ public sealed class TelemetryPayloadBuilderTests
         },
         VirtualCamera = new NativeMediaCoreVirtualCamera { Enabled = true, Status = "live" },
         IsoParticipantIds = ["zoom:pid-secret-1"],
-        Frames =
+        // #766: the core's captureDevices node is the capture-source truth; Frames is never
+        // populated on a real core.
+        CaptureDevices =
         [
-            new NativeMediaCoreFrame { SourceId = "zoom:pid-secret-1", Kind = "zoom", Health = "live" },
-            new NativeMediaCoreFrame { SourceId = "capture:cam-a", Kind = "capture", Health = "live" },
-            new NativeMediaCoreFrame { SourceId = "capture:cam-b", Kind = "capture", Health = "live" },
-            new NativeMediaCoreFrame { SourceId = "capture:cam-b", Kind = "capture", Health = "live" } // dup id
+            new NativeCaptureDeviceStatus { Id = "cam-a", Name = "Cam A", ConnectionState = "connected", SignalPresent = true },
+            new NativeCaptureDeviceStatus { Id = "cam-b", Name = "Cam B", ConnectionState = "connected", SignalPresent = false },
+            new NativeCaptureDeviceStatus { Id = "cam-b", Name = "Cam B", ConnectionState = "connected" }, // dup id
+            new NativeCaptureDeviceStatus { Id = "screen:0", Name = "DISPLAY1", ConnectionState = "detected" }
         ],
         Participants =
         [
@@ -97,7 +99,7 @@ public sealed class TelemetryPayloadBuilderTests
         Assert.True(shape.StreamingEnabled);
         Assert.True(shape.VcamEnabled);
         Assert.Equal(1, shape.IsoSourceCount);
-        Assert.Equal(2, shape.CaptureSourceCount); // cam-a + cam-b, dup collapsed
+        Assert.Equal(2, shape.CaptureSourceCount); // cam-a + cam-b connected, dup collapsed, detected-only excluded
         Assert.Equal(2, shape.ZoomParticipantCount);
     }
 

@@ -9,20 +9,19 @@
 
 namespace corevideo::modules {
 // libc++ does not implement atomic<weak_ptr> on every supported target.
-// Publication has no GPU calls under this lock; Program never waits for it.
+// Exchange an immutable weak descriptor; publication cannot make an already
+// completed image temporarily unavailable to a racing compositor.
 class CpuSourceGpuPublication {
  public:
   void store(std::weak_ptr<const GpuVideoFrame> image) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    image_ = std::move(image);
+    std::atomic_store(&image_, std::make_shared<const std::weak_ptr<const GpuVideoFrame>>(std::move(image)));
   }
   std::weak_ptr<const GpuVideoFrame> load() const {
-    std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
-    return lock.owns_lock() ? image_ : std::weak_ptr<const GpuVideoFrame>{};
+    const auto image = std::atomic_load(&image_);
+    return image ? *image : std::weak_ptr<const GpuVideoFrame>{};
   }
  private:
-  mutable std::mutex mutex_;
-  std::weak_ptr<const GpuVideoFrame> image_;
+  std::shared_ptr<const std::weak_ptr<const GpuVideoFrame>> image_;
 };
 enum class CpuPreparationCapacity : uint8_t {
   None, Sources, PendingTokens, RetiringGenerations, ActiveGenerations, Quarantine, Residency

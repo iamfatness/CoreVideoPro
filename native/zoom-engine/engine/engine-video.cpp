@@ -1,4 +1,6 @@
 #include "engine-video.h"
+#include "iso-video-ring.h"
+#include "iso-video-demand.h"
 #include "engine-resolution-policy.h"
 #include "engine-writer.h"
 #if __has_include(<rawdata/zoom_rawdata_api.h>)
@@ -134,7 +136,7 @@ ParticipantSubscription::~ParticipantSubscription()
     }
     std::lock_guard<std::mutex> lock(m_targets_mtx);
     for (auto &entry : m_targets) {
-        if (entry.second) shm_region_destroy(entry.second->shm);
+        if (entry.second) { shm_region_destroy(entry.second->shm); shm_region_destroy(entry.second->iso_shm); }
     }
 }
 
@@ -157,7 +159,7 @@ void ParticipantSubscription::remove_source(const std::string &source_uuid)
     std::lock_guard<std::mutex> lock(m_targets_mtx);
     auto it = m_targets.find(source_uuid);
     if (it == m_targets.end()) return;
-    if (it->second) shm_region_destroy(it->second->shm);
+    if (it->second) { shm_region_destroy(it->second->shm); shm_region_destroy(it->second->iso_shm); }
     m_targets.erase(it);
 }
 
@@ -202,6 +204,8 @@ bool ParticipantSubscription::ensure_shm(SourceTarget &target,
 void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
 {
     if (!data) return;
+    const auto captured100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
     if (m_stopping.load(std::memory_order_acquire)) return; // teardown in progress
     const uint32_t w     = data->GetStreamWidth();
     const uint32_t h     = data->GetStreamHeight();
@@ -302,6 +306,19 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
         std::memcpy(pixels + y_len + y_len/4, planes.v, y_len / 4);
         std::atomic_thread_fence(std::memory_order_release);
         hdr->sequence = seq + 1;
+
+        const auto iso_epoch = IsoVideoDemand::instance().get(source_uuid);
+        if (!iso_epoch) {
+            if (target.iso_shm.ptr) shm_region_destroy(target.iso_shm);
+        } else {
+            const auto name = EngineIpc::shm_prefix() + source_uuid + "-iso";
+            const bool mapped = target.iso_shm.ptr || shm_region_create(target.iso_shm, name, zoom_iso::bytes);
+            if (!mapped || !zoom_iso::write(target.iso_shm.ptr, target.iso_shm.size, iso_epoch,
+                    seq + 1, w, h, planes.y, planes.u, planes.v, captured100ns)) {
+                if (++target.iso_failures == 1 || target.iso_failures % 300 == 0)
+                    EngineIpc::write("{\"cmd\":\"error\",\"stage\":\"iso_video\",\"reason\":\"arrival_ring_write_failed\"}");
+            }
+        }
 
         ++target.frame_count;
         if (target.frame_count == 1 || target.frame_count % 120 == 0) {

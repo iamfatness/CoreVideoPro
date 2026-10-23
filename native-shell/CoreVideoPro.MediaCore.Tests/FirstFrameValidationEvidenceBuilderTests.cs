@@ -21,7 +21,6 @@ public sealed class FirstFrameValidationEvidenceBuilderTests
                 {
                     SdkUserId = "p1",
                     DisplayName = "Host",
-                    AudioLevel = 71,
                     Talking = true
                 }
             ],
@@ -81,7 +80,6 @@ public sealed class FirstFrameValidationEvidenceBuilderTests
                         SdkUserId = "p1",
                         DisplayName = "Host",
                         Muted = true,
-                        AudioLevel = 0,
                         Talking = false
                     }
                 ]
@@ -108,8 +106,7 @@ public sealed class FirstFrameValidationEvidenceBuilderTests
                 new RawParticipantEvent
                 {
                     UserId = "p1",
-                    DisplayName = "Host",
-                    AudioLevel = 64
+                    DisplayName = "Host"
                 }
             ],
             SourceSnapshot = new NativeMediaCoreFrameSourceSnapshot
@@ -120,6 +117,14 @@ public sealed class FirstFrameValidationEvidenceBuilderTests
                 SubscribedSourceCount = 1,
                 LiveFrameCount = 2
             },
+            // The spine's per-subscription counter is the Zoom frame evidence (#766).
+            ZoomSubscriptions =
+            [
+                new ZoomMediaSpineSubscription
+                {
+                    ParticipantId = "p1", Kind = "participant-video", Status = "subscribed", FramesReceived = 2
+                }
+            ],
             ProgramFramePreview = new NativeMediaCoreProgramFramePreview
             {
                 FrameNumber = 5,
@@ -278,5 +283,63 @@ public sealed class FirstFrameValidationEvidenceBuilderTests
 
         Assert.True(evidence.ZoomVideoFrameObserved);
         Assert.Equal(256.5, evidence.FirstZoomFrameElapsedMs);
+    }
+
+    // #766: the capture merger used to write the participant count into
+    // SourceSnapshot.LiveFrameCount, so joining with one participant "proved" a Zoom video
+    // frame, and ProgramTransport.FrameNumber (the core's render counter) "proved" a preview
+    // frame the shell never received. Neither is evidence.
+    [Fact]
+    public void RosterCountsAndTheProgramRenderCounterAreNotFrameEvidence()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot() with
+        {
+            MeetingState = "in_meeting",
+            Participants = [new RawParticipantEvent { UserId = "p1", DisplayName = "Host" }],
+            SourceSnapshot = new NativeMediaCoreFrameSourceSnapshot
+            {
+                AdapterId = "zoom-engine",
+                Kind = "zoom-sdk",
+                Status = "subscribed",
+                SubscribedSourceCount = 1,
+                LiveFrameCount = 1
+            },
+            ProgramFrameCount = 600,
+            ProgramTransport = new NativeMediaCoreProgramFrameTransport
+            {
+                Status = "publishing",
+                FrameNumber = 600
+            }
+        };
+
+        var evidence = FirstFrameValidationEvidenceBuilder.From(snapshot: snapshot);
+
+        Assert.False(evidence.ZoomVideoFrameObserved);
+        Assert.False(evidence.ProgramPreviewFrameObserved);
+        Assert.Equal(0, evidence.LiveZoomFrameCount);
+        Assert.Equal(600, evidence.ProgramFrameCount);
+        Assert.Contains("first Zoom video frame", evidence.Missing);
+        Assert.Contains("first program preview frame", evidence.Missing);
+        Assert.True(evidence.ParticipantFreshnessObserved);
+    }
+
+    [Fact]
+    public void SpineFrameCountersCarriedOnTheSnapshotProveAZoomFrame()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot() with
+        {
+            MeetingState = "in_meeting",
+            Participants = [new RawParticipantEvent { UserId = "p1", DisplayName = "Host" }],
+            ZoomSubscriptions =
+            [
+                new ZoomMediaSpineSubscription { ParticipantId = "p1", Kind = "participant-video", FramesReceived = 12 },
+                new ZoomMediaSpineSubscription { ParticipantId = "p1", Kind = "participant-audio", FramesReceived = 0, AudioPacketsReceived = 40 }
+            ]
+        };
+
+        var evidence = FirstFrameValidationEvidenceBuilder.From(snapshot: snapshot);
+
+        Assert.True(evidence.ZoomVideoFrameObserved);
+        Assert.Equal(12, evidence.LiveZoomFrameCount);
     }
 }

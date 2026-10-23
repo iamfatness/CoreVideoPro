@@ -38,6 +38,14 @@ public sealed class OhgHostAdapter
 
     internal const string GalleryNote = "gallery: cell order not applied (Tiles has no explicit order API)";
 
+    /// <summary>#767: the shell has no per-input lower-third title line, so a nameplate's
+    /// `location` is not applied. The facade used to answer that call with a silent SUCCESS;
+    /// now the gap is operator-visible, once per adapter lifetime (same shape as
+    /// <see cref="GalleryNote"/>), and the name line is still applied. Refusing instead would
+    /// make every setNameplates a refusal and drown the real "slot unassigned" ones.</summary>
+    internal const string NameplateLocationNote =
+        "nameplates: location line not applied (the shell has no per-input lower-third title)";
+
     private readonly IOhgHostFacade _facade;
     private readonly ShowShellConfig _shell;
     private readonly Action<string> _log;
@@ -61,6 +69,7 @@ public sealed class OhgHostAdapter
     private readonly HashSet<string> _reportedMissingRoutes = new(StringComparer.Ordinal);
 
     private bool _reportedGalleryNote;
+    private bool _reportedNameplateLocationNote;
 
     /// <param name="lookPresets">lookId → scenePreset, from <c>config.engine.looks[]</c> via
     /// <see cref="ShowConfigLooks.PresetsByLookId"/>. Null or empty is legal (an unconfigured look
@@ -290,19 +299,25 @@ public sealed class OhgHostAdapter
     {
         var plates = RequiredArray(args, 0, "plates");
         var unassigned = new List<int>();
+        var anyLocation = false;
 
         foreach (var plate in plates.EnumerateArray())
         {
             var slot = RequiredInt(plate, "slot");
             var name = RequiredString(plate, "name");
             var location = RequiredString(plate, "location");
+            anyLocation |= !string.IsNullOrWhiteSpace(location);
 
-            var nameOk = _facade.SetInputDisplayName(slot, name);
-            var titleOk = _facade.SetInputLowerThirdTitle(slot, location);
-            if (!nameOk || !titleOk)
+            if (!_facade.SetInputDisplayName(slot, name))
             {
                 unassigned.Add(slot);
             }
+        }
+
+        if (anyLocation && !_reportedNameplateLocationNote)
+        {
+            _reportedNameplateLocationNote = true;
+            Status(NameplateLocationNote);
         }
 
         if (unassigned.Count == 0)

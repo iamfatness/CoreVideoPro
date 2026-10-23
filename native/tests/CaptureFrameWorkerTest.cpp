@@ -1,9 +1,49 @@
 #include "modules/CaptureFrameWorker.h"
+#include "modules/DeferredCaptureGpuCopy.h"
 #include "modules/SourceVideoDemand.h"
 #include <gtest/gtest.h>
 #include <future>
 #include <stdexcept>
 #include <vector>
+
+TEST(DeferredCaptureGpuCopy, LateCompletionPublishesOriginalPixelsAndIdentityWithoutAnotherArrival) {
+  using Deferred = corevideo::modules::DeferredCaptureGpuCopy;
+  Deferred deferred;
+  EXPECT_TRUE(deferred.defer({13473, 800000, 7, 1920, 1080, 2, 1}));
+  auto completed = std::shared_ptr<const int>{};
+  int published = 0;
+  auto ready = [&](int slot) { EXPECT_EQ(slot, 2); return completed; };
+  auto publish = [&](const Deferred::Copy& copy, auto image) {
+    EXPECT_EQ(copy.sequence, 13473); EXPECT_EQ(copy.epoch, 7u);
+    EXPECT_EQ(copy.capture100ns, 800000); EXPECT_EQ(copy.monitorSlot, 1);
+    EXPECT_EQ(*image, 213); ++published;
+  };
+  // The initial bounded wait has expired. Unready work must remain unpublished
+  // and a later arrival cannot overwrite the outstanding slot/identity.
+  EXPECT_FALSE(deferred.poll(ready, publish));
+  EXPECT_FALSE(deferred.defer({13474, 900000, 8, 2560, 1440, 0, 0}));
+  EXPECT_EQ(published, 0); EXPECT_TRUE(deferred.pending());
+  completed = std::make_shared<const int>(213);
+  EXPECT_TRUE(deferred.poll(ready, publish)); // idle owner, no new OS frame
+  EXPECT_FALSE(deferred.pending());
+  EXPECT_FALSE(deferred.poll(ready, publish));
+  EXPECT_EQ(published, 1);
+}
+
+TEST(DeferredCaptureGpuCopy, CancellationCannotPublishRetiredSessionIntoReplacement) {
+  using Deferred = corevideo::modules::DeferredCaptureGpuCopy;
+  Deferred deferred; int published = 0;
+  EXPECT_TRUE(deferred.defer({1, 100, 1, 1920, 1080, 0, -1}));
+  deferred.cancel();
+  auto ready = [](int) { return std::make_shared<const int>(77); };
+  EXPECT_FALSE(deferred.poll(ready, [&](const auto&, auto) { ++published; }));
+  EXPECT_TRUE(deferred.defer({2, 200, 2, 2560, 1440, 1, -1}));
+  EXPECT_TRUE(deferred.poll(ready, [&](const auto& copy, auto image) {
+    EXPECT_EQ(copy.epoch, 2u); EXPECT_EQ(copy.width, 2560);
+    EXPECT_EQ(copy.sequence, 2); EXPECT_EQ(*image, 77); ++published;
+  }));
+  EXPECT_EQ(published, 1);
+}
 
 TEST(CaptureFrameWorker, KeepsLatestPendingWithoutBlockingCapture) {
   using Worker = corevideo::modules::CaptureFrameWorker<int>;

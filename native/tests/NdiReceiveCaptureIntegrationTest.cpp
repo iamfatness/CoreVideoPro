@@ -122,3 +122,66 @@ TEST(NdiReceiveCapture, DiscoversProductSenderAndDeliversVideoAndAudioToCaptureB
   receiver->disconnect(id);
 #endif
 }
+
+// #763: the configured NDI group reaches NDIlib_send_create_t::p_groups and a
+// group change recreates the sender (a receiver filtered to the new group can
+// then see it). Observed through the runtimeDetail the adapter publishes:
+// groups="<applied>" instance=<send_create count>.
+TEST(NdiOutputSender, ConfiguredGroupReachesSenderAndChangeRecreatesIt) {
+#if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_NDI_OUTPUT
+  auto sender = createNdiOutputSender();
+  const bool requireRuntime = std::getenv("COREVIDEO_REQUIRE_NDI_TEST") != nullptr;
+  if (!sender || !sender->runtimeAvailableAtConstruction()) {
+    if (requireRuntime) {
+      EXPECT_TRUE(false) << "NDI runtime unavailable; this is missing evidence.";
+    }
+    return;
+  }
+
+  OutputDestinationSettings settings;
+  settings.id = "ndi";
+  settings.protocol = "ndi";
+  settings.ndiName = "CVPGroupTest";
+  settings.fps = 30;
+  settings.ndiGroup = " cvp-group-a ";
+
+  ProgramFrame frame;
+  frame.width = frame.preview.width = 64;
+  frame.height = frame.preview.height = 36;
+  frame.preview.bgra.assign(64u * 36u * 4u, 0x40);
+
+  const auto detailOf = [&](const OutputSenderSession& session) {
+    return session.senders.empty() ? std::string{} : session.senders.front().runtimeDetail;
+  };
+
+  frame.frameNumber = 1;
+  auto session = sender->sync({"ndi"}, &frame, 33.3, {settings});
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders.front().status, "live") << session.senders.front().warning;
+  EXPECT_NE(detailOf(session).find("groups=\"cvp-group-a\""), std::string::npos) << detailOf(session);
+  EXPECT_NE(detailOf(session).find(" instance=1 "), std::string::npos) << detailOf(session);
+
+  // Same group again: the live instance is kept.
+  frame.frameNumber = 2;
+  session = sender->sync({"ndi"}, &frame, 66.6, {settings});
+  EXPECT_NE(detailOf(session).find(" instance=1 "), std::string::npos) << detailOf(session);
+
+  // A different group recreates the sender with the new p_groups.
+  settings.ndiGroup = "cvp-group-b,cvp-group-c";
+  frame.frameNumber = 3;
+  session = sender->sync({"ndi"}, &frame, 99.9, {settings});
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders.front().status, "live") << session.senders.front().warning;
+  EXPECT_NE(detailOf(session).find("groups=\"cvp-group-b,cvp-group-c\""), std::string::npos) << detailOf(session);
+  EXPECT_NE(detailOf(session).find(" instance=2 "), std::string::npos) << detailOf(session);
+
+  // Clearing the group goes back to libNDI's default and is a change too.
+  settings.ndiGroup.clear();
+  frame.frameNumber = 4;
+  session = sender->sync({"ndi"}, &frame, 133.2, {settings});
+  EXPECT_NE(detailOf(session).find("groups=\"\""), std::string::npos) << detailOf(session);
+  EXPECT_NE(detailOf(session).find(" instance=3 "), std::string::npos) << detailOf(session);
+
+  sender->sync({}, nullptr, 200);
+#endif
+}

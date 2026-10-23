@@ -114,7 +114,6 @@ public sealed class NativeMediaCoreStateMapperTests
                         Status = "live",
                         FramesSent = 12,
                         RetryCount = 0,
-                        LatencyMs = 2100,
                         BitrateMbps = 6
                     }
                 ]
@@ -211,7 +210,6 @@ public sealed class NativeMediaCoreStateMapperTests
                         Status = "failed",
                         FramesSent = 0,
                         RetryCount = 0,
-                        LatencyMs = 0,
                         BitrateMbps = 6,
                         LastError = "Failed to start FFmpeg process. Win32 error 2."
                     }
@@ -243,7 +241,6 @@ public sealed class NativeMediaCoreStateMapperTests
                         Status = "warning",
                         FramesSent = 0,
                         RetryCount = 0,
-                        LatencyMs = 0,
                         BitrateMbps = 0,
                         LastResultCode = "ndi-output-unavailable",
                         RuntimeDetail = "LibNDI runtime-missing on this machine."
@@ -361,9 +358,7 @@ public sealed class NativeMediaCoreStateMapperTests
                     Text = "Welcome to the webinar.",
                     Speaker = "Sophia Martinez",
                     AtMs = 2800,
-                    Confidence = 95
                 },
-                LatencyMs = 180,
                 Warnings = []
             },
             OverlayState = new NativeMediaCoreOverlayState
@@ -852,5 +847,64 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal("starting", snapshot.OutputHealth.Single(health => health.Destination == "rtmp").Status);
         Assert.False(LiveProductionSync.IsStreamingLive(snapshot));
         Assert.DoesNotContain("Live", MediaCoreBridgeService.SummarizeOutputs(snapshot), StringComparison.Ordinal);
+    }
+
+    // #761: the core's director recommendation is a snapshot node. It was never bound to the
+    // wire state, so Set & Forget and Magic Scene only ever saw the shell's count-only fallback
+    // (empty SlotBindings) and never acted on a real core.
+    [Fact]
+    public void AutoProductionFromARealCoreStateReachesTheSnapshotWithItsSlotBindings()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"autoProduction":{"ruleId":"focused-interview","recommendedSceneId":"interview","confidence":92,"rationale":"Two guests on camera.","slotBindings":[{"slotIndex":0,"personId":"guest-7","sourceId":"zoom:guest-7"},{"slotIndex":1,"personId":"guest-8","sourceId":"zoom:guest-8"}]}}""");
+
+        var recommendation = Assert.IsType<NativeMediaCoreAutoProduction>(snapshot.AutoProduction);
+        Assert.Equal("focused-interview", recommendation.RuleId);
+        Assert.Equal("interview", recommendation.RecommendedSceneId);
+        Assert.Equal(92, recommendation.Confidence);
+        Assert.Equal("Two guests on camera.", recommendation.Rationale);
+        Assert.Equal(["guest-7", "guest-8"], recommendation.SlotBindings.Select(binding => binding.PersonId).ToArray());
+        Assert.Equal(["zoom:guest-7", "zoom:guest-8"], recommendation.SlotBindings.Select(binding => binding.SourceId).ToArray());
+        Assert.Equal([0, 1], recommendation.SlotBindings.Select(binding => binding.SlotIndex).ToArray());
+    }
+
+    [Fact]
+    public void AStateWithNoAutoProductionNodeLeavesTheRecommendationAbsent()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null}""");
+
+        Assert.Null(snapshot.AutoProduction);
+    }
+
+    // #766: the core publishes rosterEpoch/rosterRevision at the top of every state. They were
+    // never bound, so each sync reached ZoomRosterSnapshotPolicy with no epoch, was rejected
+    // against the capture-merged barrier, and RosterStaleSnapshots climbed ~4/s.
+    [Fact]
+    public void TheRosterFactFromARealCoreStateReachesTheSnapshot()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"meetingState":"in_meeting","rosterEpoch":"3:2:abc","rosterRevision":7,"participants":[{"userId":"42","displayName":"Guest"}]}""");
+
+        Assert.Equal("3:2:abc", snapshot.RosterEpoch);
+        Assert.Equal(7, snapshot.RosterRevision);
+        Assert.True(ZoomRosterSnapshotPolicy.HasRosterFact(snapshot.RosterEpoch, snapshot.RosterRevision));
+        Assert.True(ZoomRosterSnapshotPolicy.Accept(
+            new NativeMediaCoreStateSnapshot { RosterEpoch = "3:2:abc", RosterRevision = 7 },
+            snapshot.RosterEpoch, snapshot.RosterRevision));
+    }
+
+    // Revision 0 is the engine saying "no roster yet for this epoch": the snapshot carries
+    // Program/output truth but no roster fact, so it is neither a barrier nor a stale snapshot.
+    [Fact]
+    public void ARevisionZeroStateCarriesNoRosterFact()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"meetingState":"idle","rosterEpoch":"4:0:abc","rosterRevision":0}""");
+
+        Assert.Equal("4:0:abc", snapshot.RosterEpoch);
+        Assert.Equal(0, snapshot.RosterRevision);
+        Assert.False(ZoomRosterSnapshotPolicy.HasRosterFact(snapshot.RosterEpoch, snapshot.RosterRevision));
+        Assert.False(ZoomRosterSnapshotPolicy.HasRosterFact(null, 5));
+
+        var idle = MapJson("""{"health":{"frameCount":12},"profile":null}""");
+        Assert.Null(idle.RosterEpoch);
+        Assert.Equal(0, idle.RosterRevision);
     }
 }

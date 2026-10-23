@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #if defined(_WIN32) && COREVIDEO_WITH_WGC
 #include "modules/D3DCaptureCpuBranch.h"
+#include "modules/DeferredCaptureGpuCopy.h"
 #include <future>
 
 namespace {
@@ -41,6 +42,48 @@ bool submitPrepared(D3DCaptureCpuBranch& cpu, ID3D11DeviceContext* context,
   } while (std::chrono::steady_clock::now() < deadline);
   return false;
 }
+}
+
+TEST(DeferredCaptureGpuCopy, DeferredGpuPixelsSurviveSourceReplacementAndPublishOnce) {
+  Rig rig; ASSERT_TRUE(rig.start());
+  auto consumer = D3DVideoConsumers::add(rig.reader.Get()); ASSERT_NE(consumer, nullptr);
+  D3DVideoFramePool pool; ASSERT_TRUE(pool.initialize(rig.producer.Get(), 32, 32, 1));
+  auto source = rig.image(32, 32), readback = rig.image(32, 32, true);
+  ASSERT_NE(source, nullptr); ASSERT_NE(readback, nullptr);
+  std::vector<uint8_t> bytes(32 * 32 * 4, 213);
+  rig.capture->UpdateSubresource(source.Get(), 0, nullptr, bytes.data(), 128, 0);
+  const int slot = pool.beginCopy(rig.capture.Get(), source.Get()); ASSERT_GE(slot, 0);
+  DeferredCaptureGpuCopy deferred;
+  ASSERT_TRUE(deferred.defer({13473, 800000, 7, 32, 32, slot, -1}));
+  bool allowCompletion = false; int published = 0;
+  auto ready = [&](int exactSlot) -> std::shared_ptr<const GpuVideoFrame> {
+    EXPECT_EQ(exactSlot, slot);
+    return allowCompletion ? pool.completed(rig.capture.Get(), exactSlot) : nullptr;
+  };
+  auto publish = [&](const auto& copy, auto gpu) {
+    EXPECT_EQ(copy.sequence, 13473); EXPECT_EQ(copy.epoch, 7u);
+    EXPECT_EQ(copy.capture100ns, 800000);
+    auto image = std::dynamic_pointer_cast<const D3DVideoImage>(gpu); ASSERT_NE(image, nullptr);
+    const auto* view = image->view(consumer->id); ASSERT_NE(view, nullptr);
+    rig.read->CopyResource(readback.Get(), view->texture.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    ASSERT_EQ(rig.read->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &mapped), S_OK);
+    const auto pixel = static_cast<const uint8_t*>(mapped.pData)[0];
+    rig.read->Unmap(readback.Get(), 0); EXPECT_EQ(pixel, 213u); ++published;
+  };
+  EXPECT_FALSE(deferred.poll(ready, publish));
+  // Later source content cannot relabel or replace the already submitted copy.
+  std::fill(bytes.begin(), bytes.end(), 42);
+  rig.capture->UpdateSubresource(source.Get(), 0, nullptr, bytes.data(), 128, 0);
+  EXPECT_FALSE(deferred.defer({13474, 900000, 7, 32, 32, slot, -1}));
+  rig.capture->Flush(); allowCompletion = true;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (deferred.pending() && std::chrono::steady_clock::now() < deadline) {
+    deferred.poll(ready, publish);
+    if (deferred.pending()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_FALSE(deferred.pending()); EXPECT_EQ(published, 1);
+  EXPECT_FALSE(deferred.poll(ready, publish)); EXPECT_EQ(published, 1);
 }
 
 TEST(D3DCaptureCpuBranch, HeldConversionCannotRetainProductionSlotsOrRelabelPixels) {

@@ -82,8 +82,6 @@ public sealed record SupportBundleMediaCore
     public required SupportBundleMediaCoreAudio Audio { get; init; }
     public required SupportBundleMediaCoreSenders Senders { get; init; }
     public SupportBundleMediaCoreRecording? Recording { get; init; }
-    public IReadOnlyList<SupportBundleOperatorAction> OperatorActions { get; init; } = [];
-    public IReadOnlyList<SupportBundleEvent> EventLog { get; init; } = [];
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
@@ -93,7 +91,6 @@ public sealed record SupportBundleMediaCoreSource
     public required string Kind { get; init; }
     public required string Status { get; init; }
     public int SubscribedSourceCount { get; init; }
-    public int DeliveredFrameCount { get; init; }
     public int LiveFrameCount { get; init; }
     public int StaleFrameCount { get; init; }
     public required string Backing { get; init; }
@@ -236,7 +233,6 @@ public sealed record SupportBundleMediaCoreSender
     public int? LastFrameNumber { get; init; }
     public int FramesSent { get; init; }
     public int RetryCount { get; init; }
-    public double LatencyMs { get; init; }
     public double BitrateMbps { get; init; }
     public long AudioFramesSent { get; init; }
     public long AudioBytesSent { get; init; }
@@ -315,27 +311,4 @@ public sealed record SupportBundleMediaCoreRecordingStream
     /// <summary>True when this ISO carries an audio track (a paired capture mic / Zoom stem).</summary>
     public bool HasAudio { get; init; }
     public string? Warning { get; init; }
-}
-
-public sealed record SupportBundleOperatorAction
-{
-    public required string ActionId { get; init; }
-    public required string Severity { get; init; }
-    public required string Area { get; init; }
-    public required string Title { get; init; }
-    public required string Detail { get; init; }
-    public string? Command { get; init; }
-    public string? RelatedId { get; init; }
-}
-
-public sealed record SupportBundleEvent
-{
-    public required string EventId { get; init; }
-    public double AtMs { get; init; }
-    public required string Severity { get; init; }
-    public required string Area { get; init; }
-    public required string Title { get; init; }
-    public required string Detail { get; init; }
-    public string? RelatedId { get; init; }
-    public string? CommandType { get; init; }
 }

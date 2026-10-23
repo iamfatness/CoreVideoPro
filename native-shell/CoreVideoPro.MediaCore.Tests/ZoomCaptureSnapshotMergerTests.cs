@@ -109,8 +109,40 @@ public sealed class ZoomCaptureSnapshotMergerTests
         Assert.Equal("operator-1", merged.ActiveSpeakerId);
         Assert.Equal(2, merged.Participants.Count);
         Assert.Equal("operator-1", merged.Participants[0].UserId);
-        Assert.Equal("subscribed", merged.SourceSnapshot.Status);
+        // #766: two participants are a roster, not two subscribed feeds or two live frames.
+        Assert.Equal("joined", merged.SourceSnapshot.Status);
         Assert.Equal("zoom-sdk", merged.SourceSnapshot.Kind);
+        Assert.Equal(0, merged.SourceSnapshot.SubscribedSourceCount);
+        Assert.Equal(0, merged.SourceSnapshot.LiveFrameCount);
+        Assert.Null(merged.SourceSnapshot.LastFrameTimestampMs);
+    }
+
+    [Fact]
+    public void MergeKeepsTheSpinesProvenFeedCountsWhileInMeetingAndClearsThemOnLeave()
+    {
+        var proven = new NativeMediaCoreStateSnapshot() with
+        {
+            MeetingState = "in_meeting",
+            SourceSnapshot = new NativeMediaCoreFrameSourceSnapshot
+            {
+                AdapterId = "zoom-engine", Kind = "zoom-sdk", Status = "subscribed",
+                SubscribedSourceCount = 1, LiveFrameCount = 40, LastFrameTimestampMs = 5000
+            }
+        };
+        var still = ZoomCaptureSnapshotMerger.Merge(proven, new RawCaptureSnapshot
+        {
+            MeetingState = "in_meeting",
+            Participants = [new RawParticipantEvent { UserId = "a", DisplayName = "A" }, new RawParticipantEvent { UserId = "b", DisplayName = "B" }]
+        });
+        Assert.Equal("subscribed", still.SourceSnapshot.Status);
+        Assert.Equal(1, still.SourceSnapshot.SubscribedSourceCount);
+        Assert.Equal(40, still.SourceSnapshot.LiveFrameCount);
+        Assert.Equal(5000, still.SourceSnapshot.LastFrameTimestampMs);
+
+        var left = ZoomCaptureSnapshotMerger.Merge(still, new RawCaptureSnapshot { MeetingState = "idle", Participants = [] });
+        Assert.Equal("idle", left.SourceSnapshot.Status);
+        Assert.Equal(0, left.SourceSnapshot.SubscribedSourceCount);
+        Assert.Equal(0, left.SourceSnapshot.LiveFrameCount);
     }
 
     [Fact]

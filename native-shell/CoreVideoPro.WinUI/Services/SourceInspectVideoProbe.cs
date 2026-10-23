@@ -127,6 +127,11 @@ internal sealed partial class SourceInspectVideoProbe(string reportPath, string?
             var idleFrames = inspector.PresentedFramesForProbe - idleStart;
             samples.Add(new { continuity = "idle UI with independent producer", durationMs = 2200, presented = idleFrames });
             if (idleFrames < 20) throw new InvalidOperationException("Inspect presentation stopped when UI was idle: " + idleFrames + " frames in 2200ms");
+            var queue = JsonSerializer.SerializeToElement(previewAlias.DiagnosticsForProbe);
+            if (!queue.TryGetProperty("backend", out var backend) || backend.GetString() != "native-independent" ||
+                queue.GetProperty("bufferCount").GetUInt32() != 3 || queue.GetProperty("frameLatencyLimit").GetUInt32() != 2)
+                throw new InvalidOperationException("Native video chain lacks its three-buffer/two-credit configuration");
+            samples.Add(new { presentationQueue = queue });
             var blockedStart = inspector.PresentedFramesForProbe;
             var aliasStart = previewAlias.PresentedFramesForProbe;
             // Deliberately occupy XAML while the independent GPU producer keeps running.
@@ -138,6 +143,16 @@ internal sealed partial class SourceInspectVideoProbe(string reportPath, string?
                 presented = blockedFrames, previewPresented = aliasFrames });
             if (blockedFrames < 20 || aliasFrames < 20)
                 throw new InvalidOperationException("Video presentation depended on UI callbacks during a 750ms stall");
+            var controlStart = inspector.PresentedFramesForProbe;
+            var controlAliasStart = previewAlias.PresentedFramesForProbe;
+            VideoSurfaceRenderPresenter.PauseControlPollingForProbe(750);
+            Thread.Sleep(750); // Producer continues; managed render-control threads cannot pump.
+            var independentFrames = inspector.PresentedFramesForProbe - controlStart;
+            var independentAliasFrames = previewAlias.PresentedFramesForProbe - controlAliasStart;
+            samples.Add(new { continuity = "managed render control paused; independent presentation required",
+                durationMs = 750, presented = independentFrames, previewPresented = independentAliasFrames });
+            if (independentFrames < 20 || independentAliasFrames < 20)
+                throw new InvalidOperationException("Monitor cadence still depends on managed render-control polling");
             for (var i = 0; i < 20; i++)
             {
                 var startCount = inspector.PresentedFramesForProbe;

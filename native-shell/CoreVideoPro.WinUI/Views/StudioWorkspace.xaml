@@ -826,7 +826,7 @@
             <cvcontrols:StudioFooterLayoutPanel>
 
                 <!-- Left: Magic Scene + Set & Forget -->
-                <StackPanel x:Name="FooterAutomation" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <StackPanel x:Name="FooterAutomation" Orientation="Horizontal" Spacing="10" VerticalAlignment="Top">
                     <Button Style="{StaticResource MagicSceneButton}" Width="128"
                             Command="{x:Bind ViewModel.RunMagicSceneCommand}"
                             IsEnabled="{x:Bind ViewModel.Transport.MagicSceneEnabled, Mode=OneWay}">
@@ -841,7 +841,6 @@
 
                     <Button Style="{StaticResource AutomationToggleButton}" Width="190"
                             Command="{x:Bind ViewModel.ToggleAutomationCommand}"
-                            IsEnabled="{x:Bind ViewModel.Transport.SetAndForgetCanToggle, Mode=OneWay}"
                             Background="{x:Bind ViewModel.Transport.SetAndForgetButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.Transport.SetAndForgetButtonBorder, Mode=OneWay}">
                         <StackPanel Orientation="Horizontal" Spacing="10">
@@ -906,24 +905,15 @@
                                         <TextBlock Text="{x:Bind ViewModel.LowerThirdKeyStatus, Mode=OneWay}"
                                                    FontSize="12"
                                                    Foreground="{StaticResource StudioMutedBrush}" />
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel Spacing="4">
-                                                <TextBlock Text="Position" FontSize="11" />
-                                                <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.LowerThirdPositionOptions, Mode=OneWay}"
-                                                          SelectedItem="{x:Bind ViewModel.Overlays.LowerThirdPosition, Mode=TwoWay}"
-                                                          HorizontalAlignment="Stretch" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Column="1" Spacing="4">
-                                                <TextBlock Text="Style" FontSize="11" />
-                                                <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.BrandLowerThirdStyleOptions, Mode=OneWay}"
-                                                          SelectedItem="{x:Bind ViewModel.Overlays.BrandLowerThirdStyle, Mode=TwoWay}"
-                                                          HorizontalAlignment="Stretch" />
-                                            </StackPanel>
-                                        </Grid>
+                                        <!-- #764: the "Style" (solid/minimal/gradient) combo is gone; the core stored
+                                             the string and never read it. The look itself is the lower-third
+                                             appearance designer. -->
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Text="Position" FontSize="11" />
+                                            <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.LowerThirdPositionOptions, Mode=OneWay}"
+                                                      SelectedItem="{x:Bind ViewModel.Overlays.LowerThirdPosition, Mode=TwoWay}"
+                                                      HorizontalAlignment="Stretch" />
+                                        </StackPanel>
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
@@ -1008,50 +998,11 @@
 
                 </StackPanel>
 
-                <!-- Status has its own reserved row; content and error visibility cannot
-                     change the transport group's width or move an on-air control. -->
-                <Grid x:Name="FooterTransport" Width="718" RowSpacing="4"
-                      HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="28" />
-                        <RowDefinition Height="44" />
-                    </Grid.RowDefinitions>
-                    <Grid ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="80" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="{x:Bind ViewModel.OutputStatusBrief, Mode=OneWay}" VerticalAlignment="Center"
-                                   Foreground="{StaticResource StudioMutedBrush}" FontSize="11"
-                                   TextTrimming="CharacterEllipsis"
-                                   ToolTipService.ToolTip="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}" />
-                        <Button Grid.Column="1" Content="Details"
-                                AutomationProperties.Name="Output status details"
-                                Padding="8,4"
-                                MinWidth="0"
-                                MinHeight="0"
-                                FontSize="11"
-                                HorizontalAlignment="Stretch"
-                                Style="{StaticResource StudioGhostButton}">
-                            <Button.Flyout>
-                                <Flyout Placement="Top">
-                                    <StackPanel Width="420" MaxWidth="420" Spacing="8">
-                                        <TextBlock Text="Output status"
-                                                   FontSize="12"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{StaticResource StudioTextBrush}" />
-                                        <TextBlock Text="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}"
-                                                   TextWrapping="WrapWholeWords"
-                                                   IsTextSelectionEnabled="True"
-                                                   Foreground="{StaticResource StudioMutedBrush}" />
-                                    </StackPanel>
-                                </Flyout>
-                            </Button.Flyout>
-                        </Button>
-                    </Grid>
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8">
+                <!-- Keep all production actions on the same row and baseline. -->
+                <Grid x:Name="FooterTransport" Width="718" HorizontalAlignment="Center" VerticalAlignment="Top">
+                    <StackPanel x:Name="FooterOutputActions" Orientation="Horizontal" Spacing="8">
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                        <Button Style="{StaticResource TakeButton}" Width="122" MinHeight="40"
+                        <Button Style="{StaticResource TakeButton}" Width="122" MinHeight="48"
                                 CornerRadius="8,0,0,8"
                                 Command="{x:Bind ViewModel.TakeCommand}"
                                 IsEnabled="{x:Bind ViewModel.CanTake, Mode=OneWay}"
@@ -1065,7 +1016,7 @@
                                            VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
-                        <Button Style="{StaticResource TakeButton}" Width="34" MinHeight="40"
+                        <Button Style="{StaticResource TakeButton}" Width="34" MinHeight="48"
                             AutomationProperties.Name="Choose Take transition"
                                 Padding="0"
                                 CornerRadius="0,8,8,0"
@@ -1091,7 +1042,7 @@
                         </Button>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <Button Width="144" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button Width="144" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             AutomationProperties.Name="Record"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
@@ -1115,7 +1066,7 @@
                                        HorizontalAlignment="Center" />
                         </StackPanel>
                     </Button>
-                    <Button Width="30" MinHeight="44" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
+                    <Button Width="30" MinHeight="48" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
                             AutomationProperties.Name="Recording output options"
                             ToolTipService.ToolTip="Recording output options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
@@ -1248,7 +1199,7 @@
                     </Button>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <Button Width="144" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button Width="144" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="13" AutomationProperties.Name="Stream" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
@@ -1271,7 +1222,7 @@
                                        HorizontalAlignment="Center" />
                         </StackPanel>
                     </Button>
-                    <Button Width="30" MinHeight="44" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
+                    <Button Width="30" MinHeight="48" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
                             AutomationProperties.Name="Streaming output options"
                             ToolTipService.ToolTip="Streaming output options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
@@ -1367,7 +1318,7 @@
                     <!-- Virtual camera (virtual-camera-spec V4): output the program as a
                          system webcam Zoom/Teams/Meet can select. -->
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <ToggleButton Width="160" MinHeight="44" CornerRadius="8,0,0,8" Padding="12,4"
+                    <ToggleButton Width="160" MinHeight="48" CornerRadius="8,0,0,8" Padding="12,4"
                                   AutomationProperties.Name="Virtual camera"
                                   IsChecked="{x:Bind ViewModel.VirtualCameraEnabled, Mode=TwoWay}"
                                   ToolTipService.ToolTip="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}">
@@ -1382,7 +1333,7 @@
                         </StackPanel>
                     </ToggleButton>
                     <!-- V5: virtual camera options (mirror). -->
-                    <Button MinHeight="44" Width="30" CornerRadius="0,8,8,0" Padding="0" BorderThickness="1"
+                    <Button MinHeight="48" Width="30" CornerRadius="0,8,8,0" Padding="0" BorderThickness="1"
                              AutomationProperties.Name="Virtual camera options"
                              ToolTipService.ToolTip="Virtual camera options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
@@ -1420,12 +1371,29 @@
                 <ScrollViewer x:Name="FooterTelemetry" HorizontalScrollBarVisibility="Auto"
                               VerticalScrollBarVisibility="Disabled" VerticalAlignment="Center">
                     <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
-                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                            <cvcontrols:PulseDot Diameter="8" VerticalAlignment="Center"
-                                                 DotFill="{StaticResource StudioLiveBrush}" />
-                            <TextBlock Text="OUTPUTS" Style="{StaticResource StudioMonoTag}"
-                                       FontSize="11" Foreground="#8FDCC8" CharacterSpacing="60" />
-                        </StackPanel>
+                        <Button Content="Details"
+                                AutomationProperties.Name="Output status details"
+                                Padding="8,4"
+                                MinWidth="0"
+                                MinHeight="0"
+                                FontSize="11"
+                                HorizontalAlignment="Stretch"
+                                Style="{StaticResource StudioGhostButton}">
+                            <Button.Flyout>
+                                <Flyout Placement="Top">
+                                    <StackPanel Width="420" MaxWidth="420" Spacing="8">
+                                        <TextBlock Text="Output status"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource StudioTextBrush}" />
+                                        <TextBlock Text="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}"
+                                                   TextWrapping="WrapWholeWords"
+                                                   IsTextSelectionEnabled="True"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                    </StackPanel>
+                                </Flyout>
+                            </Button.Flyout>
+                        </Button>
 
                         <StackPanel Spacing="2" Width="96">
                             <TextBlock Text="PROGRAM" Style="{StaticResource OutputStatLabel}" />
@@ -1437,7 +1405,7 @@
                                        Foreground="{x:Bind ViewModel.Transport.ProgramStatHealthBrush, Mode=OneWay}" />
                         </StackPanel>
 
-                        <StackPanel Spacing="2" Width="110">
+                        <StackPanel Spacing="2" Width="110" ToolTipService.ToolTip="Total frames reported by streaming destinations. Playback at the receiver is not verified.">
                             <TextBlock Text="STREAM" Style="{StaticResource OutputStatLabel}" />
                             <TextBlock Text="{x:Bind ViewModel.Transport.StreamStatValue, Mode=OneWay}"
                                        Style="{StaticResource OutputStatValue}" />
@@ -1447,7 +1415,7 @@
                                        Foreground="{x:Bind ViewModel.Transport.StreamStatHealthBrush, Mode=OneWay}" />
                         </StackPanel>
 
-                        <StackPanel Spacing="2" Width="110">
+                        <StackPanel Spacing="2" Width="110" ToolTipService.ToolTip="Frames written in the current or most recent recording session.">
                             <TextBlock Text="RECORD" Style="{StaticResource OutputStatLabel}" />
                             <TextBlock Text="{x:Bind ViewModel.Transport.RecordStatValue, Mode=OneWay}"
                                        Style="{StaticResource OutputStatValue}" />
@@ -1457,7 +1425,7 @@
                                        Foreground="{x:Bind ViewModel.Transport.RecordStatHealthBrush, Mode=OneWay}" />
                         </StackPanel>
 
-                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Top">
                             <StackPanel Spacing="2" Width="98">
                                 <TextBlock Text="FRAME DROPS" Style="{StaticResource OutputStatLabel}" />
                                 <TextBlock Text="{x:Bind ViewModel.Transport.FrameDropsLabel, Mode=OneWay}"
@@ -1465,7 +1433,7 @@
                             </StackPanel>
                             <StackPanel Spacing="2" Width="60"
                                         ToolTipService.ToolTip="Elapsed output session since recording or streaming first produced media. Includes retries; resets when all outputs end. Receiver playback is not verified.">
-                                <TextBlock Text="LIVE" Style="{StaticResource OutputStatLabel}" />
+                                <TextBlock Text="ELAPSED" Style="{StaticResource OutputStatLabel}" />
                                 <TextBlock Text="{x:Bind ViewModel.Transport.LiveClockLabel, Mode=OneWay}"
                                            Style="{StaticResource OutputStatValue}" />
                             </StackPanel>
@@ -1498,9 +1466,6 @@
                                                FontWeight="ExtraBold"
                                                Foreground="#8FDCC8"
                                                CharacterSpacing="60" />
-                                    <TextBlock Text="Program/master bus meter"
-                                               FontSize="10"
-                                               Foreground="{StaticResource StudioMutedBrush}" />
                                     <Grid ColumnSpacing="7">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="12" />
@@ -1534,15 +1499,12 @@
                                                FontSize="10"
                                                Foreground="{StaticResource StudioMutedBrush}"
                                                HorizontalAlignment="Right" />
+                                    <TextBlock Text="{x:Bind ViewModel.Transport.MasterVolumeLabel, Mode=OneWay}" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Right" />
                                 </StackPanel>
                             </Grid>
                         </Border>
 
-                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                            <FontIcon Glyph="&#xE767;" FontSize="16" Foreground="#C6D4CC" />
-                            <TextBlock Text="{x:Bind ViewModel.Transport.MasterVolumeLabel, Mode=OneWay}"
-                                       FontSize="12" FontWeight="Bold" Foreground="#C6D4CC" />
-                        </StackPanel>
+
                     </StackPanel>
                 </ScrollViewer>
             </cvcontrols:StudioFooterLayoutPanel>

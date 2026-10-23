@@ -22,7 +22,9 @@ public sealed partial class GraphicsWorkspaceControl
         _assignmentCaption = new() { FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis },
         _layerHeading = new() { Text = "LAYERS · top is front", FontSize = 11 };
     private readonly Dictionary<string, FrameworkElement> _toolPanels = new(StringComparer.Ordinal);
-    private readonly CheckBox _studioFollowSource = new() { Content = "Use each guest's name and title in Studio", IsChecked = true };
+    private readonly CheckBox _studioFollowSource = new() { Content = "Use the Program source name and title in Studio", IsChecked = true };
+    private readonly TextBlock _studioTextHelp = Copy("");
+    private readonly Button _editGuestText = ChromeButton("Edit source names in Sources →");
     private readonly TextBox _cueSearch = new() { PlaceholderText = "Find a cue" };
     private readonly TextBlock _cueRackTitle = new() { Text="Show cues", FontSize=16 };
     private readonly ComboBox _cueScopeFilter = new() { Header="Scope", ItemsSource=new[] {"All scenes","Current Program scene"}, SelectedIndex=0, HorizontalAlignment=HorizontalAlignment.Stretch };
@@ -42,6 +44,9 @@ public sealed partial class GraphicsWorkspaceControl
 
     private void BuildWorkspace()
     {
+        _studioFollowSource.Checked += (_, _) => RefreshStudioTextHelp();
+        _studioFollowSource.Unchecked += (_, _) => RefreshStudioTextHelp();
+        _editGuestText.Click += (_, _) => { RememberStarterEdits(); if (Studio is not null) Studio.ActiveTab = StudioTab.Sources; };
         _inspectorTarget = _contentControls;
         _body.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         _body.ColumnDefinitions.Add(new() { Width = new GridLength(270) });
@@ -115,6 +120,7 @@ public sealed partial class GraphicsWorkspaceControl
             if(_starterAdding || Studio is null)return;
             if(_activeStarter is not null)await AddStarterToShowAsync(useInStudio:true);
             else {
+                foreach (var binding in _textFields.ToArray()) binding.CommitPending();
                 var assigned=await Studio.AssignGraphicsLookToStudioAsync(_studioFollowSource.IsChecked==true);
                 _starterFeedback.Text=assigned?"Look assigned. Go to Studio and use LT in when you want names on air.":Studio.GraphicsLibrary.Status;
                 Refresh();
@@ -203,6 +209,17 @@ public sealed partial class GraphicsWorkspaceControl
             (_activeStarter is not null ? _session is {Busy:false} : _session is { Busy: false, Selected: not null, Draft: not null, PreviewSample: "current" } && _session.Template?.Family == "lower-third");
         _goToStudioButton.Visibility=_activeStarter is null && Studio?.StudioLowerThird.Assignment is not null?Visibility.Visible:Visibility.Collapsed;
         ToolTipService.SetToolTip(_useInStudioButton,_activeStarter is not null?"Save the four graphics and assign the guest-introduction look to Studio. Nothing is shown on Program.":"Assign this draft to Studio's next LT in. Current Program is unchanged.");
+        RefreshStudioTextHelp();
+    }
+    private void RefreshStudioTextHelp()
+    {
+        var relevant = _activeStarter is not null || _session?.Template?.Family == "lower-third";
+        _studioFollowSource.Visibility = _studioTextHelp.Visibility = relevant ? Visibility.Visible : Visibility.Collapsed;
+        var follows = _studioFollowSource.IsChecked == true;
+        _studioTextHelp.Text = follows
+            ? "Each LT in uses the current Program source name and secondary line from Sources. The names here are private examples."
+            : "Studio will use this graphic's text, including the sample name until you edit it. It will not use the Program source text.";
+        _editGuestText.Visibility = relevant && follows ? Visibility.Visible : Visibility.Collapsed;
     }
     private void RefreshLayerList()
     {

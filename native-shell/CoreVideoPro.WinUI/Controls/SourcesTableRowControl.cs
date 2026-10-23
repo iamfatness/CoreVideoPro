@@ -51,12 +51,11 @@ internal sealed class SourcesTableRowControl : StackPanel, IDisposable
         var status = Text(""); Bind(status, TextBlock.TextProperty, input, "Inspector.StatusChipLabel");
         var statusChip = new Border { Child = status, CornerRadius = new(3), Padding = new(5, 3, 5, 3), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
         Bind(statusChip, Border.BackgroundProperty, input, "Inspector.StatusBackgroundBrush");
+        // #765: no level bar here. It was fed from the roster's audioLevel, which the core
+        // no longer invents; the measured per-channel meters live on the Audio page.
         var audio = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        var meter = new Border { Height = 7, Width = 80, Background = Brush(43, 59, 69), HorizontalAlignment = HorizontalAlignment.Left };
-        var level = new Rectangle { Height = 7, Fill = Brush(114, 217, 170), HorizontalAlignment = HorizontalAlignment.Left };
-        Bind(level, FrameworkElement.WidthProperty, input, "Inspector.MeterWidth"); meter.Child = level;
         var audioLabel = Text(""); audioLabel.FontSize = 10;
-        Bind(audioLabel, TextBlock.TextProperty, input, "AudioSummary"); audio.Children.Add(meter); audio.Children.Add(audioLabel);
+        Bind(audioLabel, TextBlock.TextProperty, input, "AudioSummary"); audio.Children.Add(audioLabel);
         var mv = new CheckBox { MinWidth = 0, Padding = new(0), VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetName(mv, $"Input {input.SlotNumber} in Multiview");
         Bind(mv, CheckBox.IsCheckedProperty, input, "InShow", BindingMode.TwoWay);

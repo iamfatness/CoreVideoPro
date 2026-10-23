@@ -162,13 +162,28 @@ namespace {
 // Point the adapter's host resolution at a nonexistent exe so tests exercise the
 // loud spawn-failure path instead of launching real WebView2 processes (the dev
 // build stages corevideo-browser-host.exe right next to the test binary).
-void pinNonexistentHostExe() {
+struct NonexistentHostExe {
+  std::string previous;
+  bool hadValue = false;
+  NonexistentHostExe() {
+    if (const char* value = std::getenv("COREVIDEO_BROWSER_HOST_PATH")) {
+      previous = value; hadValue = true;
+    }
 #ifdef _WIN32
   _putenv_s("COREVIDEO_BROWSER_HOST_PATH", "C:\\nonexistent\\corevideo-browser-host.exe");
 #else
   setenv("COREVIDEO_BROWSER_HOST_PATH", "/nonexistent/corevideo-browser-host", 1);
 #endif
-}
+  }
+  ~NonexistentHostExe() {
+#ifdef _WIN32
+    _putenv_s("COREVIDEO_BROWSER_HOST_PATH", previous.c_str());
+#else
+    if (hadValue) setenv("COREVIDEO_BROWSER_HOST_PATH", previous.c_str(), 1);
+    else unsetenv("COREVIDEO_BROWSER_HOST_PATH");
+#endif
+  }
+};
 
 const Json* findBrowserSource(const Json& snapshot, const std::string& id) {
   const Json* sources = snapshot.get("browserSources");
@@ -186,7 +201,7 @@ const Json* findBrowserSource(const Json& snapshot, const std::string& id) {
 }  // namespace
 
 TEST(MediaCoreBrowserCommands, AddSurfacesSourceInSnapshotAndCaptureDevices) {
-  pinNonexistentHostExe();
+  const NonexistentHostExe pinnedHost;
   MediaCore core(corevideo::modules::createStubModules());
   const Json snapshot = core.applyCommand(Json::Object{
       {"type", "browser-add"},
@@ -222,7 +237,7 @@ TEST(MediaCoreBrowserCommands, AddSurfacesSourceInSnapshotAndCaptureDevices) {
 }
 
 TEST(MediaCoreBrowserCommands, RejectsInvalidUrlWithoutCreatingASource) {
-  pinNonexistentHostExe();
+  const NonexistentHostExe pinnedHost;
   MediaCore core(corevideo::modules::createStubModules());
   const Json snapshot = core.applyCommand(Json::Object{
       {"type", "browser-add"},
@@ -234,7 +249,7 @@ TEST(MediaCoreBrowserCommands, RejectsInvalidUrlWithoutCreatingASource) {
 }
 
 TEST(MediaCoreBrowserCommands, RemoveDeletesTheSource) {
-  pinNonexistentHostExe();
+  const NonexistentHostExe pinnedHost;
   MediaCore core(corevideo::modules::createStubModules());
   (void)core.applyCommand(Json::Object{
       {"type", "browser-add"},
@@ -248,7 +263,7 @@ TEST(MediaCoreBrowserCommands, RemoveDeletesTheSource) {
 }
 
 TEST(MediaCoreBrowserCommands, AddDefaultsTo1080p30) {
-  pinNonexistentHostExe();
+  const NonexistentHostExe pinnedHost;
   MediaCore core(corevideo::modules::createStubModules());
   const Json snapshot = core.applyCommand(Json::Object{
       {"type", "browser-add"},

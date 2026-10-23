@@ -369,19 +369,6 @@ bool isNetworkDestination(const std::string& destination) {
   return destination == "rtmp" || destination == "ndi" || destination == "srt" || destination == "webrtc";
 }
 
-int latencyFor(const std::string& destination) {
-  if (destination == "ndi") {
-    return 80;
-  }
-  if (destination == "webrtc") {
-    return 220;
-  }
-  if (destination == "srt") {
-    return 420;
-  }
-  return 2100;
-}
-
 double bitrateFor(const std::string& destination) {
   if (destination == "ndi") {
     return 9.6;
@@ -433,7 +420,6 @@ class SyntheticOutputSender final : public IOutputSender {
         sender.senderId = destination + ":program";
         sender.destination = destination;
         sender.startedAtMs = elapsedMs;
-        sender.latencyMs = latencyFor(destination);
         sender.bitrateMbps = bitrateFor(destination);
         sender.destinationHealth = "starting";
         sender.lastResultCode = "waiting-for-frame";
@@ -495,7 +481,6 @@ class SyntheticOutputSender final : public IOutputSender {
     if (sender.senderId.empty()) {
       sender.senderId = destination + ":program";
       sender.destination = destination;
-      sender.latencyMs = latencyFor(destination);
       sender.bitrateMbps = 0;
     }
     sender.status = "failed";
@@ -516,7 +501,6 @@ class SyntheticOutputSender final : public IOutputSender {
     if (sender.senderId.empty()) {
       sender.senderId = destination + ":program";
       sender.destination = destination;
-      sender.latencyMs = latencyFor(destination);
       sender.bitrateMbps = bitrateFor(destination);
     }
     sender.status = "starting";

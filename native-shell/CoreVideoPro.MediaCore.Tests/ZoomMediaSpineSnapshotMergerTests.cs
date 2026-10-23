@@ -7,6 +7,46 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class ZoomMediaSpineSnapshotMergerTests
 {
     [Fact]
+    public void EngineCaptureFactsSurviveOrdinaryPollsAndFollowStartStopWithoutRosterChanges()
+    {
+        NativeMediaCoreStateSnapshot? state = null;
+        foreach (var active in new[] { false, true, false, true })
+        {
+            using var response = System.Text.Json.JsonDocument.Parse(
+                "{\"ok\":true,\"type\":\"zoom-media-spine-sync\",\"spineSnapshot\":{" +
+                "\"meetingState\":\"in-meeting\",\"rosterEpoch\":\"1:1:test\",\"rosterRevision\":2," +
+                "\"rawMediaActive\":" + (active ? "true" : "false") + "}}");
+            var fact = CoreProtocolParser.TryParseZoomMediaSpineSnapshot(response)!;
+            state = ZoomMediaSpineSnapshotMerger.Merge(state, fact);
+            Assert.Equal(active, state.RawMediaActive);
+            var poll = new NativeMediaCoreStateSnapshot
+            {
+                MeetingState = "in_meeting", RosterEpoch = "1:1:test", RosterRevision = 2
+            };
+            state = ZoomMediaSpineSnapshotMerger.CarrySubscriptions(state, poll);
+            Assert.Equal(active, state.RawMediaActive);
+            Assert.Equal(!active, IsoCapturePreflight.Describe(true, 7, state.RawMediaActive) is not null);
+        }
+        var rejoined = new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:2:test", RosterRevision = 1
+        };
+        Assert.Null(ZoomMediaSpineSnapshotMerger.CarrySubscriptions(state, rejoined).RawMediaActive);
+        Assert.Null(ZoomMediaSpineSnapshotMerger.CarrySubscriptions(state,
+            new NativeMediaCoreStateSnapshot { MeetingState = "idle", RosterEpoch = "1:1:test", RosterRevision = 3 }).RawMediaActive);
+        var confirmedOff = state! with { RawMediaActive = false, RosterRevision = 3 };
+        var staleOn = state with { RawMediaActive = true, RosterRevision = 2 };
+        Assert.False(ZoomMediaSpineSnapshotMerger.CarrySubscriptions(confirmedOff, staleOn).RawMediaActive);
+        Assert.Same(confirmedOff, ZoomMediaSpineSnapshotMerger.Merge(confirmedOff,
+            new ZoomMediaSpineNativeSnapshot
+            {
+                MeetingState = "in-meeting", RosterEpoch = "1:1:test", RosterRevision = 2, RawMediaActive = true
+            }));
+        Assert.Null(ZoomMediaSpineSnapshotMerger.Merge(null,
+            new ZoomMediaSpineNativeSnapshot { MeetingState = "in-meeting" }).RawMediaActive);
+    }
+
+    [Fact]
     public void MergeNormalizesMeetingStateAndParticipants()
     {
         var spine = new ZoomMediaSpineNativeSnapshot
@@ -112,5 +152,74 @@ public sealed class ZoomMediaSpineSnapshotMergerTests
         Assert.Empty(ZoomMediaSpineSnapshotMerger.CarrySubscriptions(older, left).ZoomSubscriptions);
 
         Assert.Empty(ZoomMediaSpineSnapshotMerger.CarrySubscriptions(null, left).ZoomSubscriptions);
+    }
+
+    // #766: the Settings "Feeds" row read idle/subscribed alternately because each sync
+    // snapshot starts from the neutral source row and each spine merge restored it.
+    [Fact]
+    public void CarrySubscriptionsKeepsTheSourceRowWithTheSpineEvidence()
+    {
+        var withEvidence = new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting",
+            SourceSnapshot = new NativeMediaCoreFrameSourceSnapshot
+            {
+                AdapterId = "zoom-engine", Kind = "zoom-sdk", Status = "subscribed",
+                SubscribedSourceCount = 1, LiveFrameCount = 77
+            },
+            ZoomSubscriptions = [new ZoomMediaSpineSubscription { ParticipantId = "1", Kind = "participant-video", FramesReceived = 77 }]
+        };
+        var syncWithoutEvidence = new NativeMediaCoreStateSnapshot { MeetingState = "in_meeting" };
+
+        var carried = ZoomMediaSpineSnapshotMerger.CarrySubscriptions(withEvidence, syncWithoutEvidence);
+
+        Assert.Equal("subscribed", carried.SourceSnapshot.Status);
+        Assert.Equal(77, carried.SourceSnapshot.LiveFrameCount);
+        Assert.Equal(77, carried.Diagnostics.SourceSnapshot.LiveFrameCount);
+    }
+
+    // A sync that carries no roster fact (revision 0) after a barrier is installed keeps the
+    // installed roster: it is not stale, it just says nothing about the roster.
+    [Fact]
+    public void ARevisionZeroSyncAfterABarrierKeepsTheInstalledRoster()
+    {
+        var installed = new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:1:engine", RosterRevision = 3,
+            Participants = [new RawParticipantEvent { UserId = "42", DisplayName = "Guest" }]
+        };
+        var noFact = new NativeMediaCoreStateSnapshot { MeetingState = "in_meeting", RosterEpoch = "1:1:engine", RosterRevision = 0 };
+
+        var carried = ZoomMediaSpineSnapshotMerger.CarrySubscriptions(installed, noFact);
+
+        Assert.False(ZoomRosterSnapshotPolicy.HasRosterFact(noFact.RosterEpoch, noFact.RosterRevision));
+        Assert.Equal(3, carried.RosterRevision);
+        Assert.Single(carried.Participants);
+    }
+
+    [Fact]
+    public void SpineMergeReportsJoinedUntilAFeedIsSubscribed()
+    {
+        var spine = new ZoomMediaSpineNativeSnapshot
+        {
+            MeetingState = "in-meeting", RosterEpoch = "1:1:engine", RosterRevision = 1,
+            ParticipantCount = 1,
+            Participants = [new ZoomMediaSpineParticipant { SdkUserId = "1", DisplayName = "A" }],
+            Subscriptions = []
+        };
+        var merged = ZoomMediaSpineSnapshotMerger.Merge(null, spine);
+        Assert.Equal("joined", merged.SourceSnapshot.Status);
+        Assert.Equal(0, merged.SourceSnapshot.SubscribedSourceCount);
+
+        var subscribed = ZoomMediaSpineSnapshotMerger.Merge(merged, new ZoomMediaSpineNativeSnapshot
+        {
+            MeetingState = "in-meeting", RosterEpoch = "1:1:engine", RosterRevision = 1,
+            ParticipantCount = 1,
+            Participants = [new ZoomMediaSpineParticipant { SdkUserId = "1", DisplayName = "A" }],
+            Subscriptions = [new ZoomMediaSpineSubscription { ParticipantId = "1", Kind = "participant-video", Status = "subscribed", FramesReceived = 4 }]
+        });
+        Assert.Equal("subscribed", subscribed.SourceSnapshot.Status);
+        Assert.Equal(1, subscribed.SourceSnapshot.SubscribedSourceCount);
+        Assert.Equal(4, subscribed.SourceSnapshot.LiveFrameCount);
     }
 }

@@ -17,6 +17,7 @@
 #include "modules/VirtualCameraShm.h"
 #include "modules/VirtualCameraDeliveryEvidence.h"
 #include "modules/VirtualCameraCorrelationMapping.h"
+#include "modules/VirtualCameraHistory.h"
 #include "VcamLog.h"
 
 namespace corevideo::virtualcam {
@@ -71,6 +72,7 @@ class SharedFrameReader {
   }
 
   void close() {
+    history_.close();
     correlation_.close();
     evidence_.programIdentityVerified = false;
     fileIdentityValid_ = false;
@@ -101,6 +103,16 @@ class SharedFrameReader {
     }
     if (header_->magic != kVirtualCameraMagic) {
       return miss(Result::Uninitialized);
+    }
+    if (fileIdentityValid_) {
+      if (const auto retained = history_.read(header_, fileIdentity_, volumeIdentity_, out, width, height, copyBudget, evidence_)) {
+        if (*retained == Result::Fresh) { unchangedStreak_ = 0; lastServedSeq_ = evidence_.lastSequence; return true; }
+        if (*retained == Result::Unchanged && allowReopen && ++unchangedStreak_ >= kReopenAfterUnchangedReads) {
+          unchangedStreak_ = 0; close();
+          return readLatest(out, width, height, false, copyBudget);
+        }
+        return false;
+      }
     }
     // No NEW frame since the last successful read: skip the 3MB copy entirely and let
     // the caller re-serve its held frame. The DLL asks at the sink's cadence (60/s)
@@ -185,6 +197,7 @@ class SharedFrameReader {
  private:
   corevideo::modules::VirtualCameraReadEvidence evidence_;
   corevideo::modules::VirtualCameraCorrelationMapping correlation_;
+  corevideo::modules::VirtualCameraHistoryReader history_;
   uint64_t fileIdentity_ = 0;
   uint32_t volumeIdentity_ = 0;
   bool fileIdentityValid_ = false;

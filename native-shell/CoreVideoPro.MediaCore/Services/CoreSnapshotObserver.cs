@@ -101,9 +101,13 @@ public static class CoreSnapshotObserver
         "pwd", "authorization", "auth", "signature", "sig"
     };
 
-    internal static bool IsSecretName(string name) =>
-        SecretNames.Contains(name) ||
-        SecretNameSuffixes.Any(suffix => name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+    internal static bool IsSecretName(string name)
+    {
+        if (SecretNames.Contains(name)) return true;
+        foreach (var suffix in SecretNameSuffixes)
+            if (name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
 
     /// <summary>Rewrites the document with every string value filtered and every secret-named
     /// value dropped. Structure, numbers and booleans are untouched — a redacted snapshot must
@@ -120,7 +124,7 @@ public static class CoreSnapshotObserver
         return Encoding.UTF8.GetString(stream.ToArray());
     }
 
-    private static void WriteRedacted(JsonElement element, Utf8JsonWriter writer)
+    internal static void WriteRedacted(JsonElement element, Utf8JsonWriter writer)
     {
         switch (element.ValueKind)
         {

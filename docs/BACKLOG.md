@@ -1,5 +1,50 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 22 — credibility before the closed beta:** after the 30-minute outputs soak passed and beta-2026-10-22-f96a136 was published, the owner asked how far a public release is and chose to start on the credibility defects first: every panel, control or value is wired to something real or removed, never invented (rule in [honest-reporting](reference/honest-reporting.md)). Three lanes: shell [#1021](https://github.com/iamfatness/CoreVideoPro/pull/1021) (#767 #761 #766 #764), core [#1023](https://github.com/iamfatness/CoreVideoPro/pull/1023) (#765 #519 #763 #766 #764), services [#1020](https://github.com/iamfatness/CoreVideoPro/pull/1020) (#743). Merge #1021 before #1023. The public-release critical path stays tier 0 (#423 signing certificate, #424 Zoom SDK redistribution, #425 reference machines, #426 feedback channel, #427 rulings) and tier 2 plumbing (#433-#437); none of those are engineering-blocked.
+
+**Owner gate ruling, October 22 — release gate is outputs only:** Program recording, every ISO, the registered OS camera and any stream must deliver every source frame exactly once over the 30-minute workload (zero tolerance). The on-screen Studio cells are a UX metric judged by `scripts/qa/desktop-picture-cadence.py` v2 against a tolerance (no hold over 100 ms, omission ratio under 1 %), because Windows composes windowed surfaces at the beat between mixed-refresh monitors for every application; the app-less control reproduced the omission with the media core stopped. Qualify on the real mixed-refresh desk; never ask customers to match refresh rates. Retired: elevated PresentMon/ETW scanout proof, DXGI frame-statistics reconciliation, VBlank phase fitting, NVIDIA profile audits, and buffer/credit/alpha/Present(0) presenter experiments. Sequence: install a1e79e1 (Present(1) restored) → #1013 probe to twelve sessions reserving Program and stream → add a local SRT/RTMP stream to the workload harness → 30-minute soak judged on outputs → merge #1018/#1008, publish, desktop-shortcut acceptance. Detail in CLAUDE.md "What the release gate is, and is not".
+
+**Owner Graphics follow-up, October 21 — [#1012](https://github.com/iamfatness/CoreVideoPro/issues/1012):** finish local logo upload for the declarative logo templates as a dependency of #1007; verify private Preview, explicit Cue/Show and installed camera pixels before acceptance.
+
+**Graphics installed dependency — [#1011](https://github.com/iamfatness/CoreVideoPro/issues/1011):** fast Take/LT in chose a valid outgoing camera from mixed fade attribution. Prefer actual incoming `take-in:` layers and refuse outgoing-only transition attribution; preserve the failed installed trial and verify immediate camera/screen handoff without sleeping through the failure.
+
+**Owner priority, October 21 — [#1007](https://github.com/iamfatness/CoreVideoPro/issues/1007):** audit Graphics for Zoom-only assumptions and incomplete workflows. Generalize source-bound lower thirds to webcams and screen capture, qualify transparent PNG import/composition and verify the installed desktop-shortcut app before completion. Preserve source lifetime fences, private Cue/Program isolation and independent full-workload performance gates.
+
+**Owner beta release direction, October 21 — [#974](https://github.com/iamfatness/CoreVideoPro/issues/974), PR #1008:** the latest owner instruction replaces the earlier one-release exception: finish full-workload qualification with local recording and registered virtual camera, fix failures, then merge, build, publish and install. Eight actual live remote feeds, webcam, moving screen capture, Multiview and Preview remain required. Preserve failed and missing evidence; no merge or beta publication until all required checks pass.
+
+**Qualification dependency — [#1013](https://github.com/iamfatness/CoreVideoPro/issues/1013):** the encoder probe stops at eight sessions, below Program plus eight ISOs, forcing the last ISO to software. Measure the full supported encoder inventory without assuming driver capacity, preserve lower-capacity fallback, and verify actual installed hardware placement and unchanged full-workload delivery gates.
+
+**Qualification dependency — [#1014](https://github.com/iamfatness/CoreVideoPro/issues/1014):** remove the measured WGC CPU round trip and investigate remaining exact webcam-selection delays under recording load. Preserve source identities, bounded ownership and independent CPU/ISO consumers. Require per-frame source and mapped display evidence; advancing Program counters cannot qualify stale source pictures. This remains within the owner's #974/#1007 full-workload request.
+
+**Qualification test dependency — [#1015](https://github.com/iamfatness/CoreVideoPro/issues/1015):** scope browser mock environment and keep the native test runner's COM apartment alive across successive real capture fixtures, matching production lifetime. Retain the interrupted capture-enabled run; require actual WGC/browser pixels and the complete suite before accepting #1014.
+
+**Source deadline dependency — [#1016](https://github.com/iamfatness/CoreVideoPro/issues/1016):** integrate source preparation and composition into the existing Program deadline budget. Retain exact selected identities, original deadlines, total buffering and bounded capacity; require causal late-preparation tests and installed full-workload evidence. Scheduling alone did not remove holds. This blocks #1008 merge/publication under the owner's root-cause instruction.
+
+**Qualification CI dependency — [#1017](https://github.com/iamfatness/CoreVideoPro/issues/1017):** synchronize completed observation-reader leases before bounded snapshot slots are reused. Retain the 37-warning ThreadSanitizer failure, fixed capacity and nonblocking publisher refusal; require concurrent reuse coverage and a clean sanitizer job before #1008 merge/publication. This is not yet established as a video-stuttering cause.
+
+**Source cadence dependency — [#1019](https://github.com/iamfatness/CoreVideoPro/issues/1019):** stop latest-arrival sampling from repeating and skipping already prepared webcam pictures. Resolve explicit source cadence within the existing preparation/deadline budget; preserve exact identities, bounded ownership, ISO fidelity and actual-picture gates. The installed short run passed output identities but failed source pictures, so #1008 remains blocked.
+
+**Beta CI dependency — [#1006](https://github.com/iamfatness/CoreVideoPro/issues/1006):** initialize clock publication storage before launching its worker. Keep strict revision/visibility checks while distinguishing bounded controller-busy admission from configuration errors; validate the retained macOS failure and thread-sanitized clock lifetime before releasing #974.
+
+**Full-workload gray-source dependency — [#1003](https://github.com/iamfatness/CoreVideoPro/issues/1003):** Program can stamp consecutive output counters while Zoom/screen GPU preparation is refused and the actual source image is gray. Preserve the live `preparation-retiring-generation-capacity` failure, reproduce bounded generation ownership and require actual source admissions/pixels in qualification. Fix retirement without raising memory/lease limits; the display move is not established as its cause. No beta publication.
+
+**Full-workload screen-capture dependency — [#1002](https://github.com/iamfatness/CoreVideoPro/issues/1002):** the owner confirms video moves on DISPLAY3 while its CoreVideo input freezes. Retain the engineering run's 41-second source-progress stall and distinguish it from the older installed core's stale API/control stall. Measure capture callback, bounded worker, GPU readiness and publication ownership; require actual moving-screen progress with recording/virtual camera before qualification. No static-desktop waiver or beta publication.
+
+**Full-workload UI delivery dependency — [#997](https://github.com/iamfatness/CoreVideoPro/issues/997):** native Program deadlines and actual recording/OS-camera/ISO pixels passed the retained 30-minute component run, while UI Present commits remained below 60 per second. Measure readiness between periodic polls, preserve existing deadlines and bounded ownership, and require real UI delivery evidence before publication. This is part of the owner's ongoing root-cause and full-workload qualification request; the replacement eighth remote is now available, but the new eight-remote run failed OS-camera continuity and remains unqualified.
+
+**Full-workload camera dependency — [#1000](https://github.com/iamfatness/CoreVideoPro/issues/1000):** the eight-live-1080p run skipped one Program identity inside the Windows camera source, while its matched recording retained it. Reproduce the consumer/publication phase crossing and preserve bounded ownership and original request deadlines before rerunning the owner-requested full workload. No beta publication.
+
+**Unranked finding — [#998](https://github.com/iamfatness/CoreVideoPro/issues/998):** investigate slow redaction of one long diagnostic string. Retain the aborted synthetic regression separately from the actual workload allocation evidence; this is not established as the live failure's cause.
+
+**Full-workload camera repeat dependency — [#991](https://github.com/iamfatness/CoreVideoPro/issues/991):** registered OS camera pixels exposed one held identity after 27 minutes while native Program counters stayed clean. Preserve that failed run, establish cadence from the first actual fresh emission without extending issued read deadlines, serialize request ownership and test restart fences. Require fresh installed recording/OS-pixel and full-workload evidence before publication.
+
+**Full-workload Zoom fidelity dependency — [#989](https://github.com/iamfatness/CoreVideoPro/issues/989):** unchanged source epochs exposed hundreds of Zoom frames omitted before ISO recording despite zero writer drops. Preserve selected ISO ingest arrivals before latest-picture playout, reject fallback to older render frames during empty batches, and separately repair/account shared-memory reader loss. Actual source/reader/recorded identities and fresh installed workload evidence are required; the current qualification run cannot pass overall.
+
+**Full-workload readout dependency — [#987](https://github.com/iamfatness/CoreVideoPro/issues/987):** explicit ISO re-arm after Unassign must refresh the armed count even when persisted intent is unchanged. Preserve engine-reported raw-media facts through the spine/read model so recording preflight follows confirmed capture start/stop instead of a stale join-time warning. Validate the installed controls before publication; do not infer capture from toggle intent.
+
+**Full-workload qualification dependency — [#984](https://github.com/iamfatness/CoreVideoPro/issues/984):** the owner's requested full-workload checks exposed 1,668 camera arrivals skipped before ISO admission while recording drop counters stayed zero. Preserve actual selected camera arrivals through a bounded ref-only CPU branch, account for pre-ingest loss and rerun the installed workload. Passing Program counter bands cannot substitute for camera source fidelity. This is part of the authorized keep-fixing-failures qualification work; publication remains blocked.
+**Owner-approved UIUX batch, October 20 — [#978](https://github.com/iamfatness/CoreVideoPro/issues/978):** audit shipped Graphics/starter/source-text behavior, then finish template-to-Studio guidance, default/custom/hidden guest text and guarded automation editing under #927/#593/#929. Preserve the installed app, GPU, profile and camera registration while the other chat validates #975. Source work, CPU-only tests and hosted CI only; installed/native output acceptance stays separate. #955 owns footer status/alignment.
+
 **Owner follow-up, October 21 — #968 within #960:** diagnose and fix the decoded audio gaps, then rerun full Studio crash-survival validation for PR #965. This is a blocker in the active #960 lane, not an additional WIP item. Retain failed evidence and require decoded recording and received-stream continuity.
 
 **Owner implementation direction, October 19 — #960:** merge #964 and start the
@@ -28,6 +73,7 @@ The scoped dependency sequence is recorded in Next below. This authorizes the
 plan/backlog intake; it does not start four development items, supersede unrelated
 Now work, enable the feature, or change the installed app. Maximum three active
 development items remains. #930/#517 delivery acceptance is not waived.
+**Owner Studio review follow-up, October 19 — [#954](https://github.com/iamfatness/CoreVideoPro/issues/954):** correct stale output status text, distinguish observed output progress from configuration, remove redundant footer summary text and align production/telemetry baselines. Validate state transitions and compiled bindings as well as fit; preserve the running review app.
 
 **Owner review follow-up, October 19 — #951/#927:** Studio's bottom controls do
 not fit at 1080p and the template workflow is still unclear. Restore complete
@@ -284,8 +330,10 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner current — October 20 UIUX | B | [#978](https://github.com/iamfatness/CoreVideoPro/issues/978) | Graphics workflow clarity and preserved automation drafts; source/CPU-only and hosted checks during #975's quiet GPU window. Companion acceptance under #927/#593/#929 remains independent. |
 | Owner review regression — October 19 | B | [#951](https://github.com/iamfatness/CoreVideoPro/issues/951) | Reproduce full Studio footer clipping at 1080p; restore visible, non-overlapping production actions with compiled full-workspace geometry and renders. |
 | Owner Sources regression — October 19 | B | [#956](https://github.com/iamfatness/CoreVideoPro/issues/956) | Keep an unassigned input's unified picker enabled; prove repeated source reassignment restores its controls on the retained row without restart or unintended routing/output changes. |
+| Owner review follow-up — October 19 | B | [#954](https://github.com/iamfatness/CoreVideoPro/issues/954) | Correct stuck output status text and misleading configured readouts; remove redundant summary and align action/telemetry rows. Prove observed recording/local-stream progress reaches compiled controls. |
 | Owner current — October 19 Graphics feedback | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927) | Preview/starters merged in #950; review follow-up makes personalization live and joins saved starter adoption to explicit Studio assignment and navigation without putting graphics on air. |
 | Owner current — Volt implementation | A | [#926](https://github.com/iamfatness/CoreVideoPro/issues/926) | Native template/instance consumer and bounded preparation with compatibility lower-third pixels. |
 | Volt dependent — after #926 | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927), [#928](https://github.com/iamfatness/CoreVideoPro/issues/928) | Complete workspace/migration and actual title/bug/clock consumers; activate only as dependency gates pass. |
@@ -442,12 +490,12 @@ Found by reading code on main; none reproduced in the running app unless its iss
 | [#758](https://github.com/iamfatness/CoreVideoPro/issues/758) | A disconnected bridged capture device stays on Program as a frozen frame: the shell never sends `unregister-capture-shm` and the adapter re-emits its last frame. Blackmagic-named UVC devices are forced onto this path. |
 | [#759](https://github.com/iamfatness/CoreVideoPro/issues/759) | Output status reads "Live" while the sender is still `starting`. Stream-only sessions on a current core run the shell's "legacy core" branches because the core omits `recording.lifecycle`. |
 | [#762](https://github.com/iamfatness/CoreVideoPro/issues/762) | The shell accepts any core. A stub encoder (Record shows live, no file written) or no-op compositor in a real build is silent; `NativeMediaCoreProfileValidator` has no caller. Pair with #741. |
-| [#763](https://github.com/iamfatness/CoreVideoPro/issues/763) | NDI group is accepted and discarded; Program is advertised to every receiver on the LAN. |
-| [#761](https://github.com/iamfatness/CoreVideoPro/issues/761) | Set & Forget and Magic Scene never act on a real core: `autoProduction` is not bound. |
-| [#764](https://github.com/iamfatness/CoreVideoPro/issues/764) | Operator settings the core drops: colour-grade LUT presets, brand-kit styles, and other payload fields. |
-| [#765](https://github.com/iamfatness/CoreVideoPro/issues/765) | Invented values shown as measurements: guest network quality always "good", the LIVE clock, caption latency/confidence, per-participant meters. |
-| [#766](https://github.com/iamfatness/CoreVideoPro/issues/766) | Diagnostics that over-claim or are empty: first-frame evidence, support-bundle sections, the stale-roster counter (roster epoch/revision unbound). |
-| [#767](https://github.com/iamfatness/CoreVideoPro/issues/767) | Mock UI: licensing panel and caption controls with nothing behind them. Depends on the #743 ruling. |
+| [#763](https://github.com/iamfatness/CoreVideoPro/issues/763) | PR #1023: `ndiGroup` reaches `p_groups`, sender recreated on change. Not verified on a receiver with a group filter. |
+| [#761](https://github.com/iamfatness/CoreVideoPro/issues/761) | PR #1021: `autoProduction.slotBindings` bound and mapped; unit-tested to the coordinator, not live-run. |
+| [#764](https://github.com/iamfatness/CoreVideoPro/issues/764) | PRs #1021/#1023: echo-only brand-kit fields, route `audioRole`, strip `inputLevel`, `ptz` removed from both ends. LUT presets were a stale claim; the GPU grade shaders apply them and they stay. |
+| [#765](https://github.com/iamfatness/CoreVideoPro/issues/765) | LIVE clock fixed in #792; PRs #1023/#1021: network quality from the SDK (absent until reported), roster `audioLevel` and caption latency/confidence removed, fallback meters from DSP. |
+| [#766](https://github.com/iamfatness/CoreVideoPro/issues/766) | PRs #1021/#1023: first-frame evidence from frame events/spine counters only; empty bundle sections dropped; roster epoch/revision bound; media-mix warning only when true. |
+| [#767](https://github.com/iamfatness/CoreVideoPro/issues/767) | PR #1021: License & Plan panel, caption style controls and the no-op OHG title removed; caption cues stay. |
 | [#768](https://github.com/iamfatness/CoreVideoPro/issues/768) | Dead code: test-only fail/recover/simulate commands in the production protocol, breakout detection wired only to its simulator, an unused 935-line Zoom SDK adapter, unreferenced C# types. |
 
 ## Unranked — mock code in the shipping path and repo cleanup (2026-10-01 audit)
@@ -456,7 +504,7 @@ Found by the 2026-10-01 cleanup audit. Order within this table is a suggestion; 
 
 | Issue | Remaining work |
 |---|---|
-| [#743](https://github.com/iamfatness/CoreVideoPro/issues/743) | `caption-broker` and `licensing-api` are stub services with no native client. Owner ruling: build for real or remove, including deployed workers. |
+| [#743](https://github.com/iamfatness/CoreVideoPro/issues/743) | PR #1020 removes both stub services and their smoke/deploy references. Owner still has to delete the deployed `corevideo-licensing-api` and `corevideo-caption-broker` workers, the `LICENSE_KV` namespace and the two Actions secrets. |
 
 ## Unranked — open issue inventory restored in this audit
 
@@ -486,7 +534,7 @@ the sole work list. Their order in this table is not a priority assignment.
 | [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | Async ISO writer status still omits live `framesWritten` / `bytesWritten`. |
 | [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points; UI design still needed. |
 | [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct HEVC shipped in #566. AV1 refused pending #565. Raw fallback and recording/ISO on the encoder seam remain. |
-| [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | RTMP `bytesSent` still estimated; `latencyMs` hard-coded to 2100. |
+| [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | PR #1023: `bytesSent` measured at the FFmpeg stdin pipe; `latencyMs` removed from the wire. |
 | [#509](https://github.com/iamfatness/CoreVideoPro/issues/509) | 197 ms participant-rebuild stutter. Command-drop on the same apply graph is #622. |
 | [#537](https://github.com/iamfatness/CoreVideoPro/issues/537) | DeckLink/AJA: live frames on the source bus (not probe-only). Parked for beta. |
 | [#508](https://github.com/iamfatness/CoreVideoPro/issues/508) | Watch item: multiview label/click mismatch after unassign has not recurred. |
@@ -503,10 +551,13 @@ issue exists yet for this row; one will be filed, labeled `backlog`, when the
 |---|---|
 | (pending — file on PR) | 1080P flip live acceptance (mac): owner-meeting soak per [`docs/mac-parity-plan.md`](mac-parity-plan.md) §7 Task 3 Step 6 — (a) subscriptions at 1920-wide delivery for camera-on sources, (b) `zoomSubscriptionChurn.fullResolutionDemoted == 0` at ≤8 cameras, (c) camera off→on re-subscribe within one spine sync, (d) sustained render holds frame rate; fallback = revert the one-line kind flip in `spineSubscriptionPayloads` (restores the 720P fence; budget machinery stays). Evidence source: the core snapshot export (`AppModel.swift` dumps `lastSnapshot`/`lastZoomSnapshot` carrying `zoomSubscriptionChurn`) — NOT the Diagnostics pane, which doesn't render subscriptions; the stub reports 1280×720 for `participant-video`, so this is verifiable against the REAL engine only. |
 
+**Graphics qualification dependency — [#1010](https://github.com/iamfatness/CoreVideoPro/issues/1010):** local automatic introductions must read accepted native source labels after video reincarnation while refusing stale instance text. This is within the owner-requested #1007 local-source Graphics audit and fix; qualify the actual reconnect, not only a manual Show.
+
 ## Later — parked
 
 | Issue | Item |
 |---|---|
+| [#1009](https://github.com/iamfatness/CoreVideoPro/issues/1009) | Local Program recording remains gated on a Zoom meeting; audit finding from #1007, needs owner ranking and installed output validation. |
 | [#539](https://github.com/iamfatness/CoreVideoPro/issues/539) | MXL / ZoomISO Cloud / Kubernetes; parked until the source bus and plant I/O exist. |
 
 Parked from the 2026-09-24 architecture review (do not start from that document):
@@ -569,4 +620,3 @@ These rows record specific fixes, not blanket production or fleet reliability.
 | [#574](https://github.com/iamfatness/CoreVideoPro/issues/574) | GPU readiness moved before publication in #566. Hardware pixel tests and 30m16s installed candidate soak passed with zero new CVP delivery failures. Workload limits remain under #517/#569. |
 | [#529](https://github.com/iamfatness/CoreVideoPro/issues/529), [#533](https://github.com/iamfatness/CoreVideoPro/issues/533) | ISO drops/timeline fixes merged and validated in the earlier 24-minute six-ISO recording; shipped September 18. |
 | [#516](https://github.com/iamfatness/CoreVideoPro/issues/516), [#526](https://github.com/iamfatness/CoreVideoPro/issues/526), [#518](https://github.com/iamfatness/CoreVideoPro/issues/518) | Earlier render-stall, Program-buffer startup/busy-loop, and audio-log fixes merged and validated; shipped September 18. Later distinct defects retain their own issues. |
-

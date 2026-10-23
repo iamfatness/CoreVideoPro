@@ -17,16 +17,13 @@ public sealed partial class TransportViewModel : ObservableObject
     private bool _setAndForgetSelected;
 
     [ObservableProperty]
-    private bool _setAndForgetCanToggle = true;
-
-    [ObservableProperty]
     private string _automationStatusLabel = "On";
 
     [ObservableProperty]
     private string _programStatValue = "1080p60";
 
     [ObservableProperty]
-    private string _programStatHealthLabel = "Good";
+    private string _programStatHealthLabel = "Unavailable";
 
     [ObservableProperty]
     private string _streamStatValue = "Idle";
@@ -76,7 +73,7 @@ public sealed partial class TransportViewModel : ObservableObject
     public string DiskLoadLine => $"Disk {DiskLoadLabel}";
 
     [ObservableProperty]
-    private string _frameDropsLabel = "0 (0.0%)";
+    private string _frameDropsLabel = "—";
 
     [ObservableProperty]
     private string _liveClockLabel = TransportFormatting.FormatElapsed(0);
@@ -93,7 +90,7 @@ public sealed partial class TransportViewModel : ObservableObject
     [ObservableProperty]
     private string _masterLufsLabel = "LUFS —";
 
-    private Brush _programStatHealthBrush = TransportFormatting.HealthBrush(OutputHealthKind.Good);
+    private Brush _programStatHealthBrush = TransportFormatting.HealthBrush(OutputHealthKind.Idle);
 
     private Brush _streamStatHealthBrush = TransportFormatting.HealthBrush(OutputHealthKind.Idle);
 
@@ -184,10 +181,9 @@ public sealed partial class TransportViewModel : ObservableObject
         DiskLoadBarWidth = ResourceBarMaxWidth * DiskLoadPercent / 100d;
     }
 
-    public void ApplyAutomationState(ProductionMode mode, bool canToggle)
+    public void ApplyAutomationState(ProductionMode mode)
     {
         SetAndForgetSelected = mode == ProductionMode.SetAndForget;
-        SetAndForgetCanToggle = canToggle;
         AutomationStatusLabel = SetAndForgetSelected ? "On" : "Off";
     }
 
@@ -197,21 +193,18 @@ public sealed partial class TransportViewModel : ObservableObject
     {
         _outputClock.Reset();
         ProgramStatValue = string.IsNullOrWhiteSpace(programResolutionLabel) ? "—" : programResolutionLabel;
-        ApplyHealth(ProgramStatHealthLabel, OutputHealthKind.Idle, brush => ProgramStatHealthBrush = brush);
+        ProgramStatHealthLabel = "Unavailable";
+        ProgramStatHealthBrush = TransportFormatting.HealthBrush(OutputHealthKind.Idle);
 
-        StreamStatValue = streaming ? programResolutionLabel : "Idle";
-        ApplyHealth(
-            StreamStatHealthLabel,
-            streaming ? OutputHealthKind.Good : OutputHealthKind.Idle,
-            brush => StreamStatHealthBrush = brush);
+        StreamStatValue = "—";
+        StreamStatHealthLabel = streaming ? "Unverified" : "Idle";
+        StreamStatHealthBrush = TransportFormatting.HealthBrush(streaming ? OutputHealthKind.Warning : OutputHealthKind.Idle);
 
-        RecordStatValue = recording ? programResolutionLabel : "Idle";
-        ApplyHealth(
-            RecordStatHealthLabel,
-            recording ? OutputHealthKind.Good : OutputHealthKind.Idle,
-            brush => RecordStatHealthBrush = brush);
+        RecordStatValue = "—";
+        RecordStatHealthLabel = recording ? "Unverified" : "Idle";
+        RecordStatHealthBrush = TransportFormatting.HealthBrush(recording ? OutputHealthKind.Warning : OutputHealthKind.Idle);
 
-        FrameDropsLabel = TransportFormatting.FrameDropsLabel(0, 0);
+        FrameDropsLabel = "—";
         LiveClockLabel = TransportFormatting.FormatElapsed(0);
         MasterLevelLeft = 0;
         MasterLevelRight = 0;
@@ -226,37 +219,31 @@ public sealed partial class TransportViewModel : ObservableObject
         bool masterLimiterEnabled)
     {
         var elapsedSeconds = (int)Math.Floor(_outputClock.Observe(snapshot));
-        var networkHealth = ResolveNetworkHealth(snapshot);
+        var programReadout = StudioOutputTelemetry.Program(snapshot);
         var droppedFrames = ResolveDroppedFrames(snapshot);
         var totalFrames = Math.Max(snapshot.ProgramFrameCount, droppedFrames);
-        var transportReadouts = LiveProductionSync.MapTransportReadouts(
-            snapshot,
-            recording,
-            streaming,
-            programResolutionLabel);
+        var recordingReadout = StudioOutputTelemetry.Recording(snapshot.Recording);
+        var streamingReadout = StudioOutputTelemetry.Streaming(snapshot);
 
         ProgramStatValue = programResolutionLabel;
-        ApplyHealth(ProgramStatHealthLabel, networkHealth, brush => ProgramStatHealthBrush = brush);
+        ProgramStatHealthLabel = programReadout.State;
+        ProgramStatHealthBrush = TransportFormatting.HealthBrush(TransportFormatting.MapNetworkHealth(programReadout.Health));
 
-        StreamStatValue = transportReadouts.StreamStatValue;
-        ApplyHealth(
-            StreamStatHealthLabel,
-            TransportFormatting.MapNetworkHealth(transportReadouts.StreamHealthStatus),
-            brush => StreamStatHealthBrush = brush);
+        StreamStatValue = streamingReadout.Progress;
+        StreamStatHealthLabel = streamingReadout.State;
+        StreamStatHealthBrush = TransportFormatting.HealthBrush(TransportFormatting.MapNetworkHealth(streamingReadout.Health));
 
-        RecordStatValue = transportReadouts.RecordStatValue;
-        ApplyHealth(
-            RecordStatHealthLabel,
-            TransportFormatting.MapNetworkHealth(transportReadouts.RecordHealthStatus),
-            brush => RecordStatHealthBrush = brush);
+        RecordStatValue = recordingReadout.Progress;
+        RecordStatHealthLabel = recordingReadout.State;
+        RecordStatHealthBrush = TransportFormatting.HealthBrush(TransportFormatting.MapNetworkHealth(recordingReadout.Health));
 
-        FrameDropsLabel = TransportFormatting.FrameDropsLabel(droppedFrames, totalFrames);
+        FrameDropsLabel = totalFrames > 0 ? TransportFormatting.FrameDropsLabel(droppedFrames, totalFrames) : "—";
         LiveClockLabel = TransportFormatting.FormatElapsed(elapsedSeconds);
 
         var meterReadout = ResolveMasterMeterReadout(snapshot);
         MasterLevelLeft = meterReadout.LeftLevel;
         MasterLevelRight = meterReadout.RightLevel;
-        MasterLufsLabel = snapshot.AudioMixSession.LoudnessLufs <= -59
+        MasterLufsLabel = snapshot.AudioMixSession.MixedFrameCount <= 0 || !double.IsFinite(snapshot.AudioMixSession.LoudnessLufs) || snapshot.AudioMixSession.LoudnessLufs <= -59
             ? "LUFS —"
             : $"{snapshot.AudioMixSession.LoudnessLufs:0.0} LUFS";
         MasterVolumeLabel = meterReadout.PeakLabel ??
@@ -335,22 +322,6 @@ public sealed partial class TransportViewModel : ObservableObject
         return Math.Min(100, load);
     }
 
-    private static OutputHealthKind ResolveNetworkHealth(NativeMediaCoreStateSnapshot snapshot)
-    {
-        var health = snapshot.OutputHealth.FirstOrDefault(item =>
-            item.Destination.Equals("rtmp", StringComparison.OrdinalIgnoreCase) ||
-            item.Destination.Equals("program", StringComparison.OrdinalIgnoreCase));
-
-        if (health is null)
-        {
-            health = snapshot.OutputHealth.FirstOrDefault();
-        }
-
-        return health is null
-            ? OutputHealthKind.Idle
-            : TransportFormatting.MapNetworkHealth(health.Status);
-    }
-
     private static int ResolveDroppedFrames(NativeMediaCoreStateSnapshot snapshot)
     {
         var healthDrops = snapshot.OutputHealth.Sum(item => item.DroppedFrames);
@@ -359,23 +330,4 @@ public sealed partial class TransportViewModel : ObservableObject
         return Math.Max(healthDrops, Math.Max(compositorDrops, recordingDrops));
     }
 
-    private void ApplyHealth(
-        string propertyName,
-        OutputHealthKind health,
-        Action<Brush> setBrush)
-    {
-        setBrush(TransportFormatting.HealthBrush(health));
-        switch (propertyName)
-        {
-            case nameof(ProgramStatHealthLabel):
-                ProgramStatHealthLabel = TransportFormatting.HealthLabel(health);
-                break;
-            case nameof(StreamStatHealthLabel):
-                StreamStatHealthLabel = TransportFormatting.HealthLabel(health);
-                break;
-            case nameof(RecordStatHealthLabel):
-                RecordStatHealthLabel = TransportFormatting.HealthLabel(health);
-                break;
-        }
-    }
 }

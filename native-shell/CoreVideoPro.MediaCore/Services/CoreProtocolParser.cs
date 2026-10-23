@@ -595,14 +595,14 @@ public static class CoreProtocolParser
     }
 
     /// <summary>Binds the typed snapshot AND retains the core's own JSON text alongside it. The
-    /// text costs nothing extra here — <see cref="ValidatedRecordingLifecycleJson"/> already
-    /// materializes it for the deserializer — and it is the only record of the nodes this type
+    /// text is retained once for observers; typed projection borrows the parsed tree
+    /// synchronously and omits diagnostics without copying them. It retains nodes this type
     /// does not bind (see <see cref="NativeMediaCoreStateSnapshot.RawJson"/>).</summary>
     private static NativeMediaCoreStateSnapshot? DeserializeSnapshot(JsonElement element)
     {
-        var json = ValidatedRecordingLifecycleJson(element);
+        var validated = ValidatedRecordingLifecycle(element);
         var snapshot = JsonSerializer.Deserialize<NativeMediaCoreStateSnapshot>(
-            CoreObservationModel.Parse(json).TypedJson(), MediaCoreJson.Options);
+            CoreObservationModel.TypedJson(validated), MediaCoreJson.Options);
         return snapshot is null
             ? null
             : snapshot with
@@ -610,7 +610,7 @@ public static class CoreProtocolParser
                 CaptureDevices = element.TryGetProperty("captureDevices", out var captureDevices) &&
                     captureDevices.ValueKind == JsonValueKind.Array
                     ? ParseCaptureDevices(captureDevices) : [],
-                RawJson = json,
+                RawJson = validated.GetRawText(),
                 RawReceivedUtc = DateTimeOffset.UtcNow
             };
     }
@@ -638,7 +638,7 @@ public static class CoreProtocolParser
         }
 
         var wire = JsonSerializer.Deserialize<NativeMediaCoreWireState>(
-            CoreObservationModel.Parse(ValidatedRecordingLifecycleJson(wireElement)).TypedJson(), MediaCoreJson.Options);
+            CoreObservationModel.TypedJson(ValidatedRecordingLifecycle(wireElement)), MediaCoreJson.Options);
         // #760: this is the path every real core takes. The device list used to be parsed
         // only on the typed (stub/test) branch, so SRT and RTMP ingest facts never reached
         // the shell and a working feed read as not connected.
@@ -652,24 +652,23 @@ public static class CoreProtocolParser
         return wire;
     }
 
-    private static string ValidatedRecordingLifecycleJson(JsonElement snapshot)
+    private static JsonElement ValidatedRecordingLifecycle(JsonElement snapshot)
     {
-        var json = snapshot.GetRawText();
-        if (snapshot.ValueKind != JsonValueKind.Object) return json;
+        if (snapshot.ValueKind != JsonValueKind.Object) return snapshot;
         // Match the serializer's case-insensitive property handling.
         var recording = snapshot.EnumerateObject().LastOrDefault(property =>
             property.Name.Equals("recording", StringComparison.OrdinalIgnoreCase)).Value;
-        if (recording.ValueKind != JsonValueKind.Object) return json;
+        if (recording.ValueKind != JsonValueKind.Object) return snapshot;
         var lifecycle = recording.EnumerateObject().LastOrDefault(property =>
             property.Name.Equals("lifecycle", StringComparison.OrdinalIgnoreCase)).Value;
         if (lifecycle.ValueKind == JsonValueKind.Undefined || OutputLifecycleContract.Validate(lifecycle))
-            return json;
+            return snapshot;
 
         // Absence is an older protocol. Explicit null/invalid data is not: do
         // not let nullable deserialization turn it into optimistic legacy state.
         // Preserve the rest of the snapshot so the UI receives the failure
         // instead of retaining a previous live snapshot after a parse rejection.
-        var root = JsonNode.Parse(json, new JsonNodeOptions { PropertyNameCaseInsensitive = true })!;
+        var root = JsonNode.Parse(snapshot.GetRawText(), new JsonNodeOptions { PropertyNameCaseInsensitive = true })!;
         var target = root["recording"]!;
         target["active"] = false;
         target["status"] = "failed";
@@ -683,7 +682,7 @@ public static class CoreProtocolParser
             Finalized = false,
             Error = "Malformed recording lifecycle received from the media core."
         }, MediaCoreJson.Options);
-        return root.ToJsonString();
+        return JsonSerializer.SerializeToElement(root);
     }
 
     public static ZoomMediaSpineNativeSnapshot? TryParseZoomMediaSpineSnapshot(JsonDocument response)

@@ -46,9 +46,18 @@ public sealed record ControlState
     public bool? NativeLowerThirdVisible { get; init; }
     public int? NativeProgramFrameCount { get; init; }
     public System.Text.Json.JsonElement? NativeProgramBuffer { get; init; }
+    private Lazy<System.Text.Json.JsonElement?>? _nativeObservation;
     /// <summary>Complete redacted core observation. Flat native fields above remain for
     /// existing feedback clients; new evidence should be read from this generated view.</summary>
-    public System.Text.Json.JsonElement? NativeObservation { get; init; }
+    public System.Text.Json.JsonElement? NativeObservation
+    {
+        get => _nativeObservation?.Value;
+        init => _nativeObservation = value.HasValue ? new(() => value) : null;
+    }
+    /// <summary>Keep diagnostic projection off ordinary button feedback. The
+    /// immutable result is evaluated once, only when read or serialized.</summary>
+    public ControlState WithNativeObservation(Func<System.Text.Json.JsonElement?> observe) =>
+        this with { _nativeObservation = new(observe) };
     public int? ProgramBufferRequestedFrames { get; init; }
     public int? ProgramBufferSessionRequestedFrames { get; init; }
     public bool? ProgramBufferRestartRequired { get; init; }

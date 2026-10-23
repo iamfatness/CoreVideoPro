@@ -53,6 +53,10 @@ struct ZoomEngineParticipant {
   // Core-owned incarnation. Changes when this SDK id leaves and reappears,
   // including a same-meeting id reuse. Zero is reserved for legacy producers.
   std::uint64_t sourceGeneration = 0;
+  // Measured network quality relayed from the SDK's onUserNetworkStatusChanged
+  // ("good" | "recovering" | "low"); empty until the SDK has reported this user,
+  // and then absent from the wire. Never defaulted to a guess (#765).
+  std::string networkQuality;
 };
 
 enum class ZoomEngineEventKind {
@@ -177,6 +181,20 @@ std::size_t readZoomEnginePcmAudioRing(const void* sharedMemory, std::size_t sha
 // Fixed region size of the ring layout (both sides of the SHM agree via
 // zoom-engine/shared/engine-ipc.h).
 std::size_t zoomEngineAudioRingByteSize();
+
+struct ZoomIsoVideoArrival {
+  ZoomEngineRgbaFrame frame;
+  std::int64_t captured100ns = 0;
+};
+struct ZoomIsoRingReadEvidence {
+  std::uint64_t overwritten = 0, publicationChanged = 0, invalidPayload = 0;
+  std::uint32_t maximumBacklog = 0;
+};
+std::size_t zoomEngineIsoVideoRingByteSize();
+std::size_t readZoomEngineIsoVideoRing(const void* view, std::size_t size,
+    std::uint32_t epoch, std::uint32_t& next, const std::string& uuid,
+    std::uint32_t participantId, bool thumbnail, std::vector<ZoomIsoVideoArrival>& out,
+    ZoomIsoRingReadEvidence* evidence = nullptr);
 
 // Per-source pending-PCM accumulator for the runtime's audio ingest. Chunks
 // append in arrival order; the mixer drains the whole buffer once per audio

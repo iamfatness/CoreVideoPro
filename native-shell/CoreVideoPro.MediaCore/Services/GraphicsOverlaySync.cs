@@ -15,7 +15,6 @@ public static class GraphicsOverlaySync
         public required string SpeakerName { get; init; }
         public required string Role { get; init; }
         public required string Text { get; init; }
-        public required int Confidence { get; init; }
     }
 
     /// <summary>
@@ -43,14 +42,12 @@ public static class GraphicsOverlaySync
         }
 
         var role = ResolveSpeakerRole(speakerName, speakerRoles);
-        var confidence = (int)Math.Clamp(Math.Round(cue.Confidence), 0, 100);
         var entry = new CaptionTranscriptEntryPatch
         {
             Id = $"cc-{cue.AtMs:0}-{Slug(speakerName)}",
             SpeakerName = speakerName,
             Role = role,
-            Text = text,
-            Confidence = confidence
+            Text = text
         };
 
         return existing.Concat([entry]).TakeLast(MaxTranscriptEntries).ToList();

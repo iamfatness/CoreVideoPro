@@ -11,6 +11,8 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
+#include <cstdlib>
+#include <string>
 
 namespace corevideo::modules {
 
@@ -140,6 +142,16 @@ class D3DDecoupledExport {
   int width() const { return width_; }
   int height() const { return height_; }
   std::shared_ptr<std::atomic<int64_t>> publishedFrameNumber() const { return publishedFrameNumber_; }
+  struct HandoffDiagnostics {
+    uint64_t submitted = 0, published = 0, unreadReplaced = 0, preparedReplaced = 0;
+    uint64_t dropped = 0, producerBusy = 0, consumerBusy = 0;
+  };
+  // Independently sampled cumulative counters, not a coherent frame snapshot or
+  // proof of GPU completion/display. Safe while either owner is active.
+  HandoffDiagnostics handoffDiagnostics() const {
+    return {submitted_.load(), published_.load(), unreadReplaced_.load(), preparedReplaced_.load(),
+            dropped_.load(), producerBusy_.load(), consumerBusy_.load()};
+  }
 
   // Called on the render thread. Copies `src` (owned by the render device) into a
   // free internal slot with a single keyed-mutex acquire/release that only couples
@@ -177,6 +189,7 @@ class D3DDecoupledExport {
       slot->frameNumber = frameNumber;
       slot->sourceEpoch = sourceEpoch;
       queue_.push_back(slot);
+      ++submitted_;
     }
     changed_.notify_one();
     timing.boundary();
@@ -290,13 +303,29 @@ class D3DDecoupledExport {
   bool publishPrepared(int64_t frameNumber, uint64_t sourceEpoch) {
     if (!rotateOutput(sourceEpoch)) return false;
     bool owned = outputMutex_->AcquireSync(0, 0) == S_OK;
-    if (!owned) owned = outputMutex_->AcquireSync(1, 0) == S_OK;
+    if (!owned) {
+      owned = outputMutex_->AcquireSync(1, 0) == S_OK;
+      if (owned) ++unreadReplaced_;
+    }
     if (!owned) return false;
     exportContext_->CopyResource(output_.get(), prepared_.get());
     publishedFrameNumber_->store(frameNumber, std::memory_order_release);
     outputMutex_->ReleaseSync(1);
     publishDescriptor(outputHandle_, sourceEpoch, frameNumber);
     ++published_;
+    if (observeHandoff_) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - lastHandoffLog_ >= std::chrono::seconds(1)) {
+        const auto stats = handoffDiagnostics();
+        core::nativeLogf("[monitor-export-handoff] owner=%s epoch=%llu frame=%lld submitted=%llu published=%llu unread_replaced=%llu prepared_replaced=%llu dropped=%llu producer_busy=%llu consumer_busy=%llu\n",
+            label_, static_cast<unsigned long long>(submissionEpoch_), static_cast<long long>(frameNumber),
+            static_cast<unsigned long long>(stats.submitted), static_cast<unsigned long long>(stats.published),
+            static_cast<unsigned long long>(stats.unreadReplaced), static_cast<unsigned long long>(stats.preparedReplaced),
+            static_cast<unsigned long long>(stats.dropped), static_cast<unsigned long long>(stats.producerBusy),
+            static_cast<unsigned long long>(stats.consumerBusy));
+        lastHandoffLog_ = now;
+      }
+    }
     exportContext_->Flush();
     return true;
   }
@@ -336,6 +365,7 @@ class D3DDecoupledExport {
         const int64_t frameNumber = slot->frameNumber;
         const uint64_t sourceEpoch = slot->sourceEpoch;
         if (pulled) {
+          if (pending) ++preparedReplaced_;
           exportContext_->CopyResource(prepared_.get(), slot->opened.get());
           slot->mutex->ReleaseSync(0);  // slot free for the producer immediately
         } else {
@@ -393,7 +423,13 @@ class D3DDecoupledExport {
   std::atomic<int64_t> publishedFrame_{-1};
   std::shared_ptr<std::atomic<int64_t>> publishedFrameNumber_ = std::make_shared<std::atomic<int64_t>>(-1);
   std::thread worker_;
-  std::uint64_t published_ = 0, dropped_ = 0, producerBusy_ = 0, consumerBusy_ = 0;
+  std::atomic<std::uint64_t> submitted_{0}, published_{0}, unreadReplaced_{0}, preparedReplaced_{0};
+  std::atomic<std::uint64_t> dropped_{0}, producerBusy_{0}, consumerBusy_{0};
+  const bool observeHandoff_ = [] {
+    const auto* value = std::getenv("COREVIDEO_MONITOR_DIAGNOSTICS");
+    return value && std::string(value) == "1";
+  }();
+  std::chrono::steady_clock::time_point lastHandoffLog_{};
 };
 
 }  // namespace corevideo::modules

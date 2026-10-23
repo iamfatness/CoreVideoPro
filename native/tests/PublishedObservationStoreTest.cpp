@@ -84,3 +84,46 @@ TEST(PublishedObservationStore, OversizedDraftIsRefusedAndRetiredWithoutLosingPr
   EXPECT_LT(view.residentBytes, 4u * 512u * 1024u);
   EXPECT_TRUE(store.publish(3, [](auto& value) { return audioObservationBytes(value); }));
 }
+
+TEST(PublishedObservationStore, CopiedAndMovedLeasesPinPayloadUntilFinalReaderAndOutliveStore) {
+  using Store = PublishedObservationStore<std::vector<int>, 2>;
+  Store::View retained;
+  {
+    Store store;
+    ASSERT_TRUE(store.publish(1, [](auto& value) { value.assign(128, 7); }));
+    auto first = store.acquire();
+    auto copy = first;
+    retained = std::move(copy);
+    first.payload.reset();
+    ASSERT_TRUE(store.publish(2, [](auto& value) { value.assign(128, 8); }));
+    EXPECT_FALSE(store.publish(3, [](auto& value) { value.assign(128, 9); }));
+    EXPECT_EQ(retained.payload->value.front(), 7);
+  }
+  EXPECT_EQ(retained.payload->value.back(), 7);
+  EXPECT_EQ(retained.payload->revision, 1u);
+}
+
+TEST(PublishedObservationStore, ConcurrentReaderRetirementSynchronizesPayloadReuse) {
+  PublishedObservationStore<std::vector<uint64_t>> store;
+  ASSERT_TRUE(store.publish(1, [](auto& value) { value.assign(128, 1); }));
+  std::atomic<bool> invalid{false};
+  std::latch start(5);
+  std::vector<std::thread> readers;
+  for (int index = 0; index < 4; ++index) readers.emplace_back([&] {
+    start.count_down(); start.wait();
+    for (int pass = 0; pass < 4000; ++pass) {
+      const auto held = store.acquire();
+      auto copy = held;
+      if (!copy.payload || copy.payload->value.size() != 128) { invalid.store(true); continue; }
+      for (const auto value : copy.payload->value)
+        if (value != copy.payload->revision) invalid.store(true);
+    }
+  });
+  start.count_down(); start.wait();
+  for (uint64_t revision = 2; revision < 8000; ++revision)
+    (void)store.publish(revision, [revision](auto& value) { value.assign(128, revision); });
+  for (auto& reader : readers) reader.join();
+  EXPECT_FALSE(invalid.load());
+  EXPECT_TRUE(store.publish(8000, [](auto& value) { value.assign(128, 8000); }));
+  EXPECT_EQ(store.acquire().payload->revision, 8000u);
+}

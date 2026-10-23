@@ -164,16 +164,8 @@ public sealed partial class StudioViewModel : IMagicSceneHost
 
     void IMagicSceneHost.RefreshProductionReadouts() => RefreshProductionReadouts();
 
-    void IMagicSceneHost.ApplyTransportAutomationState(ProductionMode mode, bool canToggle) =>
-        Transport.ApplyAutomationState(mode, canToggle);
-
-    bool IMagicSceneHost.IsSetAndForgetEntitled()
-    {
-        var entitlements = LicenseCatalog.DeriveEntitlements(
-            new LicenseState { Tier = Settings.LicenseTier, Status = Settings.LicenseStatus },
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        return entitlements.SetAndForget;
-    }
+    void IMagicSceneHost.ApplyTransportAutomationState(ProductionMode mode) =>
+        Transport.ApplyAutomationState(mode);
 
     bool IMagicSceneHost.SetAutomationGraphic(string kind, bool enabled) => SetAutomationGraphic(kind, enabled);
 

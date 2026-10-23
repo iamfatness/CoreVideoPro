@@ -39,7 +39,9 @@ class GraphicsClockController {
   void run(GraphicsClockConfig);
   struct Command { std::string action; GraphicsClockConfig config; };
   std::mutex mutex_; std::condition_variable wake_; std::deque<Command> commands_;
-  bool stopping_=false; std::thread worker_;
+  bool stopping_=false;
   std::shared_ptr<const rpc::Json> sample_;
+  // The worker publishes sample_; initialize its storage before starting it.
+  std::thread worker_;
 };
 }

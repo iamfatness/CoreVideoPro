@@ -67,3 +67,28 @@ test('rejects continuous identities delivered at 50fps despite a declared 60/1 t
   for (let index = 1; index < rows.length - 1; ++index) rows[index].arrivalUs = (index - 1) * 20000;
   assert.equal(judge(rows).receiverPixelContinuityPassed, false);
 });
+const timedFixture = () => fixture().map(row => Number.isSafeInteger(row.sample)
+  ? { ...row, arrivalHostUs: 1_000_000 + row.arrivalUs } : row);
+const judgeWindow = (rows, overrides = {}) => judgeCameraPixels(rows.map(JSON.stringify).join('\n'),
+  { startHostUs: 1_505_000, endHostUs: 2_505_000, minimumSeconds: 1, ...overrides });
+test('judges the predeclared host-clock interval with samples bracketing both endpoints', () => {
+  const rows = timedFixture(); rows[10].identity = rows[9].identity;
+  assert.equal(judge(rows).receiverPixelContinuityPassed, false); // retain whole-capture failure
+  const report = judgeWindow(rows);
+  assert.equal(report.receiverPixelContinuityPassed, true);
+  assert.equal(report.firstIdentity, 530); assert.equal(report.lastIdentity, 591);
+  assert.equal(report.measurement.includesEndpointBrackets, true);
+});
+test('a repeated frame at the declared interval boundary or interior still fails', () => {
+  for (const index of [32, 50, 92]) {
+    const rows = timedFixture(); rows[index].identity = rows[index - 1].identity;
+    assert.equal(judgeWindow(rows).receiverPixelContinuityPassed, false);
+  }
+});
+test('refuses short, absent, reordered or uncovered host-clock evidence', () => {
+  for (const options of [{ startHostUs: -1 }, { endHostUs: 1_600_000 }, { endHostUs: 4_000_000 }, { startHostUs: undefined }])
+    assert.equal(judgeWindow(timedFixture(), options).receiverPixelContinuityPassed, false);
+  assert.equal(judgeWindow(fixture()).receiverPixelContinuityPassed, false);
+  const rows = timedFixture(); rows[50].arrivalHostUs = rows[49].arrivalHostUs;
+  assert.equal(judgeWindow(rows).receiverPixelContinuityPassed, false);
+});

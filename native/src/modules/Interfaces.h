@@ -25,6 +25,8 @@
 namespace corevideo::graphics { struct GraphicsTemplateInput; struct GraphicsAsset; }
 namespace corevideo::modules {
 class CpuSourcePreparation;
+class CapturePresentationWindow;
+class ReadyCapturePublication;
 
 struct VideoFrame {
   std::string participantId;
@@ -70,13 +72,17 @@ struct VideoFrame {
   // Resolved after authoritative source reserve/guest trim selection. The CPU
   // descriptor only holds a weak GPU publication, so ISO cannot pin the pool.
   std::shared_ptr<CpuSourceGpuView> preparedGpu;
+  // Bounded capture-owned arrivals for a scheduled selection inside Program's
+  // existing preparation interval. Neither the shell nor ISO consumes it.
+  std::shared_ptr<CapturePresentationWindow> capturePresentation;
+  std::shared_ptr<ReadyCapturePublication> readyCapture;
   // Same source identity in a separate optional pool. Monitor requests must
   // never retain the production capture lease while waiting for their worker.
   std::shared_ptr<const GpuVideoFrame> monitorGpuPixels;
   // Native capture identity/time, retained across independent representations.
   // Zero means a legacy source whose timeline is stamped at gather.
   uint64_t sourceEpoch = 0;
-  uint64_t sourceGeneration = 0;  // Zoom roster incarnation carried with these pixels.
+  uint64_t sourceGeneration = 0;  // Authoritative Zoom roster or source-bus video incarnation.
   int64_t captureTimestamp100ns = 0;
   [[nodiscard]] bool hasGpuPixels() const {
     return gpuPixels && gpuPixels->width > 0 && gpuPixels->height > 0;
@@ -872,16 +878,23 @@ struct OutputSender {
   int64_t lastFrameNumber = 0;
   int64_t framesSent = 0;
   int retryCount = 0;
-  int latencyMs = 2100;
+  // Set ONLY by an adapter that measured it (#519). The RTMP/SRT FFmpeg path
+  // and NDI measure no transport latency, so they leave it unset and the
+  // snapshot omits the key rather than publishing a constant.
+  std::optional<int> latencyMs;
   double bitrateMbps = 6.0;
   std::string warning;
   std::string destinationHealth = "starting";
   std::string lastResultCode = "waiting-for-frame";
   std::string lastError;
+  // Bytes this adapter actually handed to its transport in the current run:
+  // for the FFmpeg senders every byte written to the child's stdin pipe (raw
+  // video, encoded bitstream or transport-stream audio), for NDI the UYVY
+  // frame bytes submitted to libNDI. Measured, never estimated (#519). Local
+  // acceptance only; remote receipt still requires ingest/receiver evidence.
   int64_t bytesSent = 0;
-  // Compressed video accepted by this destination's FFmpeg input pipe. Unlike
-  // bytesSent (legacy configured-rate estimate), these are measured writes;
-  // remote receipt still requires ingest/receiver evidence.
+  // Compressed video accepted by this destination's FFmpeg input pipe; the
+  // per-packet view of the same measured writes.
   struct MuxInputVideo {
     int64_t payloadBytes = 0;
     int64_t packets = 0;
@@ -1002,6 +1015,12 @@ struct OutputDestinationSettings {
 };
 
 struct CaptureDeviceInfo {
+  struct CpuArrivalEvidence {
+    std::string sourceId;
+    bool demanded = false;
+    uint64_t observed = 0, accepted = 0, drained = 0, overflowed = 0, released = 0;
+    size_t pending = 0, bytes = 0;
+  };
   std::string id;
   std::string name;
   std::string kind;
@@ -1031,6 +1050,7 @@ struct CaptureDeviceInfo {
   std::optional<int64_t> codecDecodeErrors;
   std::optional<int64_t> packetDecodeErrors;
   std::optional<double> rttMs;
+  std::optional<CpuArrivalEvidence> isoCpuArrivals;
 };
 
 struct CaptureAudioSourceConfig {
@@ -1157,7 +1177,9 @@ struct MonitorRenderRequest {
   int64_t producerStartedNs = 0, producerPreparedNs = 0;
   std::function<bool(ProgramFrameSharedTexture&, std::shared_ptr<const void>&)> acquireDeliveredProgram;
   int64_t sequence = 0;
+  int64_t captureSlot = -1, captureAnchorNs = 0;
   int64_t programDisplayTargetNs = 0, programDisplayDeadlineNs = 0;
+  int64_t programDisplayOffset100ns = 166666;
   CompositorRenderPlan programPlan;
   CompositorRenderPlan multiviewPlan;
   CompositorRenderPlan previewPlan;
@@ -1203,6 +1225,7 @@ struct ProgramDisplayIncident {
 };
 struct ProgramDisplayObservation {
   bool observed = false;
+  int64_t presentationOffset100ns = 166666;
   uint64_t generation = 0, requestedSequence = 0, copiedSequence = 0;
   int64_t frameNumber = 0, timelineTimestamp100ns = 0, age100ns = 0;
   uint64_t copies = 0, completedCopies = 0, reused = 0, refused = 0, skipped = 0, reordered = 0;

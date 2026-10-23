@@ -61,7 +61,7 @@ std::shared_ptr<const GraphicsTemplateInput> resolveGraphicsTemplateInput(const 
   auto publication=input->draft->poll();
   if(!publication || publication->key!=input->draftKey) {reason="validating-private-template";return {};}
   if(!publication->definition) {reason=publication->error;return {};}
-  auto result=std::make_shared<GraphicsTemplateInput>(); result->definition=publication->definition; result->fields=input->fields; result->brand=input->brand; result->placement=input->placement;
+  auto result=std::make_shared<GraphicsTemplateInput>(); result->definition=publication->definition; result->fields=input->fields; result->brand=input->brand; result->placement=input->placement; result->logo=input->logo;
   std::shared_ptr<const GraphicsTemplateInput> immutable=result;
   std::atomic_store(&input->resolvedDraft,immutable); return immutable;
 }

@@ -15,6 +15,10 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <array>
+#include <fstream>
+#include <filesystem>
+#include <string>
 #include "modules/DeliveryCounterPattern.h"
 using namespace winrt;
 using namespace Windows::Media::Capture;
@@ -26,10 +30,22 @@ struct __declspec(uuid("5B0D3235-4DBA-4D44-865E-8F1D0E4FD04D")) BitmapBytes : IU
 };
 
 int wmain(int argc, wchar_t** argv) {
-  const int seconds = argc == 3 ? _wtoi(argv[2]) : 0;
+  const int seconds = (argc == 3 || (argc == 5 && std::wstring(argv[3]) == L"--picture-points")) ? _wtoi(argv[2]) : 0;
   if (seconds < 1 || seconds > 7500) {
-    std::fprintf(stderr, "Usage: corevideo-shared-camera-receiver REGISTERED_DEVICE_ID SECONDS (1..7500)\n");
+    std::fprintf(stderr, "Usage: corevideo-shared-camera-receiver REGISTERED_DEVICE_ID SECONDS (1..7500) [--picture-points FILE]\n");
     return 2;
+  }
+  // Explicit QA sampling coordinates, fixed before capture. These are actual
+  // delivered luma bytes, independent of the publisher's counters/metadata.
+  std::vector<std::pair<int, int>> picturePoints;
+  if (argc == 5) {
+    std::ifstream input{std::filesystem::path(argv[4])};
+    int x = 0, y = 0;
+    while (input >> x >> y) {
+      if (x < 0 || x >= 1920 || y < 0 || y >= 1080 || picturePoints.size() >= 256) return 2;
+      picturePoints.emplace_back(x, y);
+    }
+    if (!input.eof() || picturePoints.empty()) return 2;
   }
   const auto deadline = Clock::now() + std::chrono::seconds(seconds + 30);
   std::jthread watchdog([deadline](std::stop_token stop) {
@@ -38,7 +54,7 @@ int wmain(int argc, wchar_t** argv) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   });
-  struct Row { int64_t arrival, host, pts, identity; };
+  struct Row { int64_t arrival, host, pts, identity; std::array<uint8_t, 256> picture{}; };
   std::vector<Row> rows;
   const size_t capacity = static_cast<size_t>(seconds) * 64 + 128;
   rows.reserve(capacity);
@@ -63,8 +79,14 @@ int wmain(int argc, wchar_t** argv) {
     const auto start = Clock::now();
     const auto unixUs = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
-    std::printf("{\"schema\":\"camera-pixel-receiver-v1\",\"receiverMode\":\"os-camera\",\"activation\":\"shared-readonly\",\"receiverScheduling\":\"ordinary\",\"startUnixUs\":%lld,\"width\":%u,\"height\":%u,\"fpsNumerator\":%u,\"fpsDenominator\":%u}\n",
+    std::printf("{\"schema\":\"camera-pixel-receiver-v1\",\"receiverMode\":\"os-camera\",\"activation\":\"shared-readonly\",\"receiverScheduling\":\"ordinary\",\"startUnixUs\":%lld,\"width\":%u,\"height\":%u,\"fpsNumerator\":%u,\"fpsDenominator\":%u,\"picturePoints\":[",
         unixUs, format.VideoFormat().Width(), format.VideoFormat().Height(), rate.Numerator(), rate.Denominator());
+    for (size_t i = 0; i < picturePoints.size(); ++i)
+      std::printf("%s[%d,%d]", i ? "," : "", picturePoints[i].first, picturePoints[i].second);
+    std::printf("]}\n");
+    // Setup evidence is available before the live interval. Keep per-frame
+    // rows buffered so console/file I/O does not run on the measured cadence.
+    std::fflush(stdout);
     auto reader = capture.CreateFrameReaderAsync(source,
         Windows::Media::MediaProperties::MediaEncodingSubtypes::Nv12()).get();
     // Realtime/Latest drops are deliberately visible as missing pixel identities.
@@ -89,9 +111,22 @@ int wmain(int argc, wchar_t** argv) {
         auto identity = corevideo::modules::decodeDeliveryCounter(bytes + plane.StartIndex,
             length - plane.StartIndex, bitmap.PixelWidth(), bitmap.PixelHeight(), plane.Stride);
         if (rows.size() >= capacity) { ++failures; return; }
-        rows.push_back({std::chrono::duration_cast<std::chrono::microseconds>(arrived - start).count(),
+        Row row{std::chrono::duration_cast<std::chrono::microseconds>(arrived - start).count(),
             std::chrono::duration_cast<std::chrono::microseconds>(arrived.time_since_epoch()).count(),
-            frame.SystemRelativeTime().Value().count(), identity ? static_cast<int64_t>(*identity) : -1});
+            frame.SystemRelativeTime().Value().count(), identity ? static_cast<int64_t>(*identity) : -1};
+        for (size_t i = 0; i < picturePoints.size(); ++i) {
+          const auto [x, y] = picturePoints[i];
+          const auto offset = static_cast<int64_t>(plane.StartIndex) + static_cast<int64_t>(y) * plane.Stride + x;
+          if (x >= bitmap.PixelWidth() || y >= bitmap.PixelHeight() || offset < 0 || offset >= length) {
+            ++failures; return;
+          }
+          row.picture[i] = bytes[offset];
+        }
+        rows.push_back(row);
+        if (rows.size() == 1) {
+          std::fprintf(stderr, "[receiver] first-frame identity=%lld\n", rows.back().identity);
+          std::fflush(stderr);
+        }
       } catch (hresult_error const&) { ++failures; }
     });
     if (reader.StartAsync().get() != MediaFrameReaderStartStatus::Success)
@@ -111,6 +146,11 @@ int wmain(int argc, wchar_t** argv) {
     std::printf("{\"sample\":%zu,\"arrivalUs\":%lld,\"arrivalHostUs\":%lld,\"pts100ns\":%lld,\"identity\":",
         ++number, row.arrival, row.host, row.pts);
     if (row.identity < 0) std::printf("null"); else std::printf("%lld", row.identity);
+    if (!picturePoints.empty()) {
+      std::printf(",\"pictureLuma\":\"");
+      for (size_t i = 0; i < picturePoints.size(); ++i) std::printf("%02x", row.picture[i]);
+      std::printf("\"");
+    }
     std::printf("}\n");
   }
   std::printf("{\"complete\":%s,\"samples\":%zu,\"frameFailures\":%u}\n",

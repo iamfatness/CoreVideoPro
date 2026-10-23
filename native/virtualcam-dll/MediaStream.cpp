@@ -86,6 +86,7 @@ IFACEMETHODIMP MediaStream::GetStreamDescriptor(IMFStreamDescriptor** descriptor
 }
 
 IFACEMETHODIMP MediaStream::RequestSample(IUnknown* token) {
+  std::lock_guard<std::mutex> requestLock(requestMutex_);
   // PACE DELIVERY TO THE FRAME RATE. The pipeline requests the next sample the
   // moment the previous one completes, so completing immediately free-runs the
   // whole serve chain at CPU speed - measured ~2000 samples/s (vs 60 declared),
@@ -94,21 +95,18 @@ IFACEMETHODIMP MediaStream::RequestSample(IUnknown* token) {
   // consumed the camera. A camera source controls delivery cadence exactly like
   // hardware delivering at sensor rate: wait until the next frame is DUE.
   LONGLONG waitHns = 0;
+  uint64_t requestRun = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (shutdown_) return MF_E_SHUTDOWN;
     if (!running_) return MF_E_INVALIDREQUEST;
     const LONGLONG now = MFGetSystemTime();
-    if (nextDueHns_ == 0 || now >= nextDueHns_ + frameDuration_) {
-      nextDueHns_ = now;  // first sample, or we fell behind: re-anchor, no catch-up burst
-      cadence_.reset(fps_);
-    }
-    waitHns = nextDueHns_ - now;
+    const auto window = schedule_.begin(now);
+    requestRun = deliveryRun_;
+    waitHns = window.wait100ns;
     // Capture before pacing/allocation. Never extend this if the request is
     // scheduled late. Reserve the rest of the frame for copy/event delivery.
-    const auto intervalHns = cadence_.nextInterval100ns();
-    sampleReadDeadlineUs_ = (nextDueHns_ + intervalHns - 20000) / 10;
-    nextDueHns_ += intervalHns;
+    sampleReadDeadlineUs_ = window.readDeadlineUs;
     // Lazy high-resolution timer: the process timer resolution is often 15.6ms,
     // which would quantize a plain Sleep and cap 60fps pacing at ~40fps.
     if (waitHns > 0 && pacerTimer_ == nullptr) {
@@ -135,6 +133,7 @@ IFACEMETHODIMP MediaStream::RequestSample(IUnknown* token) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (shutdown_) return MF_E_SHUTDOWN;
   if (!running_) return MF_E_INVALIDREQUEST;
+  if (requestRun != deliveryRun_) return MF_E_INVALIDREQUEST;
 
   ComPtr<IMFSample> sample;
   HRESULT hr = CreateSample(token, &sample);
@@ -144,7 +143,11 @@ IFACEMETHODIMP MediaStream::RequestSample(IUnknown* token) {
     return hr;
   }
   hr = events_->QueueEventParamUnk(MEMediaSample, GUID_NULL, S_OK, sample.Get());
-  delivery_.recordEmission(SUCCEEDED(hr), sampleContent_, MFGetSystemTime());
+  const auto emittedAt = MFGetSystemTime();
+  delivery_.recordEmission(SUCCEEDED(hr), sampleContent_, emittedAt);
+  if (SUCCEEDED(hr) && sampleContent_ == corevideo::modules::VirtualCameraSampleContent::Fresh &&
+      schedule_.firstFreshEmission(emittedAt))
+    VcamServeLog("[vcam-cadence] anchored once at first fresh event delivery; subsequent read deadlines remain absolute");
   if (SUCCEEDED(hr)) emittedIdentity_ = sampleIdentity_;
   LogDeliveryEvidence();
   return hr;
@@ -156,14 +159,15 @@ void MediaStream::LogDeliveryEvidence() {
   if ((deliveryLogAttempts_++ % 60) != 0) return;
   using Result = corevideo::modules::VirtualCameraReadResult;
   const auto& read = reader_.evidence();
-  char b[1024];
+  char b[1800];
   _snprintf_s(b, sizeof(b), _TRUNCATE,
       "[vcam-delivery-v2] stream=%p run=%llu emitted=%llu fresh=%llu held=%llu slate=%llu failed=%llu "
       "formatMismatch=%llu readFresh=%llu unchanged=%llu contended=%llu unavailable=%llu uninitialized=%llu "
       "invalidHeader=%llu publicationObserved=%d lastPublication=%llu lastSeq=%lu maxIntervalHns=%llu "
       "programIdentityVerified=%d receiverVerified=0 correlatedReads=%llu uncorrelatedReads=%llu "
       "unobservedProgramFrames=%llu programEpochChanges=%llu programRegressions=%llu "
-      "lastProgramSequence=%lld epoch=%016llx%016llx lastReadProgramSequence=%lld logDropped=%llu logFailures=%llu",
+      "lastProgramSequence=%lld epoch=%016llx%016llx lastReadProgramSequence=%lld logDropped=%llu logFailures=%llu "
+      "historyReads=%llu historyRetainedReads=%llu historyOverflows=%llu historySkippedPublications=%llu historyMaximumLag=%llu",
       static_cast<void*>(this), deliveryRun_, delivery_.emitted, delivery_.fresh, delivery_.held, delivery_.slate,
       delivery_.failed, delivery_.formatMismatches, read.count(Result::Fresh), read.count(Result::Unchanged),
       read.count(Result::Contended), read.count(Result::Unavailable), read.count(Result::Uninitialized),
@@ -172,7 +176,8 @@ void MediaStream::LogDeliveryEvidence() {
       emittedIdentity_.verified ? 1 : 0, read.correlatedReads, read.uncorrelatedReads,
       read.unobservedProgramFrames, read.programEpochChanges, read.programRegressions,
       static_cast<long long>(emittedIdentity_.sequence), emittedIdentity_.epochHigh, emittedIdentity_.epochLow,
-      static_cast<long long>(read.lastProgramSequence), VcamServeLogQueue().dropped(), VcamServeLogQueue().failures());
+      static_cast<long long>(read.lastProgramSequence), VcamServeLogQueue().dropped(), VcamServeLogQueue().failures(),
+      read.historyReads, read.historyRetainedReads, read.historyOverflows, read.historySkippedPublications, read.historyMaximumLag);
   VcamServeLog(b);
   if (retryTransientRead_) {
     _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu readDeadlineMisses=%llu writerActive=%llu changedDuringCopy=%llu copyBudgetExhausted=%llu timerTimeouts=%llu timerFailures=%llu unrecoveredTransientSamples=%llu waitMaxUs=250 deadlineReserveUs=2000 maxRetries=64 maxPayloadCopies=2",
@@ -319,7 +324,7 @@ HRESULT MediaStream::Start() {
   if (shutdown_) return MF_E_SHUTDOWN;
   running_ = true;
   nextPts_ = 0;
-  nextDueHns_ = 0;  // re-anchor delivery pacing per run
+  schedule_.reset(fps_);
   ++deliveryRun_;
   delivery_.restartCadence();
   VcamServeLog("MediaStream::Start - serving begins");
@@ -335,6 +340,7 @@ HRESULT MediaStream::Stop() {
 }
 
 void MediaStream::Shutdown() {
+  std::lock_guard<std::mutex> requestLock(requestMutex_);
   std::lock_guard<std::mutex> lock(mutex_);
   shutdown_ = true;
   running_ = false;

@@ -56,10 +56,8 @@ public interface IMagicSceneHost
 
     void RefreshProductionReadouts();
 
-    // --- transport + license gate ---
-    void ApplyTransportAutomationState(ProductionMode mode, bool canToggle);
-
-    bool IsSetAndForgetEntitled();
+    // --- transport ---
+    void ApplyTransportAutomationState(ProductionMode mode);
 
     // --- overlay policy hooks ---
     bool SetAutomationGraphic(string kind, bool enabled);

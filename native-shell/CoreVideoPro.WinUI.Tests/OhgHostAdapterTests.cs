@@ -46,8 +46,6 @@ public sealed class OhgHostAdapterTests
 
         public List<(int Slot, string Name)> DisplayNames { get; } = new();
 
-        public List<(int Slot, string Title)> LowerThirdTitles { get; } = new();
-
         public List<(string SceneId, IReadOnlyDictionary<string, int?> Routes)> Cues { get; } = new();
 
         public Dictionary<string, int?> RouteSlots { get; } = new();
@@ -93,18 +91,6 @@ public sealed class OhgHostAdapterTests
             }
 
             DisplayNames.Add((slot, name));
-            return true;
-        }
-
-        public bool SetInputLowerThirdTitle(int slot, string title)
-        {
-            Guard(nameof(SetInputLowerThirdTitle));
-            if (!AssignableSlots.Contains(slot))
-            {
-                return false;
-            }
-
-            LowerThirdTitles.Add((slot, title));
             return true;
         }
 
@@ -507,9 +493,9 @@ public sealed class OhgHostAdapterTests
     }
 
     [Fact]
-    public async Task SetNameplates_SetsDisplayNameAndLowerThirdTitlePerPlate()
+    public async Task SetNameplates_SetsDisplayNamePerPlateAndReportsTheUnappliedLocationOnce()
     {
-        var (adapter, facade, _) = Build();
+        var (adapter, facade, log) = Build();
 
         var refusal = await adapter.ApplyAsync(Cmd("setNameplates", """
             [[{"position":{"kind":"host"},"slot":1,"name":"Ada","location":"Helsinki","tone":"host"},
@@ -518,7 +504,28 @@ public sealed class OhgHostAdapterTests
 
         Assert.Null(refusal);
         Assert.Equal(new[] { (1, "Ada"), (5, "Bo") }, facade.DisplayNames);
-        Assert.Equal(new[] { (1, "Helsinki"), (5, "Oslo") }, facade.LowerThirdTitles);
+        // #767: the location line used to be answered with a silent no-op SUCCESS. The shell has
+        // no per-input lower-third title, so the gap is now operator-visible, once.
+        Assert.Equal(OhgHostAdapter.NameplateLocationNote, Assert.Single(facade.StatusLines));
+        Assert.Contains(OhgHostAdapter.NameplateLocationNote, log);
+
+        Assert.Null(await adapter.ApplyAsync(Cmd("setNameplates", """
+            [[{"position":{"kind":"host"},"slot":1,"name":"Ada","location":"Tampere","tone":"host"}]]
+            """, seq: 2)));
+        Assert.Single(facade.StatusLines);
+    }
+
+    [Fact]
+    public async Task SetNameplates_WithoutLocationsReportsNothing()
+    {
+        var (adapter, facade, _) = Build();
+
+        Assert.Null(await adapter.ApplyAsync(Cmd("setNameplates", """
+            [[{"position":{"kind":"host"},"slot":1,"name":"Ada","location":"","tone":"host"}]]
+            """)));
+
+        Assert.Equal(new[] { (1, "Ada") }, facade.DisplayNames);
+        Assert.Empty(facade.StatusLines);
     }
 
     [Fact]

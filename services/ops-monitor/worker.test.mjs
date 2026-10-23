@@ -67,9 +67,9 @@ describe("statusIsUp", () => {
 });
 
 describe("buildTargets", () => {
-  it("defaults to the broker + three workers + self", () => {
+  it("defaults to the broker + telemetry worker + self", () => {
     const names = buildTargets({}).map((t) => t.name);
-    expect(names).toEqual(["oauth-broker", "licensing-api", "telemetry-ingest", "caption-broker", "ops-monitor"]);
+    expect(names).toEqual(["oauth-broker", "telemetry-ingest", "ops-monitor"]);
   });
 
   it("flags the broker as a read-only probe and defaults it to a no-return_uri start URL", () => {
@@ -82,12 +82,12 @@ describe("buildTargets", () => {
   it("honors env overrides and skips targets set to '' or 'off'", () => {
     const targets = buildTargets({
       OPS_BROKER_START_URL: "https://broker.test/probe",
-      OPS_CAPTION_URL: "off",
+      OPS_TELEMETRY_URL: "off",
       OPS_SELF_URL: ""
     });
     const byName = Object.fromEntries(targets.map((t) => [t.name, t.url]));
     expect(byName["oauth-broker"]).toBe("https://broker.test/probe");
-    expect(byName["caption-broker"]).toBeUndefined();
+    expect(byName["telemetry-ingest"]).toBeUndefined();
     expect(byName["ops-monitor"]).toBeUndefined();
   });
 });
@@ -171,11 +171,11 @@ describe("buildAlertPayload", () => {
   it("carries both Discord (content) and Slack (text) keys with the failed target + status", () => {
     const now = () => Date.parse("2026-07-23T12:00:00.000Z");
     const payload = buildAlertPayload(
-      [{ name: "licensing-api", url: "u", from: "up", to: "down", status: 503, error: null }],
+      [{ name: "telemetry-ingest", url: "u", from: "up", to: "down", status: 503, error: null }],
       { now, environment: "staging" }
     );
     expect(payload.content).toBe(payload.text);
-    expect(payload.content).toContain("licensing-api");
+    expect(payload.content).toContain("telemetry-ingest");
     expect(payload.content).toContain("status 503");
     expect(payload.content).toContain("DOWN");
     expect(payload.content).toContain("2026-07-23T12:00:00.000Z");
@@ -238,15 +238,13 @@ describe("sendAlert", () => {
 
 describe("runChecks (multi-target aggregation)", () => {
   it("probes all targets, persists next state, and alerts once for the changed targets", async () => {
-    const kv = makeKv({ "oauth-broker": "up", "licensing-api": "up", "telemetry-ingest": "up", "caption-broker": "up", "ops-monitor": "up" });
+    const kv = makeKv({ "oauth-broker": "up", "telemetry-ingest": "up", "ops-monitor": "up" });
     const capture = {};
     const fetchImpl = makeFetch(
       {
         "oauth-broker": 400, // broker up (expected 4xx)
         "corevideo.iamfatness.us": 400,
-        "licensing-api": 503, // DOWN
-        "telemetry-ingest": 200,
-        "caption-broker": 200,
+        "telemetry-ingest": 503, // DOWN
         "ops-monitor": 200
       },
       capture
@@ -254,25 +252,25 @@ describe("runChecks (multi-target aggregation)", () => {
     const env = { OPS_ALERT_WEBHOOK_URL: "https://hooks.test/abc", ENVIRONMENT: "staging" };
     const summary = await runChecks(env, { fetchImpl, kv, logger: quietLogger });
 
-    expect(summary.results).toHaveLength(5);
-    // exactly one change: licensing-api up->down
+    expect(summary.results).toHaveLength(3);
+    // exactly one change: telemetry-ingest up->down
     expect(summary.changes).toHaveLength(1);
-    expect(summary.changes[0]).toMatchObject({ name: "licensing-api", to: "down" });
+    expect(summary.changes[0]).toMatchObject({ name: "telemetry-ingest", to: "down" });
     expect(summary.alert).toMatchObject({ sent: true });
     // one aggregated webhook POST
     const body = JSON.parse(capture.body);
-    expect(body.content).toContain("licensing-api");
+    expect(body.content).toContain("telemetry-ingest");
     // next state persisted
     const persisted = JSON.parse(kv.store.get(STATE_KEY));
-    expect(persisted["licensing-api"]).toBe("down");
-    expect(persisted["telemetry-ingest"]).toBe("up");
+    expect(persisted["telemetry-ingest"]).toBe("down");
+    expect(persisted["ops-monitor"]).toBe("up");
   });
 
   it("no state change => no webhook call (spam-proof)", async () => {
-    const kv = makeKv({ "oauth-broker": "up", "licensing-api": "up", "telemetry-ingest": "up", "caption-broker": "up", "ops-monitor": "up" });
+    const kv = makeKv({ "oauth-broker": "up", "telemetry-ingest": "up", "ops-monitor": "up" });
     const capture = {};
     const fetchImpl = makeFetch(
-      { "iamfatness": 400, "licensing": 200, "telemetry": 200, "caption": 200, "ops-monitor": 200 },
+      { "iamfatness": 400, "telemetry": 200, "ops-monitor": 200 },
       capture
     );
     const summary = await runChecks({ OPS_ALERT_WEBHOOK_URL: "https://hooks.test/abc" }, { fetchImpl, kv, logger: quietLogger });
@@ -287,7 +285,7 @@ describe("runChecks (multi-target aggregation)", () => {
       },
       async put() {}
     };
-    const fetchImpl = makeFetch({ "iamfatness": "throw", "licensing": 200, "telemetry": 200, "caption": 200, "ops-monitor": 200 });
+    const fetchImpl = makeFetch({ "iamfatness": "throw", "telemetry": 200, "ops-monitor": 200 });
     const summary = await runChecks({}, { fetchImpl, kv: brokenKv, logger: quietLogger });
     // broker down; missing prior => baseline up => one down change; log-only (no webhook)
     expect(summary.changes.some((c) => c.name === "oauth-broker" && c.to === "down")).toBe(true);
