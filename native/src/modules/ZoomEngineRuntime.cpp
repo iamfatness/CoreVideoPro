@@ -1289,7 +1289,10 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
   const auto snapshot = state_.snapshot();
   rpc::Json::Array participants;
   for (const auto& participant : snapshot.participants) {
-    participants.emplace_back(rpc::Json::Object{
+    // No `audioLevel`: the engine has no per-user level and the old
+    // talking-flag constant was a fake meter (#765). Measured participant
+    // meters live in audioMixSession.participants.
+    rpc::Json::Object entry{
         {"userId", participantIdString(participant.id)},
         {"displayName", participant.displayName.empty() ? "Zoom User " + participantIdString(participant.id) : participant.displayName},
         {"persistentId", participant.persistentId},
@@ -1302,9 +1305,11 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
         {"videoOn", participant.hasVideo},
         {"talking", participant.isTalking || participantIdString(participant.id) == snapshot.activeSpeakerId},
         {"sharingScreen", participant.isSharingScreen},
-        {"audioLevel", participant.isTalking || participantIdString(participant.id) == snapshot.activeSpeakerId ? 78 : 12},
-        {"networkQuality", "good"},
-    });
+    };
+    if (!participant.networkQuality.empty()) {
+      entry.emplace("networkQuality", participant.networkQuality);
+    }
+    participants.emplace_back(std::move(entry));
   }
 
   rpc::Json::Object result{

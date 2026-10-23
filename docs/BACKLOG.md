@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 22 — credibility before the closed beta:** after the 30-minute outputs soak passed and beta-2026-10-22-f96a136 was published, the owner asked how far a public release is and chose to start on the credibility defects first: every panel, control or value is wired to something real or removed, never invented (rule in [honest-reporting](reference/honest-reporting.md)). Three lanes: shell [#1021](https://github.com/iamfatness/CoreVideoPro/pull/1021) (#767 #761 #766 #764), core [#1023](https://github.com/iamfatness/CoreVideoPro/pull/1023) (#765 #519 #763 #766 #764), services [#1020](https://github.com/iamfatness/CoreVideoPro/pull/1020) (#743). Merge #1021 before #1023. The public-release critical path stays tier 0 (#423 signing certificate, #424 Zoom SDK redistribution, #425 reference machines, #426 feedback channel, #427 rulings) and tier 2 plumbing (#433-#437); none of those are engineering-blocked.
+
 **Owner gate ruling, October 22 — release gate is outputs only:** Program recording, every ISO, the registered OS camera and any stream must deliver every source frame exactly once over the 30-minute workload (zero tolerance). The on-screen Studio cells are a UX metric judged by `scripts/qa/desktop-picture-cadence.py` v2 against a tolerance (no hold over 100 ms, omission ratio under 1 %), because Windows composes windowed surfaces at the beat between mixed-refresh monitors for every application; the app-less control reproduced the omission with the media core stopped. Qualify on the real mixed-refresh desk; never ask customers to match refresh rates. Retired: elevated PresentMon/ETW scanout proof, DXGI frame-statistics reconciliation, VBlank phase fitting, NVIDIA profile audits, and buffer/credit/alpha/Present(0) presenter experiments. Sequence: install a1e79e1 (Present(1) restored) → #1013 probe to twelve sessions reserving Program and stream → add a local SRT/RTMP stream to the workload harness → 30-minute soak judged on outputs → merge #1018/#1008, publish, desktop-shortcut acceptance. Detail in CLAUDE.md "What the release gate is, and is not".
 
 **Owner Graphics follow-up, October 21 — [#1012](https://github.com/iamfatness/CoreVideoPro/issues/1012):** finish local logo upload for the declarative logo templates as a dependency of #1007; verify private Preview, explicit Cue/Show and installed camera pixels before acceptance.
@@ -474,12 +476,12 @@ Found by reading code on main; none reproduced in the running app unless its iss
 | [#758](https://github.com/iamfatness/CoreVideoPro/issues/758) | A disconnected bridged capture device stays on Program as a frozen frame: the shell never sends `unregister-capture-shm` and the adapter re-emits its last frame. Blackmagic-named UVC devices are forced onto this path. |
 | [#759](https://github.com/iamfatness/CoreVideoPro/issues/759) | Output status reads "Live" while the sender is still `starting`. Stream-only sessions on a current core run the shell's "legacy core" branches because the core omits `recording.lifecycle`. |
 | [#762](https://github.com/iamfatness/CoreVideoPro/issues/762) | The shell accepts any core. A stub encoder (Record shows live, no file written) or no-op compositor in a real build is silent; `NativeMediaCoreProfileValidator` has no caller. Pair with #741. |
-| [#763](https://github.com/iamfatness/CoreVideoPro/issues/763) | NDI group is accepted and discarded; Program is advertised to every receiver on the LAN. |
-| [#761](https://github.com/iamfatness/CoreVideoPro/issues/761) | Set & Forget and Magic Scene never act on a real core: `autoProduction` is not bound. |
-| [#764](https://github.com/iamfatness/CoreVideoPro/issues/764) | Operator settings the core drops: colour-grade LUT presets, brand-kit styles, and other payload fields. |
-| [#765](https://github.com/iamfatness/CoreVideoPro/issues/765) | Invented values shown as measurements: guest network quality always "good", the LIVE clock, caption latency/confidence, per-participant meters. |
-| [#766](https://github.com/iamfatness/CoreVideoPro/issues/766) | Diagnostics that over-claim or are empty: first-frame evidence, support-bundle sections, the stale-roster counter (roster epoch/revision unbound). |
-| [#767](https://github.com/iamfatness/CoreVideoPro/issues/767) | Mock UI: licensing panel and caption controls with nothing behind them. Depends on the #743 ruling. |
+| [#763](https://github.com/iamfatness/CoreVideoPro/issues/763) | PR #1023: `ndiGroup` reaches `p_groups`, sender recreated on change. Not verified on a receiver with a group filter. |
+| [#761](https://github.com/iamfatness/CoreVideoPro/issues/761) | PR #1021: `autoProduction.slotBindings` bound and mapped; unit-tested to the coordinator, not live-run. |
+| [#764](https://github.com/iamfatness/CoreVideoPro/issues/764) | PRs #1021/#1023: echo-only brand-kit fields, route `audioRole`, strip `inputLevel`, `ptz` removed from both ends. LUT presets were a stale claim; the GPU grade shaders apply them and they stay. |
+| [#765](https://github.com/iamfatness/CoreVideoPro/issues/765) | LIVE clock fixed in #792; PRs #1023/#1021: network quality from the SDK (absent until reported), roster `audioLevel` and caption latency/confidence removed, fallback meters from DSP. |
+| [#766](https://github.com/iamfatness/CoreVideoPro/issues/766) | PRs #1021/#1023: first-frame evidence from frame events/spine counters only; empty bundle sections dropped; roster epoch/revision bound; media-mix warning only when true. |
+| [#767](https://github.com/iamfatness/CoreVideoPro/issues/767) | PR #1021: License & Plan panel, caption style controls and the no-op OHG title removed; caption cues stay. |
 | [#768](https://github.com/iamfatness/CoreVideoPro/issues/768) | Dead code: test-only fail/recover/simulate commands in the production protocol, breakout detection wired only to its simulator, an unused 935-line Zoom SDK adapter, unreferenced C# types. |
 
 ## Unranked — mock code in the shipping path and repo cleanup (2026-10-01 audit)
@@ -488,7 +490,7 @@ Found by the 2026-10-01 cleanup audit. Order within this table is a suggestion; 
 
 | Issue | Remaining work |
 |---|---|
-| [#743](https://github.com/iamfatness/CoreVideoPro/issues/743) | `caption-broker` and `licensing-api` are stub services with no native client. Owner ruling: build for real or remove, including deployed workers. |
+| [#743](https://github.com/iamfatness/CoreVideoPro/issues/743) | PR #1020 removes both stub services and their smoke/deploy references. Owner still has to delete the deployed `corevideo-licensing-api` and `corevideo-caption-broker` workers, the `LICENSE_KV` namespace and the two Actions secrets. |
 
 ## Unranked — open issue inventory restored in this audit
 
@@ -518,7 +520,7 @@ the sole work list. Their order in this table is not a priority assignment.
 | [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | Async ISO writer status still omits live `framesWritten` / `bytesWritten`. |
 | [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points; UI design still needed. |
 | [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct HEVC shipped in #566. AV1 refused pending #565. Raw fallback and recording/ISO on the encoder seam remain. |
-| [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | RTMP `bytesSent` still estimated; `latencyMs` hard-coded to 2100. |
+| [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | PR #1023: `bytesSent` measured at the FFmpeg stdin pipe; `latencyMs` removed from the wire. |
 | [#509](https://github.com/iamfatness/CoreVideoPro/issues/509) | 197 ms participant-rebuild stutter. Command-drop on the same apply graph is #622. |
 | [#537](https://github.com/iamfatness/CoreVideoPro/issues/537) | DeckLink/AJA: live frames on the source bus (not probe-only). Parked for beta. |
 | [#508](https://github.com/iamfatness/CoreVideoPro/issues/508) | Watch item: multiview label/click mismatch after unassign has not recurred. |

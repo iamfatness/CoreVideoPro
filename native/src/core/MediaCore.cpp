@@ -692,8 +692,6 @@ rpc::Json MediaCore::zoomSnapshot() const {
                {"videoOn", true},
                {"muted", false},
                {"talking", true},
-               {"audioLevel", 76},
-               {"networkQuality", "good"},
            },
            rpc::Json::Object{
                {"userId", "guest-1"},
@@ -702,8 +700,6 @@ rpc::Json MediaCore::zoomSnapshot() const {
                {"videoOn", true},
                {"muted", false},
                {"talking", false},
-               {"audioLevel", 22},
-               {"networkQuality", "good"},
            },
        };
   return rpc::Json::Object{
@@ -785,6 +781,7 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
     const std::string rawMediaWarning = rawMediaDisabledWarningFor(payload, kind);
     const rpc::Json* videoOn = participant ? participant->get("videoOn") : nullptr;
     const bool videoOff = participant && (kind == "participant-video" || kind == "screen-share") && videoOn && !videoOn->asBool();
+    // #765: "low" only when the SDK reported it; an absent value is unknown, not a resolution claim.
     const bool lowResolution = participant && participant->getString("networkQuality") == "low";
     const std::string warning = !rawMediaWarning.empty()
                                     ? rawMediaWarning
@@ -1451,7 +1448,6 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
   int degradedCount = 0;
   int activeContributorCount = 0;
   int talkingCount = 0;
-  double audioLevelSum = 0.0;
   std::string lastTalkingId;
 
   for (const auto& participant : participants->asArray()) {
@@ -1464,8 +1460,10 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
     const bool talking = rawTalking ? rawTalking->asBool() :
         (participant.get("talking") && participant.get("talking")->asBool());
     const bool sharingScreen = participant.get("sharingScreen") && participant.get("sharingScreen")->asBool();
-    const double audioLevel = participant.getNumber("audioLevel", 0.0);
-    const std::string networkQuality = participant.getString("networkQuality", "good");
+    // #765: only the SDK-measured network quality counts. Absent means
+    // unknown and is never treated as "good" (or as degraded). The roster
+    // carries no audio level any more; nothing here may invent one.
+    const std::string networkQuality = participant.getString("networkQuality");
 
     if (sharingScreen) {
       signals.screenShareActive = true;
@@ -1486,7 +1484,6 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
     if (!muted || talking) {
       ++activeContributorCount;
     }
-    audioLevelSum += audioLevel;  // audioLevel is reported 0-100
     if (talking) {
       ++talkingCount;
       lastTalkingId = participant.getString("userId");
@@ -1496,7 +1493,6 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
   signals.liveCount = liveCount;
   signals.degradedCount = degradedCount;
   signals.activeContributorCount = activeContributorCount;
-  signals.meanAudioLevel = liveCount == 0 ? 0.0 : (audioLevelSum / liveCount) / 100.0;
   signals.hasDominantSpeaker = talkingCount == 1;
   signals.crossTalk = talkingCount >= 2;
   return signals;
@@ -2097,7 +2093,6 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.participantId = route.getString("participantId");
       state.personId = route.getString("personId");
       state.captureDeviceId = route.getString("captureDeviceId");
-      state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
       state.mediaAssetName = route.getString("mediaAssetName");
       state.mediaAssetKind = route.getString("mediaAssetKind");
@@ -2859,7 +2854,8 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
   for (const auto& channel : channels->asArray()) {
     ParticipantAudioChannelInput input;
     input.participantId = channel.getString("participantId");
-    input.inputLevel = std::max(0, std::min(100, static_cast<int>(channel.get("inputLevel") ? channel.get("inputLevel")->asNumber() : 0)));
+    // `inputLevel` is deliberately NOT read (#764): the strip meters off the
+    // measured PCM, never off a level the shell sends.
     input.muted = channel.get("muted") && channel.get("muted")->asBool();
     input.noiseSuppression = channel.get("noiseSuppression") && channel.get("noiseSuppression")->asBool();
     if (const rpc::Json* manualGain = channel.get("manualGainDb")) {
@@ -3343,7 +3339,6 @@ void MediaCore::pushCaptionCue(const rpc::Json& command) {
   captionText_ = text;
   captionSpeaker_ = command.getString("speaker");
   captionAtMs_ = command.get("atMs") ? command.get("atMs")->asNumber() : 0;
-  captionConfidence_ = std::max(82, 97 - static_cast<int>(text.size() / 28));
   if (text.size() > 96) {
     captionWarnings_.push_back("Caption line is long; compact mode enabled.");
   }
@@ -3367,19 +3362,15 @@ void MediaCore::setBrandKit(const rpc::Json& command) {
       else brandWarnings_.push_back("Invalid lower-third appearance; previous look retained.");
     }
   }
+  // #764: only the fields the compositor actually applies are kept. logoText,
+  // lowerThirdStyle, captionStyle and defaultOverlayBehavior were stored and
+  // echoed only (no bug label is ever drawn), so they are neither read nor
+  // published any more.
   brandName_ = command.getString("name", brandName_);
-  brandLogoText_ = command.getString("logoText", brandLogoText_);
   brandColor_ = command.getString("brandColor", brandColor_);
   brandAccentColor_ = command.getString("accentColor", brandAccentColor_);
   brandBackgroundColor_ = command.getString("backgroundColor", brandBackgroundColor_);
   brandFontFamily_ = command.getString("fontFamily", brandFontFamily_);
-  brandLowerThirdStyle_ = command.getString("lowerThirdStyle", brandLowerThirdStyle_);
-  brandCaptionStyle_ = command.getString("captionStyle", brandCaptionStyle_);
-  brandDefaultOverlayBehavior_ = command.getString("defaultOverlayBehavior", brandDefaultOverlayBehavior_);
-  if (brandLogoText_.empty()) {
-    brandLogoText_ = "CoreVideo Pro";
-    brandWarnings_.push_back("Brand logo text was empty; using default bug label.");
-  }
 }
 
 // #535 slice 3b: SELECTION ONLY. `playing` and `mediaPlaybackKey` still ride
@@ -3583,7 +3574,6 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       state.participantId = route.getString("participantId");
       state.personId = route.getString("personId");
       state.captureDeviceId = route.getString("captureDeviceId");
-      state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
       state.mediaAssetName = route.getString("mediaAssetName");
       state.mediaAssetKind = route.getString("mediaAssetKind");
@@ -4112,44 +4102,6 @@ std::string audioStatusFor(bool muted, int gainDb) {
   return "balanced";
 }
 
-// DETERMINISTIC dBFS derivation for the participant-audio contract.
-//
-// The stub core has no real PCM (the real DSP graph is F2, gated behind the dev
-// adapters), so it cannot MEASURE rms/peak the way the TS simulators do from
-// synthesized samples. Instead we DERIVE the two metrics from the existing
-// 0-100 `outputLevel` using the same sine model the renderer/native-core mirrors
-// assume: a participant tone whose PEAK amplitude tracks level/100 of full
-// scale. Then peakDbfs = 20*log10(level/100) and, for a sine, rmsDbfs is one
-// crest-factor (~3.0103 dB) below the peak. Level 0 (or muted) reports the
-// digital-silence floor. This keeps the values consistent and stable for the
-// same input, matching the TS measured-from-silence behaviour for muted/silent
-// channels (both floor to -120 dBFS).
-constexpr double kAudioDbfsFloor = -120.0;
-constexpr double kSineCrestFactorDb = 3.0102999566398121;  // 20*log10(sqrt(2))
-
-double levelToDbfs(int level) {
-  if (level <= 0) {
-    return kAudioDbfsFloor;
-  }
-  const double db = 20.0 * std::log10(static_cast<double>(level) / 100.0);
-  return db < kAudioDbfsFloor ? kAudioDbfsFloor : db;
-}
-
-double round1Dbfs(double value) {
-  return std::round(value * 10.0) / 10.0;
-}
-
-double derivePeakDbfs(int outputLevel) {
-  return round1Dbfs(levelToDbfs(outputLevel));
-}
-
-double deriveRmsDbfs(int outputLevel) {
-  if (outputLevel <= 0) {
-    return round1Dbfs(kAudioDbfsFloor);
-  }
-  const double rms = levelToDbfs(outputLevel) - kSineCrestFactorDb;
-  return round1Dbfs(rms < kAudioDbfsFloor ? kAudioDbfsFloor : rms);
-}
 
 std::string protocolAudioStatusForDsp(const modules::AudioParticipantMixMetrics& participant) {
   if (participant.muted) return "muted";

@@ -28,8 +28,8 @@ struct DirectorSignals {
   int degradedCount = 0;
   // engagement.activeContributorCount — unmuted-or-talking live participants.
   int activeContributorCount = 0;
-  // engagement.meanAudioLevel — mean audio level across live feeds (0..1).
-  double meanAudioLevel = 0.0;
+  // (engagement.meanAudioLevel was removed in #765: the roster carries no
+  // measured per-guest level, and confidence must not ride an invented one.)
   // speakerTurns.dominantSpeakerId !== undefined — exactly one active speaker.
   bool hasDominantSpeaker = false;
   // speakerTurns.crossTalk — 2+ feeds active simultaneously.
@@ -149,7 +149,7 @@ inline DirectorRecommendation recommendScene(const DirectorSignals& signals,
     return result;
   }
   DirectorRecommendation result{"single-speaker", "intro",
-      clampDirectorConfidence(90.0 + signals.meanAudioLevel * 6.0 - degradePenalty),
+      clampDirectorConfidence(90.0 - degradePenalty),
       "One guest has earned the current talker slot."};
   bind(result, guests.front());
   return result;

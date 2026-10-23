@@ -206,7 +206,7 @@ TEST(ZoomEngineClient, ParsesFrameAudioParticipantAndSpeakerEvents) {
   EXPECT_EQ(mix->byteLength, 960u);
 
   const auto participants = corevideo::modules::parseZoomEngineEvent(
-      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Sophia \"Host\"","persistent_id":"host-pid","has_video":true,"is_talking":true,"is_muted":false,"is_sharing_screen":true,"is_host":true,"is_me":true},{"id":77,"name":"David Chen","has_video":false,"is_talking":false,"is_muted":true,"is_sharing_screen":false}]})");
+      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Sophia \"Host\"","persistent_id":"host-pid","has_video":true,"is_talking":true,"is_muted":false,"is_sharing_screen":true,"is_host":true,"is_me":true,"network_quality":"low"},{"id":77,"name":"David Chen","has_video":false,"is_talking":false,"is_muted":true,"is_sharing_screen":false}]})");
   ASSERT_TRUE(participants.has_value());
   EXPECT_EQ(participants->kind, corevideo::modules::ZoomEngineEventKind::Participants);
   EXPECT_EQ(participants->activeSpeakerId, 42u);
@@ -228,6 +228,9 @@ TEST(ZoomEngineClient, ParsesFrameAudioParticipantAndSpeakerEvents) {
   EXPECT_TRUE(participants->participants[1].isMuted);
   EXPECT_FALSE(participants->participants[1].isSharingScreen);
   EXPECT_FALSE(participants->participants[1].isHost);
+  // #765: network quality is carried only when the SDK reported it.
+  EXPECT_EQ(participants->participants[0].networkQuality, "low");
+  EXPECT_TRUE(participants->participants[1].networkQuality.empty());
 
   const auto speaker = corevideo::modules::parseZoomEngineEvent(R"({"cmd":"active_speaker","participant_id":77})");
   ASSERT_TRUE(speaker.has_value());

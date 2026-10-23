@@ -430,43 +430,13 @@ std::string audioStatusFor(bool muted, int gainDb) {
   return "balanced";
 }
 
-// DETERMINISTIC dBFS derivation for the participant-audio contract.
-//
-// The stub core has no real PCM (the real DSP graph is F2, gated behind the dev
-// adapters), so it cannot MEASURE rms/peak the way the TS simulators do from
-// synthesized samples. Instead we DERIVE the two metrics from the existing
-// 0-100 `outputLevel` using the same sine model the renderer/native-core mirrors
-// assume: a participant tone whose PEAK amplitude tracks level/100 of full
-// scale. Then peakDbfs = 20*log10(level/100) and, for a sine, rmsDbfs is one
-// crest-factor (~3.0103 dB) below the peak. Level 0 (or muted) reports the
-// digital-silence floor. This keeps the values consistent and stable for the
-// same input, matching the TS measured-from-silence behaviour for muted/silent
-// channels (both floor to -120 dBFS).
+// Meter floor for a channel with no PCM (digital silence). Every published
+// rms/peak dBFS is MEASURED by the DSP off real PCM or sits at this floor;
+// nothing is derived from a 0-100 level any more (#765).
 constexpr double kAudioDbfsFloor = -120.0;
-constexpr double kSineCrestFactorDb = 3.0102999566398121;  // 20*log10(sqrt(2))
-
-double levelToDbfs(int level) {
-  if (level <= 0) {
-    return kAudioDbfsFloor;
-  }
-  const double db = 20.0 * std::log10(static_cast<double>(level) / 100.0);
-  return db < kAudioDbfsFloor ? kAudioDbfsFloor : db;
-}
 
 double round1Dbfs(double value) {
   return std::round(value * 10.0) / 10.0;
-}
-
-double derivePeakDbfs(int outputLevel) {
-  return round1Dbfs(levelToDbfs(outputLevel));
-}
-
-double deriveRmsDbfs(int outputLevel) {
-  if (outputLevel <= 0) {
-    return round1Dbfs(kAudioDbfsFloor);
-  }
-  const double rms = levelToDbfs(outputLevel) - kSineCrestFactorDb;
-  return round1Dbfs(rms < kAudioDbfsFloor ? kAudioDbfsFloor : rms);
 }
 
 std::string protocolAudioStatusForDsp(const modules::AudioParticipantMixMetrics& participant) {
@@ -515,18 +485,13 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   audioRoutingWarnings_ = core.audioRoutingWarnings_;
   brandAccentColor_ = core.brandAccentColor_;
   brandBackgroundColor_ = core.brandBackgroundColor_;
-  brandCaptionStyle_ = core.brandCaptionStyle_;
   brandColor_ = core.brandColor_;
-  brandDefaultOverlayBehavior_ = core.brandDefaultOverlayBehavior_;
   brandFontFamily_ = core.brandFontFamily_;
-  brandLogoText_ = core.brandLogoText_;
-  brandLowerThirdStyle_ = core.brandLowerThirdStyle_;
   brandName_ = core.brandName_;
   brandWarnings_ = core.brandWarnings_;
   breakoutRoomId_ = core.breakoutRoomId_;
   breakoutRoomName_ = core.breakoutRoomName_;
   captionAtMs_ = core.captionAtMs_;
-  captionConfidence_ = core.captionConfidence_;
   captionEnabled_ = core.captionEnabled_;
   captionSpeaker_ = core.captionSpeaker_;
   captionText_ = core.captionText_;
@@ -1266,8 +1231,10 @@ rpc::Json CoreStateCapture::audioMixSessionState(const AudioOutputObservation& o
             {"inputLevel", participant.inputLevel},
             {"outputLevel", participant.outputLevel},
             {"gainDb", participant.gainDb},
-            {"rmsDbfs", deriveRmsDbfs(participant.muted ? 0 : participant.outputLevel)},
-            {"peakDbfs", derivePeakDbfs(participant.muted ? 0 : participant.outputLevel)},
+            // Output meters measured by the DSP off the mixed PCM (#765); a muted
+            // strip contributes nothing to a bus, so it reports the silence floor.
+            {"rmsDbfs", participant.muted ? kAudioDbfsFloor : round1Dbfs(modules::linearToDbfs(participant.rmsLevel))},
+            {"peakDbfs", participant.muted ? kAudioDbfsFloor : round1Dbfs(modules::linearToDbfs(participant.peakLevel))},
             {"noiseSuppression", participant.noiseSuppressionActive},
             {"limiterActive", audioLimiterEnabled_ && participant.limiterActive},
             {"muted", participant.muted},
@@ -1389,6 +1356,14 @@ rpc::Json CoreStateCapture::audioMixSessionState(const AudioOutputObservation& o
         clampInt(static_cast<int>(std::lround(mediaPreSumMetric.rmsLevel * 100.0)), 0, 100);
     mediaPreSumMetric.limiterActive = mediaPreSumMetric.peakLevel >= 0.92;
   }
+  // #766: a clip routed by its own send rows (or with its own strip) bypasses
+  // the "media" pre-sum and is metered under its own id. Media PCM IS being
+  // mixed then, so the generic "media" strip must not claim otherwise.
+  bool anyMediaClipPcmMixed = false;
+  for (const auto& [sourceId, metric] : nativeMetricsByParticipant) {
+    (void)metric;
+    if (isMediaClipAudioSourceId(sourceId)) { anyMediaClipPcmMixed = true; break; }
+  }
 
   for (const auto& channel : audioChannels_) {
     const auto nativeMetric = nativeMetricsByParticipant.find(channel.participantId);
@@ -1419,7 +1394,11 @@ rpc::Json CoreStateCapture::audioMixSessionState(const AudioOutputObservation& o
     if (!channel.pluginInserts.empty()) {
       insertCount += static_cast<int>(channel.pluginInserts.size());
     }
-    if (!hasPcm && !channel.muted && warningSet.insert("missing-pcm:" + channel.participantId).second) {
+    // Only a TRUE claim goes on the wire (#766): the media strip stays quiet
+    // while its clips are mixed under their own ids.
+    const bool mediaMixedElsewhere = channel.participantId == kMediaAudioControlSourceId && anyMediaClipPcmMixed;
+    if (!hasPcm && !channel.muted && !mediaMixedElsewhere &&
+        warningSet.insert("missing-pcm:" + channel.participantId).second) {
       warnings.emplace_back("No native PCM has been mixed for " + channel.participantId + "; meters are held at silence for that channel.");
     }
 
@@ -1455,20 +1434,20 @@ rpc::Json CoreStateCapture::audioMixSessionState(const AudioOutputObservation& o
         // and control API even while the routed audio was correctly silent.
         {"rmsDbfs", hasPcm && !channel.muted
                         ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel))
-                        : deriveRmsDbfs(0)},
+                        : kAudioDbfsFloor},
         {"peakDbfs", hasPcm && !channel.muted
                          ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
-                         : derivePeakDbfs(0)},
+                         : kAudioDbfsFloor},
         // #481: PRE-MUTE input meters, measured off the same PCM before mute/
         // fader is applied. A muted strip still receives signal - this is how
         // the A1 sees a guest talking while their channel is muted. Never gate
         // this on channel.muted; that would recreate the bug these fields fix.
         {"inputRmsDbfs", hasPcm
                         ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel))
-                        : deriveRmsDbfs(0)},
+                        : kAudioDbfsFloor},
         {"inputPeakDbfs", hasPcm
                          ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
-                         : derivePeakDbfs(0)},
+                         : kAudioDbfsFloor},
         // C7b: live compressor gain reduction (dB, 0 when idle/not engaged) -
         // feeds the workspace GR meter.
         {"gainReductionDb",
@@ -2110,7 +2089,6 @@ rpc::Json CoreStateCapture::captionTrackState() const {
     return rpc::Json::Object{
         {"enabled", false},
         {"status", "idle"},
-        {"latencyMs", 0},
         {"warnings", warnings},
     };
   }
@@ -2118,7 +2096,6 @@ rpc::Json CoreStateCapture::captionTrackState() const {
     return rpc::Json::Object{
         {"enabled", true},
         {"status", "idle"},
-        {"latencyMs", 180},
         {"warnings", warnings},
     };
   }
@@ -2126,7 +2103,6 @@ rpc::Json CoreStateCapture::captionTrackState() const {
   rpc::Json::Object cue{
       {"text", captionText_},
       {"atMs", captionAtMs_},
-      {"confidence", static_cast<double>(captionConfidence_)},
   };
   if (!captionSpeaker_.empty()) {
     cue.emplace("speaker", captionSpeaker_);
@@ -2136,7 +2112,6 @@ rpc::Json CoreStateCapture::captionTrackState() const {
       {"enabled", true},
       {"status", warnings.empty() ? "live" : "warning"},
       {"currentCue", cue},
-      {"latencyMs", 180},
       {"warnings", warnings},
   };
 }
@@ -2158,14 +2133,10 @@ rpc::Json CoreStateCapture::brandKitState() const {
 
   return rpc::Json::Object{
       {"name", brandName_},
-      {"logoText", brandLogoText_},
       {"brandColor", brandColor_},
       {"accentColor", brandAccentColor_},
       {"backgroundColor", brandBackgroundColor_},
       {"fontFamily", brandFontFamily_},
-      {"lowerThirdStyle", brandLowerThirdStyle_},
-      {"captionStyle", brandCaptionStyle_},
-      {"defaultOverlayBehavior", brandDefaultOverlayBehavior_},
       {"appliedOverlayCount", appliedOverlayCount},
       {"summary", summary.str()},
       {"warnings", warnings},
@@ -2574,7 +2545,6 @@ DirectorSignals CoreStateCapture::deriveDirectorSignals() const {
   int degradedCount = 0;
   int activeContributorCount = 0;
   int talkingCount = 0;
-  double audioLevelSum = 0.0;
   std::string lastTalkingId;
 
   for (const auto& participant : participants->asArray()) {
@@ -2587,8 +2557,10 @@ DirectorSignals CoreStateCapture::deriveDirectorSignals() const {
     const bool talking = rawTalking ? rawTalking->asBool() :
         (participant.get("talking") && participant.get("talking")->asBool());
     const bool sharingScreen = participant.get("sharingScreen") && participant.get("sharingScreen")->asBool();
-    const double audioLevel = participant.getNumber("audioLevel", 0.0);
-    const std::string networkQuality = participant.getString("networkQuality", "good");
+    // #765: only the SDK-measured network quality counts. Absent means
+    // unknown and is never treated as "good" (or as degraded). The roster
+    // carries no audio level any more; nothing here may invent one.
+    const std::string networkQuality = participant.getString("networkQuality");
 
     if (sharingScreen) {
       signals.screenShareActive = true;
@@ -2609,7 +2581,6 @@ DirectorSignals CoreStateCapture::deriveDirectorSignals() const {
     if (!muted || talking) {
       ++activeContributorCount;
     }
-    audioLevelSum += audioLevel;  // audioLevel is reported 0-100
     if (talking) {
       ++talkingCount;
       lastTalkingId = participant.getString("userId");
@@ -2619,7 +2590,6 @@ DirectorSignals CoreStateCapture::deriveDirectorSignals() const {
   signals.liveCount = liveCount;
   signals.degradedCount = degradedCount;
   signals.activeContributorCount = activeContributorCount;
-  signals.meanAudioLevel = liveCount == 0 ? 0.0 : (audioLevelSum / liveCount) / 100.0;
   signals.hasDominantSpeaker = talkingCount == 1;
   signals.crossTalk = talkingCount >= 2;
   return signals;
@@ -2654,8 +2624,6 @@ rpc::Json CoreStateCapture::zoomSnapshot() const {
                {"videoOn", true},
                {"muted", false},
                {"talking", true},
-               {"audioLevel", 76},
-               {"networkQuality", "good"},
            },
            rpc::Json::Object{
                {"userId", "guest-1"},
@@ -2664,8 +2632,6 @@ rpc::Json CoreStateCapture::zoomSnapshot() const {
                {"videoOn", true},
                {"muted", false},
                {"talking", false},
-               {"audioLevel", 22},
-               {"networkQuality", "good"},
            },
        };
   return rpc::Json::Object{
@@ -2753,7 +2719,6 @@ rpc::Json CoreStateCapture::outputSenderSessionState(const AudioOutputObservatio
         {"status", core::publishedSenderStatus(sender.status, lifecycleState, sender.supervisor)},
         {"framesSent", static_cast<double>(sender.framesSent)},
         {"retryCount", sender.retryCount},
-        {"latencyMs", sender.latencyMs},
         {"bitrateMbps", sender.bitrateMbps},
         {"destinationHealth", core::publishedSenderDestinationHealth(sender.destinationHealth, lifecycleState, sender.supervisor)},
         {"lastResultCode", sender.lastResultCode},
@@ -2764,6 +2729,10 @@ rpc::Json CoreStateCapture::outputSenderSessionState(const AudioOutputObservatio
         {"audioChannels", sender.audioChannels},
         {"audioSampleRate", sender.audioSampleRate},
     };
+    // #519: only a MEASURED latency goes on the wire; no adapter fakes one.
+    if (sender.latencyMs.has_value()) {
+      senderJson.emplace("latencyMs", *sender.latencyMs);
+    }
     if (sender.startedAtMs > 0) {
       senderJson.emplace("startedAtMs", sender.startedAtMs);
     }

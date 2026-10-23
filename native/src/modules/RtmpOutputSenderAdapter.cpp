@@ -474,10 +474,6 @@ RuntimeProbe probeFfmpegRuntime(const std::string& configuredBinDirectory) {
   return probe;
 }
 
-int64_t estimatedFrameBytes(double bitrateMbps) {
-  return static_cast<int64_t>((bitrateMbps * 1000000.0 / 8.0 / 30.0) + 0.5);
-}
-
 std::string quoteArgument(const std::string& value) {
   std::string quoted = "\"";
   for (const char ch : value) {
@@ -1048,7 +1044,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.lastFrameNumber = frame->frameNumber;
     // These counters prove local FFmpeg input acceptance, not destination receipt.
     ++sender_.framesSent;
-    sender_.bytesSent += estimatedFrameBytes(sender_.bitrateMbps);
+    sender_.bytesSent = stdinBytesWritten_.load(std::memory_order_relaxed);
     sender_.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 0;
     sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
     sender_.destinationHealth = "ok";
@@ -1117,6 +1113,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.lastError.clear();
     sender_.framesSent = sender_.audioFramesSent = 0;
     sender_.bytesSent = sender_.audioBytesSent = 0;
+    stdinBytesWritten_.store(0, std::memory_order_relaxed);
     return snapshot();
   }
 
@@ -1341,7 +1338,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.destination = protocol_.destination;
     sender_.status = "starting";
     sender_.startedAtMs = elapsedMs;
-    sender_.latencyMs = 2100;
+    // No latencyMs: nothing on this path measures transport latency (#519).
     sender_.bitrateMbps = 6.0;
     sender_.runtimeDetail = runtimeDetail_;
     sender_.destinationHealth = "starting";
@@ -2632,6 +2629,7 @@ class RtmpOutputSender final : public IOutputSender {
       }
       data += written;
       size -= written;
+      stdinBytesWritten_.fetch_add(written, std::memory_order_relaxed);
     }
     if (adtsBytes) {
       audioBytesWritten_.fetch_add(static_cast<std::int64_t>(adtsBytes));
@@ -2824,6 +2822,7 @@ class RtmpOutputSender final : public IOutputSender {
       }
       data += written;
       remaining -= written;
+      stdinBytesWritten_.fetch_add(written, std::memory_order_relaxed);
     }
     trace.writeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - packetWriteStarted).count();
@@ -2843,6 +2842,7 @@ class RtmpOutputSender final : public IOutputSender {
       }
       data += static_cast<size_t>(written);
       remaining -= static_cast<size_t>(written);
+      stdinBytesWritten_.fetch_add(written, std::memory_order_relaxed);
     }
     firstBitstreamToFfmpeg_.store(true, std::memory_order_release);
 #endif
@@ -2911,6 +2911,7 @@ class RtmpOutputSender final : public IOutputSender {
       }
       data += written;
       remaining -= written;
+      stdinBytesWritten_.fetch_add(written, std::memory_order_relaxed);
     }
     return true;
 #else
@@ -2969,6 +2970,7 @@ class RtmpOutputSender final : public IOutputSender {
       }
       data += written;
       remaining -= static_cast<size_t>(written);
+      stdinBytesWritten_.fetch_add(written, std::memory_order_relaxed);
     }
     return true;
 #endif
@@ -3308,6 +3310,7 @@ class RtmpOutputSender final : public IOutputSender {
     OutputSenderSession session;
     if (!sender_.senderId.empty()) {
       auto sender = sender_;
+      sender.bytesSent = stdinBytesWritten_.load(std::memory_order_relaxed);
       if (activeUseGpuDirect_ && ffmpegRunning_) {
         const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -3559,6 +3562,10 @@ class RtmpOutputSender final : public IOutputSender {
   // Written by the destination's bitstream writer; sampled by its async sender
   // worker. These counters never run on the compositor or audio worker.
   MuxInputRateWindow muxRateWindow_;
+  // Every byte accepted by the FFmpeg child's stdin pipe this run (#519):
+  // raw frames, encoded bitstream and transport-stream audio alike. The
+  // measurement behind OutputSender::bytesSent.
+  std::atomic<std::int64_t> stdinBytesWritten_{0};
   std::atomic<std::int64_t> muxVideoPayloadBytes_{0};
   std::atomic<std::int64_t> muxVideoPackets_{0};
   std::atomic<double> muxVideoMbps_{0};

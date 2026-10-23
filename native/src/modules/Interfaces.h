@@ -878,16 +878,23 @@ struct OutputSender {
   int64_t lastFrameNumber = 0;
   int64_t framesSent = 0;
   int retryCount = 0;
-  int latencyMs = 2100;
+  // Set ONLY by an adapter that measured it (#519). The RTMP/SRT FFmpeg path
+  // and NDI measure no transport latency, so they leave it unset and the
+  // snapshot omits the key rather than publishing a constant.
+  std::optional<int> latencyMs;
   double bitrateMbps = 6.0;
   std::string warning;
   std::string destinationHealth = "starting";
   std::string lastResultCode = "waiting-for-frame";
   std::string lastError;
+  // Bytes this adapter actually handed to its transport in the current run:
+  // for the FFmpeg senders every byte written to the child's stdin pipe (raw
+  // video, encoded bitstream or transport-stream audio), for NDI the UYVY
+  // frame bytes submitted to libNDI. Measured, never estimated (#519). Local
+  // acceptance only; remote receipt still requires ingest/receiver evidence.
   int64_t bytesSent = 0;
-  // Compressed video accepted by this destination's FFmpeg input pipe. Unlike
-  // bytesSent (legacy configured-rate estimate), these are measured writes;
-  // remote receipt still requires ingest/receiver evidence.
+  // Compressed video accepted by this destination's FFmpeg input pipe; the
+  // per-packet view of the same measured writes.
   struct MuxInputVideo {
     int64_t payloadBytes = 0;
     int64_t packets = 0;

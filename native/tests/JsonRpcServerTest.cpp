@@ -434,8 +434,6 @@ TEST(JsonRpcServer, HandlesZoomMediaSpineSyncRequest) {
                     {"muted", false},
                     {"talking", true},
                     {"sharingScreen", false},
-                    {"audioLevel", 80},
-                    {"networkQuality", "good"},
                 },
             }},
            {"subscriptions",
