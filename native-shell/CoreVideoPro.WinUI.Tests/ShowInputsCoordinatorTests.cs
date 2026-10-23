@@ -1115,6 +1115,38 @@ public sealed class ShowInputsCoordinatorTests
         Assert.Equal(Enumerable.Range(2, 8).Select(index => $"zoom:p{index}"), targets);
     }
 
+    // #1009: Program recording no longer needs a meeting, but a Zoom guest's ISO still does.
+    // With Zoom offline (no roster) the guest's ISO does not arm; a local camera's ISO does, and
+    // the guest's ISO choice is kept for when the meeting is rejoined.
+    [Fact]
+    public void BuildIsoSourceTargets_ZoomIsoNeedsTheMeeting_CaptureIsoDoesNot()
+    {
+        var (coordinator, host) = Build();
+        host.IsoRecordingEnabled = true;
+        host.RoomParticipantsForInputs = [new Participant { Id = "p1", Name = "Guest", Health = FeedHealth.Live }];
+        host.CaptureDevices.Add(new CaptureDevice
+        {
+            Id = "cam", NativeDeviceId = "cam", Name = "Camera", Vendor = "test",
+            Inputs = [], SelectedInputId = "cam"
+        });
+        coordinator.RefreshShowInputEditors(force: true);
+        coordinator.ShowInputEditors[0].SelectedUnifiedSourceId = "zoom:p1";
+        coordinator.ShowInputEditors[0].IsoEnabled = true;
+        coordinator.ShowInputEditors[1].SelectedUnifiedSourceId = "capture:cam";
+        coordinator.ShowInputEditors[1].IsoEnabled = true;
+        Assert.Equal(["zoom:p1", "capture:cam"], coordinator.BuildIsoSourceTargets().SourceIds);
+
+        host.RoomParticipantsForInputs = []; // left the meeting
+        coordinator.RefreshShowInputEditors(force: true);
+
+        Assert.Equal(["capture:cam"], coordinator.BuildIsoSourceTargets().SourceIds);
+        Assert.Contains("zoom:p1", coordinator.IsoSelectedSourceIds);
+
+        host.RoomParticipantsForInputs = [new Participant { Id = "p1", Name = "Guest", Health = FeedHealth.Live }];
+        coordinator.RefreshShowInputEditors(force: true);
+        Assert.Equal(["zoom:p1", "capture:cam"], coordinator.BuildIsoSourceTargets().SourceIds);
+    }
+
     // ---------------------------------------------------------------- fakes
 
     private sealed class FakeShowInputsHost : IShowInputsHost

@@ -38,16 +38,17 @@ public enum OutputResumeDecision
 /// </summary>
 public sealed class OutputResumeAfterCoreRestart
 {
-    private readonly bool _requiresMeeting;
+    private readonly bool _requiresZoomRejoin;
     private bool _owed;
 
-    /// <param name="requiresMeeting">
-    /// True for the recording: without the meeting there is only a slate to record, which is
-    /// the case the shell already refuses to start a session for. False for the stream: a
-    /// destination that stays disconnected ends the broadcast, so Program goes back out
-    /// whatever happened to Zoom.
+    /// <param name="requiresZoomRejoin">
+    /// True for the recording: when a meeting was live and Zoom did not come back, the
+    /// operator decides, rather than a new session recording slates where the guests were.
+    /// A recording made with no meeting (#1009: local sources only) resumes like any other.
+    /// False for the stream: a destination that stays disconnected ends the broadcast, so
+    /// Program goes back out whatever happened to Zoom.
     /// </param>
-    public OutputResumeAfterCoreRestart(bool requiresMeeting) => _requiresMeeting = requiresMeeting;
+    public OutputResumeAfterCoreRestart(bool requiresZoomRejoin) => _requiresZoomRejoin = requiresZoomRejoin;
 
     /// <summary>True while an output lost to a crash has not been resumed or given up.</summary>
     public bool Owed => _owed;
@@ -72,7 +73,7 @@ public sealed class OutputResumeAfterCoreRestart
     {
         if (!_owed) return OutputResumeDecision.None;
         _owed = false;
-        return !_requiresMeeting || outcome == MediaCoreRecoveryOutcome.ZoomRejoined
+        return !_requiresZoomRejoin || outcome != MediaCoreRecoveryOutcome.ZoomRejoinFailed
             ? OutputResumeDecision.Resume
             : OutputResumeDecision.NotResumed;
     }
@@ -82,6 +83,6 @@ public sealed class OutputResumeAfterCoreRestart
         MediaCoreRecoveryOutcome.ZoomRejoinFailed =>
             "Recording stopped when the media core restarted and was NOT resumed: Zoom did not rejoin. Rejoin the meeting, then press Record.",
         _ =>
-            "Recording stopped when the media core restarted and was NOT resumed: there is no meeting to record. Press Record when ready."
+            "Recording stopped when the media core restarted and was NOT resumed. Press Record when ready."
     };
 }

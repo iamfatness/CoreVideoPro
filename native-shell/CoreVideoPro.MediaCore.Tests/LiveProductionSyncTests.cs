@@ -85,6 +85,53 @@ public sealed class LiveProductionSyncTests
         Assert.Contains("recording", patch.OutputSessionStatus!, StringComparison.OrdinalIgnoreCase);
     }
 
+    // #1009, SNAPSHOT MERGE + PATCH MAPPING ONLY. A leave/rejoin capture snapshot merged over a
+    // core snapshot that is recording keeps the core's recording facts, does not disarm the
+    // operator's Record intent, and the output status still says Recording. This does not run
+    // the leave itself (shell or core); it pins how the shell READS a recording across one.
+    [Fact]
+    public void LeaveAndRejoinSnapshotsKeepTheProgramRecordingObservedAndArmed()
+    {
+        var recordingSnapshot = BuildSnapshot(recordingActive: true);
+        var inMeeting = ZoomCaptureSnapshotMerger.Merge(recordingSnapshot with
+        {
+            Recording = recordingSnapshot.Recording! with
+            {
+                Lifecycle = new CoreVideoPro.MediaCore.Contracts.OutputLifecycle
+                {
+                    SessionId = "process-1:take-1", DesiredActive = true,
+                    State = "live", Health = "healthy", Finalized = false
+                }
+            }
+        }, new RawCaptureSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:1:engine-a", RosterRevision = 3,
+            Participants = [new RawParticipantEvent { UserId = "p1", DisplayName = "Guest", VideoOn = true }]
+        });
+        var recordingContext = Context with { RecordingRequested = true };
+
+        var left = ZoomCaptureSnapshotMerger.Merge(inMeeting, new RawCaptureSnapshot
+        {
+            MeetingState = "idle", RosterEpoch = "1:1:engine-a", RosterRevision = 4, Participants = []
+        });
+        var rejoined = ZoomCaptureSnapshotMerger.Merge(left, new RawCaptureSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:2:engine-a", RosterRevision = 1,
+            Participants = [new RawParticipantEvent { UserId = "p1", DisplayName = "Guest", VideoOn = true }]
+        });
+
+        foreach (var (snapshot, zoomStatus) in new[] { (left, "Zoom Offline"), (rejoined, "Zoom Live") })
+        {
+            var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, recordingContext);
+            Assert.Equal(zoomStatus, patch.ZoomStatus);
+            Assert.True(patch.Recording);
+            Assert.Null(patch.RecordingRequested); // null = leave the operator's intent alone
+            Assert.Equal("process-1:take-1", patch.RecordingSessionId);
+            Assert.Contains("Recording", patch.OutputStatus);
+            Assert.DoesNotContain("idle", patch.OutputStatus, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     [Fact]
     public void RequestedOutputsDoNotClaimObservedMedia()
     {

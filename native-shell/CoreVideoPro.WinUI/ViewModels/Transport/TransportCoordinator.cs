@@ -309,6 +309,29 @@ public sealed class TransportCoordinator
         // resets _recordingToggleInFlight on the early return.
         if (starting)
         {
+            // #1009: Record no longer waits for a Zoom meeting, which used to imply a running
+            // core. Bring the core up BEFORE arming, so the profile asked below is the core
+            // that will record (not absent, not the dead core's), and so no production sync
+            // can carry the Record intent to a core that is then refused. ConfigureAwait(true):
+            // everything after this writes bound transport state, so it must resume on the UI
+            // thread (the 0xc000027b rule).
+            try
+            {
+                await _host.EnsureMediaCoreRunningAsync("Starting media core for recording...").ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                // Nothing is armed yet, so there is nothing to roll back in the core.
+                var startFailure = TransportStatusFormatter.FormatRecordingFailureStatus("start", ex);
+                LaunchLog.Write($"recording: start failed before arming {ex.GetType().Name}: {ex.Message}");
+                _recordingToggleInFlight = false;
+                _host.NotifyRecordingCommandCanExecuteChanged();
+                _host.OutputStatus = startFailure;
+                _host.OutputSessionStatus = _host.OutputStatus;
+                _host.RefreshOutputStatus();
+                return;
+            }
+
             // #762: a real build whose encoder adapter did not start keeps the counting
             // stub encoder, which reports a recording and writes no file. The core
             // refuses the session too; this is the shell's reason to the operator.

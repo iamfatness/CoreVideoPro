@@ -83,6 +83,190 @@ public sealed class TransportCoordinatorTests
         Assert.False(called);
     }
 
+    // ---------------------------------------------------------------- #1009: Record without Zoom
+
+    // The Record button and transport.record.set take no meeting input: with Zoom offline and
+    // nothing in flight, both start and stop are available.
+    [Fact]
+    public void RecordControl_IsAvailableWithZoomOffline()
+    {
+        Assert.True(RecordingControlPolicy.CanToggle(toggleInFlight: false, outputsClosing: false));
+        Assert.True(RecordingControlPolicy.CanSet(requested: true, toggleInFlight: false, outputsClosing: false));
+        Assert.True(RecordingControlPolicy.CanSet(requested: false, toggleInFlight: false, outputsClosing: false));
+    }
+
+    // The two terms that stay: an in-flight toggle holds both directions; "Stop and close"
+    // holds the button and refuses a start, but an explicit stop still goes through.
+    [Fact]
+    public void RecordControl_KeepsTheInFlightAndOutputsClosingGuards()
+    {
+        Assert.False(RecordingControlPolicy.CanToggle(toggleInFlight: true, outputsClosing: false));
+        Assert.False(RecordingControlPolicy.CanSet(requested: true, toggleInFlight: true, outputsClosing: false));
+        Assert.False(RecordingControlPolicy.CanSet(requested: false, toggleInFlight: true, outputsClosing: false));
+
+        Assert.False(RecordingControlPolicy.CanToggle(toggleInFlight: false, outputsClosing: true));
+        Assert.False(RecordingControlPolicy.CanSet(requested: true, toggleInFlight: false, outputsClosing: true));
+        Assert.True(RecordingControlPolicy.CanSet(requested: false, toggleInFlight: false, outputsClosing: true));
+    }
+
+    // StudioViewModel cannot be constructed in tests, so pin that its Record predicates are the
+    // policy above and carry no meeting term (the #1009 defect was exactly that term).
+    [Fact]
+    public void StudioRecordPredicates_UseThePolicyAndNoMeetingTerm()
+    {
+        var studio = File.ReadAllText(FindRepoFile(Path.Combine(
+            "native-shell", "CoreVideoPro.WinUI", "ViewModels", "StudioViewModel.cs")));
+        var transport = File.ReadAllText(FindRepoFile(Path.Combine(
+            "native-shell", "CoreVideoPro.WinUI", "ViewModels", "StudioViewModel.Transport.cs")));
+
+        var toggle = PredicateBody(studio, "public bool CanToggleRecording =>");
+        Assert.Contains("RecordingControlPolicy.CanToggle(", toggle);
+        Assert.DoesNotContain("IsInMeeting", toggle);
+
+        var set = PredicateBody(transport, "internal bool CanSetRecording(bool requested) =>");
+        Assert.Contains("RecordingControlPolicy.CanSet(", set);
+        Assert.DoesNotContain("IsInMeeting", set);
+    }
+
+    // transport.record.set with Zoom offline: the API path reaches the start with the target.
+    [Fact]
+    public async Task ApiRecordSet_StartsWithZoomOffline()
+    {
+        var (coordinator, _, host) = Build();
+        var result = await StudioControlSurface.RunOutputSet(
+            host.Recording, observedLive: false, target: true,
+            requested => RecordingControlPolicy.CanSet(requested, coordinator.RecordingToggleInFlight, outputsClosing: false),
+            coordinator.SetRecordingAsync, "recording");
+
+        Assert.True(result.Ok);
+        Assert.True(host.Recording);
+        Assert.Equal(1, host.SyncCallCount);
+        Assert.Equal([true], host.AppliedRecordingIntents);
+        Assert.Contains("Recording start requested.", host.OutputStatus);
+    }
+
+    // COORDINATOR PATH ONLY. Leave turns Engine off first (SettingsViewModel.LeaveZoomAsync ->
+    // StudioViewModel's onBeforeLeaveMeeting -> UnsubscribeZoomCapture), then sends zoom-leave.
+    // This pins only that TransportCoordinator's Engine-off path leaves an armed recording armed
+    // and sends no recording=false sync. The host here is a fake: StudioViewModel's real
+    // UnsubscribeZoomCapture and SettingsViewModel.LeaveZoomAsync are NOT exercised (neither is
+    // constructible in this test project); that they do not touch the recording was checked by
+    // reading them (#1009).
+    [Fact]
+    public async Task CoordinatorEngineOff_DoesNotStopAnArmedRecording_FakeHost()
+    {
+        var (coordinator, _, host) = Build();
+        await coordinator.SetRecordingAsync(true);
+        Assert.True(host.Recording);
+        var syncsBefore = host.SyncCallCount;
+
+        host.ZoomCaptureSubscribed = true;
+        await coordinator.ToggleEngineAsync();
+
+        Assert.Equal(1, host.UnsubscribeCallCount);
+        Assert.False(host.ZoomCaptureSubscribed);
+        Assert.True(host.Recording);
+        Assert.Equal(syncsBefore, host.SyncCallCount);
+        Assert.DoesNotContain(false, host.AppliedRecordingIntents);
+    }
+
+    // With Zoom offline the core may be down when Record is pressed. The start brings it up and
+    // must then refuse a core whose encoder did not construct (it would count bytes and write no
+    // file), saying so, before any recording intent reaches the core.
+    [Fact]
+    public async Task OfflineStart_RefusesAStartedCoreWithNoEncoder_AndSaysSo()
+    {
+        var (coordinator, bridge, host) = Build();
+        bridge.Running = false;
+        bridge.Profile = null;
+        host.OnEnsureMediaCoreRunning = () =>
+        {
+            bridge.Running = true;
+            bridge.Profile = new NativeMediaCoreProfile
+            {
+                Name = "CoreVideo Pro Native Media Core",
+                Renderer = "d3d11",
+                MaxProgramResolution = "3840x2160",
+                CapabilityStates = new Dictionary<string, NativeMediaCoreCapabilityState>
+                {
+                    ["gpu-compositor"] = new() { State = "available", Detail = "" },
+                    ["program-recording"] = new() { State = "failed-to-construct", Detail = "encoder-adapter-did-not-start" }
+                }
+            };
+            return Task.CompletedTask;
+        };
+
+        await coordinator.SetRecordingAsync(true);
+
+        Assert.Equal(1, host.EnsureMediaCoreRunningCallCount);
+        Assert.False(host.Recording);
+        Assert.Equal(0, host.SyncCallCount);
+        Assert.Contains("no recording encoder", host.OutputStatus);
+        Assert.False(coordinator.RecordingToggleInFlight);
+    }
+
+    // The core is brought up and its profile asked BEFORE the Record intent is armed, so no
+    // production sync can carry recording=true to a core that is then refused.
+    [Fact]
+    public async Task OfflineStart_StartsTheCoreBeforeArming()
+    {
+        var (coordinator, bridge, host) = Build();
+        bridge.Running = false;
+        bool? armedWhenTheCoreStarted = null;
+        host.OnEnsureMediaCoreRunning = () =>
+        {
+            armedWhenTheCoreStarted ??= host.Recording;
+            bridge.Running = true;
+            return Task.CompletedTask;
+        };
+
+        await coordinator.SetRecordingAsync(true);
+
+        Assert.False(armedWhenTheCoreStarted);
+        Assert.True(host.Recording);
+        Assert.Equal([true], host.AppliedRecordingIntents);
+        Assert.Contains("Recording start requested.", host.OutputStatus);
+    }
+
+    [Fact]
+    public async Task OfflineStart_ReportsACoreThatCannotStart()
+    {
+        var (coordinator, bridge, host) = Build();
+        bridge.Running = false;
+        host.OnEnsureMediaCoreRunning = () => throw new InvalidOperationException("corevideo-native.exe was not found.");
+
+        await coordinator.SetRecordingAsync(true);
+
+        Assert.False(host.Recording);
+        // The only sync allowed is the delayed failed-start cleanup, which carries recording=false.
+        Assert.DoesNotContain(true, host.AppliedRecordingIntents);
+        Assert.StartsWith("Recording start failed:", host.OutputStatus);
+        Assert.Contains("corevideo-native.exe was not found.", host.OutputStatus);
+        Assert.False(coordinator.RecordingToggleInFlight);
+    }
+
+    private static string PredicateBody(string source, string declaration)
+    {
+        var start = source.IndexOf(declaration, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"'{declaration}' not found");
+        var end = source.IndexOf(';', start);
+        return source[start..end];
+    }
+
+    private static string FindRepoFile(string relativePath)
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, relativePath);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new FileNotFoundException($"Could not locate {relativePath} above {AppContext.BaseDirectory}.");
+    }
+
     // ---------------------------------------------------------------- Recording
 
     [Fact]
@@ -1152,7 +1336,16 @@ public sealed class TransportCoordinatorTests
             return LastWentLive;
         }
 
-        public Task EnsureMediaCoreRunningAsync(string startingStatus) => Task.CompletedTask;
+        // #1009: what "start the core if it is down" does in a test (null = already running).
+        public Func<Task>? OnEnsureMediaCoreRunning { get; set; }
+
+        public int EnsureMediaCoreRunningCallCount { get; private set; }
+
+        public Task EnsureMediaCoreRunningAsync(string startingStatus)
+        {
+            EnsureMediaCoreRunningCallCount++;
+            return OnEnsureMediaCoreRunning?.Invoke() ?? Task.CompletedTask;
+        }
 
         public async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null)
         {
@@ -1243,7 +1436,7 @@ public sealed class TransportCoordinatorTests
 
         public bool SpineCallbackInstalled { get; private set; }
 
-        public NativeMediaCoreProfile? Profile => null;
+        public NativeMediaCoreProfile? Profile { get; set; }
 
         public string ProfileSummary => "GPU 1080p60";
 
