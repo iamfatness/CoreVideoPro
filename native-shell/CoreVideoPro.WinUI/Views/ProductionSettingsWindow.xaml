@@ -142,7 +142,7 @@
                                     <ColumnDefinition Width="160" />
                                 </Grid.ColumnDefinitions>
                                 <ComboBox Header="Canvas size"
-                                          ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
+                                          ItemsSource="{x:Bind ViewModel.CanvasResolutionOptions, Mode=OneWay}"
                                           SelectedValue="{x:Bind ViewModel.CanvasResolution, Mode=TwoWay}"
                                           SelectedValuePath="Value"
                                           DisplayMemberPath="Label"
@@ -155,6 +155,11 @@
                                           DisplayMemberPath="Label"
                                           HorizontalAlignment="Stretch" />
                             </Grid>
+                            <ToggleSwitch Header="Allow settings above this GPU's recommended limits"
+                                          IsOn="{x:Bind ViewModel.AllowAboveGpuTier, Mode=TwoWay}" />
+                            <TextBlock Text="{x:Bind ViewModel.GpuTierNotice, Mode=OneWay}"
+                                       Visibility="{x:Bind ViewModel.HasGpuTierNotice, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
                             <TextBlock Text="{x:Bind ViewModel.CanvasProfileSummary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
@@ -805,7 +810,7 @@
                                            Header="Tile count"
                                            Value="{x:Bind ViewModel.MultiviewTileCount, Mode=TwoWay}"
                                            Minimum="1"
-                                           Maximum="8"
+                                           Maximum="{x:Bind ViewModel.MultiviewTileMaximum, Mode=OneWay}"
                                            SmallChange="1"
                                            LargeChange="1"
                                            SpinButtonPlacementMode="Inline" />

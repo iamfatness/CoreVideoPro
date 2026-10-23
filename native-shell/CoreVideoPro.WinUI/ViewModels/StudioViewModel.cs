@@ -11680,6 +11680,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ProductionPreferencesWarning = ProductionPreferencesNotice.For(loaded.Status);
             if (_startupBootstrap.LoadError is { } loadError) LaunchLog.WriteException("prefs: startup load failed", loadError);
             _startupBootstrap.Restore(ApplyProductionOutputPreferences);
+            if (loaded.Preferences is null) ApplyGpuTierDefaults(null);
         }
         catch (Exception ex)
         {
@@ -11776,6 +11777,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamSrtKeyLength = StreamSrtKeyLength,
             StreamSrtPassphrase = StreamSrtPassphrase,
             CanvasResolution = CanvasResolution,
+            GpuTierLimitsOverride = AllowAboveGpuTier,
             CanvasFps = CanvasFps,
             ProgramBufferFrames = ProgramBufferFrames,
             LocalAudioSourceEnabled = LocalAudioSourceEnabled,
@@ -11871,6 +11873,69 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 .ToList()
         };
 
+    // ---- #439 GPU-tier defaults -------------------------------------------------
+    // Test seam: the probe is a DXGI call, so tests substitute a band string.
+    internal static Func<string?> GpuTierBandProvider { get; set; } = GpuTierProbe.TryProbe;
+
+    private GpuTierPolicy? _gpuTierPolicy;
+    public GpuTierPolicy GpuTierPolicy => _gpuTierPolicy ??= GpuTierPolicy.ForBand(SafeGpuBand());
+
+    private static string? SafeGpuBand()
+    {
+        try { return GpuTierBandProvider(); } catch { return null; }
+    }
+
+    [ObservableProperty]
+    private bool _allowAboveGpuTier;
+
+    public string GpuTierNotice => GpuTierPolicy.Notice ?? string.Empty;
+    public bool HasGpuTierNotice => GpuTierPolicy.Notice is not null;
+    public int MultiviewTileMaximum => AllowAboveGpuTier ? MaxMultiviewTileCount : GpuTierPolicy.EffectiveTileCeiling;
+
+    public IReadOnlyList<RouteSelectOption> CanvasResolutionOptions
+    {
+        get
+        {
+            var offered = GpuTierPolicy.OfferedCanvases(
+                OutputResolutionOptions.Select(o => o.Value), CanvasResolution, AllowAboveGpuTier);
+            return OutputResolutionOptions.Where(o => offered.Contains(o.Value)).ToList();
+        }
+    }
+
+    partial void OnAllowAboveGpuTierChanged(bool value)
+    {
+        LaunchLog.Write(GpuTierPolicy.DescribeForLog(value));
+        OnPropertyChanged(nameof(MultiviewTileMaximum));
+        OnPropertyChanged(nameof(CanvasResolutionOptions));
+        SaveProductionOutputPreferences();
+    }
+
+    /// <summary>
+    /// Applies the tier policy to a loaded (or, when null, fresh) profile.
+    /// A profile that has ever persisted a canvas size is NOT fresh: its saved
+    /// canvas and tile count are kept verbatim, and logged when above the tier
+    /// ceiling. Only a never-saved profile receives tier defaults.
+    /// </summary>
+    private void ApplyGpuTierDefaults(ProductionOutputPreferences? preferences)
+    {
+        var policy = GpuTierPolicy;
+        var fresh = preferences is null || string.IsNullOrWhiteSpace(preferences.CanvasResolution);
+        _allowAboveGpuTier = preferences?.GpuTierLimitsOverride ?? false;
+        OnPropertyChanged(nameof(AllowAboveGpuTier));
+
+        CanvasResolution = policy.ResolveCanvas(preferences?.CanvasResolution, out var canvasAbove);
+        var tiles = policy.ResolveTileCount(fresh ? null : preferences!.MultiviewTileCount, out var tilesAbove);
+        MultiviewTileCount = ClampMultiviewTileCount(tiles);
+
+        var overrideActive = _allowAboveGpuTier || canvasAbove || tilesAbove;
+        LaunchLog.Write(policy.DescribeForLog(overrideActive)
+            + (fresh ? " source=tier-default" : " source=saved"));
+        OnPropertyChanged(nameof(CanvasResolutionOptions));
+        OnPropertyChanged(nameof(MultiviewTileMaximum));
+        OnPropertyChanged(nameof(GpuTierNotice));
+        OnPropertyChanged(nameof(HasGpuTierNotice));
+    }
+
     private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)
     {
         Overlays.RestoreAppearance(preferences.LowerThirdAppearance,preferences.LowerThirdPresets);
@@ -11895,7 +11960,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         StreamSrtStreamId = preferences.StreamSrtStreamId ?? StreamSrtStreamId;
         StreamSrtKeyLength = preferences.StreamSrtKeyLength ?? StreamSrtKeyLength;
         StreamSrtPassphrase = preferences.StreamSrtPassphrase ?? StreamSrtPassphrase;
-        CanvasResolution = preferences.CanvasResolution ?? CanvasResolution;
+        ApplyGpuTierDefaults(preferences);
         CanvasFps = preferences.CanvasFps ?? CanvasFps;
         ProgramBufferFrames = preferences.ProgramBufferFrames;
         _localAudioSourceEnabled = preferences.LocalAudioSourceEnabled;
@@ -12029,7 +12094,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RestoreMasteringFromPreferences(preferences);
 
         MultiviewLayoutMode = NormalizeMultiviewLayoutMode(preferences.MultiviewLayoutMode);
-        MultiviewTileCount = ClampMultiviewTileCount(preferences.MultiviewTileCount);
+        // Tile count is applied by ApplyGpuTierDefaults (saved value wins; tier default only for a never-saved profile).
         MultiviewShowLabels = preferences.MultiviewShowLabels;
         MultiviewShowTally = preferences.MultiviewShowTally;
         MultiviewShowMeters = preferences.MultiviewShowMeters;
