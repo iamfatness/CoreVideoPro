@@ -95,7 +95,7 @@ invalid preview requests.
 
 Declarative fields follow advertised types/ranges/choices. The style boundary
 accepts only consumed placement/color/font values; compatibility-only width,
-typography-size, padding and logo controls are not forwarded to these templates.
+typography-size, padding and legacy logo-scale/visibility style values are not forwarded to these templates. Declared logo slots use the separate verified image reference described below.
 The brand adapter supplies the declared color and font vocabulary. A field patch
 has at most 32 values, 4,096 UTF-8 bytes per string and a 32 KiB aggregate bound;
 the transport also bounds the complete non-import request. Required blank fields
@@ -312,8 +312,7 @@ Composition requires the exact source generation, an explicit matching camera
 layer selector and actual textured source draw submission in the current pass;
 metadata alone, a slate, or a different routed participant does not qualify.
 This observes draw submission, not receiver continuity. Current source binding
-supports direct Zoom cameras; Tiles and nested scene membership remain to be
-qualified. Automatic introductions consume these native source-draw facts, rather than roster names or director recommendations.
+supports direct Zoom cameras and source-bus capture cameras/screens. Capture bindings carry the source-bus video incarnation, independent of pixel-format epochs and Zoom meeting state. Tiles and nested scene membership remain to be qualified. Automatic introductions consume these native source-draw facts, rather than roster names or director recommendations.
 
 Scene filtering, direct-camera bindings and independent accepted Cue are present.
 The workspace, verified image migration, title/bug/clock consumers and qualified introduction controller use this authority. Functional implementation does not establish complete output/installed acceptance. Metal does not announce this instance
@@ -405,3 +404,71 @@ The capture also exposes an epoch-specific local `stopEvent`; signaling it drain
 and finalizes the trace while media stays running, avoiding reliance on the shell's
 exit grace. `captureComplete` and the finalized header must both be observed before
 decoding. Neither mode measures camera or physical display completion.
+
+
+### Local sources and transparent art (#1007)
+
+The Graphics catalog projects the existing Zoom roster and capture source-bus
+lifetimes; it does not own a second ingest lifecycle. `CaptureDeviceSource`
+stamps a video incarnation once, preserves it across pixel-format changes, and
+allocates a new incarnation after clear/removal. A disappeared source retires its
+bound Cue/Program copies; reconnect never silently rebinds or reveals old text.
+The frame selector strips `zoom:` only for Zoom; capture selectors retain their
+full canonical ID. Preparation, plan membership and the actual textured draw
+must all agree on source identity. Native introductions read the same draw facts
+for cameras/screens. Screen suppression remains the default; disabling it is
+explicit. Meeting epoch changes continue to disarm automation as a conservative
+operator policy; they do not retire valid local manually shown graphics.
+
+Graphics Library offers **Import PNG / JPEG graphic** for standalone artwork.
+The immutable import uses a full 1920x1080 canvas, contain fit and upper-left
+origin; it creates no cue or on-air layer. The existing image inspector import
+continues to provide a square logo asset. Both retain the exact encoded bytes,
+including PNG alpha, and use the existing verified package/export mechanism.
+Native WIC converts to premultiplied BGRA for Direct2D; the compositor blends
+premultiplied alpha. Transparent pixels must reveal the actual video/background,
+and half-alpha pixels must blend without black mattes. Import completion cannot
+discard a newer private selection or edit.
+
+Remote actions `graphics.template.select [id, version]`,
+`graphics.cue.create [id, version, scope, sceneId]`,
+`graphics.studio.assign [followProgramSource]` and `graphics.image.import [path]`
+call these same private selection/assignment/import services. Studio assignment requires an actual hidden cue, matching the UI; browsing alone cannot assign. They do not Show;
+Studio's existing `graphics.lowerThird.set` performs the explicit reveal.
+
+
+Capture catalog display names project already-accepted native `set-source-policy`
+metadata. They survive video reincarnation without polling/enumerating devices
+or waiting for a shell refresh. Source identity remains exact; old generation
+`sourceTexts` is ignored after reconnect. Automatic fallback uses the current
+native label and a blank secondary line, never an obsolete person override.
+`input.unassign [slot]` uses the existing operator Unassign method so control
+clients can exercise the real clear/reuse lifecycle rather than erase row fields.
+
+`source.capture.online.set [capture:<deviceId>, online]` calls the existing
+Connect/Take Offline commands. Offline also unassigns that device's inputs,
+matching the operator action. A connected device is not proof of video; verify
+actual source generations, admissions and pixels independently.
+
+
+### Uploading a logo into a graphic
+
+Select a logo-capable graphic, such as Corner logo bug or Logo accent lower third,
+and use **Content -> Upload logo PNG / JPEG**. The existing compatibility-logo
+inspector uses the same import service. Declarative templates need a declared
+`logo` asset slot; unrelated image fields are not silently replaced. Upload installs
+a verified immutable image package and selects it in the private draft. It preserves
+PNG alpha and contain aspect ratio, enables the existing logo visibility field,
+and never implicitly creates, Cues, Shows or Updates a live instance. Choosing
+Use template logo restores the template's own asset. Newer edits/navigation during
+an upload remain authoritative. A saved cue/Studio look pins both template and
+uploaded image package; explicit restore remains hidden until Cue and Show.
+
+`graphics.logo.import [path]` calls that same guarded uploader service.
+`graphics.cue.select [instanceId]`, `graphics.cue.action [cue|show|hide|update]`,
+`graphics.cue.save [name]` and `graphics.saved.restore [savedId]` exercise the real
+workspace/library actions. Commands observe the current bridge snapshot before
+checking native preparation, so a completed Cue does not depend on the next UI
+observation. Readiness and revision guards still apply. The advanced image-source
+selector edits the existing immutable scratch asset binding and honors layer locks;
+its template still requires native validation and explicit immutable-version save.

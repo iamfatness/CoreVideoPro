@@ -3,6 +3,8 @@
 #include "modules/CpuVideoArrival.h"
 #include "modules/Interfaces.h"
 #include "modules/MonitorFrameAdmission.h"
+#include "modules/PreparedProgramComposition.h"
+#include "modules/MonitorCaptureCadence.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cstdlib>
@@ -12,6 +14,248 @@
 #include <fstream>
 
 using namespace corevideo::modules;
+namespace {
+VideoFrame cadenceFrame(int64_t id, uint64_t epoch = 1) {
+  VideoFrame frame;
+  frame.participantId = "capture:cadence"; frame.frameId = id; frame.sourceEpoch = epoch;
+  frame.captureTimestamp100ns = 100000 + id * 166667;
+  frame.width = frame.height = frame.i420Width = frame.i420Height = 64;
+  frame.i420 = std::make_shared<const std::vector<uint8_t>>(64 * 64 * 3 / 2, static_cast<uint8_t>(id));
+  frame.preparedGpu = std::make_shared<CpuSourceGpuView>();
+  frame.preparedGpu->demand = std::make_shared<CpuSourceGpuDemand>();
+  return frame;
+}
+}
+TEST(CapturePresentationWindow, PhaseCrossingConsumesReadyArrivalInsideExistingPreparationInterval) {
+  auto window = std::make_shared<CapturePresentationWindow>(); window->configure(60, 1);
+  auto first = cadenceFrame(100); window->publish(first); first.capturePresentation = window;
+  auto a = PreparedProgramComposition::capture({}, {first}, 1, 0, 1000);
+  ASSERT_TRUE(a); ASSERT_TRUE(a->resolveCaptures()); EXPECT_EQ(a->frames[0].frameId, 100);
+  // The next ingest poll still sees 100. Latest-only selection repeats 100,
+  // then skips 101 when the following poll sees 102. Both captures arrive
+  // before the already-reserved next composition, so no extra delay is needed.
+  auto b = PreparedProgramComposition::capture({}, {first}, 2, 1, 1000);
+  ASSERT_TRUE(b); ASSERT_TRUE(b->captureChoices[0].choice);
+  EXPECT_EQ(b->captureChoices[0].choice->frameId, 101);
+  EXPECT_EQ(first.preparedGpu->demand->selectedFrameId.load(), 101);
+  auto next = cadenceFrame(101); const auto original = next.i420;
+  window->publish(next); window->publish(cadenceFrame(102));
+  ASSERT_TRUE(b->resolveCaptures()); EXPECT_EQ(b->frames[0].frameId, 101);
+  EXPECT_EQ(b->frames[0].captureTimestamp100ns, next.captureTimestamp100ns);
+  EXPECT_FALSE(b->frames[0].i420); EXPECT_EQ(b->productionSlot, 1);
+  EXPECT_EQ(b->anchorNs, 1000); EXPECT_EQ(b->sequence, 2);
+  EXPECT_EQ((*original)[0], 101);
+}
+TEST(CapturePresentationWindow, RationalRateRepeatsOnlyAtItsDeclaredConversionCadence) {
+  CapturePresentationWindow window; window.configure(60000, 1001);
+  auto observed = cadenceFrame(100); window.publish(observed);
+  int64_t previous = -1; int repeats = 0;
+  for (int64_t slot = 0; slot <= 6006; ++slot) {
+    const auto choice = window.choose(observed, slot, 1000); ASSERT_TRUE(choice);
+    const auto expected = 100 + slot * 1000 / 1001;
+    EXPECT_EQ(choice->frameId, expected);
+    if (previous == choice->frameId) ++repeats;
+    previous = choice->frameId;
+  }
+  EXPECT_EQ(repeats, 6);
+}
+TEST(CapturePresentationWindow, AnchorsToPublishedCaptureRatherThanALaggingIngestDescriptor) {
+  CapturePresentationWindow window; window.configure(60, 1);
+  auto observed = cadenceFrame(100);
+  window.publish(observed); window.publish(cadenceFrame(101)); window.publish(cadenceFrame(102));
+  auto choice = window.choose(observed, 0, 1000); ASSERT_TRUE(choice);
+  EXPECT_EQ(choice->frameId, 102);
+  auto actual = window.resolve(*choice); ASSERT_TRUE(actual);
+  EXPECT_EQ(actual->frameId, 102);
+}
+TEST(MonitorCaptureCadence, IngestSamplingJitterCannotRepeatAndSkipFractionalCapturePictures) {
+  auto window = std::make_shared<CapturePresentationWindow>(); window->configure(60000, 1001);
+  MonitorCaptureCadence cadence;
+  int64_t published = -1, previous = -1; int repeats = 0;
+  for (int64_t slot = 0; slot <= 6006; ++slot) {
+    const auto expected = 100 + slot * 1000 / 1001;
+    if (expected != published) { window->publish(cadenceFrame(expected)); published = expected; }
+    auto observed = cadenceFrame(expected - (slot && slot % 7 == 0 ? 1 : 0));
+    observed.capturePresentation = window;
+    MonitorRenderRequest request; request.captureSlot = slot; request.captureAnchorNs = 1000;
+    request.frames = {observed};
+    cadence.prepare(request);
+    ASSERT_TRUE(request.unavailableInputs.empty());
+    EXPECT_EQ(request.frames[0].frameId, expected);
+    EXPECT_TRUE(request.frames[0].hasI420());
+    EXPECT_FALSE(request.frames[0].capturePresentation);
+    EXPECT_FALSE(request.frames[0].preparedGpu);
+    EXPECT_FALSE(request.frames[0].gpuPixels);
+    repeats += previous == expected; previous = expected;
+  }
+  EXPECT_EQ(repeats, 6);
+}
+TEST(MonitorCaptureCadence, OptionalSelectionCannotAdvanceProductionDemandOrRetainItsGpuView) {
+  auto window = std::make_shared<CapturePresentationWindow>(); window->configure(60, 1);
+  auto observed = cadenceFrame(100);
+  observed.preparedGpu = std::make_shared<CpuSourceGpuView>();
+  auto demand = observed.preparedGpu->demand = std::make_shared<CpuSourceGpuDemand>();
+  demand->selectedFrameId.store(17);
+  window->publish(observed); observed.capturePresentation = window;
+  MonitorRenderRequest request; request.captureSlot = 0; request.captureAnchorNs = 1000;
+  request.frames = {observed};
+  MonitorCaptureCadence cadence; cadence.prepare(request);
+  EXPECT_EQ(demand->selectedFrameId.load(), 17);
+  EXPECT_FALSE(request.frames[0].preparedGpu);
+  EXPECT_FALSE(request.frames[0].gpuPixels);
+  request.captureSlot = 1; request.frames = {observed}; cadence.prepare(request);
+  EXPECT_EQ(request.unavailableInputs.size(), 1u);
+  EXPECT_EQ(demand->selectedFrameId.load(), 17);
+}
+TEST(CapturePresentationWindow, FractionalCapturePhaseLeavesPreparationBudgetForLateArrivals) {
+  CapturePresentationWindow window; window.configure(60000, 1001);
+  auto observed = cadenceFrame(100); window.publish(observed);
+  constexpr int64_t anchor = 1'000'000'000;
+  corevideo::core::ProgramPlayoutTimeline timeline(2, anchor);
+  int legacyLate = 0, repeats = 0;
+  int64_t previous = -1;
+  for (int64_t slot = 0; slot <= 6006; ++slot) {
+    const auto choice = window.choose(observed, slot, anchor); ASSERT_TRUE(choice);
+    // A source observed at the initial slot may subsequently arrive 7 ms late
+    // and take 5 ms to prepare. This stays inside the existing 25 ms source
+    // budget; selecting a future fractional frame must not consume that slack.
+    const auto readyAt = [&](int64_t frame) {
+      return anchor + (frame - 100) * 1'001'000'000 / 60 + 12'000'000;
+    };
+    const auto cutoff = timeline.deadlineNs(slot) - 8'333'334;
+    EXPECT_LE(readyAt(choice->frameId), cutoff);
+    const auto legacy = 100 + (slot * 1000 + 1000) / 1001;
+    legacyLate += readyAt(legacy) > cutoff;
+    repeats += previous == choice->frameId; previous = choice->frameId;
+  }
+  EXPECT_GT(legacyLate, 0);
+  EXPECT_EQ(repeats, 6);
+}
+TEST(CapturePresentationWindow, MissingArrivalFailsWithoutSubstitutionAndNextChoiceCanRecover) {
+  CapturePresentationWindow window; window.configure(60, 1);
+  auto observed = cadenceFrame(100); window.publish(observed);
+  ASSERT_TRUE(window.choose(observed, 0, 1000));
+  auto missing = window.choose(observed, 1, 1000); ASSERT_TRUE(missing);
+  EXPECT_FALSE(window.resolve(*missing));
+  auto current = cadenceFrame(102); window.publish(current);
+  auto resumed = window.choose(current, 2, 1000); ASSERT_TRUE(resumed);
+  EXPECT_EQ(resumed->frameId, 102); EXPECT_TRUE(window.resolve(*resumed));
+}
+TEST(CapturePresentationWindow, BoundedHistoryAndSourceReplacementFenceOldChoices) {
+  CapturePresentationWindow window; window.configure(60, 1);
+  auto old = cadenceFrame(10); auto weak = std::weak_ptr<const std::vector<uint8_t>>(old.i420);
+  window.publish(old); auto choice = window.choose(old, 0, 1000); ASSERT_TRUE(choice); old = {};
+  for (int id = 11; id <= 13; ++id) window.publish(cadenceFrame(id));
+  EXPECT_TRUE(weak.expired()); EXPECT_FALSE(window.resolve(*choice));
+  auto replacement = cadenceFrame(10, 2); window.publish(replacement);
+  EXPECT_FALSE(window.resolve(*choice));
+  auto fresh = window.choose(replacement, 7, 2000); ASSERT_TRUE(fresh);
+  EXPECT_EQ(fresh->frameId, 10); EXPECT_EQ(fresh->epoch, 2u);
+}
+TEST(CapturePresentationWindow, UnqualifiedNativeRatesRetainExistingCaptureSelection) {
+  EXPECT_TRUE(CapturePresentationWindow::supportedRate(60, 1));
+  EXPECT_TRUE(CapturePresentationWindow::supportedRate(60000, 1001));
+  EXPECT_FALSE(CapturePresentationWindow::supportedRate(30, 1));
+  EXPECT_FALSE(CapturePresentationWindow::supportedRate(120, 1));
+  EXPECT_FALSE(CapturePresentationWindow::supportedRate(0, 0));
+}
+TEST(CapturePresentationWindow, ConcurrentPublicationNeverRefusesAnOtherwiseValidClockChoice) {
+  CapturePresentationWindow window; window.configure(60, 1);
+  auto observed = cadenceFrame(1); window.publish(observed);
+  std::atomic<bool> go{false};
+  std::jthread writer([&] {
+    while (!go.load()) std::this_thread::yield();
+    for (int id = 2; id < 10002; ++id) window.publish(cadenceFrame(id));
+  });
+  go.store(true);
+  int refused = 0;
+  for (int slot = 0; slot < 10000; ++slot) if (!window.choose(observed, slot, 1000)) ++refused;
+  EXPECT_EQ(refused, 0);
+}
+TEST(CapturePresentationWindow, ReadinessProbePreservesTheFutureChoiceUntilTheOriginalBudgetEnds) {
+  auto window = std::make_shared<CapturePresentationWindow>(); window->configure(60, 1);
+  auto observed = cadenceFrame(100); window->publish(observed); observed.capturePresentation = window;
+  ASSERT_TRUE(window->choose(observed, 0, 1000));
+  auto selected = PreparedProgramComposition::capture({}, {observed}, 2, 1, 1000);
+  ASSERT_TRUE(selected); EXPECT_FALSE(selected->resolveCaptures(false));
+  EXPECT_GT(selected->frames[0].captureTimestamp100ns, 0);
+  window->publish(cadenceFrame(101));
+  EXPECT_TRUE(selected->resolveCaptures(false)); EXPECT_EQ(selected->frames[0].frameId, 101);
+  auto next = window->choose(observed, 2, 1000); ASSERT_TRUE(next); EXPECT_EQ(next->frameId, 102);
+  corevideo::core::ProgramPlayoutTimeline original(2, 1000);
+  EXPECT_EQ(selected->readinessDeadlineNs(2), original.deadlineNs(1) - 8'333'334);
+}
+TEST(ReadyCapturePublication, ConcurrentReplacementNeverCreatesAnEmptyCompletedPublication) {
+  ReadyCapturePublication publication;
+  auto selected = cadenceFrame(1);
+  auto image = std::make_shared<GpuVideoFrame>(); image->width = image->height = 64;
+  selected.gpuPixels = image; publication.publish(selected);
+  std::atomic<bool> go{false};
+  std::jthread writer([&] {
+    while (!go.load()) std::this_thread::yield();
+    for (int id = 2; id < 10002; ++id) { auto next = selected; next.frameId = id; publication.publish(next); }
+  });
+  go.store(true);
+  int unavailable = 0;
+  for (int i = 0; i < 10000; ++i) if (!publication.acquire(selected)) ++unavailable;
+  EXPECT_EQ(unavailable, 0);
+}
+TEST(ReadyCapturePublication, SelectsCompletedImageAtCompositionAndFencesReplacementWithoutPinningOldCapture) {
+  auto publication = std::make_shared<ReadyCapturePublication>();
+  auto first = cadenceFrame(100);
+  auto image = std::make_shared<GpuVideoFrame>(); image->width = image->height = 64;
+  std::weak_ptr<GpuVideoFrame> old = image;
+  first.gpuPixels = image; first.readyCapture = publication;
+  publication->publish(first);
+  auto pending = PreparedProgramComposition::capture({}, {first}, 1, 0, 1000); ASSERT_TRUE(pending);
+  EXPECT_FALSE(pending->frames[0].gpuPixels);
+  auto second = cadenceFrame(101);
+  auto newer = std::make_shared<GpuVideoFrame>(); newer->width = newer->height = 64;
+  second.gpuPixels = newer; publication->publish(second);
+  first.gpuPixels.reset(); image.reset(); EXPECT_TRUE(old.expired());
+  ASSERT_TRUE(pending->resolveCaptures()); EXPECT_EQ(pending->frames[0].frameId, 101);
+  EXPECT_EQ(pending->frames[0].gpuPixels.get(), newer.get());
+  EXPECT_FALSE(pending->frames[0].i420); EXPECT_FALSE(pending->frames[0].readyCapture);
+  auto selected = second;
+  second.sourceEpoch = 2; publication->publish(second);
+  EXPECT_FALSE(publication->acquire(selected));
+  publication->clear(); EXPECT_FALSE(publication->acquire(second));
+}
+TEST(PreparedProgramCompositionInputs, CapturesTakeAndSourceIdentityWithoutRetainingCpuOrMonitorPixels) {
+  VideoFrame frame;
+  frame.participantId = "capture:independent"; frame.sourceEpoch = 7; frame.frameId = 3;
+  frame.captureTimestamp100ns = 1000;
+  frame.width = frame.height = frame.i420Width = frame.i420Height = 64;
+  frame.i420 = std::make_shared<const std::vector<uint8_t>>(64 * 64 * 3 / 2, 90);
+  auto cpu = frame.i420;
+  auto gpu = std::make_shared<GpuVideoFrame>(); gpu->width = gpu->height = 64;
+  frame.gpuPixels = gpu;
+  auto monitor = std::make_shared<GpuVideoFrame>(); monitor->monitorPrivate = true;
+  frame.monitorGpuPixels = monitor;
+  const auto cpuOwners = cpu.use_count(), monitorOwners = monitor.use_count();
+  CompositorRenderPlan plan; plan.renderPlanId = "selected-take";
+  auto captured = PreparedProgramComposition::capture(plan, {frame}, 5, 4, 10000);
+  ASSERT_TRUE(captured.has_value()); ASSERT_EQ(captured->frames.size(), 1u);
+  plan.renderPlanId = "later-take"; frame.frameId = 4;
+  EXPECT_EQ(captured->plan.renderPlanId, "selected-take");
+  EXPECT_EQ(captured->frames[0].frameId, 3);
+  EXPECT_EQ(captured->frames[0].sourceEpoch, 7u);
+  EXPECT_EQ(captured->frames[0].captureTimestamp100ns, 1000);
+  EXPECT_EQ(captured->productionSlot, 4); EXPECT_EQ(captured->anchorNs, 10000);
+  EXPECT_EQ(captured->frames[0].gpuPixels.get(), gpu.get());
+  EXPECT_FALSE(captured->frames[0].i420); EXPECT_FALSE(captured->frames[0].pixels);
+  EXPECT_FALSE(captured->frames[0].monitorGpuPixels);
+  EXPECT_EQ(cpu.use_count(), cpuOwners); EXPECT_EQ(monitor.use_count(), monitorOwners);
+  EXPECT_EQ(frame.i420.get(), cpu.get());
+}
+TEST(PreparedProgramCompositionInputs, RejectsInvalidClockAndSourceCapacityWithoutChangingTheBudget) {
+  CompositorRenderPlan plan;
+  EXPECT_FALSE(PreparedProgramComposition::capture(plan, {}, 1, -1, 100));
+  EXPECT_FALSE(PreparedProgramComposition::capture(plan, {}, 1, 0, 0));
+  EXPECT_FALSE(PreparedProgramComposition::capture(plan, {}, 0, 0, 100));
+  std::vector<VideoFrame> sources(PreparedProgramComposition::kMaxSources + 1);
+  EXPECT_FALSE(PreparedProgramComposition::capture(plan, sources, 1, 0, 100));
+}
 TEST(I420CaptureArrival, HeldSnapshotsPreserveCpuIdentityAndReconnectOrResizeChangesEpoch) {
   I420CaptureArrival first("capture:camera", {});
   auto cpu = std::make_shared<std::vector<uint8_t>>(64 * 64 * 3 / 2, 128);
@@ -1562,5 +1806,178 @@ TEST(I420SourcePreparation, StrictProgramHoldsActualPixelsAcrossInlinePreviewAnd
   EXPECT_EQ(recovered.sourceAdmissions.front().actualFrameId, 1);
   ASSERT_FALSE(recovered.preview.bgra.empty());
   EXPECT_NEAR(recovered.preview.bgra.front(), 210, 1);
+}
+
+static void checkCompositionDeadline(bool deferred, bool completesBeforeComposition, bool stopped, bool completesAfterTick = false) {
+  PreparationFlags flags;
+  _putenv_s("COREVIDEO_ISOLATE_MONITORS", "1");
+  const char* raw = std::getenv("COREVIDEO_PREPARE_PROGRAM_WITHIN_BUDGET");
+  struct Restore {
+    std::string value;
+    ~Restore() { _putenv_s("COREVIDEO_PREPARE_PROGRAM_WITHIN_BUDGET", value.c_str()); }
+  } restore{raw ? raw : ""};
+  _putenv_s("COREVIDEO_PREPARE_PROGRAM_WITHIN_BUDGET", deferred ? "1" : "0");
+  std::promise<void> entered, release;
+  auto resume = release.get_future().share();
+  auto enteredFuture = entered.get_future();
+  std::atomic<bool> hold{false};
+  auto owner = std::make_shared<CpuSourcePreparation>(true, std::function<void(const std::string&)>{},
+      [&](const std::string&) { if (hold.load()) { entered.set_value(); (void)resume.wait_for(std::chrono::seconds(1)); } });
+  struct Release {
+    std::promise<void>& promise; bool released = false;
+    void now() { if (!released) { released = true; promise.set_value(); } }
+    ~Release() { now(); }
+  } unblock{release};
+  auto compositor = createD3D11Compositor(true); ASSERT_TRUE(compositor);
+  auto initial = sourceFrame("capture:deadline", 7, 1, 40); initial.i420FullRange = false;
+  offer(*owner, initial); ASSERT_TRUE(await([&] { return bool(initial.preparedGpu->acquire(true)); }));
+  auto plan = planFor(initial.participantId); plan.renderPlanId = "selected-take";
+  plan.skipCpuReadback = true; plan.fullProgramReadback = true;
+  // Warm the exact render/export geometry, then replace only the startup pool.
+  // No frame enters the empty three-frame pool. The measured pool is two and
+  // its immutable deadline is asserted below, so no extra latency can pass.
+  compositor->configureProgramBuffer(2); compositor->prepareProgramBuffer(64, 64);
+  (void)compositor->render(plan, {initial});
+  compositor->configureProgramBuffer(3); compositor->prepareProgramBuffer(64, 64);
+  compositor->configureProgramBuffer(2); compositor->prepareProgramBuffer(64, 64);
+  hold.store(true);
+  auto frame = sourceFrame("capture:deadline", 7, 2, 90); frame.i420FullRange = false;
+  offer(*owner, frame); (void)frame.preparedGpu->acquire(true);
+  ASSERT_TRUE(enteredFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+  const auto anchor = std::chrono::steady_clock::now();
+  const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+  std::jthread laterCompletion;
+  if (completesAfterTick) laterCompletion = std::jthread([&] {
+    std::this_thread::sleep_until(anchor + std::chrono::milliseconds(18));
+    unblock.now();
+  });
+  compositor->setProgramProductionTiming(0, anchorNs);
+  (void)compositor->render(plan, {frame}); // exact chosen image is still preparing
+  if (completesBeforeComposition) {
+    unblock.now();
+    ASSERT_TRUE(await([&] { return bool(frame.preparedGpu->acquire(false)); }));
+  }
+  if (stopped) frame.preparedGpu->demand->stopped.store(true);
+  ASSERT_LT(std::chrono::steady_clock::now() - anchor, std::chrono::milliseconds(16));
+  HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  ASSERT_TRUE(timer != nullptr);
+  struct CloseTimer { HANDLE value; ~CloseTimer() { CloseHandle(value); } } timerLease{timer};
+  LARGE_INTEGER due;
+  const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor + std::chrono::nanoseconds(16'666'667) - std::chrono::steady_clock::now()).count();
+  due.QuadPart = -(std::max)(int64_t(1), (remaining + 99) / 100);
+  ASSERT_TRUE(SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE));
+  ASSERT_EQ(WaitForSingleObject(timer, 50), WAIT_OBJECT_0);
+  compositor->setProgramProductionTiming(1, anchorNs);
+  auto later = plan; later.renderPlanId = "later-take";
+  const auto composed = compositor->render(later, {frame});
+  std::fprintf(stderr, "[composition-deadline-test] elapsed_us=%lld produced=%lld health=%s admissions=%zu submitted=%llu prepared=%llu\n",
+      static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - anchor).count()),
+      static_cast<long long>(composed.frameNumber), composed.health.c_str(), composed.sourceAdmissions.size(),
+      static_cast<unsigned long long>(compositor->programBufferDiagnostics().produced),
+      static_cast<unsigned long long>(compositor->programBufferDiagnostics().prepared));
+  for (const auto& fact : composed.sourceAdmissions)
+    std::fprintf(stderr, "[composition-deadline-test] source=%s state=%s reason=%s wanted=%lld actual=%lld\n",
+        fact.sourceId.c_str(), fact.state.c_str(), fact.reason.c_str(),
+        static_cast<long long>(fact.requestedFrameId), static_cast<long long>(fact.actualFrameId));
+  ProgramFrame delivered;
+  ASSERT_TRUE(compositor->takeDeliveredProgramFrame(delivered, 100));
+  ASSERT_EQ(delivered.sourceAdmissions.size(), 1u);
+  const bool exact = deferred && (completesBeforeComposition || completesAfterTick) && !stopped;
+  EXPECT_EQ(delivered.sourceAdmissions.front().state, exact ? "ready" : stopped ? "unavailable" : "held");
+  EXPECT_EQ(delivered.sourceAdmissions.front().requestedFrameId, 2);
+  EXPECT_EQ(delivered.sourceAdmissions.front().actualFrameId, exact ? 2 : stopped ? -1 : 1);
+  EXPECT_EQ(delivered.sourceAdmissions.front().actualEpoch, stopped ? 0u : 7u);
+  EXPECT_EQ(delivered.renderPlanId, "selected-take");
+  // An extra upstream frame must not silently become a third frame of latency.
+  EXPECT_EQ(delivered.timelineTimestamp100ns, (anchorNs + 33'333'334) / 100);
+  ASSERT_TRUE(delivered.programNv12Shared && delivered.programNv12Shared->size() >= 64u * 64u);
+  if (!stopped) EXPECT_NEAR(delivered.programNv12Shared->at(32 * 64 + 32), exact ? 90 : 40, 3);
+  EXPECT_EQ(compositor->programBufferDiagnostics().capacity, 5);
+  EXPECT_EQ(compositor->programBufferDiagnostics().underruns, 0u);
+}
+
+TEST(PreparedProgramComposition, SelectedImageCompletesWithinOriginalTwoFrameDeadlineWithoutSubstitution) {
+  checkCompositionDeadline(true, true, false);
+}
+TEST(PreparedProgramComposition, CompletionAfterTheNextTickUsesRemainingBudgetWithoutMovingOutputDeadline) {
+  checkCompositionDeadline(true, false, false, true);
+}
+TEST(PreparedProgramComposition, LegacyControlCommitsOlderPixelsDespiteCompletionBeforeOutputDeadline) {
+  checkCompositionDeadline(false, true, false);
+}
+TEST(PreparedProgramComposition, IncompletePreparationRemainsAHeldSourceFailure) {
+  checkCompositionDeadline(true, false, false);
+}
+TEST(PreparedProgramComposition, StoppedProducerCannotPublishAStalePreparedImage) {
+  checkCompositionDeadline(true, true, true);
+}
+namespace {
+void checkClockedCaptureDeadline(bool publishSecond, bool readyDirect = false) {
+  PreparationFlags flags;
+  _putenv_s("COREVIDEO_ISOLATE_MONITORS", "1");
+  auto owner = std::make_shared<CpuSourcePreparation>(true);
+  auto compositor = createD3D11Compositor(true); ASSERT_TRUE(compositor);
+  auto window = std::make_shared<CapturePresentationWindow>(); window->configure(60, 1);
+  auto publication = std::make_shared<ReadyCapturePublication>();
+  auto first = sourceFrame("capture:clocked", 7, 1, 40); first.i420FullRange = false;
+  offer(*owner, first); ASSERT_TRUE(await([&] { return bool(first.preparedGpu->acquire(true)); }));
+  if (readyDirect) {
+    first.gpuPixels = first.preparedGpu->acquire(false);
+    publication->publish(first); first.readyCapture = publication;
+  } else { window->publish(first); first.capturePresentation = window; }
+  auto plan = planFor(first.participantId); plan.skipCpuReadback = true; plan.fullProgramReadback = true;
+  compositor->configureProgramBuffer(2); compositor->prepareProgramBuffer(64, 64);
+  (void)compositor->render(plan, {first});
+  compositor->configureProgramBuffer(3); compositor->prepareProgramBuffer(64, 64);
+  compositor->configureProgramBuffer(2); compositor->prepareProgramBuffer(64, 64);
+  HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  ASSERT_TRUE(timer != nullptr);
+  struct Close { HANDLE value; ~Close() { CloseHandle(value); } } close{timer};
+  const auto anchor = std::chrono::steady_clock::now();
+  const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+  const auto waitSlot = [&](int64_t slot) {
+    LARGE_INTEGER due;
+    const auto ns = anchorNs + (slot * 1'000'000'000 + 59) / 60 -
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    due.QuadPart = -(std::max)(int64_t(1), (ns + 99) / 100);
+    return SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE) && WaitForSingleObject(timer, 100) == WAIT_OBJECT_0;
+  };
+  compositor->setProgramProductionTiming(0, anchorNs); (void)compositor->render(plan, {first});
+  ASSERT_TRUE(waitSlot(1));
+  compositor->setProgramProductionTiming(1, anchorNs); (void)compositor->render(plan, {first});
+  auto second = sourceFrame("capture:clocked", 7, 2, 90); second.i420FullRange = false;
+  if (publishSecond) {
+    offer(*owner, second); window->publish(second);
+    ASSERT_TRUE(await([&] { return bool(second.preparedGpu->acquire(false)); }));
+    if (readyDirect) { second.gpuPixels = second.preparedGpu->acquire(false); publication->publish(second); }
+  }
+  auto third = sourceFrame("capture:clocked", 7, 3, 150); third.i420FullRange = false;
+  offer(*owner, third); window->publish(third); third.capturePresentation = window;
+  ASSERT_TRUE(waitSlot(2));
+  compositor->setProgramProductionTiming(2, anchorNs); (void)compositor->render(plan, {third});
+  ProgramFrame delivered;
+  ASSERT_TRUE(compositor->takeDeliveredProgramFrame(delivered, 100));
+  ASSERT_TRUE(compositor->takeDeliveredProgramFrame(delivered, 100));
+  ASSERT_EQ(delivered.sourceAdmissions.size(), 1u);
+  EXPECT_EQ(delivered.sourceAdmissions[0].state, publishSecond ? "ready" : "unavailable");
+  EXPECT_EQ(delivered.sourceAdmissions[0].requestedFrameId, 2);
+  EXPECT_EQ(delivered.sourceAdmissions[0].actualFrameId, publishSecond ? 2 : -1);
+  if (!publishSecond) EXPECT_EQ(delivered.health, "degraded");
+  EXPECT_EQ(delivered.timelineTimestamp100ns, (anchorNs + 50'000'000) / 100);
+  ASSERT_TRUE(delivered.programNv12Shared && delivered.programNv12Shared->size() >= 64u * 64u);
+  if (publishSecond) EXPECT_NEAR(delivered.programNv12Shared->at(32 * 64 + 32), 90, 3);
+  else EXPECT_TRUE(std::abs(int(delivered.programNv12Shared->at(32 * 64 + 32)) - 90) > 3);
+  EXPECT_EQ(compositor->programBufferDiagnostics().capacity, 5);
+  EXPECT_EQ(compositor->programBufferDiagnostics().activeFrames, 2);
+}
+}
+TEST(PreparedProgramComposition, ClockedCaptureResolvesLatePictureAtOriginalDeadlineWithActualPixels) {
+  checkClockedCaptureDeadline(true);
+}
+TEST(PreparedProgramComposition, MissingClockedCaptureStillDeliversProgramAtOriginalDeadlineWithUnavailableEvidence) {
+  checkClockedCaptureDeadline(false);
+}
+TEST(PreparedProgramComposition, DirectGpuCaptureSelectsNewlyCompletedPixelsAtCompositionWithinOriginalDeadline) {
+  checkClockedCaptureDeadline(true, true);
 }
 #endif

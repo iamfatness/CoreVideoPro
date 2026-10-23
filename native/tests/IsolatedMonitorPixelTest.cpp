@@ -22,15 +22,16 @@
 #include "compositor/ComPtrLite.h"
 #include "modules/D3DVideoFrame.h"
 #include "modules/CpuSourcePreparation.h"
+#include "modules/CapturePresentationWindow.h"
 
 namespace {
 using namespace corevideo::modules;
 
-std::unique_ptr<ICompositor> isolatedCompositor() {
+std::unique_ptr<ICompositor> isolatedCompositor(bool prepareCpuSources = false) {
   const char* raw = std::getenv("COREVIDEO_ISOLATE_MONITORS");
   const std::string previous = raw ? raw : "";
   _putenv_s("COREVIDEO_ISOLATE_MONITORS", "1");
-  auto result = createD3D11Compositor();
+  auto result = createD3D11Compositor(prepareCpuSources);
   _putenv_s("COREVIDEO_ISOLATE_MONITORS", previous.c_str());
   return result;
 }
@@ -183,6 +184,47 @@ void gradePixelParity(bool i420, bool advanced = false, bool fullRange = true, b
   ASSERT_TRUE(compositor->latestGradePreviews()->gradePreviews.empty());
   EXPECT_EQ(compositor->gradePreviewDiagnostics().retainedInputs, 0u);
 }
+}
+TEST(IsolatedMonitorPixels, CaptureClockRendersPublishedHeadPixelsDespiteLaggingIngest) {
+  auto compositor = isolatedCompositor(); ASSERT_TRUE(compositor);
+  const auto readyBy = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (compositor->monitorDiagnostics().readiness == "starting" && std::chrono::steady_clock::now() < readyBy)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_EQ(compositor->monitorDiagnostics().readiness, "ready");
+  auto request = requestAtSize(128); request.multiviewActive = false; request.sequence = 1;
+  auto first = request.frames.front(); first.pixels.reset();
+  first.sourceEpoch = 7; first.frameId = 100; first.captureTimestamp100ns = 1000;
+  first.i420Width = first.i420Height = 64; first.i420FullRange = true;
+  auto low = std::make_shared<std::vector<uint8_t>>(64 * 64 * 3 / 2, 128);
+  std::fill(low->begin(), low->begin() + 64 * 64, 40); first.i420 = low;
+  auto current = first; current.frameId = 101; current.captureTimestamp100ns = 2000;
+  auto high = std::make_shared<std::vector<uint8_t>>(*low);
+  std::fill(high->begin(), high->begin() + 64 * 64, 150); current.i420 = high;
+  auto window = std::make_shared<CapturePresentationWindow>(); window->configure(60, 1);
+  window->publish(first); window->publish(current); first.capturePresentation = window;
+  request.frames = {first};
+  const auto anchor = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  compositor->setProgramProductionTiming(0, anchor);
+  std::shared_ptr<const MonitorRenderResult> result;
+  uint32_t pixel = 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  do {
+    compositor->submitMonitors(request);
+    ++request.sequence;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    result = compositor->latestMonitors();
+    if (result && result->preview.frameNumber >= 1 && !result->preview.sharedHandleHex.empty()) {
+      pixel = consumeCenter(result->preview);
+      if (pixel) break; // unavailable startup key is not a sampled image
+    }
+  } while (std::chrono::steady_clock::now() < deadline);
+  ASSERT_TRUE(result); ASSERT_FALSE(result->preview.sharedHandleHex.empty());
+  ASSERT_EQ(result->inputs.size(), 1u); EXPECT_EQ(result->inputs.front().frameId, 101);
+  ASSERT_NE(pixel, 0u);
+  std::fprintf(stderr, "[monitor-cadence-pixel] selected=%lld export=%lld pixel=%08x\n",
+      static_cast<long long>(result->inputs.front().frameId), static_cast<long long>(result->preview.frameNumber), pixel);
+  EXPECT_NEAR(pixel & 255, 150, 2);
 }
 TEST(GradePreviewPixels, BgraDraftMatchesNativeProgramAndRetiresPrivateEditors) { gradePixelParity(false); }
 TEST(GradePreviewPixels, I420DraftMatchesNativeProgramAndRetiresPrivateEditors) { gradePixelParity(true); }
@@ -956,7 +998,7 @@ TEST(WgcCpuPreparation, OptInRealCpuCaptureMatchesReferencePixelsWithoutProgramU
   capture->disconnect(devices.front().id);
 }
 
-TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndIndependentCpuConsumers) {
+TEST(GpuCaptureIngress, DefaultRealWgcFrameUsesPreparedGpuViewAndIndependentCpuConsumers) {
   const char* enabled = std::getenv("COREVIDEO_CAPTURE_TESTS");
   if (!enabled || std::string(enabled) != "1") {
     std::fprintf(stderr, "[capture-test] SKIPPED real WGC capture; enable COREVIDEO_CAPTURE_TESTS=1 on an interactive rig\n");
@@ -967,8 +1009,10 @@ TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndIndependentCpuCon
   corevideo::core::ComApartmentLifetime apartment;
   const char* raw = std::getenv("COREVIDEO_GPU_CAPTURE");
   const std::string previous = raw ? raw : "";
-  _putenv_s("COREVIDEO_GPU_CAPTURE", "1");
-  auto compositor = isolatedCompositor();
+  _putenv_s("COREVIDEO_GPU_CAPTURE", "");
+  // Match production's preparation-enabled compositor consumer. The direct
+  // legacy fixture otherwise has no production GPU consumer to import into.
+  auto compositor = isolatedCompositor(true);
   auto capture = createWgcScreenCaptureDevice();
   ASSERT_TRUE(compositor != nullptr);
   ASSERT_TRUE(capture != nullptr);

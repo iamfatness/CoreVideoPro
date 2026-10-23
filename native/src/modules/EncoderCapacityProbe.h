@@ -75,6 +75,10 @@
 
 namespace corevideo::modules {
 
+// Discover the complete supported recording workload: eight ISOs plus Program.
+// This bounds probing, not measured capacity or sustainable throughput.
+inline constexpr int kDefaultEncoderProbeSessionCap = 9;
+
 // The exact workload a capacity answer is valid for. Capacity is not a property
 // of the machine alone — a GPU that sustains eight 1080p30 sessions may manage
 // one at 4K60 — so the cache is keyed by the whole tuple.

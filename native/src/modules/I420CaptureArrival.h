@@ -18,6 +18,14 @@ class I420CaptureArrival {
       if (cpu.use_count() != 1) cpu = std::make_shared<std::vector<uint8_t>>(*cpu);
       paintDeliveryCounter(cpu->data(), cpu->size(), width, height, width,
           static_cast<uint32_t>(frameId_ + 1));
+      // Source identity must survive Program's separate output counter bands.
+      // Paint before GPU preparation so stale source textures retain stale bits.
+      if (height >= 96) {
+        const int markerWidth = (std::min)(width, 720);
+        const int offset = (width - markerWidth) / 2;
+        paintDeliveryCounter(cpu->data() + offset, cpu->size() - offset, markerWidth, height, width,
+            static_cast<uint32_t>(frameId_ + 1), true);
+      }
     }
     return publish(std::move(cpu), width, height, fullRange, bt601);
   }

@@ -43,6 +43,19 @@ public sealed class GraphicsTemplateEditorTests
         Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.Add(original,"image"));
         Assert.Equal(3,GraphicsTemplateEditor.Layers(original).Count);
     }
+    [Fact]
+    public void ImageSelectorCanChangeAssetBindingPrivatelyAndStillHonorsLocks()
+    {
+        var document=JsonNode.Parse(Document.GetRawText())!.AsObject();
+        document["assets"]=new JsonArray(new JsonObject { ["id"]="logo",["file"]="assets/logo.png" });
+        var original=GraphicsTemplateEditor.Add(NativeGraphicsScratch.From(JsonSerializer.SerializeToElement(document)),"image");
+        var id=GraphicsTemplateEditor.Layers(original).Last().Id;
+        var changed=GraphicsTemplateEditor.Set(original,id,"asset",JsonSerializer.SerializeToElement(new {token="brand.logo"}));
+        Assert.Equal("logo",GraphicsTemplateEditor.Layer(original,id).GetProperty("asset").GetString());
+        Assert.Equal("brand.logo",GraphicsTemplateEditor.Layer(changed,id).GetProperty("asset").GetProperty("token").GetString());
+        Assert.Contains("brand.logo",JsonDocument.Parse(changed.Manifest).RootElement.GetProperty("brandTokens").EnumerateArray().Select(t=>t.GetString()));
+        Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.Set(GraphicsTemplateEditor.Lock(changed,id,true),id,"asset",JsonSerializer.SerializeToElement("logo")));
+    }
     private static NativeGraphicsState State()
     {
         var doc=Document;return new() {SchemaVersion=1,CoreEpoch="test-core",Templates=[new() {TemplateId="card",TemplateVersion=1,Runtime="declarative",Family="title",Definition=doc,ManifestHash=NativeGraphicsScratch.From(doc).Hash,Fields=[new() {Id="name",Type="string",Default=JsonSerializer.SerializeToElement("Ada"),Required=true}]}],

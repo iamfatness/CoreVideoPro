@@ -215,7 +215,10 @@ struct Group : std::enable_shared_from_this<Group> {
     // presentation commits. Never map a fresh, unwritten post-flip buffer.
     const auto observedPixel = readPixelForProbe(surface);
     const auto presentStart = qpc();
-    const auto result = surface.chain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+    // Retain each queued picture for a refresh. The interval-zero comparison
+    // improved accepted-call counters but omitted hundreds of actual Studio
+    // camera identities. Counters cannot qualify this presentation boundary.
+    const auto result = surface.chain->Present(1, DXGI_PRESENT_DO_NOT_WAIT);
     const auto presentMs = milliseconds(presentStart);
     surface.stats.presentMs += presentMs; surface.stats.presentMaximumMs = std::max(surface.stats.presentMaximumMs, presentMs);
     if (result == DXGI_ERROR_WAS_STILL_DRAWING) {
@@ -268,6 +271,7 @@ struct Group : std::enable_shared_from_this<Group> {
     DWORD waitResult = WAIT_OBJECT_0;
     std::vector<std::shared_ptr<Surface>> current;
     current.reserve(64);
+    std::shared_ptr<Surface> creditWake;
     for (;;) {
       std::array<Lease*, 64> retired{};
       std::size_t retiredCount;
@@ -294,18 +298,35 @@ struct Group : std::enable_shared_from_this<Group> {
       } else if (active && now >= retryAt && now < next) {
         retry = true; retryAt = now + retryPeriod;
       }
-      if (periodic || retry) for (const auto& surface : current) {
-        if (periodic || surface->pending) pump(*surface, retry, slotDue, wokeAt, waitResult);
+      for (const auto& surface : current) {
+        if (periodic || (retry && surface->pending) || surface == creditWake)
+          pump(*surface, !periodic, slotDue, wokeAt, waitResult);
       }
+      creditWake.reset();
       const bool pending = std::any_of(current.begin(), current.end(), [](const auto& surface) {
         return surface->active.load() && (surface->pending || surface->readPixel.load()); });
       const auto dueAt = active ? (pending ? std::min(next, retryAt) : next) : qpc() + frequency();
       LARGE_INTEGER due{};
       due.QuadPart = -std::max<std::int64_t>(1, (dueAt - qpc()) * 10'000'000 / frequency());
       SetWaitableTimer(timer.value, &due, 0, nullptr, nullptr, FALSE);
-      const HANDLE waits[]{wake.value, timer.value};
-      waitResult = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+      // A second free-running 60 Hz timer must not defer a ready display queue.
+      // Wait on available per-chain credits directly. Missing source pixels
+      // still use the bounded retry timer; producers and the UI never wait here.
+      std::array<HANDLE, MAXIMUM_WAIT_OBJECTS> waits{wake.value, timer.value};
+      std::array<std::shared_ptr<Surface>, MAXIMUM_WAIT_OBJECTS> waitOwners;
+      DWORD count = 2;
+      for (const auto& surface : current) {
+        if (!surface->active.load() || surface->retired.load() || surface->credit || !surface->frameReady.value) continue;
+        if (count == waits.size()) break; // excess surfaces retain periodic/retry polling
+        waits[count] = surface->frameReady.value; waitOwners[count++] = surface;
+      }
+      waitResult = WaitForMultipleObjects(count, waits.data(), FALSE, INFINITE);
       wokeAt = qpc();
+      if (waitResult >= WAIT_OBJECT_0 + 2 && waitResult < WAIT_OBJECT_0 + count) {
+        creditWake = waitOwners[waitResult - WAIT_OBJECT_0];
+        creditWake->credit = true; // retain the auto-reset signal exactly once
+        creditWake->pending = true;
+      }
     }
   }
   void failAndDrain() {

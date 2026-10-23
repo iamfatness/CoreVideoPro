@@ -1,6 +1,24 @@
 # CoreVideo Pro — ranked backlog
 
-**Owner beta release direction, October 21 — [#974](https://github.com/iamfatness/CoreVideoPro/issues/974):** the owner explicitly authorized a new beta containing the completed fixes before full-workload qualification passes. This supersedes the historical publication holds below for this release only. Preserve failed and missing evidence, keep `framePerformanceAccepted=false`, disclose the remaining screen/display and installed-shortcut acceptance gaps, and retain the normal clean-build, CI and exact-package installer gates. Publication does not close performance acceptance or establish that stuttering is fixed.
+**Owner Graphics follow-up, October 21 — [#1012](https://github.com/iamfatness/CoreVideoPro/issues/1012):** finish local logo upload for the declarative logo templates as a dependency of #1007; verify private Preview, explicit Cue/Show and installed camera pixels before acceptance.
+
+**Graphics installed dependency — [#1011](https://github.com/iamfatness/CoreVideoPro/issues/1011):** fast Take/LT in chose a valid outgoing camera from mixed fade attribution. Prefer actual incoming `take-in:` layers and refuse outgoing-only transition attribution; preserve the failed installed trial and verify immediate camera/screen handoff without sleeping through the failure.
+
+**Owner priority, October 21 — [#1007](https://github.com/iamfatness/CoreVideoPro/issues/1007):** audit Graphics for Zoom-only assumptions and incomplete workflows. Generalize source-bound lower thirds to webcams and screen capture, qualify transparent PNG import/composition and verify the installed desktop-shortcut app before completion. Preserve source lifetime fences, private Cue/Program isolation and independent full-workload performance gates.
+
+**Owner beta release direction, October 21 — [#974](https://github.com/iamfatness/CoreVideoPro/issues/974), PR #1008:** the latest owner instruction replaces the earlier one-release exception: finish full-workload qualification with local recording and registered virtual camera, fix failures, then merge, build, publish and install. Eight actual live remote feeds, webcam, moving screen capture, Multiview and Preview remain required. Preserve failed and missing evidence; no merge or beta publication until all required checks pass.
+
+**Qualification dependency — [#1013](https://github.com/iamfatness/CoreVideoPro/issues/1013):** the encoder probe stops at eight sessions, below Program plus eight ISOs, forcing the last ISO to software. Measure the full supported encoder inventory without assuming driver capacity, preserve lower-capacity fallback, and verify actual installed hardware placement and unchanged full-workload delivery gates.
+
+**Qualification dependency — [#1014](https://github.com/iamfatness/CoreVideoPro/issues/1014):** remove the measured WGC CPU round trip and investigate remaining exact webcam-selection delays under recording load. Preserve source identities, bounded ownership and independent CPU/ISO consumers. Require per-frame source and mapped display evidence; advancing Program counters cannot qualify stale source pictures. This remains within the owner's #974/#1007 full-workload request.
+
+**Qualification test dependency — [#1015](https://github.com/iamfatness/CoreVideoPro/issues/1015):** scope browser mock environment and keep the native test runner's COM apartment alive across successive real capture fixtures, matching production lifetime. Retain the interrupted capture-enabled run; require actual WGC/browser pixels and the complete suite before accepting #1014.
+
+**Source deadline dependency — [#1016](https://github.com/iamfatness/CoreVideoPro/issues/1016):** integrate source preparation and composition into the existing Program deadline budget. Retain exact selected identities, original deadlines, total buffering and bounded capacity; require causal late-preparation tests and installed full-workload evidence. Scheduling alone did not remove holds. This blocks #1008 merge/publication under the owner's root-cause instruction.
+
+**Qualification CI dependency — [#1017](https://github.com/iamfatness/CoreVideoPro/issues/1017):** synchronize completed observation-reader leases before bounded snapshot slots are reused. Retain the 37-warning ThreadSanitizer failure, fixed capacity and nonblocking publisher refusal; require concurrent reuse coverage and a clean sanitizer job before #1008 merge/publication. This is not yet established as a video-stuttering cause.
+
+**Source cadence dependency — [#1019](https://github.com/iamfatness/CoreVideoPro/issues/1019):** stop latest-arrival sampling from repeating and skipping already prepared webcam pictures. Resolve explicit source cadence within the existing preparation/deadline budget; preserve exact identities, bounded ownership, ISO fidelity and actual-picture gates. The installed short run passed output identities but failed source pictures, so #1008 remains blocked.
 
 **Beta CI dependency — [#1006](https://github.com/iamfatness/CoreVideoPro/issues/1006):** initialize clock publication storage before launching its worker. Keep strict revision/visibility checks while distinguishing bounded controller-busy admission from configuration errors; validate the retained macOS failure and thread-sanitized clock lifetime before releasing #974.
 
@@ -515,10 +533,13 @@ issue exists yet for this row; one will be filed, labeled `backlog`, when the
 |---|---|
 | (pending — file on PR) | 1080P flip live acceptance (mac): owner-meeting soak per [`docs/mac-parity-plan.md`](mac-parity-plan.md) §7 Task 3 Step 6 — (a) subscriptions at 1920-wide delivery for camera-on sources, (b) `zoomSubscriptionChurn.fullResolutionDemoted == 0` at ≤8 cameras, (c) camera off→on re-subscribe within one spine sync, (d) sustained render holds frame rate; fallback = revert the one-line kind flip in `spineSubscriptionPayloads` (restores the 720P fence; budget machinery stays). Evidence source: the core snapshot export (`AppModel.swift` dumps `lastSnapshot`/`lastZoomSnapshot` carrying `zoomSubscriptionChurn`) — NOT the Diagnostics pane, which doesn't render subscriptions; the stub reports 1280×720 for `participant-video`, so this is verifiable against the REAL engine only. |
 
+**Graphics qualification dependency — [#1010](https://github.com/iamfatness/CoreVideoPro/issues/1010):** local automatic introductions must read accepted native source labels after video reincarnation while refusing stale instance text. This is within the owner-requested #1007 local-source Graphics audit and fix; qualify the actual reconnect, not only a manual Show.
+
 ## Later — parked
 
 | Issue | Item |
 |---|---|
+| [#1009](https://github.com/iamfatness/CoreVideoPro/issues/1009) | Local Program recording remains gated on a Zoom meeting; audit finding from #1007, needs owner ranking and installed output validation. |
 | [#539](https://github.com/iamfatness/CoreVideoPro/issues/539) | MXL / ZoomISO Cloud / Kubernetes; parked until the source bus and plant I/O exist. |
 
 Parked from the 2026-09-24 architecture review (do not start from that document):

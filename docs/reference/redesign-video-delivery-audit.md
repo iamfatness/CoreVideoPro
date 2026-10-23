@@ -375,3 +375,97 @@ Native observations also count accepted-commit intervals over 25, 33 and 50 ms.
 Qualification compares cumulative endpoint deltas inside the measured interval,
 so a near-60 average cannot hide occasional long gaps. Missing counter fields
 are unknown evidence. These counters do not establish physical scanout.
+
+The native presentation chain uses three back buffers and two latency credits.
+A two-credit candidate was tested after
+a controlled 1080p60 producer comparison on the exact 60 Hz display:
+the three-buffer one-credit controls had 19 and 11 intervals above 25 ms;
+the intervening two-credit run accepted all 2,040 produced frames without a
+long interval. Two buffers with a two-credit limit still developed gaps.
+These are isolated native-commit observations, not physical-display or workload
+qualification. Program buffering remains separately measured; actual desktop
+camera/screen picture ages and final display timing must still pass. Creation
+records the actual buffer count/latency limit once for diagnostics, and the
+compiled changing-pixel/blocked-control probe checks the native configuration.
+The installed two-credit comparison subsequently failed actual picture age:
+`qualification-1008-17` measured a median 55.023 ms between Program delivery
+and the sampled desktop image update, and camera ages up to 123.343 ms against
+the unchanged 100 ms bound. The one-credit comparison in
+`qualification-1008-18` reduced age but omitted 36 Program camera identities
+over 65.938 seconds, versus three omissions with two credits in the earlier
+comparison. It was rejected and two credits restored while correcting source
+selection. The private producer's smoother submission intervals did not qualify
+either setting. Neither has a full workload pass. Queue size must satisfy both
+physical cadence and actual picture age.
+
+The workload verdict also requires independent Studio source-picture evidence
+for Preview, Program and the webcam input tile. Complete observation, exact
+workload interval, source identity continuity and the unchanged picture-age
+bound must all pass. Fresh output counters or recording/camera pixels cannot
+waive omitted camera identities in those optional monitor paths.
+
+`scripts/qa/desktop-picture-cadence.py` audits the independent Desktop
+Duplication samples against the declared interval. It requires a finalized
+collector, matching QPC frequency, complete interval coverage, one accumulated
+update per sample and unmasked pixels. Marker groups are distinct from body
+groups even when their names match. Torn markers, omitted identities and
+reordered identities fail continuity. This tool deliberately never claims a
+physical display or full-workload pass; freshness, ordinary picture progression,
+visibility and the output-specific timing evidence remain separate requirements.
+
+Before collecting pixels, verify the actual window rectangle and sampling
+coordinates against the visible layout. A maximized or resized window invalidates
+fixed coordinates. Occlusion must be checked over the measured video region;
+an overlap outside that region does not invalidate the sampled pictures.
+
+A controlled live observer check on October 22 submitted a known 10 Hz sequence
+with two deliberately omitted identities and a five-tick hold. Desktop
+Duplication detected both omitted identities and a 565 ms hold with no unexpected
+missing identities, invalid marker pixels or accumulated updates. That validates
+this slow detection control, not 60 Hz collection or physical scanout. Higher-rate
+collection must independently retain complete observer coverage. Replays of the
+failed one-credit workload still report 171 Preview/input and 36 Program omissions;
+the corrected analyzer must not turn those retained failures into a pass.
+
+The October 22 short installed comparison with the independent capture clock
+reduced the earlier Preview-only omissions, but still failed with 16 omitted
+camera identities on each of Preview, Program and the input tile. All 14 omission
+events coincided across the three cells. The eight ISO files, Program recording,
+registered OS camera source pictures and Program GPU deadlines passed only that
+65-second component interval; this is not release qualification.
+
+An isolated known-pixel producer reproduced periodic omissions without the media
+core. Explicit output restriction and an HWND swap chain did not resolve them.
+Removing the extra refresh wait from the native Present call removed periodic
+native commit gaps in an 80-second control and reduced observed picture age, but
+one omission with complete observer coverage remained. The interval-zero candidate
+is therefore still unqualified. DXGI can discard queued pictures with interval
+zero; only actual source-picture and display-delivery evidence can accept it.
+The installed interval-zero comparison subsequently failed with 541 omitted
+Preview/input camera identities and 538 Program identities in 65 seconds, despite
+no new active multiview exporter replacements or drops. It was rejected and
+refresh retention restored. Lower observation ages and smoother accepted calls
+did not justify discarding source pictures.
+
+With `COREVIDEO_MONITOR_DIAGNOSTICS=1`, the decoupled exporter now logs cumulative
+submitted/published counts, unread output replacements, prepared-frame replacements
+and refusal counts once per second on its existing owner. These counters identify
+handoff loss; they do not prove completed GPU copies or physical presentation.
+Their public numeric observation uses atomics, rather than racing owner counters.
+
+### Match the regular desktop launch during qualification
+
+Task Scheduler defaults to priority 7, which starts actions and their children
+at Below Normal priority, with background I/O and memory policy. A normal-SID
+task alone therefore does not reproduce the owner's desktop launch. The local
+reproduction also confirmed inheritance through the shortcut's `cmd → start`
+pattern. Explicit task priority 5 produces Normal child priority; this is a
+launch-environment correction, not a high-priority product workaround.
+
+Qualification must record the installed shortcut launch, process generation,
+elevation state, actual app priority and actual Windows-camera consumer priority.
+`judgeRedesignWorkload` requires the matching process generation and Normal
+priority for both processes. Missing observations and background/boosted runs
+cannot establish acceptance of the regular installed launch. Preserve prior
+diagnostics with their original launch conditions. Normal priority alone does
+not qualify presentation: all source-picture and display-delivery gates remain.

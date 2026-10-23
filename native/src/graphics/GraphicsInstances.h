@@ -28,8 +28,9 @@ class GraphicsInstances {
   void append(modules::CompositorRenderPlan& plan, bool preview,
               const std::vector<modules::VideoFrame>& frames = {}, ScopePass scope = ScopePass::All) const;
   void observe(const modules::ProgramFrame& frame);
-  void observeZoomSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
-                          const std::vector<modules::VideoFrame>& frames = {});
+  void observeSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
+                          const std::vector<modules::VideoFrame>& frames = {},
+                          const std::function<std::string_view(const std::string&)>& captureLabel = {});
   const rpc::Json& snapshot() const { return snapshot_; }
   bool hasCue() const;
   // Private monitor input, not an instance mutation, cue or Program revision.

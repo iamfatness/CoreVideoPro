@@ -11,6 +11,13 @@ function completeEvidence() {
   const intervalTicks = { start: '1000000', end: String(1000000 + 1800 * 10000000), frequency: 10000000 };
   const perSample = id => id.startsWith('zoom:') ? 450 : 600;
   const isoCount = id => perSample(id) * 180 + 1;
+  const sourcePictures = () => ({ schema: 'source-picture-verdict-v1', sourcePicturesVerified: true,
+    startTicks: intervalTicks.start, endTicks: intervalTicks.end, qpcFrequency: intervalTicks.frequency,
+    durationSeconds: 1800, samples: 108001, cameraSourceId: 'capture:camera', screenSourceId: 'capture:screen:2',
+    invalid: 0, mismatched: 0, stale: 0, cameraMissing: 0, cameraReordered: 0, cameraRepeated: 0,
+    cameraPermittedRateConversionRepeats: 0, cameraBodyChanges: 108000, errors: [],
+    cameraRateNumerator: 60, cameraRateDenominator: 1, maximumCameraObservationAgeMs: 75,
+    maximumScreenPictureAgeMs: 180, longestCameraBodyHoldMs: 0 });
   const pixelProof = sourceId => ({ schema: 'iso-pixel-arrival-verdict-v1', sourceId,
     path: 'fixture/' + sourceId + '.mp4', trace: 'fixture/arrival-trace.bin',
     startTicks: intervalTicks.start, endTicks: intervalTicks.end,
@@ -19,6 +26,14 @@ function completeEvidence() {
     invalid: 0, rangeViolations: 0, firstMismatchIndex: null,
     coverage: { sourceEpoch: 1, durationSeconds: 1800 } });
   return { startTime, endTime, requiredInputIds, requiredIsoIds, monitorProbeVerdict: { functionalPassed: true },
+    launchEvidence: { installed: true, method: 'desktop-shortcut', elevated: false, processGeneration: 'one',
+      priorityClass: 'Normal', receiverPriorityClass: 'Normal' },
+    sourcePictureVerdict: { osCamera: sourcePictures(), recording: sourcePictures() },
+    desktopSourcePictureVerdict: { schema: 'desktop-source-picture-verdict-v1',
+      observerCoverageComplete: true, observedPicturesFresh: true, errors: [], durationSeconds: 1800,
+      startTicks: intervalTicks.start, endTicks: intervalTicks.end, qpcFrequency: intervalTicks.frequency,
+      surfaces: Object.fromEntries(['previewCamera', 'programCamera', 'inputCamera'].map(id => [id,
+        { samples: 108001, invalid: 0, missingSourceIdentities: 0, reordered: 0, maximumObservationAgeMs: 90 }])) },
     qpcFrequency: intervalTicks.frequency,
     isoFileEvidence: requiredIsoIds.map(sourceId => ({ sourceId, path: 'fixture/' + sourceId + '.mp4',
       measurement: 'ffprobe-count-packets', width: 1920, height: 1080, packets: isoCount(sourceId), muxVideoFrameCount: isoCount(sourceId) })),
@@ -58,6 +73,41 @@ function completeEvidence() {
   };
 }
 
+test('healthy output counters cannot qualify omitted Studio camera pictures', () => {
+  for (const surface of ['previewCamera', 'programCamera', 'inputCamera']) {
+    for (const mutate of [
+      report => { delete report.desktopSourcePictureVerdict; },
+      report => { report.desktopSourcePictureVerdict.surfaces[surface].missingSourceIdentities = 1; },
+      report => { report.desktopSourcePictureVerdict.surfaces[surface].invalid = 1; },
+      report => { report.desktopSourcePictureVerdict.surfaces[surface].maximumObservationAgeMs = 101; },
+      report => { report.desktopSourcePictureVerdict.observerCoverageComplete = false; },
+      report => { report.desktopSourcePictureVerdict.startTicks = '999'; },
+    ]) {
+      const report = completeEvidence(); mutate(report);
+      assert.equal(judgeRedesignWorkload(report).passed, false);
+    }
+  }
+});
+test('healthy output counters cannot qualify missing, stale or incomplete source pictures', () => {
+  for (const destination of ['osCamera', 'recording']) {
+    for (const mutate of [
+      report => { delete report.sourcePictureVerdict; },
+      report => { report.sourcePictureVerdict[destination].sourcePicturesVerified = false; },
+      report => { report.sourcePictureVerdict[destination].cameraMissing = 142; },
+      report => { report.sourcePictureVerdict[destination].cameraRepeated = 147; },
+      report => { report.sourcePictureVerdict[destination].cameraPermittedRateConversionRepeats = 1000; },
+      report => { report.sourcePictureVerdict[destination].maximumScreenPictureAgeMs = 217; },
+      report => { report.sourcePictureVerdict[destination].stale = 82; },
+      report => { report.sourcePictureVerdict[destination].startTicks = '999999'; },
+      report => { report.sourcePictureVerdict[destination].durationSeconds = 65; },
+      report => { report.sourcePictureVerdict[destination].cameraBodyChanges = 0; },
+    ]) {
+      const report = completeEvidence(); mutate(report);
+      assert.equal(judgeRedesignWorkload(report).passed, false);
+    }
+  }
+});
+
 test('ISO arrival fidelity requires decoded pictures over the exact workload clock interval', () => {
   for (const change of [
     path => { path.measurement = 'completion-deadlines'; },
@@ -70,6 +120,25 @@ test('ISO arrival fidelity requires decoded pictures over the exact workload clo
     const path = report.framePerformanceReport.performanceEvidence.paths.find(path => path.id.startsWith('recording:iso:'));
     change(path);
     assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
+});
+
+test('qualification rejects a mismatched launch or background/boosted process priorities', () => {
+  for (const change of [
+    r => { delete r.launchEvidence; },
+    r => { r.launchEvidence.installed = false; },
+    r => { r.launchEvidence.method = 'development-executable'; },
+    r => { r.launchEvidence.elevated = true; },
+    r => { r.launchEvidence.processGeneration = 'another-run'; },
+    r => { r.launchEvidence.priorityClass = 'BelowNormal'; },
+    r => { r.launchEvidence.priorityClass = 'High'; },
+    r => { r.launchEvidence.receiverPriorityClass = 'BelowNormal'; },
+    r => { r.launchEvidence.receiverPriorityClass = 'High'; },
+  ]) {
+    const report = completeEvidence(); change(report);
+    const verdict = judgeRedesignWorkload(report);
+    assert.equal(verdict.passed, false);
+    assert.ok(verdict.errors.some(error => error.includes('observed Normal process priority')));
   }
 });
 

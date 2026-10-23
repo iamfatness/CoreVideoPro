@@ -32,6 +32,8 @@ public sealed partial class GraphicsWorkspaceControl
         importPanel.Children.Add(Action("Validate and import", async () => { if (_session is not null) await _session.ImportAsync(import.Text); }));
         _libraryPanel.Children.Add(new Expander { Header = "Import template", Content = importPanel, HorizontalAlignment = HorizontalAlignment.Stretch });
         _packageImportButton = Action("Import graphics package…", PickPackageAsync); _libraryPanel.Children.Add(_packageImportButton); _libraryPanel.Children.Add(_importStatus);
+        _libraryPanel.Children.Add(Action("Import PNG / JPEG graphic…",PickGraphicImageAsync));
+        _libraryPanel.Children.Add(Copy("PNG transparency is preserved. Imported graphics fit the full canvas; create a hidden cue, then Cue and Show explicitly."));
         _libraryPanel.Children.Add(Action("Export selected template package…",ExportPackageAsync));
     }
     private void BuildCueManagement()

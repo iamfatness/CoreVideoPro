@@ -175,6 +175,7 @@ class D3DProgramDisplayReader {
     requestedSnapshot_ = nullptr; importCached_ = false;
     retire(context);
     targetNs_ = targetNs; deadlineNs_ = deadlineNs;
+    presentationOffset100ns_ = request ? request->programDisplayOffset100ns : D3DProgramDisplaySnapshots::PresentationOffset100ns;
     held_ = true;
     if (!owner) { ++reused_; return copies_ ? view_.get() : nullptr; }
     auto snapshot = std::static_pointer_cast<const D3DProgramDisplaySnapshots::Snapshot>(owner);
@@ -409,6 +410,7 @@ class D3DProgramDisplayReader {
   void checkpoint(uint32_t stage) { record(stage); }
   ProgramDisplayObservation observation() const {
     ProgramDisplayObservation result;
+    result.presentationOffset100ns = presentationOffset100ns_;
     result.observed = copies_ > 0; result.generation = copiedGeneration_;
     result.requestedSequence = requested_; result.copiedSequence = copied_;
     result.frameNumber = frameNumber_; result.timelineTimestamp100ns = timeline100ns_;
@@ -436,6 +438,7 @@ class D3DProgramDisplayReader {
   }
  private:
   friend struct D3DProgramDisplayReaderTestAccess;
+  int64_t presentationOffset100ns_ = D3DProgramDisplaySnapshots::PresentationOffset100ns;
   // Constructor/owner-only test seam. No environment, command or API binding.
   std::function<std::optional<HRESULT>(ProgramDisplayReason)> fault_;
   std::function<int64_t()> clock_;

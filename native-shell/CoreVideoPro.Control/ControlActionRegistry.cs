@@ -121,6 +121,10 @@ public static class ControlActionRegistry
                     new ControlParam("slot", i, true, "1-10"),
                     new ControlParam("sourceId", s, true, "zoom:<pid> | capture:<id> | media:<id>")
                 }),
+            new("source.capture.online.set", "Connect or take capture offline", "Use the existing capture device controls. Taking a device offline unassigns its inputs; native video readiness remains separately observed.",
+                new[] { new ControlParam("sourceId", s, true, "capture:<deviceId>"), new ControlParam("online", b, true) }),
+            new("input.unassign", "Unassign show input", "Clear only this input through the same operator command; the source remains available for reassignment.",
+                new[] { new ControlParam("slot", i, true) }),
             new("input.name", "Name input source", "Set the display name override for a Show Input's source (blank resets).",
                 new[]
                 {
@@ -174,6 +178,27 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("request", s, true, "Versioned JSON request with a manifest string or a local packagePath archive") }),
             new("graphics.template.list", "Observe graphics templates", "Read the native versioned catalog and import results without changing graphics.",
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
+
+            new("graphics.template.select", "Select private graphics template", "Browse an installed template without creating a cue or changing Program.",
+                new[] { new ControlParam("templateId", s, true), new ControlParam("version", i, true) }),
+            new("graphics.cue.create", "Create hidden graphics cue", "Create and select a hidden cue from an installed template and its current private draft. Does not Show.",
+                new[] { new ControlParam("templateId", s, true), new ControlParam("version", i, true), new ControlParam("scope", s, true, "global | scene"), new ControlParam("sceneId", s, false) }),
+            new("graphics.studio.assign", "Assign lower third to Studio", "Pin the current private lower-third draft for the next Studio Show.",
+                new[] { new ControlParam("followProgramSource", b, true) }),
+            new("graphics.image.import", "Import local graphics image", "Verify a PNG/JPEG and browse it privately as a full-canvas graphic. Does not create a cue or show it.",
+                new[] { new ControlParam("path", s, true) }),
+
+            new("graphics.logo.import", "Upload graphic logo", "Verify a PNG/JPEG and apply it to the selected private logo draft. Does not Cue, Show or Update Program.",
+                new[] { new ControlParam("path", s, true) }),
+
+            new("graphics.cue.select", "Select graphics cue", "Select an existing cue for private editing.",
+                new[] { new ControlParam("instanceId", s, true) }),
+            new("graphics.cue.action", "Apply graphics cue action", "Use the selected workspace cue: cue, show, hide, or update. Each is explicit.",
+                new[] { new ControlParam("action", s, true, "cue | show | hide | update") }),
+            new("graphics.cue.save", "Save graphics cue", "Save the selected private cue with pinned template and image references.",
+                new[] { new ControlParam("name", s, true) }),
+            new("graphics.saved.restore", "Restore saved graphics cue", "Restore an unbound saved cue hidden; Cue and Show remain explicit.",
+                new[] { new ControlParam("savedId", s, true) }),
 
             // ---- Audio ------------------------------------------------------------------
             new("audio.zoomMode.set", "Zoom audio mode", "Choose independently routed ISO stems or Zoom's combined fallback mix.",

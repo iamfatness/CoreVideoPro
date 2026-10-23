@@ -13,8 +13,11 @@ STAGES = {1: "source-gpu-ready", 2: "source-draw-submitted", 3: "program-submitt
           9: "source-upload-submitted", 10: "source-upload-refused", 11: "iso-arrival-offered"}
 
 
-def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require_source_ready=False, expected_source_ids=None, require_program_deadlines=False):
+def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require_source_ready=False, expected_source_ids=None, require_program_deadlines=False, require_exact_source_selection=False):
     errors = []
+    if require_exact_source_selection and not expected_source_ids:
+        raise ValueError("exact source selection requires the declared source inventory")
+    require_source_ready = require_source_ready or require_exact_source_selection
     if not 0 <= warmup <= 30 or minimum < 1:
         raise ValueError("warmup must be 0..30 and minimum >=1")
     if pathlib.Path(path).stat().st_size > 256 * 1024 * 1024:
@@ -103,6 +106,8 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
                 else:
                     selection_age.append((wanted[1] - observed) / 10000)
                     metrics["ages"].append((wanted[1] - observed) / 10000)
+                    if require_exact_source_selection and (wanted[0] != frame or wanted[1] != observed or reason != 1):
+                        errors.append("delivered Program held or substituted its requested source")
         if require_source_ready:
             for key, timestamp in selected:
                 if key not in gpu_ready or gpu_ready[key] > timestamp:
@@ -163,6 +168,7 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
                 "minimumProgramGpuDeadlineSlackMs": min(deadline_slacks) if deadline_slacks else None,
                 "sourceSelectionObservationAgeMs": {"samples": len(selection_age), "p50": percentile(.5), "p95": percentile(.95), "maximum": selection_age[-1] if selection_age else None, "scope": "Requested CPU selection versus actual drawn source observation; not acquisition-to-receiver content latency"},
                 "sourceGpuCompletionRequired": require_source_ready,
+                "exactSourceSelectionRequired": require_exact_source_selection,
                 "sourceStageDistributions": per_source,
                 "selectedSources": {str(tag): len(frames) for tag, frames in sources.items()},
                 "errors": sorted(set(errors)), "releaseQualification": "MISSING_EVIDENCE",
@@ -175,9 +181,14 @@ if __name__ == "__main__":
     parser.add_argument("--warmup", type=float, default=15)
     parser.add_argument("--minimum", type=float, default=30)
     parser.add_argument("--require-program-deadlines", action="store_true")
+    parser.add_argument("--require-source-ready", action="store_true")
+    parser.add_argument("--require-exact-source-selection", action="store_true")
+    parser.add_argument("--expected-source", action="append", default=[])
     args = parser.parse_args()
     try:
-        report = judge(args.path, args.warmup, args.minimum, require_program_deadlines=args.require_program_deadlines)
+        report = judge(args.path, args.warmup, args.minimum, require_program_deadlines=args.require_program_deadlines,
+                       require_source_ready=args.require_source_ready, expected_source_ids=args.expected_source,
+                       require_exact_source_selection=args.require_exact_source_selection)
     except Exception as error:
         report = {"result": "INVALID", "error": str(error)}
     print(json.dumps(report, indent=2))

@@ -75,11 +75,66 @@ class D3DProgramBuffer {
   bool dimensions(int width, int height, int depth) const {
     return width == width_ && height == height_ && depth == depth_;
   }
-  void submit(ID3D11DeviceContext* producer, ID3D11Texture2D* texture, ProgramFrame frame, bool nv12) {
+  struct CompositionReservation { size_t index = 0; uint64_t revision = 0; };
+  std::optional<CompositionReservation> reserveComposition(ProgramFrame frame) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopped_ || !initialized_ || frame.productionSlot < 0 || frame.productionAnchorNs <= 0) return {};
+    if (!timeline_) {
+      timeline_ = std::make_unique<core::ProgramPlayoutTimeline>(depth_, frame.productionAnchorNs, frame.productionSlot);
+      firstFrameNumber_ = frame.frameNumber;
+    }
+    if (timeline_->isExpired(frame.productionSlot) || frame.productionSlot <= lastProducedSlot_) { ++diagnostics_.overflows; return {}; }
+    // One pre-composition job consumes a real existing pool credit. No new
+    // pixel storage, queue capacity, presentation delay or timeline is added.
+    for (const auto& slot : slots_) if (slot->state == State::AwaitingSources) { ++diagnostics_.overflows; return {}; }
+    for (size_t index = 0; index < slots_.size(); ++index) {
+      auto& slot = *slots_[index];
+      if (slot.state != State::Free) continue;
+      slot.state = State::AwaitingSources; slot.reservation = ++nextCompositionReservation_;
+      slot.compositionCopyStarted = false;
+      slot.productionSlot = frame.productionSlot; slot.frame = std::move(frame);
+      lastProducedSlot_ = slot.productionSlot; delivery_.push_back(&slot);
+      diagnostics_.occupancy = static_cast<int>(delivery_.size());
+      notifyChanged();
+      return CompositionReservation{index, slot.reservation};
+    }
+    ++diagnostics_.overflows; return {};
+  }
+  bool claimComposition(const CompositionReservation& reservation) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopped_ || reservation.index >= slots_.size()) return false;
+    auto& slot = *slots_[reservation.index];
+    if (slot.reservation != reservation.revision || slot.state != State::AwaitingSources ||
+        timeline_->isExpired(slot.productionSlot) || now100ns() * 100 >= timeline_->deadlineNs(slot.productionSlot)) return false;
+    slot.state = State::Writing; return true;
+  }
+  void cancelComposition(const CompositionReservation& reservation) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (reservation.index >= slots_.size()) return;
+    auto* slot = slots_[reservation.index].get();
+    if (slot->reservation != reservation.revision ||
+        (slot->state != State::AwaitingSources && !(slot->state == State::Writing && !slot->compositionCopyStarted))) return;
+    delivery_.erase(std::remove(delivery_.begin(), delivery_.end(), slot), delivery_.end());
+    slot->state = State::Free; diagnostics_.occupancy = static_cast<int>(delivery_.size());
+    notifyChanged();
+  }
+  void submit(ID3D11DeviceContext* producer, ID3D11Texture2D* texture, ProgramFrame frame, bool nv12,
+      const CompositionReservation* reserved = nullptr) {
     Slot* slot = nullptr;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (stopped_ || !initialized_) return;
+      if (reserved) {
+        if (reserved->index >= slots_.size()) return;
+        slot = slots_[reserved->index].get();
+        if (slot->reservation != reserved->revision || slot->state != State::Writing ||
+            slot->productionSlot != frame.productionSlot) {
+          core::nativeLogf("[program-composition-refused] reservation=%llu actual=%llu state=%d slot=%lld frame_slot=%lld\n",
+              static_cast<unsigned long long>(reserved->revision), static_cast<unsigned long long>(slot->reservation),
+              static_cast<int>(slot->state), static_cast<long long>(slot->productionSlot), static_cast<long long>(frame.productionSlot));
+          return;
+        }
+      } else {
       if (!timeline_) {
         timeline_ = std::make_unique<core::ProgramPlayoutTimeline>(depth_,
             frame.productionAnchorNs > 0 ? frame.productionAnchorNs : frame.producedAt100ns * 100,
@@ -93,10 +148,21 @@ class D3DProgramBuffer {
       }
       if (!slot) { ++diagnostics_.overflows; return; }
       lastProducedSlot_ = productionSlot;
+      }
     }
     if (slot->producerMutex->AcquireSync(0, 0) != S_OK) {
       std::lock_guard<std::mutex> lock(mutex_);
-      slot->state = State::Free; ++diagnostics_.gpuNotReady; return;
+      if (reserved && (slot->reservation != reserved->revision || slot->state != State::Writing)) return;
+      if (reserved) delivery_.erase(std::remove(delivery_.begin(), delivery_.end(), slot), delivery_.end());
+      slot->state = State::Free; ++diagnostics_.gpuNotReady;
+      diagnostics_.occupancy = static_cast<int>(delivery_.size()); return;
+    }
+    if (reserved) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (slot->reservation != reserved->revision || slot->state != State::Writing) {
+        slot->producerMutex->ReleaseSync(0); return;
+      }
+      slot->compositionCopyStarted = true;
     }
     producer->CopyResource(slot->producerTexture.get(), texture);
     slot->producerMutex->ReleaseSync(1);
@@ -110,7 +176,7 @@ class D3DProgramBuffer {
       slot->submittedAt = std::chrono::steady_clock::now();
       slot->state = State::Submitted;
       submitted_.push_back(slot);
-      delivery_.push_back(slot);
+      if (!reserved) delivery_.push_back(slot);
       ++diagnostics_.produced;
       diagnostics_.occupancy = static_cast<int>(delivery_.size());
     }
@@ -131,14 +197,19 @@ class D3DProgramBuffer {
     if (delivered_.empty()) return false;
     frame = std::move(delivered_.front()); delivered_.pop_front(); return true;
   }
+  enum class DisplaySlot { Previous, Current };
   bool multiview(ProgramFrameSharedTexture& texture, std::shared_ptr<const void>& owner,
-      int64_t productionSlot = -1, bool exact = false) const {
+      int64_t productionSlot = -1, bool exact = false, DisplaySlot selection = DisplaySlot::Previous) const {
     std::lock_guard<std::mutex> lock(mutex_);
     // Target the submitting render's scheduled slot, not its variable CPU
-    // arrival time. One explicit display frame behind the delivery timeline.
+    // arrival time. The dedicated copy owner can wait for this slot's completed
+    // publication until the existing next-slot deadline. Selecting the previous
+    // slot here adds a frame even when the current delivered image is ready.
+    // Inline readers have no waiting owner and retain their preceding-slot policy.
+    const int offset = selection == DisplaySlot::Current ? 0 : 1;
     const auto target = productionSlot >= 0 && timeline_
-        ? timeline_->deadlineNs(productionSlot - depth_ - 1) / 100
-        : now100ns() - D3DProgramDisplaySnapshots::PresentationOffset100ns;
+        ? timeline_->deadlineNs(productionSlot - depth_ - offset) / 100
+        : now100ns() - offset * D3DProgramDisplaySnapshots::PresentationOffset100ns;
     return displaySnapshots_.select(target, texture, owner, exact);
   }
   ProgramBufferDiagnostics diagnostics() const {
@@ -169,7 +240,7 @@ class D3DProgramBuffer {
     changed_.notify_all();
     if (wakeEvent_) ::SetEvent(wakeEvent_);
   }
-  enum class State { Free, Writing, Submitted, Preparing, Ready, Delivering, Exporting };
+  enum class State { Free, Writing, Submitted, Preparing, Ready, Delivering, Exporting, AwaitingSources };
   struct Slot {
     State state = State::Free;
     ComPtrLite<ID3D11Texture2D> producerTexture, prepareTexture;
@@ -187,6 +258,8 @@ class D3DProgramBuffer {
     ComPtrLite<ID3D11Texture2D> yRead, uvRead;
     ComPtrLite<ID3D11Query> prepareComplete;
     int64_t productionSlot = 0;
+    uint64_t reservation = 0;
+    bool compositionCopyStarted = false;
     std::chrono::steady_clock::time_point submittedAt{};
     std::chrono::steady_clock::time_point preparingAt{};
     std::chrono::steady_clock::time_point readyAt{};
@@ -569,10 +642,11 @@ class D3DProgramBuffer {
     }
     diagnostics_.status = "running";
     while (!stopped_) {
-      while (!delivery_.empty() && delivery_.front()->state == State::Ready && timeline_->isExpired(delivery_.front()->productionSlot)) {
+      while (!delivery_.empty() && (delivery_.front()->state == State::Ready || delivery_.front()->state == State::AwaitingSources) && timeline_->isExpired(delivery_.front()->productionSlot)) {
         auto* expired = delivery_.front();
         trace(expired->frame, core::DeliveryStage::ProgramMiss, core::DeliveryReason::Failed);
         expired->state = State::Free; delivery_.pop_front(); ++diagnostics_.overflows;
+        diagnostics_.occupancy = static_cast<int>(delivery_.size());
       }
       const auto targetSlot = timeline_->nextSlot();
       const auto deadline = std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
@@ -763,6 +837,7 @@ class D3DProgramBuffer {
   std::unique_ptr<core::ProgramPlayoutTimeline> timeline_;
   int64_t lastProducedSlot_ = -1;
   int64_t firstFrameNumber_ = 0;
+  uint64_t nextCompositionReservation_ = 0;
   std::shared_ptr<const ProgramFrame> latest_;
   ExportBranch shellBranch_, multiviewBranch_;
   std::shared_ptr<Output> output_;

@@ -35,3 +35,22 @@ TEST(DeliveryCounterPattern, PaintedBandsPreservePictureChromaAndStridePadding) 
   EXPECT_FALSE(corevideo::modules::paintDeliveryCounter(image.data(), 10, width, height, stride, 1));
   EXPECT_EQ(image, before);
 }
+
+TEST(DeliveryCounterPattern, SourceInteriorBitsSurviveIndependentProgramCounterAndRejectShortGeometry) {
+  constexpr int width = 1920, height = 1080, stride = 2048;
+  std::vector<uint8_t> image(stride * height * 3 / 2, 128);
+  using namespace corevideo::modules;
+  ASSERT_TRUE(paintDeliveryCounter(image.data(), image.size(), width, height, stride, 75, true));
+  ASSERT_TRUE(paintDeliveryCounter(image.data(), image.size(), width, height, stride, 1000));
+  EXPECT_EQ(*decodeDeliveryCounter(image.data(), image.size(), width, height, stride), 1000u);
+  const int cellWidth = (width / kDeliveryCounterCells) & ~1;
+  for (int cell = 0; cell < kDeliveryCounterCells; ++cell) {
+    const int x = cell * cellWidth + cellWidth / 2;
+    EXPECT_EQ(image[(height / 3 + 16) * stride + x], deliveryCounterBit(75, cell) ? 235 : 16);
+    EXPECT_EQ(image[(height * 2 / 3 + 16) * stride + x], deliveryCounterBit(75, cell) ? 16 : 235);
+  }
+  EXPECT_EQ(image[(height / 2) * stride + width / 2], 128);
+  const auto before = image;
+  EXPECT_FALSE(paintDeliveryCounter(image.data(), image.size(), width, 64, stride, 1, true));
+  EXPECT_EQ(image, before);
+}

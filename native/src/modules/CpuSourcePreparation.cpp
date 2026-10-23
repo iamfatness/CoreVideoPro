@@ -9,6 +9,7 @@
 #include <thread>
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
 #include "modules/D3DPreparedSourcePool.h"
+#include "modules/D3DDeadlineWait.h"
 #endif
 
 namespace corevideo::modules {
@@ -317,6 +318,7 @@ struct CpuSourcePreparation::Impl {
   }
   void gpuLoop() {
     bool attempted = false;
+    D3DDeadlineWait completionWait;
     while (!stopping.load()) {
       const auto observedRevision = workRevision.load();
       try {
@@ -361,11 +363,18 @@ struct CpuSourcePreparation::Impl {
         }
         if (context && !deviceFailed) tick();
       } catch (...) { std::lock_guard<std::mutex> lock(mutex); ++measured.failed; }
-      // Arrival wakes the owner immediately. Active event queries need prompt
-      // progress; a fixed 2 ms sleep before AND after upload added a source
-      // frame at unfavorable capture/Program phases. No polling on Program.
+      // A condition-variable timeout rounds even 100 us to milliseconds on
+      // Windows. That delayed observed GPU readiness beyond composition while
+      // the original output deadline still had room. Use the same bounded
+      // high-resolution yield as other GPU completion owners. This remains on
+      // the preparation context owner, never on Program or under its mutex.
+      if (pendingWrites && !stopping.load() && workRevision.load() == observedRevision) {
+        completionWait.pause(100000);
+        continue;
+      }
+      // With no pending GPU query, arrivals interrupt the idle wait directly.
       std::unique_lock<std::mutex> wait(mutex);
-      gpuChanged.wait_for(wait, pendingWrites ? std::chrono::microseconds(100) : std::chrono::microseconds(2000),
+      gpuChanged.wait_for(wait, std::chrono::microseconds(2000),
           [&] { return stopping.load() || workRevision.load() != observedRevision; });
     }
     // Shutdown/lifecycle owner drains writes; external reads keep immutable

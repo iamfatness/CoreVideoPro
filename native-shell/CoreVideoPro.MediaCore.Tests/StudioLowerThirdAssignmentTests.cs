@@ -34,6 +34,24 @@ public sealed class StudioLowerThirdAssignmentTests : IDisposable
         return Task.FromResult(new NativeGraphicsOperationResult { Accepted = true, InstanceId = id, CurrentRevision = 1, Reason = "accepted" });
     }
 
+    [Theory]
+    [InlineData("capture:camera")]
+    [InlineData("capture:screen:2")]
+    public async Task LocalProgramSourceUsesExactNativeIdentityAndOperatorText(string sourceId)
+    {
+        var identity=new SourceInstanceIdentity {SourceId=sourceId,InstanceId=sourceId+"-generation-9",ProcessEpoch="core-a:capture",Generation=9};
+        _state=_state with {Sources=[new() {VideoOn=true,Identity=identity,DisplayName=sourceId}]};
+        var session=Session();var library=Library(session);
+        Assert.True(await library.AssignStudioLowerThirdAsync(true));
+        var controller=new StudioLowerThirdController(library,Invoke,()=>_state);
+        Assert.True((await controller.ShowAsync("scene-a",_=>new(identity,"Operator camera name",""))).Accepted);
+        var request=_commands.Single(c=>c.Action=="graphics.instance.create").Body;
+        Assert.Equal(sourceId,request.GetProperty("binding").GetProperty("sourceId").GetString());
+        Assert.Equal(9,request.GetProperty("binding").GetProperty("generation").GetInt32());
+        Assert.Equal("Operator camera name",request.GetProperty("fields").GetProperty("name").GetString());
+        Assert.Equal("",request.GetProperty("fields").GetProperty("title").GetString());
+    }
+
     [Fact] public async Task AssignmentPinsPrivateDraftAndNeverCuesOrShows()
     {
         var session = Session(); var library = Library(session);

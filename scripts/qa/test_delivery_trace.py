@@ -139,5 +139,45 @@ class DeliveryTraceJudgeTests(unittest.TestCase):
         values = list(module.HEADER.unpack(header)); values[-1] = 2500000
         self.assertEqual(self.judge(module.HEADER.pack(*values), events)["result"], "FAIL")
 
+    def source_fixture(self, substitute=False, held=False):
+        header, events = self.fixture()
+        tag = 14695981039346656037 ^ 77
+        for value in b'capture:camera': tag = ((tag ^ value) * 1099511628211) & 0xffffffffffffffff
+        extra = []
+        for program in range(121):
+            timestamp = 1000 + round(program * 1000000 / 60)
+            # A native 30fps input legitimately selects the same frame twice.
+            wanted = program // 2 + 1
+            actual = wanted - 1 if substitute and program == 60 else wanted
+            observed = actual * 10000
+            extra.extend([
+                module.EVENT.pack(77, tag, 7, -1, actual, timestamp - 3, observed, 0, 1, 0),
+                module.EVENT.pack(77, tag, 7, program, wanted, timestamp - 2, wanted * 10000, 9, 7, 0),
+                module.EVENT.pack(77, tag, 7, program, actual, timestamp - 1, observed, 9, 2,
+                                  2 if held and program == 60 else 1)])
+        values = list(module.HEADER.unpack(header)); values[5] += len(extra); values[-2] = 990
+        return module.HEADER.pack(*values), extra + events
+
+    def test_strict_selection_rejects_old_pixels_despite_continuous_program(self):
+        for substitute, held in [(True, False), (False, True)]:
+            fixture = self.source_fixture(substitute=substitute, held=held)
+            self.assertEqual(self.judge(*fixture)['result'], 'PASS')
+            result = self.judge(*fixture, require_exact_source_selection=True,
+                                expected_source_ids=['capture:camera'])
+            self.assertEqual(result['result'], 'FAIL')
+            self.assertEqual(result['gaps'], 0)
+            self.assertIn('delivered Program held or substituted its requested source', result['errors'])
+
+    def test_strict_selection_accepts_native_lower_cadence_and_requires_inventory(self):
+        fixture = self.source_fixture()
+        result = self.judge(*fixture, require_exact_source_selection=True,
+                            expected_source_ids=['capture:camera'])
+        self.assertEqual(result['result'], 'PASS')
+        self.assertTrue(result['sourceGpuCompletionRequired'])
+        with self.assertRaises(ValueError):
+            self.judge(*fixture, require_exact_source_selection=True)
+        self.assertEqual(self.judge(*fixture, require_exact_source_selection=True,
+                         expected_source_ids=['capture:camera', 'capture:screen'])['result'], 'FAIL')
+
 
 if __name__ == "__main__": unittest.main()

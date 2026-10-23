@@ -1,5 +1,6 @@
 #include "graphics/GraphicsInstances.h"
 #include "graphics/GraphicsTemplate.h"
+#include "core/CaptureDeviceSource.h"
 #include "gtest/gtest.h"
 #include <chrono>
 #include <thread>
@@ -95,6 +96,24 @@ TEST(GraphicsInstances, CompatibilityImageUsesOnlyVerifiedPackageBytesAndPrivate
   EXPECT_FALSE(state.apply(request("graphics-instance-update",{{"target","program"},{"image",missing}})));
   EXPECT_EQ(row(state).getNumber("programRevision"),1);
   EXPECT_EQ(row(state).get("programImage")->getString("assetId"),"logo");
+}
+TEST(GraphicsInstances, DeclarativeLogoIsVerifiedPrivateAndRetainsAcceptedProgramUntilExplicitUpdate) {
+  GraphicsInstances state{"test-core"};
+  const auto image=Json::Object{{"templateId","corner-logo"},{"templateVersion",1},{"assetId","logo"}};
+  ASSERT_TRUE(state.apply(request("graphics-instance-create",{{"templateId","logo-accent"},{"templateVersion",1},{"scope","global"},{"image",image}})));
+  ready(state,1);ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+  CompositorRenderPlan plan;plan.width=1920;plan.height=1080;state.append(plan,false);ASSERT_EQ(plan.layers.size(),1u);
+  ASSERT_TRUE(plan.layers[0].overlay.graphicsTemplate);ASSERT_TRUE(plan.layers[0].overlay.graphicsTemplate->logo);
+  const auto preview=state.authoringPreview(Json::Object{{"templateId","logo-accent"},{"templateVersion",1},{"image",image}});
+  ASSERT_TRUE(preview);ASSERT_TRUE(preview->graphicsTemplate);
+  EXPECT_EQ(preview->graphicsTemplate->logo,plan.layers[0].overlay.graphicsTemplate->logo);
+  auto missing=image;missing["assetId"]="absent";
+  EXPECT_FALSE(state.apply(request("graphics-instance-update",{{"target","program"},{"image",missing}})));
+  EXPECT_EQ(row(state).getNumber("programRevision"),1);
+  ASSERT_TRUE(state.apply(request("graphics-instance-update",{{"target","cue"},{"image",Json{}}})));
+  EXPECT_EQ(row(state).getNumber("programRevision"),1);
+  EXPECT_TRUE(row(state).get("programImage")->isObject());
+  EXPECT_TRUE(row(state).get("image")->isNull());
 }
 corevideo::modules::ZoomEngineParticipant guest(uint64_t generation = 1) {
   corevideo::modules::ZoomEngineParticipant participant;
@@ -204,7 +223,7 @@ TEST(GraphicsInstances, SameFieldsAreNoOpAndInvalidPatchIsAtomic) {
 TEST(GraphicsInstances, SceneAndSourceScopesPreventPreviousGuestLabelOnNewScene) {
   GraphicsInstances state{"test-core"};
   const auto frames = sourceFrames();
-  state.observeZoomSources({guest()}, 7, frames);
+  state.observeSources({guest()}, 7, frames);
   ASSERT_TRUE(state.apply(request("graphics-instance-create", {
       {"templateId", "broadcast"}, {"templateVersion", 1}, {"scope", "scene"}, {"sceneId", "interview"},
       {"binding", binding(state)}, {"fields", Json::Object{{"name", "A"}}}})));
@@ -430,12 +449,12 @@ TEST(GraphicsInstances, InvalidTransitionCannotMutateTheAcceptedRevision) {
 TEST(GraphicsInstances, ResolutionUpgradePreservesSubjectIdentityWithoutSerializingPixelEpochs) {
   GraphicsInstances state{"test-core"};
   auto frames = sourceFrames();
-  state.observeZoomSources({guest()}, 7, frames);
+  state.observeSources({guest()}, 7, frames);
   const auto before = binding(state).stringify();
   ASSERT_TRUE(createBound(state)); ready(state, 1);
   ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "show"}})));
   frames = sourceFrames(1, UINT64_MAX);
-  state.observeZoomSources({guest()}, 7, frames);
+  state.observeSources({guest()}, 7, frames);
   EXPECT_EQ(before, binding(state).stringify());
   EXPECT_EQ(1., row(state).getNumber("revision"));
   auto plan = sourcePlan(); state.append(plan, false, frames);
@@ -444,11 +463,11 @@ TEST(GraphicsInstances, ResolutionUpgradePreservesSubjectIdentityWithoutSerializ
 
 TEST(GraphicsInstances, RecycledSdkIdRetiresOldLabelBeforeNewVideoAndRequiresExplicitRebinding) {
   GraphicsInstances state{"test-core"};
-  auto frames = sourceFrames(); state.observeZoomSources({guest()}, 7, frames);
+  auto frames = sourceFrames(); state.observeSources({guest()}, 7, frames);
   const auto oldBinding = binding(state);
   ASSERT_TRUE(createBound(state)); ready(state, 1);
   ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "show"}})));
-  frames = sourceFrames(2); state.observeZoomSources({guest(2)}, 7, frames);
+  frames = sourceFrames(2); state.observeSources({guest(2)}, 7, frames);
   EXPECT_EQ("hidden", row(state).getString("visibility"));
   EXPECT_EQ("source-identity-changed", row(state).getString("bindingState"));
   ready(state, 1);
@@ -468,11 +487,11 @@ TEST(GraphicsInstances, RecycledSdkIdRetiresOldLabelBeforeNewVideoAndRequiresExp
 
 TEST(GraphicsInstances, MetadataRefreshCannotChangeSourceOwnedOverridesOrTriggerNewRevision) {
   GraphicsInstances state{"test-core"};
-  const auto frames = sourceFrames(); state.observeZoomSources({guest()}, 7, frames);
+  const auto frames = sourceFrames(); state.observeSources({guest()}, 7, frames);
   ASSERT_TRUE(createBound(state)); ready(state, 1);
   ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "show"}})));
   auto participant = guest(); participant.displayName = "guest";
-  state.observeZoomSources({participant}, 7, frames);
+  state.observeSources({participant}, 7, frames);
   EXPECT_EQ("Guest", row(state).get("fields")->getString("name"));
   EXPECT_EQ("", row(state).get("fields")->getString("title"));
   EXPECT_EQ(1., row(state).getNumber("revision"));
@@ -481,7 +500,7 @@ TEST(GraphicsInstances, MetadataRefreshCannotChangeSourceOwnedOverridesOrTrigger
 
 TEST(GraphicsInstances, MetadataOrAmbiguousFramesCannotStandInForTheComposedSubject) {
   GraphicsInstances state{"test-core"};
-  auto frames = sourceFrames(); state.observeZoomSources({guest()}, 7, frames);
+  auto frames = sourceFrames(); state.observeSources({guest()}, 7, frames);
   ASSERT_TRUE(createBound(state)); ready(state, 1);
   ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "show"}})));
   auto metadata = frames; metadata[0].pixels.reset();
@@ -497,11 +516,11 @@ TEST(GraphicsInstances, MetadataOrAmbiguousFramesCannotStandInForTheComposedSubj
 
 TEST(GraphicsInstances, SessionReplacementCancelsPendingRevealAndDoesNotReuseTheOldIdentity) {
   GraphicsInstances state{"test-core"};
-  const auto frames = sourceFrames(); state.observeZoomSources({guest()}, 7, frames);
+  const auto frames = sourceFrames(); state.observeSources({guest()}, 7, frames);
   const auto oldBinding = binding(state).stringify();
   ASSERT_TRUE(createBound(state));
   ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "show"}})));
-  state.observeZoomSources({guest()}, 8, frames);
+  state.observeSources({guest()}, 8, frames);
   EXPECT_NE(oldBinding, binding(state).stringify());
   ready(state, 1);
   auto plan = sourcePlan(); state.append(plan, false, frames);
@@ -511,7 +530,7 @@ TEST(GraphicsInstances, SessionReplacementCancelsPendingRevealAndDoesNotReuseThe
 
 TEST(GraphicsInstances, NakedOrUnknownSourceBindingIsRejectedWithoutMutation) {
   GraphicsInstances state{"test-core"};
-  const auto frames = sourceFrames(); state.observeZoomSources({guest()}, 7, frames);
+  const auto frames = sourceFrames(); state.observeSources({guest()}, 7, frames);
   EXPECT_FALSE(state.apply(request("graphics-instance-create", {{"scope", "global"}, {"templateId", "compact-solid"},
       {"templateVersion", 1}, {"sourceId", "zoom:44"}})));
   auto unknown = binding(state).asObject(); unknown["processEpoch"] = "retired-helper";
@@ -529,13 +548,13 @@ TEST(GraphicsInstances, NakedOrUnknownSourceBindingIsRejectedWithoutMutation) {
 TEST(GraphicsSourceCatalog, StableRosterHasNoNewPublicationAndLegacyOrUnconfiguredSourcesStayUnqualified) {
   corevideo::graphics::GraphicsSourceCatalog catalog{"test-core"};
   const auto frames = sourceFrames();
-  EXPECT_TRUE(catalog.observeZoom({guest()}, 7, frames));
-  EXPECT_FALSE(catalog.observeZoom({guest()}, 7, frames));
-  EXPECT_TRUE(catalog.observeZoom({guest(0)}, 7, frames));
+  EXPECT_TRUE(catalog.observeSources({guest()}, 7, frames));
+  EXPECT_FALSE(catalog.observeSources({guest()}, 7, frames));
+  EXPECT_TRUE(catalog.observeSources({guest(0)}, 7, frames));
   EXPECT_TRUE(catalog.rows().asArray().empty());
-  EXPECT_FALSE(catalog.observeZoom({guest(0)}, 7, frames));
+  EXPECT_FALSE(catalog.observeSources({guest(0)}, 7, frames));
   EXPECT_EQ("unqualified-source-identity", catalog.status());
-  EXPECT_TRUE(catalog.observeZoom({guest()}, 7, {}));
+  EXPECT_TRUE(catalog.observeSources({guest()}, 7, {}));
   EXPECT_TRUE(catalog.rows().asArray().empty());
 }
 
@@ -648,11 +667,11 @@ TEST(GraphicsInstances, FailedCueReplacementKeepsAcceptedCueAndLateReadinessCann
 
 TEST(GraphicsInstances, SubjectReplacementInvalidatesAcceptedCueWithoutAReplay) {
   GraphicsInstances state{"test-core"}; auto frames = sourceFrames();
-  state.observeZoomSources({guest()}, 7, frames);
+  state.observeSources({guest()}, 7, frames);
   ASSERT_TRUE(createBound(state)); ready(state, 1);
   ASSERT_TRUE(state.apply(request("graphics-instance-cue")));
   EXPECT_EQ(1., row(state).getNumber("cueRevision"));
-  state.observeZoomSources({guest(2)}, 7, sourceFrames(2));
+  state.observeSources({guest(2)}, 7, sourceFrames(2));
   EXPECT_EQ(0., row(state).getNumber("cueRevision"));
   EXPECT_EQ("source-identity-changed", row(state).getString("cueWarning"));
   ready(state, 1);
@@ -665,7 +684,7 @@ TEST(GraphicsInstances, RetiringAnOldSubjectCannotCancelAnExplicitPendingCueForA
   auto other = guest(); other.id = 55;
   auto otherFrame = sourceFrames().front(); otherFrame.participantId = "55";
   auto frames = sourceFrames(); frames.push_back(otherFrame);
-  state.observeZoomSources({guest(), other}, 7, frames);
+  state.observeSources({guest(), other}, 7, frames);
   ASSERT_TRUE(createBound(state)); ready(state, 1);
   ASSERT_TRUE(state.apply(request("graphics-instance-cue")));
   const auto nextBinding = *state.snapshot().get("sources")->asArray()[1].get("identity");
@@ -673,7 +692,7 @@ TEST(GraphicsInstances, RetiringAnOldSubjectCannotCancelAnExplicitPendingCueForA
       {"fields", Json::Object{{"name", "Other guest"}}}})));
   ASSERT_TRUE(state.apply(request("graphics-instance-cue", {{"expectedRevision", 2}})));
   frames = sourceFrames(2); frames.push_back(otherFrame);
-  state.observeZoomSources({guest(2), other}, 7, frames);
+  state.observeSources({guest(2), other}, 7, frames);
   EXPECT_EQ(0., row(state).getNumber("cueRevision"));
   EXPECT_TRUE(row(state).get("cuePending")->asBool());
   EXPECT_EQ("preparing", row(state).getString("cuePreparation"));
@@ -883,7 +902,7 @@ TEST(GraphicsInstances, PrivatePreviewAndProgramShareTheDefaultsOfEveryExistingL
 
 TEST(GraphicsInstances, AutomaticRequestsRequireNativeSubjectDrawAndClearCancelsPendingReveal) {
   double now=0;GraphicsInstances state{"test-core",[&]{return now;}};ASSERT_TRUE(create(state));
-  state.observeZoomSources({guest()},7,sourceFrames());
+  state.observeSources({guest()},7,sourceFrames());
   Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"},{"dwellMs",0}}}}};
   ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
   ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","set-mode"},{"mode","automatic"}})));
@@ -897,8 +916,8 @@ TEST(GraphicsInstances, AutomaticRequestsRequireNativeSubjectDrawAndClearCancels
   now=1000;state.observe(frame);EXPECT_EQ(row(state).getNumber("programRevision"),0);EXPECT_FALSE(row(state).get("showPending")->asBool());
 }
 TEST(GraphicsInstances, AutomaticConfigurationCannotBindRecycledSourceOverride) {
-  GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeZoomSources({guest()},7,sourceFrames());auto old=binding(state);
-  state.observeZoomSources({guest(2)},7,sourceFrames(2));
+  GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeSources({guest()},7,sourceFrames());auto old=binding(state);
+  state.observeSources({guest(2)},7,sourceFrames(2));
   Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"}}}},
     {"sourceTexts",Json::Object{{"zoom:44",Json::Object{{"binding",old},{"name","Old name"}}}}}};
   EXPECT_FALSE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
@@ -923,7 +942,7 @@ TEST(GraphicsInstances, RackMetadataChangesNativeOrderWithoutRasterRevisionAndIn
 }
 
 TEST(GraphicsInstances, DelayedArmCannotActivateAChangedRuleConfigurationOrMode) {
- GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeZoomSources({guest()},7,sourceFrames());
+ GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeSources({guest()},7,sourceFrames());
  Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"}}}}};
  ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
  ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","set-mode"},{"mode","automatic"}})));
@@ -935,7 +954,7 @@ TEST(GraphicsInstances, DelayedArmCannotActivateAChangedRuleConfigurationOrMode)
 }
 
 TEST(GraphicsInstances, ClearRevokesAnUnsentArmIntentEvenWhenConfigurationAndModeStayTheSame) {
- GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeZoomSources({guest()},7,sourceFrames());
+ GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeSources({guest()},7,sourceFrames());
  Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"}}}}};
  ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
  ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","set-mode"},{"mode","automatic"}})));
@@ -945,11 +964,111 @@ TEST(GraphicsInstances, ClearRevokesAnUnsentArmIntentEvenWhenConfigurationAndMod
 }
 
 TEST(GraphicsInstances, CompatibilityAutomaticEnableIsAtomicAndClearRevokesItsEarlierIntent) {
- GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeZoomSources({guest()},7,sourceFrames());
+ GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeSources({guest()},7,sourceFrames());
  Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"}}}}};
  ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
  const auto enable=[&] {return request("graphics-automation-control",{{"action","enable-automatic"},{"mode","automatic"},{"expectedAutomationRevision",state.snapshot().get("automation")->getNumber("revision")},{"expectedActivationRevision",state.snapshot().get("automation")->getNumber("activationRevision")}});};
  const auto delayed=enable();ASSERT_TRUE(state.apply(request("graphics-program-clear",{{"channel","all"}})));
  EXPECT_FALSE(state.apply(delayed));EXPECT_EQ(state.snapshot().get("automation")->getString("mode"),"manual");
  ASSERT_TRUE(state.apply(enable()));EXPECT_EQ(state.snapshot().get("automation")->getString("mode"),"automatic");EXPECT_TRUE(state.snapshot().get("automation")->get("armed")->asBool());
+}
+
+TEST(GraphicsLocalSources, BusVideoLifetimeSurvivesFormatChangesButNotClearOrReplacement) {
+  using corevideo::core::CaptureDeviceSource;
+  auto frame = sourceFrames().front(); frame.participantId = "capture:camera"; frame.sourceGeneration = 0;
+  CaptureDeviceSource source(frame.participantId, 1, 1); source.setLatest(frame);
+  const auto first = source.poll(0).video.front().sourceGeneration; ASSERT_GT(first, 0u);
+  frame.sourceEpoch = 999; source.setLatest(frame);
+  EXPECT_EQ(first, source.poll(0).video.front().sourceGeneration);
+  source.clearVideo(); source.setLatest(frame);
+  EXPECT_GT(source.poll(0).video.front().sourceGeneration, first);
+  CaptureDeviceSource replacement(frame.participantId, 1, 1); replacement.setLatest(frame);
+  EXPECT_GT(replacement.poll(0).video.front().sourceGeneration, source.poll(0).video.front().sourceGeneration);
+}
+
+TEST(GraphicsLocalSources, CameraAndScreenBindingsRequireExactDrawAndRetireWithoutZoom) {
+  for (const auto& id : {"capture:camera", "capture:screen:2"}) {
+    GraphicsInstances state{"test-core"};
+    corevideo::core::CaptureDeviceSource source(id, 1, 1);
+    auto input = sourceFrames().front(); input.participantId = id; input.sourceGeneration = 0; source.setLatest(input);
+    auto frames = source.poll(0).video;
+    state.observeSources({}, 0, frames);
+    ASSERT_EQ(1u, state.snapshot().get("sources")->asArray().size());
+    const auto original = binding(state).stringify();
+    ASSERT_TRUE(createBound(state)); ready(state, 1);
+    ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "show"}})));
+    auto plan = sourcePlan(); plan.layers[0].sourceId = id; plan.layers[0].participantId = id;
+    plan.layers[0].kind = std::string(id).find("screen:") != std::string::npos ? "screen-share" : "participant-video";
+    state.append(plan, false, frames); ASSERT_EQ(2u, plan.layers.size());
+    EXPECT_EQ(id, plan.layers.back().graphicsBoundParticipantId);
+    auto absent = sourcePlan(); state.append(absent, false, frames); EXPECT_EQ(1u, absent.layers.size());
+    input.sourceEpoch = 222; source.setLatest(input); frames = source.poll(0).video;
+    state.observeSources({guest()}, 99, frames); // unrelated meeting start must not invalidate local binding
+    EXPECT_EQ(original, binding(state).stringify()); EXPECT_GT(row(state).getNumber("programRevision"), 0);
+    state.observeSources({}, 0, frames); EXPECT_EQ(original, binding(state).stringify());
+    state.observeSources({}, 0, {});
+    EXPECT_EQ(0, row(state).getNumber("programRevision"));
+    source.clearVideo(); source.setLatest(input); frames = source.poll(0).video; state.observeSources({}, 0, frames);
+    EXPECT_NE(original, binding(state).stringify());
+    EXPECT_EQ(0, row(state).getNumber("programRevision")); // no implicit rebind/reveal
+  }
+}
+
+TEST(GraphicsSourceCatalog, ConflictingLocalRepresentationsNeverChooseAnArbitraryGeneration) {
+  corevideo::graphics::GraphicsSourceCatalog catalog{"test-core"};
+  auto one=sourceFrames().front();one.participantId="capture:camera";
+  auto two=one;two.sourceGeneration=2;
+  EXPECT_TRUE(catalog.observeSources({},0,{one,two,one})); EXPECT_TRUE(catalog.rows().asArray().empty());
+  EXPECT_TRUE(catalog.observeSources({},0,{two})); ASSERT_EQ(1u,catalog.rows().asArray().size());
+}
+
+TEST(GraphicsLocalSources, AutomaticIntroductionUsesLocalDrawFactsAndHonorsScreenSuppression) {
+  for (bool suppress : {false,true}) {
+    double now=0;GraphicsInstances state{"test-core",[&]{return now;}};ASSERT_TRUE(create(state));
+    auto frames=sourceFrames();frames[0].participantId="capture:screen:2";
+    state.observeSources({},0,frames);
+    Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"},{"dwellMs",0},{"suppressScreenShare",suppress}}}}};
+    ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
+    ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","set-mode"},{"mode","automatic"}})));
+    ASSERT_TRUE(state.apply(armRequest(state)));
+    ProgramFrame frame;frame.frameNumber=1;frame.gpuComposed=true;frame.graphicsFacts.push_back({"source:capture:screen:2",1,"share-draw-submitted",""});state.observe(frame);
+    EXPECT_EQ(!suppress,row(state).get("showPending")->asBool());
+    if(!suppress) EXPECT_EQ("capture:screen:2",row(state).get("binding")->getString("sourceId"));
+  }
+}
+
+TEST(GraphicsLocalSources, AutomaticReconnectUsesNativeLabelAndNeverStaleIncarnationText) {
+  double now=0;GraphicsInstances state{"test-core",[&]{return now;}};ASSERT_TRUE(create(state));
+  auto frames=sourceFrames();frames[0].participantId="capture:camera";
+  std::string label="Presenter camera";
+  const auto sourceLabel=[&](const std::string&) -> std::string_view {return label;};
+  state.observeSources({},0,frames,sourceLabel);const auto old=binding(state);
+  Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"},{"dwellMs",0}}}},
+    {"sourceTexts",Json::Object{{"capture:camera",Json::Object{{"binding",old},{"name","Old person"},{"secondary","Old title"}}}}}};
+  ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
+  ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","set-mode"},{"mode","automatic"}})));
+  ASSERT_TRUE(state.apply(armRequest(state)));
+  state.observeSources({},0,{},sourceLabel);
+  frames[0].sourceGeneration=2;state.observeSources({},0,frames,sourceLabel);
+  ProgramFrame frame;frame.frameNumber=1;frame.gpuComposed=true;frame.graphicsFacts.push_back({"source:capture:camera",2,"source-draw-submitted",""});state.observe(frame);
+  EXPECT_TRUE(row(state).get("showPending")->asBool());
+  EXPECT_EQ("Presenter camera",row(state).get("fields")->getString("name"));
+  EXPECT_EQ("",row(state).get("fields")->getString("title"));
+  EXPECT_EQ(2,row(state).get("binding")->getNumber("generation"));
+  EXPECT_TRUE(state.snapshot().get("automation")->get("armed")->asBool());
+  label="Renamed camera";state.observeSources({},0,frames,sourceLabel);
+  EXPECT_EQ("Renamed camera",state.snapshot().get("sources")->asArray().front().getString("displayName"));
+}
+
+TEST(GraphicsSourceCatalog, LocalMetadataChangePublishesWithoutChangingSourceIdentity) {
+  corevideo::graphics::GraphicsSourceCatalog catalog{"test-core"};
+  auto frames=sourceFrames();frames[0].participantId="capture:camera";
+  std::string label="Camera A";const auto name=[&](const std::string&) -> std::string_view {return label;};
+  EXPECT_TRUE(catalog.observeSources({},0,frames,name));
+  const auto identity=catalog.rows().asArray().front().get("identity")->stringify();
+  EXPECT_FALSE(catalog.observeSources({},0,frames,name));
+  label="Camera B";EXPECT_TRUE(catalog.observeSources({},0,frames,name));
+  EXPECT_EQ(identity,catalog.rows().asArray().front().get("identity")->stringify());
+  EXPECT_EQ("Camera B",catalog.rows().asArray().front().getString("displayName"));
+  EXPECT_FALSE(catalog.observeSources({},0,frames,name));
 }

@@ -114,7 +114,7 @@ std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPre
     authoringKey_=key;
     authoringInput_=Json::Object{{"templateId",templateId},{"templateVersion",int(version)},{"manifestHash",expected},{"fields",revision.templateFields},
       {"style",draft.get("style") ? *draft.get("style") : Json{Json::Object{}}}};
-    auto input=std::make_shared<GraphicsTemplateInput>(); input->definition=revision.definition;
+    auto input=std::make_shared<GraphicsTemplateInput>(); input->definition=revision.definition; input->logo=revision.image;
     input->fields=revision.templateInput->fields; input->brand=revision.templateInput->brand; input->placement=revision.placement;
     input->draft=authoringCompiler_; input->draftKey=key; revision.templateInput=std::move(input);
     if(scratch && !scratch->isNull()) {
@@ -132,7 +132,8 @@ bool GraphicsInstances::readRevision(const Json& request, Revision& revision) {
   if(const auto* image=request.get("image")) {
     if(image->isNull()) {revision.image.reset();revision.imageReference=Json{};}
     else {
-      if(revision.definition || !image->isObject() || image->asObject().size()!=3) return false;
+      if(!image->isObject() || image->asObject().size()!=3 ||
+          (revision.definition && !revision.definition->assets().count("logo"))) return false;
       const auto version=image->getNumber("templateVersion");
       if(version<1 || version>std::numeric_limits<int>::max() || std::floor(version)!=version) return false;
       const auto package=templatesPublication_->definitions.find({image->getString("templateId"),int(version)});
@@ -237,7 +238,7 @@ void GraphicsInstances::hashRevision(const std::string& templateId, Revision& re
     const auto& a = revision.appearance;
     const auto alpha = unsigned(std::lround(a.backgroundOpacity * 255)); static constexpr char hex[] = "0123456789ABCDEF";
     const auto background = a.backgroundColor + hex[alpha >> 4] + hex[alpha & 15];
-    auto input = std::make_shared<GraphicsTemplateInput>(); input->definition = revision.definition; input->fields = revision.templateFields; input->placement=revision.placement;
+    auto input = std::make_shared<GraphicsTemplateInput>(); input->definition = revision.definition; input->logo = revision.image; input->fields = revision.templateFields; input->placement=revision.placement;
     input->brand = Json::Object{{"brand.primary", background}, {"brand.onPrimary", a.nameColor},
         {"brand.onPrimaryMuted", a.titleColor}, {"brand.fontBody", a.fontFamily},
         {"brand.secondary", a.titleColor}, {"brand.accent", a.accentColor},
@@ -654,7 +655,7 @@ modules::CompositorRenderPlanLayer GraphicsInstances::layer(const Instance& inst
   layer.overlay.graphicsImage=revision.image;
   if(revision.image) layer.overlay.imageUri="graphics-asset:"+revision.image->sha256;
   if (revision.binding) {
-    layer.graphicsBoundParticipantId = revision.binding->sourceId.substr(5);
+    layer.graphicsBoundParticipantId = GraphicsSourceCatalog::frameId(revision.binding->sourceId);
     layer.graphicsBoundSourceGeneration = uint64_t(revision.binding->generation);
   }
   layer.overlay.keyPosition = revision.appearance.anchor;
@@ -727,7 +728,7 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
     if (!revision) continue;
     if (revision->binding) {
       if (!sources_->contains(*revision->binding)) continue;
-      const auto raw = revision->sourceId.substr(5); // catalog currently qualifies Zoom camera sources only
+      const auto raw = GraphicsSourceCatalog::frameId(revision->sourceId);
       if (std::any_of(frames.begin(), frames.end(), [&](const auto& video) {
         return video.participantId == raw && video.hasContent() && video.sourceGeneration != uint64_t(revision->binding->generation);
       })) continue;
@@ -737,7 +738,7 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
       if (frame == frames.end() || std::none_of(plan.layers.begin(), plan.layers.end(), [&](const auto& video) {
         // Match the compositor's explicit frame selector, not a source label
         // that can remain unchanged while a routed participant is replaced.
-        return !video.hasOverlayContent && video.opacity > 0 && video.kind == "participant-video" && video.participantId == raw;
+        return !video.hasOverlayContent && video.opacity > 0 && (video.kind == "participant-video" || video.kind == "screen-share") && video.participantId == raw;
       })) continue;
     }
     auto content = layer(instance, *revision, plan.width, plan.height);
@@ -766,11 +767,12 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
   }
 }
 
-void GraphicsInstances::observeZoomSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
-                                         const std::vector<modules::VideoFrame>& frames) {
+void GraphicsInstances::observeSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
+                                         const std::vector<modules::VideoFrame>& frames,
+                                         const std::function<std::string_view(const std::string&)>& captureLabel) {
   automation_.observeEpoch(sessionEpoch);
 
-  if (!sources_->observeZoom(roster, sessionEpoch, frames)) return;
+  if (!sources_->observeSources(roster, sessionEpoch, frames, captureLabel)) return;
   for (auto& [_, instance] : instances_) {
     if (instance.pendingCue && instance.pendingCue->binding && !sources_->contains(*instance.pendingCue->binding)) {
       instance.pendingCue.reset(); instance.cuePreparation = "failed"; instance.cueWarning = "source-identity-changed";
@@ -886,9 +888,9 @@ bool GraphicsInstances::applyAutomation(const modules::ProgramFrame& frame) {
   const auto before=automation_.traceSequence();
   std::vector<GraphicsAutomation::Subject> subjects;bool sharing=false;
   for(const auto& fact:frame.graphicsFacts) {
-    if(fact.state=="share-draw-submitted") {sharing=true;continue;}
-    if(fact.state!="source-draw-submitted" || fact.instanceId.rfind("source:",0)!=0 || !fact.revision) continue;
-    const auto sourceId="zoom:"+fact.instanceId.substr(7);
+    if(fact.state=="share-draw-submitted") sharing=true;
+    if((fact.state!="source-draw-submitted" && fact.state!="share-draw-submitted") || fact.instanceId.rfind("source:",0)!=0 || !fact.revision) continue;
+    const auto sourceId=GraphicsSourceCatalog::sourceId(fact.instanceId.substr(7));
     for(const auto& source:sources_->rows().asArray()) {
       const auto* identity=source.get("identity");if(!identity || !source.get("videoOn")->asBool()) continue;
       auto binding=GraphicsSourceCatalog::read(*identity);

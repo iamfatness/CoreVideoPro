@@ -33,6 +33,11 @@ export function judgeRedesignWorkload(report) {
   if (!Array.isArray(rows) || rows.length < 2 || rows.length > 100000)
     errors.push('Bounded workload samples are required.');
   const samples = Array.isArray(rows) && rows.length <= 100000 ? rows : [];
+  const launch = report?.launchEvidence;
+  if (launch?.installed !== true || launch?.method !== 'desktop-shortcut' || launch?.elevated !== false ||
+      !samples[0]?.processGeneration || launch?.processGeneration !== samples[0].processGeneration ||
+      launch?.priorityClass !== 'Normal' || launch?.receiverPriorityClass !== 'Normal')
+    errors.push('Installed desktop-shortcut workload and camera consumer must have observed Normal process priority and matching process identity.');
   const counters = new Map();
   const progress = new Map();
   const additionalGenerations = new Map();
@@ -177,6 +182,42 @@ export function judgeRedesignWorkload(report) {
     errors.push('Frame evidence omits Preview or multiview display.');
   if (report?.cameraPixelVerdict?.osCameraContinuityVerified !== true)
     errors.push('Independent Windows camera pixel continuity did not pass.');
+  const desktopPictures = report?.desktopSourcePictureVerdict;
+  if (desktopPictures?.schema !== 'desktop-source-picture-verdict-v1' ||
+      desktopPictures.observerCoverageComplete !== true || desktopPictures.observedPicturesFresh !== true ||
+      desktopPictures.startTicks !== interval?.start || desktopPictures.endTicks !== interval?.end ||
+      desktopPictures.qpcFrequency !== report?.qpcFrequency || !(desktopPictures.durationSeconds >= durationSeconds) ||
+      !Array.isArray(desktopPictures.errors) || desktopPictures.errors.length)
+    errors.push('Studio source-picture evidence is missing, incomplete or failed.');
+  for (const surface of ['previewCamera', 'programCamera', 'inputCamera']) {
+    const pictures = desktopPictures?.surfaces?.[surface];
+    if (!pictures || !Number.isSafeInteger(pictures.samples) || pictures.samples < durationSeconds * 60 - 1 ||
+        ['invalid', 'missingSourceIdentities', 'reordered'].some(key => pictures[key] !== 0) ||
+        !Number.isFinite(pictures.maximumObservationAgeMs) || pictures.maximumObservationAgeMs < 0 ||
+        pictures.maximumObservationAgeMs > 100)
+      errors.push(`${surface}: actual Studio camera pictures omitted identities or exceeded their age limit.`);
+  }
+  for (const destination of ['osCamera', 'recording']) {
+    const pictures = report?.sourcePictureVerdict?.[destination];
+    const sourceRate = pictures?.cameraRateNumerator / pictures?.cameraRateDenominator;
+    const repeatLimit = Math.ceil((pictures?.samples - 1) * (1 - sourceRate / 60)) + (sourceRate < 60 ? 2 : 0);
+    if (pictures?.schema !== 'source-picture-verdict-v1' || pictures.sourcePicturesVerified !== true ||
+        !Array.isArray(pictures.errors) || pictures.errors.length ||
+        pictures.startTicks !== interval?.start || pictures.endTicks !== interval?.end ||
+        pictures.qpcFrequency !== report?.qpcFrequency || !(pictures.durationSeconds >= durationSeconds) ||
+        !Number.isSafeInteger(pictures.samples) || pictures.samples < durationSeconds * 60 - 1 ||
+        pictures.cameraSourceId !== declared.find(id => typeof id === 'string' && id.startsWith('capture:') && !id.startsWith('capture:screen:')) ||
+        pictures.screenSourceId !== declared.find(id => typeof id === 'string' && id.startsWith('capture:screen:')) ||
+        ['invalid', 'mismatched', 'stale', 'cameraMissing', 'cameraReordered'].some(key => pictures[key] !== 0) ||
+        !Number.isSafeInteger(pictures.cameraRepeated) || !Number.isSafeInteger(pictures.cameraPermittedRateConversionRepeats) ||
+        !Number.isFinite(sourceRate) || sourceRate <= 0 || sourceRate > 60 || pictures.cameraPermittedRateConversionRepeats !== repeatLimit ||
+        pictures.cameraRepeated < 0 || pictures.cameraRepeated > pictures.cameraPermittedRateConversionRepeats ||
+        !Number.isFinite(pictures.maximumCameraObservationAgeMs) || pictures.maximumCameraObservationAgeMs > 100 || pictures.maximumCameraObservationAgeMs < 0 ||
+        !Number.isFinite(pictures.maximumScreenPictureAgeMs) || pictures.maximumScreenPictureAgeMs > 200 || pictures.maximumScreenPictureAgeMs < 0 ||
+        !Number.isFinite(pictures.longestCameraBodyHoldMs) || pictures.longestCameraBodyHoldMs > 1000 || pictures.longestCameraBodyHoldMs < 0 ||
+        !(pictures.cameraBodyChanges > 0))
+      errors.push(`${destination}: actual source pictures did not pass over the full measured interval.`);
+  }
   const recorded = report?.recordingPixelVerdict, camera = report?.cameraPixelVerdict;
   if (recorded?.recordedPixelContinuityPassed !== true || recorded?.identityRangeComplete !== true ||
       !Number.isSafeInteger(camera?.firstIdentity) || !Number.isSafeInteger(camera?.lastIdentity) ||

@@ -32,9 +32,10 @@ internal static class GraphicsWorkspaceLayoutProbe
             // than pretending Graphics can consume the entire display.
             page.Width = 1840; page.Height = 820; page.HorizontalAlignment = HorizontalAlignment.Left; page.VerticalAlignment = VerticalAlignment.Top;
             var template = new NativeGraphicsTemplate { TemplateId="compact-solid", TemplateVersion=1, Name="Compact solid", Family="lower-third", Runtime="compatibility" };
+            var logoFixture = System.Text.Json.JsonSerializer.Deserialize<NativeGraphicsTemplate>("""{"defaultPlacement":{"anchor":"upper-right","scale":1,"x":-64,"y":48},"definition":{"animations":{"in":{"durationMs":250,"easing":"ease-out","type":"fade"},"out":{"durationMs":200,"easing":"ease-in","type":"fade"}},"assets":[{"file":"assets/5c998247459cadf4c7229c685d5ca8257e92e1154a19767a4be874c69def0d09.png","id":"logo","sha256":"5c998247459cadf4c7229c685d5ca8257e92e1154a19767a4be874c69def0d09"}],"bounds":{"height":192,"width":192},"brandTokens":["brand.primary","brand.onPrimary","brand.onPrimaryMuted","brand.fontBody","brand.accent"],"canvas":{"height":1080,"width":1920},"defaultPlacement":{"anchor":"upper-right","scale":1,"x":-64,"y":48},"family":"bug","fields":[{"default":"logo","id":"logo","type":"image"},{"default":true,"id":"show-logo","type":"boolean"}],"layers":[{"align":"center","asset":{"field":"logo"},"fit":"contain","height":168,"id":"logo-image","type":"image","verticalAlign":"center","visible":{"field":"show-logo"},"width":168,"x":12,"y":12}],"name":"Corner logo bug","schemaVersion":1,"templateId":"corner-logo","templateVersion":1},"family":"bug","fields":[{"default":"logo","id":"logo","type":"image"},{"default":true,"id":"show-logo","type":"boolean"}],"layers":[{"align":"center","asset":{"field":"logo"},"fit":"contain","height":168,"id":"logo-image","type":"image","verticalAlign":"center","visible":{"field":"show-logo"},"width":168,"x":12,"y":12}],"manifestHash":"5e2a31231137a532fe771b84a56efa4e0fe9eb9f23c36975ce5ef177c9cd63b2","name":"Corner logo bug","runtime":"declarative","templateId":"corner-logo","templateVersion":1}""",new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))!;
             var catalog = new[] { template, template with { TemplateId="minimal-accent",Name="Minimal accent" }, template with { TemplateId="broadcast",Name="Broadcast" },
                 new NativeGraphicsTemplate {TemplateId="centered-title",TemplateVersion=1,Name="Centered title",Family="title",Runtime="declarative",Fields=[new() {Id="heading",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("Welcome")},new() {Id="subtitle",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("Your show")}]},
-                new NativeGraphicsTemplate {TemplateId="corner-logo",TemplateVersion=1,Name="Logo",Family="bug",Runtime="declarative"},
+                logoFixture,
                 new NativeGraphicsTemplate {TemplateId="clock-panel",TemplateVersion=1,Name="Clock",Family="clock",Runtime="declarative",Fields=[new() {Id="label",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("LIVE")},new() {Id="time",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("12:34:56")}]} };
             // Optional catalog collected from a separate native QA process.
             // This opt-in probe still never attaches to the running application.
@@ -76,11 +77,11 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("heading").GetString()=="My weekly show","Edited welcome title was lost while recoloring or choosing another graphic");
             sampleList.SelectedIndex=0;
             Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("name").GetString()=="My guest","Switching sample graphics lost private edits");
-            var sourceText = Descendants(workspace).OfType<CheckBox>().Single(c => c.Content as string == "Use each guest's name and title in Studio");
+            var sourceText = Descendants(workspace).OfType<CheckBox>().Single(c => c.Content as string == "Use the Program source name and title in Studio");
             sourceText.IsChecked = false;
             Require(Descendants(workspace).OfType<TextBlock>().Any(t => t.Text.Contains("including the sample name")), "Fixed sample text has no Studio warning");
             sourceText.IsChecked = true;
-            Invoke(Button(workspace,"Edit guest names in Sources →"));
+            Invoke(Button(workspace,"Edit source names in Sources →"));
             Require(studio.ActiveTab == CoreVideoPro.WinUI.Models.StudioTab.Sources, "Guest text shortcut did not navigate to existing Sources");
             Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("name").GetString()=="My guest", "Guest text handoff lost the private sample draft");
             studio.ActiveTab = CoreVideoPro.WinUI.Models.StudioTab.Overlays;
@@ -92,6 +93,15 @@ internal static class GraphicsWorkspaceLayoutProbe
             individualLibrary.SelectedIndex=0;Invoke(Button(workspace,"Close"));await Task.Delay(80);
             Require(sampleList.Visibility==Visibility.Collapsed && studio.GraphicsWorkspace.Selected is null && studio.GraphicsWorkspace.Draft?.TemplateId==catalog[0].TemplateId,"Individual library browsing retained the show-starter mode or hid the editor");
             checks.Add("Returning to individual graphics from a starter exits sample-set mode and preserves the original library workflow");
+            studio.GraphicsWorkspace.Browse(catalog.Single(t=>t.TemplateId=="corner-logo"));
+            await Task.Delay(100); Invoke(Button(workspace,"Customize layout & motion")); Invoke(Button(workspace,"Content")); await Task.Delay(80);page.UpdateLayout();
+            Require(Button(workspace,"Upload logo PNG / JPEG…").IsEnabled && Button(workspace,"Upload logo PNG / JPEG…").ActualHeight > 0,"Declarative logo uploader is missing or disabled");
+            Require(Descendants(workspace).OfType<GraphicsImageControl>().Any(),"Logo template only offers bundled asset IDs");
+            Require(Descendants(workspace).OfType<ComboBox>().Count(c=>c.Header as string == "Logo")==1,"Logo uploader is duplicated by an asset-ID-only selector");
+            Require(studio.GraphicsWorkspace.Selected is null && studio.GraphicsLibrary.Document.StudioLowerThird is null,"Logo editing implicitly created or assigned a cue");
+            checks.Add("Declarative logo template exposes an enabled PNG/JPEG uploader in Content without creating or showing a cue");
+            Invoke(Button(workspace,"Use simple controls"));
+            studio.GraphicsWorkspace.Browse(catalog[0]);
             var state = new NativeGraphicsState { CoreEpoch="isolated-layout", SchemaVersion=1, Templates=catalog,
                 Instances=Enumerable.Range(1,8).Select(n=>new NativeGraphicsInstance { InstanceId=$"fixture-{n}", Label=n==1?"Guest introduction":$"Show cue {n}", TemplateId=template.TemplateId, TemplateVersion=1, Scope=n==8?"scene":"global", SceneId=n==8?"other-scene":"", Revision=1, Fields=new() { Name="Alex Rivera",Title="Producer · Office Hours" } }).ToArray() };
             studio.GraphicsWorkspace.Observe(state); studio.GraphicsWorkspace.Select("fixture-1");
@@ -113,6 +123,10 @@ internal static class GraphicsWorkspaceLayoutProbe
                 await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,$"graphics-942-{tab.ToLowerInvariant()}-1080.png"));
             }
             checks.Add("Content, Style, Layout and Motion switch independently; compiled-control screenshots exclude native video pixels");
+            Invoke(Button(workspace,"Templates and saved cues")); await Task.Delay(80);
+            Require(Button(workspace,"Import PNG / JPEG graphic…").IsEnabled,"Standalone transparent artwork import is unreachable");
+            Invoke(Button(workspace,"Close"));
+            checks.Add("Standalone PNG/JPEG graphic import is available in the library without changing the current cue");
             Invoke(Button(workspace,"Manage")); await Task.Delay(80);
             Invoke(Button(workspace,"Existing overlay controls")); await Task.Delay(80);
             var legacyDrawer=Descendants(page).OfType<SplitView>().Single(s=>s.Name=="ExistingOverlayDrawer");
@@ -180,14 +194,14 @@ internal static class GraphicsWorkspaceLayoutProbe
         dwell.Value=3.5;
         state=state with {Sources=[]};
         studio.GraphicsWorkspace.Observe(state);control.Refresh();
-        Require(dwell.Value==3.5 && subject.SelectedItem?.ToString()=="Unavailable guest · guest-a", "Roster refresh erased pending dwell or silently substituted an automatic subject");
+        Require(dwell.Value==3.5 && subject.SelectedItem?.ToString()=="Unavailable source · guest-a", "Roster refresh erased pending dwell or silently substituted an automatic subject");
         Require(!Button(control,"Arm").IsEnabled && !Button(control,"Save rule configuration").IsEnabled,"Pending form edits can be mistaken for saved or armed rules");
         state=state with {Automation=state.Automation! with {Revision=2,Configuration=new() {Rules=[rule with {DwellMs=5000}]}}};
         studio.GraphicsWorkspace.Observe(state);control.Refresh();
         Require(dwell.Value==3.5 && !Button(control,"Apply rule — disarmed").IsEnabled,"Concurrent rule edit was overwritten or pending conflicting edits can be applied");
         Invoke(Button(control,"Discard edits and reload current settings"));
         await Eventually(()=>dwell.Value==5);
-        Require(subject.SelectedItem?.ToString()=="Unavailable guest · guest-a", "Reload lost the explicit unavailable guest binding");
+        Require(subject.SelectedItem?.ToString()=="Unavailable source · guest-a", "Reload lost the explicit unavailable guest binding");
         checks.Add("compiled automation editor follows native mode, retains unsent mode/rule edits and missing guest identity, blocks conflicts/arming/save, and explicitly reloads newer settings without sending media commands");
     }
     private static async Task CheckBusyTextBindingAsync(Window window, List<string> checks)

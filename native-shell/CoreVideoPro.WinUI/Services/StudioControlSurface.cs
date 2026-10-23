@@ -57,10 +57,11 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
         "transport.virtualcam.name.set",
         "scene.select", "scene.cueWithRoutes", "scene.route.set", "scene.dynamicGallery.create", "view.setMode",
-        "input.assign", "input.name", "input.inShow.set", "source.dropout.set",
+        "source.capture.online.set", "input.assign", "input.unassign", "input.name", "input.inShow.set", "source.dropout.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
         "graphics.clock.control", "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
+        "graphics.template.select", "graphics.cue.create", "graphics.studio.assign", "graphics.image.import", "graphics.logo.import", "graphics.cue.select", "graphics.cue.action", "graphics.cue.save", "graphics.saved.restore",
         "graphics.template.install", "graphics.template.list", "graphics.authority.set", "graphics.automation.configure", "graphics.automation.control",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
@@ -290,6 +291,25 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             // ---- Show inputs --------------------------------------------------------
             case "input.assign":
                 return AssignInput(Int(args, 0), Str(args, 1));
+            case "source.capture.online.set":
+            {
+                var sourceId = Str(args,0);
+                if (!sourceId.StartsWith("capture:",StringComparison.Ordinal)) return ControlInvokeResult.Fail("Choose a capture source ID.");
+                var id = sourceId["capture:".Length..];
+                if (!_vm.CaptureDevices.Any(d => d.Id == id)) return ControlInvokeResult.Fail("The capture device is unavailable.");
+                var online = Bool(args,1);
+                if (online) await _vm.ConnectCaptureDeviceCommand.ExecuteAsync(id);
+                else await _vm.TakeCaptureDeviceOfflineCommand.ExecuteAsync(id);
+                var device = _vm.CaptureDevices.FirstOrDefault(d => d.Id == id);
+                return device is not null && (device.ConnectionState == CaptureConnectionState.Connected) == online
+                    ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);
+            }
+            case "input.unassign":
+            {
+                if (!TryGetEditor(Int(args,0),out var editor)) return ControlInvokeResult.Fail("Show input slot is out of range.");
+                using var write = ShowInputWriteScope.Enter("control-api.unassign");
+                _vm.UnassignShowInputCommand.Execute(editor); return ControlInvokeResult.Success;
+            }
             case "input.name":
                 return NameInput(Int(args, 0), args.Count > 1 ? args[1] as string : null);
             case "input.inShow.set":
@@ -311,6 +331,62 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             }
 
             // ---- Graphics -----------------------------------------------------------
+            case "graphics.template.select":
+            {
+                var workspace = _vm.GraphicsWorkspace;
+                if (workspace.Busy) return ControlInvokeResult.Fail("Graphics is busy; private selection was kept.");
+                var template = workspace.State?.Templates.FirstOrDefault(t => t.TemplateId == Str(args,0) && t.TemplateVersion == Int(args,1));
+                if (template is null) return ControlInvokeResult.Fail("The requested template version is unavailable.");
+                workspace.Browse(template); return ControlInvokeResult.Success;
+            }
+            case "graphics.cue.create":
+            {
+                var workspace = _vm.GraphicsWorkspace;
+                var template = workspace.State?.Templates.FirstOrDefault(t => t.TemplateId == Str(args,0) && t.TemplateVersion == Int(args,1));
+                if (template is null) return ControlInvokeResult.Fail("The requested template version is unavailable.");
+                var scope = Str(args,2); var sceneId = Str(args,3);
+                if (scope is not ("global" or "scene") || (scope == "scene" && !_vm.Scenes.Any(s => s.Id == sceneId)))
+                    return ControlInvokeResult.Fail("Choose a global scope or an existing scene.");
+                return await workspace.CreateAsync(template,scope,scope == "global" ? "" : sceneId)
+                    ? ControlInvokeResult.Success : ControlInvokeResult.Fail(workspace.Status);
+            }
+            case "graphics.studio.assign":
+                return await _vm.AssignGraphicsLookToStudioAsync(Bool(args,0)) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);
+            case "graphics.cue.select":
+                if (_vm.GraphicsWorkspace.Busy || _vm.GraphicsWorkspace.State?.Instances.Any(i=>i.InstanceId==Str(args,0)) != true)
+                    return ControlInvokeResult.Fail("The cue is unavailable or busy.");
+                _vm.GraphicsWorkspace.Select(Str(args,0)); return ControlInvokeResult.Success;
+            case "graphics.cue.action":
+            {
+                var workspace=_vm.GraphicsWorkspace;
+                var accepted=Str(args,0) switch {
+                    "cue" => await workspace.CueAsync(), "show" => await workspace.ShowAsync(),
+                    "hide" => await workspace.HideAsync(), "update" => await workspace.UpdateProgramAsync(), _ => false
+                };
+                return accepted ? ControlInvokeResult.Success : ControlInvokeResult.Fail(workspace.Status);
+            }
+            case "graphics.cue.save":
+                return await _vm.GraphicsLibrary.SaveCueAsync(Str(args,0)) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.GraphicsLibrary.Status);
+            case "graphics.saved.restore":
+            {
+                await _vm.GraphicsLibrary.LoadAsync();
+                var saved=_vm.GraphicsLibrary.Document.Cues.FirstOrDefault(c=>c.Id==Str(args,0));
+                return saved is not null && await _vm.GraphicsLibrary.RestoreAsync(saved)
+                    ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.GraphicsLibrary.Status);
+            }
+            case "graphics.logo.import":
+                return await _vm.GraphicsWorkspace.ImportLogoAsync(Str(args,0))
+                    ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.GraphicsWorkspace.ImportStatus);
+            case "graphics.image.import":
+            {
+                var workspace = _vm.GraphicsWorkspace;
+                var selected = workspace.SelectedId; var draft = workspace.Draft;
+                var image = await workspace.ImportImageAsync(Str(args,0),fullCanvas:true);
+                var template = image is null ? null : workspace.State?.Templates.FirstOrDefault(t => t.TemplateId == image.TemplateId && t.TemplateVersion == image.TemplateVersion);
+                if (template is null) return ControlInvokeResult.Fail(workspace.ImportStatus);
+                if (workspace.SelectedId != selected || workspace.Draft != draft) return ControlInvokeResult.Fail("Graphic imported; a newer private selection or edit was preserved.");
+                workspace.Browse(template); return ControlInvokeResult.Success;
+            }
             case "graphics.instance.create":
             case "graphics.instance.update":
             case "graphics.instance.cue":

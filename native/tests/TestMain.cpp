@@ -6,8 +6,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
+#include "core/ComApartmentLifetime.h"
 
 int main(int argc, char** argv) {
+  // Match production main: COM/WinRT activation caches and worker-owned media
+  // must not outlive the final apartment between successive capture fixtures.
+  corevideo::core::ComApartmentLifetime apartment;
+  if (!apartment.initialized()) {
+    std::fprintf(stderr, "Native test COM apartment initialization failed.\n");
+    return 1;
+  }
   const auto environment = [](const char* name) {
     const char* value = std::getenv(name);
     return value ? value : "<unset; factory default>";

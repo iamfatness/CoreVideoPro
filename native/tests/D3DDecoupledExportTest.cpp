@@ -79,6 +79,33 @@ bool readOutputPixel(ID3D11Device* device, ID3D11DeviceContext* context, HANDLE 
 }
 }  // namespace
 
+TEST(D3DDecoupledExport, HandoffDiagnosticsExposeUnreadReplacementSeparatelyFromPublishedPixels) {
+  ComPtrLite<ID3D11Device> device, consumer;
+  ComPtrLite<ID3D11DeviceContext> context, consumerContext;
+  ASSERT_TRUE(makeDevice(device, context)); ASSERT_TRUE(makeDevice(consumer, consumerContext));
+  D3DDecoupledExport exporter(device.get(), kW, kH, "handoff-observation-test");
+  ASSERT_TRUE(exporter.ready());
+  for (int64_t identity = 1; identity <= 2; ++identity) {
+    ComPtrLite<ID3D11Texture2D> source;
+    ASSERT_TRUE(makeUniformSource(device.get(), context.get(), 0xff000000u | static_cast<uint32_t>(identity), source));
+    ASSERT_TRUE(exporter.submit(context.get(), source.get(), identity));
+    context->Flush();
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (exporter.handoffDiagnostics().published < static_cast<uint64_t>(identity) &&
+           std::chrono::steady_clock::now() < until)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    ASSERT_EQ(exporter.handoffDiagnostics().published, static_cast<uint64_t>(identity));
+  }
+  const auto stats = exporter.handoffDiagnostics();
+  EXPECT_EQ(stats.submitted, 2u); EXPECT_EQ(stats.published, 2u);
+  EXPECT_EQ(stats.unreadReplaced, 1u); EXPECT_EQ(stats.preparedReplaced, 0u);
+  EXPECT_EQ(stats.dropped, 0u);
+  uint32_t pixel = 0; int64_t identity = -1;
+  ASSERT_TRUE(readOutputPixel(consumer.get(), consumerContext.get(), exporter.handle(), pixel,
+                             exporter.publishedFrameNumber(), &identity));
+  EXPECT_EQ(identity, 2); EXPECT_EQ(pixel, 0xff000002u);
+}
+
 TEST(D3DDecoupledExport, SourceIncarnationPublishesNewHandleAndPixelsWhileOldConsumerHoldsItsKey) {
   ComPtrLite<ID3D11Device> device, consumer;
   ComPtrLite<ID3D11DeviceContext> context, consumerContext;

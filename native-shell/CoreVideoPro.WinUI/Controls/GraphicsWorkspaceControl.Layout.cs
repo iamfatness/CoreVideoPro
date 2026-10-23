@@ -22,9 +22,9 @@ public sealed partial class GraphicsWorkspaceControl
         _assignmentCaption = new() { FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis },
         _layerHeading = new() { Text = "LAYERS · top is front", FontSize = 11 };
     private readonly Dictionary<string, FrameworkElement> _toolPanels = new(StringComparer.Ordinal);
-    private readonly CheckBox _studioFollowSource = new() { Content = "Use each guest's name and title in Studio", IsChecked = true };
+    private readonly CheckBox _studioFollowSource = new() { Content = "Use the Program source name and title in Studio", IsChecked = true };
     private readonly TextBlock _studioTextHelp = Copy("");
-    private readonly Button _editGuestText = ChromeButton("Edit guest names in Sources →");
+    private readonly Button _editGuestText = ChromeButton("Edit source names in Sources →");
     private readonly TextBox _cueSearch = new() { PlaceholderText = "Find a cue" };
     private readonly TextBlock _cueRackTitle = new() { Text="Show cues", FontSize=16 };
     private readonly ComboBox _cueScopeFilter = new() { Header="Scope", ItemsSource=new[] {"All scenes","Current Program scene"}, SelectedIndex=0, HorizontalAlignment=HorizontalAlignment.Stretch };
@@ -217,8 +217,8 @@ public sealed partial class GraphicsWorkspaceControl
         _studioFollowSource.Visibility = _studioTextHelp.Visibility = relevant ? Visibility.Visible : Visibility.Collapsed;
         var follows = _studioFollowSource.IsChecked == true;
         _studioTextHelp.Text = follows
-            ? "Studio will use the Program guest's name and secondary line from Sources. The names here are private examples."
-            : "Studio will use this graphic's text, including the sample name until you edit it. It will not follow the Program guest.";
+            ? "Each LT in uses the current Program source name and secondary line from Sources. The names here are private examples."
+            : "Studio will use this graphic's text, including the sample name until you edit it. It will not use the Program source text.";
         _editGuestText.Visibility = relevant && follows ? Visibility.Visible : Visibility.Collapsed;
     }
     private void RefreshLayerList()

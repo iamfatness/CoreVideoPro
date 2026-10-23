@@ -49,8 +49,12 @@ to remove.
   failed, disabled or unavailable, the capacity falls back to `assumedIsoEncoderCapacity`
   — byte-for-byte the old literal — and the verdict may warn but may NOT refuse. Nobody's
   show gets blocked because we could not read their driver. `COREVIDEO_ENCODER_PROBE=0`
-  turns probing off entirely; `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS` raises the count cap
-  (default 8).
+  turns probing off entirely; `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS` overrides the bounded
+  count cap. The default is nine: one Program recording plus eight selected ISOs.
+  The old default of eight truncated discovery below that supported workload and
+  forced the final ISO onto software even when another hardware session was available
+  (#1013). This changes how far discovery asks, not what a driver is assumed to support;
+  measured lower capacity and the unprobed eight-session fallback remain unchanged.
 - **Diagnosability:** the probe summary and the admission code go into the session
   `manifest.json` (`encoderCapacity`, `isoAdmission`) and to `[encoder-probe]` /
   `[recording] iso-admission` log lines.
