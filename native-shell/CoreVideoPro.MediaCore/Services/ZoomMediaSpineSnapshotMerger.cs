@@ -22,23 +22,28 @@ public static class ZoomMediaSpineSnapshotMerger
                 subscription.Kind == "participant-video" &&
                 !subscription.Status.Equals("failed", StringComparison.Ordinal));
 
+        // #766: the spine's per-subscription counters are the only source of these numbers.
+        var subscribedSourceCount = inMeeting
+            ? Math.Max(subscribedVideoFeeds, merged.SourceSnapshot.SubscribedSourceCount)
+            : 0;
+        var liveFrameCount = inMeeting
+            ? Math.Max(
+                spine.Subscriptions.Sum(subscription => subscription.FramesReceived),
+                merged.SourceSnapshot.LiveFrameCount)
+            : 0;
         var sourceSnapshot = new NativeMediaCoreFrameSourceSnapshot
         {
             AdapterId = merged.SourceSnapshot.AdapterId,
             Kind = merged.SourceSnapshot.Kind,
-            Status = merged.SourceSnapshot.Status,
-            SubscribedSourceCount = inMeeting
-                ? Math.Max(subscribedVideoFeeds, merged.SourceSnapshot.SubscribedSourceCount)
-                : 0,
-            LiveFrameCount = inMeeting
-                ? Math.Max(
-                    spine.Subscriptions.Sum(subscription => subscription.FramesReceived),
-                    merged.SourceSnapshot.LiveFrameCount)
-                : 0,
+            Status = !inMeeting ? "idle" : subscribedSourceCount > 0 ? "subscribed" : "joined",
+            SubscribedSourceCount = subscribedSourceCount,
+            LiveFrameCount = liveFrameCount,
             StaleFrameCount = merged.SourceSnapshot.StaleFrameCount,
             DroppedFrameCount = merged.SourceSnapshot.DroppedFrameCount,
             LowResolutionFrameCount = merged.SourceSnapshot.LowResolutionFrameCount,
-            LastFrameTimestampMs = merged.SourceSnapshot.LastFrameTimestampMs,
+            LastFrameTimestampMs = liveFrameCount > merged.SourceSnapshot.LiveFrameCount
+                ? merged.Diagnostics.GeneratedAtMs
+                : merged.SourceSnapshot.LastFrameTimestampMs,
             Warnings = merged.SourceSnapshot.Warnings
         };
 
@@ -93,7 +98,15 @@ public static class ZoomMediaSpineSnapshotMerger
         {
             return incoming;
         }
-        return incoming with { ZoomSubscriptions = existing.ZoomSubscriptions };
+        // #766: the Zoom source row (Settings "Feeds") is derived from the same spine
+        // evidence, and the mapper's sync snapshot starts from the neutral idle row, so the
+        // row flickered idle/subscribed on every poll. Carry it with the subscriptions.
+        return incoming with
+        {
+            ZoomSubscriptions = existing.ZoomSubscriptions,
+            SourceSnapshot = existing.SourceSnapshot,
+            Diagnostics = incoming.Diagnostics with { SourceSnapshot = existing.SourceSnapshot }
+        };
     }
 
     public static RawCaptureSnapshot ToCaptureSnapshot(

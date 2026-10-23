@@ -799,8 +799,12 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
         lock (_gate)
         {
             if (!CoreSnapshotRevisionPolicy.Accept(_lastSnapshot, snapshot)) return;
-            _controlRecovery.ObserveRoster(snapshot.RosterEpoch, snapshot.RosterRevision,
-                ZoomRosterSnapshotPolicy.Accept(_lastSnapshot, snapshot.RosterEpoch, snapshot.RosterRevision));
+            // #766: a snapshot without a roster fact (idle engine, or revision 0 before the
+            // first roster of an epoch) is not a roster observation: neither a barrier nor
+            // stale. CarrySubscriptions below keeps the installed roster for it.
+            if (ZoomRosterSnapshotPolicy.HasRosterFact(snapshot.RosterEpoch, snapshot.RosterRevision))
+                _controlRecovery.ObserveRoster(snapshot.RosterEpoch, snapshot.RosterRevision,
+                    ZoomRosterSnapshotPolicy.Accept(_lastSnapshot, snapshot.RosterEpoch, snapshot.RosterRevision));
             _controlRecovery.ObserveMonitor(snapshot.AudioMixSession.MonitorControl?.AuthorityEpoch,
                 snapshot.AudioMixSession.MonitorControl?.Revision ?? 0);
             _controlRecovery.ObserveAudioRoute(snapshot.AudioRoutingMatrix.Control?.AuthorityEpoch,

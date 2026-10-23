@@ -98,9 +98,11 @@ public static class TelemetryPayloadBuilder
             return new TelemetryOutputConfigShape();
         }
 
-        var captureSourceCount = snapshot.Frames
-            .Where(static frame => frame.SourceId.StartsWith("capture:", StringComparison.Ordinal))
-            .Select(static frame => frame.SourceId)
+        // #766: the mapper never populates Frames on a real core, so this was always 0. The
+        // core's captureDevices node is the real list; count the devices that are connected.
+        var captureSourceCount = snapshot.CaptureDevices
+            .Where(static device => device.ConnectionState == "connected")
+            .Select(static device => device.Id)
             .Distinct(StringComparer.Ordinal)
             .Count();
 

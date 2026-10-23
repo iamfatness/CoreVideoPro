@@ -879,4 +879,37 @@ public sealed class NativeMediaCoreStateMapperTests
 
         Assert.Null(snapshot.AutoProduction);
     }
+
+    // #766: the core publishes rosterEpoch/rosterRevision at the top of every state. They were
+    // never bound, so each sync reached ZoomRosterSnapshotPolicy with no epoch, was rejected
+    // against the capture-merged barrier, and RosterStaleSnapshots climbed ~4/s.
+    [Fact]
+    public void TheRosterFactFromARealCoreStateReachesTheSnapshot()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"meetingState":"in_meeting","rosterEpoch":"3:2:abc","rosterRevision":7,"participants":[{"userId":"42","displayName":"Guest"}]}""");
+
+        Assert.Equal("3:2:abc", snapshot.RosterEpoch);
+        Assert.Equal(7, snapshot.RosterRevision);
+        Assert.True(ZoomRosterSnapshotPolicy.HasRosterFact(snapshot.RosterEpoch, snapshot.RosterRevision));
+        Assert.True(ZoomRosterSnapshotPolicy.Accept(
+            new NativeMediaCoreStateSnapshot { RosterEpoch = "3:2:abc", RosterRevision = 7 },
+            snapshot.RosterEpoch, snapshot.RosterRevision));
+    }
+
+    // Revision 0 is the engine saying "no roster yet for this epoch": the snapshot carries
+    // Program/output truth but no roster fact, so it is neither a barrier nor a stale snapshot.
+    [Fact]
+    public void ARevisionZeroStateCarriesNoRosterFact()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"meetingState":"idle","rosterEpoch":"4:0:abc","rosterRevision":0}""");
+
+        Assert.Equal("4:0:abc", snapshot.RosterEpoch);
+        Assert.Equal(0, snapshot.RosterRevision);
+        Assert.False(ZoomRosterSnapshotPolicy.HasRosterFact(snapshot.RosterEpoch, snapshot.RosterRevision));
+        Assert.False(ZoomRosterSnapshotPolicy.HasRosterFact(null, 5));
+
+        var idle = MapJson("""{"health":{"frameCount":12},"profile":null}""");
+        Assert.Null(idle.RosterEpoch);
+        Assert.Equal(0, idle.RosterRevision);
+    }
 }

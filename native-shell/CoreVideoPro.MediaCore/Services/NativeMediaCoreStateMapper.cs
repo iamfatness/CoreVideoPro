@@ -214,6 +214,10 @@ public static class NativeMediaCoreStateMapper
             BreakoutRoomId = wire.BreakoutRoomId ?? baseSnapshot.BreakoutRoomId,
             BreakoutRoomName = wire.BreakoutRoomName ?? baseSnapshot.BreakoutRoomName,
             ActiveSpeakerId = wire.ActiveSpeakerId ?? baseSnapshot.ActiveSpeakerId,
+            // #766: the roster fact travels with the participants it versions. A snapshot with
+            // no epoch or revision 0 carries no roster fact and is neither a barrier nor stale.
+            RosterEpoch = wire.RosterEpoch,
+            RosterRevision = wire.RosterRevision ?? 0,
             Participants = wire.Participants is { Count: > 0 } participants
                 ? participants
                 : baseSnapshot.Participants

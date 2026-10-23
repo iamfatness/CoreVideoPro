@@ -764,36 +764,6 @@ public sealed partial class SettingsViewModel : ObservableObject
             });
         }
 
-        foreach (var action in snapshot.OperatorActions.Take(5))
-        {
-            items.Add(new ZoomEngineEvidenceItem
-            {
-                Label = $"Action · {action.Area}",
-                Value = action.Title,
-                Detail = action.Detail,
-                Status = action.Severity == "critical"
-                    ? ZoomSdkReadinessStatus.Blocked
-                    : action.Severity == "warning"
-                        ? ZoomSdkReadinessStatus.Warning
-                        : ZoomSdkReadinessStatus.Ready
-            });
-        }
-
-        foreach (var entry in snapshot.EventLog.TakeLast(5).Reverse())
-        {
-            items.Add(new ZoomEngineEvidenceItem
-            {
-                Label = $"Event · {entry.Area}",
-                Value = entry.Title,
-                Detail = entry.Detail,
-                Status = entry.Severity == "critical"
-                    ? ZoomSdkReadinessStatus.Blocked
-                    : entry.Severity == "warning"
-                        ? ZoomSdkReadinessStatus.Warning
-                        : ZoomSdkReadinessStatus.Ready
-            });
-        }
-
         return items;
     }
 
