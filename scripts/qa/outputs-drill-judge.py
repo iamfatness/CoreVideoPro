@@ -9,12 +9,19 @@ is judged by the existing modules in scripts/qa/:
   Program recording, stream  -> recording-pixel-verdict.py  (Program QA counter)
   each ISO                   -> iso-pixel-verdict.py        (trace stage 11 arrivals)
   registered OS camera       -> camera-pixel-receiver.mjs   (independent receiver)
+  Program source admissions  -> program-source-admission-capture.mjs (gates Program)
   Program GPU deadlines      -> delivery-trace.py           (supplementary only)
+
+The live collector's throughout-assertions (hardware encoders, remotes at
+1080p, capture progress, Program admissions, stream health) arrive in
+measurement.json; any false one fails the drill, as in Collect-Identity.ps1.
 
 This file only orchestrates them and aggregates their results into
 verdict.json and summary.txt. An output whose judge could not run is NOT JUDGED
 with the reason; it is never PASS. Overall PASS requires every enabled output to
-PASS (zero missing, repeated, reordered or invalid identities).
+PASS (zero missing, repeated, reordered or invalid identities) inside an
+interval bounded by the OS camera; without that bound Program and stream are
+UNBOUNDED, never PASS.
 """
 import argparse
 import importlib.util
@@ -26,6 +33,12 @@ import traceback
 
 HERE = pathlib.Path(__file__).resolve().parent
 PASS, FAIL, NOT_JUDGED = 'PASS', 'FAIL', 'NOT JUDGED'
+# Clean identities over the whole file, but no declared interval bounded them
+# (no OS camera). The reference refused to judge without bounds; this status
+# reports the counts and can never make the overall verdict PASS.
+UNBOUNDED = 'UNBOUNDED'
+THROUGHOUT_FLAGS = ('hardwareEncodersThroughout', 'remotes1080Throughout', 'captureProgressThroughout',
+                    'programSourcesAdmittedThroughout', 'streamHealthyThroughout')
 
 
 def load_module(name, file):
@@ -71,8 +84,9 @@ def recording_row(output, kind, verdict, proof, bounded):
             problems.append(f"samples={verdict.get('samples')} below the {verdict.get('minimumSeconds')} s minimum")
         reason = '; '.join(problems)
     elif not bounded:
-        reason = 'whole-file identity range (no OS camera interval to bound it)'
-    return {'output': output, 'kind': kind, 'sourceId': None, 'status': PASS if passed else FAIL,
+        reason = 'whole-file identity range only: no OS camera interval bounded it, so it cannot PASS'
+    status = (PASS if bounded else UNBOUNDED) if passed else FAIL
+    return {'output': output, 'kind': kind, 'sourceId': None, 'status': status,
             'expected': expected, 'decoded': verdict.get('samples'), 'missing': verdict.get('missing'),
             'repeated': verdict.get('repeated'), 'reordered': verdict.get('reordered'),
             'invalid': verdict.get('invalid'), 'reason': reason, 'proof': proof}
@@ -121,10 +135,30 @@ def camera_row(verdict, proof, covers_interval, serving_proven):
             'invalid': verdict.get('invalid'), 'reason': reason, 'proof': proof}
 
 
+def gate_program_admissions(row, admissions):
+    """Finalize-DeclaredInterval.py: Program pixels count only when the Program
+    source images were admitted throughout (program-source-admission-capture.mjs)."""
+    if row['status'] not in (PASS, UNBOUNDED):
+        return row
+    if admissions is None or _judge_error(admissions) or 'sourceAdmissionsVerified' not in admissions:
+        error = (admissions or {}).get('error', 'no admission evidence')
+        return {**row, 'status': NOT_JUDGED, 'reason': 'Program source admission capture could not run: ' + str(error)}
+    if admissions.get('sourceAdmissionsVerified') is not True:
+        return {**row, 'status': FAIL, 'reason': (f"Program source admissions not verified throughout: samples={admissions.get('samples')} "
+                                                   f"failed={admissions.get('failedSamples')} missingEvidence={admissions.get('missingEvidenceSamples')}")}
+    return row
+
+
+def throughout_failures(measurement):
+    """Collect-Identity.ps1 throughout-assertions recorded in measurement.json."""
+    return [flag for flag in THROUGHOUT_FLAGS if flag in measurement and measurement[flag] is not True]
+
+
 def aggregate(rows, context):
     """Overall verdict. PASS only when every enabled output PASSes."""
     failure = context.get('collectionFailure')
-    if failure:
+    broken = context.get('throughoutFailures') or []
+    if failure or broken:
         overall = FAIL
     elif not rows:
         overall = NOT_JUDGED
@@ -135,11 +169,15 @@ def aggregate(rows, context):
     else:
         overall = NOT_JUDGED
     notes = list(context.get('notes', []))
+    if broken:
+        notes.insert(0, 'Workload assertions failed during the interval: ' + ', '.join(broken))
     if failure:
         notes.insert(0, 'Live collection aborted: ' + failure)
-    return {'schema': 'outputs-drill-verdict-v1', 'overall': overall,
-            'rule': 'PASS only if every enabled output PASSes with zero missing, repeated, reordered or invalid identities; '
-                    'NOT JUDGED never counts as PASS.',
+    return {'schema': 'outputs-drill-verdict-v2', 'overall': overall,
+            'rule': 'PASS only if every enabled output PASSes with zero missing, repeated, reordered or invalid identities '
+                    'inside an OS-camera-bounded interval, and every workload assertion held throughout; '
+                    'NOT JUDGED and UNBOUNDED never count as PASS.',
+            'throughoutFailures': broken,
             'seconds': context.get('seconds'), 'workload': context.get('workload'),
             'outputs': rows, 'skipped': context.get('skipped', []),
             'supplementary': context.get('supplementary', {}), 'notes': notes,
@@ -223,6 +261,10 @@ def run(evidence):
     final = read_json(evidence / 'finalized.json')
     start, end = int(measurement['start']['qpc']), int(measurement['end']['qpc'])
     frequency = int(measurement['qpcFrequency'])
+    context['throughoutFailures'] = throughout_failures(measurement)
+    missing_flags = [flag for flag in THROUGHOUT_FLAGS[:4] if flag not in measurement]
+    if missing_flags:
+        context['throughoutFailures'] += [flag + ' (not recorded)' for flag in missing_flags]
     trace = evidence / 'arrival-trace.bin'
     ffmpeg, ffprobe = tools['ffmpeg'], tools['ffprobe']
     finalized_ok = bool(final.get('recording', {}).get('lifecycle', {}).get('finalized'))
@@ -271,7 +313,11 @@ def run(evidence):
         rows.insert(0, recording_row('Program recording', 'program', {'error': 'no Program artifact path in finalized snapshot'}, None, False))
     else:
         verdict, proof = attempt('program.json', lambda: record_module.judge(program_path, ffmpeg, ffprobe, seconds, first, last))
-        rows.insert(0, recording_row('Program recording', 'program', verdict, proof, bounds is not None))
+        admissions, _ = attempt('program-source-admission.json', lambda: json.loads(subprocess.run(
+            [tools['node'], str(HERE / 'program-source-admission-capture.mjs'), str(evidence / 'samples.ndjson'),
+             str(evidence / 'measurement.json'), *drill.get('programSourceIds', [])],
+            capture_output=True, text=True, check=True).stdout))
+        rows.insert(0, gate_program_admissions(recording_row('Program recording', 'program', verdict, proof, bounds is not None), admissions))
 
     tracks = {row.get('sourceId'): row for row in final.get('recording', {}).get('streams', []) if row.get('kind') == 'iso'}
     for source in enabled.get('iso', []):
