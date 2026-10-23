@@ -381,6 +381,11 @@ public sealed class NativeMediaCoreWireState
     public NativeMediaCoreBrandKit? BrandKit { get; init; }
     public NativeMediaCoreOverlayState? OverlayState { get; init; }
     public NativeGraphicsState? Graphics { get; init; }
+    /// <summary>The core's deterministic director recommendation (snapshot node "autoProduction":
+    /// ruleId, recommendedSceneId, confidence, rationale, slotBindings). #761: this was never bound,
+    /// so Set &amp; Forget and Magic Scene only ever saw the shell's count-only fallback, whose
+    /// SlotBindings are always empty, and never acted. Null means the core published no node.</summary>
+    public NativeMediaCoreAutoProduction? AutoProduction { get; init; }
     public NativeMediaCoreMediaPlaybackState? MediaPlayback { get; init; }
     /// <summary>The core's per-source media transport rows (#535 slice 3b, snapshot node
     /// "mediaSources"). Published unconditionally by the core, so null here means an OLD core,

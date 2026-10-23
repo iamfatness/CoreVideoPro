@@ -203,6 +203,9 @@ public static class NativeMediaCoreStateMapper
             BrandKit = brandKit,
             OverlayState = overlayState,
             Graphics = wire.Graphics,
+            // #761: the director recommendation is a core node, never a shell guess; absent
+            // stays null so the automation path falls back to its explicit count-only heuristic.
+            AutoProduction = wire.AutoProduction,
             MediaPlayback = mediaPlayback,
             MediaSources = mediaSources,
             Diagnostics = diagnostics,
