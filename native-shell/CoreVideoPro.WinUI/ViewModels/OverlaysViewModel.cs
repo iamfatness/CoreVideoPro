@@ -15,22 +15,7 @@ public sealed partial class OverlaysViewModel : ObservableObject
     private bool _updatingBrandColors;
 
     [ObservableProperty]
-    private string _captionFontSize = ProductionCatalog.CaptionStyle.FontSize;
-
-    [ObservableProperty]
-    private string _captionTextColor = ProductionCatalog.CaptionStyle.TextColor;
-
-    [ObservableProperty]
-    private int _captionBackgroundOpacity = ProductionCatalog.CaptionStyle.BackgroundOpacity;
-
-    [ObservableProperty]
-    private bool _captionUppercase = ProductionCatalog.CaptionStyle.Uppercase;
-
-    [ObservableProperty]
     private string _lowerThirdPosition = "lower-left";
-
-    [ObservableProperty]
-    private string _captionPosition = "bottom";
 
     public OverlaysViewModel(StudioViewModel studio)
     {
@@ -85,23 +70,11 @@ public sealed partial class OverlaysViewModel : ObservableObject
 
     public IReadOnlyList<CaptionTranscriptEntry> CaptionTranscript => _studio.CaptionTranscript;
 
-    public IReadOnlyList<string> CaptionFontSizeOptions => CaptionStyleHelper.FontSizeOptions;
-
-    public IReadOnlyList<string> LowerThirdPositionOptions => CaptionStyleHelper.LowerThirdPositionOptions;
-
-    public IReadOnlyList<string> CaptionPositionOptions => CaptionStyleHelper.CaptionPositionOptions;
+    public IReadOnlyList<string> LowerThirdPositionOptions => LowerThirdLayoutHelper.LowerThirdPositionOptions;
 
     public IReadOnlyList<string> BrandLowerThirdStyleOptions { get; } = ["solid", "minimal", "gradient"];
 
     public IReadOnlyList<string> BrandDefaultOverlayBehaviorOptions { get; } = ["all-off", "manual"];
-
-    public string CaptionStyleSummary => CaptionStyleHelper.Summarize(new CaptionStyleState
-    {
-        FontSize = CaptionFontSize,
-        TextColor = CaptionTextColor,
-        BackgroundOpacity = CaptionBackgroundOpacity,
-        Uppercase = CaptionUppercase
-    });
 
     public string BrandColorSummary => $"{BrandKit.BrandColor} / {BrandKit.AccentColor} / {BrandKit.BackgroundColor}";
 
@@ -111,60 +84,13 @@ public sealed partial class OverlaysViewModel : ObservableObject
 
     public SolidColorBrush BrandBackgroundSwatch => new(BrandBackgroundPickerColor);
 
-    public string CaptionQualitySummary => _studio.CaptionQualitySummary;
-
     public string LowerThirdPositionLabel => LowerThirdPosition.Replace('-', ' ');
 
-    public string CaptionPositionLabel => CaptionPosition;
-
-    public double CaptionFontSizePx => CaptionStyleHelper.FontSizeToPixels(CaptionFontSize);
-
-    public string CaptionDisplayText =>
-        CaptionStyleHelper.FormatCaptionText(_studio.CaptionText, CaptionUppercase);
-
-    public SolidColorBrush CaptionTextBrush => CaptionStyleHelper.CaptionTextBrush(CaptionTextColor);
-
-    // #476 / T3.5. A caption composites into PROGRAM, so its colour is a real
-    // on-air decision and deserves the same picker the brand rows have had all
-    // along. The hex string stays the source of truth: the picker reads it and
-    // writes it back, so there is no second copy to drift and no re-entrancy
-    // latch (the brand rows need one because their hex values are observable
-    // properties written from two directions; this is a projection).
-    public Color CaptionTextPickerColor
-    {
-        get => CoreVideoPro.WinUI.Services.HexColor.ParseOrDefault(
-            CaptionTextColor, Color.FromArgb(255, 0xF7, 0xFB, 0xF8));
-        set => CaptionTextColor = CoreVideoPro.WinUI.Services.HexColor.ToHex(value);
-    }
-
-    public SolidColorBrush CaptionBackgroundBrush =>
-        CaptionStyleHelper.CaptionBackgroundBrush(CaptionBackgroundOpacity);
-
     public HorizontalAlignment LowerThirdHorizontalAlignment =>
-        CaptionStyleHelper.LowerThirdAlignment(LowerThirdPosition).Horizontal;
+        LowerThirdLayoutHelper.LowerThirdAlignment(LowerThirdPosition).Horizontal;
 
     public VerticalAlignment LowerThirdVerticalAlignment =>
-        CaptionStyleHelper.LowerThirdAlignment(LowerThirdPosition).Vertical;
-
-    public bool ShowCaptionStripBelowProgram =>
-        CaptionStyleHelper.IsCaptionStripBelowProgram(CaptionPosition);
-
-    public bool ShowCaptionStripInProgram => !ShowCaptionStripBelowProgram;
-
-    public Thickness CaptionStripMargin =>
-        CaptionPosition == "top" ? new Thickness(16, 16, 16, 0) : new Thickness(0);
-
-    partial void OnCaptionFontSizeChanged(string value) => NotifyCaptionPresentationChanged();
-
-    partial void OnCaptionTextColorChanged(string value)
-    {
-        OnPropertyChanged(nameof(CaptionTextPickerColor));
-        NotifyCaptionPresentationChanged();
-    }
-
-    partial void OnCaptionBackgroundOpacityChanged(int value) => NotifyCaptionPresentationChanged();
-
-    partial void OnCaptionUppercaseChanged(bool value) => NotifyCaptionPresentationChanged();
+        LowerThirdLayoutHelper.LowerThirdAlignment(LowerThirdPosition).Vertical;
 
     partial void OnBrandNameChanged(string value) => UpdateBrandKit();
 
@@ -245,19 +171,6 @@ public sealed partial class OverlaysViewModel : ObservableObject
         _studio.NotifyLowerThirdPresentationChanged();
     }
 
-    partial void OnCaptionPositionChanged(string value)
-    {
-        OnPropertyChanged(nameof(CaptionPositionLabel));
-        OnPropertyChanged(nameof(ShowCaptionStripBelowProgram));
-        OnPropertyChanged(nameof(ShowCaptionStripInProgram));
-        OnPropertyChanged(nameof(CaptionStripMargin));
-    }
-
-    public void NotifyCaptionContentChanged()
-    {
-        OnPropertyChanged(nameof(CaptionDisplayText));
-    }
-
     [RelayCommand]
     private void ToggleGraphic(string graphicId) => _studio.ToggleGraphicCommand.Execute(graphicId);
 
@@ -294,16 +207,6 @@ public sealed partial class OverlaysViewModel : ObservableObject
         OnPropertyChanged(nameof(BrandColorSummary));
     }
 
-    private void NotifyCaptionPresentationChanged()
-    {
-        OnPropertyChanged(nameof(CaptionStyleSummary));
-        OnPropertyChanged(nameof(CaptionFontSizePx));
-        OnPropertyChanged(nameof(CaptionDisplayText));
-        OnPropertyChanged(nameof(CaptionTextBrush));
-        OnPropertyChanged(nameof(CaptionBackgroundBrush));
-        UpdateBrandKit();
-    }
-
     private void UpdateBrandKit()
     {
         if (string.IsNullOrWhiteSpace(BrandName) ||
@@ -337,7 +240,7 @@ public sealed partial class OverlaysViewModel : ObservableObject
             FontFamily = BrandKit.FontFamily,
             LowerThirdStyle = BrandLowerThirdStyle,
             LowerThirdAppearance = BrandKit.LowerThirdAppearance,
-            CaptionStyle = CaptionStyleSummary,
+            CaptionStyle = BrandKit.CaptionStyle,
             DefaultOverlayBehavior = BrandDefaultOverlayBehavior
         });
     }

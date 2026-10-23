@@ -576,6 +576,9 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Contains("set-recording-targets", commandTypes);
         Assert.Contains("start-recording-session", commandTypes);
         Assert.Contains("push-caption-cue", commandTypes);
+        // #767: the core's caption track is enabled by default and nothing in the shell can
+        // disable it; restating "enabled: true" on every sync was a dead command.
+        Assert.DoesNotContain("set-caption-enabled", commandTypes);
     }
 
     [Fact]

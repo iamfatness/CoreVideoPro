@@ -1013,11 +1013,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public IReadOnlyList<AudioProcessingTargetOption> AudioProcessingTargetOptions { get; private set; } = [];
     private string _audioProcessingTargetsSignature = string.Empty;
 
-    public string CaptionQualitySummary =>
-        ProductionStateHelper.CaptionQualitySummary(
-            !string.IsNullOrWhiteSpace(CaptionText) || CaptionTranscript.Count > 0,
-            CaptionTranscript.Count);
-
     public ObservableCollection<SceneCanvasLayerViewModel> PreviewCanvasLayers { get; } = [];
 
     /// <summary>
@@ -5635,8 +5630,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public bool HasCaptionTranscript => CaptionTranscript.Count > 0;
 
+    // #767: honest about the source. CoreVideo has no speech-to-text; the caption track only
+    // carries cues the show engine (setQuestion) or a control client pushed.
     public string CaptionTranscriptEmptyGuidance =>
-        "Caption lines appear here when the engine is live and the caption track publishes cues.";
+        "No caption cues yet. Cues come from the show engine's question feed or a control client; CoreVideo does not transcribe speech.";
 
     [RelayCommand]
     private void RefreshMediaBin()
@@ -7442,7 +7439,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AutomationScenePolicySummary));
         OnPropertyChanged(nameof(AutomationOverlayPolicySummary));
         OnPropertyChanged(nameof(AutomationTakeModeLabel));
-        OnPropertyChanged(nameof(CaptionQualitySummary));
         RefreshAudioReadoutBindings();
         // ISO-4: "N ISOs armed" + per-stream health, scalar props per snapshot apply.
         RefreshIsoReadouts();
@@ -10915,7 +10911,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _captionTranscriptPatches.Clear();
         CaptionTranscript = [];
         OnPropertyChanged(nameof(CaptionTranscript));
-        OnPropertyChanged(nameof(CaptionQualitySummary));
         OnPropertyChanged(nameof(HasCaptionTranscript));
         OutputStatus = "Outputs idle";
         OutputSessionStatus = "Outputs idle";
@@ -10945,7 +10940,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (patch.CaptionText is { Length: > 0 } captionText)
         {
             CaptionText = captionText;
-            Overlays.NotifyCaptionContentChanged();
         }
 
         if (patch.CaptionSpeaker is { Length: > 0 } captionSpeaker)
@@ -11046,7 +11040,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             })
             .ToList();
         OnPropertyChanged(nameof(CaptionTranscript));
-        OnPropertyChanged(nameof(CaptionQualitySummary));
         OnPropertyChanged(nameof(HasCaptionTranscript));
     }
 

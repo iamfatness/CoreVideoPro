@@ -16,7 +16,7 @@ public sealed class LowerThirdDesignerControl : UserControl
     private readonly Dictionary<string,SliderValueControl> _values=[];
     private readonly ComboBox _preset=new() { Header="Starter look",ItemsSource=new[] { "compact-solid","minimal-accent","broadcast" } };
     private readonly ComboBox _saved=new() { Header="Saved looks" };
-    private readonly ComboBox _anchor=new() { Header="Anchor",ItemsSource=CaptionStyleHelper.LowerThirdPositionOptions };
+    private readonly ComboBox _anchor=new() { Header="Anchor",ItemsSource=LowerThirdLayoutHelper.LowerThirdPositionOptions };
     private readonly TextBox _font=new() { Header="Font family" },_nameColor=new() { Header="Name color (#RRGGBB)" },_titleColor=new() { Header="Title color (#RRGGBB)" },_presetName=new() { Header="Save look as" };
     private readonly TextBox _backgroundColor=new() { Header="Background color (#RRGGBB)" },_accentColor=new() { Header="Accent color (#RRGGBB)" };
     private readonly ColorPicker _backgroundPicker=new() { IsAlphaEnabled=false },_accentPicker=new() { IsAlphaEnabled=false };

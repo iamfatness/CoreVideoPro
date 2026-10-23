@@ -57,7 +57,6 @@ public sealed partial class ProductionSettingsWindow : Window
             "audio" => AudioPanel,
             "record" or "recording" => RecordingPanel,
             "multiviewer" or "multiview" => MultiviewerPanel,
-            "license" or "plan" => LicensePanel,
             "ffmpeg" => FfmpegPanel,
             "ohg" => OhgPanel,
             _ => OutputPanel
@@ -79,8 +78,6 @@ public sealed partial class ProductionSettingsWindow : Window
     private void OnRecordingClicked(object sender, RoutedEventArgs args) => ShowSection("recording");
 
     private void OnMultiviewerClicked(object sender, RoutedEventArgs args) => ShowSection("multiviewer");
-
-    private void OnLicenseClicked(object sender, RoutedEventArgs args) => ShowSection("license");
 
     private void OnFfmpegClicked(object sender, RoutedEventArgs args) => ShowSection("ffmpeg");
 
@@ -495,7 +492,6 @@ public sealed partial class ProductionSettingsWindow : Window
         AudioPanel.Visibility = activePanel == AudioPanel ? Visibility.Visible : Visibility.Collapsed;
         RecordingPanel.Visibility = activePanel == RecordingPanel ? Visibility.Visible : Visibility.Collapsed;
         MultiviewerPanel.Visibility = activePanel == MultiviewerPanel ? Visibility.Visible : Visibility.Collapsed;
-        LicensePanel.Visibility = activePanel == LicensePanel ? Visibility.Visible : Visibility.Collapsed;
         FfmpegPanel.Visibility = activePanel == FfmpegPanel ? Visibility.Visible : Visibility.Collapsed;
         OhgPanel.Visibility = activePanel == OhgPanel ? Visibility.Visible : Visibility.Collapsed;
     }

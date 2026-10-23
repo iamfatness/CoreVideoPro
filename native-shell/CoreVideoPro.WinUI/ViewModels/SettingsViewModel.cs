@@ -57,18 +57,6 @@ public sealed partial class SettingsViewModel : ObservableObject
     private bool _verboseDiagnosticsEnabled;
 
     [ObservableProperty]
-    private string _activationKey = string.Empty;
-
-    [ObservableProperty]
-    private LicenseTier _licenseTier = LicenseTier.Trial;
-
-    [ObservableProperty]
-    private LicenseStatus _licenseStatus = LicenseStatus.Trial;
-
-    [ObservableProperty]
-    private string _licenseActionStatus = string.Empty;
-
-    [ObservableProperty]
     private string _oauthStatusMessage = string.Empty;
 
     [ObservableProperty]
@@ -277,8 +265,6 @@ public sealed partial class SettingsViewModel : ObservableObject
             ? "Zoom is unavailable. Open Health for details."
             : "Zoom needs attention. Open Health for details.";
 
-    public bool ShowLicenseActionStatus => !string.IsNullOrWhiteSpace(LicenseActionStatus);
-
     public bool ZoomOperatorIsBlocked =>
         !IsInMeeting && _sdkReadiness.Status == ZoomSdkReadinessStatus.Blocked;
 
@@ -324,63 +310,6 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public string SdkDetailsButtonLabel => SdkDiagnosticsExpanded ? "Hide details" : "Show details";
 
-    public string LicensePlanLabel => LicenseCatalog.TierLabel(LicenseTier);
-
-    public string LicenseStatusLabel => LicenseStatus.ToString().ToLowerInvariant();
-
-    public string TrialDaysLabel
-    {
-        get
-        {
-            if (LicenseStatus != LicenseStatus.Trial)
-            {
-                return string.Empty;
-            }
-
-            var trialEnd = DateTimeOffset.UtcNow.AddDays(14).ToUnixTimeMilliseconds();
-            var days = Math.Max(0, (int)Math.Ceiling((trialEnd - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) / 86_400_000d));
-            return $" — {days} days left";
-        }
-    }
-
-    public string EntitlementsSummary
-    {
-        get
-        {
-            var entitlements = LicenseCatalog.DeriveEntitlements(
-                new LicenseState { Tier = LicenseTier, Status = LicenseStatus },
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-
-            var parts = new List<string>
-            {
-                $"up to {entitlements.MaxZoomParticipants} participants",
-                $"{entitlements.MaxOutputHeight}p output"
-            };
-
-            if (entitlements.Watermark)
-            {
-                parts.Add("watermark");
-            }
-
-            if (!entitlements.SetAndForget)
-            {
-                parts.Add("Set & Forget locked");
-            }
-
-            if (!entitlements.ChromaKey)
-            {
-                parts.Add("chroma key locked");
-            }
-
-            if (!entitlements.Phase2Outputs)
-            {
-                parts.Add("NDI/SRT/WebRTC locked");
-            }
-
-            return $"Limits: {string.Join(", ", parts)}";
-        }
-    }
-
     public string MeetingStatusLine
     {
         get
@@ -396,8 +325,6 @@ public sealed partial class SettingsViewModel : ObservableObject
             };
         }
     }
-
-    public bool CanActivateLicense => !string.IsNullOrWhiteSpace(ActivationKey);
 
     partial void OnMeetingStateChanged(ZoomMeetingState value)
     {
@@ -497,10 +424,6 @@ public sealed partial class SettingsViewModel : ObservableObject
             }
         }
     }
-
-    partial void OnActivationKeyChanged(string value) => OnPropertyChanged(nameof(CanActivateLicense));
-
-    partial void OnLicenseActionStatusChanged(string value) => OnPropertyChanged(nameof(ShowLicenseActionStatus));
 
     public async Task RefreshOAuthStatusAsync()
     {
@@ -1160,40 +1083,6 @@ public sealed partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private void ToggleSdkDiagnostics() => SdkDiagnosticsExpanded = !SdkDiagnosticsExpanded;
 
-    [RelayCommand]
-    private void ActivateLicense()
-    {
-        if (!CanActivateLicense)
-        {
-            return;
-        }
-
-        LicenseActionStatus = $"Activation queued for key {ActivationKey.Trim()}";
-    }
-
-    [RelayCommand]
-    private void StartTrial()
-    {
-        LicenseTier = LicenseTier.Trial;
-        LicenseStatus = LicenseStatus.Trial;
-        LicenseActionStatus = "Trial started.";
-        NotifyLicenseUi();
-    }
-
-    [RelayCommand]
-    private void Upgrade(string tier)
-    {
-        if (!Enum.TryParse<LicenseTier>(tier, ignoreCase: true, out var parsed))
-        {
-            return;
-        }
-
-        LicenseTier = parsed;
-        LicenseStatus = LicenseStatus.Active;
-        LicenseActionStatus = $"Upgrade to {LicenseCatalog.TierLabel(parsed)} queued.";
-        NotifyLicenseUi();
-    }
-
     private void NotifyMeetingUi()
     {
         OnPropertyChanged(nameof(IsInMeeting));
@@ -1231,14 +1120,6 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(CanJoinZoom));
         OnPropertyChanged(nameof(JoinBlockedReason));
         OnPropertyChanged(nameof(JoinActionHint));
-    }
-
-    private void NotifyLicenseUi()
-    {
-        OnPropertyChanged(nameof(LicensePlanLabel));
-        OnPropertyChanged(nameof(LicenseStatusLabel));
-        OnPropertyChanged(nameof(TrialDaysLabel));
-        OnPropertyChanged(nameof(EntitlementsSummary));
     }
 
     private void NotifyOAuthUi()

@@ -649,10 +649,11 @@ public static class MediaCoreCommandBuilder
         }
     }
 
+    // #767: no set-caption-enabled. The shell never had a control that could send false (the
+    // automation "Captions" toggle drives the caption GRAPHIC, not the core's track), so the
+    // command only restated the core's default on every sync.
     private static IEnumerable<NativeMediaCoreCommand> BuildCaptionCommands(string? captionText, string? captionSpeaker)
     {
-        yield return Command("set-caption-enabled", new Dictionary<string, object?> { ["enabled"] = true });
-
         if (!string.IsNullOrWhiteSpace(captionText))
         {
             yield return Command("push-caption-cue", new Dictionary<string, object?>

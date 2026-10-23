@@ -841,7 +841,6 @@
 
                     <Button Style="{StaticResource AutomationToggleButton}" Width="190"
                             Command="{x:Bind ViewModel.ToggleAutomationCommand}"
-                            IsEnabled="{x:Bind ViewModel.Transport.SetAndForgetCanToggle, Mode=OneWay}"
                             Background="{x:Bind ViewModel.Transport.SetAndForgetButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.Transport.SetAndForgetButtonBorder, Mode=OneWay}">
                         <StackPanel Orientation="Horizontal" Spacing="10">

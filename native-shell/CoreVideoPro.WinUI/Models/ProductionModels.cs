@@ -697,17 +697,6 @@ public sealed class BrandKit
     };
 }
 
-public sealed class CaptionStyle
-{
-    public required string FontSize { get; init; }
-    public required string TextColor { get; init; }
-    public required int BackgroundOpacity { get; init; }
-    public required bool Uppercase { get; init; }
-
-    public string Summary =>
-        $"{FontSize} captions · {(Uppercase ? "uppercase" : "sentence case")} · {BackgroundOpacity}% backdrop";
-}
-
 public sealed class CaptionTranscriptEntry
 {
     public required string Id { get; init; }
@@ -953,14 +942,6 @@ public static class ProductionCatalog
         DefaultOverlayBehavior = "all-off"
     };
 
-    public static CaptionStyle CaptionStyle { get; } = new()
-    {
-        FontSize = "medium",
-        TextColor = "#f7fbf8",
-        BackgroundOpacity = 70,
-        Uppercase = false
-    };
-
     public static ColorGrade ColorGrade { get; } = new()
     {
         Lut = "none",
@@ -1177,11 +1158,6 @@ public static class ProductionStateHelper
 
     public static string MediaBinSummary(int assetCount) =>
         assetCount == 0 ? "Media bin is empty" : $"{assetCount} assets in bin";
-
-    public static string CaptionQualitySummary(bool hasCaptions, int entryCount) =>
-        hasCaptions
-            ? $"{entryCount} caption lines · live"
-            : "No captions yet";
 
     public static AutoProductionState BuildAutomationRecommendation(
         IReadOnlyList<Participant> participants,

@@ -86,13 +86,22 @@ internal static class OhgConformanceGoldens
         "SceneExists(conformance-scene)",
         "CueSceneWithRoutes(conformance-scene, ohg-box-1=3, ohg-box-2=null, ohg-host=1, ohg-reader=2)",
         "SetInputDisplayName(1, Cara Ames)",
-        "SetInputLowerThirdTitle(1, Oslo)",
         "SetInputDisplayName(2, Dev Blake)",
-        "SetInputLowerThirdTitle(2, Reno)",
         "SetInputDisplayName(3, Eve Cole)",
-        "SetInputLowerThirdTitle(3, Lima)",
         "SetCaption()"
     };
+
+    /// <summary>#767: the first setNameplates whose plates carry a `location` makes the adapter say,
+    /// once per adapter lifetime, that the shell has no per-input lower-third title to put it on
+    /// (it used to be a silent no-op success). It rides the same tick as the plates, after the
+    /// name lines and before the question's caption.</summary>
+    private static readonly string[] NameplateLocationNote =
+    {
+        "ReportStatus(nameplates: location line not applied (the shell has no per-input lower-third title))"
+    };
+
+    private static string[] WithNote(string[] look) =>
+        look.Take(look.Length - 1).Concat(NameplateLocationNote).Concat(look.Skip(look.Length - 1)).ToArray();
 
     /// <summary>The same look with an EMPTY box 1: both guest routes carry nobody and the plates
     /// name only the two chairs.</summary>
@@ -101,9 +110,7 @@ internal static class OhgConformanceGoldens
         "SceneExists(conformance-scene)",
         "CueSceneWithRoutes(conformance-scene, ohg-box-1=null, ohg-box-2=null, ohg-host=1, ohg-reader=2)",
         "SetInputDisplayName(1, Cara Ames)",
-        "SetInputLowerThirdTitle(1, Oslo)",
         "SetInputDisplayName(2, Dev Blake)",
-        "SetInputLowerThirdTitle(2, Reno)",
         "SetCaption()"
     };
 
@@ -115,7 +122,6 @@ internal static class OhgConformanceGoldens
         "SceneExists(conformance-scene)",
         "CueSceneWithRoutes(conformance-scene, ohg-box-1=null, ohg-host=1, ohg-reader=null)",
         "SetInputDisplayName(1, Cara Ames)",
-        "SetInputLowerThirdTitle(1, Oslo)",
         "SetCaption()"
     };
 
@@ -142,7 +148,7 @@ internal static class OhgConformanceGoldens
             // placement adds nothing. The plates that follow are the same look resolving, not a
             // second placement.
             ["selecting a look applies its preset and both chairs"] =
-                Sequence(SeatingPreamble, LookPreviewCue, FullLook),
+                Sequence(SeatingPreamble, LookPreviewCue, WithNote(FullLook)),
 
             // INTENT: "An unseated chair is CLEARED, not left alone. `CONFORMANCE_SOLO_LOOK_ID`
             // seats the host chair and no reader chair, while the roster still holds a panelist in
@@ -155,7 +161,7 @@ internal static class OhgConformanceGoldens
             // chair alone. A sequence where `ohg-reader` were missing here, or still `=2`, would be
             // an adapter bug to FIX rather than pin — that is the whole point of reading first.
             ["a look with no reader chair clears ohg-reader"] =
-                Sequence(SeatingPreamble, LookPreviewCue, EmptyBoxLook, LookPreviewCue, SoloHostLook),
+                Sequence(SeatingPreamble, LookPreviewCue, WithNote(EmptyBoxLook), LookPreviewCue, SoloHostLook),
 
             // INTENT: "a host that declares `hasPreviewBus: false` must never receive
             // `setPreview`/`cut`/`auto` … and a cut must still put the staged source on program."
@@ -185,12 +191,12 @@ internal static class OhgConformanceGoldens
             // `setNameplates`/`setQuestion` must go out on a real change and stay silent otherwise."
             // Read out: plates for the host chair, the reader chair and the filled box; then two
             // silent ticks contributing NOTHING; then — the box cleared — the same look again with
-            // its guest route emptied and plates naming only the two chairs. Each plate is two
-            // facade calls (display name + lower-third title). The question overlay is null
+            // its guest route emptied and plates naming only the two chairs. Each plate is one
+            // facade call (display name); the location line is reported unapplied once (#767). The question overlay is null
             // throughout (no question feed is configurable in CONFORMANCE_CONFIG), which is an
             // empty caption, published alongside each plate change.
             ["nameplates and question emit on change and stay silent otherwise"] =
-                Sequence(SeatingPreamble, LookPreviewCue, FullLook, EmptyBoxLook),
+                Sequence(SeatingPreamble, LookPreviewCue, WithNote(FullLook), EmptyBoxLook),
 
             // INTENT: "The engine ticks continuously; a host that received work every tick would be
             // rebinding inputs and re-rastering overlays at tick rate, which is the churn class this

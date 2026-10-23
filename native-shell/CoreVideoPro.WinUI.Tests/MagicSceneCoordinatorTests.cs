@@ -152,19 +152,19 @@ public sealed class MagicSceneCoordinatorTests
         Assert.Equal("Automation defaults restored", host.CommandStatus);
     }
 
+    // #767: the licence tier was never real (a mock panel with nothing behind it), so
+    // Set & Forget has no entitlement gate; the toggle is the operator's alone.
     [Fact]
-    public void SetAndForgetGate_RespectsLicenseEntitlement()
+    public void SetAndForget_TogglesWithoutALicenseGate()
     {
         var (coordinator, host) = Build();
-        host.SetAndForgetEntitled = false;
+
+        coordinator.ToggleAutomationCommand.Execute(null);
+        Assert.Equal(ProductionMode.SetAndForget, coordinator.ProductionMode);
+        Assert.StartsWith("Set & Forget enabled", host.CommandStatus);
 
         coordinator.ToggleAutomationCommand.Execute(null);
         Assert.Equal(ProductionMode.Manual, coordinator.ProductionMode);
-        Assert.Equal("Set & Forget is locked on this license tier", host.CommandStatus);
-
-        host.SetAndForgetEntitled = true;
-        coordinator.ToggleAutomationCommand.Execute(null);
-        Assert.Equal(ProductionMode.SetAndForget, coordinator.ProductionMode);
     }
 
     [Fact]
@@ -495,8 +495,6 @@ public sealed class MagicSceneCoordinatorTests
 
         public bool IsMediaCoreRunning { get; set; } = true;
 
-        public bool SetAndForgetEntitled { get; set; } = true;
-
         public string? CommandStatus { get; private set; }
 
         public string CaptionText { get; set; } = string.Empty;
@@ -538,9 +536,7 @@ public sealed class MagicSceneCoordinatorTests
             }
         }
 
-        public bool IsSetAndForgetEntitled() => SetAndForgetEntitled;
-
-        public void ApplyTransportAutomationState(ProductionMode mode, bool canToggle) { }
+        public void ApplyTransportAutomationState(ProductionMode mode) { }
 
         public bool SetAutomationGraphic(string kind, bool enabled)
         {
