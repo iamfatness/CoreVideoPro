@@ -84,6 +84,7 @@ public sealed record MediaCoreCrashEvent
 
 public sealed class NativeMediaCoreColorGrade
 {
+    public string Lut { get; init; } = "none";
     public double Exposure { get; init; }
     public double Contrast { get; init; }
     public double Saturation { get; init; }

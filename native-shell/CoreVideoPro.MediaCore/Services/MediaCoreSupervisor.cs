@@ -459,7 +459,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
             ["compareOriginal"] = grade.CompareOriginal,
             ["scopeRoi"] = grade.ScopeRoi ?? new GradeScopeRoi(),
             ["lowerThirdPreview"] = grade.LowerThirdPreview,
-            ["grade"] = new { exposure = grade.Exposure, contrast = grade.Contrast,
+            ["grade"] = new { lut = grade.Lut, exposure = grade.Exposure, contrast = grade.Contrast,
                 saturation = grade.Saturation, temperature = grade.Temperature, advanced }
         }, cancellationToken).ConfigureAwait(false);
         ThrowIfRejected(response, "set-grade-preview");

@@ -8,7 +8,7 @@ public sealed class OperatorEditingBundleTests
 {
     [Fact] public void ShapeChangeAdvancesScopeRevisionAndPersistsWithoutApplyingGrade()
     {
-        var e=new ColorGradeEditorViewModel("p1","Guest",new());
+        var e=new ColorGradeEditorViewModel("p1","Guest",new() { Lut="none" });
         var grade=e.CopyGradeJson();var applied=0;e.GradeChanged+=(_,_)=>applied++;
         e.SetScopeRoi(new(true,.2,.2,.2,.2));var revision=e.Revision;
         e.SetScopeRoi(e.ScopeRoi with {Shape="circle"});
@@ -20,7 +20,7 @@ public sealed class OperatorEditingBundleTests
     }
     [Fact] public void RoiDoesNotChangeGradeOrPresetAndRejectsInvalidGeometry()
     {
-        var e=new ColorGradeEditorViewModel("p1","Guest",new()); e.AdvancedExpanded=true;
+        var e=new ColorGradeEditorViewModel("p1","Guest",new() { Lut="none" }); e.AdvancedExpanded=true;
         var original=e.CopyGradeJson();var applied=0;e.GradeChanged+=(_,_)=>applied++;
         e.SetScopeRoi(new(true,.2,.3,.1,.2));var revision=e.Revision;
         Assert.Equal(original,e.CopyGradeJson());Assert.Equal(0,applied);Assert.Equal(1,e.ScopeRoi.Revision);
@@ -35,7 +35,7 @@ public sealed class OperatorEditingBundleTests
     }
     [Fact] public void ContinuousAdjustmentIsOneUndoStepAndRetainsExactValues()
     {
-        var e=new ColorGradeEditorViewModel("p1","Guest",new());e.AdvancedExpanded=true;e.AddPrimariesCommand.Execute(null);
+        var e=new ColorGradeEditorViewModel("p1","Guest",new() { Lut="none" });e.AdvancedExpanded=true;e.AddPrimariesCommand.Execute(null);
         var before=e.Document;e.BeginAdjustmentGesture();
         foreach (var value in new[] { .01,.1,.123456789 }) e.EditAdjustment(e.SelectedAdjustment! with { ExposureStops=value });
         e.EndAdjustmentGesture();Assert.Equal(.123456789,e.SelectedAdjustment!.ExposureStops);

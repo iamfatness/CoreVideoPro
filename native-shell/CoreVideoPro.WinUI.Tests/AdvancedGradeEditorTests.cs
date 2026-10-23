@@ -6,7 +6,7 @@ using Xunit;
 namespace CoreVideoPro.WinUI.Tests;
 public sealed class AdvancedGradeEditorTests
 {
-    private static ColorGradeEditorViewModel Editor() => new("p1","Guest",new() { Exposure=2 });
+    private static ColorGradeEditorViewModel Editor() => new("p1","Guest",new() { Lut="warm-film",Exposure=2 });
     private static GradePreviewObservation Ready(ColorGradeEditorViewModel e,long applied=0,ulong epoch=7) => new() {
         InstanceId=e.InstanceId,SourceId=e.SourceId,Revision=e.Revision,AppliedRevision=applied,SourceEpoch=epoch,SourceFrameId=11,
         Status="ready",Texture=new() { SharedHandleHex="0x1234",Width=1920,Height=1080,Format="B8G8R8A8_UNORM" } };
@@ -20,7 +20,7 @@ public sealed class AdvancedGradeEditorTests
         editor.UndoGradeCommand.Execute(null);Assert.Equal(2,editor.Document.Operations[0].Curves[1].Length);
         editor.RedoGradeCommand.Execute(null);Assert.Equal(3,editor.Document.Operations[0].Curves[1].Length);
         var preset=editor.CopyGradeJson();var loaded=Editor();loaded.LiveEditing=false;Assert.True(loaded.PasteGradeJson(preset));
-        Assert.Equal(2,loaded.Exposure);Assert.Equal(.7,loaded.Document.Operations[0].Curves[1][1].Y);
+        Assert.Equal("warm-film",loaded.Lut);Assert.Equal(2,loaded.Exposure);Assert.Equal(.7,loaded.Document.Operations[0].Curves[1][1].Y);
         var prefs=new ProductionOutputPreferences { SourceGrades=new() { ["zoom-person:stable"] = editor.CurrentGrade } };
         var decoded=ProductionOutputPreferencesSerializer.Deserialize(ProductionOutputPreferencesSerializer.Serialize(prefs));
         Assert.NotNull(decoded);Assert.Equal(.333,decoded!.SourceGrades["zoom-person:stable"].Advanced!.Operations[0].Curves[1][1].X);
@@ -30,15 +30,15 @@ public sealed class AdvancedGradeEditorTests
         var editor=Editor();editor.LiveEditing=false;editor.Exposure=9;
         editor.UndoGradeCommand.Execute(null);Assert.Equal(2,editor.Exposure);
         editor.RedoGradeCommand.Execute(null);Assert.Equal(9,editor.Exposure);
-        var preset=new ColorGradeEditorViewModel("p2","Other",new() { Exposure=15 });
+        var preset=new ColorGradeEditorViewModel("p2","Other",new() { Lut="punch",Exposure=15 });
         preset.LiveEditing=false;preset.AddCurvesCommand.Execute(null);
         Assert.True(editor.PasteGradeJson(preset.CopyGradeJson()));Assert.Equal(15,editor.Exposure);Assert.True(editor.HasAdvancedAdjustments);
-        editor.UndoGradeCommand.Execute(null);Assert.Equal(9,editor.Exposure);Assert.False(editor.HasAdvancedAdjustments);
+        editor.UndoGradeCommand.Execute(null);Assert.Equal(9,editor.Exposure);Assert.Equal("warm-film",editor.Lut);Assert.False(editor.HasAdvancedAdjustments);
         editor.RedoGradeCommand.Execute(null);Assert.Equal(15,editor.Exposure);Assert.True(editor.HasAdvancedAdjustments);
     }
     [Fact] public async Task ApplyWaitsForAckAndConflictsRetainDraftWithoutSaving()
     {
-        var editor=new ColorGradeEditorViewModel("p1","Guest",new() { Exposure=2 },4);editor.AdvancedExpanded=true;editor.ObserveNativePreview(Ready(editor,4));
+        var editor=new ColorGradeEditorViewModel("p1","Guest",new() { Lut="warm-film",Exposure=2 },4);editor.AdvancedExpanded=true;editor.ObserveNativePreview(Ready(editor,4));
         var ack=new TaskCompletionSource<SourceGradeApplyOutcome>();long expected=-1;var saved=0;
         editor.ApplyGradeAsync=(_,epoch,revision)=> {Assert.Equal(7ul,epoch);expected=revision;return ack.Task;};
         editor.GradeSaved+=(_,_)=>++saved;

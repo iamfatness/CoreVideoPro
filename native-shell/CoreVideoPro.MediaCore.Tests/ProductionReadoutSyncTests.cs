@@ -22,7 +22,8 @@ public sealed class ProductionReadoutSyncTests
         var patch = ProductionReadoutSync.ResolveColorGradePatch(snapshot, engineRunning: true);
 
         Assert.NotNull(patch);
-        Assert.Equal(2, patch!.Exposure);
+        Assert.Equal("broadcast", patch!.Lut);
+        Assert.Equal(2, patch.Exposure);
         Assert.Equal(-1, patch.Contrast);
         Assert.Equal(4, patch.Saturation);
         Assert.Equal(-3, patch.Temperature);
@@ -63,6 +64,7 @@ public sealed class ProductionReadoutSyncTests
                 RenderPlanId = "test-plan",
                 ColorGrade = new NativeMediaCoreColorGrade
                 {
+                    Lut = "broadcast",
                     Exposure = exposure,
                     Contrast = contrast,
                     Saturation = saturation,

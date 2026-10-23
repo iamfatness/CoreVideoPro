@@ -42,9 +42,9 @@ internal sealed class SourceGradeWorkspaceProbe(string corePath,string reportPat
             await bridge.SyncAsync([
                 Command("set-output-profile",new { width=1280,height=720,fps=30 }),
                 Command("load-scene-graph",new { sceneId="grade-probe",routes=new[] { new {routeId="source",mode="capture-input",captureDeviceId="grade-probe",fitMode="fill",opacity=1,rect=new {x=0,y=0,width=1,height=1} } } })]);
-            var editor = new ColorGradeEditorViewModel("capture:grade-probe","Synthetic grade qualification",new());
+            var editor = new ColorGradeEditorViewModel("capture:grade-probe","Synthetic grade qualification",new() { Lut="none" });
             editor.ApplyGradeAsync=(grade,epoch,revision)=>bridge.ApplySourceGradeAsync(editor.SourceId,epoch,revision,
-                new(grade.Exposure,grade.Contrast,grade.Saturation,grade.Temperature,grade.Advanced));
+                new(grade.Lut,grade.Exposure,grade.Contrast,grade.Saturation,grade.Temperature,grade.Advanced));
             window = new(editor);window.InitializeOffscreenBindings();window.AppWindow.MoveAndResize(new RectInt32(-20000,-20000,1320,920));window.AppWindow.Show(false);
             var dispatcher=window.DispatcherQueue;
             coordinator=new(bridge,editor,action=>dispatcher.TryEnqueue(()=>action()));
@@ -104,7 +104,7 @@ internal sealed class SourceGradeWorkspaceProbe(string corePath,string reportPat
             encoder.SetPixelData(BitmapPixelFormat.Bgra8,BitmapAlphaMode.Premultiplied,(uint)bitmap.PixelWidth,(uint)bitmap.PixelHeight,96,96,bytes);
             await encoder.FlushAsync();checks.Add("real XAML layout image (GPU pixels excluded by capture API)");
             coordinator.Dispose();coordinator=null;
-            var draft=new ColorGradeEditorViewModel("preview:lower-third","Lower-third draft",new());draft.LiveEditing=false;
+            var draft=new ColorGradeEditorViewModel("preview:lower-third","Lower-third draft",new() { Lut="none" });draft.LiveEditing=false;
             draft.SetLowerThirdPreview(new(new() { NameSize=53.25,ShowLogo=false }));
             coordinator=new(bridge,draft,action=>dispatcher.TryEnqueue(()=>action()));
             await Eventually(()=>draft.HasPreview,"Native lower-third draft did not render");

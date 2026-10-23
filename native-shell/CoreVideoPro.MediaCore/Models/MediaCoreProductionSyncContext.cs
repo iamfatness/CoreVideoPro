@@ -172,6 +172,7 @@ public sealed record MediaCoreAudioMonitorWire(
     double Volume);
 
 public sealed record MediaCoreColorGradeWire(
+    string Lut,
     int Exposure,
     int Contrast,
     int Saturation,
@@ -414,6 +415,7 @@ public sealed record MediaCoreProductionSyncContext
         IsoParticipantIds: []);
 
     public static MediaCoreColorGradeWire NeutralColorGrade { get; } = new(
+        Lut: "none",
         Exposure: 0,
         Contrast: 0,
         Saturation: 0,

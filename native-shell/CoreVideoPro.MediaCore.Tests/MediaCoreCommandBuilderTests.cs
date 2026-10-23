@@ -275,7 +275,7 @@ public sealed class MediaCoreCommandBuilderTests
                     "fixed",
                     "mix",
                     "p1",
-                    ColorGrade: new MediaCoreColorGradeWire(8, 12, -6, 15))
+                    ColorGrade: new MediaCoreColorGradeWire("warm-film", 8, 12, -6, 15))
             ],
             Participants = Participants
         });
@@ -284,9 +284,8 @@ public sealed class MediaCoreCommandBuilderTests
         var route = sceneGraph.ExtensionData!["routes"].EnumerateArray().Single();
         var grade = route.GetProperty("colorGrade");
 
-        // #764: no "lut". The named look is parsed into the core's plan and hashed, but neither
-        // GPU adapter applies it; only the four axes (and the advanced document) render.
-        Assert.False(grade.TryGetProperty("lut", out _));
+        // The named look is real: native/src/compositor/ColorGradeParams.h maps it to shader constants.
+        Assert.Equal("warm-film", grade.GetProperty("lut").GetString());
         Assert.Equal(8, grade.GetProperty("exposure").GetInt32());
         Assert.Equal(12, grade.GetProperty("contrast").GetInt32());
         Assert.Equal(-6, grade.GetProperty("saturation").GetInt32());

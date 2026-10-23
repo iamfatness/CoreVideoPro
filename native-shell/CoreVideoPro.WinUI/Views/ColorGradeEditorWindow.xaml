@@ -48,6 +48,7 @@
                     <Button Content="Expand / collapse grade" Command="{x:Bind ViewModel.ExpandGradeCommand}" />
                     <TextBlock Text="{x:Bind ViewModel.AdvancedIndicator, Mode=OneWay}" FontSize="11" />
                     <StackPanel x:Name="BasicPanel" Spacing="10">
+                        <ComboBox Header="Built-in look" ItemsSource="{x:Bind vm:ColorGradeEditorViewModel.LutOptions}" SelectedItem="{x:Bind ViewModel.Lut, Mode=TwoWay}" HorizontalAlignment="Stretch" />
                         <controls:SliderValueControl Header="Exposure" Unit="points" Minimum="-50" Maximum="50" StepFrequency="1" Value="{x:Bind ViewModel.Exposure, Mode=TwoWay}" EditStarted="OnAdjustmentEditStarted" EditCompleted="OnAdjustmentEditCompleted" Help="0 is neutral. Expand grade for exposure in stops." />
                         <controls:SliderValueControl Header="Contrast" Unit="points" Minimum="-50" Maximum="50" StepFrequency="1" Value="{x:Bind ViewModel.Contrast, Mode=TwoWay}" EditStarted="OnAdjustmentEditStarted" EditCompleted="OnAdjustmentEditCompleted" Help="0 is neutral; higher values increase contrast." />
                         <controls:SliderValueControl Header="Saturation" Unit="points" Minimum="-50" Maximum="50" StepFrequency="1" Value="{x:Bind ViewModel.Saturation, Mode=TwoWay}" EditStarted="OnAdjustmentEditStarted" EditCompleted="OnAdjustmentEditCompleted" Help="0 is neutral; higher values increase color." />

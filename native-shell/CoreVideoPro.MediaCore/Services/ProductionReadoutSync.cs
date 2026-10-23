@@ -8,6 +8,7 @@ namespace CoreVideoPro.MediaCore.Services;
 public static class ProductionReadoutSync
 {
     public sealed record ColorGradePatch(
+        string Lut,
         int Exposure,
         int Contrast,
         int Saturation,
@@ -33,6 +34,7 @@ public static class ProductionReadoutSync
 
         var grade = snapshot.RenderPlan.ColorGrade;
         return new ColorGradePatch(
+            string.IsNullOrWhiteSpace(grade.Lut) ? "none" : grade.Lut.Trim(),
             (int)Math.Round(grade.Exposure),
             (int)Math.Round(grade.Contrast),
             (int)Math.Round(grade.Saturation),

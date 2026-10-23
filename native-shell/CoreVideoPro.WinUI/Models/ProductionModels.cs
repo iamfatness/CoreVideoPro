@@ -824,6 +824,7 @@ public sealed class AudioMixState
 
 public sealed class ColorGrade
 {
+    public required string Lut { get; init; }
     public int Exposure { get; init; }
     public int Contrast { get; init; }
     public int Saturation { get; init; }
@@ -831,7 +832,7 @@ public sealed class ColorGrade
     public CoreVideoPro.MediaCore.Models.AdvancedGradeDocument? Advanced { get; init; }
 
     public string Summary =>
-        $"exposure {FormatAxis(Exposure)} · contrast {FormatAxis(Contrast)} · saturation {FormatAxis(Saturation)} · temperature {FormatAxis(Temperature)}";
+        $"Look {Lut} · exposure {FormatAxis(Exposure)} · contrast {FormatAxis(Contrast)} · saturation {FormatAxis(Saturation)}";
 
     private static string FormatAxis(int value) => value > 0 ? $"+{value}" : value.ToString();
 }
@@ -938,6 +939,7 @@ public static class ProductionCatalog
 
     public static ColorGrade ColorGrade { get; } = new()
     {
+        Lut = "none",
         Exposure = 0,
         Contrast = 0,
         Saturation = 0,

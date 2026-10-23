@@ -167,6 +167,7 @@ public static class MediaCoreCommandBuilder
                 ? null
                 : new Dictionary<string, object?>
                 {
+                    ["lut"] = colorGrade.Lut,
                     ["exposure"] = colorGrade.Exposure,
                     ["contrast"] = colorGrade.Contrast,
                     ["saturation"] = colorGrade.Saturation,
@@ -272,6 +273,7 @@ public static class MediaCoreCommandBuilder
                 ? null
                 : new Dictionary<string, object?>
                 {
+                    ["lut"] = route.ColorGrade.Lut,
                     ["exposure"] = route.ColorGrade.Exposure,
                     ["contrast"] = route.ColorGrade.Contrast,
                     ["saturation"] = route.ColorGrade.Saturation,
@@ -401,6 +403,7 @@ public static class MediaCoreCommandBuilder
     private static NativeMediaCoreCommand BuildColorGradeCommand(MediaCoreColorGradeWire colorGrade) =>
         Command("set-color-grade", new Dictionary<string, object?>
         {
+            ["lut"] = colorGrade.Lut,
             ["exposure"] = colorGrade.Exposure,
             ["contrast"] = colorGrade.Contrast,
             ["saturation"] = colorGrade.Saturation,

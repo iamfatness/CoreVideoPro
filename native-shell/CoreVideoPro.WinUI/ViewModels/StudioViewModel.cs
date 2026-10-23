@@ -9039,6 +9039,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PreviewSceneBackground = BuildSceneBackgroundWire(PreviewSceneId,true),
             PreviewTilesLayer = previewTilesLayer,
             PreviewColorGrade = new MediaCoreColorGradeWire(
+                ColorGrade.Lut,
                 ColorGrade.Exposure,
                 ColorGrade.Contrast,
                 ColorGrade.Saturation,
@@ -9092,6 +9093,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     ProgramLowerThirdKey.BuildOutMs)
                 : null,
             ColorGrade = new MediaCoreColorGradeWire(
+                ColorGrade.Lut,
                 ColorGrade.Exposure,
                 ColorGrade.Contrast,
                 ColorGrade.Saturation,
@@ -10967,6 +10969,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             ColorGrade = new ColorGrade
             {
+                Lut = colorGradePatch.Lut,
                 Exposure = colorGradePatch.Exposure,
                 Contrast = colorGradePatch.Contrast,
                 Saturation = colorGradePatch.Saturation,

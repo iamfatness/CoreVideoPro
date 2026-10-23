@@ -5,7 +5,7 @@ using Xunit;
 namespace CoreVideoPro.WinUI.Tests;
 public sealed class ColorGradeEditorViewModelTests
 {
-    private static ColorGradeEditorViewModel Editor() => new("p1", "Camera", new());
+    private static ColorGradeEditorViewModel Editor() => new("p1", "Camera", new() { Lut = "none" });
     private static GradePreviewObservation Ready(ColorGradeEditorViewModel editor, long? revision = null) => new()
     {
         InstanceId = editor.InstanceId, SourceId = editor.SourceId, Revision = revision ?? editor.Revision,
@@ -26,10 +26,10 @@ public sealed class ColorGradeEditorViewModelTests
     {
         var editor = Editor(); var changes = 0; ColorGrade? saved = null;
         editor.GradeChanged += (_, _) => ++changes; editor.GradeSaved += (_, grade) => saved = grade;
-        editor.LiveEditing = false; editor.Exposure = 8; editor.Temperature = -4;
-        editor.CompareOriginal = true; Assert.Equal(0, changes); Assert.Equal(0, editor.PreviewGrade.Temperature);
+        editor.LiveEditing = false; editor.Exposure = 8; editor.Lut = "warm-film";
+        editor.CompareOriginal = true; Assert.Equal(0, changes); Assert.Equal("none", editor.PreviewGrade.Lut);
         Assert.Equal(0, editor.PreviewGrade.Exposure);
-        editor.CompareOriginal = false; Assert.Equal(-4, editor.PreviewGrade.Temperature);
+        editor.CompareOriginal = false; Assert.Equal("warm-film", editor.PreviewGrade.Lut);
         editor.SaveCommand.Execute(null); Assert.NotNull(saved); Assert.Equal(8, saved!.Exposure);
         Assert.Equal(0, changes); editor.LiveEditing = true; Assert.Equal(1, changes);
         editor.Exposure = 9; Assert.Equal(2, changes);
