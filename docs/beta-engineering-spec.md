@@ -22,7 +22,7 @@ What exists vs. what the plans assumed:
 | Crash handling | Shell logs unhandled exceptions to `launch.log` (and swallows recoverable COM ones); `MediaCoreSupervisor` tracks child crashes (ring of 20, respawn ≤5). **No code touches `%LOCALAPPDATA%\CrashDumps`** — no detection, no upload. `setup-crash-dumps.ps1` (elevated, HKLM) is a manual dev-rig script |
 | Support bundle | REAL and tested: `SupportBundleBuilder` (MediaCore) → `%LOCALAPPDATA%\CoreVideoPro\support-bundles\*.json`, stream keys/passphrases redacted (`present-redacted`), endpoint query secrets scrubbed, covered by `SupportBundleExportTests`. **S2 shipped 2026-07-18:** export also writes a zip beside the JSON (`SupportBundleArchiveBuilder`) with ~2MB redacted tails of `launch.log`/`media-core.log`/`perf.log`/`vcam-serve.log`, a `dumps.txt` CrashDumps listing (names/sizes/dates only), and a `manifest.txt` of included/skipped entries; Explorer reveals the zip after export. Remaining gap: no upload (S0/S1) |
 | Secrets at rest | ~~plaintext~~ **DONE (S4, 2026-07-18):** Zoom OAuth tokens and RTMP stream key / SRT passphrase are DPAPI-encrypted at rest (`DpapiSecretProtector`, CurrentUser, field-level `dpapi:` prefix); plaintext legacy files load and re-save encrypted (prefs schema v4) |
-| Services | `services/licensing-api` (Stripe + KV + tier entitlements) and `services/telemetry-ingest` are deployed-able but **orphaned** — only the smoke script calls them; the shell never implements the renderer's license bridge (falls to `StubLicenseClient`). telemetry-ingest stores crashes in R2 + a KV index and requires its API key since S0 (2026-07-18). `deploy-staging-workers.ps1` deploys all three workers manually; no monitoring |
+| Services | `services/telemetry-ingest` stores crashes in R2 + a KV index and requires its API key since S0 (2026-07-18); only the smoke script and the shell's crash uploader call it. `services/licensing-api` and `services/caption-broker` were stubs (in-memory store / fabricated captions) with no native client and were **removed in #743**; the shell's license state is local-only (`LicenseModels.cs`). `deploy-staging-workers.ps1` deploys telemetry-ingest + ops-monitor manually |
 | OAuth broker | External (`corevideo.iamfatness.us`, lives in the CoreVideo repo). Shell is hard-wired to it for sign-in AND refresh (#290). Only the start URL is overridable (`COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`). **Discrepancy: code default app-return URI is `corevideo://oauth/callback`; the appxmanifest + docs say `corevideopro://`** |
 | First-run | No wizard, no first-launch flag. Canvas default is **already 1080p** (`MediaCoreProductionSyncContext.DefaultCanvasOutputProfile` = 1920x1080) — the plan's "4K is an RTX-4090 assumption" worry is stale; 4K is opt-in |
 | Wizard targets | Monitor device, mic (deliberately default-OFF), recording folder (defaults to `%USERPROFILE%\Videos\CoreVideo Pro`), Zoom sign-in all exist as bindable settings. ~~Vcam enable/mirror/name are NOT persisted~~ **DONE (O1, 2026-07-18):** vcam enable/mirror/name persist in `ProductionOutputPreferences` (schema v5) and re-apply on launch via the initial production sync. **No single "selected camera" setting exists** — cameras are scene sources, not a global pick |
@@ -340,14 +340,14 @@ as legacy alias); pinned by `ZoomOAuthManifestTests`.
 ### S5 — Broker + workers ops
 The broker code is external (CoreVideo repo) but beta depends on it for sign-in
 AND refresh. In this repo: a scheduled uptime check (Worker cron hitting
-`/oauth/start` + the three workers' health, alert via email/Discord webhook),
+`/oauth/start` + the telemetry worker's health, alert via email/Discord webhook),
 and `smoke:staging-services` wired into CI as a daily scheduled job. Production
 domains + deploy hygiene for the broker itself are tracked in beta-plan B2.
 
 **Status: SHIPPED 2026-07-23 (branch `chore/beta-s5-ops-monitoring`).**
 - **`services/ops-monitor`** — a Cron-triggered Worker (`*/5 * * * *`) that
-  probes the OAuth broker + `licensing-api` / `telemetry-ingest` /
-  `caption-broker` + itself, and alerts a generic webhook (Discord/Slack:
+  probes the OAuth broker + `telemetry-ingest` + itself (the `licensing-api`
+  and `caption-broker` probes went with those stub services in #743), and alerts a generic webhook (Discord/Slack:
   payload carries both `content` and `text`) **on state change only**
   (KV-backed flap-dampener, `OPS_STATE`). Alert destination is owner-deferred:
   `OPS_ALERT_WEBHOOK_URL` unset = log-only (never crash, never spam); no email
@@ -362,13 +362,11 @@ domains + deploy hygiene for the broker itself are tracked in beta-plan B2.
   "manual"` never follows a redirect off to Zoom. Overridable if the broker
   grows a dedicated health endpoint.
 - **`GET /health`** added (unauthenticated, before the auth gate) to
-  `licensing-api`, `telemetry-ingest`, `caption-broker`, and `ops-monitor` for
-  clean liveness probing.
+  `telemetry-ingest` and `ops-monitor` for clean liveness probing.
 - **`.github/workflows/smoke-staging.yml`** — runs `smoke-staging-services.ps1`
   daily (cron `0 13 * * *`) + `workflow_dispatch`, **never on push/PR**. Writes
   `scripts/.staging-secrets.local` from repo secrets
-  (`COREVIDEO_LICENSE_API_KEY` / `COREVIDEO_CAPTION_BROKER_API_KEY` /
-  `COREVIDEO_TELEMETRY_API_KEY`) and fails loud if any is missing/unhealthy.
+  (`COREVIDEO_TELEMETRY_API_KEY`) and fails loud if it is missing/unhealthy.
 - **Deploy:** `deploy-staging-workers.ps1` now deploys `ops-monitor` too (its
   webhook secret is optional). Owner steps: create the `OPS_STATE` KV namespace
   + paste its id into `services/ops-monitor/wrangler.jsonc`, optionally set
@@ -422,8 +420,10 @@ Ships in the repo AND linked from the wizard's last page.
 
 ## 5. L — Access control (closed-beta gate)
 
-Use the existing `licensing-api` worker — it is built, KV-backed, and deployed;
-wiring beats rewriting:
+**Note (#743, 2026-10-22):** the stub `licensing-api` worker was removed from
+the repo; the plan below describes what a real one would need and must be
+rebuilt from scratch if beta access control goes server-side.
+Original plan (`licensing-api` worker, KV-backed):
 - **Server:** add `POST /v1/admin/mint` (gated by a separate admin key) so we
   can issue beta keys without Stripe; ensure `LICENSE_API_KEY` is set in prod.
   Entitlement tiers are IGNORED in beta except validity/expiry.

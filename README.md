@@ -130,7 +130,7 @@ Shipped on main since 2026-09-24, still waiting on a fleet show for [#601](https
 | `native-shell/` | **WinUI 3 (.NET 9)** desktop shell — primary product path and packaging |
 | `studio/` | Native C++ Win32 test shell for fast desktop validation |
 | `native/` | C++20 media core (compositor, audio, encoder, output adapters) + vendored Zoom engine |
-| `services/` | Backend services (caption broker, license) |
+| `services/` | Cloudflare Workers (telemetry-ingest crash/event upload, ops-monitor uptime probe) |
 | `scripts/` | PowerShell build / package / sign / validation scripts (Windows) |
 | `docs/` | Ranked work order ([BACKLOG.md](docs/BACKLOG.md)), alpha plan, native completion plan, reference specs |
 
