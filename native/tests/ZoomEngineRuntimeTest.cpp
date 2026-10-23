@@ -798,12 +798,15 @@ TEST(ZoomEngineRuntime, ExplicitLeavePublishesVersionedEmptyRosterBarrier) {
     corevideo::modules::ZoomEngineRuntime runtime;
     runtime.installEngineProcessForTest(fake);
     const auto roster = corevideo::modules::parseZoomEngineEvent(
-        R"({"cmd":"participants","meeting_generation":1,"roster_revision":3,"participants":[{"id":42,"name":"Guest","is_muted":false}]})");
+        R"({"cmd":"participants","meeting_generation":1,"roster_revision":3,"participants":[{"id":42,"name":"Guest","is_muted":false,"network_quality":"low"}]})");
     ASSERT_TRUE(roster.has_value());
     runtime.applyEngineEventForTest(*roster);
     const auto before = runtime.snapshot();
     ASSERT_EQ(before.getNumber("rosterRevision"), 3);
     ASSERT_EQ(before.get("participants")->asArray().size(), 1u);
+    // #765: the roster carries the SDK-measured network quality and no fake meter.
+    EXPECT_EQ(before.get("participants")->asArray().front().getString("networkQuality"), "low");
+    EXPECT_EQ(before.get("participants")->asArray().front().get("audioLevel"), nullptr);
 
     const auto left = runtime.leave();
     EXPECT_EQ(left.getString("meetingState"), "idle");

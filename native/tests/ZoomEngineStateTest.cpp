@@ -20,7 +20,7 @@ TEST(ZoomEngineRuntimeState, MapsEngineEventsToSpineRosterState) {
   state.apply(eventFrom(R"({"cmd":"auth_ok"})"), 0);
   state.apply(eventFrom(R"({"cmd":"joined"})"), 0);
   state.apply(eventFrom(
-      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Sophia Martinez","has_video":true,"is_talking":false,"is_muted":false,"is_sharing_screen":false},{"id":77,"name":"David Chen","has_video":true,"is_talking":false,"is_muted":true,"is_sharing_screen":true}]})"), 0);
+      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Sophia Martinez","has_video":true,"is_talking":false,"is_muted":false,"is_sharing_screen":false},{"id":77,"name":"David Chen","has_video":true,"is_talking":false,"is_muted":true,"is_sharing_screen":true,"network_quality":"recovering"}]})"), 0);
   state.apply(eventFrom(R"({"cmd":"active_speaker","participant_id":77})"), 100);
 
   const auto snapshot = state.snapshot();
@@ -44,6 +44,10 @@ TEST(ZoomEngineRuntimeState, MapsEngineEventsToSpineRosterState) {
   EXPECT_TRUE(participants[1].get("muted")->asBool());
   EXPECT_FALSE(participants[1].get("talking")->asBool());
   EXPECT_TRUE(participants[1].get("sharingScreen")->asBool());
+  // #765: no invented meter, and network quality only where the SDK measured it.
+  EXPECT_EQ(participants[0].get("audioLevel"), nullptr);
+  EXPECT_EQ(participants[0].get("networkQuality"), nullptr);
+  EXPECT_EQ(participants[1].getString("networkQuality"), "recovering");
 }
 
 TEST(ZoomEngineRuntimeState, PreservesUtf8ParticipantIdentityAcrossIpcJson) {

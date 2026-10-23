@@ -44,8 +44,10 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 static void trace_engine_stage(const std::string &stage)
@@ -431,7 +433,26 @@ struct ParticipantInfo {
     bool is_sharing_screen = false;
     bool is_host = false;
     bool is_me = false;
+    // Measured by the SDK's onUserNetworkStatusChanged callback; empty until the
+    // SDK has reported this user at least once (never a guessed "good").
+    std::string network_quality;
 };
+
+// Wire vocabulary for the SDK's ConnectionQuality (#765). "good" covers
+// Normal/Good/Excellent, "recovering" is Not_Good, "low" is Bad/Very_Bad, and
+// Unknown stays off the wire so no consumer can mistake it for a measurement.
+static const char *network_quality_label(ZOOMSDK::ConnectionQuality level)
+{
+    switch (level) {
+    case ZOOMSDK::Conn_Quality_Very_Bad:
+    case ZOOMSDK::Conn_Quality_Bad: return "low";
+    case ZOOMSDK::Conn_Quality_Not_Good: return "recovering";
+    case ZOOMSDK::Conn_Quality_Normal:
+    case ZOOMSDK::Conn_Quality_Good:
+    case ZOOMSDK::Conn_Quality_Excellent: return "good";
+    default: return "";
+    }
+}
 
 static std::string zchar_to_utf8(const zchar_t *name)
 {
@@ -507,6 +528,7 @@ public:
         {
             std::lock_guard<std::mutex> lk(m_mtx);
             m_roster.clear();
+            m_network_levels.clear();
             m_active_speaker = 0;
             m_active_share_user.store(0, std::memory_order_release);
             ++m_roster_revision;
@@ -613,6 +635,51 @@ private:
         return info;
     }
 
+public:
+    // onUserNetworkStatusChanged relay (IMeetingServiceEvent lives on
+    // EngineMeetingEvent). The SDK reports per component (audio/video/share)
+    // and direction; the roster carries the WORST level reported for the user
+    // so a guest whose video uplink is bad reads as bad even while audio is fine.
+    void note_network_quality(unsigned int user_id, ZOOMSDK::MeetingComponentType component,
+                              ZOOMSDK::ConnectionQuality level, bool uplink)
+    {
+        const std::string label = network_quality_label(level);
+        if (label.empty()) return;
+        bool changed = false;
+        {
+            std::lock_guard<std::mutex> lk(m_mtx);
+            auto &levels = m_network_levels[user_id];
+            levels[std::make_pair(static_cast<int>(component), uplink)] = level;
+            ZOOMSDK::ConnectionQuality worst = level;
+            for (const auto &entry : levels)
+                if (entry.second < worst) worst = entry.second;
+            const std::string worst_label = network_quality_label(worst);
+            for (auto &p : m_roster) {
+                if (p.user_id == user_id && p.network_quality != worst_label) {
+                    p.network_quality = worst_label;
+                    changed = true;
+                }
+            }
+            if (changed) ++m_roster_revision;
+        }
+        if (changed) send_roster();
+    }
+
+private:
+    // Re-apply the remembered network levels after rebuild_roster() rebuilt the
+    // entries from SDK getters (which carry no network quality). Caller holds m_mtx.
+    void restore_network_quality_locked()
+    {
+        for (auto &p : m_roster) {
+            const auto levels = m_network_levels.find(p.user_id);
+            if (levels == m_network_levels.end() || levels->second.empty()) continue;
+            ZOOMSDK::ConnectionQuality worst = levels->second.begin()->second;
+            for (const auto &entry : levels->second)
+                if (entry.second < worst) worst = entry.second;
+            p.network_quality = network_quality_label(worst);
+        }
+    }
+
     void rebuild_roster()
     {
         // Call SDK getters outside our mutex to avoid re-entrant deadlock:
@@ -630,6 +697,7 @@ private:
         }
         std::lock_guard<std::mutex> lk(m_mtx);
         m_roster = std::move(new_roster);
+        restore_network_quality_locked();
         ++m_roster_revision;
         m_active_speaker = 0;
         const auto active = std::find_if(m_roster.begin(), m_roster.end(),
@@ -668,7 +736,10 @@ private:
                 R"(,"is_host":)" + (p.is_host ? "true" : "false") +
                 R"(,"is_me":)" + (p.is_me ? "true" : "false") +
                 R"(,"is_sharing_screen":)" +
-                (p.is_sharing_screen ? "true" : "false") + "}";
+                (p.is_sharing_screen ? "true" : "false");
+            if (!p.network_quality.empty())
+                msg += R"(,"network_quality":")" + p.network_quality + "\"";
+            msg += "}";
         }
         msg += "]}";
         EngineIpc::write( msg);
@@ -684,6 +755,8 @@ private:
     uint64_t m_roster_revision = 0;
     uint32_t m_active_speaker = 0;
     std::atomic<uint32_t> m_active_share_user{0};
+    // user_id -> {(component, uplink) -> last SDK ConnectionQuality}. Guarded by m_mtx.
+    std::map<uint32_t, std::map<std::pair<int, bool>, ZOOMSDK::ConnectionQuality>> m_network_levels;
 };
 
 // ── Auth event handler ────────────────────────────────────────────────────────
@@ -1142,9 +1215,12 @@ public:
     void onAICompanionActiveChangeNotice(bool) override {}
     void onMeetingTopicChanged(const zchar_t *) override {}
     void onMeetingFullToWatchLiveStream(const zchar_t *) override {}
-    void onUserNetworkStatusChanged(ZOOMSDK::MeetingComponentType,
-                                    ZOOMSDK::ConnectionQuality,
-                                    unsigned int, bool) override {}
+    void onUserNetworkStatusChanged(ZOOMSDK::MeetingComponentType component,
+                                    ZOOMSDK::ConnectionQuality level,
+                                    unsigned int user_id, bool uplink) override
+    {
+        if (m_participants) m_participants->note_network_quality(user_id, component, level, uplink);
+    }
 #if defined(WIN32)
     void onAppSignalPanelUpdated(ZOOMSDK::IMeetingAppSignalHandler *) override {}
 #endif

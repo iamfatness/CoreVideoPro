@@ -1596,6 +1596,23 @@ TEST(MediaCoreCommand, OverlayAssetRastersAnimatedLowerThirdIntoProgramFrame) {
   EXPECT_TRUE(settledColors >= earlyColors);
 }
 
+TEST(MediaCoreCommand, CaptionTrackCarriesNoInventedLatencyOrConfidence) {
+  // #765: the 180 ms latency and the text-length "confidence" were never measured.
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "push-caption-cue"}, {"text", "Measured only"}, {"speaker", "ADA"}, {"atMs", 1200}},
+  });
+  const auto* captions = state.get("captionTrack");
+  ASSERT_NE(captions, nullptr);
+  EXPECT_TRUE(captions->get("enabled")->asBool());
+  EXPECT_EQ(captions->get("latencyMs"), nullptr);
+  const auto* cue = captions->get("currentCue");
+  ASSERT_NE(cue, nullptr);
+  EXPECT_EQ(cue->getString("text"), "Measured only");
+  EXPECT_EQ(cue->get("atMs")->asNumber(), 1200);
+  EXPECT_EQ(cue->get("confidence"), nullptr);
+}
+
 TEST(MediaCoreCommand, CaptionCueRastersStyledLowerBand) {
   corevideo::core::MediaCore mediaCore;
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{

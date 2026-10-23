@@ -1339,7 +1339,6 @@ class MediaCore {
   std::string captionText_;
   std::string captionSpeaker_;
   double captionAtMs_ = 0;
-  int captionConfidence_ = 0;
   std::vector<std::string> captionWarnings_;
   std::string brandName_ = "CoreVideo Pro House";
   std::string brandLogoText_ = "CoreVideo Pro";

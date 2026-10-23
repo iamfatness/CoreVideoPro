@@ -53,6 +53,10 @@ struct ZoomEngineParticipant {
   // Core-owned incarnation. Changes when this SDK id leaves and reappears,
   // including a same-meeting id reuse. Zero is reserved for legacy producers.
   std::uint64_t sourceGeneration = 0;
+  // Measured network quality relayed from the SDK's onUserNetworkStatusChanged
+  // ("good" | "recovering" | "low"); empty until the SDK has reported this user,
+  // and then absent from the wire. Never defaulted to a guess (#765).
+  std::string networkQuality;
 };
 
 enum class ZoomEngineEventKind {

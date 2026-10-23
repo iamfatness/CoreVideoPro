@@ -113,7 +113,6 @@ class CoreStateCapture {
   decltype(MediaCore::breakoutRoomId_) breakoutRoomId_;
   decltype(MediaCore::breakoutRoomName_) breakoutRoomName_;
   decltype(MediaCore::captionAtMs_) captionAtMs_;
-  decltype(MediaCore::captionConfidence_) captionConfidence_;
   decltype(MediaCore::captionEnabled_) captionEnabled_;
   decltype(MediaCore::captionSpeaker_) captionSpeaker_;
   decltype(MediaCore::captionText_) captionText_;

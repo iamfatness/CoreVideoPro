@@ -430,43 +430,13 @@ std::string audioStatusFor(bool muted, int gainDb) {
   return "balanced";
 }
 
-// DETERMINISTIC dBFS derivation for the participant-audio contract.
-//
-// The stub core has no real PCM (the real DSP graph is F2, gated behind the dev
-// adapters), so it cannot MEASURE rms/peak the way the TS simulators do from
-// synthesized samples. Instead we DERIVE the two metrics from the existing
-// 0-100 `outputLevel` using the same sine model the renderer/native-core mirrors
-// assume: a participant tone whose PEAK amplitude tracks level/100 of full
-// scale. Then peakDbfs = 20*log10(level/100) and, for a sine, rmsDbfs is one
-// crest-factor (~3.0103 dB) below the peak. Level 0 (or muted) reports the
-// digital-silence floor. This keeps the values consistent and stable for the
-// same input, matching the TS measured-from-silence behaviour for muted/silent
-// channels (both floor to -120 dBFS).
+// Meter floor for a channel with no PCM (digital silence). Every published
+// rms/peak dBFS is MEASURED by the DSP off real PCM or sits at this floor;
+// nothing is derived from a 0-100 level any more (#765).
 constexpr double kAudioDbfsFloor = -120.0;
-constexpr double kSineCrestFactorDb = 3.0102999566398121;  // 20*log10(sqrt(2))
-
-double levelToDbfs(int level) {
-  if (level <= 0) {
-    return kAudioDbfsFloor;
-  }
-  const double db = 20.0 * std::log10(static_cast<double>(level) / 100.0);
-  return db < kAudioDbfsFloor ? kAudioDbfsFloor : db;
-}
 
 double round1Dbfs(double value) {
   return std::round(value * 10.0) / 10.0;
-}
-
-double derivePeakDbfs(int outputLevel) {
-  return round1Dbfs(levelToDbfs(outputLevel));
-}
-
-double deriveRmsDbfs(int outputLevel) {
-  if (outputLevel <= 0) {
-    return round1Dbfs(kAudioDbfsFloor);
-  }
-  const double rms = levelToDbfs(outputLevel) - kSineCrestFactorDb;
-  return round1Dbfs(rms < kAudioDbfsFloor ? kAudioDbfsFloor : rms);
 }
 
 std::string protocolAudioStatusForDsp(const modules::AudioParticipantMixMetrics& participant) {
@@ -526,7 +496,6 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   breakoutRoomId_ = core.breakoutRoomId_;
   breakoutRoomName_ = core.breakoutRoomName_;
   captionAtMs_ = core.captionAtMs_;
-  captionConfidence_ = core.captionConfidence_;
   captionEnabled_ = core.captionEnabled_;
   captionSpeaker_ = core.captionSpeaker_;
   captionText_ = core.captionText_;
@@ -1266,8 +1235,10 @@ rpc::Json CoreStateCapture::audioMixSessionState(const AudioOutputObservation& o
             {"inputLevel", participant.inputLevel},
             {"outputLevel", participant.outputLevel},
             {"gainDb", participant.gainDb},
-            {"rmsDbfs", deriveRmsDbfs(participant.muted ? 0 : participant.outputLevel)},
-            {"peakDbfs", derivePeakDbfs(participant.muted ? 0 : participant.outputLevel)},
+            // Output meters measured by the DSP off the mixed PCM (#765); a muted
+            // strip contributes nothing to a bus, so it reports the silence floor.
+            {"rmsDbfs", participant.muted ? kAudioDbfsFloor : round1Dbfs(modules::linearToDbfs(participant.rmsLevel))},
+            {"peakDbfs", participant.muted ? kAudioDbfsFloor : round1Dbfs(modules::linearToDbfs(participant.peakLevel))},
             {"noiseSuppression", participant.noiseSuppressionActive},
             {"limiterActive", audioLimiterEnabled_ && participant.limiterActive},
             {"muted", participant.muted},
@@ -1455,20 +1426,20 @@ rpc::Json CoreStateCapture::audioMixSessionState(const AudioOutputObservation& o
         // and control API even while the routed audio was correctly silent.
         {"rmsDbfs", hasPcm && !channel.muted
                         ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel))
-                        : deriveRmsDbfs(0)},
+                        : kAudioDbfsFloor},
         {"peakDbfs", hasPcm && !channel.muted
                          ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
-                         : derivePeakDbfs(0)},
+                         : kAudioDbfsFloor},
         // #481: PRE-MUTE input meters, measured off the same PCM before mute/
         // fader is applied. A muted strip still receives signal - this is how
         // the A1 sees a guest talking while their channel is muted. Never gate
         // this on channel.muted; that would recreate the bug these fields fix.
         {"inputRmsDbfs", hasPcm
                         ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel))
-                        : deriveRmsDbfs(0)},
+                        : kAudioDbfsFloor},
         {"inputPeakDbfs", hasPcm
                          ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
-                         : derivePeakDbfs(0)},
+                         : kAudioDbfsFloor},
         // C7b: live compressor gain reduction (dB, 0 when idle/not engaged) -
         // feeds the workspace GR meter.
         {"gainReductionDb",
@@ -2110,7 +2081,6 @@ rpc::Json CoreStateCapture::captionTrackState() const {
     return rpc::Json::Object{
         {"enabled", false},
         {"status", "idle"},
-        {"latencyMs", 0},
         {"warnings", warnings},
     };
   }
@@ -2118,7 +2088,6 @@ rpc::Json CoreStateCapture::captionTrackState() const {
     return rpc::Json::Object{
         {"enabled", true},
         {"status", "idle"},
-        {"latencyMs", 180},
         {"warnings", warnings},
     };
   }
@@ -2126,7 +2095,6 @@ rpc::Json CoreStateCapture::captionTrackState() const {
   rpc::Json::Object cue{
       {"text", captionText_},
       {"atMs", captionAtMs_},
-      {"confidence", static_cast<double>(captionConfidence_)},
   };
   if (!captionSpeaker_.empty()) {
     cue.emplace("speaker", captionSpeaker_);
@@ -2136,7 +2104,6 @@ rpc::Json CoreStateCapture::captionTrackState() const {
       {"enabled", true},
       {"status", warnings.empty() ? "live" : "warning"},
       {"currentCue", cue},
-      {"latencyMs", 180},
       {"warnings", warnings},
   };
 }
@@ -2654,8 +2621,6 @@ rpc::Json CoreStateCapture::zoomSnapshot() const {
                {"videoOn", true},
                {"muted", false},
                {"talking", true},
-               {"audioLevel", 76},
-               {"networkQuality", "good"},
            },
            rpc::Json::Object{
                {"userId", "guest-1"},
@@ -2664,8 +2629,6 @@ rpc::Json CoreStateCapture::zoomSnapshot() const {
                {"videoOn", true},
                {"muted", false},
                {"talking", false},
-               {"audioLevel", 22},
-               {"networkQuality", "good"},
            },
        };
   return rpc::Json::Object{

@@ -692,8 +692,6 @@ rpc::Json MediaCore::zoomSnapshot() const {
                {"videoOn", true},
                {"muted", false},
                {"talking", true},
-               {"audioLevel", 76},
-               {"networkQuality", "good"},
            },
            rpc::Json::Object{
                {"userId", "guest-1"},
@@ -702,8 +700,6 @@ rpc::Json MediaCore::zoomSnapshot() const {
                {"videoOn", true},
                {"muted", false},
                {"talking", false},
-               {"audioLevel", 22},
-               {"networkQuality", "good"},
            },
        };
   return rpc::Json::Object{
@@ -3343,7 +3339,6 @@ void MediaCore::pushCaptionCue(const rpc::Json& command) {
   captionText_ = text;
   captionSpeaker_ = command.getString("speaker");
   captionAtMs_ = command.get("atMs") ? command.get("atMs")->asNumber() : 0;
-  captionConfidence_ = std::max(82, 97 - static_cast<int>(text.size() / 28));
   if (text.size() > 96) {
     captionWarnings_.push_back("Caption line is long; compact mode enabled.");
   }
@@ -4112,44 +4107,6 @@ std::string audioStatusFor(bool muted, int gainDb) {
   return "balanced";
 }
 
-// DETERMINISTIC dBFS derivation for the participant-audio contract.
-//
-// The stub core has no real PCM (the real DSP graph is F2, gated behind the dev
-// adapters), so it cannot MEASURE rms/peak the way the TS simulators do from
-// synthesized samples. Instead we DERIVE the two metrics from the existing
-// 0-100 `outputLevel` using the same sine model the renderer/native-core mirrors
-// assume: a participant tone whose PEAK amplitude tracks level/100 of full
-// scale. Then peakDbfs = 20*log10(level/100) and, for a sine, rmsDbfs is one
-// crest-factor (~3.0103 dB) below the peak. Level 0 (or muted) reports the
-// digital-silence floor. This keeps the values consistent and stable for the
-// same input, matching the TS measured-from-silence behaviour for muted/silent
-// channels (both floor to -120 dBFS).
-constexpr double kAudioDbfsFloor = -120.0;
-constexpr double kSineCrestFactorDb = 3.0102999566398121;  // 20*log10(sqrt(2))
-
-double levelToDbfs(int level) {
-  if (level <= 0) {
-    return kAudioDbfsFloor;
-  }
-  const double db = 20.0 * std::log10(static_cast<double>(level) / 100.0);
-  return db < kAudioDbfsFloor ? kAudioDbfsFloor : db;
-}
-
-double round1Dbfs(double value) {
-  return std::round(value * 10.0) / 10.0;
-}
-
-double derivePeakDbfs(int outputLevel) {
-  return round1Dbfs(levelToDbfs(outputLevel));
-}
-
-double deriveRmsDbfs(int outputLevel) {
-  if (outputLevel <= 0) {
-    return round1Dbfs(kAudioDbfsFloor);
-  }
-  const double rms = levelToDbfs(outputLevel) - kSineCrestFactorDb;
-  return round1Dbfs(rms < kAudioDbfsFloor ? kAudioDbfsFloor : rms);
-}
 
 std::string protocolAudioStatusForDsp(const modules::AudioParticipantMixMetrics& participant) {
   if (participant.muted) return "muted";

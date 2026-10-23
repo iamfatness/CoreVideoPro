@@ -277,6 +277,7 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
           boolField(participant, "is_host"),
           boolField(participant, "is_me"),
       });
+      event.participants.back().networkQuality = participant.getString("network_quality");
     }
   }
 
