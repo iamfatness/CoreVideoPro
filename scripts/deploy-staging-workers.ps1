@@ -1,4 +1,4 @@
-# Deploy CoreVideo Pro staging Cloudflare workers (licensing, captions, telemetry, ops-monitor).
+# Deploy CoreVideo Pro staging Cloudflare workers (telemetry-ingest, ops-monitor).
 $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 
@@ -6,8 +6,6 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 # `Optional = $true` means the secret is skipped (not an error) when absent — the
 # ops-monitor's alert webhook is optional (unset = log-only, beta S5).
 $services = @(
-  @{ Name = "licensing-api"; Secret = "LICENSE_API_KEY"; EnvVar = "COREVIDEO_LICENSE_API_KEY" },
-  @{ Name = "caption-broker"; Secret = "CAPTION_BROKER_API_KEY"; EnvVar = "COREVIDEO_CAPTION_BROKER_API_KEY" },
   @{ Name = "telemetry-ingest"; Secret = "TELEMETRY_API_KEY"; EnvVar = "COREVIDEO_TELEMETRY_API_KEY" },
   @{ Name = "ops-monitor"; Secret = "OPS_ALERT_WEBHOOK_URL"; EnvVar = "COREVIDEO_OPS_ALERT_WEBHOOK_URL"; Optional = $true }
 )

@@ -77,9 +77,8 @@ update mechanism. Two items here are calendar-bound and start immediately.
 ### B3 - Access control
 Keep it minimal for beta; this is a gate, not a store.
 - [ ] Closed-beta gate: license key or email allowlist checked at startup.
-      `services/licensing-api` (Cloudflare Worker) exists but is only wired to the
-      legacy TS engine - either wire the native shell to it or ship a simpler
-      signed-key check and defer the service
+      the stub `services/licensing-api` worker was removed in #743 (no native
+      client) - ship a simpler signed-key check or build a real service
 - [ ] No trial/commerce mechanics in beta
 
 ### B4 - Supportability

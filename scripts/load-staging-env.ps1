@@ -6,8 +6,6 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $secretsFile = Join-Path $PSScriptRoot ".staging-secrets.local"
 $exampleFile = Join-Path $PSScriptRoot "staging-services.env.example"
 
-$env:COREVIDEO_LICENSE_API_ENDPOINT = "https://corevideo-licensing-api.wallace-john-w.workers.dev"
-$env:COREVIDEO_CAPTION_BROKER_ENDPOINT = "https://corevideo-caption-broker.wallace-john-w.workers.dev"
 $env:COREVIDEO_TELEMETRY_ENDPOINT = "https://corevideo-telemetry-ingest.wallace-john-w.workers.dev"
 $env:COREVIDEO_OPS_MONITOR_ENDPOINT = "https://corevideo-ops-monitor.wallace-john-w.workers.dev"
 
@@ -32,7 +30,5 @@ Get-Content $secretsFile | ForEach-Object {
 }
 
 Write-Host "Staging services loaded:"
-Write-Host ("  LICENSE: " + $env:COREVIDEO_LICENSE_API_ENDPOINT)
-Write-Host ("  CAPTIONS: " + $env:COREVIDEO_CAPTION_BROKER_ENDPOINT)
 Write-Host ("  TELEMETRY: " + $env:COREVIDEO_TELEMETRY_ENDPOINT)
 Write-Host ("  OPS-MONITOR: " + $env:COREVIDEO_OPS_MONITOR_ENDPOINT)

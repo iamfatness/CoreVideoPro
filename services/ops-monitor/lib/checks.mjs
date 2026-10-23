@@ -2,7 +2,7 @@
  * Pure + orchestration logic for the ops-monitor worker (beta spec §S5).
  *
  * The worker periodically probes the OAuth broker + the in-repo Cloudflare
- * workers, and alerts ONLY when a target changes state (up->down / down->up)
+ * worker (telemetry-ingest) + itself, and alerts ONLY when a target changes state (up->down / down->up)
  * so a persistent outage never spams the destination. Everything here is
  * dependency-injected (fetch / KV / clock) so it is unit-testable without a
  * live network or a real Cloudflare runtime.
@@ -50,16 +50,8 @@ export function buildTargets(env = {}) {
       readOnlyProbe: true
     },
     {
-      name: "licensing-api",
-      url: env.OPS_LICENSING_URL ?? "https://corevideo-licensing-api.wallace-john-w.workers.dev/health"
-    },
-    {
       name: "telemetry-ingest",
       url: env.OPS_TELEMETRY_URL ?? "https://corevideo-telemetry-ingest.wallace-john-w.workers.dev/health"
-    },
-    {
-      name: "caption-broker",
-      url: env.OPS_CAPTION_URL ?? "https://corevideo-caption-broker.wallace-john-w.workers.dev/health"
     },
     {
       name: "ops-monitor",
