@@ -102,12 +102,8 @@ class CoreStateCapture {
   decltype(MediaCore::audioRoutingWarnings_) audioRoutingWarnings_;
   decltype(MediaCore::brandAccentColor_) brandAccentColor_;
   decltype(MediaCore::brandBackgroundColor_) brandBackgroundColor_;
-  decltype(MediaCore::brandCaptionStyle_) brandCaptionStyle_;
   decltype(MediaCore::brandColor_) brandColor_;
-  decltype(MediaCore::brandDefaultOverlayBehavior_) brandDefaultOverlayBehavior_;
   decltype(MediaCore::brandFontFamily_) brandFontFamily_;
-  decltype(MediaCore::brandLogoText_) brandLogoText_;
-  decltype(MediaCore::brandLowerThirdStyle_) brandLowerThirdStyle_;
   decltype(MediaCore::brandName_) brandName_;
   decltype(MediaCore::brandWarnings_) brandWarnings_;
   decltype(MediaCore::breakoutRoomId_) breakoutRoomId_;

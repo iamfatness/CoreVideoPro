@@ -2168,8 +2168,11 @@ TEST(MediaCoreCommand, BrandKitSnapshotIncludesFullWinUiContract) {
   const auto idle = mediaCore.sessionState();
   const auto* idleBrandKit = idle.get("brandKit");
   ASSERT_NE(idleBrandKit, nullptr);
-  EXPECT_EQ(idleBrandKit->getString("captionStyle"), "medium sentence captions");
-  EXPECT_EQ(idleBrandKit->getString("defaultOverlayBehavior"), "all-off");
+  // #764: fields the compositor never applied are no longer echoed as if set.
+  EXPECT_EQ(idleBrandKit->get("captionStyle"), nullptr);
+  EXPECT_EQ(idleBrandKit->get("defaultOverlayBehavior"), nullptr);
+  EXPECT_EQ(idleBrandKit->get("logoText"), nullptr);
+  EXPECT_EQ(idleBrandKit->get("lowerThirdStyle"), nullptr);
 
   const auto branded = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "set-brand-kit"},
@@ -2187,14 +2190,15 @@ TEST(MediaCoreCommand, BrandKitSnapshotIncludesFullWinUiContract) {
   const auto* brandKit = branded.get("brandKit");
   ASSERT_NE(brandKit, nullptr);
   EXPECT_EQ(brandKit->getString("name"), "Launch Night");
-  EXPECT_EQ(brandKit->getString("logoText"), "CVP");
+  EXPECT_EQ(brandKit->get("logoText"), nullptr);
   EXPECT_EQ(brandKit->getString("brandColor"), "#102030");
   EXPECT_EQ(brandKit->getString("accentColor"), "#405060");
   EXPECT_EQ(brandKit->getString("backgroundColor"), "#070809");
   EXPECT_EQ(brandKit->getString("fontFamily"), "Poppins");
-  EXPECT_EQ(brandKit->getString("lowerThirdStyle"), "minimal");
-  EXPECT_EQ(brandKit->getString("captionStyle"), "boxed");
-  EXPECT_EQ(brandKit->getString("defaultOverlayBehavior"), "auto");
+  EXPECT_EQ(brandKit->get("lowerThirdStyle"), nullptr);
+  EXPECT_EQ(brandKit->get("captionStyle"), nullptr);
+  EXPECT_EQ(brandKit->get("defaultOverlayBehavior"), nullptr);
+  // Sent but never applied: silently ignored, never echoed.
 }
 
 TEST(MediaCoreCommand, AudioMixSessionDoesNotFakeMetersWithoutPcm) {

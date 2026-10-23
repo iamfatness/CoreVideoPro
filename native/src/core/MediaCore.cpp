@@ -2093,7 +2093,6 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.participantId = route.getString("participantId");
       state.personId = route.getString("personId");
       state.captureDeviceId = route.getString("captureDeviceId");
-      state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
       state.mediaAssetName = route.getString("mediaAssetName");
       state.mediaAssetKind = route.getString("mediaAssetKind");
@@ -2855,7 +2854,8 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
   for (const auto& channel : channels->asArray()) {
     ParticipantAudioChannelInput input;
     input.participantId = channel.getString("participantId");
-    input.inputLevel = std::max(0, std::min(100, static_cast<int>(channel.get("inputLevel") ? channel.get("inputLevel")->asNumber() : 0)));
+    // `inputLevel` is deliberately NOT read (#764): the strip meters off the
+    // measured PCM, never off a level the shell sends.
     input.muted = channel.get("muted") && channel.get("muted")->asBool();
     input.noiseSuppression = channel.get("noiseSuppression") && channel.get("noiseSuppression")->asBool();
     if (const rpc::Json* manualGain = channel.get("manualGainDb")) {
@@ -3362,19 +3362,15 @@ void MediaCore::setBrandKit(const rpc::Json& command) {
       else brandWarnings_.push_back("Invalid lower-third appearance; previous look retained.");
     }
   }
+  // #764: only the fields the compositor actually applies are kept. logoText,
+  // lowerThirdStyle, captionStyle and defaultOverlayBehavior were stored and
+  // echoed only (no bug label is ever drawn), so they are neither read nor
+  // published any more.
   brandName_ = command.getString("name", brandName_);
-  brandLogoText_ = command.getString("logoText", brandLogoText_);
   brandColor_ = command.getString("brandColor", brandColor_);
   brandAccentColor_ = command.getString("accentColor", brandAccentColor_);
   brandBackgroundColor_ = command.getString("backgroundColor", brandBackgroundColor_);
   brandFontFamily_ = command.getString("fontFamily", brandFontFamily_);
-  brandLowerThirdStyle_ = command.getString("lowerThirdStyle", brandLowerThirdStyle_);
-  brandCaptionStyle_ = command.getString("captionStyle", brandCaptionStyle_);
-  brandDefaultOverlayBehavior_ = command.getString("defaultOverlayBehavior", brandDefaultOverlayBehavior_);
-  if (brandLogoText_.empty()) {
-    brandLogoText_ = "CoreVideo Pro";
-    brandWarnings_.push_back("Brand logo text was empty; using default bug label.");
-  }
 }
 
 // #535 slice 3b: SELECTION ONLY. `playing` and `mediaPlaybackKey` still ride
@@ -3578,7 +3574,6 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       state.participantId = route.getString("participantId");
       state.personId = route.getString("personId");
       state.captureDeviceId = route.getString("captureDeviceId");
-      state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
       state.mediaAssetName = route.getString("mediaAssetName");
       state.mediaAssetKind = route.getString("mediaAssetKind");

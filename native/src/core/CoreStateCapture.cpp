@@ -485,12 +485,8 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   audioRoutingWarnings_ = core.audioRoutingWarnings_;
   brandAccentColor_ = core.brandAccentColor_;
   brandBackgroundColor_ = core.brandBackgroundColor_;
-  brandCaptionStyle_ = core.brandCaptionStyle_;
   brandColor_ = core.brandColor_;
-  brandDefaultOverlayBehavior_ = core.brandDefaultOverlayBehavior_;
   brandFontFamily_ = core.brandFontFamily_;
-  brandLogoText_ = core.brandLogoText_;
-  brandLowerThirdStyle_ = core.brandLowerThirdStyle_;
   brandName_ = core.brandName_;
   brandWarnings_ = core.brandWarnings_;
   breakoutRoomId_ = core.breakoutRoomId_;
@@ -2137,14 +2133,10 @@ rpc::Json CoreStateCapture::brandKitState() const {
 
   return rpc::Json::Object{
       {"name", brandName_},
-      {"logoText", brandLogoText_},
       {"brandColor", brandColor_},
       {"accentColor", brandAccentColor_},
       {"backgroundColor", brandBackgroundColor_},
       {"fontFamily", brandFontFamily_},
-      {"lowerThirdStyle", brandLowerThirdStyle_},
-      {"captionStyle", brandCaptionStyle_},
-      {"defaultOverlayBehavior", brandDefaultOverlayBehavior_},
       {"appliedOverlayCount", appliedOverlayCount},
       {"summary", summary.str()},
       {"warnings", warnings},
