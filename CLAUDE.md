@@ -95,6 +95,13 @@ textures** (cross-process) for program/preview, and shared-memory I420 for Zoom 
 
 Process boundaries + where spine features (ISO/NDI/SRT/browser) plug in: `docs/architecture-seams.md`.
 
+## Production endpoints
+
+The shell bakes `https://telemetry.corevideo.io` (telemetry + crash upload) and the OAuth broker
+`https://auth.corevideo.io`; `COREVIDEO_TELEMETRY_ENDPOINT` / `COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`
+override for staging (`scripts/load-staging-env.ps1`). The telemetry API key is never baked.
+**Do not ship a build until owner checklist steps 1-3 are done**: none of the three hostnames resolve yet, so Sign in with Zoom opens a dead host. Details and the checklist: `docs/reference/production-endpoints.md`.
+
 ## Build & run (Windows)
 
 ```powershell

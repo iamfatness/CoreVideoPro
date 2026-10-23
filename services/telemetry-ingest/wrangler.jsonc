@@ -4,9 +4,29 @@
   "main": "worker.mjs",
   "compatibility_date": "2026-06-01",
   "workers_dev": true,
+  // Production hostname (#434). The owner activates the Cloudflare custom domain
+  // (zone corevideo.io must be on the same account); see docs/reference/production-endpoints.md.
+  "routes": [{ "pattern": "telemetry.corevideo.io", "custom_domain": true }],
   "preview_urls": false,
+  // Staging (scripts/deploy-staging-workers.ps1 uses `--env staging`): separate worker
+  // "corevideo-telemetry-ingest-staging" on workers.dev, NO routes/custom domain, ENVIRONMENT=staging.
+  // Wrangler does not inherit bindings/vars into envs, so they are repeated here.
+  "env": {
+    "staging": {
+      "name": "corevideo-telemetry-ingest-staging",
+      "workers_dev": true,
+      "routes": [],
+      "vars": { "ENVIRONMENT": "staging" },
+      "r2_buckets": [
+        { "binding": "REPORTS_BUCKET", "bucket_name": "corevideo-telemetry-reports" }
+      ],
+      "kv_namespaces": [
+        { "binding": "REPORTS_KV", "id": "REPLACE_WITH_REPORTS_KV_NAMESPACE_ID" }
+      ]
+    }
+  },
   "vars": {
-    "ENVIRONMENT": "staging"
+    "ENVIRONMENT": "production"
   },
   // S0 storage bindings. The real Cloudflare resources must exist before
   // `wrangler deploy` (see README.md in this directory):

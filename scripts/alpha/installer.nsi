@@ -29,7 +29,7 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "CoreVideo Pro"
 ; fix. Beta testers will do exactly the same. The version-named shortcut stays,
 ; but only in the Start menu.
 !define STABLE_SHORTCUT_NAME "CoreVideo Pro"
-!define MUI_WELCOMEPAGE_TEXT "Install this Windows ${CHANNEL} for your account.$\r$\n$\r$\nThe app is unsigned. Use it for rehearsals and testing before an irreplaceable production.$\r$\n$\r$\nSetup requests administrator approval for the virtual camera and, if needed, Microsoft's VC runtime. First app launch downloads its verified media runtime. Close this version before uninstalling."
+!define MUI_WELCOMEPAGE_TEXT "Install this Windows ${CHANNEL} for your account.$\r$\n$\r$\nThe app is unsigned. Use it for rehearsals and testing before an irreplaceable production.$\r$\n$\r$\nSetup requests administrator approval for the virtual camera, for Windows crash-dump settings (so crashes can be diagnosed) and, if needed, Microsoft's VC runtime. You may be asked more than once. First app launch downloads its verified media runtime. Close this version before uninstalling."
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_TEXT "CoreVideo Pro is installed. Open its desktop or Start menu shortcut to begin.$\r$\n$\r$\nFirst launch requires internet access to download the verified media runtime. This ${CHANNEL} is for testing and feedback.$\r$\n$\r$\nUninstall removes delivered files and shortcuts, while preserving settings, recordings, and downloaded media."
@@ -156,8 +156,14 @@ Section "CoreVideo Pro" SEC_APP
     ${EndIf}
     StrCpy $CameraChanged 1
     ; T2.1: create the recording folder so the first Record has somewhere to go.
-    ; Must match RecordingFolderPolicy.Resolve's default (Videos\CoreVideo Pro).
-    CreateDirectory "$PROFILE\Videos\${STABLE_SHORTCUT_NAME}"
+    ; Must match RecordingFolderPolicy.Resolve's default: the user's Videos known
+    ; folder (which may be redirected) + "CoreVideo Pro", or, with no Videos
+    ; folder, %LOCALAPPDATA%\CoreVideo Pro. CreateDirectory never clobbers.
+    ${If} $VIDEOS != ""
+        CreateDirectory "$VIDEOS\${STABLE_SHORTCUT_NAME}"
+    ${Else}
+        CreateDirectory "$LOCALAPPDATA\${STABLE_SHORTCUT_NAME}"
+    ${EndIf}
     StrCpy $FailureReason "Writing application uninstall registration failed."
     ClearErrors
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "CoreVideo Pro ${RELEASE_ID}"
@@ -238,6 +244,24 @@ Section "CoreVideo Pro" SEC_APP
         SetErrorLevel 1603
         Abort
     installed:
+        ; T2.1 / #433: full WER crash dumps. HKLM-only, so this is the elevated
+        ; step. A refusal must NEVER fail setup: it is logged loudly and we go on.
+        ; Interactive setup requests elevation; silent setup must already be elevated.
+        CreateDirectory "$LOCALAPPDATA\CoreVideoPro\crashes"
+        CreateDirectory "$LOCALAPPDATA\CoreVideoPro\installer-logs"
+        IfSilent dumps_silent
+        nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-CrashDumps.ps1" -Action Install -ReleaseId "${RELEASE_ID}" -AllowElevation -LogPath "$LOCALAPPDATA\CoreVideoPro\installer-logs\${RELEASE_ID}-crashdumps.log"'
+        Goto dumps_result
+        dumps_silent:
+        nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-CrashDumps.ps1" -Action Install -ReleaseId "${RELEASE_ID}" -LogPath "$LOCALAPPDATA\CoreVideoPro\installer-logs\${RELEASE_ID}-crashdumps.log"'
+        dumps_result:
+        Pop $1
+        Pop $2
+        DetailPrint "$2"
+        ${If} $1 != 0
+            DetailPrint "WARNING: crash dumps were NOT enabled (exit $1). Setup continues. Details: $LOCALAPPDATA\CoreVideoPro\installer-logs\${RELEASE_ID}-crashdumps.log"
+            MessageBox MB_OK|MB_ICONEXCLAMATION "CoreVideo Pro is installed, but Windows crash dumps could not be enabled (administrator approval is needed). Crashes will be harder to diagnose. Details: $LOCALAPPDATA\CoreVideoPro\installer-logs\${RELEASE_ID}-crashdumps.log" /SD IDOK
+        ${EndIf}
         ; New payload, camera and shortcuts are committed before retirement.
         ; Never run old uninstallers: legacy camera removal can undo the new owner.
         nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Remove-PreviousInstallations.ps1" -AppDirectory "$INSTDIR"'
@@ -346,6 +370,20 @@ Section "Uninstall"
         SetErrorLevel 1603
         Abort
     un.camera_removed:
+    ; #433: remove the LocalDumps keys this installer wrote (kept while another
+    ; CoreVideo Pro version is still installed). Never blocks uninstall.
+    IfSilent un.dumps_silent
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-CrashDumps.ps1" -Action Uninstall -ReleaseId "${RELEASE_ID}" -AllowElevation'
+    Goto un.dumps_result
+    un.dumps_silent:
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-CrashDumps.ps1" -Action Uninstall -ReleaseId "${RELEASE_ID}"'
+    un.dumps_result:
+    Pop $1
+    Pop $2
+    DetailPrint "$2"
+    ${If} $1 != 0
+        DetailPrint "WARNING: crash dump registry keys were not removed (exit $1). They are harmless and can be deleted by hand."
+    ${EndIf}
     ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Remove-OwnedShortcuts.ps1" -AppDirectory "$INSTDIR"' $1
     StrCpy $DeleteFailed 0
     !include "uninstall-files.nsh"

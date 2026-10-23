@@ -26,6 +26,36 @@ $hadStableStart = Test-Path -LiteralPath $stableStart
 if ($hadStableDesktop -or $hadStableStart) {
     throw 'A CoreVideo Pro shortcut already exists; refusing to alter a real installation for testing.'
 }
+# T2.1 / #433 baseline: never alter a LocalDumps configuration this test did not write.
+# Read through the 64-bit registry view: the installer is 32-bit, but WerFault reads the 64-bit view, and
+# the HKLM: PSDrive would follow THIS process's view and could show the wrong hive.
+function Get-DumpKey64([string]$exe) {
+    $b = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+    try {
+        $k = $b.OpenSubKey("SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\$exe")
+        if (-not $k) { return $null }
+        try {
+            [pscustomobject]@{ Managed = ($null -ne $k.GetValue('CoreVideoProInstaller')); DumpType = $k.GetValue('DumpType'); DumpCount = $k.GetValue('DumpCount')
+                DumpFolder = $k.GetValue('DumpFolder', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                DumpFolderKind = $k.GetValueKind('DumpFolder').ToString() }
+        } finally { $k.Dispose() }
+    } finally { $b.Dispose() }
+}
+# Same retention rule as Install-CrashDumps.ps1: keys stay while another registered version still exists.
+function Test-OtherCvpInstallRegistered {
+    foreach ($k in Get-ChildItem 'HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall' -ErrorAction SilentlyContinue) {
+        if ($k.PSChildName -notlike 'CoreVideoPro-*' -or $k.PSChildName -eq "CoreVideoPro-$releaseId") { continue }
+        $loc = (Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue).InstallLocation
+        if ($loc -and (Test-Path -LiteralPath $loc)) { return $true }
+    }
+    return $false
+}
+$dumpExecutables = 'CoreVideoPro.WinUI.exe', 'corevideo-native.exe', 'corevideo-zoom-engine.exe'
+$isAdmin = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$priorDumps = @{}
+foreach ($exe in $dumpExecutables) { $priorDumps[$exe] = Get-DumpKey64 $exe }
+$videosFolder = [Environment]::GetFolderPath('MyVideos')
+$recordingFolderExisted = Test-Path -LiteralPath $(if ($videosFolder) { Join-Path $videosFolder 'CoreVideo Pro' } else { Join-Path $env:LOCALAPPDATA 'CoreVideo Pro' })
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $work = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkRoot)
 if ($work.Length -gt $MaxWorkPathLength) { throw "Working root is $($work.Length) characters (limit $MaxWorkPathLength); use a shorter -WorkRoot: $work" }
@@ -60,6 +90,29 @@ try {
     }
 } finally { Set-CameraMachineRegistration $priorUserCamera -CurrentUser }
 if ((Invoke-OwnedProcess $installerPath @('/S', "/D=$installRoot")) -ne 0) { throw "Silent installation failed. Evidence: $work" }
+# T2.1 / #433: recording folder + WER LocalDumps. The recording folder must be the app's own default
+# (RecordingFolderPolicy: Videos\CoreVideo Pro, else %LOCALAPPDATA%\CoreVideo Pro) and survive uninstall.
+$recordingFolder = if ($videosFolder) { Join-Path $videosFolder 'CoreVideo Pro' } else { Join-Path $env:LOCALAPPDATA 'CoreVideo Pro' }
+if (-not (Test-Path -LiteralPath $recordingFolder -PathType Container)) { throw "Install did not create the recording folder: $recordingFolder" }
+$crashLog = Join-Path $env:LOCALAPPDATA "CoreVideoPro\installer-logs\$releaseId-crashdumps.log"
+$crashDumpsExpected = $null
+if ($isAdmin) {
+    # Silent setup is elevated here, so the HKLM write must have happened (or an existing foreign config was preserved).
+    foreach ($exe in $dumpExecutables) {
+        $item = Get-DumpKey64 $exe
+        if (-not $item) { throw "LocalDumps key missing from the 64-bit registry view after elevated install: $exe" }
+        if ($priorDumps[$exe] -and -not $priorDumps[$exe].Managed) { continue }   # foreign config: must be untouched (checked after uninstall)
+        if ($item.DumpType -ne 2 -or $item.DumpCount -ne 5 -or $item.DumpFolder -ne '%LOCALAPPDATA%\CoreVideoPro\crashes' -or
+            $item.DumpFolderKind -ne 'ExpandString') { throw "LocalDumps values wrong for $exe" }
+    }
+    $crashDumpsExpected = 'configured'
+} else {
+    # Not elevated: setup must still succeed (it did, exit 0) and must say loudly that dumps were not enabled.
+    if (-not (Test-Path -LiteralPath $crashLog) -or (Get-Content -LiteralPath $crashLog -Raw) -notmatch 'NOT configured') {
+        throw 'Unelevated install did not log that crash dumps were not configured.'
+    }
+    $crashDumpsExpected = 'refused-loudly'
+}
 $inspectHost = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $inspectionJson = & $inspectHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installRoot 'Install-VirtualCamera.ps1') -Action Inspect -AppDirectory $installRoot
 if ($LASTEXITCODE -ne 0) { throw 'Installed desktop-user camera inspection failed.' }
@@ -142,12 +195,24 @@ if ((Test-Path -LiteralPath $stableDesktop) -or (Test-Path -LiteralPath $stableS
 foreach ($file in $manifest.files) {
     if (Test-Path -LiteralPath (Join-Path $installRoot $file.path)) { throw "Delivered file remained after uninstall: $($file.path)" }
 }
+if (-not (Test-Path -LiteralPath $recordingFolder)) { throw 'Uninstall removed the recording folder.' }
+$keepForOtherInstall = Test-OtherCvpInstallRegistered
+foreach ($exe in $dumpExecutables) {
+    # Keys this installer wrote are gone (unless another registered version still needs them);
+    # a configuration that pre-existed and was not ours is exactly as it was.
+    $after = Get-DumpKey64 $exe
+    if ($after) {
+        if ($isAdmin -and -not $keepForOtherInstall -and $after.Managed) { throw "Uninstall left the LocalDumps key for $exe." }
+    } elseif ($priorDumps[$exe] -and ($keepForOtherInstall -or -not $priorDumps[$exe].Managed)) { throw "Uninstall removed a LocalDumps key it must keep: $exe" }
+}
+if (-not $recordingFolderExisted -and @(Get-ChildItem -LiteralPath $recordingFolder -Force).Count -eq 0) { Remove-Item -LiteralPath $recordingFolder }
 if ((Get-Content -LiteralPath $sentinel -Raw) -ne 'preserve this user file') { throw 'Uninstall did not preserve the user file.' }
 [ordered]@{ success=$true; releaseId=$releaseId; payloadFilesVerified=$manifest.files.Count
     silentInstall=$true; runtimeProbe=$true; shortcutTargets=$true; duplicateInstallRejected=$true
     invalidMarkerRejected=$true; silentUninstall=$true; userFilePreserved=$true
     stableShortcutOnly=$true; mediaRuntimeRemoved=$true; manifestEscapeRefused=$true; evidence=$evidenceCopy; workDirectory=$work
     failedInstallRetry=$true; failedInstallCameraPreserved=$true; independentDesktopRegistration=$true
+    recordingFolderCreated=$true; crashDumps=$crashDumpsExpected
     desktopShortcutCameraDelivery='unverified'; desktopShortcutUnassign='unverified'
 } | ConvertTo-Json | Tee-Object -FilePath (Join-Path $work 'result.json')
 $succeeded = $true
