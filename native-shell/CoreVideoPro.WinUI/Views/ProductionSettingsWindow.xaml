@@ -157,6 +157,8 @@
                             </Grid>
                             <ToggleSwitch Header="Allow settings above this GPU's recommended limits"
                                           IsOn="{x:Bind ViewModel.AllowAboveGpuTier, Mode=TwoWay}" />
+                            <TextBlock Text="{x:Bind ViewModel.GpuTierStatusLine, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
                             <TextBlock Text="{x:Bind ViewModel.GpuTierNotice, Mode=OneWay}"
                                        Visibility="{x:Bind ViewModel.HasGpuTierNotice, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />

@@ -2809,6 +2809,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnMultiviewTileCountChanged(int value)
     {
+        OnPropertyChanged(nameof(MultiviewTileMaximum));
         var clamped = ClampMultiviewTileCount(value);
         if (clamped != value)
         {
@@ -3451,7 +3452,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(OutputStatusDetailsVisibility));
     }
 
-    partial void OnCanvasResolutionChanged(string value) => OnOutputProfileChanged();
+    partial void OnCanvasResolutionChanged(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            // A ComboBox re-bind can write null; never let it reach the profile.
+            CanvasResolution = _lastGoodCanvasResolution;
+            return;
+        }
+
+        _lastGoodCanvasResolution = value;
+        if (GpuTierPolicy.FormatCanvasChangeLog(value) is { } line) LaunchLog.Write(line);
+        OnOutputProfileChanged();
+    }
 
     partial void OnCanvasFpsChanged(string value) => OnOutputProfileChanged();
 
@@ -11875,6 +11888,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // ---- #439 GPU-tier defaults -------------------------------------------------
     // Test seam: the probe is a DXGI call, so tests substitute a band string.
+    // The policy (and so the probe result) is cached: adapters are enumerated once.
     internal static Func<string?> GpuTierBandProvider { get; set; } = GpuTierProbe.TryProbe;
 
     private GpuTierPolicy? _gpuTierPolicy;
@@ -11888,52 +11902,73 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private bool _allowAboveGpuTier;
 
+    private string _lastGoodCanvasResolution = MediaCoreProductionSyncContext.DefaultCanvasOutputProfile.Resolution;
+    private IReadOnlyList<RouteSelectOption>? _canvasResolutionOptions;
+
     public string GpuTierNotice => GpuTierPolicy.Notice ?? string.Empty;
     public bool HasGpuTierNotice => GpuTierPolicy.Notice is not null;
-    public int MultiviewTileMaximum => AllowAboveGpuTier ? MaxMultiviewTileCount : GpuTierPolicy.EffectiveTileCeiling;
+    public string GpuTierStatusLine => GpuTierPolicy.StatusLine(AllowAboveGpuTier);
 
-    public IReadOnlyList<RouteSelectOption> CanvasResolutionOptions
+    // Never below the current value: a NumberBox coerces Value to Maximum, and the
+    // TwoWay binding would otherwise rewrite (and persist) a saved tile count.
+    public int MultiviewTileMaximum => GpuTierPolicy.TileMaximum(AllowAboveGpuTier, MultiviewTileCount);
+
+    // Cached: ItemsSource churn on a TwoWay SelectedValue combo can write null back.
+    public IReadOnlyList<RouteSelectOption> CanvasResolutionOptions =>
+        _canvasResolutionOptions ??= BuildCanvasResolutionOptions();
+
+    private IReadOnlyList<RouteSelectOption> BuildCanvasResolutionOptions()
     {
-        get
+        var offered = GpuTierPolicy.OfferedCanvases(
+            OutputResolutionOptions.Select(o => o.Value), CanvasResolution, AllowAboveGpuTier);
+        return OutputResolutionOptions.Where(o => offered.Contains(o.Value)).ToList();
+    }
+
+    private void RefreshCanvasResolutionOptions()
+    {
+        var next = BuildCanvasResolutionOptions();
+        var current = _canvasResolutionOptions;
+        if (current is not null && current.Select(o => o.Value).SequenceEqual(next.Select(o => o.Value)))
         {
-            var offered = GpuTierPolicy.OfferedCanvases(
-                OutputResolutionOptions.Select(o => o.Value), CanvasResolution, AllowAboveGpuTier);
-            return OutputResolutionOptions.Where(o => offered.Contains(o.Value)).ToList();
+            return; // unchanged contents: do not touch ItemsSource
         }
+
+        var keep = CanvasResolution;
+        _canvasResolutionOptions = next;
+        OnPropertyChanged(nameof(CanvasResolutionOptions));
+        if (!string.Equals(CanvasResolution, keep, StringComparison.Ordinal)) CanvasResolution = keep;
     }
 
     partial void OnAllowAboveGpuTierChanged(bool value)
     {
-        LaunchLog.Write(GpuTierPolicy.DescribeForLog(value));
+        LaunchLog.Write(GpuTierPolicy.FormatSwitchLog(value));
         OnPropertyChanged(nameof(MultiviewTileMaximum));
-        OnPropertyChanged(nameof(CanvasResolutionOptions));
+        OnPropertyChanged(nameof(GpuTierStatusLine));
+        RefreshCanvasResolutionOptions();
         SaveProductionOutputPreferences();
     }
 
     /// <summary>
     /// Applies the tier policy to a loaded (or, when null, fresh) profile.
-    /// A profile that has ever persisted a canvas size is NOT fresh: its saved
-    /// canvas and tile count are kept verbatim, and logged when above the tier
-    /// ceiling. Only a never-saved profile receives tier defaults.
+    /// Saved canvas and tile values are kept verbatim; only a never-saved
+    /// canvas / absent profile receives tier defaults. See GpuTierPolicy.Resolve.
     /// </summary>
     private void ApplyGpuTierDefaults(ProductionOutputPreferences? preferences)
     {
         var policy = GpuTierPolicy;
-        var fresh = preferences is null || string.IsNullOrWhiteSpace(preferences.CanvasResolution);
-        _allowAboveGpuTier = preferences?.GpuTierLimitsOverride ?? false;
+        var r = policy.Resolve(preferences);
+        _allowAboveGpuTier = r.SwitchOn;
         OnPropertyChanged(nameof(AllowAboveGpuTier));
 
-        CanvasResolution = policy.ResolveCanvas(preferences?.CanvasResolution, out var canvasAbove);
-        var tiles = policy.ResolveTileCount(fresh ? null : preferences!.MultiviewTileCount, out var tilesAbove);
-        MultiviewTileCount = ClampMultiviewTileCount(tiles);
+        CanvasResolution = r.Canvas;
+        MultiviewTileCount = ClampMultiviewTileCount(r.TileCount);
 
-        var overrideActive = _allowAboveGpuTier || canvasAbove || tilesAbove;
-        LaunchLog.Write(policy.DescribeForLog(overrideActive)
-            + (fresh ? " source=tier-default" : " source=saved"));
-        OnPropertyChanged(nameof(CanvasResolutionOptions));
+        LaunchLog.Write(policy.FormatStartupLog(r));
+        RefreshCanvasResolutionOptions();
         OnPropertyChanged(nameof(MultiviewTileMaximum));
         OnPropertyChanged(nameof(GpuTierNotice));
         OnPropertyChanged(nameof(HasGpuTierNotice));
+        OnPropertyChanged(nameof(GpuTierStatusLine));
     }
 
     private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)

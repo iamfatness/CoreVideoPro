@@ -126,7 +126,66 @@ public sealed record GpuTierPolicy(
         all.Where(r => operatorOverride || !CanvasExceedsCeiling(r)
                        || string.Equals(r, current, StringComparison.Ordinal)).ToList();
 
-    /// <summary>Single log/support-bundle line: tier + override pair only.</summary>
-    public string DescribeForLog(bool overrideActive) =>
-        $"gpu-tier-defaults tier={TierLabel} override={(overrideActive ? "yes" : "no")}";
+    /// <summary>Highest tile count the NumberBox may carry: never below the current value, so binding Maximum can never coerce (rewrite) a saved value.</summary>
+    public int TileMaximum(bool operatorOverride, int current) =>
+        Math.Max(operatorOverride ? ProductTileCapacity : EffectiveTileCeiling, current);
+
+    /// <summary>Measured status line for Settings: the ceilings and the product cap, stated plainly.</summary>
+    public string StatusLine(bool operatorOverride)
+    {
+        if (Tier == GpuVramTier.Unknown)
+        {
+            return "GPU tier: unknown (VRAM not measured), treated as under 8 GB: canvas up to 1080p, tiles up to "
+                + EffectiveTileCeiling + ". 1440p counts as above the 1080p ceiling.";
+        }
+
+        var label = Tier switch
+        {
+            GpuVramTier.Under8Gb => "under 8 GB",
+            GpuVramTier.From8To16Gb => "8 to 16 GB",
+            _ => "16 GB+"
+        };
+        var cap = TileCeiling > ProductTileCapacity ? " (product limit)" : string.Empty;
+        return $"GPU tier: {label}: canvas up to {(CanvasCeiling == Canvas4K ? "4K" : "1080p")}, tiles up to {EffectiveTileCeiling}{cap}."
+            + " 1440p counts as above the 1080p ceiling."
+            + (operatorOverride ? " Limits lifted by the operator." : string.Empty);
+    }
+
+    /// <summary>
+    /// Pure load-time resolution. A profile is "fresh" for the canvas only when
+    /// no canvas size was ever saved; the tile default applies only when there
+    /// is no preferences file at all, so a saved tile count is never discarded.
+    /// </summary>
+    public GpuTierResolution Resolve(ProductionOutputPreferences? preferences)
+    {
+        var canvasFromDefault = preferences is null || string.IsNullOrWhiteSpace(preferences.CanvasResolution);
+        var tilesFromDefault = preferences is null;
+        var canvas = ResolveCanvas(preferences?.CanvasResolution, out var canvasAbove);
+        var tiles = ResolveTileCount(tilesFromDefault ? null : preferences!.MultiviewTileCount, out var tilesAbove);
+        return new GpuTierResolution(canvas, tiles, preferences?.GpuTierLimitsOverride ?? false,
+            canvasAbove, tilesAbove, canvasFromDefault, tilesFromDefault);
+    }
+
+    /// <summary>Startup log / support-bundle line: tier plus separate switch and above-ceiling facts. No per-unit identifiers.</summary>
+    public string FormatStartupLog(GpuTierResolution r) =>
+        $"gpu-tier-defaults tier={TierLabel} switch={(r.SwitchOn ? "on" : "off")} canvasAbove={(r.CanvasAboveCeiling ? "yes" : "no")}"
+        + $" tilesAbove={(r.TilesAboveCeiling ? "yes" : "no")} canvasSource={(r.CanvasFromDefault ? "tier-default" : "saved")}"
+        + $" tilesSource={(r.TilesFromDefault ? "tier-default" : "saved")}";
+
+    public string FormatSwitchLog(bool switchOn) => $"gpu-tier-defaults tier={TierLabel} switch={(switchOn ? "on" : "off")}";
+
+    /// <summary>Operator picked a canvas above the tier default: log the override, else null.</summary>
+    public string? FormatCanvasChangeLog(string? newCanvas) =>
+        HeightOf(newCanvas) > HeightOf(DefaultCanvas)
+            ? $"gpu-tier-defaults tier={TierLabel} canvasOverride={newCanvas} default={DefaultCanvas}"
+            : null;
 }
+
+public sealed record GpuTierResolution(
+    string Canvas,
+    int TileCount,
+    bool SwitchOn,
+    bool CanvasAboveCeiling,
+    bool TilesAboveCeiling,
+    bool CanvasFromDefault,
+    bool TilesFromDefault);

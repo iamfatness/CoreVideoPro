@@ -99,10 +99,85 @@ public sealed class GpuTierPolicyTests
     }
 
     [Fact]
-    public void LogLine_CarriesOnlyTierAndOverride()
+    public void StartupLog_ReportsSwitchAndAboveFactsSeparately()
     {
-        var line = GpuTierPolicy.ForTier(GpuVramTier.From8To16Gb).DescribeForLog(true);
-        Assert.Equal("gpu-tier-defaults tier=8-16gb override=yes", line);
+        var low = GpuTierPolicy.ForTier(GpuVramTier.Under8Gb);
+        var r = low.Resolve(new ProductionOutputPreferences { CanvasResolution = "3840x2160", MultiviewTileCount = 10 });
+        Assert.Equal(
+            "gpu-tier-defaults tier=under-8gb switch=off canvasAbove=yes tilesAbove=yes canvasSource=saved tilesSource=saved",
+            low.FormatStartupLog(r));
+        var on = low.Resolve(new ProductionOutputPreferences { CanvasResolution = "1920x1080", GpuTierLimitsOverride = true });
+        Assert.Contains("switch=on canvasAbove=no tilesAbove=yes", low.FormatStartupLog(on));
+        Assert.Contains("canvasSource=tier-default tilesSource=tier-default", low.FormatStartupLog(low.Resolve(null)));
+    }
+
+    [Fact]
+    public void CanvasChangeAboveTierDefault_IsLogged_OtherwiseNot()
+    {
+        var mid = GpuTierPolicy.ForTier(GpuVramTier.From8To16Gb);
+        Assert.Equal("gpu-tier-defaults tier=8-16gb canvasOverride=3840x2160 default=1920x1080", mid.FormatCanvasChangeLog("3840x2160"));
+        Assert.Null(mid.FormatCanvasChangeLog("1920x1080"));
+        Assert.Null(mid.FormatCanvasChangeLog(null));
+    }
+
+    [Theory]
+    [InlineData(GpuVramTier.Under8Gb, false, 10, 10)]   // saved 10 above ceiling 9: Maximum must not coerce it
+    [InlineData(GpuVramTier.Unknown, false, 10, 10)]
+    [InlineData(GpuVramTier.Under8Gb, false, 4, 9)]
+    [InlineData(GpuVramTier.Under8Gb, true, 4, 10)]
+    [InlineData(GpuVramTier.AtLeast16Gb, false, 4, 10)]
+    public void TileMaximum_NeverFallsBelowCurrentValue(GpuVramTier tier, bool over, int current, int expected)
+    {
+        var max = GpuTierPolicy.ForTier(tier).TileMaximum(over, current);
+        Assert.Equal(expected, max);
+        Assert.True(max >= current);
+    }
+
+    [Fact]
+    public void SavedTenTilesOnUnder8Gb_AreKeptAndSerializeUnchanged()
+    {
+        var saved = new ProductionOutputPreferences { CanvasResolution = "1920x1080", MultiviewTileCount = 10 };
+        var low = GpuTierPolicy.ForTier(GpuVramTier.Under8Gb);
+        var r = low.Resolve(saved);
+        Assert.Equal(10, r.TileCount);
+        Assert.Equal("1920x1080", r.Canvas);
+        Assert.Equal(10, low.TileMaximum(r.SwitchOn, r.TileCount)); // NumberBox cannot coerce down
+        Assert.Equal(saved.MultiviewTileCount, r.TileCount);
+    }
+
+    [Fact]
+    public void SavedTilesWithBlankCanvas_AreStillKept()
+    {
+        var saved = new ProductionOutputPreferences { CanvasResolution = null, MultiviewTileCount = 6 };
+        var r = GpuTierPolicy.ForTier(GpuVramTier.AtLeast16Gb).Resolve(saved);
+        Assert.Equal(6, r.TileCount);
+        Assert.False(r.TilesFromDefault);
+        Assert.Equal("3840x2160", r.Canvas);
+        Assert.True(r.CanvasFromDefault);
+    }
+
+    [Fact]
+    public void OlderVersionProfile_OnSixteenGbTier_ChangesNothing()
+    {
+        var prefs = ProductionOutputPreferencesSerializer.Deserialize(
+            "{\"Version\":11,\"CanvasResolution\":\"1920x1080\",\"MultiviewTileCount\":10}")!;
+        var r = GpuTierPolicy.ForBand("nvidia-vram16gb+").Resolve(prefs);
+        Assert.Equal("1920x1080", r.Canvas);
+        Assert.Equal(10, r.TileCount);
+        Assert.False(r.CanvasFromDefault);
+        Assert.False(r.TilesFromDefault);
+        Assert.False(r.CanvasAboveCeiling);
+        Assert.False(r.TilesAboveCeiling);
+    }
+
+    [Fact]
+    public void StatusLine_StatesCeilingsCapAndFourteenFortyRule()
+    {
+        var line = GpuTierPolicy.ForTier(GpuVramTier.AtLeast16Gb).StatusLine(false);
+        Assert.Contains("canvas up to 4K", line);
+        Assert.Contains("tiles up to 10 (product limit)", line);
+        Assert.Contains("1440p counts as above the 1080p ceiling", line);
+        Assert.Contains("not measured", GpuTierPolicy.ForTier(GpuVramTier.Unknown).StatusLine(false));
     }
 
     [Fact]
