@@ -46,7 +46,6 @@ public sealed class MediaCoreCommandBuilderTests
             IsActiveSpeaker: false,
             IsMuted: false,
             IsScreenSharing: false,
-            AudioLevel: 54,
             Health: "live"),
         new(
             Id: "p2",
@@ -57,7 +56,6 @@ public sealed class MediaCoreCommandBuilderTests
             IsActiveSpeaker: true,
             IsMuted: false,
             IsScreenSharing: true,
-            AudioLevel: 82,
             Health: "live")
     ];
 
@@ -117,14 +115,12 @@ public sealed class MediaCoreCommandBuilderTests
             {
                 Assert.Equal("interview-1", route.RouteId);
                 Assert.Equal("active-speaker", route.Mode);
-                Assert.Equal("mix", route.AudioRole);
                 Assert.Null(route.ParticipantId);
             },
             route =>
             {
                 Assert.Equal("interview-2", route.RouteId);
                 Assert.Equal("fixed", route.Mode);
-                Assert.Equal("isolated", route.AudioRole);
                 Assert.Equal("p1", route.ParticipantId);
             });
     }
@@ -184,12 +180,15 @@ public sealed class MediaCoreCommandBuilderTests
             .ExtensionData!["routes"]
             .EnumerateArray()
             .Single();
-        var ptz = route.GetProperty("ptz");
 
         Assert.Equal("fill", route.GetProperty("fitMode").GetString());
-        Assert.Equal(1.5, ptz.GetProperty("zoom").GetDouble());
-        Assert.Equal(-0.25, ptz.GetProperty("pan").GetDouble());
-        Assert.Equal(0.35, ptz.GetProperty("tilt").GetDouble());
+        // #764: sourceScale/sourceOffsetX/Y are what the core reads. The duplicate
+        // ptz{zoom,pan,tilt} block had no reader and is no longer sent.
+        Assert.Equal(1.5, route.GetProperty("sourceScale").GetDouble());
+        Assert.Equal(-0.25, route.GetProperty("sourceOffsetX").GetDouble());
+        Assert.Equal(0.35, route.GetProperty("sourceOffsetY").GetDouble());
+        Assert.False(route.TryGetProperty("ptz", out _));
+        Assert.False(route.TryGetProperty("audioRole", out _));
     }
 
     [Fact]
@@ -283,6 +282,7 @@ public sealed class MediaCoreCommandBuilderTests
         var route = sceneGraph.ExtensionData!["routes"].EnumerateArray().Single();
         var grade = route.GetProperty("colorGrade");
 
+        // The named look is real: native/src/compositor/ColorGradeParams.h maps it to shader constants.
         Assert.Equal("warm-film", grade.GetProperty("lut").GetString());
         Assert.Equal(8, grade.GetProperty("exposure").GetInt32());
         Assert.Equal(12, grade.GetProperty("contrast").GetInt32());
@@ -345,13 +345,11 @@ public sealed class MediaCoreCommandBuilderTests
             route =>
             {
                 Assert.Equal("fixed", route.Mode);
-                Assert.Equal("isolated", route.AudioRole);
                 Assert.Equal("p2", route.ParticipantId);
             },
             route =>
             {
                 Assert.Equal("screen-share", route.Mode);
-                Assert.Equal("audience", route.AudioRole);
                 Assert.Null(route.ParticipantId);
             });
     }
@@ -576,6 +574,9 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Contains("set-recording-targets", commandTypes);
         Assert.Contains("start-recording-session", commandTypes);
         Assert.Contains("push-caption-cue", commandTypes);
+        // #767: the core's caption track is enabled by default and nothing in the shell can
+        // disable it; restating "enabled: true" on every sync was a dead command.
+        Assert.DoesNotContain("set-caption-enabled", commandTypes);
     }
 
     [Fact]
@@ -894,32 +895,56 @@ public sealed class MediaCoreCommandBuilderTests
             Participants = Participants,
             BrandKit = new MediaCoreBrandKitWire(
                 "Launch Briefing",
-                "CVP",
-                "logo-main",
-                "Primary Logo",
                 @"C:\media\brand\logo.png",
                 "#1cc7b8",
                 "#f2b84b",
                 "#081014",
-                "Inter",
-                "executive",
-                "boxed",
-                "auto")
+                "Inter")
         });
 
         var brand = commands.Single(command => command.Type == "set-brand-kit");
         Assert.Equal("Launch Briefing", GetString(brand, "name"));
-        Assert.Equal("CVP", GetString(brand, "logoText"));
-        Assert.Equal("logo-main", GetString(brand, "logoAssetId"));
-        Assert.Equal("Primary Logo", GetString(brand, "logoAssetName"));
-        Assert.Equal(@"C:\media\brand\logo.png", GetString(brand, "logoAssetPath"));
         Assert.Equal("#1cc7b8", GetString(brand, "brandColor"));
         Assert.Equal("#f2b84b", GetString(brand, "accentColor"));
         Assert.Equal("#081014", GetString(brand, "backgroundColor"));
         Assert.Equal("Inter", GetString(brand, "fontFamily"));
-        Assert.Equal("executive", GetString(brand, "lowerThirdStyle"));
-        Assert.Equal("boxed", GetString(brand, "captionStyle"));
-        Assert.Equal("auto", GetString(brand, "defaultOverlayBehavior"));
+        // #764: fields the core never applied are no longer offered or sent.
+        foreach (var dead in new[] { "logoText", "logoAssetId", "logoAssetName", "logoAssetPath", "lowerThirdStyle", "captionStyle", "defaultOverlayBehavior" })
+        {
+            Assert.False(brand.ExtensionData!.ContainsKey(dead), dead);
+        }
+    }
+
+    [Fact]
+    public void VirtualCameraCommandCarriesNoSizeTheCoreWouldIgnore()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "camera-test",
+            VirtualCameraEnabled = true
+        });
+
+        var camera = commands.Single(command => command.Type == "sync-virtual-camera");
+        Assert.True(camera.ExtensionData!["on"].GetBoolean());
+        foreach (var dead in new[] { "width", "height", "fps" })
+        {
+            Assert.False(camera.ExtensionData.ContainsKey(dead), dead);
+        }
+    }
+
+    [Fact]
+    public void AudioMixChannelsCarryNoEchoedInputLevel()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "mix-test",
+            AudioMixChannels = [new MediaCoreAudioMixChannelWire("p1", Muted: false, NoiseSuppression: true, ManualGainDb: null)]
+        });
+
+        var mix = commands.Single(command => command.Type == "sync-participant-audio-mix");
+        var channel = mix.ExtensionData!["channels"].EnumerateArray().Single();
+        Assert.Equal("p1", channel.GetProperty("participantId").GetString());
+        Assert.False(channel.TryGetProperty("inputLevel", out _));
     }
 
     [Fact]
@@ -1270,7 +1295,7 @@ public sealed class MediaCoreCommandBuilderTests
         return value;
     }
 
-    private static IReadOnlyList<(string RouteId, string Mode, string AudioRole, string? ParticipantId)> GetRoutes(
+    private static IReadOnlyList<(string RouteId, string Mode, string? ParticipantId)> GetRoutes(
         NativeMediaCoreCommand command)
     {
         if (command.ExtensionData is null ||
@@ -1289,14 +1314,11 @@ public sealed class MediaCoreCommandBuilderTests
                 var mode = route.TryGetProperty("mode", out var modeElement)
                     ? modeElement.GetString() ?? string.Empty
                     : string.Empty;
-                var audioRole = route.TryGetProperty("audioRole", out var audioRoleElement)
-                    ? audioRoleElement.GetString() ?? string.Empty
-                    : string.Empty;
                 string? participantId = route.TryGetProperty("participantId", out var participantElement) &&
                                           participantElement.ValueKind == JsonValueKind.String
                     ? participantElement.GetString()
                     : null;
-                return (routeId, mode, audioRole, participantId);
+                return (routeId, mode, participantId);
             })
             .ToList();
     }

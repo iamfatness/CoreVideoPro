@@ -841,7 +841,6 @@
 
                     <Button Style="{StaticResource AutomationToggleButton}" Width="190"
                             Command="{x:Bind ViewModel.ToggleAutomationCommand}"
-                            IsEnabled="{x:Bind ViewModel.Transport.SetAndForgetCanToggle, Mode=OneWay}"
                             Background="{x:Bind ViewModel.Transport.SetAndForgetButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.Transport.SetAndForgetButtonBorder, Mode=OneWay}">
                         <StackPanel Orientation="Horizontal" Spacing="10">
@@ -906,24 +905,15 @@
                                         <TextBlock Text="{x:Bind ViewModel.LowerThirdKeyStatus, Mode=OneWay}"
                                                    FontSize="12"
                                                    Foreground="{StaticResource StudioMutedBrush}" />
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel Spacing="4">
-                                                <TextBlock Text="Position" FontSize="11" />
-                                                <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.LowerThirdPositionOptions, Mode=OneWay}"
-                                                          SelectedItem="{x:Bind ViewModel.Overlays.LowerThirdPosition, Mode=TwoWay}"
-                                                          HorizontalAlignment="Stretch" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Column="1" Spacing="4">
-                                                <TextBlock Text="Style" FontSize="11" />
-                                                <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.BrandLowerThirdStyleOptions, Mode=OneWay}"
-                                                          SelectedItem="{x:Bind ViewModel.Overlays.BrandLowerThirdStyle, Mode=TwoWay}"
-                                                          HorizontalAlignment="Stretch" />
-                                            </StackPanel>
-                                        </Grid>
+                                        <!-- #764: the "Style" (solid/minimal/gradient) combo is gone; the core stored
+                                             the string and never read it. The look itself is the lower-third
+                                             appearance designer. -->
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Text="Position" FontSize="11" />
+                                            <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.LowerThirdPositionOptions, Mode=OneWay}"
+                                                      SelectedItem="{x:Bind ViewModel.Overlays.LowerThirdPosition, Mode=TwoWay}"
+                                                      HorizontalAlignment="Stretch" />
+                                        </StackPanel>
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />

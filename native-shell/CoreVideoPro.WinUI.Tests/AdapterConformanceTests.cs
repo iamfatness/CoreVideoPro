@@ -45,12 +45,6 @@ internal sealed class RecordingOhgHostFacade : IOhgHostFacade
         return true;
     }
 
-    public bool SetInputLowerThirdTitle(int slot, string title)
-    {
-        _records.Add($"SetInputLowerThirdTitle({slot}, {title})");
-        return true;
-    }
-
     public bool SceneExists(string sceneId)
     {
         _records.Add($"SceneExists({sceneId})");

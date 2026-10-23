@@ -17,9 +17,6 @@ public sealed partial class TransportViewModel : ObservableObject
     private bool _setAndForgetSelected;
 
     [ObservableProperty]
-    private bool _setAndForgetCanToggle = true;
-
-    [ObservableProperty]
     private string _automationStatusLabel = "On";
 
     [ObservableProperty]
@@ -184,10 +181,9 @@ public sealed partial class TransportViewModel : ObservableObject
         DiskLoadBarWidth = ResourceBarMaxWidth * DiskLoadPercent / 100d;
     }
 
-    public void ApplyAutomationState(ProductionMode mode, bool canToggle)
+    public void ApplyAutomationState(ProductionMode mode)
     {
         SetAndForgetSelected = mode == ProductionMode.SetAndForget;
-        SetAndForgetCanToggle = canToggle;
         AutomationStatusLabel = SetAndForgetSelected ? "On" : "Off";
     }
 

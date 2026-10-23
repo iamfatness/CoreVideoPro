@@ -305,7 +305,6 @@ public sealed class NativeMediaCoreOutputSender
     public int? LastFrameNumber { get; init; }
     public int FramesSent { get; init; }
     public int RetryCount { get; init; }
-    public double LatencyMs { get; init; }
     public double BitrateMbps { get; init; }
     public long AudioFramesSent { get; init; }
     public long AudioBytesSent { get; init; }
@@ -632,7 +631,6 @@ public sealed class NativeMediaCoreCaptionCue
     public required string Text { get; init; }
     public string? Speaker { get; init; }
     public double AtMs { get; init; }
-    public double Confidence { get; init; }
 }
 
 public sealed class NativeMediaCoreCaptionTrack
@@ -640,24 +638,16 @@ public sealed class NativeMediaCoreCaptionTrack
     public bool Enabled { get; init; }
     public required string Status { get; init; }
     public NativeMediaCoreCaptionCue? CurrentCue { get; init; }
-    public double LatencyMs { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
 public sealed class NativeMediaCoreBrandKit
 {
     public required string Name { get; init; }
-    public required string LogoText { get; init; }
-    public string? LogoAssetId { get; init; }
-    public string? LogoAssetName { get; init; }
-    public string? LogoAssetPath { get; init; }
     public required string BrandColor { get; init; }
     public required string AccentColor { get; init; }
     public required string BackgroundColor { get; init; }
     public required string FontFamily { get; init; }
-    public required string LowerThirdStyle { get; init; }
-    public required string CaptionStyle { get; init; }
-    public required string DefaultOverlayBehavior { get; init; }
     public int AppliedOverlayCount { get; init; }
     public required string Summary { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];
@@ -809,14 +799,10 @@ public sealed record NativeMediaCoreDiagnosticsSnapshot
     public NativeMediaCoreBrandKit BrandKit { get; init; } = new()
     {
         Name = "Default",
-        LogoText = "CV",
         BrandColor = "#111111",
         AccentColor = "#3366ff",
         BackgroundColor = "#000000",
         FontFamily = "Inter",
-        LowerThirdStyle = "solid",
-        CaptionStyle = "medium sentence captions",
-        DefaultOverlayBehavior = "all-off",
         Summary = "Idle"
     };
     public NativeMediaCoreOverlayState OverlayState { get; init; } = new()
@@ -935,14 +921,10 @@ public sealed record NativeMediaCoreStateSnapshot
     public NativeMediaCoreBrandKit BrandKit { get; init; } = new()
     {
         Name = "Default",
-        LogoText = "CV",
         BrandColor = "#111111",
         AccentColor = "#3366ff",
         BackgroundColor = "#000000",
         FontFamily = "Inter",
-        LowerThirdStyle = "solid",
-        CaptionStyle = "medium sentence captions",
-        DefaultOverlayBehavior = "all-off",
         Summary = "Idle"
     };
     public NativeMediaCoreOverlayState OverlayState { get; init; } = new()

@@ -25,19 +25,11 @@ namespace CoreVideoPro.WinUI.Services;
 /// </summary>
 public sealed class StudioViewModelOhgFacade : IOhgHostFacade
 {
-    /// <summary>Controller ruling (2026-09-07): the shell has no per-input lower-third TITLE
-    /// field, so the nameplate's `location` line is dropped in 7a and carried to Plan 7b. Logged
-    /// ONCE per facade lifetime — a nameplate change per look would otherwise flood the log.</summary>
-    internal const string LowerThirdTitleUnsupported =
-        "ohg: per-input lower-third titles are not supported by the shell yet (nameplate location dropped)";
-
     private static readonly HashSet<string> KnownTransitions =
         new(StringComparer.OrdinalIgnoreCase) { "cut", "fade", "dip", "wipe" };
 
     private readonly StudioViewModel _vm;
     private readonly Action<string> _log;
-
-    private bool _reportedLowerThirdTitleUnsupported;
 
     public StudioViewModelOhgFacade(StudioViewModel viewModel, Action<string>? log = null)
     {
@@ -80,20 +72,6 @@ public sealed class StudioViewModelOhgFacade : IOhgHostFacade
 
         using var scope = ShowInputWriteScope.Enter("ohg.setNameplates");
         editor.DisplayName = name ?? string.Empty;  // blank resets to the derived name
-        return true;
-    }
-
-    public bool SetInputLowerThirdTitle(int slot, string title)
-    {
-        // A no-op that reports SUCCESS on purpose: refusing would make every setNameplates
-        // command a refusal in the engine's eyes and drown the real "slot unassigned" refusals.
-        // The gap is stated once, loudly, instead.
-        if (!_reportedLowerThirdTitleUnsupported)
-        {
-            _reportedLowerThirdTitleUnsupported = true;
-            _log(LowerThirdTitleUnsupported);
-        }
-
         return true;
     }
 

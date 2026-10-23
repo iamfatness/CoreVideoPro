@@ -24,9 +24,9 @@ public sealed class TilesAudioSourceLatchTests
             EngineRunning = true,
             Participants =
             [
-                new MediaCoreParticipantWire("a", "A", "guest", "main", "Main", false, false, false, 0,
+                new MediaCoreParticipantWire("a", "A", "guest", "main", "Main", false, false, false,
                     aCameraOn ? "live" : "video-off"),
-                new MediaCoreParticipantWire("b", "B", "guest", "main", "Main", false, false, false, 0, "live")
+                new MediaCoreParticipantWire("b", "B", "guest", "main", "Main", false, false, false, "live")
             ],
             ProgramTilesLayer = wall,
             StickyAudioParticipantIds = latch.Observe(true, "gallery", wall, null, null, Everyone)
@@ -106,8 +106,8 @@ public sealed class TilesAudioSourceLatchTests
             EngineRunning = true,
             Participants =
             [
-                new MediaCoreParticipantWire("a", "A", "guest", "main", "Main", false, false, false, 0, "live"),
-                new MediaCoreParticipantWire("comms", "OH Comms 1", "guest", "main", "Main", false, false, false, 0, "video-off")
+                new MediaCoreParticipantWire("a", "A", "guest", "main", "Main", false, false, false, "live"),
+                new MediaCoreParticipantWire("comms", "OH Comms 1", "guest", "main", "Main", false, false, false, "video-off")
             ],
             ProgramTilesLayer = Wall("gallery", "a"),
             StickyAudioParticipantIds = sticky

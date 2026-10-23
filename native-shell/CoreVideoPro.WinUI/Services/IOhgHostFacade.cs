@@ -31,10 +31,6 @@ public interface IOhgHostFacade
     /// assigned.</summary>
     bool SetInputDisplayName(int slot, string name);
 
-    /// <summary>Set the Show Input's lower-third title line. False when the slot is not
-    /// assigned.</summary>
-    bool SetInputLowerThirdTitle(int slot, string title);
-
     /// <summary>Does a scene with this id exist right now?</summary>
     bool SceneExists(string sceneId);
 

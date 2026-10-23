@@ -102,7 +102,15 @@ public static class FirstFrameValidationEvidenceBuilder
     {
         var meetingState = ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(snapshot.MeetingState);
         var participantCount = Math.Max(existing.ParticipantCount, snapshot.Participants.Count);
-        var liveFrameCount = Math.Max(existing.LiveZoomFrameCount, snapshot.SourceSnapshot.LiveFrameCount);
+        // #766: a Zoom video frame is proven by the spine's per-subscription frame counters
+        // (carried on the snapshot) or by an observed frame event, never by
+        // SourceSnapshot.LiveFrameCount, which the capture merger once set to the PARTICIPANT
+        // count: joining with one participant "proved" a video frame that was never received.
+        var liveFrameCount = Math.Max(
+            existing.LiveZoomFrameCount,
+            snapshot.ZoomSubscriptions
+                .Where(subscription => subscription.Kind == "participant-video")
+                .Sum(subscription => subscription.FramesReceived));
         var programFrameCount = Math.Max(existing.ProgramFrameCount, snapshot.ProgramFrameCount);
         var audioPacketCount = Math.Max(existing.AudioPacketCount, snapshot.AudioMixSession.MixedFrameCount);
         var audioActiveParticipantCount = Math.Max(
@@ -113,10 +121,13 @@ public static class FirstFrameValidationEvidenceBuilder
                 participant.Status.Equals("balanced", StringComparison.Ordinal) ||
                 participant.Status.Equals("live", StringComparison.Ordinal)));
 
+        // A preview frame is observed only when the core published preview pixels or a
+        // shared texture. ProgramTransport.FrameNumber is the program render counter the
+        // mapper derives from health.frameCount; it says the core rendered, not that the
+        // shell ever received a preview frame.
         var preview = snapshot.ProgramFramePreview;
         var previewObserved = existing.ProgramPreviewFrameObserved ||
-                              IsNativePreviewPresent(preview) ||
-                              snapshot.ProgramTransport.FrameNumber > 0;
+                              IsNativePreviewPresent(preview);
 
         return existing with
         {
@@ -163,7 +174,6 @@ public static class FirstFrameValidationEvidenceBuilder
         var audioActiveParticipantCount = Math.Max(
             existing.AudioActiveParticipantCount,
             spine.Participants.Count(participant =>
-                participant.AudioLevel > 0 ||
                 participant.Talking ||
                 !participant.Muted));
 

@@ -956,7 +956,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SetBrandKit(new BrandKit
         {
             Name = BrandKit.Name,
-            LogoText = BrandKit.LogoText,
             LogoAssetId = asset.Id,
             LogoAssetName = asset.Name,
             LogoAssetPath = asset.FilePath,
@@ -964,9 +963,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AccentColor = BrandKit.AccentColor,
             BackgroundColor = BrandKit.BackgroundColor,
             FontFamily = BrandKit.FontFamily,
-            LowerThirdStyle = BrandKit.LowerThirdStyle,
             LowerThirdAppearance = BrandKit.LowerThirdAppearance,
-            CaptionStyle = BrandKit.CaptionStyle,
             DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
         });
         CommandStatus = $"{asset.Name} assigned as brand logo";
@@ -1012,11 +1009,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<AudioProcessingTargetOption> AudioProcessingTargetOptions { get; private set; } = [];
     private string _audioProcessingTargetsSignature = string.Empty;
-
-    public string CaptionQualitySummary =>
-        ProductionStateHelper.CaptionQualitySummary(
-            !string.IsNullOrWhiteSpace(CaptionText) || CaptionTranscript.Count > 0,
-            CaptionTranscript.Count);
 
     public ObservableCollection<SceneCanvasLayerViewModel> PreviewCanvasLayers { get; } = [];
 
@@ -2022,8 +2014,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string SelectedMuteButtonLabel =>
         SelectedAudioMix?.Muted == true ? "Unmute in mix" : "Mute in mix";
 
-    public int SelectedOutputLevel =>
-        SelectedAudioMix?.OutputLevel ?? SelectedParticipant?.AudioLevel ?? 0;
+    // #765: the only level is the one the core measures per mixer channel.
+    public int SelectedOutputLevel => SelectedAudioMix?.OutputLevel ?? 0;
 
     public string SelectedInsertChainLabel =>
         SelectedAudioMix is { PluginInserts.Count: > 0 } mix
@@ -5635,8 +5627,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public bool HasCaptionTranscript => CaptionTranscript.Count > 0;
 
+    // #767: honest about the source. CoreVideo has no speech-to-text; the caption track only
+    // carries cues the show engine (setQuestion) or a control client pushed.
     public string CaptionTranscriptEmptyGuidance =>
-        "Caption lines appear here when the engine is live and the caption track publishes cues.";
+        "No caption cues yet. Cues come from the show engine's question feed or a control client; CoreVideo does not transcribe speech.";
 
     [RelayCommand]
     private void RefreshMediaBin()
@@ -5897,7 +5891,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         BrandKit = new BrandKit
         {
             Name = BrandKit.Name,
-            LogoText = BrandKit.LogoText,
             LogoAssetId = asset.Id,
             LogoAssetName = asset.Name,
             LogoAssetPath = asset.FilePath,
@@ -5905,9 +5898,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AccentColor = BrandKit.AccentColor,
             BackgroundColor = BrandKit.BackgroundColor,
             FontFamily = BrandKit.FontFamily,
-            LowerThirdStyle = BrandKit.LowerThirdStyle,
             LowerThirdAppearance = BrandKit.LowerThirdAppearance,
-            CaptionStyle = BrandKit.CaptionStyle,
             DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
         };
         Overlays.NotifyBrandKitChanged();
@@ -7442,7 +7433,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AutomationScenePolicySummary));
         OnPropertyChanged(nameof(AutomationOverlayPolicySummary));
         OnPropertyChanged(nameof(AutomationTakeModeLabel));
-        OnPropertyChanged(nameof(CaptionQualitySummary));
         RefreshAudioReadoutBindings();
         // ISO-4: "N ISOs armed" + per-stream health, scalar props per snapshot apply.
         RefreshIsoReadouts();
@@ -8709,7 +8699,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                         : participant.Talking == true,
                     participant.Muted == true,
                     participant.SharingScreen == true,
-                    participant.AudioLevel ?? 0,
                     // #478: VideoOn must reach the spine, or a camera-off guest reads as live
                     // and spends a capped video subscription on no frames.
                     LiveProductionSync.NormalizeFeedHealthLabel(participant)))
@@ -8907,7 +8896,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 participant.IsActiveSpeaker,
                 participant.IsMuted,
                 participant.IsScreenSharing,
-                participant.AudioLevel,
                 MapParticipantHealth(participant.Health)))
             .ToList();
 
@@ -9111,17 +9099,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SourcePolicies = BuildSourcePolicyWires(),
             BrandKit = new MediaCoreBrandKitWire(
                 BrandKit.Name,
-                BrandKit.LogoText,
-                BrandKit.LogoAssetId,
-                BrandKit.LogoAssetName,
                 BrandKit.LogoAssetPath,
                 BrandKit.BrandColor,
                 BrandKit.AccentColor,
                 BrandKit.BackgroundColor,
                 BrandKit.FontFamily,
-                BrandKit.LowerThirdStyle,
-                BrandKit.CaptionStyle,
-                BrandKit.DefaultOverlayBehavior, BrandKit.LowerThirdAppearance),
+                BrandKit.LowerThirdAppearance),
             AudioLimiterEnabled = MasterLimiterEnabled,
             AudioMasteringEnabled = MasteringEnabled,
             AudioMasteringTargetLufs = MasteringTargetLufs,
@@ -9479,7 +9462,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // serializing it here leaves an unmuted guest gated until the next sync.
         return new MediaCoreAudioMixChannelWire(
             sourceId,
-            Math.Clamp(participant?.AudioLevel ?? mix?.OutputLevel ?? 0, 0, 100),
             ResolveMixerMute(mix?.Muted),
             mix?.NoiseSuppression ?? false,
             Math.Abs(manualGain) < 0.05 ? null : manualGain,
@@ -10915,7 +10897,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _captionTranscriptPatches.Clear();
         CaptionTranscript = [];
         OnPropertyChanged(nameof(CaptionTranscript));
-        OnPropertyChanged(nameof(CaptionQualitySummary));
         OnPropertyChanged(nameof(HasCaptionTranscript));
         OutputStatus = "Outputs idle";
         OutputSessionStatus = "Outputs idle";
@@ -10945,7 +10926,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (patch.CaptionText is { Length: > 0 } captionText)
         {
             CaptionText = captionText;
-            Overlays.NotifyCaptionContentChanged();
         }
 
         if (patch.CaptionSpeaker is { Length: > 0 } captionSpeaker)
@@ -11001,7 +10981,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             BrandKit = new BrandKit
             {
                 Name = brandKitPatch.Name,
-                LogoText = brandKitPatch.LogoText,
                 LogoAssetId = BrandKit.LogoAssetId,
                 LogoAssetName = BrandKit.LogoAssetName,
                 LogoAssetPath = BrandKit.LogoAssetPath,
@@ -11009,9 +10988,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 AccentColor = brandKitPatch.AccentColor,
                 BackgroundColor = brandKitPatch.BackgroundColor,
                 FontFamily = brandKitPatch.FontFamily,
-                LowerThirdStyle = brandKitPatch.LowerThirdStyle,
                 LowerThirdAppearance = BrandKit.LowerThirdAppearance,
-                CaptionStyle = BrandKit.CaptionStyle,
                 DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
             };
             Overlays.NotifyBrandKitChanged();
@@ -11041,12 +11018,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Id = entry.Id,
                 SpeakerName = entry.SpeakerName,
                 Role = entry.Role,
-                Text = entry.Text,
-                Confidence = entry.Confidence
+                Text = entry.Text
             })
             .ToList();
         OnPropertyChanged(nameof(CaptionTranscript));
-        OnPropertyChanged(nameof(CaptionQualitySummary));
         OnPropertyChanged(nameof(HasCaptionTranscript));
     }
 
@@ -11085,7 +11060,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     Role = ParticipantRole.Guest,
                     BreakoutRoomName = "Native PCM",
                     Health = mix.OutputLevel > 0 ? FeedHealth.Live : FeedHealth.Recovering,
-                    AudioLevel = mix.OutputLevel,
                     IsMuted = mix.Muted || mix.SourceMuted
                 };
 
@@ -11165,7 +11139,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Role = ParticipantRole.Guest,
                 BreakoutRoomName = "Native PCM",
                 Health = mix.OutputLevel > 0 ? FeedHealth.Live : FeedHealth.Recovering,
-                AudioLevel = mix.OutputLevel,
                 IsMuted = mix.Muted || mix.SourceMuted
             };
         var gain = NormalizeMixerGain(mix.ManualGainDb);
@@ -11833,7 +11806,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdPosition = Overlays.LowerThirdPosition,
             LowerThirdBuildInMs = NormalizeLowerThirdTimingMs(LowerThirdBuildInMs),
             LowerThirdBuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
-            BrandLowerThirdStyle = BrandKit.LowerThirdStyle,
             LowerThirdAppearance = BrandKit.LowerThirdAppearance,
             LowerThirdPresets = Overlays.LowerThirdPresets.ToDictionary(p => p.Key,p => p.Value),
             BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior,
@@ -11980,13 +11952,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Overlays.LowerThirdPosition = preferences.LowerThirdPosition;
         }
 
-        if (!string.IsNullOrWhiteSpace(preferences.BrandLowerThirdStyle) ||
-            !string.IsNullOrWhiteSpace(preferences.BrandDefaultOverlayBehavior))
+        if (!string.IsNullOrWhiteSpace(preferences.BrandDefaultOverlayBehavior))
         {
             BrandKit = new BrandKit
             {
                 Name = BrandKit.Name,
-                LogoText = BrandKit.LogoText,
                 LogoAssetId = BrandKit.LogoAssetId,
                 LogoAssetName = BrandKit.LogoAssetName,
                 LogoAssetPath = BrandKit.LogoAssetPath,
@@ -11995,13 +11965,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BackgroundColor = BrandKit.BackgroundColor,
                 FontFamily = BrandKit.FontFamily,
                 LowerThirdAppearance = BrandKit.LowerThirdAppearance,
-                LowerThirdStyle = string.IsNullOrWhiteSpace(preferences.BrandLowerThirdStyle)
-                    ? BrandKit.LowerThirdStyle
-                    : preferences.BrandLowerThirdStyle,
-                CaptionStyle = BrandKit.CaptionStyle,
-                DefaultOverlayBehavior = string.IsNullOrWhiteSpace(preferences.BrandDefaultOverlayBehavior)
-                    ? BrandKit.DefaultOverlayBehavior
-                    : preferences.BrandDefaultOverlayBehavior
+                DefaultOverlayBehavior = preferences.BrandDefaultOverlayBehavior
             };
             Overlays.NotifyBrandKitChanged();
         }

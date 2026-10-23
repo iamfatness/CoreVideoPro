@@ -90,7 +90,6 @@ public sealed class OhgAdapterSlotTests
         public int ShowInputCount => 10;
         public bool AssignZoomParticipant(int slot, string? participantId) => true;
         public bool SetInputDisplayName(int slot, string name) => true;
-        public bool SetInputLowerThirdTitle(int slot, string title) => true;
         public bool SceneExists(string sceneId) => true;
         public IReadOnlyList<string> CueSceneWithRoutes(string sceneId, IReadOnlyDictionary<string, int?> routeSlots) => Array.Empty<string>();
         public bool CanTake => true;

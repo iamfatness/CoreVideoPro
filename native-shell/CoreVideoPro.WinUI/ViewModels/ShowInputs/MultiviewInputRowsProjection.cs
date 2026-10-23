@@ -183,7 +183,6 @@ public sealed class MultiviewInputRowsProjection
             row.HasPreviewTile = false;
             row.PreviewSurface = null;
             row.PreviewTally = "none";
-            row.MeterWidth = 0;
             row.RosterEpoch = null;
             row.HighestObservationRevision = 0;
         }
@@ -360,7 +359,6 @@ public sealed class MultiviewInputRowsProjection
         }
         row.RosterEpoch = _lastRoster?.RosterEpoch;
         row.HighestObservationRevision = _lastRoster?.RosterRevision ?? 0;
-        row.MeterWidth = 0;
         if (_engineStopped || sourceId is null || slot?.InShow != true)
         {
             row.StatusLabel = "IDLE";
@@ -444,7 +442,6 @@ public sealed class MultiviewInputRowsProjection
             lock (_previewGate) _previewInstances[sourceId] = currentInstance;
             row.LastAppliedSourceInstance = currentInstance;
         }
-        row.MeterWidth = Math.Clamp(participant.AudioLevel ?? 0, 0, 100) * 0.8;
         if (participant.VideoOn == false)
         {
             row.StatusLabel = "VIDEO OFF";

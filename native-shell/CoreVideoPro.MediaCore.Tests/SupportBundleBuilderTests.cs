@@ -336,7 +336,6 @@ public sealed class SupportBundleBuilderTests
         Assert.NotNull(bundle.MediaCore);
         Assert.Equal("scene-main", bundle.MediaCore!.SceneId);
         Assert.Equal("plan-1", bundle.MediaCore.RenderPlanId);
-        Assert.Equal(42, bundle.MediaCore.Source.DeliveredFrameCount);
         Assert.Equal("native-frame", bundle.MediaCore.Source.Backing);
         Assert.Equal(48000, bundle.MediaCore.Audio.Capture.CaptureFramesReceived);
         Assert.Equal(48000, bundle.MediaCore.Audio.Capture.RoutedMasterFrames);
@@ -862,29 +861,6 @@ public sealed class SupportBundleBuilderTests
                 }
             ]
         },
-        OperatorActions =
-        [
-            new NativeMediaCoreOperatorAction
-            {
-                ActionId = "a1",
-                Severity = "warning",
-                Area = "source",
-                Title = "Resubscribe feed",
-                Detail = "p3 went stale"
-            }
-        ],
-        EventLog =
-        [
-            new NativeMediaCoreEvent
-            {
-                EventId = "e1",
-                AtMs = 1000,
-                Severity = "warning",
-                Area = "program",
-                Title = "Compositor degraded",
-                Detail = "dropped frames"
-            }
-        ],
         Warnings = ["compositor degraded"]
     };
 
@@ -908,4 +884,39 @@ public sealed class SupportBundleBuilderTests
             TotalDroppedFrames = 0,
             TotalBytesWritten = 4096
         };
+
+    // #766: a real core never publishes the snapshot's RenderPlan node (the mapper leaves it at
+    // the neutral "idle"), and never populates FrameCount, OperatorActions or EventLog. The
+    // bundle used to print "render plan: idle" and "delivered 0" for a core rendering Program at
+    // 60 fps, and shipped two always-empty sections.
+    [Fact]
+    public void Build_ReportsTheRenderedPlanNotTheIdlePlaceholder()
+    {
+        var rendering = new NativeMediaCoreStateSnapshot
+        {
+            SceneId = "scene-main",
+            ProgramFrame = new NativeMediaCoreProgramFrame
+            {
+                FrameNumber = 600, TimestampMs = 10_000, RenderPlanId = "scene-main:3:0",
+                Width = 1920, Height = 1080, Fps = 60, LayerCount = 2, Health = "live"
+            }
+        };
+
+        var bundle = SupportBundleBuilder.Build(rendering, new MediaCoreHealth());
+
+        Assert.Equal("scene-main:3:0", bundle.MediaCore!.RenderPlanId);
+        Assert.Contains(bundle.TriageLines, line => line.Contains("render plan: scene-main:3:0", StringComparison.Ordinal));
+        Assert.DoesNotContain(bundle.TriageLines, line => line.Contains("delivered", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Build_ReportsNoRenderPlanWhenTheCoreRenderedNothing()
+    {
+        var bundle = SupportBundleBuilder.Build(new NativeMediaCoreStateSnapshot(), new MediaCoreHealth());
+
+        Assert.Null(bundle.MediaCore!.RenderPlanId);
+        Assert.Contains(bundle.TriageLines, line => line.Contains("render plan: none", StringComparison.Ordinal));
+        Assert.DoesNotContain("OperatorActions", SupportBundleBuilder.Serialize(bundle), StringComparison.Ordinal);
+        Assert.DoesNotContain("EventLog", SupportBundleBuilder.Serialize(bundle), StringComparison.Ordinal);
+    }
 }

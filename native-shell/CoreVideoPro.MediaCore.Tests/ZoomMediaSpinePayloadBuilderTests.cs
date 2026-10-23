@@ -28,8 +28,8 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
             EngineRunning = true,
             Participants =
             [
-                new MediaCoreParticipantWire("p1", "Alex", "host", "main", "Main", true, false, false, 70, "live"),
-                new MediaCoreParticipantWire("p2", "Sam", "guest", "main", "Main", false, true, false, 0, "live")
+                new MediaCoreParticipantWire("p1", "Alex", "host", "main", "Main", true, false, false, "live"),
+                new MediaCoreParticipantWire("p2", "Sam", "guest", "main", "Main", false, true, false, "live")
             ],
             ProgramSceneRoutes = [Route("p1")],
             PreviewSceneRoutes = [Route("p2")]
@@ -46,6 +46,28 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
         Assert.Equal(2, subscriptions.Count(subscription => subscription["kind"]?.ToString() == "participant-video"));
         Assert.Equal(2, subscriptions.Count(subscription => subscription["kind"]?.ToString() == "participant-audio"));
         Assert.Equal(["p1"], Assert.IsAssignableFrom<IReadOnlyList<string>>(payload["directorExcludedParticipantIds"]));
+        // #765: the roster the shell sends carries no audioLevel (the core measures its own)
+        // and no networkQuality (the shell never had anything but a health label to invent
+        // "good" from; the SDK reports it, absent until then).
+        Assert.All(participants, participant =>
+        {
+            Assert.False(participant.ContainsKey("audioLevel"));
+            Assert.False(participant.ContainsKey("networkQuality"));
+        });
+    }
+
+    [Fact]
+    public void AnAbsentNetworkQualityIsNotReadAsGood()
+    {
+        var unknown = new RawParticipantEvent { UserId = "a", DisplayName = "A", VideoOn = true };
+        Assert.Null(unknown.NetworkQuality);
+        Assert.Equal("live", LiveProductionSync.NormalizeFeedHealthLabel(unknown));
+        var merged = ZoomMediaSpineSnapshotMerger.ToCaptureSnapshot(new ZoomMediaSpineNativeSnapshot
+        {
+            MeetingState = "in-meeting",
+            Participants = [new ZoomMediaSpineParticipant { SdkUserId = "a", DisplayName = "A" }]
+        });
+        Assert.Null(Assert.Single(merged.Participants).NetworkQuality);
     }
 
     [Fact]
@@ -56,8 +78,8 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
             EngineRunning = true,
             Participants =
             [
-                new MediaCoreParticipantWire("42", "Host", "Host", "main", "Main", true, false, false, 70, "live"),
-                new MediaCoreParticipantWire("77", "Guest", "guest", "main", "Main", false, false, false, 0, "live")
+                new MediaCoreParticipantWire("42", "Host", "Host", "main", "Main", true, false, false, "live"),
+                new MediaCoreParticipantWire("77", "Guest", "guest", "main", "Main", false, false, false, "live")
             ],
             DirectorExcludedParticipantIds = ["77"],
             ProgramSceneRoutes = [Route("42")],
@@ -79,7 +101,7 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
             MaxVideoSubscriptions = 0,
             Participants =
             [
-                new MediaCoreParticipantWire("p1", "Alex", "host", "main", "Main", true, false, false, 70, "live")
+                new MediaCoreParticipantWire("p1", "Alex", "host", "main", "Main", true, false, false, "live")
             ],
             ProgramSceneRoutes = [Route("p1")]
         });
@@ -317,9 +339,9 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
             EngineRunning = true,
             Participants =
             [
-                new MediaCoreParticipantWire("a", "A", "guest", "main", "Main", false, false, false, 0,
+                new MediaCoreParticipantWire("a", "A", "guest", "main", "Main", false, false, false,
                     LiveProductionSync.NormalizeFeedHealthLabel(cameraOff)),
-                new MediaCoreParticipantWire("b", "B", "guest", "main", "Main", false, false, false, 0,
+                new MediaCoreParticipantWire("b", "B", "guest", "main", "Main", false, false, false,
                     LiveProductionSync.NormalizeFeedHealthLabel(cameraOn))
             ],
             Multiview = Wall((0, "a"), (1, "b"))
@@ -552,7 +574,7 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
             Participants =
             [
                 Guest("here", "Here"),
-                new MediaCoreParticipantWire("away", "Away", "guest", "room-2", "Room 2", false, false, false, 0, "live")
+                new MediaCoreParticipantWire("away", "Away", "guest", "room-2", "Room 2", false, false, false, "live")
             ],
             Multiview = Wall((0, "here"), (1, "away"))
         });
@@ -696,7 +718,7 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
     }
 
     private static MediaCoreParticipantWire Guest(string id, string name, bool videoOn = true, bool speaker = false) =>
-        new(id, name, "guest", "main", "Main", speaker, false, false, 0, videoOn ? "live" : "video-off");
+        new(id, name, "guest", "main", "Main", speaker, false, false, videoOn ? "live" : "video-off");
 
     private static MediaCoreSceneRouteWire Route(string? participantId, string mode = "fixed") =>
         new($"route-{participantId ?? mode}", mode, "isolated", participantId);

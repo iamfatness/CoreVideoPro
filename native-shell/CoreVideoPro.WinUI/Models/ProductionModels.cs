@@ -50,7 +50,6 @@ public sealed class Participant
     public bool IsActiveSpeaker { get; init; }
     public bool IsMuted { get; init; }
     public bool IsScreenSharing { get; init; }
-    public int AudioLevel { get; init; }
     public FeedHealth Health { get; init; }
 
     public string RoleBadge => Role switch
@@ -672,7 +671,6 @@ public sealed record LowerThirdKeyState
 public sealed class BrandKit
 {
     public required string Name { get; init; }
-    public required string LogoText { get; init; }
     public string? LogoAssetId { get; init; }
     public string? LogoAssetName { get; init; }
     public string? LogoAssetPath { get; init; }
@@ -680,32 +678,20 @@ public sealed class BrandKit
     public required string AccentColor { get; init; }
     public required string BackgroundColor { get; init; }
     public required string FontFamily { get; init; }
-    public required string LowerThirdStyle { get; init; }
     public CoreVideoPro.MediaCore.Models.LowerThirdAppearance? LowerThirdAppearance { get; init; }
-    public required string CaptionStyle { get; init; }
+    /// <summary>Applied shell-side (StudioViewModel.ApplyBrandOverlayDefaults); never sent to the core.</summary>
     public required string DefaultOverlayBehavior { get; init; }
 
     public string LogoAssetLabel =>
         string.IsNullOrWhiteSpace(LogoAssetName) ? "No logo asset selected" : LogoAssetName;
 
     public string Summary =>
-        $"{Name} · {FontFamily} · lower-third {LowerThirdStyle} · logo \"{LogoText}\"";
+        $"{Name} · {FontFamily} · {LogoAssetLabel}";
     public BrandKit WithAppearance(CoreVideoPro.MediaCore.Models.LowerThirdAppearance? appearance) => new() {
-        Name=Name,LogoText=LogoText,LogoAssetId=LogoAssetId,LogoAssetName=LogoAssetName,LogoAssetPath=LogoAssetPath,
+        Name=Name,LogoAssetId=LogoAssetId,LogoAssetName=LogoAssetName,LogoAssetPath=LogoAssetPath,
         BrandColor=BrandColor,AccentColor=AccentColor,BackgroundColor=BackgroundColor,FontFamily=FontFamily,
-        LowerThirdStyle=LowerThirdStyle,LowerThirdAppearance=appearance,CaptionStyle=CaptionStyle,DefaultOverlayBehavior=DefaultOverlayBehavior
+        LowerThirdAppearance=appearance,DefaultOverlayBehavior=DefaultOverlayBehavior
     };
-}
-
-public sealed class CaptionStyle
-{
-    public required string FontSize { get; init; }
-    public required string TextColor { get; init; }
-    public required int BackgroundOpacity { get; init; }
-    public required bool Uppercase { get; init; }
-
-    public string Summary =>
-        $"{FontSize} captions · {(Uppercase ? "uppercase" : "sentence case")} · {BackgroundOpacity}% backdrop";
 }
 
 public sealed class CaptionTranscriptEntry
@@ -714,7 +700,6 @@ public sealed class CaptionTranscriptEntry
     public required string SpeakerName { get; init; }
     public required string Role { get; init; }
     public required string Text { get; init; }
-    public required int Confidence { get; init; }
 }
 
 public sealed class AudioParticipantRow : ObservableObject
@@ -943,22 +928,11 @@ public static class ProductionCatalog
     public static BrandKit BrandKit { get; } = new()
     {
         Name = "CoreVideo",
-        LogoText = "CoreVideo",
         BrandColor = "#44c1a1",
         AccentColor = "#f0a85c",
         BackgroundColor = "#0c1118",
         FontFamily = "Inter",
-        LowerThirdStyle = "gradient",
-        CaptionStyle = "medium sentence captions",
         DefaultOverlayBehavior = "all-off"
-    };
-
-    public static CaptionStyle CaptionStyle { get; } = new()
-    {
-        FontSize = "medium",
-        TextColor = "#f7fbf8",
-        BackgroundOpacity = 70,
-        Uppercase = false
     };
 
     public static ColorGrade ColorGrade { get; } = new()
@@ -1177,11 +1151,6 @@ public static class ProductionStateHelper
 
     public static string MediaBinSummary(int assetCount) =>
         assetCount == 0 ? "Media bin is empty" : $"{assetCount} assets in bin";
-
-    public static string CaptionQualitySummary(bool hasCaptions, int entryCount) =>
-        hasCaptions
-            ? $"{entryCount} caption lines · live"
-            : "No captions yet";
 
     public static AutoProductionState BuildAutomationRecommendation(
         IReadOnlyList<Participant> participants,

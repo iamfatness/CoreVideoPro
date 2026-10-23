@@ -55,7 +55,6 @@ public sealed class ProductionOutputPreferencesStoreTests
             LowerThirdPosition = "lower-right",
             LowerThirdBuildInMs = 450,
             LowerThirdBuildOutMs = 300,
-            BrandLowerThirdStyle = "minimal",
             BrandDefaultOverlayBehavior = "manual",
             VirtualCameraEnabled = true,
             VirtualCameraMirror = true,
@@ -107,7 +106,6 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.Equal("lower-right", roundTripped.LowerThirdPosition);
         Assert.Equal(450, roundTripped.LowerThirdBuildInMs);
         Assert.Equal(300, roundTripped.LowerThirdBuildOutMs);
-        Assert.Equal("minimal", roundTripped.BrandLowerThirdStyle);
         Assert.Equal("manual", roundTripped.BrandDefaultOverlayBehavior);
         Assert.Equal("media-bg-1", roundTripped.SceneBackgroundAssetIds["speaker-slides"]);
         Assert.Equal("media-bg-2", roundTripped.SceneBackgroundAssetIds["eight-up"]);

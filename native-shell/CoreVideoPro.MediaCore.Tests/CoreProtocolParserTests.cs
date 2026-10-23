@@ -243,9 +243,7 @@ public sealed class CoreProtocolParserTests
                     "videoOn": true,
                     "muted": false,
                     "talking": true,
-                    "sharingScreen": false,
-                    "audioLevel": 70,
-                    "networkQuality": "good"
+                    "sharingScreen": false
                   }
                 ],
                 "subscriptions": [],

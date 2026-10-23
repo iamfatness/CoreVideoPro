@@ -9,7 +9,7 @@ public sealed class GraphicsOverlaySyncTests
     [Fact]
     public void AppendCaptionTranscriptFromSnapshotAddsCueAndDedupesRepeats()
     {
-        var snapshot = BuildCaptionSnapshot("Welcome to the show.", "Sophia Martinez", atMs: 1200, confidence: 94);
+        var snapshot = BuildCaptionSnapshot("Welcome to the show.", "Sophia Martinez", atMs: 1200);
         var speakerRoles = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["Sophia Martinez"] = "Host"
@@ -22,7 +22,6 @@ public sealed class GraphicsOverlaySyncTests
         Assert.Equal("Sophia Martinez", second[0].SpeakerName);
         Assert.Equal("Host", second[0].Role);
         Assert.Equal("Welcome to the show.", second[0].Text);
-        Assert.Equal(94, second[0].Confidence);
         Assert.Equal(first, second);
     }
 
@@ -33,7 +32,7 @@ public sealed class GraphicsOverlaySyncTests
         for (var index = 0; index < GraphicsOverlaySync.MaxTranscriptEntries + 2; index++)
         {
             transcript = GraphicsOverlaySync.AppendCaptionTranscriptFromSnapshot(
-                BuildCaptionSnapshot($"Line {index}", "Speaker", index * 1000, 90),
+                BuildCaptionSnapshot($"Line {index}", "Speaker", index * 1000),
                 transcript);
         }
 
@@ -58,8 +57,7 @@ public sealed class GraphicsOverlaySyncTests
     private static NativeMediaCoreStateSnapshot BuildCaptionSnapshot(
         string text,
         string speaker,
-        double atMs,
-        double confidence) =>
+        double atMs) =>
         new()
         {
             CaptionTrack = new NativeMediaCoreCaptionTrack
@@ -70,10 +68,8 @@ public sealed class GraphicsOverlaySyncTests
                 {
                     Text = text,
                     Speaker = speaker,
-                    AtMs = atMs,
-                    Confidence = confidence
-                },
-                LatencyMs = 180
+                    AtMs = atMs
+                }
             }
         };
 }

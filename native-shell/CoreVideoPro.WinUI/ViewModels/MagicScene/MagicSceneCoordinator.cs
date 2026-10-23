@@ -133,12 +133,6 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     [RelayCommand]
     private void ToggleAutomation()
     {
-        if (!CanToggleSetAndForget() && ProductionMode != ProductionMode.SetAndForget)
-        {
-            _host.CommandStatus = "Set & Forget is locked on this license tier";
-            return;
-        }
-
         ProductionMode = ProductionMode == ProductionMode.SetAndForget
             ? ProductionMode.Manual
             : ProductionMode.SetAndForget;
@@ -448,13 +442,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
             : auto.Reason;
     }
 
-    public void RefreshTransportAutomationState()
-    {
-        var canToggle = CanToggleSetAndForget() || ProductionMode == ProductionMode.SetAndForget;
-        _host.ApplyTransportAutomationState(ProductionMode, canToggle);
-    }
-
-    private bool CanToggleSetAndForget() => _host.IsSetAndForgetEntitled();
+    public void RefreshTransportAutomationState() => _host.ApplyTransportAutomationState(ProductionMode);
 
     partial void OnProductionModeChanged(ProductionMode value)
     {

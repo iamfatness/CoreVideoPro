@@ -82,10 +82,6 @@
                             Content="Multiviewer"
                             Style="{StaticResource SettingsMenuButton}"
                             Click="OnMultiviewerClicked" />
-                    <Button x:Name="LicenseMenuButton"
-                            Content="License &amp; Plan"
-                            Style="{StaticResource SettingsMenuButton}"
-                            Click="OnLicenseClicked" />
                     <Button x:Name="FfmpegMenuButton"
                             Content="FFmpeg"
                             Style="{StaticResource SettingsMenuButton}"
@@ -840,63 +836,6 @@
                                           IsOn="{x:Bind ViewModel.MultiviewShowClock, Mode=TwoWay}" />
                         </StackPanel>
                     </Border>
-                </StackPanel>
-            </ScrollViewer>
-
-            <ScrollViewer x:Name="LicensePanel"
-                          Visibility="Collapsed"
-                          VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Disabled">
-                <StackPanel Spacing="14">
-                    <TextBlock Text="License &amp; Plan" Style="{StaticResource OperatorSectionTitle}" />
-                    <TextBlock Text="Manage activation, plan tier, and production feature limits."
-                               Style="{StaticResource OperatorSummary}" />
-
-                    <Border Style="{StaticResource OperatorSectionBorder}">
-                        <StackPanel Spacing="12">
-                            <TextBlock Text="Current plan" Style="{StaticResource SettingsLabel}" />
-                            <TextBlock FontSize="13" Foreground="{StaticResource StudioTextBrush}">
-                                <Run Text="Plan: " Foreground="{StaticResource StudioMutedBrush}" />
-                                <Run Text="{x:Bind ViewModel.Settings.LicensePlanLabel, Mode=OneWay}" FontWeight="SemiBold" />
-                                <Run Text=" (" Foreground="{StaticResource StudioMutedBrush}" />
-                                <Run Text="{x:Bind ViewModel.Settings.LicenseStatusLabel, Mode=OneWay}" />
-                                <Run Text=")" Foreground="{StaticResource StudioMutedBrush}" />
-                                <Run Text="{x:Bind ViewModel.Settings.TrialDaysLabel, Mode=OneWay}" />
-                            </TextBlock>
-                            <TextBlock Text="{x:Bind ViewModel.Settings.EntitlementsSummary, Mode=OneWay}"
-                                       Style="{StaticResource OperatorSummary}" />
-                        </StackPanel>
-                    </Border>
-
-                    <Border Style="{StaticResource OperatorSectionBorder}">
-                        <StackPanel Spacing="12">
-                            <TextBlock Text="Activation" Style="{StaticResource SettingsLabel}" />
-                            <Grid ColumnSpacing="10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBox Header="License key"
-                                         PlaceholderText="cv-trial-... or cv-pro-..."
-                                         Text="{x:Bind ViewModel.Settings.ActivationKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                <Button Grid.Column="1"
-                                        Content="Activate"
-                                        MinWidth="96"
-                                        Style="{StaticResource OperatorGhostButton}"
-                                        Command="{x:Bind ViewModel.Settings.ActivateLicenseCommand}"
-                                        IsEnabled="{x:Bind ViewModel.Settings.CanActivateLicense, Mode=OneWay}" />
-                                <Button Grid.Column="2"
-                                        Content="Start trial"
-                                        MinWidth="96"
-                                        Style="{StaticResource OperatorGhostButton}"
-                                        Command="{x:Bind ViewModel.Settings.StartTrialCommand}" />
-                            </Grid>
-                            <TextBlock Text="{x:Bind ViewModel.Settings.LicenseActionStatus, Mode=OneWay}"
-                                       Style="{StaticResource OperatorSummary}" />
-                        </StackPanel>
-                    </Border>
-
                 </StackPanel>
             </ScrollViewer>
 
