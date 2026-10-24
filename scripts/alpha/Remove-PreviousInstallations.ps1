@@ -69,13 +69,16 @@ $backupFolder = New-ResidualBackupFolder -BackupRoot ([IO.Path]::Combine($env:LO
 $residual = @($residual | ForEach-Object { Remove-ResidualInstallation -Plan $_ -BackupFolder $backupFolder -LeaveUnknown:$LeaveUnknown })
 $errors = @($plans | Where-Object status -eq 'retained') + @($residual | Where-Object { $_.status -eq 'skipped' -or ($_.status -eq 'retained' -and $_.reason -notlike 'operator content:*') })
 $backedUp = @($residual | Where-Object status -eq 'backed-up')
+# Ruling D4: report the backup wherever files were moved, including a folder that moved some
+# files and was then retained (e.g. a locked file), so the warning box names it too.
+$moved = @($residual | Where-Object { $_.moved -gt 0 })
 $summary = [ordered]@{
     registeredRetired = @($plans | Where-Object status -eq 'removed').Count
     residualRemoved = @($residual | Where-Object status -eq 'removed').Count
     residualBackedUp = $backedUp.Count
     retained = @($plans | Where-Object status -eq 'retained').Count + @($residual | Where-Object { $_.status -in 'retained','skipped' }).Count
-    backupFolder = if ($backedUp.Count) { $backupFolder } else { '' }
-    filesBackedUp = [int](($backedUp | ForEach-Object { $_.moved } | Measure-Object -Sum).Sum)
+    backupFolder = if ($moved.Count) { $backupFolder } else { '' }
+    filesBackedUp = [int](($moved | ForEach-Object { $_.moved } | Measure-Object -Sum).Sum)
 }
 $report = [ordered]@{
     summary = $summary
@@ -87,13 +90,14 @@ $report = [ordered]@{
 try { [IO.File]::WriteAllText([IO.Path]::ChangeExtension($logPath, '.json'), $report, (New-Object Text.UTF8Encoding $false)) }
 catch { [Console]::Error.WriteLine("Cannot copy the cleanup report to installer-logs: $($_.Exception.Message)") }
 foreach ($item in @($plans) + @($residual)) { Write-RetireLog "$($item.releaseId): $($item.status) $($item.reason)" }
+# The backup line comes FIRST: NSIS keeps only the head of stdout (NSIS_MAX_STRLEN 1024).
+if ($moved.Count) {
+    $line = "Operator files from $($moved.Count) old version folder(s) ($($summary.filesBackedUp) files) were MOVED, not deleted, to: $backupFolder"
+    Write-RetireLog $line; Write-Output $line
+}
 foreach ($item in $errors) { Write-Output "Retained $($item.releaseId): $($item.reason)" }
 foreach ($item in @($residual | Where-Object { $_.status -eq 'retained' -and $_.reason -like 'operator content:*' })) { Write-Output "Left in place $($item.releaseId): $($item.reason)" }
 $retired = $summary.registeredRetired + $summary.residualRemoved
-if ($backedUp.Count) {
-    $line = "Operator files from $($backedUp.Count) old version folder(s) ($($summary.filesBackedUp) files) were MOVED, not deleted, to: $backupFolder"
-    Write-RetireLog $line; Write-Output $line
-}
 $last = "Previous installation cleanup: $retired retired, $($summary.residualBackedUp) backed up, $($summary.retained) retained."
 Write-RetireLog $last
 Write-Output $last

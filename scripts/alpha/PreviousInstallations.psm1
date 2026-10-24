@@ -24,7 +24,11 @@ function Format-SetupHelperDiagnostics {
     param($Diagnostics)
     return ('psVersion={0}; is64Bit={1}; languageMode={2}; psHome={3}; psModulePathInherited={4}; psModulePathEffective={5}; script={6}' -f
         $Diagnostics.psVersion, $Diagnostics.is64Bit, $Diagnostics.languageMode, $Diagnostics.psHome,
-        $Diagnostics.psModulePathInherited, $Diagnostics.psModulePathEffective, $Diagnostics.script)
+        $Diagnostics.psModulePathInherited, $Diagnostics.psModulePathEffective, $Diagnostics.script) +
+        $(if (!$Diagnostics.is64Bit -and [Environment]::Is64BitOperatingSystem) {
+            # A 32-bit host reads System32 through WOW64, so the second entry is SysWOW64 too.
+            "; wow64=System32 entries resolve to $env:WINDIR\SysWOW64 (32-bit host, so the 64-bit module directory is not on the path)"
+        } else { '' })
 }
 
 function Initialize-SetupHelperEnvironment {

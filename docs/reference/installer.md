@@ -28,8 +28,9 @@ loaded. An installer started from a PowerShell 7 shell inherits PS7's `PSModuleP
 itself), nsExec passes it to the helper untouched, and 5.1 binds `Get-FileHash` to
 PS7's Core-only Utility module: "not recognized". Reproduced through a real nsExec on
 both hosts. Payload hashes were already streamed through .NET SHA-256 (`91db55bf`);
-**never reintroduce `Get-FileHash`** on the setup path. Whether the 2026-10-13 install
-was really launched from pwsh was never captured.
+**never reintroduce `Get-FileHash`** on the setup path. This is a proven MECHANISM, not the
+proven cause of the 2026-10-13 incident: no PowerShell 7 exists on the dev box, and the
+environment that launched that install was never captured.
 
 **Pinned environment (owner ruling D5).** `Remove-PreviousInstallations.ps1` first calls
 `Initialize-SetupHelperEnvironment`: it resets `PSModulePath` for its own process to
@@ -74,7 +75,10 @@ place.
 `summary` = `registeredRetired`, `residualRemoved`, `residualBackedUp`, `retained`,
 `backupFolder`, `filesBackedUp`. The last stdout line, which NSIS shows, counts
 **folders**, not uninstall entries: `Previous installation cleanup: <n> retired, <n>
-backed up, <n> retained.` Exit 0 = clean; 2 = clean and operator files were moved (Setup
+backed up, <n> retained.` Whenever ANY file was moved, even from a folder that then
+failed and was retained, `summary.backupFolder` is set and the `...were MOVED, not deleted,
+to: <folder>` line is printed FIRST: nsExec keeps only the head of stdout (1024 characters
+on makensis 3.12), so the backup path must not be pushed out by `Retained` lines. Exit 0 = clean; 2 = clean and operator files were moved (Setup
 shows an information box with the backup folder); 1 = something retained (warning box with
 the summary and log path). `/SD IDOK` keeps silent setup unblocked.
 
@@ -85,8 +89,8 @@ collisions, injected crash mid-move, locked file, cross-volume refusal, junction
 and camera folders), `Test-CleanupEnvironment.ps1` (runs the real helper in 64-bit and
 32-bit child hosts with a PS7-inherited, empty and nonexistent `PSModulePath`, embeds
 PS7 7.4's Utility manifest because a hand-trimmed look-alike does not reproduce, uses a real
-PS7 `Modules` dir when installed; plus the end-to-end sweep). It fails against the pre-fix
-module (`91db55bf^`). **Installed acceptance on a real upgrade is still pending** (plan Task 7).
+PS7 `Modules` dir when installed; plus the end-to-end sweep). With the `Get-FileHash` call restored (planner from
+`91db55bf^`) and the pin removed (the Task 1 helper), the suite fails with the issue text. **Installed acceptance on a real upgrade is still pending** (plan Task 7).
 
 Failure rollback must move Setup's working directory out of `$INSTDIR` before
 removing the owned payload and empty installation directory. `SetOutPath` sets

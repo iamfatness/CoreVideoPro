@@ -242,15 +242,17 @@ manual retry worked.
 
 A hand-written look-alike of PS7's Utility manifest did not reproduce at the full-helper level;
 PS7's manifest verbatim (signature stripped) does, so `Test-CleanupEnvironment.ps1` embeds it.
-The test FAILS against the pre-fix module (`91db55bf^`: old version `retained`, reason
-`The term 'Get-FileHash' is not recognized`, exit 1) and passes against the current one,
-which proves it bites. It also runs a real PS7 `Modules` directory when one is installed (the CI
+With the `Get-FileHash` call restored and the pin removed (the Task 1 helper, which has the
+test hooks but no environment pin, run with the planner module from `91db55bf^`), the suite
+FAILS with the issue text (old version `retained`, reason `The term 'Get-FileHash' is not
+recognized`, exit 1); it passes against the current code, which proves it bites. The current
+helper cannot be paired with the pre-fix module (it needs `Initialize-SetupHelperEnvironment`). It also runs a real PS7 `Modules` directory when one is installed (the CI
 `windows-latest` image has pwsh 7).
 
 **What is still not proven:** that the 2026-10-13 install was in fact launched from a PS7
-shell. The launching environment was never captured. Every other variant tried resolves, and
-pwsh 7 is not installed on the dev box today, so the agent shell that ran that install is the
-plausible source. The closing comment must say "reproduced under a PS7-inherited environment;
+shell. No PowerShell 7 exists on the dev box (the repro borrowed PS7 7.4.6's `Modules` from a
+downloaded zip), and the launching environment was never captured. The PS7-inheritance path
+is therefore a proven MECHANISM for the symptom, not the proven cause of that incident. The closing comment must say "reproduced under a PS7-inherited environment;
 the 10-13 launch environment itself was not captured".
 
 **Bounding the real install root (read-only, 2026-10-24 03:00 EDT):**

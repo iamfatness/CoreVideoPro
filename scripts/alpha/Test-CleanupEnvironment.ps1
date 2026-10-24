@@ -227,12 +227,24 @@ try {
         $rec = Join-Path $w.Root 'beta-2026-10-04-recordings\Recordings'
         New-Item -ItemType Directory -Force -Path $rec | Out-Null
         [IO.File]::WriteAllText((Join-Path $rec 'take.mp4'), 'in use')
-        $lock = [IO.File]::Open((Join-Path $rec 'take.mp4'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+        [IO.File]::WriteAllText((Join-Path $rec 'a-first.mp4'), 'moves before the locked one')
+        # Share READ (as a player holding the file open would): hashing succeeds, the move fails
+        # after a-first.mp4 has already moved. That is the partial-move case.
+        $lock = [IO.File]::Open((Join-Path $rec 'take.mp4'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         try { $r = Invoke-Helper $hosts[$hostName] @{ LOCALAPPDATA = $w.Local; PSModuleAnalysisCachePath = (Join-Path $w.Local 'ModuleAnalysisCache') } $w.Args } finally { $lock.Dispose() }
         $lines = @($r.Out -split "`r?`n" | Where-Object { $_.Trim() })
         Assert ($r.Code -eq 1) "$label expected exit 1; got $($r.Code). $($r.Out) $($r.Err)"
         Assert ($lines[-1] -match '1 retained') "$label last line: $($lines[-1])"
         Assert ((Get-Content -LiteralPath (Join-Path $rec 'take.mp4') -Raw) -eq 'in use') "$label locked file changed."
+        # Partial move, then failure: the warning must still name the backup (ruling D4),
+        # ahead of the Retained lines because NSIS keeps only the head of stdout.
+        $report = Get-Content -LiteralPath (Join-Path $w.Current 'previous-installations-cleanup.json') -Raw | ConvertFrom-Json
+        $backups = @(Get-ChildItem -LiteralPath (Join-Path $w.Local 'CoreVideoPro\backups') -Directory -Filter 'retired-install-remnants-*')
+        Assert ($backups.Count -eq 1 -and $report.summary.backupFolder -eq $backups[0].FullName -and $report.summary.filesBackedUp -eq 1) "$label JSON lacks the partial backup: $($report.summary | ConvertTo-Json -Compress)"
+        Assert ((Get-Content -LiteralPath (Join-Path $backups[0].FullName 'beta-2026-10-04-recordings\Recordings\a-first.mp4') -Raw) -eq 'moves before the locked one') "$label moved file not in the backup."
+        $movedAt = [array]::FindIndex([string[]]$lines, [Predicate[string]]{ param($l) $l -match 'MOVED, not deleted, to: ' + [regex]::Escape($backups[0].FullName) })
+        $retainedAt = [array]::FindIndex([string[]]$lines, [Predicate[string]]{ param($l) $l -like 'Retained *' })
+        Assert ($movedAt -ge 0 -and $retainedAt -gt $movedAt) "$label stdout must name the backup before the Retained lines: $($r.Out)"
         $results.Add("$label ok")
     }
     [ordered]@{ passed=$true; checks=$checks; cases=@($results); evidence=$work } | ConvertTo-Json
