@@ -2249,15 +2249,19 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWhoseVideoStopsWhileAudioContinu
   EXPECT_GT(s.isoStreams[0].audioSampleCount, 48000LL * 20);
   EXPECT_EQ(s.isoStreams[0].warning.find("dropped video"), std::string::npos) << s.isoStreams[0].warning;
   EXPECT_GE(s.isoStreams[0].videoFrameCount, 60) << "resumed camera frames must be muxed after the stall";
+  // The stall is visible in the snapshot: about one held picture per second.
+  EXPECT_GE(s.isoStreams[0].heldVideoFrameCount, 25);
+  EXPECT_LE(s.isoStreams[0].heldVideoFrameCount, 31);
   encoder.reset();
   fs::remove_all(targetDir, ec);
 }
 
 // #1030 re-review: the camera returns with a frame stamped BEHIND the last
 // held video frame. While video is stalled the writer holds the last picture
-// once per second of media, 0.5 s behind the audio, so after a silent run
-// ending at A the last hold lies within [A - 1.52 s, A - 0.5 s]; a frame at
-// A - 1.8 s is therefore at least 0.28 s behind it (and after the last real
+// about once per second of media (triggered 1.5 s behind, placed 0.5 s
+// behind the audio), so after a silent run ending at A the last hold lies
+// within [A - 1.56 s, A - 0.5 s]; a frame at A - 1.8 s is therefore at least
+// 0.24 s behind it (and after the last real
 // frame at ~1 s). Pinned behaviour: the late frame is muxed just after that
 // hold (never dropped, PTS strictly monotonic) and the resumed camera lands on
 // its own capture times, so A/V sync holds. This test is what rejected the
@@ -2328,7 +2332,7 @@ TEST(EncoderRecordingSession, MediaFoundationIsoFrameStampedBehindTheLastHeldFra
     }
   }
   const auto latePts = audioEnd - 18'000'000 - base;
-  // The last hold lies in [A - 1.52 s, A - 0.5 s]; the late frame follows it.
+  // The last hold lies in [A - 1.56 s, A - 0.5 s]; the late frame takes its slot.
   const bool lateMuxed = std::any_of(pts.begin(), pts.end(),
       [&](LONGLONG at) { return at >= latePts && at <= latePts + 13'200'000; });
   std::printf("[iso-behind-tick] samples=%zu framesWritten=%lld late_muxed=%d monotonic=%d last_pts=%.3f "
@@ -2351,8 +2355,12 @@ TEST(EncoderRecordingSession, MediaFoundationIsoFrameStampedBehindTheLastHeldFra
   EXPECT_LE(nearest(audioEnd - base + 10 * kTick), 333'333) << "the last resumed frame is not at its capture time";
   EXPECT_NEAR(static_cast<double>(pts.back()), static_cast<double>(audioEnd - base + 10 * kTick), 333'333.0)
       << "the timeline after the gap is wrong (gap collapsed?)";
-  // The stall itself was filled by held pictures, about one per second.
+  // The stall itself was filled by held pictures, about one per second, and
+  // the snapshot counts exactly the held pictures that are in the file (the
+  // one the late frame replaced is not counted) for the outputs-drill judge.
   EXPECT_GE(pts.size(), 61u + 25u) << "no held frames bridged the 30 s video stall";
+  EXPECT_EQ(static_cast<size_t>(iso.heldVideoFrameCount), pts.size() - 61u);
+  EXPECT_EQ(iso.videoFramesPlacedAtHold, 1);
   EXPECT_EQ(iso.warning.find("dropped video"), std::string::npos) << iso.warning;
   EXPECT_EQ(iso.videoFrameCount, 61) << "50 live + the late frame + 10 resumed";
   // The file still finalizes to its real end: A + 0.2 s of resumed media.
@@ -2393,6 +2401,7 @@ TEST(EncoderRecordingSession, MediaFoundationDepartedIsoParticipantIsNotSilenceF
   // One second of real audio (plus the close-time tail reconcile to the last
   // video frame), never the 30 s of post-departure silence.
   EXPECT_LT(s.isoStreams[0].audioSampleCount, 48000LL * 3) << "departed stem kept growing with silence";
+  EXPECT_EQ(s.isoStreams[0].heldVideoFrameCount, 0) << "no audio after departure, so nothing to hold for";
   EXPECT_GT(s.isoStreams[0].bytesWritten, 0);
   encoder.reset();
   fs::remove_all(targetDir, ec);

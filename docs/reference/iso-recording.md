@@ -168,20 +168,26 @@ Four guards, each sufficient for a different failure:
    queued inside the sink writer and zero bytes on disk** (PCM accumulating,
    ~690 MB per hour of camera-off). That is the case a present participant
    with the camera off produces (IsoVideoIngress submits only distinct frames,
-   and they keep their stem). The fix: while video is more than 1 s behind
-   the audio, `Mp4Writer::holdStalledVideo` re-submits the last real picture
-   once per second of media, 0.5 s behind the audio (a held frame, like the
-   close-time tail hold; counted in the mux frame count, never in
-   `framesWritten`). The VFR pending logic gives every sample its exact
+   and they keep their stem). The fix: while video is more than 1.5 s behind
+   the audio, `Mp4Writer::holdStalledVideo` re-submits the last real picture,
+   0.5 s behind the audio: about one per second of media, each at least 1 s
+   after the frame before it (a held frame, like the close-time tail hold;
+   counted in the mux frame count, never in `framesWritten`; reported per file
+   as `heldFrames` on the recording snapshot's `streams[]`, with
+   `framesPlacedAtHold`). The outputs-drill ISO judge excuses exactly
+   `heldFrames` repeats that match that pattern and fails any other repeat
+   (`docs/qa/outputs-drill.md`). The VFR pending logic gives every sample its exact
    duration, so the picture freezes through the gap and the timeline is kept.
    Measured with it: the same 30 s reached disk as fragments before Stop
-   (+473 KB, about 57 MB per hour of camera-off on disk), `queued_bytes=0` at
-   the Finalize drain, and the sink writer's own queue peaked at 7,680 bytes
+   (+490 KB, about 59 MB per hour of camera-off on disk), `queued_bytes=0` at
+   the Finalize drain, and the sink writer's own queue peaked at 3,840 bytes
    per stalled file (`stall_max_queued_bytes`, sampled just before each hold
-   on the drain line, which also reports `held_frames`; 28-29 holds in the
-   30 s stall). That statistic excludes encoded AAC waiting inside the fMP4
-   sink for interleave, which the hold cadence bounds to under 1.5 s of AAC
-   (~24 KB at 128 kbps). **A resumed camera frame stamped at
+   on the drain line, which also reports `held_frames`; 27-28 holds in the
+   30 s stall, measured with the 1.5 s trigger). That statistic excludes
+   encoded AAC waiting inside the fMP4 sink for interleave, which the hold
+   cadence bounds to under 2 s of AAC (~32 KB at 128 kbps). The close-time tail
+   hold is published per ISO as `tailFrames` and the judge excuses it only as
+   the file's last frame. **A resumed camera frame stamped at
    or behind the last held frame takes that hold's slot** (the still-pending
    held picture is discarded and the real frame is placed at the hold's time;
    it is never dropped, file PTS stay strictly monotonic, and the following

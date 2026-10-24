@@ -113,15 +113,25 @@ def iso_row(source_id, verdict, proof):
     if _judge_error(verdict) or 'expectedSamples' not in verdict:
         return not_judged(output, 'iso', 'judge could not run: ' + str(verdict.get('error')), source_id)
     passed = verdict.get('isoPixelArrivalFidelityPassed') is True and verdict.get('missing', 1) == 0
+    held = verdict.get('heldExcused') or 0
     reason = None
     if not passed:
         bits = [f"{key}={verdict.get(key)}" for key in ('missing', 'repeated', 'invalid', 'rangeViolations') if verdict.get(key)]
+        if verdict.get('holdsMatched') is False:
+            bits.append(f"held frames: writer reported {verdict.get('heldFrames')}, file shows {verdict.get('heldExcused')}")
         if verdict.get('firstMismatchIndex') is not None:
             bits.append(f"first mismatch at index {verdict['firstMismatchIndex']}")
         if verdict.get('decoderComplete') is False or verdict.get('decoderErrors'):
             bits.append('decoder did not complete cleanly')
         reason = '; '.join(bits) or 'decoded identities differ from offered arrivals'
+    elif held:
+        # #1030: a PASS, but never a silent one: the source's video stalled and
+        # the writer held its last picture. The stall length is in the ISO
+        # judge's coverage.maximumSourceArrivalGapMs.
+        gap = (verdict.get('coverage') or {}).get('maximumSourceArrivalGapMs')
+        reason = f"held={held}, source stalled" + (f" (longest arrival gap {gap:.0f} ms)" if gap else '')
     return {'output': output, 'kind': 'iso', 'sourceId': source_id, 'status': PASS if passed else FAIL,
+            'held': held,
             'expected': verdict.get('expectedSamples'), 'decoded': verdict.get('recordedSamples'),
             'missing': verdict.get('missing'), 'repeated': verdict.get('repeated'), 'reordered': None,
             'invalid': verdict.get('invalid'), 'reason': reason, 'proof': proof}
@@ -240,6 +250,8 @@ def aggregate(rows, context):
     return {'schema': SCHEMA, 'overall': overall,
             'rule': 'PASS only if every enabled output PASSes with zero missing, repeated, reordered or invalid identities '
                     'inside an OS-camera-bounded interval, and every workload assertion held throughout; '
+                    'an ISO\'s writer-reported held frames (and its one close-time tail hold) are excused repeats that '
+                    'pass and are reported as held=N, and the repeated column excludes them by design; '
                     'NOT JUDGED and UNBOUNDED never count as PASS. ISO encoder placement is reported, never gated; '
                     'Program on the software encoder fails (programEncoderHardwareThroughout).',
             'throughoutFailures': broken,
@@ -400,7 +412,11 @@ def run(evidence):
             rows.append(not_judged('ISO ' + source, 'iso', 'delivery trace incomplete or missing', source))
         else:
             name = 'iso-' + source.replace(':', '_') + '.json'
-            verdict, proof = attempt(name, lambda: iso_module.judge(track['path'], str(trace), source, start, end, seconds, ffmpeg, ffprobe))
+            held_frames = int(track.get('heldFrames') or 0)
+            tail_frames = int(track.get('tailFrames') or 0)
+            frame_rate = float(track.get('frameRate') or 0)
+            verdict, proof = attempt(name, lambda: iso_module.judge(track['path'], str(trace), source, start, end, seconds,
+                                                                    ffmpeg, ffprobe, held_frames, tail_frames, frame_rate))
             rows.append(with_encoder(iso_row(source, verdict, proof), 'software' if source in software_isos else None))
 
     if enabled.get('stream'):
