@@ -19,7 +19,7 @@
 | 3 Shell model + `IsoEncoderPlacementReadout` + InfoBar | sonnet | high | Pure readout with a table of cases. The honesty rules (measured or absent) live in the tests |
 | 4 Coordinator start-path pins | sonnet | medium | Two xUnit tests in an existing fixture pattern (`TransportCoordinatorTests.cs:327`) |
 | 5 `validate-iso-record.mjs` rule change | sonnet | high | Extract pure rules and test them. The only risk is waiving too much, and the tests carry it |
-| 6 Outputs drill: demote placement, measure cost | opus | high | Changes a release-gate verdict rule. A mistake turns a real FAIL into a PASS |
+| 6 Outputs drill: demote ISO placement, keep Program-on-software gating, measure cost | opus | high | Changes a release-gate verdict rule. A mistake turns a real FAIL into a PASS |
 | 7 Documentation | haiku | low | Mechanical edits taken from the spec |
 | 8 Acceptance on the dev box | fable | high | Uses the owner's GPU and a 30-min drill, and decides what the software ISO's CPU numbers mean. A false PASS is expensive |
 
@@ -51,7 +51,7 @@
 - Task 2: does the `AsyncEncoderSink` snapshot copy (`fresh` in `AsyncEncoderSink.cpp:540-830`) carry the new fields without being rebuilt field by field? If it rebuilds, the node silently disappears in the product while the direct-sink MF test still passes. The stub-sink MediaCore test must go through the same path the product uses.
 - Task 3: does any readout path show a number that was not in the snapshot (for example a frame budget from a default fps when `frameRate` is absent)?
 - Task 5: can any warning other than the exact admission message pass? Prepend, append and partial-match cases must all fail.
-- Task 6: does removing `hardwareEncodersThroughout` from gating change `missing_flags` (`outputs-drill-judge.py:265`, `THROUGHOUT_FLAGS[:4]`)? Does any identity FAIL still produce overall FAIL?
+- Task 6: does Program on the software encoder still FAIL (`programEncoderHardwareThroughout` stays gating, D8)? Does removing `hardwareEncodersThroughout` (ISO placement only) from gating change `missing_flags` (`outputs-drill-judge.py:265`, `THROUGHOUT_FLAGS[:4]`)? Does any identity FAIL still produce overall FAIL?
 - Task 8: are CPU and per-frame cost reported with hardware, workload and duration, and is a software-ISO identity FAIL reported as a finding, not waived?
 
 ---
@@ -475,19 +475,19 @@ test('missing counters are a failure, not zero', () =>
                    "coreCpuPercent": { "mean": 31.2, "peak": 47.9 },
                    "software": { "zoom:8": { "isoIndex": 8, "meanVideoWorkUs": 9400, "peakIntervalVideoWorkUs": 14100, "droppedFramesStart": 0, "droppedFramesEnd": 0 } } }
   ```
-- Produces (judge): `GATING_FLAGS = ('remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout')`. Missing-flag detection names `('remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout')` explicitly. The schema becomes `outputs-drill-verdict-v3`. Each software ISO row gets `encoder: 'software'`. Notes gain one line per software ISO.
+- Produces (judge): `GATING_FLAGS = ('remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout', 'programEncoderHardwareThroughout')`. Only ISO placement (`hardwareEncodersThroughout`) is demoted to a fact; Program on the software encoder stays a FAIL (D8). Missing-flag detection names `('remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'programEncoderHardwareThroughout')` explicitly. The schema becomes `outputs-drill-verdict-v3`. Each software ISO row gets `encoder: 'software'`. Notes gain one line per software ISO.
 - New drill parameter: `-ProbeMaxSessions <int>` (optional, 1..16). It sets `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS` for the launch, is recorded in `drill.json`, and is printed in the summary workload line.
 
-- [ ] **Step 1: Change the PowerShell test first** (`outputs-drill.test.ps1:328-331`). The software-ISO and software-Program envelopes must now leave every **gating** flag true. They must record `hardwareEncodersThroughout = $false`, and `encoderPlacement['capture:f4978a7f6d614c0d'].paths` must equal `@('software')`:
+- [ ] **Step 1: Change the PowerShell test first** (`outputs-drill.test.ps1:328-331`). The software-**ISO** envelope must now leave every **gating** flag true, including `programEncoderHardwareThroughout`. It must record `hardwareEncodersThroughout = $false`, and `encoderPlacement['capture:f4978a7f6d614c0d'].paths` must equal `@('software')`:
 
 ```powershell
 $t = New-DrillThroughout -Plan $plan; $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -EncoderPath 'software') -Plan $plan -Progress @{} -ElapsedMs 0
 Assert (-not $t.hardwareEncodersThroughout) 'software ISO not recorded as a fact'
 Assert (@($t.encoderPlacement['capture:f4978a7f6d614c0d'].paths) -join ',' -eq 'software') 'placement not recorded'
-foreach ($k in 'remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout') { Assert $t[$k] "$k failed on a placement-only difference" }
+foreach ($k in 'remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout', 'programEncoderHardwareThroughout') { Assert $t[$k] "$k failed on a placement-only difference" }
 ```
 
-Add a check that an ISO path changing between samples sets `changed = $true`. Add a check that `Get-DrillEncoderCost` (new, pure, takes two CPU samples and two snapshots) computes `meanVideoWorkUs` only when `muxVideoFrameCount > 0`, and returns `$null`, not 0, otherwise.
+Add a check that a **Program** encoder on `software` sets `programEncoderHardwareThroughout = $false` and that it stays in the gating set (D8: Program on software is a FAIL for RC because the 2026-10-22 gate measured hardware). Add a check that an ISO path changing between samples sets `changed = $true`. Add a check that `Get-DrillEncoderCost` (new, pure, takes two CPU samples and two snapshots) computes `meanVideoWorkUs` only when `muxVideoFrameCount > 0`, and returns `$null`, not 0, otherwise.
 
 - [ ] **Step 2: Change the Python tests first** (`test_outputs_drill.py`):
 
@@ -517,7 +517,7 @@ python scripts\qa\test_outputs_drill.py
 ```
 
 - [ ] **Step 4: Implement.**
-  - The lib keeps computing the hardware fact, under `hardwareEncodersThroughout` and `programEncoderHardwareThroughout`, but writes them as facts outside the gating loop: they are updated, and they do not add to `firstFailures`. It accumulates `encoderPlacement`.
+  - The lib keeps computing `hardwareEncodersThroughout` (ISO placement) but writes it as a fact outside the gating loop: it is updated and does not add to `firstFailures`. `programEncoderHardwareThroughout` stays inside the gating loop. It accumulates `encoderPlacement`.
   - `Get-DrillEncoderCost` is a pure function. The per-second loop in `outputs-drill.ps1` reads `(Get-Process -Id $corePid).TotalProcessorTime` and `[Environment]::ProcessorCount`, computes `delta CPU / (delta wall * logical)` as a percentage, and records mean and peak. Each software ISO gets `videoWorkUs` and `muxVideoFrameCount` deltas per interval, so a peak-interval mean exists, plus `droppedFrames` at start and end.
   - The judge uses `GATING_FLAGS`, sets schema v3, and adds the `encoder` field to ISO rows. It writes notes in the form `ISO-<n> <source> on software encoder: mean <x> ms of <y> ms per frame, core CPU mean <m> % / peak <p> %`, with "not measured" when absent. The summary row gets ` encoder=software`.
   - Update `docs/qa/outputs-drill.md` in Task 7, not here.
@@ -534,7 +534,7 @@ python scripts\qa\test_outputs_drill.py
 - Modify: `CLAUDE.md` only if a reference-topic index line needs the new section name
 
 - [ ] **Step 1:** Write the rule in one sentence in each doc: "Encoder placement is reported, never gated; a run fails only on measured loss." Name the fields (`isoAdmission`, `isoIndex`, `encoderCost`) and the tests that pin them.
-- [ ] **Step 2:** Under "Not yet proven" in `outputs-drill.md`, state that the software-ISO 30-minute run is the result Task 8 reports, and copy its numbers there when Task 8 completes.
+- [ ] **Step 2:** Under "Not yet proven" in `outputs-drill.md`, state that the software-ISO 30-minute run is a result Task 8 reports. Do **not** copy any Task 8 numbers here; Task 8 Step 5 adds them after the run.
 
 ---
 
@@ -544,7 +544,7 @@ python scripts\qa\test_outputs_drill.py
 - Create (evidence, not committed): `D:\CoreVideo-QA\iso935\accept-*.json`, `D:\CoreVideo-QA\drills\<timestamp>-iso935\`
 
 **Interfaces:**
-- Consumes: the Release build with Tasks 2-6, the installed app built from this branch (for the drill), the test meeting (full pwd link, see `cvp-test-meeting-link`).
+- Consumes: the Release build with Tasks 2-6, a build from this branch (for the drill; never installed over the owner's beta), the test meeting (full pwd link, see `cvp-test-meeting-link`).
 
 - [ ] **Step 1: Validator, default spill (no flag):**
 
@@ -566,8 +566,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\qa\outputs-drill.ps1
 ```
 
 Report, per output, the identity verdict. For the software ISO, report mean and peak ms/frame, `droppedFrames` start and end, and core CPU mean and peak. Also report Program `programMissingFrames`, `programBuffer.underruns`, the Program GPU deadlines line, the hardware (RTX 4090, 28 logical CPUs), the workload and the measured duration. If the software ISO FAILs identity, report it as a finding: the software budget formula admits a stream this machine cannot carry at 1080p60. Do not waive it, and file it as a separate issue.
-- [ ] **Step 4: Shell smoke (installed app):** start a recording with Program + 8 ISOs and `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS=8` in the launch environment. Confirm through the control API snapshot and UIA that the recording stays producing, that no `Recording start failed` status appears, and that the placement InfoBar names ISO-8. Stop, then delete the MP4s after keeping manifests (owner disk rule).
-- [ ] **Step 5:** Put the numbers in `docs/qa/outputs-drill.md` "Not yet proven" (Task 7 Step 2) and in a comment on #935. Leave #935 open for the owner to close.
+- [ ] **Step 4: Shell smoke (installed app).** Do **not** install over the owner's beta. This step is an owner-run step, after the soak, in an owner-scheduled window, using either a separate `-InstallRoot` or an install the owner performs; it must also work on a normal PC with UAC prompts (dev PC: EnableLUA=1, prompts suppressed). Start a recording with Program + 8 ISOs and `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS=8` in the launch environment. Confirm through the control API snapshot and UIA that the recording stays producing, that no `Recording start failed` status appears, and that the placement InfoBar names ISO-8. Stop, then delete the MP4s after keeping manifests (owner disk rule).
+- [ ] **Step 5:** Now that the numbers exist, put them in `docs/qa/outputs-drill.md` "Not yet proven" (the placeholder from Task 7 Step 2) and in a comment on #935. Leave #935 open for the owner to close.
 
 ---
 

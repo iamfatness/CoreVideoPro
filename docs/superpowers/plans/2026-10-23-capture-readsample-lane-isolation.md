@@ -23,9 +23,9 @@
 | 7 Shell: `connecting` / release-stalled handling | sonnet | high | Changes the fallback contract; a mistake reopens the two-reader collision. |
 | 8 RPC lane fault test | sonnet | medium | Follows `DelayedJoinDoesNotBlockCommandsAndCancellationAnswersOriginalId`. |
 | 9 Live fault knob, drill and real unplug | fable | high | Runs on the owner's box with real hardware and owner hands; a false pass is expensive. |
-| 10 Documentation | haiku | low | Mechanical doc edits from the spec. |
+| 10 Documentation | sonnet | low | A new reference doc needs judgement about what was and was not proven; not a mechanical edit. |
 
-**Estimated AI-assisted effort:** 2.0 + 3.0 + 1.5 + 2.0 + 3.5 + 2.0 + 2.0 + 1.5 + 3.0 + 0.75 = **about 21.25 h**. The owner is needed for Task 9 (physical unplug) and for the Review Focus ruling on the live fault knob.
+**Estimated AI-assisted effort:** 2.0 + 3.0 + 1.5 + 2.0 + 3.5 + 2.0 + 2.0 + 1.5 + 3.0 + 0.75 = **about 21.25 h**. The owner is needed for Task 9 (physical unplug) and for the Review Focus ruling on the live fault knob (ruled: D11 allows it).
 
 ## Global Constraints
 
@@ -236,6 +236,13 @@ class BoundedSessionReaper {
 
 ### Task 6: Measured liveness fields and the `signalPresent` latch fix
 
+**Interfaces (exposed for #758):** `UvcSessionState` exposes, as lock-free reads for the adapter's liveness publication:
+- `lastSampleSteadyNs` (`std::atomic<int64_t>`): steady-clock time in ns of the last delivered sample, 0 = never.
+- `terminalErrorSteadyNs` (`std::atomic<int64_t>`): steady-clock time in ns when the session first reported a terminal error or device removal, 0 = none; set once, a second signal never moves it.
+- `errorClass` (`std::atomic<UvcErrorClass>`): `None`, `DeviceRemoved` (`MEVideoCaptureDeviceRemoved` or `ReadSample` removal HRESULT), `ReadError`, `ReleaseTimeout`, set with `terminalErrorSteadyNs`.
+
+The #758 plan (`2026-10-23-capture-dropout-policy.md`) Task 4 consumes these. **#758 Task 4 must follow #993 Task 5** (they share `UvcCaptureDeviceAdapter` regions) and uses the fields above rather than adding its own.
+
 **Files:**
 - Modify: `native/src/modules/Interfaces.h` (`CaptureDeviceInfo` `:1023-1060`: add `std::optional<int64_t> readReplyAgeMs, readOutstandingMs, releaseMs;` and `std::string sessionPhase;`)
 - Modify: `native/src/core/CoreStateCapture.cpp` (`captureDeviceArray` `:303`) and `native/src/core/MediaCore.cpp:287`: emit each optional only when set; emit `sessionPhase` only when non-empty
@@ -300,6 +307,8 @@ public static bool MayOpenBridge(IReadOnlyList<NativeCaptureDeviceStatus> device
 - Create: `scripts/qa/uvc-lane-isolation-drill.py` (owned headless core; samples `ping` RTT and `/snapshot` at 10 Hz; connects, disconnects and reconnects via the control API; parses `[uvc-capture] release` lines; writes `report.json` with an explicit PASS/FAIL per acceptance clause and the raw samples)
 - Create: `scripts/qa/tests/test_uvc_lane_isolation_drill.py` (judge unit tests: a missing ping sample, a single 251 ms ping, a missing release line, and a frozen other-camera counter each FAIL)
 - Evidence: `artifacts/uvc-lane-isolation-993/`
+
+**Live-knob rule: never while the owner's app runs; owner-scheduled.** The drill runs an owned headless core in a window the owner has scheduled, never against the owner's installed app, a running show, or an app that has the virtual camera on. D11 allows the env knob (documented in `docs/reference/fault-injection-seams.md`, never set by the installer); set it process-locally from the drill harness only, never as a persistent user or machine environment variable.
 
 **If the owner rules against the env knob (Review Focus 6),** replace the knob with a test-only core build that links `createUvcCaptureDeviceForTest` around the real MF backend (fault wrapper delegating to `MfUvcCaptureBackend`), and keep the drill script unchanged.
 

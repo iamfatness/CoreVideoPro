@@ -155,14 +155,14 @@ notify, the same way `RecordingTrackWorker::run` does (`RecordingTrackWorker.h:1
 ### 2. The lane only signals: `BoundedSessionReaper`
 
 A new header-only helper, `native/src/modules/BoundedSessionReaper.h`, owns
-retirement off the lane. Its shape follows `RecordingTrackWorker::joinFor/abandon`
+retirement off the lane. It is a new shape, modelled on but not reusing `RecordingTrackWorker::joinFor/abandon`
 (PR #1035) and `CaptureSessionLifecycle`, under the rule from `CaptureSessionLifecycle.h:15-16`:
 "Creation and stop/join belong to this owner, never to a poll/render caller."
 
 ```text
 lane:    disconnect(id) -> state.requestStop(); callback.cancel()   [microseconds, no MF call]
                         -> reaper.retire(id, handle)                 [enqueue, never waits]
-reaper:  joinFor(handle, kUvcSessionReleaseBound)
+reaper:  joinFor(handle, kUvcSessionReleaseBoundMs)
            exited  -> join (instant), emit release evidence, lift fence(id)
            timeout -> abandon: detach thread, keep shared state alive,
                       mark id "release-stalled" (loud), keep watching;
@@ -170,10 +170,10 @@ reaper:  joinFor(handle, kUvcSessionReleaseBound)
 ```
 
 - **`retire()` never blocks.** It takes only the reaper's own leaf mutex for an O(1) insert.
-- **There is one reaper thread per adapter.** It waits for one session at a time, at most `kUvcSessionReleaseBound` each, so one wedged device delays other devices' release *evidence* by at most one bound. It never delays their commands, because commands never wait on the reaper.
+- **There is one reaper thread per adapter.** It waits for one session at a time, at most `kUvcSessionReleaseBoundMs` each, so one wedged device delays other devices' release *evidence* by at most one bound. It never delays their commands, because commands never wait on the reaper.
 - **Abandoned sessions are capped** (`kMaxAbandonedUvcSessions = 4`). Past the cap, every new UVC connect is refused with a loud adapter-level error ("N camera sessions did not release; restart CoreVideo"). That keeps a flapping device from leaking threads without limit. The cap is evidence, not a timeout tweak.
-- **Shutdown is bounded.** `~UvcCaptureDeviceAdapter` asks every session to stop, gives all of them one shared deadline (`kUvcSessionReleaseBound`), and abandons the rest. This matches the module-shutdown order in `docs/reference/engine-teardown-order.md`: the process exit must never hang on a camera.
-- **`kUvcSessionReleaseBound` = 4000 ms**, the same as #1030's writer bound, to be confirmed by Task 1's measurement: at least 10x the worst measured healthy release on the dev box. The lane never waits on this value. It only decides when the operator is told "this camera did not let go".
+- **Shutdown is bounded.** `~UvcCaptureDeviceAdapter` asks every session to stop, gives all of them one shared deadline (`kUvcSessionReleaseBoundMs`), and abandons the rest. This matches the module-shutdown order in `docs/reference/engine-teardown-order.md`: the process exit must never hang on a camera.
+- **`kUvcSessionReleaseBoundMs` = 4000 ms**, the same as #1030's writer bound, to be confirmed by Task 1's measurement: at least 10x the worst measured healthy release on the dev box. The lane never waits on this value. It only decides when the operator is told "this camera did not let go".
 
 ### 3. A backend seam, so faults can be injected without hardware
 

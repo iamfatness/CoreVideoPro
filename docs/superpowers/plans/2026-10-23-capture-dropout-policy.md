@@ -26,7 +26,8 @@
 - **Never run the native suite while the owner's installed app has the virtual camera on** (native tests touch the production vcam slot unless `COREVIDEO_VCAM_SHM_DIR` redirects it). Never use input injection. Drive the app through the control API.
 - **Shell UI changes follow** `docs/reference/winui-crash-class-0xc000027b.md`: no new bound collections on recycled containers, and the flyout captures identity at open.
 - **Honest reporting:** the shell displays `sources[]` fields verbatim. It computes no ages or states.
-- Do not commit until the owner asks. Commit messages end with the harness-supplied attribution line.
+- Commit per task on the lane branch; merge and publish only on the owner's word. Commit messages end with the harness-supplied attribution line.
+- **UAC on the dev PC has EnableLUA=1 with admin prompts suppressed (standing fact, `rc-owner-decisions.md`).** Every `pnputil /disable-device` / `/enable-device` step below is an **owner-run elevated step, owner-scheduled window**; the plan must also work on a normal PC.
 
 ## Review Focus
 
@@ -41,7 +42,7 @@
 
 ### Task 1: Spike — observe the loss signals on the dev box (gates constants and `cadenceTrusted`)
 
-**Recommended executor:** Opus 5.5, high effort (live hardware evidence; may change the design).
+**Recommended executor:** opus, high effort (live hardware evidence; may change the design).
 
 **Files:**
 - Create (scratch, not committed): a throwaway logging build flag `COREVIDEO_CAPTURE_LIVENESS_SPIKE=1` read in `UvcCaptureDeviceAdapter.cpp` and `CaptureDeviceFrameReaderService.cs`. Revert at the end of the task.
@@ -49,15 +50,15 @@
 
 **Interfaces:** none produced. The task decides three things: whether `UvcAsyncRead::OnEvent` receives `MEVideoCaptureDeviceRemoved` / `MEError`, whether every camera-class device on the rig keeps delivering samples on a static picture, and the measured signal-to-observation latency per adapter.
 
-- [ ] **Step 1: Inventory.** `pnputil /enum-devices /class Camera` and `/class Image`. Record each instance id, friendly name and the MF symbolic link from `GET /snapshot` `captureDevices[].nativeDeviceId`. Note whether `capture:decklink-1` is real hardware or a dev pattern.
-- [ ] **Step 2: Native path.** Spike build. For each camera, connect it natively, then `pnputil /disable-device`. Log with steady timestamps: the last sample, the `ReadSample` HRESULT and flags, any `OnEvent` event type, and the CM removal callback (registered in the spike only). Re-enable the device. Run 3 times per device.
+- [ ] **Step 1: Inventory.** `pnputil /enum-devices /class Camera` and `/class Image` (read-only). Record each instance id, friendly name and the MF symbolic link from `GET /snapshot` `captureDevices[].nativeDeviceId`. Note whether `capture:decklink-1` is real hardware or a dev pattern.
+- [ ] **Step 2: Native path.** Spike build. For each camera, connect it natively, then `pnputil /disable-device` (owner-run elevated step, owner-scheduled window). Log with steady timestamps: the last sample, the `ReadSample` HRESULT and flags, any `OnEvent` event type, and the CM removal callback (registered in the spike only). Re-enable the device. Run 3 times per device.
 - [ ] **Step 3: Bridge path.** `COREVIDEO_NATIVE_UVC=0`. Log `MediaCapture.Failed` (code, message), `DeviceWatcher.Removed` and the last `FrameArrived`, relative to the disable.
 - [ ] **Step 4: Static picture cadence.** Run 2 minutes per device with a static scene (lens covered, and a fixed HDMI test card on the capture card). Record the maximum inter-sample gap. Any gap of 1.0 s or more marks the device `cadenceTrusted = false` (record its name pattern).
 - [ ] **Step 5: Decide and record.** Decide whether `OnEvent` is used. Keep the constants, or raise a finding to the owner if a measured explicit-loss latency exceeds 1.5 s. Revert the spike flag.
 
 ### Task 2: The pure decision function
 
-**Recommended executor:** Opus 5.5, high effort (the core of the design; small and exact).
+**Recommended executor:** opus, high effort (the core of the design; small and exact).
 
 **Files:**
 - Modify: `native/src/modules/Interfaces.h` (add `CaptureLivenessState`, `CaptureLossReason`, `CaptureLiveness`, and `VideoFrame::captureLiveness`)
@@ -103,7 +104,7 @@ CaptureLiveness lost(int64_t lastSampleNs, int64_t lostAtNs, bool trusted = true
 }
 }  // namespace
 
-TEST(CaptureLivenessPolicy, UnreportedIsTodaysBehaviourAndNeverApplysPolicy) {
+TEST(CaptureLivenessPolicy, UnreportedIsTodaysBehaviourAndNeverAppliesPolicy) {
   const auto d = decideCaptureOnAir(CaptureLiveness{}, 100'000 * kMs);
   EXPECT_EQ(d.phase, CaptureOnAirPhase::Unreported);
   EXPECT_EQ(d.health, SourceHealth::Producing);
@@ -145,10 +146,13 @@ TEST(CaptureLivenessPolicy, ExplicitLossAfterLongSilenceNeverExceedsTheSilentBou
   EXPECT_EQ(decideCaptureOnAir(l, kCaptureSilentFailNs).phase, CaptureOnAirPhase::Failed);
 }
 TEST(CaptureLivenessPolicy, ExplicitLossFailsEvenWithUntrustedCadence) {
-  EXPECT_EQ(decideCaptureOnAir(lost(0, 0, /*trusted=*/false), kCaptureLostHoldNs).phase, CaptureOnAirPhase::Failed);
+  // lostAtNs == 0 is the "no loss" sentinel, so the loss time must be nonzero.
+  constexpr int64_t lostAt = 1 * kMs;
+  EXPECT_EQ(decideCaptureOnAir(lost(lostAt, lostAt, /*trusted=*/false), lostAt + kCaptureLostHoldNs).phase, CaptureOnAirPhase::Failed);
 }
 TEST(CaptureLivenessPolicy, FailInNsCountsDownToTheDeadlineWhileHolding) {
-  const auto d = decideCaptureOnAir(lost(0, 0), 500 * kMs);
+  constexpr int64_t lostAt = 1 * kMs;  // nonzero: 0 is the "no loss" sentinel
+  const auto d = decideCaptureOnAir(lost(lostAt, lostAt), lostAt + 500 * kMs);
   EXPECT_EQ(d.failInNs, kCaptureLostHoldNs - 500 * kMs);
   EXPECT_EQ(decideCaptureOnAir(live(0), 0).failInNs, 0);
 }
@@ -168,7 +172,7 @@ TEST(CaptureLivenessPolicy, RecoveryNeedsALiveSampleNewerThanTheLoss) {
 
 ### Task 3: Bus, annotation, wire and compositor rule
 
-**Recommended executor:** Opus 5.5, high effort (touches the on-air path and three compositors).
+**Recommended executor:** opus, high effort (touches the on-air path and three compositors).
 
 **Files:**
 - Modify: `native/src/core/CaptureDeviceSource.h` (store `latest_.captureLiveness`; `lastDecision()` / `recordDecision()`; tombstone support)
@@ -205,7 +209,7 @@ TEST(CaptureLivenessPolicy, RecoveryNeedsALiveSampleNewerThanTheLoss) {
 
 ### Task 4: Native UVC liveness
 
-**Recommended executor:** Opus 5.5, high effort (MF + CM threading; Windows build).
+**Recommended executor:** opus, high effort (MF + CM threading; Windows build).
 
 **Files:**
 - Modify: `native/src/modules/UvcCaptureDeviceAdapter.cpp`
@@ -234,7 +238,7 @@ TEST(CaptureLivenessPolicy, RecoveryNeedsALiveSampleNewerThanTheLoss) {
 
 ### Task 5: Bridge liveness in the core
 
-**Recommended executor:** Opus 5.5, high effort (cross-process memory; preparation-owner concurrency).
+**Recommended executor:** opus, high effort (cross-process memory; preparation-owner concurrency).
 
 **Files:**
 - Modify: `native/src/modules/ShmCapturePreparation.h/.cpp`
@@ -265,7 +269,7 @@ TEST(CaptureLivenessPolicy, RecoveryNeedsALiveSampleNewerThanTheLoss) {
 
 ### Task 6: Shell bridge lifecycle (#758)
 
-**Recommended executor:** Opus 5.5, high effort (async lifecycle across several shell services; the frozen-frame root cause).
+**Recommended executor:** opus, high effort (async lifecycle across several shell services; the frozen-frame root cause).
 
 **Files:**
 - Modify: `native-shell/CoreVideoPro.WinUI/Services/CaptureDeviceSharedMemoryWriter.cs`
@@ -308,7 +312,7 @@ TEST(CaptureLivenessPolicy, RecoveryNeedsALiveSampleNewerThanTheLoss) {
 
 ### Task 7: Sources page — lift the guard, one control, honest status
 
-**Recommended executor:** Sonnet 5.5, high effort (WinUI crash class; several small sites).
+**Recommended executor:** sonnet, high effort (WinUI crash class; several small sites).
 
 **Files:**
 - Modify: `native-shell/CoreVideoPro.WinUI/ViewModels/StudioViewModel.cs`
@@ -341,7 +345,7 @@ TEST(CaptureLivenessPolicy, RecoveryNeedsALiveSampleNewerThanTheLoss) {
 
 ### Task 8: Vendor-named devices on the native path
 
-**Recommended executor:** Sonnet 5.5, medium effort.
+**Recommended executor:** sonnet, medium effort.
 
 **Files:**
 - Modify: `native-shell/CoreVideoPro.MediaCore/Services/NativeUvcCapturePolicy.cs` (`:44-53`: `ShouldPreferNativeCapture` takes the core's native list; prefers native for `blackmagic`/`aja` when the device appears there as vendor `uvc`)
@@ -358,12 +362,12 @@ TEST(CaptureLivenessPolicy, RecoveryNeedsALiveSampleNewerThanTheLoss) {
 
 ### Task 9: Acceptance on the dev box
 
-**Recommended executor:** Opus 5.5, high effort (live evidence; the owner performs the physical replug).
+**Recommended executor:** fable, high effort (live evidence; the owner performs the physical replug).
 
 **Files:**
 - Create: `scripts/qa/capture-dropout-acceptance.py`
   - drives the control API
-  - toggles `pnputil /disable-device` / `/enable-device`
+  - toggles `pnputil /disable-device` / `/enable-device` (owner-run elevated step, owner-scheduled window; the script prints the exact commands for the owner and waits, it never self-elevates)
   - records Program for each run, and samples luma plus the slate signature per decoded frame (reuse `zoom-gap-hold-ab.py`'s sampler)
   - polls `sources[]` at 50 ms
   - writes a JSON verdict per spec acceptance row
@@ -379,7 +383,7 @@ TEST(CaptureLivenessPolicy, RecoveryNeedsALiveSampleNewerThanTheLoss) {
 
 ### Task 10: Documentation
 
-**Recommended executor:** Sonnet 5.5, low effort.
+**Recommended executor:** sonnet, low effort.
 
 **Files:**
 - Modify: `docs/reference/source-bus.md` (a "Capture liveness (#562/#758)" section: the record, the state machine, the tombstone, and that R2 is lifted for capture only)
@@ -396,19 +400,19 @@ TEST(CaptureLivenessPolicy, RecoveryNeedsALiveSampleNewerThanTheLoss) {
 
 | Task | Executor | Effort | AI-assisted hours |
 |---|---|---|---|
-| 1 Spike: loss signals and static cadence on the rig | Opus 5.5 | high | 1.5 |
-| 2 Pure decision function | Opus 5.5 | high | 1.0 |
-| 3 Bus, annotation, wire, compositor rule | Opus 5.5 | high | 2.0 |
-| 4 Native UVC liveness (Windows build) | Opus 5.5 | high | 2.0 |
-| 5 Bridge liveness in the core (Windows build) | Opus 5.5 | high | 1.5 |
-| 6 Shell bridge lifecycle (#758) | Opus 5.5 | high | 2.5 |
-| 7 Sources page: guard lift, one control, status | Sonnet 5.5 | high | 2.0 |
-| 8 Vendor-named devices native | Sonnet 5.5 | medium | 0.75 |
-| 9 Acceptance on the dev box (owner replugs) | Opus 5.5 | high | 2.0 |
-| 10 Documentation | Sonnet 5.5 | low | 0.5 |
+| 1 Spike: loss signals and static cadence on the rig | opus | high | 1.5 |
+| 2 Pure decision function | opus | high | 1.0 |
+| 3 Bus, annotation, wire, compositor rule | opus | high | 2.0 |
+| 4 Native UVC liveness (Windows build) | opus | high | 2.0 |
+| 5 Bridge liveness in the core (Windows build) | opus | high | 1.5 |
+| 6 Shell bridge lifecycle (#758) | opus | high | 2.5 |
+| 7 Sources page: guard lift, one control, status | sonnet | high | 2.0 |
+| 8 Vendor-named devices native | sonnet | medium | 0.75 |
+| 9 Acceptance on the dev box (owner replugs) | fable | high | 2.0 |
+| 10 Documentation | sonnet | low | 0.5 |
 | **Total** | | | **15.75** |
 
-Critical path: 1 → 2 → 3 → (4 ∥ 5 → 6) → 7 → 9. Task 8 can run any time after Task 4. Task 1 can run in parallel with Task 2 because the constants are already fixed; Task 1 can only tighten `cadenceTrusted` or raise a finding. A fresh-context review (Opus 5.5, high, about 1.0 h, not counted above) is recommended on Tasks 3 and 6 before merge.
+Critical path: 1 → 2 → 3 → (4 ∥ 5 → 6) → 7 → 9. Task 8 can run any time after Task 4. Task 1 can run in parallel with Task 2 because the constants are already fixed; Task 1 can only tighten `cadenceTrusted` or raise a finding. A fresh-context review (opus, high, about 1.0 h, not counted above) is recommended on Tasks 3 and 6 before merge.
 
 ## Self-review
 

@@ -26,7 +26,7 @@
 ## Review Focus
 
 1. **The single production call site.** `JsonRpcServer.cpp`'s render loop calls `prepareRenderEngineInputsUnlocked()` **before** `std::unique_lock<std::mutex> lock(coreMutex)` and calls the 3-argument `renderDisplayTick`. If it calls the 2-argument overload, the pre-read happens under the lock and the guardrail does not see it, because the inline preparation runs before the scope opens.
-2. **`AllowEngineMutexScope` usage.** Exactly three sites, all in the ingest section of `renderSyntheticTick`. `grep -n AllowEngineMutexScope native/src` must list exactly those three.
+2. **`AllowEngineMutexScope` usage.** Exactly three sites, all in the ingest section of `renderSyntheticTick`. `grep -n AllowEngineMutexScope native/src` must list three call sites (the class definition in `EngineMutexGuardrail.h` also matches).
 3. **Ordering inside `prepareRenderEngineInputsUnlocked`:** epoch, then view, then epoch. `rosterSpeakerEpoch` is 0 when the two epoch reads differ, and `speakerEpoch` is the first read.
 4. **`renderViewIfConfigured` keeps `advanceActiveSpeaker(monotonicMs())`.** The multiview/monitor tally used to depend on the snapshot call ticking the director.
 5. **The guest A/V prune race** (spec Risks) is accepted, not fixed. Confirm the owner agrees, or add the applied-at stamp.

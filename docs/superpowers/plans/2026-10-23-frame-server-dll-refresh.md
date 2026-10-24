@@ -28,7 +28,8 @@
 
 - **Task 1 gates everything.** If `Stop-Service FrameServer` cannot remove the stale instance, or removal needs a process kill, STOP and report to the owner; do not add `Stop-Process` unasked.
 - Installer stays a **32-bit NSIS** binary. Anything needing 64-bit semantics (module enumeration of the service host) runs through `Get-NativePowerShellPath` (Sysnative). Registry access stays `OpenBaseKey(..., Registry64)`, never `HKLM:` (pattern: `Install-CrashDumps.ps1`).
-- The refresh runs only inside the already-elevated block: **no new UAC prompt, no new elevation path**. Code must behave identically with UAC disabled and on a normal PC.
+- UAC on the dev PC has EnableLUA=1 with admin prompts suppressed (standing fact, `rc-owner-decisions.md`). Every `Stop-Service FrameServer` and installer run below (Task 1 Step 3, Task 7) is an **owner-run elevated step, owner-scheduled window**; plans must work on a normal PC.
+- The refresh runs only inside the already-elevated block: **no new UAC prompt, no new elevation path**. Code must behave identically with UAC prompts suppressed (the dev PC) and on a normal PC.
 - **No silent failure.** Every outcome is in the result JSON and `installer-logs\<release>-frameserver.log`; exit 3 shows a warning on interactive setup.
 - A refresh failure never rolls back a verified registration. Exit 1 remains the only rollback trigger.
 - `Unknown` evidence refreshes; `Current`, `NotLoaded` and `NotRunning` make **zero** service calls.
@@ -48,7 +49,7 @@
 
 - [ ] **Step 1:** Write the probe: print `FrameServer` and `FrameServerMonitor` state, start type, dependents, PID, creation time, and whether the PID is shared with other services (`Win32_Service` by `ProcessId`).
 - [ ] **Step 2:** Run from a 32-bit (SysWOW64) and a 64-bit PowerShell; record that `Get-Process -Id <pid> -Module` fails in 32-bit and works in 64-bit elevated.
-- [ ] **Step 3:** With the camera open (owner present), time `Stop-Service FrameServer -Force` to `Stopped`; record dependents stopped, the consumer's behaviour, whether Windows restarts it, and whether the next activation creates a new PID with a fresh `Serving module path=` line.
+- [ ] **Step 3:** (Owner-run elevated step, owner-scheduled window.) With the camera open (owner present), time `Stop-Service FrameServer -Force` to `Stopped`; record dependents stopped, the consumer's behaviour, whether Windows restarts it, and whether the next activation creates a new PID with a fresh `Serving module path=` line.
 - [ ] **Step 4:** Repeat once with an old-hash DLL deliberately loaded to confirm the stale image disappears.
 - [ ] **Step 5 (decision):** All of "stops within 20 s, instance replaced, new load observed" -> continue. Otherwise STOP and report `BLOCKED` with the measurements.
 - [ ] **Step 6:** Record the measurements as an "Outcome" section appended to the spec (not a commit by this plan's author unless asked).
@@ -142,6 +143,8 @@ Get-NativePowerShellPath                                       # -> Sysnative pa
 
 ### Task 7: Installed upgrade acceptance on the dev box
 
+**Every installer run here (interactive or silent `/S`) is an owner-run elevated step, owner-scheduled window, and must not run over the owner's beta during the soak (serialize after soak Task 5 or use a separate `-InstallRoot`).**
+
 **Files:**
 - Create: `artifacts/frame-server-refresh-<date>/` (evidence: pre/post FrameServer identity, installer logs, `vcam-serve.log` excerpts, continuity report)
 
@@ -150,7 +153,7 @@ Get-NativePowerShellPath                                       # -> Sysnative pa
 - [ ] **Step 1:** Ask the owner for a window (no call, no stream). Record installed version, camera DLL SHA256, FrameServer PID and creation time; open the camera and capture the pre-upgrade `Serving module path=` line.
 - [ ] **Step 2:** Run the candidate (different camera DLL hash) interactively; save the log and JSON. Confirm `refreshed` and a changed PID or creation time.
 - [ ] **Step 3:** Open the app by the stable shortcut, activate the camera in Zoom, then run `native-camera-continuity.py`; require `servingIdentityVerified=true`, the new SHA256, and a `Serving module path=` line from the new PID.
-- [ ] **Step 4:** Re-run the same installer: confirm `Current` and an unchanged PID. Repeat the upgrade once silently elevated.
+- [ ] **Step 4:** Re-run the same installer: confirm `Current` and an unchanged PID. Repeat the upgrade once silently elevated (`/S`; owner-run elevated step).
 - [ ] **Step 5:** Run the fault-injection control; confirm exit 3, warning, log and intact registration.
 - [ ] **Step 6:** Write the outcome in the spec, update the #781 issue comment text for the owner (do not close the issue; reboot, fresh-user and fleet remain open).
 

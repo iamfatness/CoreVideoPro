@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **Installer stays 32-bit NSIS.** Helpers run as the 32-bit SysWOW64 PowerShell 5.1 unless a test launches Sysnative on purpose. Every new test runs under BOTH hosts (`$env:WINDIR\SysWOW64\...` and `System32\...`). Never introduce `HKLM:` writes.
-- **UAC is disabled on the dev PC but code must work on a normal PC.** Nothing here needs elevation (all paths under `%LOCALAPPDATA%` and `HKCU`). Do not add an elevation requirement.
+- **UAC on the dev PC has EnableLUA=1 with admin prompts suppressed (standing fact, `rc-owner-decisions.md`). Every elevated step is an **owner-run elevated step, owner-scheduled window**, and code and plans must also work on a normal PC with UAC prompts.** Nothing here needs elevation (all paths under `%LOCALAPPDATA%` and `HKCU`). Do not add an elevation requirement.
 - **Loud failures.** No `-ErrorAction SilentlyContinue` on anything that decides deletion or moving. Every refusal names the path and reason. No empty `catch`.
 - **No recursive deletion, ever.** `Remove-Item` without `-Recurse`, one file or one empty directory at a time. Unknown content is MOVED, same volume only, manifest written first.
 - **Never terminate processes, never run an older uninstaller, never change camera ownership or shortcuts.** Fail closed if process inventory is unavailable (existing behavior, `Remove-PreviousInstallations.ps1:13-17`).
@@ -21,8 +21,8 @@
 - **One metadata list.** `Get-OwnedInstallMetadataNames` is the only place the names live.
 - Tests create fixtures under `%TEMP%\CoreVideoRetirement-<guid>` and `HKCU:\Software\CoreVideoProInstallerTests\<guid>` only. Never touch the real `%LOCALAPPDATA%\Programs\CoreVideoPro` outside Task 7.
 - Never run Task 7 while the owner's app is streaming, recording or has the virtual camera on; never SendKeys or steal focus.
-- Task 4 is blocked on owner rulings Q1 and Q2 in the spec. Tasks 1-3 are not.
-- Do not commit until the owner asks; commit messages end with the harness-supplied attribution line.
+- Owner rulings: D5 (helper may reset `PSModulePath` for its own process, logged) unblocks Task 2; D4 (move operator content to a dated backup with a manifest, never delete) unblocks Task 4. Q1 in the spec is D4 and Q2 is D5.
+- Commit per task on the lane branch; merge and publish only on the owner's word. Commit messages end with the harness-supplied attribution line.
 
 ## Review Focus
 
@@ -36,7 +36,7 @@
 
 ### Task 1: Reproduce or bound the original failure (gates the claim "root-caused")
 
-**Recommended executor:** Opus 5, high effort (investigation; the hypothesis may be wrong).
+**Recommended executor:** opus, high effort (investigation; the hypothesis may be wrong).
 
 **Files:**
 - Create: `scripts/alpha/Test-CleanupEnvironment.ps1`
@@ -52,7 +52,7 @@
 
 ### Task 2: Deterministic module environment and diagnosed failures
 
-**Recommended executor:** Sonnet 5.5, medium effort.
+**Recommended executor:** sonnet, medium effort.
 
 **Files:**
 - Modify: `scripts/alpha/PreviousInstallations.psm1` (add and export `Initialize-SetupHelperEnvironment`)
@@ -71,7 +71,7 @@
 
 ### Task 3: Shared metadata list and residual classification (pure, no writes)
 
-**Recommended executor:** Opus 5, high effort (safety-critical classifier).
+**Recommended executor:** opus, high effort (safety-critical classifier).
 
 **Files:**
 - Modify: `scripts/alpha/PreviousInstallations.psm1`
@@ -86,9 +86,9 @@
 - [ ] **Step 3: Run** under both hosts. Expected: all pass.
 - [ ] **Step 4: Commit** (when asked): `Classify residual install folders without touching them (#883)`.
 
-### Task 4: Residual removal with recoverable backup (BLOCKED on owner rulings Q1, Q2)
+### Task 4: Residual removal with recoverable backup (unblocked by D4)
 
-**Recommended executor:** Opus 5, high effort (data-moving code; review-heavy).
+**Recommended executor:** opus, high effort (data-moving code; review-heavy).
 
 **Files:**
 - Modify: `scripts/alpha/PreviousInstallations.psm1`
@@ -104,7 +104,7 @@
 
 ### Task 5: Wire the sweep into the helper, the report and the installer message
 
-**Recommended executor:** Sonnet 5.5, medium effort.
+**Recommended executor:** sonnet, medium effort.
 
 **Files:**
 - Modify: `scripts/alpha/Remove-PreviousInstallations.ps1`
@@ -125,7 +125,7 @@
 
 ### Task 6: CI and documentation
 
-**Recommended executor:** Sonnet 5.5, low effort.
+**Recommended executor:** sonnet, low effort.
 
 **Files:**
 - Modify: `.github/workflows/ci.yml` (the `native-shell-windows` steps next to `Test-PreviousInstallations.ps1` and the `Test-CrashDumps.ps1` step from #1033)
@@ -139,12 +139,12 @@
 
 ### Task 7: Installed acceptance on the dev box (owner present; this closes #883)
 
-**Recommended executor:** Sonnet 5.5, medium effort, owner approves the install. No code.
+**Recommended executor:** sonnet, medium effort, owner approves the install. No code.
 
 **Files:** evidence under `artifacts/installer-validation/<id>/`. No source changes.
 
 - [ ] **Step 1: Before.** Save an inventory of `%LOCALAPPDATA%\Programs\CoreVideoPro` (names, file counts), the uninstall-key list, `Get-CameraMachineRegistration`, both shortcut targets and a settings-file hash; run `Remove-PreviousInstallations.ps1 -AppDirectory <current> -InspectOnly`. Expected on 2026-10-23: 1 full folder, 29 metadata-only, 2 with `Recordings\` (10 files), 1 uninstall entry.
-- [ ] **Step 2: Install** the next beta containing this work with the STANDARD interactive installer (not `/S`, not `Test-AlphaInstaller.ps1`) launched from Explorer. Repeat one later upgrade launched from a PowerShell 7 shell to cover the inherited-environment case.
+- [ ] **Step 2: Install** the next beta containing this work with the STANDARD interactive installer (not `/S`, not `Test-AlphaInstaller.ps1`) launched from Explorer. This is an owner-run elevated step, owner-scheduled window, and it must not run over the owner's installed beta while the soak (Task 5 of the soak plan) is in progress. Repeat one later upgrade launched from a PowerShell 7 shell to cover the inherited-environment case.
 - [ ] **Step 3: Verify all of:** exactly one version folder remains and it is the new one; exactly one uninstall entry; both stable shortcuts and HKLM/HKCU camera ownership point at the new install; settings hash unchanged; `summary.retained = 0`; `installer-logs\<release>-retire.log` shows the diagnostics block (`Is64Bit` false, effective `PSModulePath`); if Q1 is yes, one `retired-install-remnants-<guid>` folder whose manifest lists the 10 recording files with matching SHA-256s. Uninstall-entry count alone is NOT accepted; the folder inventory is.
 - [ ] **Step 4: Post** the evidence on #883 and close it only if every item holds. If Task 1 never reproduced the original fault, say so in the closing comment.
 
@@ -154,21 +154,21 @@
 
 | Task | Executor | Effort | AI-assisted hours |
 |---|---|---|---|
-| 1 Reproduce / bound the failure | Opus 5 | high | 1.5 |
-| 2 Deterministic environment + diagnostics | Sonnet 5.5 | medium | 1.0 |
-| 3 Metadata list + residual classifier | Opus 5 | high | 1.5 |
-| 4 Residual removal with backup (blocked on Q1/Q2) | Opus 5 | high | 2.0 |
-| 5 Wire helper, report, NSIS message | Sonnet 5.5 | medium | 1.0 |
-| 6 CI + docs | Sonnet 5.5 | low | 0.5 |
-| 7 Installed acceptance | Sonnet 5.5 (owner approves) | medium | 1.0 |
+| 1 Reproduce / bound the failure | opus | high | 1.5 |
+| 2 Deterministic environment + diagnostics | sonnet | medium | 1.0 |
+| 3 Metadata list + residual classifier | opus | high | 1.5 |
+| 4 Residual removal with backup (unblocked by D4) | opus | high | 2.0 |
+| 5 Wire helper, report, NSIS message | sonnet | medium | 1.0 |
+| 6 CI + docs | sonnet | low | 0.5 |
+| 7 Installed acceptance | sonnet (owner approves) | medium | 1.0 |
 | **Total** | | | **8.5** |
 
 Critical path: 3 -> 4 -> 5 -> 7. Tasks 1 and 2 can run in parallel with Task 3. A fresh-context
-review (Opus 5, high, about 0.75 h, not counted above) is recommended on Task 4 before merge.
+review (opus, high, about 0.75 h, not counted above) is recommended on Task 4 before merge.
 
 ## Self-review
 
 - Spec section A -> Tasks 1-2; B -> Tasks 3-4; C and D -> Task 5; testing and acceptance -> Tasks 3-7.
 - No task requires elevation or changes the 32-bit installer.
-- The only file-moving code is Task 4, gated on owner rulings Q1/Q2.
+- The only file-moving code is Task 4, gated on owner ruling D4.
 - The Get-FileHash fix already shipped (`91db55bf`); this plan does not redo it. It proves the environment and removes the second symptom (stranded folders).

@@ -17,6 +17,7 @@
 | D7 | GPU tier 16/25 tile ceilings versus the 10-slot product cap (#439) | accept the cap as the ceiling for RC; or schedule a wall-size lane | accept for RC; the Settings line already says "(product limit)" | nothing now; records the intent |
 | D8 | Drill rule when an ISO (or Program) lands on the software encoder (#935) | encoder placement is a note and the row passes on frame identity alone; or hardware stays required for PASS | note for ISOs; Program on the software encoder stays a FAIL for RC because the 2026-10-22 gate measured hardware | #935 drill rule task |
 | D9 | UI severity for a software ISO that is inside its frame budget (#935) | Informational / Warning | Informational with the measured per-frame cost; Warning only when frames drop | #935 operator-line task |
+| D10 | The five ZoomISO teardown rules as worded in the #445 spec (rules 4 and 5 are reconstructed) | confirm / correct against the original ZoomISO freeze log | confirm unless the log says otherwise | #445 audit tasks 4 and 5 |
 | D11 | Headless fault switch (env var) for the #993 live drill, as the #1030 recording-stall test uses | allow / require a test-only core build | allow, documented in `docs/reference/fault-injection-seams.md`, never set by the installer | #993 live drill task |
 | D12 | Close #457 on the retained-log evidence (the crash was the post-exit drain fixed by #462; seven in-meeting closes since, no recurrence) | close / keep open until one more observed close | close; add the standing graceful-close check from the plan | #457 |
 | D13 | Zoom helper: after a CRT invalid-parameter fault, absorb and continue, or fail fast (#856) | absorb / fail | absorb and log, as ZComms v0.1.8 did in the field | #856 crash trap task |
@@ -27,7 +28,8 @@
 | D18 | Capture dropout bounds (#562/#758): stall after 1.5 s without a new sample; "hold" keeps the last frame 2.0 s after an explicit loss then shows the named slate; a dead device leaves Program within 5.0 s | confirm / change the numbers | confirm | #562/#758 policy task |
 | D19 | After the 5 s deadline on a "black" source, stay black or show the named slate (#758) | black / slate | named slate, so the operator knows which source died | #758 |
 | D20 | Preview and multiview also show the failed slate once a source is declared failed (#758) | yes / Program only | yes; one rule in all three compositors | #758 |
-| D10 | The five ZoomISO teardown rules as worded in the #445 spec (rules 4 and 5 are reconstructed) | confirm / correct against the original ZoomISO freeze log | confirm unless the log says otherwise | #445 audit tasks 4 and 5 |
+| D21 | The #856 env-armed fault knob for the Zoom helper (`COREVIDEO_ZOOM_ENGINE_FAULT_ARM`) | allow / require a test-only helper build | allow, same terms as D11: documented, never set by the installer | #856 live drill task |
+| D22 | #457 Task 5b `ForceExit` hardening | approve / skip | approved as optional, one-call change | #457 Task 5b |
 
 ## External inputs (purchases, accounts, third parties)
 
@@ -52,6 +54,12 @@
 - 2026-10-23: production hostnames `telemetry.corevideo.io`, `ops.corevideo.io`, `auth.corevideo.io` (#434/#436).
 - 2026-10-23: the installer stays 32-bit NSIS; 64-bit registry view and Sysnative at the seams.
 
+## Standing facts
+
+| Fact | Consequence for plans |
+|---|---|
+| UAC on the dev PC has EnableLUA=1 with admin prompts suppressed | Plans treat every elevated step as an owner-run elevated step in an owner-scheduled window, and must also work on a normal PC with UAC prompts. |
+
 ## Rulings 2026-10-23 23:50 EDT (owner, via the pick-one tool)
 
 D1 CI secret baked per channel (one revocable beta key via release.yml). D2 `/oauth/callback`.
@@ -64,4 +72,9 @@ never set by the installer. D12 close #457 on the evidence; add the graceful-clo
 CRT invalid-parameter faults and continue. D14 skip-and-count bad IPC messages. D15 helper dumps
 listed only, never uploaded. D16 mini dumps by default, full under the QA env var. D17 accept the
 A/V-trim race for this slice. D18 1.5 s / 2.0 s / 5.0 s confirmed. D19 named slate after the
-deadline even for "black". D20 failed slate in Preview and multiview too. D6 and D7: pending.
+deadline even for "black". D20 failed slate in Preview and multiview too.
+
+D6 ruled as issue #427 proposes: 1500 ms tile staleness; monitor isolation mitigation as written.
+D7 schedule a wall-size lane after RC; 10 slots stays the ceiling for RC; filed as #1041.
+D21 the #856 env-armed fault knob for the helper is allowed, same terms as D11. D22 #457 Task 5b
+`ForceExit` hardening approved as optional (one-call change).

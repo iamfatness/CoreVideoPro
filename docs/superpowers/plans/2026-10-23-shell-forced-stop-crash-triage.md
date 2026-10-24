@@ -176,14 +176,14 @@ Expected for the drain: the faulting OS thread is the STA UI thread with no mana
   The pass condition: the last line is `terminating the process directly`, the exit took 6 s or less, and there is no new dump and no new event.
 - [ ] **Step 3:** Run the test again. Expected: PASS.
 
-**5b. (Optional, owner ruling) ForceExit hardening.**
+**5b. (Optional; approved as D22, one-call change) ForceExit hardening.**
 
 **Files:** Modify `native-shell/CoreVideoPro.WinUI/Services/ApplicationLifecycle.cs`. Test in `native-shell/CoreVideoPro.WinUI.Tests/`.
 
 - [ ] **Step 1:** Make the final exit an injected seam, defaulting to `ShutdownCompletion.TerminateCurrentProcess`. Write a test that asserts the log line is written before the terminate call and that a second call is a no-op. It should fail first.
 - [ ] **Step 2:** Run `dotnet test native-shell/CoreVideoPro.WinUI.Tests --filter "FullyQualifiedName~ApplicationLifecycle|FullyQualifiedName~ShutdownCompletion"`. Expected: all pass.
 
-**5c. Run the gate live.**
+**5c. Run the gate live.** (Cross-reference: 5c belongs in the soak plan, `2026-10-23-rc-beta-acceptance-soak.md` Task 5 Step 3, which runs `scripts/qa/graceful-close-check.ps1` at the end of the owner's show run. Do not schedule a separate 30-minute meeting for it if the soak is running.)
 
 - [ ] **Step 1:** In the authorized test meeting (full pwd link), with Engine on, no recording and no stream, let the app run for 30 min or more. Then run `powershell -File scripts/qa/graceful-close-check.ps1`. Expected: `pass=true`. Record the build stamp and session length in the issue comment.
 - [ ] **Step 2:** If it FAILS, keep #457 open. Apply the spec's capture plan:

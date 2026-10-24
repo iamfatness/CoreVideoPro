@@ -13,7 +13,7 @@
 **Tech Stack:**
 - C++20 core (`native/`) and the in-house gtest shim (`native/tests/gtest/gtest.h`).
 - Win32 (`DbgHelp` `MiniDumpWriteDump`, `GetProcessTimes`, `GetPerformanceInfo`).
-- .NET 9 shell (`CoreVideoPro.MediaCore`, `CoreVideoPro.WinUI`) with MSTest/xUnit as already used in `CoreVideoPro.MediaCore.Tests`.
+- .NET 9 shell (`CoreVideoPro.MediaCore`, `CoreVideoPro.WinUI`) with xUnit as already used in `CoreVideoPro.MediaCore.Tests`.
 - PowerShell for the QA drill.
 
 **Spec:** `docs/superpowers/specs/2026-10-23-zoom-helper-exit-diagnostics-design.md` (rules L1-L8, classifier rules 1-10, decisions D1-D4).
@@ -33,7 +33,7 @@
 | 8. Real-SDK fault test (local, Windows + `ZOOM_SDK_DIR`) | opus | high | Interprets how Zoom's handlers actually interact with ours; the result can force a design change. |
 | 9. Shell surfacing + bundle + scanner fix (D3) | sonnet | medium | Follows existing `SupportBundleArchiveBuilder` patterns; pure observer is table-tested. |
 | 10. QA drill script + installed acceptance | fable | high | Crashes the helper on the owner's installed app in a real test meeting; a false pass is expensive. |
-| 11. Docs | haiku | low | Mechanical edits from the spec and the recorded outcomes. |
+| 11. Docs | sonnet | low | Docs record measured outcomes and need judgement about what was and was not proven. |
 | Review (once, after Task 10) | opus | high | Per Review Focus. |
 
 **Estimated AI-assisted effort:**
@@ -483,11 +483,11 @@ Also cover:
   - It prints `PASS` / `FAIL` / `MISSING_EVIDENCE` per acceptance item 1-5.
 - [ ] **Step 2:** Run `-Mode fake` on the dev box for all three kinds. Attach the verdicts.
 - [ ] **Step 3: Installed acceptance** (owner present; authorized test meeting; full pwd link).
-  1. Install the build carrying this work and record the Rejoin baseline (three runs) **before** arming.
-  2. Close the app. Set user env `COREVIDEO_ZOOM_ENGINE_FAULT_ARM=crash-this-helper` and `COREVIDEO_ZOOM_ENGINE_FAULT=av_write@in_meeting+30`. Launch and join.
+  1. Install the build carrying this work (an owner-run elevated step in an owner-scheduled window, never over the owner's beta during the soak; UAC on the dev PC has EnableLUA=1 with prompts suppressed, and this must also work on a normal PC) and record the Rejoin baseline (three runs) **before** arming.
+  2. Close the app. Set `COREVIDEO_ZOOM_ENGINE_FAULT_ARM=crash-this-helper` and `COREVIDEO_ZOOM_ENGINE_FAULT=av_write@in_meeting+30` **process-locally in the launch harness** (the drill script sets them in the environment of the child process it starts), never as a persistent user or machine environment variable (D21: allowed on the same terms as D11, never set by the installer). Launch and join.
   3. Run the drill. Repeat with `throw_bad_alloc_thread`.
-  4. Unset both variables. Relaunch, join, and run `-Kind external_kill`.
-  5. **Unset the variables and confirm with `Get-ChildItem Env:` in a fresh shell that they are gone.** Then confirm a normal join works.
+  4. Relaunch without the variables (they were process-local to the previous launch), join, and run `-Kind external_kill`.
+  5. **Confirm with `Get-ChildItem Env:` in a fresh shell that neither variable exists** (they must never have been persisted). Then confirm a normal join works.
 - [ ] **Step 4:** Post a redacted results comment on #856 (verdicts, classifications, cause lines; no paths that contain user names, no dumps). Raw evidence stays on `D:`.
 
 ---

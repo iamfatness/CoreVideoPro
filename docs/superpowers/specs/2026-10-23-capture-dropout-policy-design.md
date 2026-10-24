@@ -211,7 +211,7 @@ Both adapters then get the same liveness.
 
 ## Acceptance
 
-All runs use a Release core (check `--config Release` and the binary size, `CLAUDE.md`), the local control API (`GET /snapshot`, `127.0.0.1:8011`), and no input injection. Removal is simulated with `pnputil /disable-device <instanceId>` and restored with `/enable-device` (UAC is off on the dev PC; record the instance id). The owner's physical unplug is the final confirmation for each adapter. Program is judged from a Program recording's decoded frames (luma and slate-signature sampling, as in `scripts/qa/zoom-gap-hold-ab.py`), not from the Studio cells.
+All runs use a Release core (check `--config Release` and the binary size, `CLAUDE.md`), the local control API (`GET /snapshot`, `127.0.0.1:8011`), and no input injection. Removal is simulated with `pnputil /disable-device <instanceId>` and restored with `/enable-device` (`pnputil /disable-device` and `/enable-device` are owner-run elevated steps in an owner-scheduled window: UAC on the dev PC has EnableLUA=1 with admin prompts suppressed, and the procedure must also work on a normal PC; record the instance id). The owner's physical unplug is the final confirmation for each adapter. Program is judged from a Program recording's decoded frames (luma and slate-signature sampling, as in `scripts/qa/zoom-gap-hold-ab.py`), not from the Studio cells.
 
 | # | Test | Passes when |
 |---|---|---|

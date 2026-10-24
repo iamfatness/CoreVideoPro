@@ -23,6 +23,7 @@
 
 ## Global Constraints
 
+- UAC on the dev PC has EnableLUA=1 with admin prompts suppressed (standing fact, `rc-owner-decisions.md`). Every elevated step here (the silent `/S` install in Task 1 Step 5, anything touching HKLM) is an **owner-run elevated step, owner-scheduled window**, and must also work on a normal PC.
 - Never run the drill or the native test suite while the owner's installed app is running (the vcam SHM unlink incident; `COREVIDEO_VCAM_SHM_DIR`).
 - Evidence and recordings on `D:` only; `-Out` must be under `D:\CoreVideo-QA\drills\`.
 - RTMP stays off; the stream goes to the loopback SRT sink the drill starts.
@@ -35,7 +36,7 @@
 ## Review Focus
 
 - A helper leaves during the measured window and the shell re-forms the ISO set: recording must still be `producing` 30 s later, and a Stop/Start after the window must succeed (Task 3 asserts both).
-- A camera-off span under 1.5 s produces no holds; over 1.5 s produces holds at about one per second (Task 3 reads `heldFrames` from the finalized snapshot and checks the judge row).
+- #1038's actual rule: a hold is a repeat that arrives 1 s or more after the previous picture, and the judge matches the count to `heldFrames`; the hold onset is about 1.5 s behind the audio (the stall bound), so a camera-off span is expected to show holds from about 1.5 s into the span, not from its start. Task 3 reads `heldFrames` from the finalized snapshot and checks the judge row.
 - The drill's preference patch is refused because a value type differs on this beta (the `StreamSrtPort` string rule): Task 2 proves the patch applies on the installed beta before Task 3.
 - The camera receiver from `build-dev` is from a different commit than the beta: Task 2 records both hashes and the receiver's version output.
 - A WER dump from a deliberate crash lands under the installing user's `%LOCALAPPDATA%` and nowhere else: Task 4 checks the 64-bit registry view only.
@@ -65,7 +66,7 @@ Expected: native suite `N passed, 0 failed`; `dotnet publish` Release win-x64; P
 - [ ] **Step 4: Tag and publish the pre-release**
 Run: `git tag beta-2026-10-24-<sha7>; git push origin beta-2026-10-24-<sha7>; gh release create beta-2026-10-24-<sha7> --prerelease --notes-file <scratchpad>\release-notes-<sha7>.md <6 assets>`
 Expected: release URL; notes say the soak is pending and list the PRs since 1072a50.
-- [ ] **Step 5: Install silently and verify**
+- [ ] **Step 5: Install silently and verify** (owner-run elevated step, owner-scheduled window)
 Run: `<Setup.exe> /S`, then `Install-MediaRuntime.ps1`, then the per-file hash check against the zip manifest.
 Expected: 0 hash mismatches; previous install retired; Start-menu shortcut repointed; ffmpeg present.
 
@@ -107,7 +108,7 @@ Script: T+12:00 helper A leaves; T+15:00 helper A rejoins; T+20:00 helper B came
 Run: `outputs-drill.ps1 -Seconds 1800 -RemoteIds <ids> -MeetingUrl '<link>' -Out D:\CoreVideo-QA\drills\<ts>-gate`
 Expected: readiness passes; all outputs armed; recording `producing`.
 - [ ] **Step 3: Watch the departure**
-Run: 1 Hz samples; at T+12:30 check `recState == producing`, `encoderEvidence.completedCalls.start` advanced by 1 (the re-formed session) and no `failed`.
+Run: 1 Hz samples; at T+12:30 check `recState == producing`, `encoderEvidence.completedCalls.start` (confirm the exact snapshot key against `native/src/core/CoreStateCapture.cpp:809-818` before relying on it) advanced by 1 (the re-formed session) and no `failed`.
 Expected: no wedge; any warning names the departed source, never "encoder load".
 - [ ] **Step 4: Judge**
 Run: the drill's own judge step, then `python -I scripts\qa\outputs-drill-judge.py <Out>`.
@@ -129,8 +130,11 @@ Expected: a new take is `producing` within 15 s; the file finalizes on the final
 Run: 64-bit `Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\<exe>'` for the three exes; `Test-Path` on the app default recording folder.
 Expected: `DumpFolder` `%LOCALAPPDATA%\CoreVideoPro\crashes` as REG_EXPAND_SZ, `DumpType` 2, `DumpCount` 5, the installer marker value present; the folder exists.
 - [ ] **Step 2: Deliberate core crash lands a dump (#433)**
-Run: with the app idle and no outputs armed, trigger the core's existing fault path (the supervisor crash-lock test command in `docs/reference/core-restart-drill.md`).
+Run: trigger a WER dump by running the installed `corevideo-native.exe` with an invalid argument that aborts (the app idle, no outputs armed, on a copy of the install root or with the supervisor's core stopped so it does not collide with the owner's session). `taskkill` is NOT sufficient: a killed process does not produce a WER dump. If no in-product fault path exists, record the step as blocked and file an issue for a QA-only crash trigger.
 Expected: a `.dmp` under `%LOCALAPPDATA%\CoreVideoPro\crashes`; the supervisor respawns the core.
+- [ ] **Step 2b: Crash offer and support bundle list the dump (#1039)**
+Run: after the deliberate dump from Step 2, open the crash offer and build a support bundle; read which dump folders they scan.
+Expected: both list the dump from `%LOCALAPPDATA%\CoreVideoPro\crashes`. This is expected to FAIL until #1039 ships (the shell scans the wrong folder on installed builds); record the FAIL against #1039 rather than treating it as a gate failure of this beta.
 - [ ] **Step 3: Offline recording (#1009)**
 Run: Zoom disconnected; `transport.record.set [true]` for 60 s, then `[false]`.
 Expected: the file finalizes; `ffprobe` shows about 60 s; it plays.
@@ -152,7 +156,8 @@ Expected: `host=telemetry.corevideo.io apiKeyPresent=false`.
 
 - [ ] **Step 1: Launch clean** (`qaCounters=$false`, delivery trace on, monitor diagnostics on); arm the stream to the loopback sink and the virtual camera; the owner presses Record.
 - [ ] **Step 2: Sample at 1 Hz**; key on `recState in (recording, producing)`.
-- [ ] **Step 3: Teardown**: stream off, sink stopped, prefs restored and hashed, logs copied, `summary.txt` written.
+- [ ] **Step 3: Graceful-close gate (#457, plan 5c).** At the end of the show run, after the owner closes the app normally, run `powershell -File scripts/qa/graceful-close-check.ps1` (delivered by the #457 lane, `2026-10-23-shell-forced-stop-crash-triage.md` Task 5c). Expected: `pass=true`. If that lane has not merged, note "graceful-close check not yet available" in the write-up and carry it as open.
+- [ ] **Step 4: Teardown**: stream off, sink stopped, prefs restored and hashed, logs copied, `summary.txt` written.
 
 ### Task 6: Write-up, issues, BACKLOG
 

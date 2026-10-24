@@ -23,7 +23,7 @@
 - Never run the native suite or kill processes while the owner's installed app is streaming or has the virtual camera on, and never kill a core you did not start.
 - Shell tests: `dotnet test native-shell\CoreVideoPro.MediaCore.Tests` and `native-shell\CoreVideoPro.WinUI.Tests` with `--filter "FullyQualifiedName~<Class>"`. WinUI tests need the repo's existing test-project build; do not change project targets.
 - Every filed GitHub issue: `gh issue create -R iamfatness/CoreVideoPro --label backlog`, title prefixed `[teardown-audit]`, body = the finding block. The audit file references issue numbers; no fix is made here.
-- Do not commit or push unless the owner asks; the executing session stages and reports.
+- Commit per task on the lane branch; merge and publish only on the owner's word.
 - The audit doc may quote short code excerpts only when the exact text is the evidence. No emojis. No em-dash overuse; match the voice of `docs/reference/engine-teardown-order.md`.
 
 ## Review Focus
@@ -264,7 +264,7 @@ git diff --stat
 
 ## Recommended executor
 
-Model and effort per task. Fable is used only where a wrong reading is expensive (a `holds` on SDK re-entrancy or lock-across-SDK that is actually a deadlock would let a freeze class ship as "audited").
+Model and effort per task. fable is used only where a wrong reading is expensive (a `holds` on SDK re-entrancy or lock-across-SDK that is actually a deadlock would let a freeze class ship as "audited").
 
 | Task | Model | Effort | Why |
 |---|---|---|---|
