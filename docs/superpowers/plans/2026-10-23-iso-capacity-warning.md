@@ -67,8 +67,8 @@
 - Consumes: `scripts/validate-iso-record.mjs --evidence`, the session `manifest.json` (`encoderCapacity`, `isoAdmission`, `MediaFoundationEncoderAdapter.cpp:2465-2471`), `media-core.log` lines `[recording] iso-admission` and `[encoder-probe]`.
 - Produces: a short written record (in the Task 8 report) of `isoAdmission` code, `probed`, probe status, and the capacity summary at arm time.
 
-- [ ] **Step 1: Build Release (Global Constraints) and confirm the exe size.**
-- [ ] **Step 2: Run without and with the flag, keeping artifacts**
+- [x] **Step 1: Build Release (Global Constraints) and confirm the exe size.**
+- [x] **Step 2: Run without and with the flag, keeping artifacts**
 
 ```powershell
 New-Item -ItemType Directory -Force D:\CoreVideo-QA\iso935 | Out-Null
@@ -78,9 +78,9 @@ node scripts/validate-iso-record.mjs --sources 8 --seconds 20 --keep-artifacts -
 
 Expected: the first run FAILs only on `recording.warning surfaced: 1 ISO source will record on the CPU software encoder...`, and the second run PASSes.
 
-- [ ] **Step 3: Read the provenance.** Open `manifest.json` in the kept session folder (under `native\build-dev\Recordings\CoreVideoPro\validate-iso-record\`). Record `isoAdmission` (`iso-encoder-software-spill` vs `iso-encoder-software-spill-unprobed`) and `encoderCapacity`. Read the full `recording.warning` from the evidence JSON: an unprobed arm contains "Encoder capacity could not be measured on this machine (probe pending)".
-- [ ] **Step 4: Report, do not fix.** If the code is `-unprobed`, the arm-time lookup lost a race with the 1080p60 prewarm (`:1549`). File a GitHub issue (label `backlog`) titled "ISO arm reads unprobed capacity when Record follows configure within ~2 s". Quote the evidence and do **not** change the probe in this plan. If it is probed with a ceiling of 8, quote the `[encoder-probe]` line. Either way, continue to Task 2.
-- [ ] **Step 5: Delete the kept MP4s** after copying the manifest and evidence to `D:\CoreVideo-QA\iso935\`.
+- [x] **Step 3: Read the provenance.** Open `manifest.json` in the kept session folder (under `native\build-dev\Recordings\CoreVideoPro\validate-iso-record\`). Record `isoAdmission` (`iso-encoder-software-spill` vs `iso-encoder-software-spill-unprobed`) and `encoderCapacity`. Read the full `recording.warning` from the evidence JSON: an unprobed arm contains "Encoder capacity could not be measured on this machine (probe pending)".
+- [x] **Step 4: Report, do not fix.** If the code is `-unprobed`, the arm-time lookup lost a race with the 1080p60 prewarm (`:1549`). File a GitHub issue (label `backlog`) titled "ISO arm reads unprobed capacity when Record follows configure within ~2 s". Quote the evidence and do **not** change the probe in this plan. If it is probed with a ceiling of 8, quote the `[encoder-probe]` line. Either way, continue to Task 2.
+- [x] **Step 5: Delete the kept MP4s** after copying the manifest and evidence to `D:\CoreVideo-QA\iso935\`.
 
 ---
 
@@ -119,7 +119,7 @@ Expected: the first run FAILs only on `recording.warning surfaced: 1 ISO source 
 - Produces (snapshot JSON): `recording.isoAdmission` object as in spec section 2 (`admissibleIsoCount: null` when -1). `recording.streams[].isoIndex` is a number on ISO streams.
 - Consumes: `IsoAdmissionVerdict`, `IsoCapacitySource`, `probe.describe()` (all computed already at `:2226-2247`).
 
-- [ ] **Step 1: Write the failing pure test** in `native/tests/IsoEncoderAdmissionTest.cpp`:
+- [x] **Step 1: Write the failing pure test** in `native/tests/IsoEncoderAdmissionTest.cpp`:
 
 ```cpp
 TEST(IsoEncoderAdmission, DecisionIdsAreStableStrings) {
@@ -131,7 +131,7 @@ TEST(IsoEncoderAdmission, DecisionIdsAreStableStrings) {
 }
 ```
 
-- [ ] **Step 2: Write the failing snapshot test (non-MF, after `:2497`)**, using a sink like `WarningEncoderSink` that sets both fields:
+- [x] **Step 2: Write the failing snapshot test (non-MF, after `:2497`)**, using a sink like `WarningEncoderSink` that sets both fields:
 
 ```cpp
 namespace {
@@ -187,7 +187,7 @@ TEST(EncoderRecordingSession, IsoAdmissionAndIsoIndexSurfaceInSnapshotRecordingS
 
 Adapt the accessor calls (`get`, `getString`, `getNumber`, `isNull`) to the real `rpc::Json` API; the existing test at `:2768-2793` shows the pattern. Before writing the stream assertion, check how `CoreStateCapture` reads the encoder session (`streams` built at `:1935-1960`).
 
-- [ ] **Step 3: Extend the MF test** `MediaFoundationEightZoomIsoWritersSurviveEncoderCapacity` (`:1470`, inside the MF guard). After the existing loop:
+- [x] **Step 3: Extend the MF test** `MediaFoundationEightZoomIsoWritersSurviveEncoderCapacity` (`:1470`, inside the MF guard). After the existing loop:
 
 ```cpp
   ASSERT_TRUE(session.isoAdmission.has_value());
@@ -204,7 +204,7 @@ Adapt the accessor calls (`get`, `getString`, `getNumber`, `isNull`) to the real
 
 Add a second MF test in the same block, `MediaFoundationProgramOnlyTakeAfterSpillClearsIsoAdmission`. Arm the 8-ISO forced-capacity request, stop, then arm a request with no `isoSources`. Assert `!session.isoAdmission.has_value()`.
 
-- [ ] **Step 4: Run, expect FAIL (does not compile / assertions fail)**
+- [x] **Step 4: Run, expect FAIL (does not compile / assertions fail)**
 
 ```powershell
 native\build-dev\corevideo-native-tests.exe --gtest_filter='IsoEncoderAdmission.*'
@@ -212,7 +212,7 @@ native\build-dev\corevideo-native-tests.exe --gtest_filter='EncoderRecordingSess
 native\build-dev\corevideo-native-tests.exe --gtest_filter='EncoderRecordingSession.MediaFoundationEightZoom*'
 ```
 
-- [ ] **Step 5: Implement**
+- [x] **Step 5: Implement**
   - `isoAdmissionDecisionId` in `IsoEncoderAdmission.h`.
   - `IsoAdmissionStatus`, `IsoStreamStatus::isoIndex`, `OutputSession::isoAdmission` in `Interfaces.h`.
   - `IsoWriterEntry` gains `int isoIndex = 0`. Set `entry.isoIndex = static_cast<int>(i + 1)` beside `idxBuf` (`:2293`), and `status.isoIndex = entry.isoIndex` in `publishIsoTrack`.
@@ -221,7 +221,7 @@ native\build-dev\corevideo-native-tests.exe --gtest_filter='EncoderRecordingSess
   - The per-session ISO status vector is rebuilt near `:2415-2440`. Make sure `isoIndex` survives into `target.isoStreams`.
   - `CoreStateCapture.cpp`: emit `{"isoIndex", iso.isoIndex}` in the stream object when `iso.isoIndex > 0`. Emit `recording.isoAdmission` when present, with `admissibleIsoCount` as `nullptr` when `< 0`.
   - `AsyncEncoderSink`: confirm the session copy is wholesale (`fresh = inner->session()` or equivalent). If it rebuilds fields, copy `isoAdmission` there.
-- [ ] **Step 6: Run the three filters above, then the full recording suites**, all PASS:
+- [x] **Step 6: Run the three filters above, then the full recording suites**, all PASS:
 
 ```powershell
 native\build-dev\corevideo-native-tests.exe --gtest_filter='EncoderRecordingSession.*'
@@ -270,7 +270,7 @@ Report the exact pass counts. If any `EncoderRecordingSession.MediaFoundation*` 
   ```
 - Consumes: `recording.Streams[]` (`Kind`, `IsoIndex`, `DisplayName`, `SourceId`, `EncoderPath`, `FallbackReason`, `VideoWorkUs`, `MuxVideoFrameCount`, `DroppedFrames`, `FrameRate`). `recording.Encoder.HardwareAccelerated` (check the property name in `NativeMediaCoreRecordingEncoder`, `:460`).
 
-- [ ] **Step 1: Write failing tests** (`IsoEncoderPlacementReadoutTests.cs`):
+- [x] **Step 1: Write failing tests** (`IsoEncoderPlacementReadoutTests.cs`):
 
 ```csharp
 [Fact] public void AllHardware_NoReadout()
@@ -317,14 +317,14 @@ Report the exact pass counts. If any `EncoderRecordingSession.MediaFoundation*` 
 
 Write the `Rec(...)` / `Iso(...)` builders in the test file with `required` members filled (`Kind`, `Path`, `Status`). Add a `TransportMappingTests` case that deserializes a snapshot JSON containing `recording.isoAdmission` and `streams[].isoIndex` and asserts the mapped values. Follow the existing JSON-fixture pattern in that file.
 
-- [ ] **Step 2: Run, expect FAIL**
+- [x] **Step 2: Run, expect FAIL**
 
 ```powershell
 dotnet test native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj -p:WindowsAppSDKBootstrapAutoInitializeOptions_Default=false -p:WindowsAppSDKBootstrapAutoInitializeOptions_None=true --filter "FullyQualifiedName~IsoEncoderPlacementReadout"
 dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tests.csproj --filter "FullyQualifiedName~TransportMapping"
 ```
 
-- [ ] **Step 3: Implement.** Model fields first, then the readout (pure, no WinUI types). Rules:
+- [x] **Step 3: Implement.** Model fields first, then the readout (pure, no WinUI types). Rules:
   - Lines only for `Kind == "iso"` streams with `EncoderPath == "software"`, in `IsoIndex` order. Program line when `!programHardwareAccelerated` and a Program stream exists.
   - Label: `ISO-{IsoIndex} {DisplayName ?? SourceId}`. With no `IsoIndex`, the name alone.
   - Reason map: `hardware-capacity-exhausted` -> "GPU sessions used up"; `hardware-unavailable` -> "no GPU encoder"; `operator-selected` -> "set to software"; anything else -> the raw string.
@@ -332,8 +332,8 @@ dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tes
   - Severity: Warning if any line has cost > budget or `DroppedFrames > 0`. Otherwise Informational if any line exists. Otherwise None.
   - `StudioViewModel`: `IsoEncoderPlacementMessage` (joined lines), `IsoEncoderPlacementSeverity` (mapped to `InfoBarSeverity`), `IsoEncoderPlacementVisibility`. Raise them wherever `IsoHealthWarning` is raised.
   - XAML: `<InfoBar IsOpen="True" IsClosable="False" Severity="{x:Bind ViewModel.IsoEncoderPlacementSeverity, Mode=OneWay}" Message="{x:Bind ViewModel.IsoEncoderPlacementMessage, Mode=OneWay}" Visibility="{x:Bind ViewModel.IsoEncoderPlacementVisibility, Mode=OneWay}" AutomationProperties.Name="ISO encoder placement" />`.
-- [ ] **Step 4: Run Step 2 filters, PASS. Then run the full `npm run test:native-shell`, PASS.** Build the WinUI project Release (`dotnet build ... -c Release -p:Platform=x64`) so the XAML compiles.
-- [ ] **Step 5: UI check (owner not interrupted):** launch with the fake engine per `CLAUDE.md` "Synthetic meeting setup", with `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS=8`. Arm 8 ISOs through the control API (no input injection) and record. Screenshot the Record panel's ISO area through the app's own capture path, or UIA read of the InfoBar `Message`. Run an axe-equivalent contrast check on the InfoBar colors (Informational and Warning, light and dark).
+- [x] **Step 4: Run Step 2 filters, PASS. Then run the full `npm run test:native-shell`, PASS.** Build the WinUI project Release (`dotnet build ... -c Release -p:Platform=x64`) so the XAML compiles.
+- [ ] **Step 5 (not done; left with Task 8): UI check (owner not interrupted):** launch with the fake engine per `CLAUDE.md` "Synthetic meeting setup", with `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS=8`. Arm 8 ISOs through the control API (no input injection) and record. Screenshot the Record panel's ISO area through the app's own capture path, or UIA read of the InfoBar `Message`. Run an axe-equivalent contrast check on the InfoBar colors (Informational and Warning, light and dark).
 
 ---
 
@@ -346,7 +346,7 @@ dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tes
 **Interfaces:**
 - Consumes: `TransportCoordinator.ToggleRecordingAsync`, the fake host's `SyncResult`, `OutputStatus`, `Recording`. The `Build()` helper.
 
-- [ ] **Step 1: Write the tests**
+- [x] **Step 1: Write the tests**
 
 ```csharp
 [Fact]
@@ -387,7 +387,7 @@ public async Task ToggleRecording_StillRollsBack_WhenLifecycleFailed_935()
 
 Check `NativeMediaCoreRecordingSession.Lifecycle`'s type and required members in `NativeMediaCoreProtocol.cs` before writing the initializer.
 
-- [ ] **Step 2: Run, expect PASS for both** (the behaviour shipped in `935b2800`). These are pins. To prove they would catch a regression, temporarily revert `TransportStatusFormatter.cs:125` to `item.Status is "failed" or "warning"`. Confirm the first test FAILs, then restore the line. Record that in the report.
+- [x] **Step 2: Run, expect PASS for both** (the behaviour shipped in `935b2800`). These are pins. To prove they would catch a regression, temporarily revert `TransportStatusFormatter.cs:125` to `item.Status is "failed" or "warning"`. Confirm the first test FAILs, then restore the line. Record that in the report.
 
 ```powershell
 dotnet test native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj -p:WindowsAppSDKBootstrapAutoInitializeOptions_Default=false -p:WindowsAppSDKBootstrapAutoInitializeOptions_None=true --filter "FullyQualifiedName~TransportCoordinatorTests"
@@ -412,7 +412,7 @@ dotnet test native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.cspro
   ```
 - Consumes: snapshot `recording.warning`, `recording.isoAdmission`, `recording.streams[]`.
 
-- [ ] **Step 1: Write failing tests** (`iso-record-rules.test.mjs`):
+- [x] **Step 1: Write failing tests** (`iso-record-rules.test.mjs`):
 
 ```js
 import test from 'node:test';
@@ -446,8 +446,8 @@ test('missing counters are a failure, not zero', () =>
   assert.equal(isoLossRegressions([{ kind: 'iso', sourceId: 'zoom:8' }], [{ kind: 'iso', sourceId: 'zoom:8' }]).length > 0, true));
 ```
 
-- [ ] **Step 2: Run, expect FAIL:** `node --test scripts/qa/iso-record-rules.test.mjs`
-- [ ] **Step 3: Implement** `iso-record-rules.mjs`, then wire it into `validate-iso-record.mjs`:
+- [x] **Step 2: Run, expect FAIL:** `node --test scripts/qa/iso-record-rules.test.mjs`
+- [x] **Step 3: Implement** `iso-record-rules.mjs`, then wire it into `validate-iso-record.mjs`:
   - Replace `:262-263` with `classifyRecordingWarning(lastWarning, snap?.recording?.isoAdmission)`. Collect `failure` texts into a `Set` and push each once after the loop. Collect `note` into `notes`.
   - If `isoAdmission?.decision === 'refuse-iso'`, push `ISO admission refused: <message>`.
   - Keep the baseline ISO streams with `lossBaseline`. After the existing loss checks (`:288-292`), push `isoLossRegressions(isoStreamsOf(lossBaseline), finalStreams)`.
@@ -455,7 +455,7 @@ test('missing counters are a failure, not zero', () =>
   - `--allow-capacity-warning`: keep parsing it. Print `allow-capacity-warning: now the default; the flag waives nothing more`. Its only effect is to be recorded in the evidence.
   - Evidence JSON adds `notes`, `isoAdmission` (from the stop snapshot), and `isoPlacement: finalStreams.map(({sourceId, isoIndex, encoderPath, fallbackReason, videoWorkUs, muxVideoFrameCount, droppedFrames}) => ...)`.
   - Update the header comment `:14` ("recording.warning stays empty") to the new rule.
-- [ ] **Step 4: Run tests PASS, then `npm run test:scripts` PASS.** The live run is Task 8.
+- [x] **Step 4: Run tests PASS, then `npm run test:scripts` PASS.** The live run is Task 8.
 
 ---
 
@@ -480,7 +480,7 @@ test('missing counters are a failure, not zero', () =>
 - Produces (judge, superseded by D8: `programEncoderHardwareThroughout` is added to the gating set): `GATING_FLAGS = ('remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout')`. Missing-flag detection names `('remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout')` explicitly. The schema becomes `outputs-drill-verdict-v3`. Each software ISO row gets `encoder: 'software'`. Notes gain one line per software ISO.
 - New drill parameter: `-ProbeMaxSessions <int>` (optional, 1..16). It sets `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS` for the launch, is recorded in `drill.json`, and is printed in the summary workload line.
 
-- [ ] **Step 1: Change the PowerShell test first** (`outputs-drill.test.ps1:328-331`). The software-ISO and software-Program envelopes must now leave every **gating** flag true. They must record `hardwareEncodersThroughout = $false`, and `encoderPlacement['capture:f4978a7f6d614c0d'].paths` must equal `@('software')`:
+- [x] **Step 1: Change the PowerShell test first** (`outputs-drill.test.ps1:328-331`). The software-ISO and software-Program envelopes must now leave every **gating** flag true. They must record `hardwareEncodersThroughout = $false`, and `encoderPlacement['capture:f4978a7f6d614c0d'].paths` must equal `@('software')`:
 
 ```powershell
 $t = New-DrillThroughout -Plan $plan; $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -EncoderPath 'software') -Plan $plan -Progress @{} -ElapsedMs 0
@@ -491,7 +491,7 @@ foreach ($k in 'remotes1080Throughout', 'captureProgressThroughout', 'programSou
 
 Add a check that an ISO path changing between samples sets `changed = $true`. Add a check that `Get-DrillEncoderCost` (new, pure, takes two CPU samples and two snapshots) computes `meanVideoWorkUs` only when `muxVideoFrameCount > 0`, and returns `$null`, not 0, otherwise.
 
-- [ ] **Step 2: Change the Python tests first** (`test_outputs_drill.py`):
+- [x] **Step 2: Change the Python tests first** (`test_outputs_drill.py`):
 
 ```python
 def test_software_iso_placement_alone_does_not_fail_a_clean_run(self):
@@ -511,19 +511,19 @@ def test_software_iso_with_missing_identity_still_fails(self):
 
 Update `test_missing_throughout_flags_fail` (`:295-298`) to assert `'remotes1080Throughout (not recorded)'` instead of the hardware flag. Add `extra_measurement` to `run_drill` if it is absent.
 
-- [ ] **Step 3: Run both, expect FAIL**
+- [x] **Step 3: Run both, expect FAIL**
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\qa\outputs-drill.test.ps1
 python scripts\qa\test_outputs_drill.py
 ```
 
-- [ ] **Step 4: Implement.**
+- [x] **Step 4: Implement.**
   - The lib keeps computing the hardware fact, under `hardwareEncodersThroughout` and `programEncoderHardwareThroughout`, but writes them as facts outside the gating loop: they are updated, and they do not add to `firstFailures`. It accumulates `encoderPlacement`.
   - `Get-DrillEncoderCost` is a pure function. The per-second loop in `outputs-drill.ps1` reads `(Get-Process -Id $corePid).TotalProcessorTime` and `[Environment]::ProcessorCount`, computes `delta CPU / (delta wall * logical)` as a percentage, and records mean and peak. Each software ISO gets `videoWorkUs` and `muxVideoFrameCount` deltas per interval, so a peak-interval mean exists, plus `droppedFrames` at start and end.
   - The judge uses `GATING_FLAGS`, sets schema v3, and adds the `encoder` field to ISO rows. It writes notes in the form `ISO-<n> <source> on software encoder: mean <x> ms of <y> ms per frame, core CPU mean <m> % / peak <p> %`, with "not measured" when absent. The summary row gets ` encoder=software`.
   - Update `docs/qa/outputs-drill.md` in Task 7, not here.
-- [ ] **Step 5: Run Step 3, PASS.** Re-judge one existing evidence folder offline (for example a copy of `D:\CoreVideo-QA\beta-20261021-build\artifacts\qualification-1008-25` if it is in drill layout, else skip and say so) and confirm the overall verdict is unchanged for an all-hardware run.
+- [x] **Step 5: Run Step 3, PASS.** (No drill-layout evidence folder exists on disk to re-judge; skipped.) Re-judge one existing evidence folder offline (for example a copy of `D:\CoreVideo-QA\beta-20261021-build\artifacts\qualification-1008-25` if it is in drill layout, else skip and say so) and confirm the overall verdict is unchanged for an all-hardware run.
 
 ---
 
@@ -535,8 +535,8 @@ python scripts\qa\test_outputs_drill.py
 - Modify: `docs/reference/encoder-capacity-probe.md` (the `recording.isoAdmission` node, and that probe semantics are unchanged)
 - Modify: `CLAUDE.md` only if a reference-topic index line needs the new section name
 
-- [ ] **Step 1:** Write the rule in one sentence in each doc: "Encoder placement is reported, never gated; a run fails only on measured loss." Name the fields (`isoAdmission`, `isoIndex`, `encoderCost`) and the tests that pin them.
-- [ ] **Step 2:** Under "Not yet proven" in `outputs-drill.md`, state that the software-ISO 30-minute run is the result Task 8 reports, and copy its numbers there when Task 8 completes.
+- [x] **Step 1:** Write the rule in one sentence in each doc: "Encoder placement is reported, never gated; a run fails only on measured loss." Name the fields (`isoAdmission`, `isoIndex`, `encoderCost`) and the tests that pin them.
+- [x] **Step 2:** Under "Not yet proven" in `outputs-drill.md`, state that the software-ISO 30-minute run is the result Task 8 reports, and copy its numbers there when Task 8 completes.
 
 ---
 
