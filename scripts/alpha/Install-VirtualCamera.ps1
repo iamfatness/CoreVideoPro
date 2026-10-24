@@ -92,21 +92,34 @@ if ($Action -eq 'Install' -and -not $MachineOnly) {
 if ($Action -eq 'Inspect') {
     $desktopUser = Invoke-CameraUserSession -Action Inspect -AppDirectory $app -OwnerSid $OwnerSid
     $actualHash = if ($machine.Path -and (Test-Path -LiteralPath $machine.Path -PathType Leaf)) { (Get-CameraPayloadSha256 $machine.Path) } else { '' }
-    $loaded = @()
-    $moduleInspection = 'unverified'
-    try {
-        foreach ($service in Get-CimInstance Win32_Service -Filter "Name='FrameServer' OR Name='FrameServerMonitor'") {
-            if ($service.ProcessId) {
-                $loaded += @(Get-Process -Id $service.ProcessId -Module -ErrorAction Stop |
-                    Where-Object ModuleName -eq 'corevideo-virtualcam.dll' | Select-Object FileName,ModuleName)
-            }
-        }
-        $moduleInspection = 'observed'
-    } catch { $moduleInspection = 'unverified' }
+    # #781: the old in-process Get-Process -Module ran in the 32-bit installer
+    # host, which cannot enumerate a 64-bit service host, so it reported
+    # 'unverified' by construction. Read-only Refresh-FrameServer.ps1 -Action
+    # Inspect runs 64-bit, and falls back to this instance's own serve-log lines
+    # when module inspection is denied (always, unelevated).
+    $fsArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File', (Join-Path $PSScriptRoot 'Refresh-FrameServer.ps1'),
+        '-Action','Inspect','-ExpectedDll', $(if ($machine.Path) { $machine.Path } else { '""' }), '-ServeLog', $ServeLog)
+    $fsOutput = @(& (Get-NativePowerShellPath) @fsArgs | ForEach-Object { "$_" })
+    $fsExit = $LASTEXITCODE
+    $frameServer = $null
+    try { $frameServer = ($fsOutput -join "`n") | ConvertFrom-Json } catch { }
+    if ($fsExit -ne 0 -or -not $frameServer -or $frameServer.schema -ne 'frameserver-refresh-v1') {
+        $frameServer = [pscustomobject][ordered]@{ schema='frameserver-refresh-v1'; result='error'; moduleInspection='unavailable'; loadedCameraModules=@(); servedPaths=@()
+            servingIdentityVerified=$false; error="Frame Server inspection failed (exit $fsExit)." }
+    }
+    $moduleInspection = if ($frameServer.moduleInspection -eq 'observed') { 'observed' } else { 'unverified' }
+    $moduleInspectionReason = if ($moduleInspection -eq 'observed') { $null } elseif ($frameServer.moduleError) { [string]$frameServer.moduleError } elseif ($frameServer.error) { [string]$frameServer.error } else { "FrameServer $($frameServer.before.state): no service host to inspect" }
+    $loaded = @($frameServer.loadedCameraModules | Where-Object { $_ })
+    $registeredKey = ConvertTo-CameraDllPathKey $machine.Path
+    $matchesManifest = [bool]($actualHash -and $actualHash -eq $machine.Sha256)
     [ordered]@{ schema='camera-installation-v1'; registration=$machine; desktopUser=$desktopUser; registeredFileSha256=$actualHash;
-        registeredFileMatchesManifest=($actualHash -and $actualHash -eq $machine.Sha256); moduleInspection=$moduleInspection;
-        loadedModules=$loaded; loadedIdentityMatchesRegistration=($moduleInspection -eq 'observed' -and $loaded.Count -gt 0 -and @($loaded | Where-Object { $_.FileName -ne $machine.Path }).Count -eq 0);
-        servingIdentityVerified=$false } | ConvertTo-Json -Depth 5
+        registeredFileMatchesManifest=$matchesManifest; moduleInspection=$moduleInspection; moduleInspectionReason=$moduleInspectionReason;
+        loadedModules=$loaded; loadedIdentityMatchesRegistration=($moduleInspection -eq 'observed' -and $loaded.Count -gt 0 -and @($loaded | Where-Object { (ConvertTo-CameraDllPathKey $_) -ne $registeredKey }).Count -eq 0);
+        servedPaths=@($frameServer.servedPaths | Where-Object { $_ }); frameServer=$frameServer
+        # True only when the CURRENT FrameServer instance logged "Serving module
+        # path=" for the registered DLL and that file matches the manifest hash.
+        # Never true before the first activation after a refresh (lazy load).
+        servingIdentityVerified=([bool]$frameServer.servingIdentityVerified -and $matchesManifest) } | ConvertTo-Json -Depth 6
     exit 0
 }
 $ownershipAction = if ($Action -eq 'Rollback') { 'Uninstall' } else { $Action }

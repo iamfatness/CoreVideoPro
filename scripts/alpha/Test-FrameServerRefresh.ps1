@@ -4,8 +4,9 @@
 # Run from both hosts (CI runs both):
 #   %windir%\System32\WindowsPowerShell\v1.0\powershell.exe -File Test-FrameServerRefresh.ps1
 #   %windir%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe -File Test-FrameServerRefresh.ps1
+param([switch]$IncludeInstalledInspect)
 $ErrorActionPreference = 'Stop'
-$script = Join-Path $PSScriptRoot 'Refresh-FrameServer.ps1'
+$script =Join-Path $PSScriptRoot 'Refresh-FrameServer.ps1'
 $checks = 0
 function Assert([bool]$c, [string]$m) { if (!$c) { throw $m }; $script:checks++ }
 $expected = 'C:\Program Files\Common Files\CoreVideoProCamera\' + ('b' * 64) + '\corevideo-virtualcam.dll'
@@ -148,5 +149,22 @@ Assert ($LASTEXITCODE -eq 0) "real inspect exited $LASTEXITCODE"
 $j = ($out -join "`n") | ConvertFrom-Json
 Assert ($j.process64 -eq [Environment]::Is64BitOperatingSystem) "real inspect ran in a $(if ($j.process64) {'64'} else {'32'})-bit process"
 Assert (-not $j.servingIdentityVerified -and $j.result -eq 'inspected') 'real inspect claimed serving without a log'
+
+# 16. (opt-in: needs the independent desktop-user worker, so not on CI) the real,
+# read-only Install-VirtualCamera.ps1 -Action Inspect now carries Frame Server
+# evidence, and an empty temp serve log never verifies serving identity.
+if ($IncludeInstalledInspect) {
+    $app = [IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $PSScriptRoot))).TrimEnd('\')
+    $emptyLog = Join-Path ([IO.Path]::GetTempPath()) ('cvp-empty-serve-' + [Guid]::NewGuid().ToString('N') + '.log')
+    [IO.File]::WriteAllText($emptyLog, '')
+    try {
+        $out = & $hostExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Install-VirtualCamera.ps1') -Action Inspect -AppDirectory $app -ServeLog $emptyLog
+        Assert ($LASTEXITCODE -eq 0) "installed inspect exited $LASTEXITCODE"
+        $j = ($out -join "`n") | ConvertFrom-Json
+        Assert ($j.frameServer.schema -eq 'frameserver-refresh-v1' -and $j.frameServer.process64 -eq [Environment]::Is64BitOperatingSystem) 'installed inspect: no 64-bit Frame Server evidence'
+        Assert ($j.moduleInspection -in @('observed','unverified') -and ($j.moduleInspection -eq 'observed' -or $j.moduleInspectionReason)) 'installed inspect: unverified without a reason'
+        Assert (-not $j.servingIdentityVerified) 'installed inspect: verified serving from an empty serve log'
+    } finally { [IO.File]::Delete($emptyLog) }
+}
 
 Write-Output "Test-FrameServerRefresh passed ($checks checks; host 64-bit: $([Environment]::Is64BitProcess)). No real service was stopped."

@@ -122,6 +122,11 @@ if (-not $inspection.desktopUser.ok -or $inspection.desktopUser.boundary -ne 'in
     -not $inspection.desktopUser.userSession.matchesMachine -or -not $inspection.registeredFileMatchesManifest) {
     throw 'The independently observed desktop-user camera alias does not match the installed machine runtime.'
 }
+# #781: Inspect carries 64-bit Frame Server evidence and never claims serving before an activation.
+if ($inspection.frameServer.schema -ne 'frameserver-refresh-v1' -or $inspection.servingIdentityVerified -or
+    ($inspection.moduleInspection -ne 'observed' -and -not $inspection.moduleInspectionReason)) {
+    throw 'Inspect did not report Frame Server evidence, or claimed serving identity with no camera activation.'
+}
 # #781: the install's Frame Server refresh outcome is logged (CI runner: nothing stale, so exit 0).
 $frameServerLog = Join-Path $env:LOCALAPPDATA "CoreVideoPro\installer-logs\$releaseId-frameserver.log"
 if (-not (Test-Path -LiteralPath $frameServerLog) -or
@@ -244,7 +249,7 @@ if ((Get-Content -LiteralPath $sentinel -Raw) -ne 'preserve this user file') { t
     stableShortcutOnly=$true; mediaRuntimeRemoved=$true; manifestEscapeRefused=$true; evidence=$evidenceCopy; workDirectory=$work
     failedInstallRetry=$true; failedInstallCameraPreserved=$true; independentDesktopRegistration=$true
     recordingFolderCreated=$true; crashDumps=$crashDumpsExpected
-    frameServerRefreshLogged=$true; frameServerRefreshFault=$frameServerRefreshFault;
+    frameServerRefreshLogged=$true; frameServerRefreshFault=$frameServerRefreshFault; frameServerServingIdentity='unverified-until-activation'
     desktopShortcutCameraDelivery='unverified'; desktopShortcutUnassign='unverified'
 } | ConvertTo-Json | Tee-Object -FilePath (Join-Path $work 'result.json')
 $succeeded = $true
