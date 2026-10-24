@@ -2,6 +2,19 @@
 
 _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
 
+- **Never join a recording writer without a bound, and never let MF throttle (#1030, 2026-10-23).**
+  One ISO whose participant left blocked inside `CMFSinkWriter::ThrottleStream`;
+  an unconditional `RecordingTrackWorker::join()` then froze every later
+  Start/Stop for the rest of the show. Join with `joinFor()`, `abandon()` a
+  worker that misses the bound, and keep it (and what it references) alive
+  until `exited()`. `MF_SINK_WRITER_DISABLE_THROTTLING` stays on in the one
+  sink-writer creation path, and because the fMP4 sink holds audio for
+  interleave, a stalled video stream must get held frames (or audio piles up
+  in memory: 4.7 MB per 30 s measured). Not `SendStreamTick`: the fMP4 sink
+  lays video out by sample durations and a tick collapses the gap (A/V desync). Never take `ZoomEngineRuntime::mutex_`
+  under coreMutex; the audio gather enforces it with `ForbidEngineMutexScope`.
+  See `docs/reference/iso-recording.md`.
+
 - **A one-apply roster dip must not reflow the multiview (#725, 2026-09-30).**
   - **What happened:** in a long live session, every Take resolved Show Input slots against a
     participant list missing the producer (the app's own camera-off user) for one apply. The

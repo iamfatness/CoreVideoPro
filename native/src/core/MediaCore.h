@@ -20,6 +20,7 @@
 #include "core/RenderedSceneAttributionPolicy.h"
 #include "core/SourceBus.h"
 #include "core/IsoVideoIngress.h"
+#include "core/IsoDeparture.h"
 #include "core/AudioRouteControlState.h"
 #include "core/MediaTransports.h"
 #include "core/SourceContinuityLedger.h"
@@ -296,6 +297,7 @@ class MediaCore {
   void setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
+  [[nodiscard]] modules::ZoomEngineRuntime* zoomEngineRuntimeForTest() { return zoomEngineRuntime_.get(); }
 
   // Test seam (#535 slice 0): register an ISource with the core's SourceBus.
   // Nothing outside native/tests/ calls this — production has no registered
@@ -1248,6 +1250,9 @@ class MediaCore {
     std::vector<std::string> loopbackCaptureEndpointIds;
     bool recordingActive = false;
     std::vector<std::string> recordingIsoParticipantIds;
+    // #1030: selected Zoom ISO sources whose participant has left the meeting
+    // roster this tick (canonical ids). Their stems are not silence-filled.
+    std::unordered_set<std::string> departedIsoSourceIds;
     // Per-source ISO video for this tick (ISO-1), zero-copy shared_ptr refs
     // snapshotted from IsoVideoIngress under coreMutex at gather.
     std::vector<modules::IsoSourceVideoFrame> isoSources;
@@ -1291,8 +1296,13 @@ class MediaCore {
   // published members. The caller owns the locking (so the same trio serves both the
   // worker — phased/locked — and the synchronous test path — single-threaded, no locks).
   [[nodiscard]] std::vector<modules::AudioFrame> pollZoomAudioUnlocked();
+  // #1030: the meeting roster's ids for ISO departure, read BEFORE coreMutex
+  // for the same reason as pollZoomAudioUnlocked (the engine mutex is held
+  // across event handling and the ingest poll). nullopt = no engine.
+  [[nodiscard]] std::optional<std::unordered_set<std::string>> readZoomRosterIdsUnlocked();
   [[nodiscard]] AudioOutputWorkItem gatherAudioOutputWork(
-      std::vector<modules::AudioFrame> prePolledZoomAudio);
+      std::vector<modules::AudioFrame> prePolledZoomAudio,
+      std::optional<std::unordered_set<std::string>> prePolledRosterIds = std::nullopt);
   [[nodiscard]] AudioOutputResults runAudioOutputWork(AudioOutputWorkItem& work);
   void publishAudioOutputResults(const AudioOutputResults& results);
   // INNER lock guarding the audio/output module state (mixer, monitorOutput, encoder,

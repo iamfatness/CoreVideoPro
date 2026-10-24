@@ -13,6 +13,9 @@
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
 #include "modules/ZoomMeetingSdkAdapter.h"
+#include "modules/EngineMutexGuardrail.h"
+#include "modules/ZoomEngineClient.h"
+#include "modules/ZoomEngineRuntime.h"
 #include "core/TestPatternSource.h"
 #include "rpc/Json.h"
 
@@ -9541,4 +9544,113 @@ TEST(MediaCoreCommand, ATransportOnABackgroundOnlyAssetIsRefusedAndNamesTheLoop)
     return warning.find("no-such-asset") != std::string::npos;
   })) << "a transport command for an unknown asset must say so";
   EXPECT_EQ(CountingDecoder::created.load(), 1);
+}
+
+// #1030 (review blockers 1 + nit 3). A roster drop reaches the ISO audio
+// submit as `departed` through the REAL audio gather, and that gather never
+// takes the Zoom engine mutex (it runs under coreMutex on a sub-ms budget; the
+// roster is read before the lock, like pollZoomAudioUnlocked).
+namespace {
+class DepartureCapturingEncoder final : public corevideo::modules::IEncoderSink {
+ public:
+  void configureRecording(const corevideo::modules::RecordingSessionRequest&) override {}
+  corevideo::modules::OutputSession start(const std::vector<std::string>& destinations,
+                                          const std::vector<std::string>&) override {
+    if (std::find(destinations.begin(), destinations.end(), "recording") != destinations.end())
+      session_.recordingStatus = "recording";
+    session_.active = true;
+    session_.destinations = destinations;
+    return session_;
+  }
+  void submit(const corevideo::modules::ProgramFrame&) override {}
+  void submitIsoAudio(const std::vector<corevideo::modules::IsoSourceAudio>& sources) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    lastDeparted.clear();
+    for (const auto& source : sources) lastDeparted[source.sourceId] = source.departed;
+    ++isoAudioSubmits;
+  }
+  corevideo::modules::OutputSession session() const override { return session_; }
+  std::mutex mutex;
+  std::map<std::string, bool> lastDeparted;
+  int isoAudioSubmits = 0;
+
+ private:
+  corevideo::modules::OutputSession session_;
+};
+
+void setTestEnv(const char* name, const char* value) {
+#if defined(_WIN32)
+  _putenv_s(name, value ? value : "");
+#else
+  if (value) setenv(name, value, 1); else unsetenv(name);
+#endif
+}
+}  // namespace
+
+TEST(MediaCoreIsoDeparture, RosterDropMarksTheIsoDepartedThroughTheGatherWithoutTheEngineMutex) {
+  // A configured engine (no process is ever started) so the roster is real.
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto modules = corevideo::modules::createStubModules();
+  auto encoder = std::make_unique<DepartureCapturingEncoder>();
+  auto* capture = encoder.get();
+  modules.encoder = std::move(encoder);
+  auto core = std::make_unique<corevideo::core::MediaCore>(std::move(modules));
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_NE(runtime, nullptr);
+  ASSERT_TRUE(runtime->configured());
+
+  const auto roster = [&](const char* json) {
+    const auto event = corevideo::modules::parseZoomEngineEvent(json);
+    ASSERT_TRUE(event.has_value());
+    runtime->applyEngineEventForTest(*event);
+  };
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Stays"},{"id":2,"name":"Leaves"}]})");
+
+  const corevideo::rpc::Json isoIds = corevideo::rpc::Json::Array{std::string("zoom:1"), std::string("zoom:2")};
+  (void)core->applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-recording-targets"}, {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+      {"filenamePrefix", "iso-departure"}, {"format", "mp4"}, {"isoSourceIds", isoIds}});
+  (void)core->applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-recording-session"}, {"sessionId", "iso-departure"}, {"isoSourceIds", isoIds}});
+  (void)core->applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{std::string("recording")}}, {"isoSourceIds", isoIds}});
+
+  std::mutex coreMutex;
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  core->renderAudioOutputTick(coreMutex);
+  {
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    ASSERT_GT(capture->isoAudioSubmits, 0) << "recording with ISO selected must submit ISO audio";
+    EXPECT_FALSE(capture->lastDeparted["zoom:1"]);
+    EXPECT_FALSE(capture->lastDeparted["zoom:2"]);
+  }
+
+  // Participant 2 leaves the meeting (the shell logs this as roster-drop).
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":2,"participants":[{"id":1,"name":"Stays"}]})");
+  core->renderAudioOutputTick(coreMutex);
+  {
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    EXPECT_FALSE(capture->lastDeparted["zoom:1"]);
+    EXPECT_TRUE(capture->lastDeparted["zoom:2"]) << "a roster drop must reach the ISO stem as departed";
+  }
+
+  // They come back: no longer departed.
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":3,"participants":[{"id":1,"name":"Stays"},{"id":2,"name":"Leaves"}]})");
+  core->renderAudioOutputTick(coreMutex);
+  {
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    EXPECT_FALSE(capture->lastDeparted["zoom:2"]);
+  }
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
+      << "the audio gather (under coreMutex) took the Zoom engine mutex";
+
+  // The guardrail itself is live: an engine call inside a forbidden scope counts.
+  {
+    corevideo::modules::ForbidEngineMutexScope forbidden("test");
+    (void)runtime->floorParticipants();
+  }
+  EXPECT_GT(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore);
+  core.reset();
 }

@@ -21,6 +21,14 @@ namespace corevideo::modules {
 // Legacy users may retain reject-new overflow. Close all tracks before joining.
 // This worker is
 // itself owned by AsyncEncoderSink's bounded-teardown control block.
+//
+// #1030: an owner that serves other files (the recording file-control lane)
+// must never wait on one writer without a bound. Use joinFor(); a worker that
+// does not exit in time is abandon()ed: its queued work is discarded, its
+// thread is detached, and if the in-flight write ever returns the finalize
+// callback still runs (a late finalize), then the thread exits. An abandoned
+// worker, and everything its in-flight work and finalize reference, must stay
+// alive until exited() — never destroy it before then.
 class RecordingTrackWorker {
  public:
   enum class Kind { Video, Audio };
@@ -34,6 +42,10 @@ class RecordingTrackWorker {
     uint64_t queuedAudioSamples = 0, startupDroppedVideo = 0, startupDroppedAudio = 0;
     int64_t oldestQueuedAgeMs = 0;
     const char* lastOverflowReason = "none";
+    // #1030: items discarded when the owner abandoned a worker that did not
+    // exit within its join bound.
+    uint64_t abandonedItems = 0;
+    bool abandoned = false;
     std::string error;
   };
   RecordingTrackWorker(std::function<void()> initialize, std::function<void()> finalize,
@@ -99,6 +111,35 @@ class RecordingTrackWorker {
   void close() { std::lock_guard<std::mutex> lock(mutex_); closed_ = true; cv_.notify_one(); }
   void finishStartup() { std::lock_guard<std::mutex> lock(mutex_); startupFinished_ = true; }
   void join() { if (thread_.joinable()) thread_.join(); }
+  // Bounded join (#1030). True once the thread has exited and been joined.
+  // False when it is still inside a write or finalize after `bound`; the owner
+  // then calls abandon() rather than blocking every other file behind it.
+  bool joinFor(std::chrono::milliseconds bound) {
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (!exitCv_.wait_for(lock, bound, [&] { return exited_; })) return false;
+    }
+    join();
+    return true;
+  }
+  // Give up on a worker that did not exit within its bound (see the class
+  // comment for the lifetime contract). Queued work may reference the owner,
+  // so it is discarded, never run late.
+  void abandon() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    abandoned_ = true;
+    closed_ = true;
+    evidence_.abandoned = true;
+    evidence_.abandonedItems += queue_.size();
+    queue_.clear();
+    evidence_.queuedVideo = evidence_.queuedAudio = 0;
+    evidence_.queuedBytes = 0;
+    evidence_.queuedAudioSamples = 0;
+    cv_.notify_one();
+    if (thread_.joinable()) thread_.detach();
+  }
+  [[nodiscard]] bool abandoned() const { std::lock_guard<std::mutex> lock(mutex_); return abandoned_; }
+  [[nodiscard]] bool exited() const { std::lock_guard<std::mutex> lock(mutex_); return exited_; }
   Evidence evidence() const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto result = evidence_;
@@ -132,6 +173,11 @@ class RecordingTrackWorker {
       evidence_.maximumWorkUs = std::max(evidence_.maximumWorkUs, us);
     }
     invoke(finalize_);
+    // Last touch of this object by the worker thread. Notify under the lock so
+    // an owner that observes exited_ never races the notification.
+    std::lock_guard<std::mutex> lock(mutex_);
+    exited_ = true;
+    exitCv_.notify_all();
   }
   void invoke(const std::function<void()>& work) {
     try { work(); }
@@ -159,9 +205,11 @@ class RecordingTrackWorker {
   uint64_t startupAudioSampleCapacity_;
   mutable std::mutex mutex_;
   std::condition_variable cv_;
+  std::condition_variable exitCv_;
   std::deque<Item> queue_;
   Evidence evidence_;
   bool closed_ = false;
+  bool abandoned_ = false, exited_ = false;
   bool startupFinished_ = false, steady_ = false;
   std::thread thread_;
 };

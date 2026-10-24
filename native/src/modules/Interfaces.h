@@ -142,6 +142,12 @@ struct IsoSourceAudio {
   // makes ISO files longer than Program under multi-encoder load. Zero is
   // accepted for direct/test callers and makes the sink sample its clock.
   int64_t timelineTimestamp100ns = 0;
+  // #1030: the source has LEFT (a Zoom participant no longer in the meeting
+  // roster). The sink must not silence-fill a departed source's stem: that
+  // grew the file forever and, with no sibling video, wedged the writer. Real
+  // PCM is still written if any arrives; a source that returns resumes its
+  // stem and the clock bridges the gap with silence at that point.
+  bool departed = false;
 };
 
 struct AudioFrame {
@@ -1574,6 +1580,10 @@ class IEncoderSink {
   // Source-local dispatch budgets are safe only with independent file workers.
   // Other platform adapters retain their existing dispatch capacity until wired.
   [[nodiscard]] virtual bool supportsIndependentRecordingQueues() const { return false; }
+  // #1030: true when the sink abandoned a file writer thread that is still
+  // running and still references the sink. Its owner must then leak the sink
+  // at teardown instead of destroying it under that thread.
+  [[nodiscard]] virtual bool mustOutliveTeardown() const { return false; }
   virtual ~IEncoderSink() = default;
   // Cheap progress, called once per queue item by the async writer thread.
   // The DEFAULT derives it from session(), so every existing sink stays correct

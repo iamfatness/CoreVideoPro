@@ -201,6 +201,12 @@ class AsyncEncoderSink final : public IEncoderSink {
   // so a stuck writer keeps it alive after the owning sink is destroyed.
   struct State {
     std::unique_ptr<IEncoderSink> inner;
+    // #1030: a sink that abandoned a still-running file writer thread (one
+    // blocked inside Media Foundation past its bounded join) is leaked rather
+    // than destroyed under that thread. Process exit reclaims it.
+    ~State() {
+      if (inner && inner->mustOutliveTeardown()) (void)inner.release();
+    }
     bool independentRecordingQueues = false;
 
     std::mutex queueMutex;
