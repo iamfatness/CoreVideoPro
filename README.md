@@ -113,7 +113,9 @@ an SRT stream, with zero missing frame identities on every output. The later
 
 Every operator-visible value is measured or absent; a placeholder is never shown
 ([honest reporting](docs/reference/honest-reporting.md)). The release gate is per-frame
-identity of every output over the full workload; on-screen Studio cells are a tolerance
+identity of every output over the full workload (a writer-reported held frame during a source
+stall passes as a labelled, counted repeat, owner ruling 2026-10-23; see
+[the outputs drill](docs/qa/outputs-drill.md)); on-screen Studio cells are a tolerance
 metric because Windows DWM skips frames at the mixed-refresh monitor beat for every
 application ([`scripts/qa/desktop-picture-cadence.py`](scripts/qa/desktop-picture-cadence.py)).
 
