@@ -177,6 +177,32 @@ capture budget. Deterministic CI tests establish forbidden dependencies and
 ordering; reference-machine performance tests measure timing. Do not turn noisy
 wall-clock CI thresholds into the only protection, or merely raise warning limits.
 
+## Engine mutex under coreMutex (#1030, #1037)
+
+`ZoomEngineRuntime::mutex_` is held across roster events and the video ingest
+poll, so any acquisition under coreMutex makes every coreMutex waiter wait on
+the engine. `ForbidEngineMutexScope` counts such acquisitions on the audio
+gather (#1035) and the render tick (#1037); `AllowEngineMutexScope` names each
+sanctioned exception. Inventory on `main` 1879ccb7 and its decisions (full
+table: [the #1037 design](../superpowers/specs/2026-10-23-render-gather-engine-mutex-design.md)):
+
+| # | Lane | Site | Decision |
+|---|---|---|---|
+| R1 | render | `pollCompositorVideoFrames` | Sanctioned (frame group); follow-up A/B |
+| R2 | render | `latestDecodedVideoFrames` | Sanctioned (frame group); follow-up A/B |
+| R3 | render | `setVideoConsumerDemand` | Moved: published, applied by the next pre-read |
+| R4 | render | `floorParticipants` | Moved: pre-read before coreMutex |
+| R5 | render | `appendCpuVideoFrames` | Sanctioned (frame group); follow-up A/B |
+| R6 | render, Take | `directedSpeakerId` (follow-speaker) | Moved: pre-read |
+| R7 | render | `zoomSnapshot()` in `buildMultiviewRenderPlan` | Moved: pre-read speaker |
+| R8 | render | `zoomSnapshot()` for multiview tiles | Moved: pre-read speaker |
+| R9 | render | `zoomSnapshot()` for isolated-monitor tiles | Moved: pre-read speaker |
+| C1 | command | `syncSpine` (`zoom-media-spine-sync`) | Follow-up slice (command lane) |
+| C2 | command | `snapshot()` (`zoom-snapshot`) | Follow-up slice (command lane) |
+| C3 | command | `zoomSnapshot()` per ISO name at record start | Moved: tick roster cache |
+| C4 | command | `leave()` | Justified: operator rate, roster barrier |
+| C5 | command | `stopCapture()` | Justified: operator rate |
+
 ## Integrated verification and delivery
 
 Each focused repair ships with its first production consumer and tests, linked
