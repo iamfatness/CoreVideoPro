@@ -207,7 +207,7 @@ phrase they quote.
 | [`docs/reference/gotchas.md`](docs/reference/gotchas.md) | **before any non-trivial change** — the long list of traps, grep it for your area |
 | [`docs/reference/gpu-direct-encode.md`](docs/reference/gpu-direct-encode.md) | streaming encode, MF encoders, HEVC/AV1, bitrate/rate control |
 | [`docs/reference/honest-reporting.md`](docs/reference/honest-reporting.md) | **any value, control or diagnostic the operator sees** — measured or removed, never invented |
-| [`docs/reference/installer.md`](docs/reference/installer.md) | touching the installer, MSIX, uninstall or first-run |
+| [`docs/reference/installer.md`](docs/reference/installer.md) | touching the installer, MSIX, uninstall or first-run; the Frame Server refresh after a camera DLL upgrade (#781) |
 | [`docs/reference/iso-recording.md`](docs/reference/iso-recording.md) | ISO recording — video, audio stems, capture sources, dispatch/throttle, pre-flight, departed participants, bounded writer teardown (#1030) |
 | [`docs/reference/live-meeting-qa-2026-08-09.md`](docs/reference/live-meeting-qa-2026-08-09.md) | shell UI defects seen in real meetings (eight worked examples) |
 | [`docs/reference/media-no-decoder.md`](docs/reference/media-no-decoder.md) | media decode failures |

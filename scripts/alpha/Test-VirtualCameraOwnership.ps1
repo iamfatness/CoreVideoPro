@@ -81,4 +81,68 @@ try {
     if ([IO.Directory]::Exists($version)) { [IO.Directory]::Delete($version, $false) }
     [IO.Directory]::Delete($transactions, $false); [IO.Directory]::Delete($temporary, $false)
 }
+# #781: Frame Server refresh decision. Current/NotLoaded/NotRunning must never
+# restart the service; Stale/Unknown must. Module evidence wins over the serve log.
+$expected = 'C:\Program Files\Common Files\CoreVideoProCamera\' + ('b' * 64) + '\corevideo-virtualcam.dll'
+$old = 'C:\Program Files\Common Files\CoreVideoProCamera\' + ('a' * 64) + '\corevideo-virtualcam.dll'
+function Assert-Refresh([string]$Expected, [hashtable]$Arguments) {
+    $actual = Get-FrameServerRefreshDecision @Arguments
+    if ($actual -ne $Expected) { throw "Refresh decision: expected $Expected; got $actual for $($Arguments | ConvertTo-Json -Compress)" }
+    $script:count++
+}
+Assert-Refresh 'NotRunning' @{ServiceState='Stopped';ExpectedDll=$expected;ModuleInspection='unavailable'}
+Assert-Refresh 'NotRunning' @{ServiceState='Stopped';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($old)}
+Assert-Refresh 'NotRunning' @{ServiceState='Absent';ExpectedDll=$expected;ModuleInspection='unavailable'}
+Assert-Refresh 'Unknown' @{ServiceState='StopPending';ExpectedDll=$expected;ModuleInspection='unavailable'}
+Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@('C:\Windows\System32\mfsensorgroup.dll',$expected)}
+Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($expected.ToUpperInvariant())}
+Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=($expected + '\');ModuleInspection='observed';LoadedPaths=@($expected.Replace('\','/'))}
+Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@('\\?\' + $expected)}
+Assert-Refresh 'NotLoaded' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@('C:\Windows\System32\mfsensorgroup.dll')}
+Assert-Refresh 'NotLoaded' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@()}
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($old)}
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($expected,$old)}
+# Observed modules outrank an older serve-log claim in either direction.
+Assert-Refresh 'NotLoaded' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@();ServeLogPaths=@($old)}
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($old);ServeLogPaths=@($expected)}
+# Module API unavailable: the serve log for this PID decides, last line wins.
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='unavailable';ServeLogPaths=@($expected,$old)}
+Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='unavailable';ServeLogPaths=@($old,$expected)}
+Assert-Refresh 'Unknown' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='unavailable';ServeLogPaths=@()}
+Assert-Refresh 'Unknown' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='unavailable';ServeLogPaths=@('C:\Other\not-the-camera.dll')}
+# Uninstall/rollback-to-nothing: nothing is registered, so any loaded CoreVideo camera is stale.
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll='';ModuleInspection='observed';LoadedPaths=@($expected)}
+Assert-Refresh 'NotLoaded' @{ServiceState='Running';ExpectedDll='';ModuleInspection='observed';LoadedPaths=@()}
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll='';ModuleInspection='unavailable';ServeLogPaths=@($expected)}
+# Serve-log parsing: exact dllmain.cpp shape, PID filter, order kept, hostile lines ignored.
+$lines = @(
+    '[01:02:03.004 pid=4242] ClassFactory::CreateInstance (DLL loaded by a consumer)',
+    "[01:02:03.005 pid=4242] Serving module path=$old",
+    "[01:02:04.005 pid=999] Serving module path=$expected",
+    "[01:02:05.006 pid=4242] Serving module path=$expected",
+    ("[01:02:06.007 pid=4242] Serving module path=C:\" + ('x' * 5000) + '\corevideo-virtualcam.dll'),
+    ("[01:02:07.008 pid=4242] Serving module path=C:\evil" + [char]7 + "\corevideo-virtualcam.dll"),
+    "[01:02:08.009 pid=4242] Serving module path=relative\corevideo-virtualcam.dll",
+    "garbage [01:02:09.010 pid=4242] Serving module path=$old",
+    "[01:02:10.011 pid=42420] Serving module path=$old",
+    "[01:02:11.012 pid=99999999999999999999] Serving module path=$old")
+$parsed = @(Read-ServeLogModulePaths -Lines $lines -ProcessId 4242)
+if ($parsed.Count -ne 2 -or $parsed[0] -ne $old -or $parsed[1] -ne $expected) { throw "Serve-log parse wrong: $($parsed -join ' | ')" }
+$count++
+if (@(Read-ServeLogModulePaths -Lines @() -ProcessId 4242).Count -ne 0 -or @(Read-ServeLogModulePaths -Lines $lines -ProcessId 0).Count -ne 0) { throw 'Empty log or PID 0 produced serving evidence.' }
+$count++
+# Native PowerShell: Sysnative only for a 32-bit process on 64-bit Windows.
+$nativeCases = @(
+    @{Os=$true;Process=$false;Expect='C:\WinTest\Sysnative\WindowsPowerShell\v1.0\powershell.exe'},
+    @{Os=$true;Process=$true;Expect='C:\WinTest\System32\WindowsPowerShell\v1.0\powershell.exe'},
+    @{Os=$false;Process=$false;Expect='C:\WinTest\System32\WindowsPowerShell\v1.0\powershell.exe'})
+foreach ($case in $nativeCases) {
+    $got = Get-NativePowerShellPath -Is64BitOperatingSystem $case.Os -Is64BitProcess $case.Process -WindowsDirectory 'C:\WinTest'
+    if ($got -ne $case.Expect) { throw "Native PowerShell path: expected $($case.Expect); got $got" }
+    $count++
+}
+$hostNative = Get-NativePowerShellPath
+if (-not (Test-Path -LiteralPath $hostNative -PathType Leaf)) { throw "Resolved native PowerShell does not exist from this host: $hostNative" }
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess -and $hostNative -notlike '*\Sysnative\*') { throw 'A 32-bit host did not resolve Sysnative.' }
+$count++
 Write-Output "$count ownership/path cases passed; installer script parsed. Only process-owned temporary files changed; production registry/runtime untouched."

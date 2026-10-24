@@ -122,6 +122,42 @@ if (-not $inspection.desktopUser.ok -or $inspection.desktopUser.boundary -ne 'in
     -not $inspection.desktopUser.userSession.matchesMachine -or -not $inspection.registeredFileMatchesManifest) {
     throw 'The independently observed desktop-user camera alias does not match the installed machine runtime.'
 }
+# #781: Inspect carries 64-bit Frame Server evidence and never claims serving before an activation.
+if ($inspection.frameServer.schema -ne 'frameserver-refresh-v1' -or $inspection.servingIdentityVerified -or
+    ($inspection.moduleInspection -ne 'observed' -and -not $inspection.moduleInspectionReason)) {
+    throw 'Inspect did not report Frame Server evidence, or claimed serving identity with no camera activation.'
+}
+# #781: the install's Frame Server refresh outcome is logged (CI runner: nothing stale, so exit 0).
+$frameServerLog = Join-Path $env:LOCALAPPDATA "CoreVideoPro\installer-logs\$releaseId-frameserver.log"
+if (-not (Test-Path -LiteralPath $frameServerLog) -or
+    (Get-Content -LiteralPath $frameServerLog -Raw) -notmatch 'action=Install exit=0 result=(not_needed|refreshed) ') {
+    throw "Install did not log a successful Frame Server refresh decision: $frameServerLog"
+}
+Copy-Item -LiteralPath $frameServerLog -Destination (Join-Path $work 'frameserver-log.txt')
+$frameServerRefreshFault = 'not-run-unelevated'
+if ($isAdmin) {
+    # #781 negative control: a Frame Server that will not stop yields exit 3 and a
+    # loud warning, and leaves the verified registration intact. The built-in
+    # fault provider never touches the real service. -MachineOnly keeps the
+    # desktop alias (and its uninstall backup) out of this repeat.
+    $beforeFault = Get-CameraMachineRegistration
+    $env:COREVIDEO_FRAMESERVER_FAULT = 'unstoppable'
+    try {
+        $faultOutput = & $inspectHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installRoot 'Install-VirtualCamera.ps1') -Action Install -AppDirectory $installRoot -MachineOnly -Quiet
+        $faultExit = $LASTEXITCODE
+    } finally { Remove-Item Env:COREVIDEO_FRAMESERVER_FAULT -ErrorAction SilentlyContinue }
+    $faultResultPath = Join-Path $installRoot '.camera-frameserver-refresh.json'
+    $faultResult = if (Test-Path -LiteralPath $faultResultPath) { Get-Content -LiteralPath $faultResultPath -Raw | ConvertFrom-Json } else { $null }
+    if (Test-Path -LiteralPath $faultResultPath) { Copy-Item -LiteralPath $faultResultPath -Destination (Join-Path $work 'frameserver-fault-result.json'); Remove-Item -LiteralPath $faultResultPath }
+    if ($faultExit -ne 3 -or ($faultOutput -join ' ') -notmatch 'WARNING: camera Install registration verified' -or $faultResult.result -ne 'not_removed') {
+        throw "Unstoppable Frame Server was not reported as exit 3 with a warning (exit $faultExit): $($faultOutput -join ' ')"
+    }
+    $afterFault = Get-CameraMachineRegistration
+    foreach ($field in @('Path','Role','AppDirectory','Sha256')) {
+        if ($afterFault[$field] -ne $beforeFault[$field]) { throw "A Frame Server refresh failure changed the verified registration: $field" }
+    }
+    $frameServerRefreshFault = 'exit3-registration-intact'
+}
 $registration = Get-ItemProperty $registryPath
 if ($registration.InstallLocation -ne $installRoot) { throw 'Uninstall registration points at the wrong directory.' }
 $manifest = Get-Content -LiteralPath (Join-Path $installRoot 'build-manifest.json') -Raw | ConvertFrom-Json
@@ -213,6 +249,7 @@ if ((Get-Content -LiteralPath $sentinel -Raw) -ne 'preserve this user file') { t
     stableShortcutOnly=$true; mediaRuntimeRemoved=$true; manifestEscapeRefused=$true; evidence=$evidenceCopy; workDirectory=$work
     failedInstallRetry=$true; failedInstallCameraPreserved=$true; independentDesktopRegistration=$true
     recordingFolderCreated=$true; crashDumps=$crashDumpsExpected
+    frameServerRefreshLogged=$true; frameServerRefreshFault=$frameServerRefreshFault; frameServerServingIdentity='unverified-until-activation'
     desktopShortcutCameraDelivery='unverified'; desktopShortcutUnassign='unverified'
 } | ConvertTo-Json | Tee-Object -FilePath (Join-Path $work 'result.json')
 $succeeded = $true
