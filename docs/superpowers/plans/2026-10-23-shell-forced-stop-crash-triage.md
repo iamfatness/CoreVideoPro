@@ -144,15 +144,15 @@ Expected for the drain: the faulting OS thread is the STA UI thread with no mana
 - Modify: `docs/reference/winui-crash-class-0xc000027b.md` (the T1.7 bullet only)
 - Modify: `docs/BACKLOG.md` (the #457 row only)
 
-- [ ] **Step 1: Post the evidence comment** (no close yet). Use `gh issue comment 457 -R iamfatness/CoreVideoPro --body-file <tmp>` with:
+- [x] **Step 1: Post the evidence comment** (no close yet). Use `gh issue comment 457 -R iamfatness/CoreVideoPro --body-file <tmp>` with:
   - the corrections (build `46b07ff`, not `c36d80a`; a graceful close, not a forced-stop artefact; dump and PDBs not retained);
   - the three-hypothesis verdict;
   - the post-fix census table;
   - a link to the spec.
 
   Expected: `gh` prints the comment URL.
-- [ ] **Step 2: Add one sentence to the T1.7 bullet** of the crash-class doc: "Live confirmation (2026-10-23 census): N in-meeting closes after 41–612 min on the fixed path, 0 recurrences of `CoreMessagingXP+0x97de6`, 0 fallbacks. The original dump was not retained." Update the BACKLOG row to match the outcome.
-- [ ] **Step 3: Ask the owner** whether to close #457 now (outcome a) or after Task 5c. Close only on their word: `gh issue close 457 -R iamfatness/CoreVideoPro --reason completed`.
+- [x] **Step 2: Add one sentence to the T1.7 bullet** of the crash-class doc: "Live confirmation (2026-10-23 census): N in-meeting closes after 41–612 min on the fixed path, 0 recurrences of `CoreMessagingXP+0x97de6`, 0 fallbacks. The original dump was not retained." Update the BACKLOG row to match the outcome.
+- [x] **Step 3: Ask the owner** whether to close #457 now (outcome a) or after Task 5c. Close only on their word: `gh issue close 457 -R iamfatness/CoreVideoPro --reason completed`.
 
 ### Task 5: Fix proposal and regression gate (or the capture plan)
 
@@ -230,3 +230,10 @@ Evidence copies are in `D:\CoreVideo-QA\triage-457\` (never on C:). Originals we
 Confidence: the stack is second-hand (the 2026-09-10 report) and consistent with three first-hand sources (event 1000, event 1001, log timing). None conflicts.
 
 Outcome (a): 7 long in-meeting closes (threshold 5), 0 recurrences, 0 ShutdownCompletion fallbacks. Owner ruling D12 confirms closing on this evidence. Evidence: `D:\CoreVideo-QA\triage-457\evidence.txt`.
+
+### Task 4 result: posted, docs updated, #457 closed on the owner's word
+
+- Evidence comment posted to #457 with the corrections, the verdict table and the close census.
+- `docs/reference/winui-crash-class-0xc000027b.md`: T1.7 bullet gained the live-confirmation sentence.
+- `docs/BACKLOG.md`: #457 row marked closed; #444 and #446 stay open on the same row.
+- Closed with `gh issue close 457 --reason completed --comment` citing owner ruling D12 (2026-10-23 23:50 EDT).

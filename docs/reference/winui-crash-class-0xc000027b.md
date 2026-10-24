@@ -48,6 +48,12 @@ off-thread guards never fired). Confirmed and suspected triggers:
   recording/streaming asks first and finishes the files before `ShutdownAsync` starts.)
   The proof is a scripted close-cycle loop on the real app: zero new
   `CoreVideoPro.WinUI.exe.*.dmp` and zero Application Error 1000 events.
+  Live confirmation (2026-10-23 census, #457 closed): 7 in-meeting closes after 41-612 min on the
+  fixed path, 0 recurrences of `CoreMessagingXP+0x97de6`, 0 `ShutdownCompletion` fallbacks. The
+  original dump 17304 was not retained, so the stack is the 2026-09-10 reading, consistent with
+  events 1000/1001 and the log timing. The standing check is `scripts/qa/graceful-close-check.ps1`
+  (one `WM_CLOSE` after a 30-minute in-meeting run; a second close during cleanup takes the
+  `ForceExit` path instead, so the check never sends one).
 
 - **The GC FINALIZER THREAD releasing a XAML object (#513, 2026-09-13) — the first
   member of this family that is ASYNCHRONOUS and TIME-DELAYED, and it is NOT
