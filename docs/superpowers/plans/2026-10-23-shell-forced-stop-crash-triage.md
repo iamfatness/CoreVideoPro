@@ -131,12 +131,12 @@ Expected for the drain: the faulting OS thread is the STA UI thread with no mana
 
 **Files:** scratch `evidence.txt`.
 
-- [ ] **Step 1:** Fill the spec's hypothesis table from Task 2. Each verdict cites a row of evidence.
+- [x] **Step 1:** Fill the spec's hypothesis table from Task 2. Each verdict cites a row of evidence.
   - H1 (#513 finalizer) is excluded when the module/offset is not `Microsoft.UI.Xaml+0x3a9c5d`, the stowed code is not `0x8000000E`, and the fault came within seconds of a lifecycle event.
   - H2 (engine-off deadlock) is excluded when every `ShutdownAsync` step logged and the fault came after `resources released`.
   - H3 (new member: post-Exit drain) is confirmed when the fault came after `resources released` with an E_ABORT/E_UNEXPECTED stowed code in combase/CoreMessagingXP.
-- [ ] **Step 2:** Record the confidence statement. In surrogate mode the stack is second-hand (the 2026-09-10 report) and consistent with three first-hand sources. Say exactly that.
-- [ ] **Step 3:** Decide the outcome. Choose (a) close as fixed by #462 when the census is ≥5 long in-meeting closes with 0 recurrences and 0 fallbacks. Otherwise choose (b) keep open plus the capture plan.
+- [x] **Step 2:** Record the confidence statement. In surrogate mode the stack is second-hand (the 2026-09-10 report) and consistent with three first-hand sources. Say exactly that.
+- [x] **Step 3:** Decide the outcome. Choose (a) close as fixed by #462 when the census is ≥5 long in-meeting closes with 0 recurrences and 0 fallbacks. Otherwise choose (b) keep open plus the capture plan.
 
 ### Task 4: Write the finding into the issue and the docs
 
@@ -218,3 +218,15 @@ Evidence copies are in `D:\CoreVideo-QA\triage-457\` (never on C:). Originals we
 - **Close census** over 9 retained `launch*.log` files: 41 `terminating the process directly` lines; 0 `cleanup did not complete` / `TerminateProcess returned` lines (the ShutdownCompletion fallback never fired). In-meeting closes after 30 min or more: 09-10 20:10 (60 min), 09-11 08:37 (612), 11:02 (123), 15:26 (63), 19:50 (41), 09-13 11:39 (225), 14:38 (67). Seven, matching the spec.
 - **New fact not in the spec:** `ApplicationLifecycle.ForceExit` (which ends in `Environment.Exit`) ran twice on post-fix builds, both via the "close requested while cleanup is in progress — forcing exit" path (a second close arriving during `ShutdownAsync`): 2026-09-10 21:31 (build `2d558eb2`, after a recording finalize) and 2026-10-23 11:40 (build `1072a50a`, after a stream stop). Neither produced an event 1000. The three other `force exit code` lines are July pre-fix soak logs. This is the `Environment.Exit` exposure that Task 5b removes, and it means a second WM_CLOSE during cleanup must never be sent by a gate.
 - Evidence: `task2-events.txt`, `task2-pid17304-log.txt` (meeting number line removed), `task2-event1000-census.txt`, `task2-close-census.txt`, `launch.pre-live-confirm.log.copy`, all in `D:\CoreVideo-QA\triage-457\`.
+
+### Task 3 result: H3 confirmed, outcome (a)
+
+| # | Verdict | Evidence row |
+|---|---|---|
+| H1 #513 finalizer | Excluded | Module `CoreMessagingXP+0x97de6`, not `Microsoft.UI.Xaml+0x3a9c5d` (event 1000). P7 `80004004`, not `8000000E` (event 1001). Fault 0.4 s after `resources released` (log), not time-delayed. |
+| H2 engine-off deadlock | Excluded | Every `ShutdownAsync` step logged, core stop 337 ms, fault after the last step (log). |
+| H3 post-Exit dispatcher drain | Confirmed | Fault after `resources released`, stowed E_ABORT in combase, CoreMessagingXP fail-fast. Fixed by #462. |
+
+Confidence: the stack is second-hand (the 2026-09-10 report) and consistent with three first-hand sources (event 1000, event 1001, log timing). None conflicts.
+
+Outcome (a): 7 long in-meeting closes (threshold 5), 0 recurrences, 0 ShutdownCompletion fallbacks. Owner ruling D12 confirms closing on this evidence. Evidence: `D:\CoreVideo-QA\triage-457\evidence.txt`.
