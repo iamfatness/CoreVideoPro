@@ -1,7 +1,7 @@
 # Render gather: stop taking the Zoom engine mutex under coreMutex — design
 
 **Date:** 2026-10-23
-**Status:** proposed (awaiting owner review)
+**Status:** implemented on `codex/rc-1037` (Outcome below); owner ruling D17 recorded under Risks
 **Issue:** [#1037](https://github.com/iamfatness/CoreVideoPro/issues/1037)
 **Related:** #1030 / PR #1035 (the audio-gather fix and the `EngineMutexGuardrail` this design reuses), #517 / #870 (realtime isolation), `docs/reference/realtime-isolation-audit.md`
 **Line numbers:** `main` at `1879ccb7` (the #1035 merge). Re-grep before editing; they move.
@@ -322,6 +322,9 @@ make promotions on schedule. Two side effects change:
     operator can re-apply. Review Focus lists it. If the owner wants it closed,
     the fix is to stamp offsets with the time they were applied and prune only
     offsets older than the pre-read.
+    **Owner ruling D17 (2026-10-23): accepted for this slice.** A guest A/V
+    trim set during a tens-of-milliseconds render-thread stall may be dropped.
+    The fix (applied-at stamp) rides with the command-lane follow-up issue.
 - **The render thread still waits on `mutex_`,** before the lock instead of
   under it. Its own deadline exposure is unchanged in kind. Only the other
   coreMutex clients are freed. Task 8 measures it.
@@ -344,3 +347,101 @@ make promotions on schedule. Two side effects change:
   Optionally, a lock-free "no ISO arrival queues" skip for R5.
 - **Roster-fact JSON** built off `mutex_`.
 - **The `zoom-stop-capture` / `zoom-leave` responses'** full snapshots (C4, C5).
+
+## Outcome (2026-10-24)
+
+Branch `codex/rc-1037`, implementation head `c7b36bdd` (plus the measurement
+and docs commits). Machine: the dev box, Intel Core i7-14700K, Windows 11 Home
+10.0.26200. Both builds are Release from `npm run build:native-dev`
+(`corevideo-native.exe` 4,075,008 bytes before, 4,077,056 after; the tests
+binary 12.3 MB both times). No `CoreVideoPro.WinUI`, `corevideo-native` or
+`corevideo-zoom-engine` process was running for either measurement. One
+AFTER attempt was discarded because another worktree's test binary was
+running; the AFTER runs below were taken after it exited.
+
+### Lock-hold churn measurement (QA harness, not a CI gate)
+
+`RenderEngineMutexChurnQa.WorstRenderHoldUnderRosterChurn`,
+`COREVIDEO_QA_LOCK_CHURN=1`: 50 participants, a churn thread applying roster
+events at maximum rate, multiview active (8 tiles), 1,200 ticks paced at
+16.7 ms, each under a test-owned mutex. Hold = the time inside the mutex.
+
+BEFORE (`main` 1879ccb7 + the harness, commit 3c39c7f6; the 2-argument
+`renderDisplayTick`, which is today's production shape on main):
+
+| run | churn events | worst | p99 | p50 | mean |
+|---|---|---|---|---|---|
+| 1 | 19,437 | 47,806 us | 17,686 us | 5,148 us | 5,545 us |
+| 2 | 19,496 | 17,372 us | 10,783 us | 5,290 us | 5,444 us |
+| 3 | 19,567 | 14,411 us | 8,905 us | 5,161 us | 5,211 us |
+| 4 (handoff timing on) | 19,743 | 10,746 us | 8,887 us | 5,061 us | 5,131 us |
+
+AFTER (branch; production shape: pre-read outside the mutex, then the
+3-argument `renderDisplayTick` inside it):
+
+| run | churn events | worst | p99 | p50 | mean | pre-read worst / p99 / p50 (off the mutex) |
+|---|---|---|---|---|---|---|
+| 1 | 34,861 | 4,412 us | 2,779 us | 1,588 us | 1,682 us | 1,819 / 1,062 / 283 us |
+| 2 | 34,560 | 11,208 us | 3,085 us | 1,591 us | 1,708 us | 6,820 / 1,323 / 302 us |
+| 3 | 34,760 | 4,736 us | 3,140 us | 1,655 us | 1,753 us | 3,943 / 1,142 / 299 us |
+| 4 (handoff timing on) | 34,242 | 19,191 us | 3,394 us | 1,702 us | 1,775 us | 46,466 / 2,122 / 303 us |
+
+Reading it:
+
+- p99 fell from 8.9-17.7 ms to 2.8-3.4 ms and the mean from 5.1-5.5 ms to
+  1.7-1.8 ms, while the churn thread applied about 1.8x as many roster events
+  (Task 7 made each event cheaper, so the AFTER load is harsher per tick).
+- The worst hold is noisy in both columns. AFTER's worst was 4.4-11.2 ms in
+  three runs and 19.2 ms in the fourth. In that fourth run the off-lock
+  pre-read also saw a 46 ms worst, and `COREVIDEO_QA_ZOOM_HANDOFF_TIMING`
+  logged no frame-group (`poll-compositor`, `latest-decoded`) wait over its
+  8 ms threshold, in either column. So no single worst-case hold in either
+  column is attributed to an engine-mutex wait by the existing
+  instrumentation; scheduler preemption of the test process is not ruled
+  out. The worst-case drop is reported as measured, not claimed.
+- Residual engine waits inside the tick are, by construction and by the CI
+  guardrail, only R1, R2 and R5. Their individual wait distribution was not
+  measured below the 8 ms logging threshold (no new production
+  instrumentation, per the plan).
+- The pre-read's own p99 of 1.1-2.1 ms is now paid by the render thread
+  before the lock, not by every coreMutex waiter. It is not yet shown to be
+  material to the render deadline; the published-roster alternative is not
+  filed.
+
+### Guardrail (CI)
+
+`MediaCoreRenderGather.RosterChurnReachesTheRenderGatherWithoutTheEngineMutex`
+was RED with 10 forbidden acquisitions for two ticks on both the stub
+compositor (R3, R4, R6, R7, R8 per tick) and the isolated-monitor probe (R3,
+R4, R6, R7, R9 per tick). After the pre-read it saw 2 (R3 only), and after
+R3 moved, 0. `IsoVideoDemandReachesTheEngineFromBeforeTheLock` and
+`IsoDisplayNamesComeFromTheTickRosterNotAnEngineSnapshot` were each RED on
+the guardrail before their change.
+
+### Changes beyond the plan
+
+- The speaker-floor ledger now observes the roster under the epoch read
+  BEFORE the pre-read (`renderEngineInputs_.speakerEpoch`) instead of a fresh
+  `speakerEpoch()` read after it, so roster and epoch come from the same
+  read (L3).
+- Test seam `ZoomEngineRuntime::isoArrivalDemandIdsForTest()` (the friend
+  access struct lives in another test file).
+- The C3 test defers the response snapshot (as `cmd.handle` does) and runs
+  with the audio worker enabled, so its forbidden scope covers only the
+  command.
+
+### Native suite
+
+Full native suite on the Release core at `c7b36bdd` (+ the harness change), `COREVIDEO_CAPTURE_TESTS=1`: **1,895 passed, 0 failed** (the churn harness self-skips without its env var; other tests' own skip lines are counted as passes by the gtest shim).
+
+### Not established
+
+- No live-meeting soak or installed-app run. The 26 ms `render.display-tick`
+  worst from the 2026-10-23 show is not re-measured.
+- The `cmd.handle` 10,111 us worst (C1 spine sync, C2 `zoom-snapshot`) is not
+  addressed; it is the command-lane follow-up.
+- The frame group's (R1, R2, R5) residual waits are unmoved.
+- R3 lands one tick later. The first ISO frame's timing after record start
+  was not measured against main.
+- The guest A/V prune race (D17) remains, accepted.
+

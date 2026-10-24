@@ -92,14 +92,23 @@ TEST(RenderEngineMutexChurnQa, WorstRenderHoldUnderRosterChurn) {
   constexpr int kTicks = 1200;
   std::mutex coreMutex;
   std::vector<long long> holdsUs;
+  std::vector<long long> preReadUs;
   holdsUs.reserve(kTicks);
+  preReadUs.reserve(kTicks);
   auto next = std::chrono::steady_clock::now();
   for (int tick = 0; tick < kTicks; ++tick) {
     next += std::chrono::microseconds(16'667);
+    // Production shape (JsonRpcServer render loop, #1037): the engine pre-read
+    // happens BEFORE coreMutex. Its duration is the render thread's own
+    // residual engine wait, not a coreMutex hold, so it is reported apart.
+    const auto p0 = std::chrono::steady_clock::now();
+    auto inputs = core->prepareRenderEngineInputsUnlocked();
+    preReadUs.push_back(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - p0).count());
     {
       std::lock_guard<std::mutex> lock(coreMutex);
       const auto t0 = std::chrono::steady_clock::now();
-      core->renderDisplayTick();
+      core->renderDisplayTick(-1, 0, std::move(inputs));
       holdsUs.push_back(std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - t0).count());
     }
@@ -111,5 +120,9 @@ TEST(RenderEngineMutexChurnQa, WorstRenderHoldUnderRosterChurn) {
   std::fprintf(stderr,
       "[render-churn] participants=%d ticks=%zu churnEvents=%lld hold worst=%lldus p99=%lldus p50=%lldus mean=%lldus\n",
       kParticipants, holdsUs.size(), churnEvents.load(), hold.worst, hold.p99, hold.p50, hold.mean);
+  const auto preRead = summarize(preReadUs);
+  std::fprintf(stderr,
+      "[render-churn] pre-read (off coreMutex) worst=%lldus p99=%lldus p50=%lldus mean=%lldus\n",
+      preRead.worst, preRead.p99, preRead.p50, preRead.mean);
   core.reset();
 }
