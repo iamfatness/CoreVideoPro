@@ -91,6 +91,9 @@ public sealed class ProductionOutputPreferences
     public string? StreamSrtKeyLength { get; set; }
     public string? StreamSrtPassphrase { get; set; }
     public string? CanvasResolution { get; set; }
+    // #439: operator opted past the GPU-tier recommended canvas/tile ceiling.
+    // Additive; absent = false. No version bump needed (absent deserializes to the default).
+    public bool GpuTierLimitsOverride { get; set; }
     public string? CanvasFps { get; set; }
     // Opening a capture endpoint can affect multi-endpoint USB interfaces such
     // as GoXLR. Capture must therefore be an explicit operator action, not a
