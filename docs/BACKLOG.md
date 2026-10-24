@@ -418,6 +418,7 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 - [#968](https://github.com/iamfatness/CoreVideoPro/issues/968): intermittent decoded PCM gaps found during #960 full Studio crash qualification; blocks its audio-continuity evidence. Owner-authorized October 21 within active #960; retain failed trials.
 
+| [#1042](https://github.com/iamfatness/CoreVideoPro/issues/1042) | Found in #935 Task 1 (2026-10-24): an 8-ISO 1080p60 take armed while the 1080p60 capacity prewarm was still `pending`, so placement used the unprobed 8-session fallback (7 hardware + 1 software spill) on an RTX 4090 that probes `sessions<=9`; the late probe result was discarded as overlapping live encoding. Not fixed by #935 (probe semantics out of scope). |
 | [#908](https://github.com/iamfatness/CoreVideoPro/issues/908) | Owner-ranked October 14: follows the #517 camera-reader repair in the active delivery lane. Retained Program frames report unavailable/preparation-stopped source pixels during real SDK epoch transitions; preserve pixels through replacement readiness without retaining removed/reassigned guests. |
 
 | [#906](https://github.com/iamfatness/CoreVideoPro/issues/906) | Attribute the Windows GradePreviewCoordinator disposal-test timeout; preserve the failed gate and verify the initiating condition. Owner rank pending. |
