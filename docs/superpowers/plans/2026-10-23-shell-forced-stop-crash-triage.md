@@ -74,7 +74,7 @@ Expected: `False`, and only `origin/backup/419-pre-rebase-1d164b7`. Ask the owne
 
 **Surrogate mode (dump unavailable — the expected path):**
 
-- [ ] **Step 1: Event Log signature.**
+- [x] **Step 1: Event Log signature.**
 
 ```powershell
 Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000,1001; StartTime=[datetime]'2026-09-10 08:50'; EndTime=[datetime]'2026-09-10 08:56'} | Format-List TimeCreated,Id,Message
@@ -82,7 +82,7 @@ Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000,1001; StartTime=[
 
 Expected: 1000 at 08:52:36 with `CoreMessagingXP.dll` 10.0.27200.1048, `0xc000027b`, offset `0x97de6`, PID `0x4398`. 1001 at 08:52:40 with P4 `combase.dll`, P7 `80004004`, report `7f60387a-...`.
 
-- [ ] **Step 2: Last shell lines of PID 17304.**
+- [x] **Step 2: Last shell lines of PID 17304.**
 
 ```powershell
 Select-String -Path "$env:LOCALAPPDATA\CoreVideoPro\launch.pre-live-confirm.log" -Pattern 'pid=17304 session=4118cc2c' | Select -Last 6 | % Line
@@ -90,7 +90,7 @@ Select-String -Path "$env:LOCALAPPDATA\CoreVideoPro\launch.pre-live-confirm.log"
 
 Expected: the build stamp `46b07ff5...`. The last five lines run from `shutdown: close requested` (08:52:35.764) to `shutdown: resources released` (08:52:36.125), and nothing follows.
 
-- [ ] **Step 3: Recurrence census, shell crashes since the fix.**
+- [x] **Step 3: Recurrence census, shell crashes since the fix.**
 
 ```powershell
 Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=[datetime]'2026-09-10'} | ? Message -like '*CoreVideoPro.WinUI.exe*' | % { ($_.Message -split "`n" | Select-String 'Faulting module name|Fault offset|Exception code').Line -join ' | ' }
@@ -98,7 +98,7 @@ Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=[datet
 
 Expected: exactly one `CoreMessagingXP.dll ... 0x97de6` entry (17304). Every other entry is `Microsoft.UI.Xaml.dll 0x3a9c5d`, `coreclr 0xc0000005` or `CoreMessagingXP 0xc0000602`. Before treating a new entry as unrelated, match its time against a close in the log.
 
-- [ ] **Step 4: Post-fix close census.** Count `shutdown: cleanup complete; terminating the process directly` across the retained logs, and check that the fallback never fired:
+- [x] **Step 4: Post-fix close census.** Count `shutdown: cleanup complete; terminating the process directly` across the retained logs, and check that the fallback never fired:
 
 ```powershell
 $logs = Get-ChildItem "$env:LOCALAPPDATA\CoreVideoPro\launch*.log"
@@ -208,3 +208,13 @@ Evidence copies are in `D:\CoreVideo-QA\triage-457\` (never on C:). Originals we
 - cdb present; `dotnet-dump` 10.0.745401 installed.
 - The owner question ("does the dump exist elsewhere?") is superseded by owner ruling D12 (2026-10-23 23:50 EDT): close on the retained-log evidence. Dump mode (Task 2 steps 5-6) is not run.
 - Evidence: `D:\CoreVideo-QA\triage-457\task1.txt`.
+
+### Task 2 result: surrogate evidence re-verified
+
+- **Event 1000** 2026-09-10 08:52:36: `CoreVideoPro.WinUI.exe` 0.1.0.0, module `CoreMessagingXP.dll` 10.0.27200.1048 (WindowsAppRuntime 2.4.0.0 package path), `0xc000027b`, offset `0x97de6`, PID `0x4398` (17304), start time `0x1DD41181B1DB7B6` = 2026-09-10 07:32:48 -04:00. Matches the spec.
+- **Event 1001** 08:52:40: APPCRASH, report `7f60387a-6831-4b72-9da0-92429402129b`, P4 `combase.dll` 10.0.26100.9444, P7 `80004004` (E_ABORT), P8 `0x579e4`. Matches the spec.
+- **Shell log**, `launch.pre-live-confirm.log`, session `4118cc2c`: 86 lines (the spec's 87 `pid=17304` matches include one line from a later, unrelated session that reused PID 17304 on 2026-09-11; filter on the session id). Build `1.0.0+46b07ff5e7b2...`. In meeting from 07:33:01 (`meetingState=in_meeting participants=7`). Last five lines 08:52:35.764 `close requested` to 08:52:36.125 `resources released`; nothing after. Matches the spec.
+- **Event 1000 census** since 2026-09-10 00:00, shell only: **15** entries (the spec said 16; one fewer is present today, consistent with log retention). Exactly one is `CoreMessagingXP.dll+0x97de6` (17304). The rest: 12 x `Microsoft.UI.Xaml.dll+0x3a9c5d`, 1 x `coreclr.dll c0000005` (10-13, #889), 1 x `CoreMessagingXP.dll c0000602` (09-18, `+0xd87d`). No shutdown-drain signature after the fix.
+- **Close census** over 9 retained `launch*.log` files: 41 `terminating the process directly` lines; 0 `cleanup did not complete` / `TerminateProcess returned` lines (the ShutdownCompletion fallback never fired). In-meeting closes after 30 min or more: 09-10 20:10 (60 min), 09-11 08:37 (612), 11:02 (123), 15:26 (63), 19:50 (41), 09-13 11:39 (225), 14:38 (67). Seven, matching the spec.
+- **New fact not in the spec:** `ApplicationLifecycle.ForceExit` (which ends in `Environment.Exit`) ran twice on post-fix builds, both via the "close requested while cleanup is in progress — forcing exit" path (a second close arriving during `ShutdownAsync`): 2026-09-10 21:31 (build `2d558eb2`, after a recording finalize) and 2026-10-23 11:40 (build `1072a50a`, after a stream stop). Neither produced an event 1000. The three other `force exit code` lines are July pre-fix soak logs. This is the `Environment.Exit` exposure that Task 5b removes, and it means a second WM_CLOSE during cleanup must never be sent by a gate.
+- Evidence: `task2-events.txt`, `task2-pid17304-log.txt` (meeting number line removed), `task2-event1000-census.txt`, `task2-close-census.txt`, `launch.pre-live-confirm.log.copy`, all in `D:\CoreVideo-QA\triage-457\`.
