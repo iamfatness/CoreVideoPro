@@ -119,3 +119,60 @@ shared-install retention, and the loud non-fatal refusal. `Test-AlphaInstaller.p
 the recording folder, and either the HKLM keys (elevated run) or the logged refusal
 (unelevated run). NOT verified without a real elevated install: the UAC RunAs path of
 `-AllowElevation`, and an actual WER dump landing in the crashes folder.
+
+## Frame Server refresh after a camera DLL upgrade (#781)
+
+**Implemented 2026-10-24 (PR for #781); installed acceptance is pending (plan Task 7, owner-run).**
+Spec: `docs/superpowers/specs/2026-10-23-frame-server-dll-refresh-design.md`; plan:
+`docs/superpowers/plans/2026-10-23-frame-server-dll-refresh.md`.
+
+Why: an in-proc camera DLL stays mapped in the `FrameServer` service host until that process exits, so after an
+upgrade a correct registration (#783) could still be served by the OLD DLL (measured: PID 29648 served `8670d079`
+while registry and core used `cd63ab88`). Camera validation could pass against the wrong DLL.
+
+What Setup does now, inside the camera step's existing elevated block (no new UAC prompt, no new elevation path):
+
+- After the Install registration is verified, after a Rollback restore, and on Uninstall after the keys are removed
+  but **before** `Remove-UnreferencedCameraRuntime`, `Install-VirtualCamera.ps1` runs
+  `Refresh-FrameServer.ps1 -Action Refresh -ExpectedDll <registered DLL, or empty>`.
+- The decision is pure (`Get-FrameServerRefreshDecision` in `VirtualCameraRegistration.psm1`): `NotRunning`,
+  `Current` (only the expected DLL is loaded) and `NotLoaded` make **zero** service calls; `Stale` (another CoreVideo
+  camera DLL is loaded, or the serve log names one for this PID) and `Unknown` (no evidence) refresh. Observed modules
+  outrank the serve log; a serve log last written before the instance started is not evidence (PID reuse).
+- Refresh = `Stop-Service FrameServer -Force`, wait at most 20 s for the old PID+creation time to be gone (or replaced
+  by a Windows demand-start), then start it again only if it was running. Never `Stop-Process`, never kills.
+- **Exit codes.** `Refresh-FrameServer.ps1`: 0 refreshed/not needed, 3 not removed, 1 error.
+  `Install-VirtualCamera.ps1` maps any refresh failure to **exit 3** = "registered and verified, Frame Server not
+  refreshed". It never rolls back a verified registration for this; exit 1 stays the only rollback trigger. Exit 3
+  prints a `WARNING:` line even with `-Quiet`; NSIS `DetailPrint`s it, appends to `<release>-setup.log`, and shows a
+  warning box on interactive setup (close camera apps or restart Windows). Uninstall and the NSIS rollback path
+  accept 3 the same way.
+- Every outcome (including `not_needed`) is one line in
+  `%LOCALAPPDATA%\CoreVideoPro\installer-logs\<release>-frameserver.log` (BOM-free; the compact result JSON is on the
+  line). The elevated RunAs child cannot return stdout, so it leaves the result in
+  `<app>\.camera-frameserver-refresh.json`, which the parent reads and deletes (NSIS deletes it too).
+- **64-bit / Sysnative required.** The 32-bit NSIS host launches SysWOW64 PowerShell, which cannot enumerate a
+  64-bit process's modules (measured: not even the user's own `explorer.exe`). `Get-NativePowerShellPath` returns
+  `%windir%\Sysnative\WindowsPowerShell\v1.0\powershell.exe` from a 32-bit process on 64-bit Windows, else System32
+  (never `$PSHOME`, so a pwsh 7 parent cannot leak in). The RunAs child, the refresh and Inspect all go through it, and
+  `Refresh-FrameServer.ps1` re-invokes itself through Sysnative if started 32-bit. Note `[Environment]::Is64BitOS`
+  does not exist in .NET Framework (it reads `$null`); use `Is64BitOperatingSystem`.
+- **Lazy load.** A refreshed Frame Server loads the DLL on the next camera activation, so install time can only prove
+  the stale image is gone. `servingIdentityVerified` stays `false` until a fresh `Serving module path=` line from the
+  current FrameServer PID names the registered DLL. `Install-VirtualCamera.ps1 -Action Inspect` now computes it from
+  that evidence (and the manifest hash) instead of a constant; unelevated, module inspection is `unverified` with a
+  `moduleInspectionReason` and the serve log decides.
+- Fault injection (tests only): `COREVIDEO_FRAMESERVER_FAULT=unstoppable` (or `-FrameServerFault unstoppable`) swaps
+  in a built-in fake instance that refuses to stop; the real service is never touched in that mode.
+
+Tests: `Test-FrameServerRefresh.ps1` (fake provider, 36 checks, plus a read-only real Inspect; CI runs it from the
+64-bit and SysWOW64 hosts; `-IncludeInstalledInspect` adds the desktop-user Inspect locally) and the decision/parser
+table in `Test-VirtualCameraOwnership.ps1` (51 cases, both hosts). `Test-AlphaInstaller.ps1` asserts the
+frameserver log after a real silent install and, elevated, a fault-injected exit 3 with the registration intact.
+
+**NOT verified until the owner-run acceptance (plan Task 7):** a real `Stop-Service FrameServer` with the camera open
+(timing, consumer behaviour, Windows self-restart); the stale image actually disappearing on an upgrade; a fresh
+`Serving module path=` line from the new PID; the NSIS warning box. The acceptance probe is
+`scripts/qa/probe-frameserver-stop.ps1` (`-Mode Observe` read-only; `-Mode Stop -RestartAfter -AllowConsumers
+-OutDir D:\...` elevated, 64-bit, owner present), then `scripts/qa/native-camera-continuity.py` after activating the
+camera in Zoom. Reboot, fresh-user, alternate-admin and fleet rollout remain out of scope.

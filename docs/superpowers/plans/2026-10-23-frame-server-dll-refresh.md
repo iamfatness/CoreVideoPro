@@ -46,12 +46,12 @@
 
 **Interfaces:** Produces printed measurements only. No product code.
 
-- [ ] **Step 1:** Write the probe: print `FrameServer` and `FrameServerMonitor` state, start type, dependents, PID, creation time, and whether the PID is shared with other services (`Win32_Service` by `ProcessId`).
-- [ ] **Step 2:** Run from a 32-bit (SysWOW64) and a 64-bit PowerShell; record that `Get-Process -Id <pid> -Module` fails in 32-bit and works in 64-bit elevated.
-- [ ] **Step 3:** With the camera open (owner present), time `Stop-Service FrameServer -Force` to `Stopped`; record dependents stopped, the consumer's behaviour, whether Windows restarts it, and whether the next activation creates a new PID with a fresh `Serving module path=` line.
+- [x] **Step 1:** Write the probe: print `FrameServer` and `FrameServerMonitor` state, start type, dependents, PID, creation time, and whether the PID is shared with other services (`Win32_Service` by `ProcessId`).
+- [x] **Step 2:** Run from a 32-bit (SysWOW64) and a 64-bit PowerShell; record that `Get-Process -Id <pid> -Module` fails in 32-bit and works in 64-bit elevated.
+- [ ] **Step 3 (owner-run, elevated; not run 2026-10-24, Zoom was running):** With the camera open (owner present), time `Stop-Service FrameServer -Force` to `Stopped`; record dependents stopped, the consumer's behaviour, whether Windows restarts it, and whether the next activation creates a new PID with a fresh `Serving module path=` line.
 - [ ] **Step 4:** Repeat once with an old-hash DLL deliberately loaded to confirm the stale image disappears.
 - [ ] **Step 5 (decision):** All of "stops within 20 s, instance replaced, new load observed" -> continue. Otherwise STOP and report `BLOCKED` with the measurements.
-- [ ] **Step 6:** Record the measurements as an "Outcome" section appended to the spec (not a commit by this plan's author unless asked).
+- [x] **Step 6:** Record the measurements as an "Outcome" section appended to the spec (not a commit by this plan's author unless asked).
 
 ---
 
@@ -70,10 +70,10 @@ Read-ServeLogModulePaths -Lines <string[]> -ProcessId <int>   # -> string[] last
 Get-NativePowerShellPath                                       # -> Sysnative path on 32-bit-on-64, else $PSHOME
 ```
 
-- [ ] **Step 1: Write the failing tests first.** One assertion per decision row in the spec; serve-log lines using the exact `[hh:mm:ss.mmm pid=N] Serving module path=...` shape; overlong and hostile lines ignored; `Get-NativePowerShellPath` equals Sysnative when `[Environment]::Is64BitProcess` is false on a 64-bit OS (parameterise the two booleans for testability).
-- [ ] **Step 2:** Run the suite; confirm the new cases fail.
-- [ ] **Step 3:** Implement. Path comparison is case-insensitive, trailing-slash tolerant, and only paths ending in `corevideo-virtualcam.dll` are considered.
-- [ ] **Step 4:** Run from 64-bit and from `C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe`; both green.
+- [x] **Step 1: Write the failing tests first.** One assertion per decision row in the spec; serve-log lines using the exact `[hh:mm:ss.mmm pid=N] Serving module path=...` shape; overlong and hostile lines ignored; `Get-NativePowerShellPath` equals Sysnative when `[Environment]::Is64BitProcess` is false on a 64-bit OS (parameterise the two booleans for testability).
+- [x] **Step 2:** Run the suite; confirm the new cases fail.
+- [x] **Step 3:** Implement. Path comparison is case-insensitive, trailing-slash tolerant, and only paths ending in `corevideo-virtualcam.dll` are considered.
+- [x] **Step 4:** Run from 64-bit and from `C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe`; both green.
 
 ---
 
@@ -88,11 +88,11 @@ Get-NativePowerShellPath                                       # -> Sysnative pa
 - Consumes: Task 2 functions.
 - Produces: `Refresh-FrameServer.ps1 -Action Inspect|Refresh -ExpectedDll <p> [-ServeLog <p>] [-Provider <hashtable>]`; emits one JSON object `{schema:'frameserver-refresh-v1', decision, result:'not_needed'|'refreshed'|'not_removed'|'error', before:{pid,created}, after:{pid,created}, moduleInspection, servedPaths, durationMs, servingIdentityVerified:false}`; exit 0 / 3 / 1.
 
-- [ ] **Step 1: Write the failing tests first** with a provider fake: stale -> `refreshed` with changed creation time; will-not-stop within the bounded wait -> exit 3, no kill call exists to assert; service replaced by Windows between steps; stopped stays stopped; `Current` / `NotLoaded` / `NotRunning` -> zero Stop/Start calls; `Unknown` -> refreshes; stop throws access denied -> exit 3 with the message in JSON.
-- [ ] **Step 2:** Run; confirm failures.
-- [ ] **Step 3:** Implement with real default providers (`Get-CimInstance Win32_Service` / `Win32_Process`, `Stop-Service -Force`, `Start-Service`, `Get-Process -Module`, a bounded `ReadServeLog` that reads at most the last 1 MB) and a 20 s stop wait, 20 s start wait. Restore only services that were `Running`.
-- [ ] **Step 4:** Require 64-bit: if `[Environment]::Is64BitOS -and -not [Environment]::Is64BitProcess`, re-invoke through `Get-NativePowerShellPath` and relay JSON and exit code.
-- [ ] **Step 5:** Run the suite from both PowerShell hosts; add to CI; confirm green.
+- [x] **Step 1: Write the failing tests first** with a provider fake: stale -> `refreshed` with changed creation time; will-not-stop within the bounded wait -> exit 3, no kill call exists to assert; service replaced by Windows between steps; stopped stays stopped; `Current` / `NotLoaded` / `NotRunning` -> zero Stop/Start calls; `Unknown` -> refreshes; stop throws access denied -> exit 3 with the message in JSON.
+- [x] **Step 2:** Run; confirm failures.
+- [x] **Step 3:** Implement with real default providers (`Get-CimInstance Win32_Service` / `Win32_Process`, `Stop-Service -Force`, `Start-Service`, `Get-Process -Module`, a bounded `ReadServeLog` that reads at most the last 1 MB) and a 20 s stop wait, 20 s start wait. Restore only services that were `Running`.
+- [x] **Step 4:** Require 64-bit: if `[Environment]::Is64BitOS -and -not [Environment]::Is64BitProcess`, re-invoke through `Get-NativePowerShellPath` and relay JSON and exit code. (Executed with `Is64BitOperatingSystem`: `Is64BitOS` does not exist in .NET Framework.)
+- [x] **Step 5:** Run the suite from both PowerShell hosts; add to CI; confirm green.
 
 ---
 
@@ -107,11 +107,11 @@ Get-NativePowerShellPath                                       # -> Sysnative pa
 - Consumes: `Refresh-FrameServer.ps1`, `Get-NativePowerShellPath`.
 - Produces: `frameServerRefresh` object in the install JSON; exit 3 = "registered, refresh failed"; log `installer-logs\<release>-frameserver.log`.
 
-- [ ] **Step 1: Write the failing tests first.** In `Test-AlphaInstaller.ps1` assert the result carries `frameServerRefresh` and that an injected non-removable service (env var read only by the test provider path, never in production) yields exit 3 with the registration intact and the log line present. Assert `Refresh-FrameServer.ps1` ships in the package manifest.
-- [ ] **Step 2:** After `Set-CameraMachineRegistration` verification (Install), after registration restore (Rollback) and before `Remove-UnreferencedCameraRuntime` (Uninstall), call the refresh via the native PowerShell with the registered DLL path. Add `-MachineOnly` elevated child launch via `Get-NativePowerShellPath` too.
-- [ ] **Step 3:** Map exit codes: child exit 3 is a warning, not a throw; the user-session registration still proceeds; the script exits 3 at the end. Write the log file; print the loud line even with `-Quiet`.
-- [ ] **Step 4:** NSIS: after the camera `nsExec`, branch `$1 == 3` to a path that `DetailPrint`s, appends to the setup log, shows a `MessageBox` unless silent, keeps `CameraChanged 1`, and continues. Mirror in `un.camera_result` (uninstall continues, reports files retained in use).
-- [ ] **Step 5:** Run the installer test elevated and unelevated; run the existing forced-camera-failure path and confirm rollback still occurs on exit 1.
+- [x] **Step 1: Write the failing tests first.** In `Test-AlphaInstaller.ps1` assert the result carries `frameServerRefresh` and that an injected non-removable service (env var read only by the test provider path, never in production) yields exit 3 with the registration intact and the log line present. Assert `Refresh-FrameServer.ps1` ships in the package manifest.
+- [x] **Step 2:** After `Set-CameraMachineRegistration` verification (Install), after registration restore (Rollback) and before `Remove-UnreferencedCameraRuntime` (Uninstall), call the refresh via the native PowerShell with the registered DLL path. Add `-MachineOnly` elevated child launch via `Get-NativePowerShellPath` too.
+- [x] **Step 3:** Map exit codes: child exit 3 is a warning, not a throw; the user-session registration still proceeds; the script exits 3 at the end. Write the log file; print the loud line even with `-Quiet`.
+- [x] **Step 4:** NSIS: after the camera `nsExec`, branch `$1 == 3` to a path that `DetailPrint`s, appends to the setup log, shows a `MessageBox` unless silent, keeps `CameraChanged 1`, and continues. Mirror in `un.camera_result` (uninstall continues, reports files retained in use).
+- [ ] **Step 5 (owner/CI; not run by the executor, which may not run the installer):** Run the installer test elevated and unelevated; run the existing forced-camera-failure path and confirm rollback still occurs on exit 1.
 
 ---
 
@@ -123,9 +123,9 @@ Get-NativePowerShellPath                                       # -> Sysnative pa
 
 **Interfaces:** `Inspect` calls `Refresh-FrameServer.ps1 -Action Inspect` and reports `moduleInspection`, `servedPaths`, `loadedIdentityMatchesRegistration`; `servingIdentityVerified` becomes true only when the serve log shows the expected path from the current FrameServer PID (same rule as `judge_serving_identity`).
 
-- [ ] **Step 1: Write the failing test first:** a temp serve log with the expected path for the fake PID -> true; wrong path, other PID, or no lines -> false; module API failing never yields true.
-- [ ] **Step 2:** Replace the swallowed `try/catch` with the Task 3 inspect path; keep `unverified` as an explicit value with the reason.
-- [ ] **Step 3:** Run the existing user-session tests; their "never claims delivery" assertions must still pass (delivery stays unverified).
+- [x] **Step 1: Write the failing test first:** a temp serve log with the expected path for the fake PID -> true; wrong path, other PID, or no lines -> false; module API failing never yields true.
+- [x] **Step 2:** Replace the swallowed `try/catch` with the Task 3 inspect path; keep `unverified` as an explicit value with the reason.
+- [x] **Step 3:** Run the existing user-session tests; their "never claims delivery" assertions must still pass (delivery stays unverified).
 
 ---
 
@@ -134,9 +134,9 @@ Get-NativePowerShellPath                                       # -> Sysnative pa
 **Files:**
 - Modify: `docs/reference/installer.md`, `docs/reference/virtual-camera.md`, `CLAUDE.md` (one-line pointer), `docs/BACKLOG.md` (#781 row status)
 
-- [ ] **Step 1:** Add the refresh behaviour, exit 3, the 64-bit/Sysnative requirement, the lazy-load caveat and the acceptance command to `installer.md`.
-- [ ] **Step 2:** Replace the "restart Windows if an older DLL remains" note in `virtual-camera.md` with the mechanism and how to verify with `camera_serving_evidence.py`.
-- [ ] **Step 3:** State in each doc what is NOT verified until Task 7 passes.
+- [x] **Step 1:** Add the refresh behaviour, exit 3, the 64-bit/Sysnative requirement, the lazy-load caveat and the acceptance command to `installer.md`.
+- [x] **Step 2:** Replace the "restart Windows if an older DLL remains" note in `virtual-camera.md` with the mechanism and how to verify with `camera_serving_evidence.py`.
+- [x] **Step 3:** State in each doc what is NOT verified until Task 7 passes.
 
 ---
 

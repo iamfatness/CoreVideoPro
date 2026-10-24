@@ -290,12 +290,23 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
    checkout automatically. Startup repairs only a missing/stale alias owned by
    this app, from an installed machine runtime. Unknown ownership and machine
    paths fail with named diagnostics.
-2. DLL versions are immutable while installed. Setup never restarts camera
-   services underneath consumers. Close/reopen consumers; if Windows still has
-   the previous DLL cached, restart Windows. `Install-VirtualCamera.ps1 -Action
-   Inspect -AppDirectory <app>` separates registry/hash checks from observed
-   module paths. Access-denied module inspection is **unverified**. Even a matching
-   loaded module is not proof of pixels reaching a particular receiver.
+2. DLL versions are immutable while installed. The Frame Server keeps a loaded
+   camera DLL mapped until its service host exits, so after an upgrade it can keep
+   serving the OLD DLL (#781). Setup's camera step now refreshes it: when the
+   running `FrameServer` instance holds a different CoreVideo camera DLL (or its
+   identity cannot be shown), `Refresh-FrameServer.ps1` stops it (bounded 20 s,
+   never a kill) and restarts it if it was running; a provably current or stopped
+   instance is left alone. If it cannot be removed, Setup keeps the registration,
+   exits 3 and warns: close camera apps or restart Windows. Details and exit codes:
+   `docs/reference/installer.md` ("Frame Server refresh"). The new DLL loads
+   lazily on the next activation, so verify it with `Install-VirtualCamera.ps1
+   -Action Inspect -AppDirectory <app>` (64-bit evidence; `servingIdentityVerified`
+   is true only after the CURRENT FrameServer PID logged `Serving module path=`
+   for the registered DLL) or `scripts/qa/camera_serving_evidence.py` /
+   `native-camera-continuity.py` during a trial. Access-denied module inspection is
+   **unverified**. Even a matching loaded module is not proof of pixels reaching a
+   particular receiver. Not yet verified on an installed upgrade (owner acceptance
+   pending).
    Uninstall removes only its owned keys and tries to delete its unreferenced
    runtime after an exclusive write-open and hash check. Loaded images, rollback
    references, and uncertain cases are retained; it never forces removal or
