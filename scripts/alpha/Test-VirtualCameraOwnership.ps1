@@ -92,6 +92,7 @@ function Assert-Refresh([string]$Expected, [hashtable]$Arguments) {
 }
 Assert-Refresh 'NotRunning' @{ServiceState='Stopped';ExpectedDll=$expected;ModuleInspection='unavailable'}
 Assert-Refresh 'NotRunning' @{ServiceState='Stopped';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($old)}
+Assert-Refresh 'NotRunning' @{ServiceState='Absent';ExpectedDll=$expected;ModuleInspection='unavailable'}
 Assert-Refresh 'Unknown' @{ServiceState='StopPending';ExpectedDll=$expected;ModuleInspection='unavailable'}
 Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@('C:\Windows\System32\mfsensorgroup.dll',$expected)}
 Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($expected.ToUpperInvariant())}

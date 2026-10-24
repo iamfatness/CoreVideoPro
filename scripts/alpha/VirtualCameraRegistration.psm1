@@ -184,7 +184,7 @@ function Get-FrameServerRefreshDecision {
     param([string]$ServiceState, [string]$ExpectedDll,
         [ValidateSet('observed','unavailable')][string]$ModuleInspection = 'unavailable',
         [string[]]$LoadedPaths = @(), [string[]]$ServeLogPaths = @())
-    if ($ServiceState -eq 'Stopped') { return 'NotRunning' }
+    if ($ServiceState -in @('Stopped','Absent')) { return 'NotRunning' }
     if ($ServiceState -ne 'Running') { return 'Unknown' }
     $expectedKey = ConvertTo-CameraDllPathKey $ExpectedDll
     if ($ModuleInspection -eq 'observed') {
