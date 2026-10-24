@@ -133,6 +133,82 @@ try {
     $result = Remove-PreviousInstallation -Plan $registeredPlan
     Assert ($result.status -eq 'removed' -and !(Test-Path -LiteralPath $registeredOld)) "(k) registered retirement left the desktop camera backup: $($result.reason)"
 
+    # --- Task 4: removal with recoverable backup (owner ruling D4) -------------------------
+    $backupRoot = Join-Path $work 'LocalAppData\CoreVideoPro\backups'
+    $backup = New-ResidualBackupFolder -BackupRoot $backupRoot
+    Assert ((Split-Path -Leaf $backup) -match '^retired-install-remnants-\d{8}-\d{6}-[0-9a-f]{8}$') "Backup folder is not dated: $backup"
+    function Retire([string]$Dir, [hashtable]$Extra = @{}) {
+        $p = Find (Get-Plan -Running @((Join-Path $running 'app.exe')) -Protected @((Join-Path $camera 'corevideo-virtualcam.dll'))) $Dir
+        Assert ($p.Count -eq 1) "No plan for $Dir"
+        return Remove-ResidualInstallation -Plan $p[0] -BackupFolder $backup @Extra
+    }
+    function Read-Manifest { @((Get-Content -LiteralPath (Join-Path $backup 'backup-manifest.json') -Raw | ConvertFrom-Json).entries) }
+
+    # (a) metadata-only: folder gone, no backup folder created
+    $r = Retire $metaOnly
+    Assert ($r.status -eq 'removed' -and !(Test-Path -LiteralPath $metaOnly)) "(a) metadata-only folder not removed: $($r.reason)"
+    Assert (!(Test-Path -LiteralPath $backup)) '(a) backup folder created for a metadata-only folder.'
+
+    # (b) recordings: moved byte-identical, manifest lists each, source gone
+    $hash1 = Get-Sha256 (Join-Path $recordings 'Recordings\CoreVideo Pro\take1.mp4')
+    $r = Retire $recordings
+    Assert ($r.status -eq 'backed-up' -and $r.moved -eq 2 -and !(Test-Path -LiteralPath $recordings)) "(b) recordings folder not backed up: $($r.status) $($r.reason)"
+    $dest1 = Join-Path $backup 'beta-2026-10-02-recordings\Recordings\CoreVideo Pro\take1.mp4'
+    Assert ((Test-Path -LiteralPath $dest1) -and (Get-Sha256 $dest1) -eq $hash1) '(b) moved recording differs or is missing.'
+    Assert ($r.backedUpTo -eq (Join-Path $backup 'beta-2026-10-02-recordings')) "(b) backedUpTo wrong: $($r.backedUpTo)"
+    $m = Read-Manifest
+    Assert (@($m | Where-Object { $_.releaseId -eq 'beta-2026-10-02-recordings' -and $_.status -eq 'moved' -and $_.sha256 -and $_.length -gt 0 }).Count -eq 2) '(b) manifest does not list both moves.'
+
+    # modified payload: proven payload deleted, modified file backed up, folder gone
+    $r = Retire $modified
+    Assert ($r.status -eq 'backed-up' -and $r.moved -eq 1 -and !(Test-Path -LiteralPath $modified)) "(modified) not retired: $($r.reason)"
+    Assert ((Get-Content -LiteralPath (Join-Path $backup 'beta-2026-10-03-modified\lib\core.dll') -Raw) -eq 'operator patched this') '(modified) modified payload not preserved.'
+
+    # (c) -LeaveUnknown: nothing moved, folder kept, reason names the count
+    $leave = New-Residual 'beta-2026-10-10-leave' -Files @{ 'Recordings\x.mp4' = 'keep me'; '.camera-desktop-registration-before.json' = '{}' }
+    $inv = Get-Inventory $leave
+    $r = Retire $leave @{ LeaveUnknown = $true }
+    Assert ($r.status -eq 'retained' -and $r.reason -match 'operator content: 1 files') "(c) LeaveUnknown: $($r.status) $($r.reason)"
+    Assert ((Get-Inventory $leave) -eq $inv) '(c) LeaveUnknown changed the folder.'
+
+    # (d) destination collision: numeric suffix, the existing file is untouched
+    $collide = New-Residual 'beta-2026-10-11-collide' -Files @{ 'Recordings\x.mp4' = 'second' }
+    Write-File (Join-Path $backup 'beta-2026-10-11-collide\Recordings\x.mp4') 'already here'
+    $r = Retire $collide
+    Assert ($r.status -eq 'backed-up') "(d) collision folder: $($r.reason)"
+    Assert ((Get-Content -LiteralPath (Join-Path $backup 'beta-2026-10-11-collide\Recordings\x.mp4') -Raw) -eq 'already here') '(d) existing backup file overwritten.'
+    Assert ((Get-Content -LiteralPath (Join-Path $backup 'beta-2026-10-11-collide\Recordings\x (1).mp4') -Raw) -eq 'second') '(d) collision not suffixed.'
+
+    # (e) injected crash after one move: every file is at its source or at a listed destination
+    $crash = New-Residual 'beta-2026-10-12-crash' -Files @{ 'Recordings\a.mp4' = 'a'; 'Recordings\b.mp4' = 'b'; '.camera-desktop-registration-before.json' = '{}' }
+    $r = Retire $crash @{ FailAfterMoves = 1 }
+    Assert ($r.status -eq 'retained' -and $r.moved -eq 1 -and (Test-Path -LiteralPath $crash)) "(e) injected failure not retained: $($r.status) $($r.reason)"
+    $m = @(Read-Manifest | Where-Object releaseId -eq 'beta-2026-10-12-crash')
+    Assert ($m.Count -eq 2) '(e) manifest does not list every planned move.'
+    foreach ($e in $m) { Assert ((Test-Path -LiteralPath $e.source) -xor (Test-Path -LiteralPath $e.destination)) "(e) $($e.source) is neither at source nor destination (or both)." }
+    Assert (Test-Path -LiteralPath (Join-Path $crash '.camera-desktop-registration-before.json')) '(e) metadata deleted after a failed move.'
+    #     a locked operator file keeps the folder
+    $locked = New-Residual 'beta-2026-10-13-locked' -Files @{ 'Recordings\l.mp4' = 'locked' }
+    $lock = [IO.File]::Open((Join-Path $locked 'Recordings\l.mp4'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try { $r = Retire $locked } finally { $lock.Dispose() }
+    Assert ($r.status -eq 'retained' -and (Test-Path -LiteralPath (Join-Path $locked 'Recordings\l.mp4'))) "(e) locked file: $($r.status) $($r.reason)"
+
+    # (f) backup on another volume: retained, nothing moved
+    $vol = New-Residual 'beta-2026-10-14-volume' -Files @{ 'Recordings\v.mp4' = 'v' }
+    $inv = Get-Inventory $vol
+    $r = Retire $vol @{ BackupVolumeRoot = 'Z:\' }
+    Assert ($r.status -eq 'retained' -and $r.reason -match 'another volume' -and (Get-Inventory $vol) -eq $inv) "(f) cross-volume backup: $($r.status) $($r.reason)"
+
+    # (g) running version and (h) junction never reach removal; camera folder neither
+    foreach ($d in $running, $linked, $camera) {
+        $inv = Get-Inventory $d
+        $r = Retire $d
+        Assert ($r.status -in 'skipped','retained' -and (Get-Inventory $d) -eq $inv) "(g/h) $d was changed: $($r.status)"
+    }
+    Assert ((Get-Inventory $junctionTarget) -eq $targetBefore) '(h) junction target changed.'
+    Assert (Test-Path -LiteralPath (Join-Path $foreign 'notes.txt')) 'Foreign folder changed.'
+    Assert (Test-Path -LiteralPath (Join-Path $current 'app.exe')) 'Current install changed.'
+
     [ordered]@{ passed=$true; checks=$checks; evidence=$work } | ConvertTo-Json
 } finally {
     $resolvedKey = Get-Item -LiteralPath $registryRoot

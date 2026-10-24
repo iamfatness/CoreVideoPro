@@ -252,6 +252,107 @@ function Get-ResidualInstallationPlan {
     }
 }
 
+# #883 + owner ruling D4 (2026-10-23): retire one residual folder from its plan. Unknown
+# content (Recordings\, modified payload) is MOVED into a dated backup folder, never deleted;
+# backup-manifest.json lists every planned move BEFORE the first one, so after a crash every
+# file is either at its source or at a destination the manifest names. Then hash-proven
+# payload and owned metadata are deleted one file at a time and empty directories removed
+# deepest first, non-recursively. Any failure keeps the folder (status 'retained') and stops
+# work on that folder only.
+function New-ResidualBackupFolder {
+    param([string]$BackupRoot)
+    return Join-Path $BackupRoot ('retired-install-remnants-{0:yyyyMMdd-HHmmss}-{1}' -f [DateTime]::Now, [Guid]::NewGuid().ToString('N').Substring(0, 8))
+}
+
+function Write-ResidualBackupManifest {
+    param([string]$BackupFolder, [object[]]$Entries)
+    [void][IO.Directory]::CreateDirectory($BackupFolder)
+    $json = [ordered]@{ purpose = 'CoreVideo Pro setup moved these operator files out of retired version folders (#883). Nothing was deleted.'; entries = @($Entries) } | ConvertTo-Json -Depth 5
+    $path = Join-Path $BackupFolder 'backup-manifest.json'
+    $temp = "$path.tmp"
+    [IO.File]::WriteAllText($temp, $json, (New-Object Text.UTF8Encoding $false))
+    if ([IO.File]::Exists($path)) { [IO.File]::Replace($temp, $path, [NullString]::Value) } else { [IO.File]::Move($temp, $path) }
+}
+
+function Remove-ResidualInstallation {
+    param($Plan, [string]$BackupFolder, [switch]$LeaveUnknown,
+        # Test hooks: inject a failure after N moves; pretend the backup is on another volume.
+        [int]$FailAfterMoves = 0, [string]$BackupVolumeRoot = '')
+    $Plan | Add-Member -NotePropertyName backedUpTo -NotePropertyValue '' -Force
+    $Plan | Add-Member -NotePropertyName moved -NotePropertyValue 0 -Force
+    if ($Plan.status -ne 'ready') { return $Plan }
+    $dir = $Plan.directory
+    try {
+        $unknown = @($Plan.unknown)
+        if ($unknown.Count -and $LeaveUnknown) {
+            $Plan.status = 'retained'; $Plan.reason = "operator content: $($unknown.Count) files (left in place)"; return $Plan
+        }
+        if ($unknown.Count) {
+            if (!$BackupFolder) { throw 'No backup folder given for operator content.' }
+            $sourceVolume = [IO.Path]::GetPathRoot($dir)
+            $backupVolume = if ($BackupVolumeRoot) { $BackupVolumeRoot } else { [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($BackupFolder)) }
+            if ($sourceVolume -ine $backupVolume) { throw "Backup folder is on another volume ($backupVolume); operator content was not moved." }
+            $manifestPath = Join-Path $BackupFolder 'backup-manifest.json'
+            $entries = [Collections.Generic.List[object]]::new()
+            if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+                foreach ($e in @((Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).entries)) { $entries.Add($e) }
+            }
+            $taken = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            foreach ($e in $entries) { [void]$taken.Add($e.destination) }
+            $mine = [Collections.Generic.List[object]]::new()
+            foreach ($source in $unknown) {
+                $relative = $source.Substring($dir.Length + 1)
+                $checked = Get-OwnedInstallPath $dir $relative
+                $destination = Join-Path (Join-Path $BackupFolder $Plan.releaseId) $relative
+                $base = [IO.Path]::Combine([IO.Path]::GetDirectoryName($destination), [IO.Path]::GetFileNameWithoutExtension($destination))
+                $extension = [IO.Path]::GetExtension($destination)
+                for ($n = 1; $taken.Contains($destination) -or [IO.File]::Exists($destination) -or [IO.Directory]::Exists($destination); $n++) { $destination = "$base ($n)$extension" }
+                [void]$taken.Add($destination)
+                $entry = [pscustomobject][ordered]@{ releaseId = $Plan.releaseId; source = $checked; destination = $destination
+                    length = (Get-Item -LiteralPath $checked -Force).Length; sha256 = (Get-InstallPayloadSha256 -Path $checked); status = 'planned' }
+                $entries.Add($entry); $mine.Add($entry)
+            }
+            # Manifest first: from here on every file is at its source or at a listed destination.
+            Write-ResidualBackupManifest $BackupFolder $entries
+            $Plan.backedUpTo = Join-Path $BackupFolder $Plan.releaseId
+            try {
+                foreach ($entry in $mine) {
+                    if ($FailAfterMoves -and $Plan.moved -ge $FailAfterMoves) { throw "Injected failure after $($Plan.moved) moves." }
+                    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($entry.destination))
+                    [IO.File]::Move($entry.source, $entry.destination)   # same volume: a rename; never overwrites
+                    if ((Get-InstallPayloadSha256 -Path $entry.destination) -ne $entry.sha256) { throw "Moved file changed: $($entry.destination)" }
+                    $entry.status = 'moved'
+                    $Plan.moved++
+                }
+            } finally { Write-ResidualBackupManifest $BackupFolder $entries }
+        }
+        # Payload first, owned metadata last (a retry still has the manifest).
+        foreach ($path in @($Plan.payload) + @($Plan.metadata)) {
+            $checked = Get-OwnedInstallPath $dir $path.Substring($dir.Length + 1)
+            if (Test-Path -LiteralPath $checked -PathType Leaf) { Remove-Item -LiteralPath $checked -Force -ErrorAction Stop }
+        }
+        # Empty directories, deepest first, one at a time, never recursive.
+        $directories = [Collections.Generic.List[string]]::new()
+        $stack = [Collections.Generic.Stack[string]]::new(); $stack.Push($dir)
+        while ($stack.Count) {
+            $here = $stack.Pop(); $directories.Add($here)
+            foreach ($item in Get-ChildItem -LiteralPath $here -Force -Directory) {
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Reparse point appeared: $($item.FullName)" }
+                $stack.Push($item.FullName)
+            }
+        }
+        foreach ($directory in $directories | Sort-Object Length -Descending) {
+            if (!(Get-ChildItem -LiteralPath $directory -Force)) { Remove-Item -LiteralPath $directory -ErrorAction Stop }
+        }
+        if (Test-Path -LiteralPath $dir) {
+            $left = @(Get-ChildItem -LiteralPath $dir -Force -Recurse -File | Select-Object -First 1)
+            throw "Folder not empty after cleanup: $(if ($left) { $left[0].FullName } else { $dir })"
+        }
+        $Plan.status = if ($Plan.moved) { 'backed-up' } else { 'removed' }
+    } catch { $Plan.status = 'retained'; $Plan.reason = $_.Exception.Message }
+    return $Plan
+}
+
 function Remove-PreviousInstallation {
     param($Plan, [string]$ProgramsDirectory)
     if ($Plan.status -ne 'ready') { return $Plan }
@@ -298,4 +399,4 @@ function Remove-PreviousInstallation {
     return $Plan
 }
 
-Export-ModuleMember -Function Get-OwnedInstallMetadataNames,Get-ResidualInstallationPlan,Initialize-SetupHelperEnvironment,Format-SetupHelperDiagnostics,Get-InstallPayloadSha256,Get-PreviousInstallationPlan,Remove-PreviousInstallation
+Export-ModuleMember -Function Get-OwnedInstallMetadataNames,Get-ResidualInstallationPlan,New-ResidualBackupFolder,Remove-ResidualInstallation,Initialize-SetupHelperEnvironment,Format-SetupHelperDiagnostics,Get-InstallPayloadSha256,Get-PreviousInstallationPlan,Remove-PreviousInstallation
