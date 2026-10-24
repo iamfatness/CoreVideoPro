@@ -195,7 +195,40 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(IsoArmedSummary));
         OnPropertyChanged(nameof(IsoHealthWarning));
         OnPropertyChanged(nameof(IsoHealthWarningVisibility));
+        RefreshIsoEncoderPlacement();
     }
+
+    // #935: which ISO is on the CPU software encoder and its measured per-frame cost. The logic is the
+    // pure IsoEncoderPlacementReadout; this is only the scalar bound projection. Notified only when
+    // the text/severity changes so a steady snapshot stream raises nothing.
+    private PlacementReadout _isoEncoderPlacement = PlacementReadout.Empty;
+
+    private void RefreshIsoEncoderPlacement()
+    {
+        var recording = _bridge.LastSnapshot?.Recording;
+        var next = IsoEncoderPlacementReadout.Describe(recording, recording?.Encoder.HardwareAccelerated ?? true);
+        if (next.Severity == _isoEncoderPlacement.Severity && next.Lines.SequenceEqual(_isoEncoderPlacement.Lines))
+        {
+            return;
+        }
+
+        _isoEncoderPlacement = next;
+        OnPropertyChanged(nameof(IsoEncoderPlacementMessage));
+        OnPropertyChanged(nameof(IsoEncoderPlacementSeverity));
+        OnPropertyChanged(nameof(IsoEncoderPlacementVisibility));
+    }
+
+    public string IsoEncoderPlacementMessage => string.Join(Environment.NewLine, _isoEncoderPlacement.Lines);
+
+    public Microsoft.UI.Xaml.Controls.InfoBarSeverity IsoEncoderPlacementSeverity =>
+        _isoEncoderPlacement.Severity == PlacementSeverity.Warning
+            ? Microsoft.UI.Xaml.Controls.InfoBarSeverity.Warning
+            : Microsoft.UI.Xaml.Controls.InfoBarSeverity.Informational;
+
+    public Microsoft.UI.Xaml.Visibility IsoEncoderPlacementVisibility =>
+        _isoEncoderPlacement.Severity == PlacementSeverity.None
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
 
     /// <summary>"Program only" / "Program + N ISO(s)" readout for the transport/record area.
     /// While recording, counts the live ISO streams from the snapshot; otherwise the armed
