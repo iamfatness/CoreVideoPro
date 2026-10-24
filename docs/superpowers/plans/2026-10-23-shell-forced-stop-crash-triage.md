@@ -180,8 +180,8 @@ Expected for the drain: the faulting OS thread is the STA UI thread with no mana
 
 **Files:** Modify `native-shell/CoreVideoPro.WinUI/Services/ApplicationLifecycle.cs`. Test in `native-shell/CoreVideoPro.WinUI.Tests/`.
 
-- [ ] **Step 1:** Make the final exit an injected seam, defaulting to `ShutdownCompletion.TerminateCurrentProcess`. Write a test that asserts the log line is written before the terminate call and that a second call is a no-op. It should fail first.
-- [ ] **Step 2:** Run `dotnet test native-shell/CoreVideoPro.WinUI.Tests --filter "FullyQualifiedName~ApplicationLifecycle|FullyQualifiedName~ShutdownCompletion"`. Expected: all pass.
+- [x] **Step 1:** Make the final exit an injected seam, defaulting to `ShutdownCompletion.TerminateCurrentProcess`. Write a test that asserts the log line is written before the terminate call and that a second call is a no-op. It should fail first.
+- [x] **Step 2:** Run `dotnet test native-shell/CoreVideoPro.WinUI.Tests --filter "FullyQualifiedName~ApplicationLifecycle|FullyQualifiedName~ShutdownCompletion"`. Expected: all pass.
 
 **5c. Run the gate live.**
 
@@ -243,3 +243,19 @@ Outcome (a): 7 long in-meeting closes (threshold 5), 0 recurrences, 0 ShutdownCo
 - `scripts/qa/graceful-close-check.ps1`: refuses (exit 2, nothing closed) unless exactly one shell is running, the control API answers, `Test-DrillSafeToClose` has no reasons other than `engine on` (the shell's close guard prompts only for recording/streaming), the shell has been up `-MinSessionMinutes` (default 30) and the snapshot says `in_meeting` (or `-AllowOutsideMeeting`). It then sends ONE `WM_CLOSE` (`CloseMainWindow`), never a second (a second close during cleanup takes `ForceExit`), waits 6 s (and up to 60 s more, sending nothing), watches 60 s from the close, and writes `before.json`, `check.log` and `verdict.json` under `D:\CoreVideo-QA\graceful-close\<timestamp>\`. Exit 0 pass, 1 fail.
 - The session is keyed on the log's `session=` id, not the PID (PID 17304 itself was reused a day later).
 - `scripts/qa/graceful-close-check.test.ps1`: 17 cases (failed first with the script missing; 17/17 after). The parsers were also checked against the real `launch.log` (the 2026-10-23 09:00 close is read as a terminate line) and the real Event Log (the 2026-10-16 entry is decoded).
+
+### Task 5b result: ForceExit ends in TerminateProcess (owner-approved optional)
+
+- `ApplicationLifecycle.ForceExit(int)` now delegates to an injected overload: log `shutdown: force exit code=N`, `PrepareShutdown`, then `ShutdownCompletion.TerminateCurrentProcess`; `Environment.Exit` runs only if the terminate call returns (logged). A run-once `ExitOnce` latch replaces the static int.
+- `ApplicationLifecycleForceExitTests` (4 cases) failed first (CS0426, no `ExitOnce`), then passed. Filtered run `ApplicationLifecycle|ShutdownCompletion`: 10/10. Full `CoreVideoPro.WinUI.Tests`: 1765/1765. `dotnet build` of the shell (Release x64): succeeded.
+- Not exercised live: no forced-exit path was triggered on the real app.
+
+### Task 5c: NOT RUN (owner)
+
+Left unchecked on purpose. Owner steps:
+
+1. Build and launch this branch (`npm run app`), join the authorized test meeting with the full pwd link, turn Engine on. No recording, no stream.
+2. Leave it running 30 minutes or more. Do not close or restart it in that time.
+3. Run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\qa\graceful-close-check.ps1` from the repo root. It closes the app itself (one WM_CLOSE) and takes about 70 s. Do not touch the window while it runs.
+4. Expect `Verdict: PASS` and exit 0. Evidence: `D:\CoreVideo-QA\graceful-close\<timestamp>\verdict.json`. Exit 2 means it refused and closed nothing (the reason is printed). Exit 1 is a FAIL: copy any new dump, the publish folder and the logs to `D:\CoreVideo-QA\dumps\457\` before rebuilding, then reopen #457.
+5. Post the build stamp, session minutes and verdict to #457.

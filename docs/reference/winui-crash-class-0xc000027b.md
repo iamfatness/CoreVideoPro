@@ -41,7 +41,9 @@ off-thread guards never fired). Confirmed and suspected triggers:
   `Application.Current.Exit()`. It uses TerminateProcess, not `Environment.Exit`, because
   `ExitProcess` would still run `DLL_PROCESS_DETACH` in Microsoft.UI.Xaml and CoreMessagingXP.
   The logs are synchronous, and no ProcessExit handlers exist. A failed or timed-out cleanup
-  keeps the `ApplicationLifecycle.ForceExit` fallback. `PrepareForShutdown` also stops the view
+  keeps the `ApplicationLifecycle.ForceExit` fallback. Since the #457 closure (2026-10-23) `ForceExit` also ends in
+  `TerminateProcess` (`Environment.Exit` only if that call returns); `ApplicationLifecycleForceExitTests`
+  pin the order and the run-once latch. `PrepareForShutdown` also stops the view
   model's DispatcherQueueTimers (defence in depth). **Rule: never hand a torn-down shell back to
   WinUI's shutdown drain.** Unit tests (`ShutdownCompletionTests`) pin the order and the gate.
   (T1.8 put a close guard in FRONT of this path — see "Engine teardown order": closing while
