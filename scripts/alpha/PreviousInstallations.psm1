@@ -159,6 +159,99 @@ function Get-PreviousInstallationPlan {
     }
 }
 
+# #883: the ONLY list of installer-owned metadata names. Root-level files with these
+# names are retired by both the registered and the residual path. Keeping one list stops
+# the drift that stranded 29 folders on .camera-desktop-registration-before.json.
+function Get-OwnedInstallMetadataNames {
+    return @('Uninstall.exe', '.camera-registration-before.json', '.camera-desktop-registration-before.json',
+        '.corevideo-prerelease-install', 'build-manifest.json', 'previous-installations-cleanup.json')
+}
+
+$script:ReleaseIdPattern = '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$'
+$script:RuntimeFilePattern = '^(ffmpeg\.exe|(?:avcodec|avdevice|avfilter|avformat|avutil|swscale|swresample)-[0-9]+\.dll|notices/ffmpeg/(?:LICENSE[^/]*|COPYING[^/]*|NOTICE[^/]*|README[^/]*|download-provenance\.txt|installed-files\.txt))$'
+
+# Residual version folders: direct children of the install root that look like a release,
+# are not the current install and have NO uninstall registration (the registered path,
+# Get-PreviousInstallationPlan, cannot see them). Read-only: classifies every file as
+# metadata (root-level owned name), payload (hash-proven against the folder's own valid
+# manifest, or allowlisted media runtime) or unknown (everything else, incl. Recordings\).
+function Get-ResidualInstallationPlan {
+    param([string]$CurrentDirectory, [string]$InstallRoot, [string]$RegistryRoot,
+          [string[]]$RunningPaths = @(), [string[]]$ProtectedPaths = @())
+    $current = [IO.Path]::GetFullPath($CurrentDirectory).TrimEnd('\')
+    $root = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
+    if ((Split-Path -Parent $current) -ne $root) { throw 'Current installation is outside the expected install root.' }
+    if ((Get-Item -LiteralPath $root -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Install root is a reparse point: $root" }
+    $registered = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($key in Get-ChildItem -LiteralPath $RegistryRoot) {
+        if ($key.PSChildName -match '^CoreVideoPro-(.+)$') { [void]$registered.Add($Matches[1]) }
+        $location = (Get-ItemProperty -LiteralPath $key.PSPath).PSObject.Properties['InstallLocation']
+        if ($location -and $location.Value) { [void]$registered.Add((Split-Path -Leaf ([string]$location.Value).TrimEnd('\'))) }
+    }
+    $metadataNames = Get-OwnedInstallMetadataNames
+    foreach ($folder in Get-ChildItem -LiteralPath $root -Directory -Force) {
+        $id = $folder.Name
+        $dir = Join-Path $root $id
+        if ($id -notmatch $script:ReleaseIdPattern -or $dir -eq $current -or $registered.Contains($id)) { continue }
+        $plan = [pscustomobject]@{ releaseId=$id; directory=$dir; status='ready'; reason=''; metadata=@(); payload=@(); unknown=@() }
+        try {
+            if ($folder.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Reparse point: $dir" }
+            if (@($RunningPaths | Where-Object { $_ -and $_.StartsWith($dir + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
+                $plan.status = 'skipped'; $plan.reason = 'Version is still running.'; $plan; continue
+            }
+            if (@($ProtectedPaths | Where-Object { $_ -and ($_.TrimEnd('\') -eq $dir -or $_.StartsWith($dir + '\', [StringComparison]::OrdinalIgnoreCase)) }).Count) {
+                $plan.status = 'skipped'; $plan.reason = 'The registered camera points into this folder.'; $plan; continue
+            }
+            # Walk with an explicit stack; never enter a reparse point (it retains the folder).
+            $files = [Collections.Generic.List[string]]::new()
+            $stack = [Collections.Generic.Stack[string]]::new()
+            $stack.Push($dir)
+            while ($stack.Count) {
+                $here = $stack.Pop()
+                foreach ($item in Get-ChildItem -LiteralPath $here -Force) {
+                    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Reparse point: $($item.FullName)" }
+                    if ($item.PSIsContainer) { $stack.Push($item.FullName) } else { $files.Add($item.FullName.Substring($dir.Length + 1)) }
+                }
+            }
+            # The folder's own manifest proves payload only if it is valid and names this release.
+            $proven = @{}
+            $manifestPath = Join-Path $dir 'build-manifest.json'
+            if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+                try {
+                    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+                    if ($manifest.releaseId -eq $id -and $manifest.sourceCommit -match '^[a-f0-9]{40}$' -and @($manifest.files).Count) {
+                        foreach ($entry in $manifest.files) {
+                            $path = Get-OwnedInstallPath $dir $entry.path
+                            if ($entry.sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Invalid payload hash.' }
+                            $proven[$path] = $entry.sha256
+                        }
+                    }
+                } catch { $proven = @{} }   # an unusable manifest proves nothing: its files stay unknown
+            }
+            $runtime = @{}
+            $runtimeManifest = Join-Path $dir 'notices\ffmpeg\installed-files.txt'
+            if (Test-Path -LiteralPath $runtimeManifest -PathType Leaf) {
+                foreach ($relative in Get-Content -LiteralPath $runtimeManifest) {
+                    if ($relative -and ($relative -replace '[\\/]+', '/') -match $script:RuntimeFilePattern) { $runtime[(Get-OwnedInstallPath $dir $relative)] = $true }
+                }
+                $runtime[$runtimeManifest] = $true
+            }
+            $metadata = [Collections.Generic.List[string]]::new()
+            $payload = [Collections.Generic.List[string]]::new()
+            $unknown = [Collections.Generic.List[string]]::new()
+            foreach ($relative in $files) {
+                $path = Get-OwnedInstallPath $dir $relative
+                if ($relative -notmatch '[\\/]' -and $metadataNames -contains $relative) { $metadata.Add($path) }
+                elseif ($proven.ContainsKey($path) -and (Get-InstallPayloadSha256 -Path $path) -eq $proven[$path]) { $payload.Add($path) }
+                elseif ($runtime.ContainsKey($path)) { $payload.Add($path) }
+                else { $unknown.Add($path) }
+            }
+            $plan.metadata = @($metadata); $plan.payload = @($payload); $plan.unknown = @($unknown)
+        } catch { $plan.status = 'retained'; $plan.reason = $_.Exception.Message; $plan.metadata = @(); $plan.payload = @(); $plan.unknown = @() }
+        $plan
+    }
+}
+
 function Remove-PreviousInstallation {
     param($Plan, [string]$ProgramsDirectory)
     if ($Plan.status -ne 'ready') { return $Plan }
@@ -191,7 +284,7 @@ function Remove-PreviousInstallation {
         }
         # Retain marker/manifest/uninstaller if any payload operation failed, so
         # the user can retry. Metadata is retired only after payload completion.
-        foreach ($relative in @('Uninstall.exe','.camera-registration-before.json','.corevideo-prerelease-install','build-manifest.json','previous-installations-cleanup.json')) {
+        foreach ($relative in Get-OwnedInstallMetadataNames) {
             $path = Get-OwnedInstallPath $Plan.directory $relative
             if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
         }
@@ -205,4 +298,4 @@ function Remove-PreviousInstallation {
     return $Plan
 }
 
-Export-ModuleMember -Function Initialize-SetupHelperEnvironment,Format-SetupHelperDiagnostics,Get-InstallPayloadSha256,Get-PreviousInstallationPlan,Remove-PreviousInstallation
+Export-ModuleMember -Function Get-OwnedInstallMetadataNames,Get-ResidualInstallationPlan,Initialize-SetupHelperEnvironment,Format-SetupHelperDiagnostics,Get-InstallPayloadSha256,Get-PreviousInstallationPlan,Remove-PreviousInstallation
