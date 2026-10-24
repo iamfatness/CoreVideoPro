@@ -9770,8 +9770,7 @@ std::uint64_t runRenderGatherRosterChurn(bool isolatedMonitors) {
 TEST(MediaCoreRenderGather, RosterChurnReachesTheRenderGatherWithoutTheEngineMutex) {
   for (const bool isolated : {false, true}) {
     const auto delta = runRenderGatherRosterChurn(isolated);
-    // R3 (setVideoConsumerDemand) only, one per tick; Task 5 moves it.
-    EXPECT_EQ(delta, 2u) << "the render tick (under coreMutex) took the Zoom engine mutex "
+    EXPECT_EQ(delta, 0u) << "the render tick (under coreMutex) took the Zoom engine mutex "
                          << delta << " time(s) outside the frame group (isolatedMonitors="
                          << (isolated ? "true" : "false") << ")";
   }
@@ -9786,4 +9785,68 @@ TEST(MediaCoreRenderGather, RosterChurnReachesTheRenderGatherWithoutTheEngineMut
     (void)core->zoomEngineRuntimeForTest()->floorParticipants();
   }
   EXPECT_GT(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before);
+}
+
+// #1037 R3: the ISO video demand the render tick computes reaches the engine
+// through the NEXT tick's pre-read (coreMutex free), re-arms after a leave, and
+// the render tick itself never takes the engine mutex for it.
+TEST(MediaCoreRenderGather, IsoVideoDemandReachesTheEngineFromBeforeTheLock) {
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_TRUE(runtime && runtime->configured());
+  const auto event = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})");
+  ASSERT_TRUE(event.has_value());
+  runtime->applyEngineEventForTest(*event);
+
+  const auto tick = [&] {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();  // BEFORE the lock
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  };
+  const corevideo::rpc::Json isoIds = corevideo::rpc::Json::Array{std::string("zoom:1")};
+  const auto startRecording = [&] {
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "set-recording-targets"}, {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+        {"filenamePrefix", "iso-demand"}, {"format", "mp4"}, {"isoSourceIds", isoIds}});
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "start-recording-session"}, {"sessionId", "iso-demand"}, {"isoSourceIds", isoIds}});
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "start-program-output"},
+        {"destinations", corevideo::rpc::Json::Array{std::string("recording")}}, {"isoSourceIds", isoIds}});
+  };
+  const auto stopRecording = [&] {
+    (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "stop-recording-session"}});
+    (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "stop-program-output"}});
+  };
+  const bool supported = corevideo::modules::ZoomEngineRuntime::independentIsoVideoSupported();
+  const std::vector<std::string> demanded = supported ? std::vector<std::string>{"1"} : std::vector<std::string>{};
+
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  startRecording();
+  tick();
+  tick();
+  EXPECT_EQ(runtime->isoArrivalDemandIdsForTest(), demanded)
+      << "a recording's Zoom ISO demand must reach the engine";
+
+  stopRecording();
+  tick();
+  tick();
+  EXPECT_TRUE(runtime->isoArrivalDemandIdsForTest().empty()) << "stopping must retire the demand";
+
+  // leave() clears the engine's arrival queues; the next recording must re-arm.
+  (void)core->leaveZoom();
+  runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":2,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})"));
+  startRecording();
+  tick();
+  tick();
+  EXPECT_EQ(runtime->isoArrivalDemandIdsForTest(), demanded) << "the demand must re-arm after a leave";
+  stopRecording();
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
+      << "the render tick took the Zoom engine mutex outside the frame group";
+  core.reset();
 }

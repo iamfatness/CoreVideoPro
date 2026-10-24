@@ -5028,6 +5028,9 @@ MediaCore::RenderEngineInputs MediaCore::prepareRenderEngineInputsUnlocked() {
   inputs.valid = true;
   if (!zoomEngineRuntime_ || !zoomEngineRuntime_->configured()) return inputs;
   inputs.engineConfigured = true;
+  // R3: the demand the previous tick published (see renderSyntheticTick).
+  if (const auto demand = std::atomic_load_explicit(&engineVideoDemand_, std::memory_order_acquire))
+    zoomEngineRuntime_->setVideoConsumerDemand(*demand);
   // L3: the EPOCH first, then the view, then the epoch again. The graphics
   // binding only trusts a roster read entirely inside one speaker epoch.
   const auto before = zoomEngineRuntime_->speakerEpoch();
@@ -5211,7 +5214,14 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
           "recording", modules::SourceVideoRepresentation::Cpu});
   }
   modules_.captureDevice->setVideoConsumerDemand(captureDemands);
-  if (engineLive) zoomEngineRuntime_->setVideoConsumerDemand(captureDemands);
+  // #1037 R3: the engine half is applied by the NEXT tick's pre-read, with
+  // coreMutex free. One tick (16.7 ms) late; re-armed every tick (no dedupe:
+  // leave() clears the engine's arrival queues).
+  if (engineLive) {
+    std::atomic_store_explicit(&engineVideoDemand_,
+        std::make_shared<const std::vector<modules::SourceVideoDemand>>(captureDemands),
+        std::memory_order_release);
+  }
   modules_.captureDevice->deliverVideo(captureVideo, frameTimestampMs);
   std::vector<modules::VideoFrame> browserFrames;
   if (!browserSources_->empty()) {

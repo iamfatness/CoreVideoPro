@@ -1082,6 +1082,11 @@ class MediaCore {
   // #1037: the last render tick's engine pre-read (coreMutex state). Every
   // roster/speaker consumer on the render tick and the command lane reads it.
   RenderEngineInputs renderEngineInputs_;
+  // #1037 R3: the Zoom half of the video consumer demand the render tick
+  // computed, applied to the engine by the NEXT tick's pre-read (coreMutex
+  // free). Accessed ONLY through std::atomic_load/store_explicit, the same
+  // pattern as programOutputConfiguration_.
+  std::shared_ptr<const std::vector<modules::SourceVideoDemand>> engineVideoDemand_;
   SpeakerFloor speakerFloor_;
   // Command/render/gather state under coreMutex. A changed speaker epoch drops
   // every manual setting so a recycled Zoom user id cannot inherit it.

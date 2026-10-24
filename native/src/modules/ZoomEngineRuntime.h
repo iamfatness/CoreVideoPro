@@ -121,6 +121,9 @@ class ZoomEngineRuntime {
   // thread uses (state apply + frame/audio shared-memory ingest), so tests can
   // exercise the SHM audio ingest without a live engine subprocess.
   void applyEngineEventForTest(const ZoomEngineEvent& event);
+  // TEST SEAM (#1037): the participant ids holding an ISO CPU arrival queue,
+  // i.e. the Zoom ISO video demand the engine has applied. Takes mutex_.
+  [[nodiscard]] std::vector<std::string> isoArrivalDemandIdsForTest();
 
  private:
   std::atomic<bool> thumbnailDemand_{true}; // legacy clients retain CPU previews

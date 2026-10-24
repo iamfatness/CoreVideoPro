@@ -998,6 +998,14 @@ void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<s
 
 void ZoomEngineRuntime::applyEngineEventForTest(const ZoomEngineEvent& event) { applyEvent(event); }
 
+std::vector<std::string> ZoomEngineRuntime::isoArrivalDemandIdsForTest() {
+  std::lock_guard<EngineMutex> lock(mutex_);
+  std::vector<std::string> ids;
+  for (const auto& entry : isoArrivalQueues_) ids.push_back(entry.first);
+  std::sort(ids.begin(), ids.end());
+  return ids;
+}
+
 void ZoomEngineRuntime::stopReader() {
   std::shared_ptr<ZoomEngineProcessClient> process;
   {
