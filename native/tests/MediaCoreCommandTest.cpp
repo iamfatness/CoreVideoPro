@@ -1,6 +1,7 @@
 ﻿#include "compositor/CompositorLayout.h"
 #include "core/AudioControlSourcePolicy.h"
 #include "core/BoundedAsyncLog.h"
+#include "core/CoreStateCapture.h"
 #include "core/StreamBackpressurePolicy.h"
 #include "core/MediaCore.h"
 #include "core/ZoomParticipantSource.h"
@@ -9848,5 +9849,73 @@ TEST(MediaCoreRenderGather, IsoVideoDemandReachesTheEngineFromBeforeTheLock) {
   stopRecording();
   EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
       << "the render tick took the Zoom engine mutex outside the frame group";
+  core.reset();
+}
+
+// #1037 C3: ISO display names come from the render tick's pre-read roster, so
+// starting a recording (a command, under coreMutex) never builds a full
+// engine snapshot under the engine mutex.
+namespace {
+class IsoNameCapturingEncoder final : public corevideo::modules::IEncoderSink {
+ public:
+  void configureRecording(const corevideo::modules::RecordingSessionRequest& request) override {
+    names.clear();
+    for (const auto& source : request.isoSources) names[source.sourceId] = source.displayName;
+  }
+  corevideo::modules::OutputSession start(const std::vector<std::string>& destinations,
+                                          const std::vector<std::string>&) override {
+    session_.active = true;
+    session_.destinations = destinations;
+    return session_;
+  }
+  void submit(const corevideo::modules::ProgramFrame&) override {}
+  corevideo::modules::OutputSession session() const override { return session_; }
+  std::map<std::string, std::string> names;
+
+ private:
+  corevideo::modules::OutputSession session_;
+};
+}  // namespace
+
+TEST(MediaCoreRenderGather, IsoDisplayNamesComeFromTheTickRosterNotAnEngineSnapshot) {
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto modules = corevideo::modules::createStubModules();
+  auto encoder = std::make_unique<IsoNameCapturingEncoder>();
+  auto* capture = encoder.get();
+  modules.encoder = std::move(encoder);
+  auto core = std::make_unique<corevideo::core::MediaCore>(std::move(modules));
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  // With the audio worker active, commands never render inline (N10), so the
+  // forbidden scope below covers only the command's own work.
+  core->enableAudioOutputWorker();
+  // As in production (cmd.handle), the response snapshot is assembled after
+  // coreMutex is released (N7): defer it so the scope covers the command only.
+  core->setSnapshotDeferrer([](std::unique_ptr<corevideo::core::CoreStateCapture>,
+                               corevideo::core::SnapshotProjection) { return corevideo::rpc::Json(); });
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_TRUE(runtime && runtime->configured());
+  const auto event = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Alice"},{"id":2,"name":""}]})");
+  ASSERT_TRUE(event.has_value());
+  runtime->applyEngineEventForTest(*event);
+  {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  }
+  const corevideo::rpc::Json isoIds = corevideo::rpc::Json::Array{
+      std::string("zoom:1"), std::string("zoom:2"), std::string("zoom:3")};
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  {
+    corevideo::modules::ForbidEngineMutexScope forbid("test.cmd");
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "start-recording-session"}, {"sessionId", "iso-names"}, {"isoSourceIds", isoIds}});
+  }
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
+      << "start-recording-session took the Zoom engine mutex to resolve ISO names";
+  EXPECT_EQ(capture->names["zoom:1"], "Alice");
+  EXPECT_EQ(capture->names["zoom:2"], "Zoom User 2") << "the snapshot's exact empty-name fallback";
+  EXPECT_EQ(capture->names["zoom:3"], "3") << "not in the roster: the bare id, as before";
   core.reset();
 }

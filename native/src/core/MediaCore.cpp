@@ -2732,14 +2732,26 @@ std::string MediaCore::resolveIsoDisplayName(const std::string& sourceId) const 
   const std::string scheme = colon == std::string::npos ? "" : sourceId.substr(0, colon);
   const std::string bareId = colon == std::string::npos ? sourceId : sourceId.substr(colon + 1);
   if (scheme == "zoom" || scheme.empty()) {
-    // Look the participant up in the live roster (userId → displayName).
-    const auto snapshot = zoomSnapshot();
-    if (const rpc::Json* participants = snapshot.get("participants"); participants && participants->isArray()) {
-      for (const auto& participant : participants->asArray()) {
-        if (participant.getString("userId") == bareId) {
-          const std::string name = participant.getString("displayName");
-          if (!name.empty()) {
-            return name;
+    if (renderEngineInputs_.engineConfigured && renderEngineInputs_.valid) {
+      // #1037 C3: the render tick's pre-read roster, never a full engine
+      // snapshot under coreMutex. Same fallback as rawCaptureSnapshotLocked
+      // for an empty name; a source not in the roster falls through to the
+      // bare id below, exactly as the snapshot lookup did.
+      for (const auto& participant : renderEngineInputs_.floorRoster) {
+        if (participant.id == 0 || std::to_string(participant.id) != bareId) continue;
+        return participant.displayName.empty() ? "Zoom User " + bareId : participant.displayName;
+      }
+    } else {
+      // Cold path (engine configured but no render tick yet) and the stub:
+      // look the participant up in the snapshot roster (userId → displayName).
+      const auto snapshot = zoomSnapshot();
+      if (const rpc::Json* participants = snapshot.get("participants"); participants && participants->isArray()) {
+        for (const auto& participant : participants->asArray()) {
+          if (participant.getString("userId") == bareId) {
+            const std::string name = participant.getString("displayName");
+            if (!name.empty()) {
+              return name;
+            }
           }
         }
       }
