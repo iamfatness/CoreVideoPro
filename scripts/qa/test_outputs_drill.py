@@ -66,6 +66,25 @@ class RowsAndAggregation(unittest.TestCase):
         self.assertIn('missing=1', rows[3]['reason'])
         self.assertEqual(verdict['overall'], 'FAIL')
 
+    def test_iso_hold_pattern_passes_but_says_the_source_stalled(self):
+        verdict = dict(ISO_PASS, heldFrames=3, heldExcused=3, holdsMatched=True,
+                       coverage={'maximumSourceArrivalGapMs': 3016.0})
+        row = judge.iso_row('zoom:1', verdict, 'p')
+        self.assertEqual(row['status'], judge.PASS)
+        self.assertEqual(row['held'], 3)
+        self.assertIn('held=3, source stalled', row['reason'])
+        self.assertIn('3016 ms', row['reason'])
+
+    def test_iso_healthy_row_has_no_held_note(self):
+        row = judge.iso_row('zoom:1', dict(ISO_PASS, heldFrames=0, heldExcused=0, holdsMatched=True), 'p')
+        self.assertEqual((row['status'], row['held'], row['reason']), (judge.PASS, 0, None))
+
+    def test_iso_hold_count_mismatch_fails_and_says_so(self):
+        verdict = dict(ISO_PASS, isoPixelArrivalFidelityPassed=False, heldFrames=0, heldExcused=2, holdsMatched=False)
+        row = judge.iso_row('zoom:1', verdict, 'p')
+        self.assertEqual(row['status'], judge.FAIL)
+        self.assertIn('writer reported 0, file shows 2', row['reason'])
+
     def test_iso_repeat_fails(self):
         row = judge.iso_row('zoom:1', dict(ISO_PASS, isoPixelArrivalFidelityPassed=False, repeated=2, firstMismatchIndex=7), 'p')
         self.assertEqual(row['status'], 'FAIL')

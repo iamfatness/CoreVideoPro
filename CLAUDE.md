@@ -39,6 +39,8 @@ frame exactly once with bounded latency, judged per frame by pixel identity
 30-minute full workload. Zero tolerance. These are what a viewer, a file, or a
 downstream app can see, and they are what "beat vMix" means.
 
+**Amendment, owner ruling 2026-10-23 23:27 EDT (#1030, #1038):** a held frame passes the per-frame identity gate as a labelled, counted, source-caused repeat. A held frame is the last picture that an ISO writer re-submits while that source's video is stalled. It passes only when all three conditions hold: (1) it repeats the immediately preceding picture; (2) it lies at least 1 s, minus one frame period, after that picture; (3) the number of such repeats in the file equals the writer's `heldFrames` in the finalized recording snapshot. The close-time tail hold is excused the same way, only as the file's last frame when `tailFrames` is 1. Zero tolerance remains for anything the pipeline itself loses or duplicates: a missing arrival, any other repeat, a reorder, an invalid picture, or a hold count that disagrees with the writer still fails. A passing row with holds must read `held=N, source stalled`, so the stall is never a silent pass.
+
 **The on-screen Studio cells (Preview, Program monitor, input tiles) are a UX
 metric with a tolerance, not a release gate.** They are windowed surfaces
 composed by the Desktop Window Manager. On a multi-monitor desk with mixed
