@@ -1908,6 +1908,7 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
           {"status", publishedWriterStatus},
           {"expectedFrames", static_cast<double>(programFramesWritten + session.recordingProgramMissingFrames)},
           {"framesWritten", static_cast<double>(programFramesWritten)},
+          {"heldFrames", static_cast<double>(session.recordingVideoHeldFrameCount)},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},
           {"hasAudio", audioPresent},
@@ -1936,6 +1937,10 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
           {"status", iso.warning.empty() ? publishedWriterStatus : std::string("warning")},
           {"readiness", iso.trackOpen ? "ready" : "missing"},
           {"framesWritten", static_cast<double>(iso.videoFrameCount)},
+          // #1030: held pictures while the source's video was stalled; the
+          // outputs drill excuses exactly this many hold-pattern repeats.
+          {"heldFrames", static_cast<double>(iso.heldVideoFrameCount)},
+          {"framesPlacedAtHold", static_cast<double>(iso.videoFramesPlacedAtHold)},
           {"muxVideoFrameCount", iso.muxVideoFrameCount ? rpc::Json(static_cast<double>(*iso.muxVideoFrameCount)) : rpc::Json(nullptr)},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},

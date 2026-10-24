@@ -122,6 +122,7 @@ Program GPU deadlines (`delivery-trace.py --require-program-deadlines`) are
 printed as supplementary evidence only, outside the overall verdict.
 `iso-pixel-verdict.py` gained additive `missing`/`repeated` counts for the
 summary; its pass rule is unchanged.
+**Held frames (#1030):** a repeat is excused only when it repeats the immediately preceding picture at least 1 s (minus one frame period) after it AND the excused count equals that ISO's `heldFrames` in the finalized recording snapshot; any other repeat fails, and an excused stall is reported on the row as `held=N, source stalled` with the longest arrival gap. A source stall by itself never counted as missing: the ISO judge expects only arrivals the trace OFFERED, so a stall (no arrivals) passed before held frames existed and still does (pinned by `test_iso_pixels.test_a_source_stall_without_holds_loses_no_arrival`); the stall shows in `coverage.maximumSourceArrivalGapMs`.
 
 ## Tests
 

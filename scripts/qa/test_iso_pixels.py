@@ -28,6 +28,56 @@ class IsoPixelsTest(unittest.TestCase):
             with self.subTest(decoded=decoded):
                 self.assertFalse(iso.compare_identities([100, 102, 108, 110], decoded)['isoPixelArrivalFidelityPassed'])
 
+    # #1030 held frames. Times are presentation seconds; 30 fps frame period.
+    PERIOD = 1 / 30
+
+    def test_healthy_file_passes_with_no_held_frames(self):
+        decoded = [(100 + i, i * self.PERIOD) for i in range(4)]
+        result = iso.compare_identities([100, 101, 102, 103], decoded, 0, self.PERIOD)
+        self.assertTrue(result['isoPixelArrivalFidelityPassed'])
+        self.assertEqual((result['heldFrames'], result['heldExcused'], result['repeated']), (0, 0, 0))
+
+    def test_a_source_stall_without_holds_loses_no_arrival(self):
+        # Pins the drill's behaviour before held frames: the trace expects only
+        # OFFERED arrivals, so a 2 s video stall (no arrivals) is not "missing";
+        # the stall shows only in coverage.maximumSourceArrivalGapMs.
+        decoded = [(100, 0.0), (101, self.PERIOD), (102, 2.0 + self.PERIOD)]
+        result = iso.compare_identities([100, 101, 102], decoded, 0, self.PERIOD)
+        self.assertTrue(result['isoPixelArrivalFidelityPassed'])
+        self.assertEqual((result['missing'], result['repeated']), (0, 0))
+
+    def test_stall_with_the_writer_hold_pattern_passes_and_reports_held(self):
+        # The last picture (101) is held once per second while the video is
+        # stalled; the first hold is 1 s after it, minus up to one frame period.
+        decoded = [(100, 0.0), (101, self.PERIOD), (101, 1.0), (101, 2.02), (101, 3.03), (102, 3.5)]
+        result = iso.compare_identities([100, 101, 102], decoded, 3, self.PERIOD)
+        self.assertTrue(result['isoPixelArrivalFidelityPassed'], result)
+        self.assertEqual((result['heldExcused'], result['holdsMatched'], result['repeated']), (3, True, 0))
+
+    def test_a_repeat_that_is_not_a_hold_fails(self):
+        # Adjacent duplicate (one frame period later) is a real repeat even when
+        # the writer reported a hold.
+        adjacent = [(100, 0.0), (101, self.PERIOD), (101, 2 * self.PERIOD), (102, 3 * self.PERIOD)]
+        result = iso.compare_identities([100, 101, 102], adjacent, 1, self.PERIOD)
+        self.assertFalse(result['isoPixelArrivalFidelityPassed'])
+        self.assertEqual((result['repeated'], result['heldExcused']), (1, 0))
+        # A repeat of an EARLIER identity is never a hold.
+        earlier = [(100, 0.0), (101, self.PERIOD), (100, 1.5), (102, 1.6)]
+        self.assertFalse(iso.compare_identities([100, 101, 102], earlier, 1, self.PERIOD)['isoPixelArrivalFidelityPassed'])
+
+    def test_hold_count_must_match_the_writer(self):
+        decoded = [(100, 0.0), (101, self.PERIOD), (101, 1.1), (101, 2.1), (102, 2.5)]
+        for reported in (0, 1, 3):
+            with self.subTest(reported=reported):
+                result = iso.compare_identities([100, 101, 102], decoded, reported, self.PERIOD)
+                self.assertFalse(result['isoPixelArrivalFidelityPassed'])
+                self.assertFalse(result['holdsMatched'])
+        self.assertTrue(iso.compare_identities([100, 101, 102], decoded, 2, self.PERIOD)['isoPixelArrivalFidelityPassed'])
+
+    def test_untimed_repeats_are_never_excused(self):
+        result = iso.compare_identities([100, 101, 102], [100, 101, 101, 102], 1)
+        self.assertFalse(result['isoPixelArrivalFidelityPassed'])
+
     def write_trace(self, path, *, lost=0, complete=1, second_epoch=5, source='zoom:1000', dimensions=(1920, 1080), v2=False):
         tag = iso.source_tag(source, 777)
         records = [iso.EVENT.pack(777, tag, epoch, -1, frame, at, at * 10000,
