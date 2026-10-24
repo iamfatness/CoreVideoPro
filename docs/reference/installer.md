@@ -13,18 +13,84 @@ are checked before deletion. Running versions and unverifiable candidates remain
 with a cleanup report and warning. Missing version folders permit removal of their
 matching stale registration only. Cleanup removes hash-matching delivered files,
 allowlisted first-run runtime files and version shortcuts, using nonrecursive
-directory removal. Modified payload files and operator files remain. It never
-invokes older uninstallers or changes webcam registration: legacy uninstallers
-can otherwise unregister the newly installed camera. The upgrade helper tests use
-an isolated registry namespace and temporary fixtures.
+directory removal. Modified payload files and operator files are left for the residual
+sweep below. It never invokes older uninstallers or changes webcam registration: legacy
+uninstallers can otherwise unregister the newly installed camera. The upgrade helper
+tests use an isolated registry namespace and temporary fixtures.
 
-Payload hashes are streamed through .NET SHA-256 rather than relying on
-`Get-FileHash` resolution in Setup's PowerShell helper (#883). The retirement
-regression also runs with that command masked in the planner module on both
-32-bit and 64-bit Windows PowerShell.
-The allowlisted retirement metadata includes the previous cleanup report itself;
-otherwise an otherwise empty version folder survives after its registration is gone.
-Unknown operator files and modified payloads remain protected.
+### #883: deterministic helper environment and the residual-folder sweep (2026-10-24)
+
+**Root cause of "Get-FileHash is not recognized" (reproduced).** In Windows PowerShell
+5.1, `Get-FileHash` (also `New-Guid`, `Format-Hex`) is a *script function* found by
+module auto-loading; compiled cmdlets (`ConvertTo-Json`, `Get-ChildItem`) are always
+loaded. An installer started from a PowerShell 7 shell inherits PS7's `PSModulePath`
+(PS7's `$PSHOME\Modules` first; pwsh only strips it when it launches `powershell.exe`
+itself), nsExec passes it to the helper untouched, and 5.1 binds `Get-FileHash` to
+PS7's Core-only Utility module: "not recognized". Reproduced through a real nsExec on
+both hosts. Payload hashes were already streamed through .NET SHA-256 (`91db55bf`);
+**never reintroduce `Get-FileHash`** on the setup path. This is a proven MECHANISM, not the
+proven cause of the 2026-10-13 incident: no PowerShell 7 exists on the dev box, and the
+environment that launched that install was never captured.
+
+**Pinned environment (owner ruling D5).** `Remove-PreviousInstallations.ps1` first calls
+`Initialize-SetupHelperEnvironment`: it resets `PSModulePath` for its own process to
+`$PSHOME\Modules;%WINDIR%\System32\WindowsPowerShell\v1.0\Modules`, imports
+Utility/Management/CimCmdlets by absolute `.psd1` path, and resolves every command the
+helper uses (one list, `$SetupHelperCommands` in `PreviousInstallations.psm1`; add to it
+when you add a cmdlet). A miss throws `Setup helper cannot resolve <cmdlet> (module <m>)`
+with the diagnostics on one line. Every run appends the diagnostics block (PS version,
+`is64Bit`, language mode, `$PSHOME`, inherited and effective `PSModulePath`) and the
+outcome to `%LOCALAPPDATA%\CoreVideoPro\installer-logs\<release>-retire.log`, written with
+.NET only so the log works when command resolution is what broke. The helper still runs
+as the 32-bit SysWOW64 host (32-bit NSIS); the registered and camera checks use the 64-bit
+registry view.
+
+**One metadata list.** `Get-OwnedInstallMetadataNames` is the only place installer-owned
+root-level names live (`Uninstall.exe`, `.camera-registration-before.json`,
+`.camera-desktop-registration-before.json`, `.corevideo-prerelease-install`,
+`build-manifest.json`, `previous-installations-cleanup.json`). The inline list it replaced
+missed the desktop camera backup and stranded 29 folders on the dev box.
+
+**Residual sweep.** After the registered pass, `Get-ResidualInstallationPlan` takes every
+direct child of the install root that matches the release-id pattern, is not the current
+install and has NO uninstall registration (the registered pass cannot see these). Skipped:
+a running version, a folder a camera registration (machine or desktop alias) points into.
+Retained, never entered: anything with a reparse point. Every file is classified:
+root-level owned metadata; payload proven by SHA-256 against the folder's own valid
+`build-manifest.json` (or the allowlisted media runtime); unknown (everything else:
+`Recordings\`, modified payload, a metadata-named file below the root).
+`Remove-ResidualInstallation` then, owner ruling D4, **moves** unknown files (never
+copies-then-deletes, never deletes) to
+`%LOCALAPPDATA%\CoreVideoPro\backups\retired-install-remnants-<yyyyMMdd-HHmmss>-<id>\<release>\<relative path>`,
+same volume only. `backup-manifest.json` there lists `source`, `destination`, `length`,
+`sha256`, `status` per file and is written BEFORE the first move, so after a crash every
+file is at its source or at a listed destination. Collisions get ` (n)`, never an
+overwrite. Then proven payload and metadata are deleted one file at a time and empty
+directories removed deepest first, non-recursively. Any failure keeps that folder,
+`retained` with the reason. `-LeaveUnknown` (manual runs only) keeps operator content in
+place.
+
+**Report and exit code.** `previous-installations-cleanup.json` (copy:
+`installer-logs\<release>-retire.json`) is `{summary, registered[], residual[]}`;
+`summary` = `registeredRetired`, `residualRemoved`, `residualBackedUp`, `retained`,
+`backupFolder`, `filesBackedUp`. The last stdout line, which NSIS shows, counts
+**folders**, not uninstall entries: `Previous installation cleanup: <n> retired, <n>
+backed up, <n> retained.` Whenever ANY file was moved, even from a folder that then
+failed and was retained, `summary.backupFolder` is set and the `...were MOVED, not deleted,
+to: <folder>` line is printed FIRST: nsExec keeps only the head of stdout (1024 characters
+on makensis 3.12), so the backup path must not be pushed out by `Retained` lines. Exit 0 = clean; 2 = clean and operator files were moved (Setup
+shows an information box with the backup folder); 1 = something retained (warning box with
+the summary and log path). `/SD IDOK` keeps silent setup unblocked.
+
+Tests (both CI `native-shell-windows` and local, from the 64-bit and the SysWOW64 host):
+`Test-PreviousInstallations.ps1` (registered path, also `-WithoutHashCommand`),
+`Test-ResidualInstallations.ps1` (classifier + backup: Recordings, modified payload,
+collisions, injected crash mid-move, locked file, cross-volume refusal, junctions, running
+and camera folders), `Test-CleanupEnvironment.ps1` (runs the real helper in 64-bit and
+32-bit child hosts with a PS7-inherited, empty and nonexistent `PSModulePath`, embeds
+PS7 7.4's Utility manifest because a hand-trimmed look-alike does not reproduce, uses a real
+PS7 `Modules` dir when installed; plus the end-to-end sweep). With the `Get-FileHash` call restored (planner from
+`91db55bf^`) and the pin removed (the Task 1 helper), the suite fails with the issue text. **Installed acceptance on a real upgrade is still pending** (plan Task 7).
 
 Failure rollback must move Setup's working directory out of `$INSTDIR` before
 removing the owned payload and empty installation directory. `SetOutPath` sets
