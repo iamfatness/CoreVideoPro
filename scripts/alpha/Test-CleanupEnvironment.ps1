@@ -166,8 +166,32 @@ try {
             $entries = @($report)
             if ($report.PSObject.Properties.Name -contains 'registered') { $entries = @($report.registered) }
             Assert (@($entries | Where-Object { $_.releaseId -eq 'beta-2026-10-22-old' -and $_.status -eq 'removed' }).Count -eq 1) "$label cleanup report does not show the old version removed."
+            # Task 2: the pinned environment is logged on every run, inherited value included.
+            $log = Join-Path $w.Local 'CoreVideoPro\installer-logs\beta-2026-10-23-current-retire.log'
+            Assert (Test-Path -LiteralPath $log) "$label retire log not written: $log"
+            $logText = Get-Content -LiteralPath $log -Raw
+            Assert ($logText -match [regex]::Escape("is64Bit=$($hostName -eq '64-bit')")) "$label log lacks host bitness: $logText"
+            Assert ($logText -match 'languageMode=FullLanguage') "$label log lacks language mode."
+            Assert ($logText -match [regex]::Escape("psModulePathEffective=$(Join-Path $(if ($hostName -eq '32-bit') { "$env:WINDIR\SysWOW64" } else { "$env:WINDIR\System32" }) 'WindowsPowerShell\v1.0\Modules')")) "$label effective PSModulePath not pinned to `$PSHOME\Modules: $logText"
+            # 5.1 itself edits the inherited value at startup (the 32-bit host inserts the x86
+            # Program Files path), so match the polluting entries, not the whole string.
+            foreach ($entry in @("$($environments[$envName])".Split(';') | Where-Object { $_ -match 'PowerShell\\7|fake-ps7|does-not-exist' })) {
+                Assert ($logText -match ('psModulePathInherited=[^\r\n]*' + [regex]::Escape($entry))) "$label inherited PSModulePath entry $entry not logged: $logText"
+            }
             $results.Add("$label ok")
         }
+        # Task 2: an unresolvable command fails loudly, by name, with diagnostics, and is logged.
+        $label = "[$hostName, unresolvable command]"
+        $w = New-World $hosts[$hostName]
+        $r = Invoke-Helper $hosts[$hostName] @{ LOCALAPPDATA = $w.Local; PSModuleAnalysisCachePath = (Join-Path $w.Local 'ModuleAnalysisCache') } ($w.Args + @('-RequiredCommands', 'Get-CoreVideo883Missing'))
+        $text = "$($r.Out)`n$($r.Err)"
+        Assert ($r.Code -ne 0) "$label helper did not fail: $text"
+        Assert ($text -match 'cannot resolve Get-CoreVideo883Missing') "$label failure does not name the command: $text"
+        foreach ($field in 'is64Bit=','languageMode=','psModulePathEffective=','psHome=') { Assert ($text -match $field) "$label failure lacks $field" }
+        Assert (Test-Path -LiteralPath $w.Old) "$label a failed environment check still retired a version."
+        $log = Join-Path $w.Local 'CoreVideoPro\installer-logs\beta-2026-10-23-current-retire.log'
+        Assert ((Test-Path -LiteralPath $log) -and ((Get-Content -LiteralPath $log -Raw) -match 'FAILED: .*Get-CoreVideo883Missing.*psModulePathEffective=')) "$label failure not logged with diagnostics."
+        $results.Add("$label ok")
     }
     [ordered]@{ passed=$true; checks=$checks; cases=@($results); evidence=$work } | ConvertTo-Json
 } finally {

@@ -63,11 +63,11 @@
 - `Initialize-SetupHelperEnvironment [-RequiredCommands string[]]` sets the process `PSModulePath` to `$PSHOME\Modules;$env:WINDIR\System32\WindowsPowerShell\v1.0\Modules`, imports `Microsoft.PowerShell.Utility`, `Microsoft.PowerShell.Management` and `CimCmdlets` by absolute `.psd1` path, resolves the required-command list, and returns `{psVersion; is64Bit; languageMode; psHome; psModulePathInherited; psModulePathEffective}`. On a miss it throws `Setup helper cannot resolve <cmdlet> (module <m>). <diagnostics on one line>`.
 - `Remove-PreviousInstallations.ps1` gains `-ReleaseId` (default: leaf of `-AppDirectory`) used to name `installer-logs\<release>-retire.log`.
 
-- [ ] **Step 1: Tests first.** In `Test-CleanupEnvironment.ps1` add: (1) the Task 1 polluted `PSModulePath` passes; (2) a `-RequiredCommands` entry naming a nonexistent cmdlet makes the script exit nonzero, the message contains the cmdlet name, `Is64Bit`, `LanguageMode` and the effective path, and the log file exists with the same block; (3) both hosts. Run: expect failures.
-- [ ] **Step 2: Implement.** Add the function; call it inside a `try` at the top of the script; on catch append diagnostics + message to the log (create the folder; a log-write failure is itself written to stderr), then rethrow.
-- [ ] **Step 3: Run** `powershell.exe -NoProfile -File scripts/alpha/Test-CleanupEnvironment.ps1` and the SysWOW64 variant. Expected: `passed=true`.
-- [ ] **Step 4: Regression.** `Test-PreviousInstallations.ps1` and `Test-PreviousInstallations.ps1 -WithoutHashCommand`.
-- [ ] **Step 5: Commit** (when asked): `Pin the setup cleanup helper's module environment and log diagnostics (#883)`.
+- [x] **Step 1: Tests first.** In `Test-CleanupEnvironment.ps1` add: (1) the Task 1 polluted `PSModulePath` passes; (2) a `-RequiredCommands` entry naming a nonexistent cmdlet makes the script exit nonzero, the message contains the cmdlet name, `Is64Bit`, `LanguageMode` and the effective path, and the log file exists with the same block; (3) both hosts. Run: expect failures.
+- [x] **Step 2: Implement.** Add the function; call it inside a `try` at the top of the script; on catch append diagnostics + message to the log (create the folder; a log-write failure is itself written to stderr), then rethrow.
+- [x] **Step 3: Run** `powershell.exe -NoProfile -File scripts/alpha/Test-CleanupEnvironment.ps1` and the SysWOW64 variant. Expected: `passed=true`.
+- [x] **Step 4: Regression.** `Test-PreviousInstallations.ps1` and `Test-PreviousInstallations.ps1 -WithoutHashCommand`.
+- [x] **Step 5: Commit** (when asked): `Pin the setup cleanup helper's module environment and log diagnostics (#883)`.
 
 ### Task 3: Shared metadata list and residual classification (pure, no writes)
 

@@ -5,14 +5,30 @@ param([Parameter(Mandatory=$true)][string]$AppDirectory, [switch]$InspectOnly,
     # child host against throwaway fixtures. Setup never passes them.
     [string]$RegistryRoot = 'HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall',
     [string]$ProgramsDirectory = ([Environment]::GetFolderPath('Programs')),
-    [string]$CameraRegistrationKey = '')
+    [string]$CameraRegistrationKey = '',
+    # Names the log: %LOCALAPPDATA%\CoreVideoPro\installer-logs\<release>-retire.log.
+    [string]$ReleaseId = '',
+    # Extra commands to prove resolvable before anything runs (test hook for the failure path).
+    [string[]]$RequiredCommands = @())
 $ErrorActionPreference = 'Stop'
+if (!$ReleaseId) { $ReleaseId = [IO.Path]::GetFileName($AppDirectory.TrimEnd([char]'\', [char]'/')) }
+$logPath = [IO.Path]::Combine($env:LOCALAPPDATA, 'CoreVideoPro', 'installer-logs', "$ReleaseId-retire.log")
+# .NET only: this must work even when command resolution is what is broken (#883).
+function Write-RetireLog([string]$Message) {
+    try {
+        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($logPath))
+        [IO.File]::AppendAllText($logPath, ('{0:o} {1}{2}' -f [DateTime]::Now, $Message, [Environment]::NewLine))
+    } catch { [Console]::Error.WriteLine("Cannot write cleanup log ${logPath}: $($_.Exception.Message)") }
+}
 Import-Module (Join-Path $PSScriptRoot 'PreviousInstallations.psm1') -Force
+try {
+$environment = Initialize-SetupHelperEnvironment -RequiredCommands $RequiredCommands -ScriptPath $PSCommandPath
+Write-RetireLog "environment (PSModulePath reset for this process only, owner ruling D5): $(Format-SetupHelperDiagnostics $environment)"
 Import-Module (Join-Path $PSScriptRoot 'VirtualCameraRegistration.psm1') -Force
 $app = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $AppDirectory).Path).TrimEnd('\')
 $root = Join-Path $env:LOCALAPPDATA 'Programs/CoreVideoPro'
 # Custom QA destinations must never retire the operator's real installations.
-if ((Split-Path -Parent $app) -ne $root) { Write-Output 'Previous installation cleanup skipped: custom install destination.'; exit 0 }
+if ((Split-Path -Parent $app) -ne $root) { Write-RetireLog 'skipped: custom install destination'; Write-Output 'Previous installation cleanup skipped: custom install destination.'; exit 0 }
 if ($CameraRegistrationKey) {
     # Only the dedicated test namespace may stand in for the machine camera owner.
     if ($CameraRegistrationKey -notmatch '^Software\\CoreVideoProInstallerTests\\[0-9a-f]{32}\\') { throw "Camera test key outside the test namespace: $CameraRegistrationKey" }
@@ -39,4 +55,8 @@ $plans | ConvertTo-Json -Depth 5
 if (!$InspectOnly) {
     $plans | Select-Object releaseId,status,reason,preserved | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $app 'previous-installations-cleanup.json')
     if (@($plans | Where-Object status -eq 'retained').Count) { exit 1 }
+}
+} catch {
+    Write-RetireLog "FAILED: $($_.Exception.Message)"
+    throw
 }

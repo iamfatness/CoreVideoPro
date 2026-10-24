@@ -1,6 +1,69 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# #883: every command the setup cleanup helper (this module + Remove-PreviousInstallations.ps1)
+# needs, with the module that owns it. Resolved up front so a broken environment fails
+# loudly, by name, before anything is planned or touched.
+$script:SetupHelperCommands = [ordered]@{
+    'ConvertTo-Json'='Microsoft.PowerShell.Utility'; 'ConvertFrom-Json'='Microsoft.PowerShell.Utility'
+    'Select-Object'='Microsoft.PowerShell.Utility'; 'Sort-Object'='Microsoft.PowerShell.Utility'
+    'New-Object'='Microsoft.PowerShell.Utility'; 'Get-Date'='Microsoft.PowerShell.Utility'
+    'Write-Output'='Microsoft.PowerShell.Utility'; 'Out-Null'='Microsoft.PowerShell.Core'
+    'Get-Item'='Microsoft.PowerShell.Management'; 'Get-ItemProperty'='Microsoft.PowerShell.Management'
+    'Get-ChildItem'='Microsoft.PowerShell.Management'; 'Get-Content'='Microsoft.PowerShell.Management'
+    'Set-Content'='Microsoft.PowerShell.Management'; 'Add-Content'='Microsoft.PowerShell.Management'
+    'Remove-Item'='Microsoft.PowerShell.Management'; 'Move-Item'='Microsoft.PowerShell.Management'
+    'New-Item'='Microsoft.PowerShell.Management'; 'Test-Path'='Microsoft.PowerShell.Management'
+    'Join-Path'='Microsoft.PowerShell.Management'; 'Split-Path'='Microsoft.PowerShell.Management'
+    'Resolve-Path'='Microsoft.PowerShell.Management'; 'Get-CimInstance'='CimCmdlets'
+    'Where-Object'='Microsoft.PowerShell.Core'; 'ForEach-Object'='Microsoft.PowerShell.Core'
+}
+
+function Format-SetupHelperDiagnostics {
+    param($Diagnostics)
+    return ('psVersion={0}; is64Bit={1}; languageMode={2}; psHome={3}; psModulePathInherited={4}; psModulePathEffective={5}; script={6}' -f
+        $Diagnostics.psVersion, $Diagnostics.is64Bit, $Diagnostics.languageMode, $Diagnostics.psHome,
+        $Diagnostics.psModulePathInherited, $Diagnostics.psModulePathEffective, $Diagnostics.script)
+}
+
+function Initialize-SetupHelperEnvironment {
+    # Owner ruling D5 (2026-10-23): the helper may reset PSModulePath for ITS OWN process.
+    # A Windows PowerShell 5.1 child that inherits PowerShell 7's PSModulePath binds
+    # Get-FileHash/New-Guid to PS7's Core-only Utility module and reports them "not
+    # recognized" (reproduced 2026-10-24). Pin the path, import the built-ins by absolute
+    # manifest path, then prove every needed command resolves.
+    param([string[]]$RequiredCommands = @(), [string]$ScriptPath = '')
+    $diagnostics = [ordered]@{
+        psVersion = "$($PSVersionTable.PSVersion)"
+        is64Bit = [Environment]::Is64BitProcess
+        languageMode = "$($ExecutionContext.SessionState.LanguageMode)"
+        psHome = $PSHOME
+        psModulePathInherited = "$env:PSModulePath"
+        psModulePathEffective = ''
+        script = $ScriptPath
+    }
+    $system = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\Modules'
+    $env:PSModulePath = (@((Join-Path $PSHOME 'Modules'), $system) | Select-Object -Unique) -join ';'
+    $diagnostics.psModulePathEffective = $env:PSModulePath
+    foreach ($module in 'Microsoft.PowerShell.Utility','Microsoft.PowerShell.Management','CimCmdlets') {
+        $manifest = Join-Path $PSHOME "Modules\$module\$module.psd1"
+        if (!(Test-Path -LiteralPath $manifest -PathType Leaf)) {
+            throw "Setup helper cannot find built-in module $module at $manifest. $(Format-SetupHelperDiagnostics $diagnostics)"
+        }
+        try { Import-Module -Name $manifest -Global -ErrorAction Stop }
+        catch { throw "Setup helper cannot import $module from ${manifest}: $($_.Exception.Message) $(Format-SetupHelperDiagnostics $diagnostics)" }
+    }
+    $commands = [ordered]@{}
+    foreach ($name in $script:SetupHelperCommands.Keys) { $commands[$name] = $script:SetupHelperCommands[$name] }
+    foreach ($name in $RequiredCommands) { if ($name -and !$commands.Contains($name)) { $commands[$name] = '(caller)' } }
+    foreach ($name in $commands.Keys) {
+        if (!(Get-Command -Name $name -ErrorAction SilentlyContinue)) {
+            throw "Setup helper cannot resolve $name (module $($commands[$name])). $(Format-SetupHelperDiagnostics $diagnostics)"
+        }
+    }
+    return [pscustomobject]$diagnostics
+}
+
 function Get-InstallPayloadSha256 {
     param([string]$Path)
     # Setup's helper must not depend on Get-FileHash command/module resolution.
@@ -142,4 +205,4 @@ function Remove-PreviousInstallation {
     return $Plan
 }
 
-Export-ModuleMember -Function Get-PreviousInstallationPlan,Remove-PreviousInstallation
+Export-ModuleMember -Function Initialize-SetupHelperEnvironment,Format-SetupHelperDiagnostics,Get-InstallPayloadSha256,Get-PreviousInstallationPlan,Remove-PreviousInstallation
