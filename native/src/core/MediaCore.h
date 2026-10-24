@@ -183,7 +183,28 @@ class MediaCore {
   // blocking I/O — driven at ~60fps by the dedicated display worker under
   // coreMutex. Live command batches apply state without rendering; the next
   // display tick publishes the corresponding frame. Audio/output has its own worker.
+  // TESTS / DIRECT CALLERS ONLY: prepares the engine inputs inline (so under
+  // whatever lock the caller holds), then forwards to the 3-argument overload.
+  // The production render loop (JsonRpcServer) must call the 3-argument form
+  // with inputs prepared BEFORE it takes coreMutex (#1037).
   void renderDisplayTick(int64_t productionSlot = -1, int64_t productionAnchorNs = 0);
+
+  // #1037: everything the render tick needs from the Zoom engine roster,
+  // read BEFORE coreMutex (prepareRenderEngineInputsUnlocked).
+  struct RenderEngineInputs {
+    bool engineConfigured = false;
+    bool valid = false;                      // a pre-read happened (false = never read)
+    std::uint64_t speakerEpoch = 0;          // read BEFORE the view (L3 order)
+    std::uint64_t rosterSpeakerEpoch = 0;    // speakerEpoch if unchanged across the view, else 0
+    std::vector<modules::ZoomEngineParticipant> floorRoster;
+    std::string directedSpeakerId;
+  };
+  // #1037: read BEFORE coreMutex, for the same reason as pollZoomAudioUnlocked
+  // (ZoomEngineRuntime::mutex_ is held across roster events and the ingest
+  // poll). Touches only zoomEngineRuntime_ (created once, never reset).
+  [[nodiscard]] RenderEngineInputs prepareRenderEngineInputsUnlocked();
+  // The production render tick. Opens ForbidEngineMutexScope("render.display-tick").
+  void renderDisplayTick(int64_t productionSlot, int64_t productionAnchorNs, RenderEngineInputs inputs);
 
   // Phase 2 audio/output decouple. The audio mix, routed-bus matrix, monitor
   // device render, BS.1770 loudness, encoder submit, output-sender network sync
@@ -506,7 +527,13 @@ class MediaCore {
   void setZoomSourceRoster(const rpc::Json& command);
   void setActiveSpeaker(const rpc::Json& command);
   void setScreenShareSource(const rpc::Json& command);
-  void renderSyntheticTick(bool videoOnly = false, int64_t mediaPresentationTime100ns = -1);
+  // `inputs` = the #1037 engine pre-read. nullopt (the command-lane / test
+  // path, N10) prepares it inline; the production display tick passes it in.
+  void renderSyntheticTick(bool videoOnly = false, int64_t mediaPresentationTime100ns = -1,
+                           std::optional<RenderEngineInputs> inputs = std::nullopt);
+  // #1037: the multiview/monitor tally speaker. Engine: the tick's pre-read
+  // (never a full snapshot under coreMutex). Stub: unchanged.
+  [[nodiscard]] std::string tallySpeakerId() const;
   void enqueueProgramFramePreviewEvent();
   void enqueueProgramSharedTextureEvent();
   void enqueueParticipantSharedTextureEvents();
@@ -1052,6 +1079,14 @@ class MediaCore {
   // Recently directed speakers for follow-speaker routes, scoped to one meeting
   // (#478 N2). Written only from plan builds, which run under coreMutex.
   mutable FollowSpeakerHold followSpeakerHold_;
+  // #1037: the last render tick's engine pre-read (coreMutex state). Every
+  // roster/speaker consumer on the render tick and the command lane reads it.
+  RenderEngineInputs renderEngineInputs_;
+  // #1037 R3: the Zoom half of the video consumer demand the render tick
+  // computed, applied to the engine by the NEXT tick's pre-read (coreMutex
+  // free). Accessed ONLY through std::atomic_load/store_explicit, the same
+  // pattern as programOutputConfiguration_.
+  std::shared_ptr<const std::vector<modules::SourceVideoDemand>> engineVideoDemand_;
   SpeakerFloor speakerFloor_;
   // Command/render/gather state under coreMutex. A changed speaker epoch drops
   // every manual setting so a recycled Zoom user id cannot inherit it.

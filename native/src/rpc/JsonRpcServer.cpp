@@ -684,6 +684,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         worstFrameUs = (std::max)(worstFrameUs, intervalUs);
         lastFrameStart = t0;
       }
+      // #1037: everything the render tick needs from the Zoom engine roster is
+      // read HERE, with coreMutex free. Taking ZoomEngineRuntime::mutex_ under
+      // coreMutex stalls every command and the audio gather behind it. Only the
+      // frame-selection group still takes it inside the tick (sanctioned).
+      auto engineInputs = mediaCore_.prepareRenderEngineInputsUnlocked();
       {
         std::unique_lock<std::mutex> lock(coreMutex);
         coreHandoff.wait(lock, [&] {
@@ -696,7 +701,8 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
                                             core::LockHoldGuardrail::kRenderTickBudgetUs);
         const auto t1 = std::chrono::steady_clock::now();
         mediaCore_.renderDisplayTick(cadence.slotIndex(),
-            std::chrono::duration_cast<std::chrono::nanoseconds>(cadenceAnchor.time_since_epoch()).count());
+            std::chrono::duration_cast<std::chrono::nanoseconds>(cadenceAnchor.time_since_epoch()).count(),
+            std::move(engineInputs));
         // Surface events are drained by the off-lock resource pump. Rendering
         // never formats JSON or enters the stdout mailbox.
         const auto tDrain = std::chrono::steady_clock::now();

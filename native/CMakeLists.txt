@@ -878,6 +878,7 @@ if(BUILD_TESTING)
     tests/D3DProgramBufferTest.cpp
     tests/D3DDecoupledExportTest.cpp
     tests/MediaCoreCommandTest.cpp
+    tests/RenderEngineMutexChurnQaTest.cpp
     tests/MediaCoreBatchSnapshotTest.cpp
     tests/PublishedObservationStoreTest.cpp
     tests/ResourceEventLaneTest.cpp

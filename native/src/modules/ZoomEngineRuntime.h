@@ -27,6 +27,13 @@
 namespace corevideo::modules {
 
 class ZoomHandoffCpuScope;
+
+// #1037: what the render tick reads from the roster, in one engine-mutex hold.
+struct ZoomRenderView {
+  std::vector<ZoomEngineParticipant> floorParticipants;  // == state_.floorParticipants()
+  std::string directedSpeakerId;                          // after advanceActiveSpeaker(now)
+};
+
 class ZoomEngineRuntime {
  public:
   explicit ZoomEngineRuntime(std::shared_ptr<CpuSourcePreparation> preparation = {});
@@ -68,6 +75,12 @@ class ZoomEngineRuntime {
   // configured. Takes mutex_: call it OUTSIDE coreMutex (the audio worker reads
   // it before its gather, like pollCompositorAudioFrames).
   [[nodiscard]] std::optional<std::vector<std::uint32_t>> rosterIdsIfConfigured();
+  // #1037: ONE mutex_ acquisition for everything the render tick needs from
+  // the roster: the floor participants and the directed speaker, read after the
+  // director is advanced (what a snapshot did for the multiview tally). Call it
+  // OUTSIDE coreMutex (MediaCore::prepareRenderEngineInputsUnlocked).
+  // nullopt = no engine configured.
+  [[nodiscard]] std::optional<ZoomRenderView> renderViewIfConfigured();
   // Moves whenever the meeting session changes under the core: join, leave,
   // Engine off (stopCapture) and every new engine process. A follow-speaker
   // route forgets its speaker history when it moves (#478 N2). Lock-free.
@@ -108,6 +121,9 @@ class ZoomEngineRuntime {
   // thread uses (state apply + frame/audio shared-memory ingest), so tests can
   // exercise the SHM audio ingest without a live engine subprocess.
   void applyEngineEventForTest(const ZoomEngineEvent& event);
+  // TEST SEAM (#1037): the participant ids holding an ISO CPU arrival queue,
+  // i.e. the Zoom ISO video demand the engine has applied. Takes mutex_.
+  [[nodiscard]] std::vector<std::string> isoArrivalDemandIdsForTest();
 
  private:
   std::atomic<bool> thumbnailDemand_{true}; // legacy clients retain CPU previews

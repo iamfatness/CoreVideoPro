@@ -13,7 +13,15 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   in memory: 4.7 MB per 30 s measured). Not `SendStreamTick`: the fMP4 sink
   lays video out by sample durations and a tick collapses the gap (A/V desync). Never take `ZoomEngineRuntime::mutex_`
   under coreMutex; the audio gather enforces it with `ForbidEngineMutexScope`.
-  See `docs/reference/iso-recording.md`.
+  So does the render tick (#1037): the production loop reads the roster and
+  directed speaker with `MediaCore::prepareRenderEngineInputsUnlocked()` BEFORE
+  taking coreMutex, and `renderDisplayTick` forbids the engine mutex. The only
+  sanctioned exceptions are the frame-selection calls in
+  `AllowEngineMutexScope("render.frame-group #1037-followup")`;
+  `grep AllowEngineMutexScope native/src` lists them. A new roster/speaker
+  consumer on the render tick reads `renderEngineInputs_`, never the runtime.
+  See `docs/reference/iso-recording.md` and
+  `docs/superpowers/specs/2026-10-23-render-gather-engine-mutex-design.md`.
 
 - **A one-apply roster dip must not reflow the multiview (#725, 2026-09-30).**
   - **What happened:** in a long live session, every Take resolved Show Input slots against a
