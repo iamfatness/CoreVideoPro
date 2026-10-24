@@ -135,9 +135,9 @@ _Executed 2026-10-24._ The end-to-end cases live in `Test-CleanupEnvironment.ps1
 - Modify: `docs/BACKLOG.md` (the #883 row, line 361)
 - Modify: `CLAUDE.md` only if it lists installer helpers (grep first)
 
-- [ ] **Step 1:** Add CI steps for `Test-CleanupEnvironment.ps1` and `Test-ResidualInstallations.ps1`, each `powershell.exe -NoProfile -File ...`.
-- [ ] **Step 2:** Document the pinned environment and log location, residual sweep rules, backup layout and manifest, the shared metadata list rule, the new JSON schema and the Task 1 finding. Replace "implementation shipped" in the BACKLOG row with the real state and the pending installed acceptance.
-- [ ] **Step 3:** Confirm no doc still says setup uses `Get-FileHash` (`Grep Get-FileHash docs`).
+- [x] **Step 1:** Add CI steps for `Test-CleanupEnvironment.ps1` and `Test-ResidualInstallations.ps1`, each `powershell.exe -NoProfile -File ...`.
+- [x] **Step 2:** Document the pinned environment and log location, residual sweep rules, backup layout and manifest, the shared metadata list rule, the new JSON schema and the Task 1 finding. Replace "implementation shipped" in the BACKLOG row with the real state and the pending installed acceptance.
+- [x] **Step 3:** Confirm no doc still says setup uses `Get-FileHash` (`Grep Get-FileHash docs`).
 
 ### Task 7: Installed acceptance on the dev box (owner present; this closes #883)
 
@@ -145,10 +145,51 @@ _Executed 2026-10-24._ The end-to-end cases live in `Test-CleanupEnvironment.ps1
 
 **Files:** evidence under `artifacts/installer-validation/<id>/`. No source changes.
 
-- [ ] **Step 1: Before.** Save an inventory of `%LOCALAPPDATA%\Programs\CoreVideoPro` (names, file counts), the uninstall-key list, `Get-CameraMachineRegistration`, both shortcut targets and a settings-file hash; run `Remove-PreviousInstallations.ps1 -AppDirectory <current> -InspectOnly`. Expected on 2026-10-23: 1 full folder, 29 metadata-only, 2 with `Recordings\` (10 files), 1 uninstall entry.
+- [ ] **Step 1: Before.** Save an inventory of `%LOCALAPPDATA%\Programs\CoreVideoPro` (names, file counts), the uninstall-key list, `Get-CameraMachineRegistration`, both shortcut targets and a settings-file hash; run `Remove-PreviousInstallations.ps1 -AppDirectory <current> -InspectOnly`. Expected (measured read-only 2026-10-24): 2 full folders (current `beta-2026-10-23-1072a50` registered, `beta-2026-10-22-q1022ecd2749` unregistered), 29 metadata-only, 2 with `Recordings\` (10 + 2 = 12 files), 1 uninstall entry.
 - [ ] **Step 2: Install** the next beta containing this work with the STANDARD interactive installer (not `/S`, not `Test-AlphaInstaller.ps1`) launched from Explorer. Repeat one later upgrade launched from a PowerShell 7 shell to cover the inherited-environment case.
-- [ ] **Step 3: Verify all of:** exactly one version folder remains and it is the new one; exactly one uninstall entry; both stable shortcuts and HKLM/HKCU camera ownership point at the new install; settings hash unchanged; `summary.retained = 0`; `installer-logs\<release>-retire.log` shows the diagnostics block (`Is64Bit` false, effective `PSModulePath`); if Q1 is yes, one `retired-install-remnants-<guid>` folder whose manifest lists the 10 recording files with matching SHA-256s. Uninstall-entry count alone is NOT accepted; the folder inventory is.
+- [ ] **Step 3: Verify all of:** exactly one version folder remains and it is the new one; exactly one uninstall entry; both stable shortcuts and HKLM/HKCU camera ownership point at the new install; settings hash unchanged; `summary.retained = 0`; `installer-logs\<release>-retire.log` shows the diagnostics block (`Is64Bit` false, effective `PSModulePath`); per ruling D4, one `retired-install-remnants-<stamp>-<id>` folder whose manifest lists the 12 recording files with matching SHA-256s. Uninstall-entry count alone is NOT accepted; the folder inventory is.
 - [ ] **Step 4: Post** the evidence on #883 and close it only if every item holds. If Task 1 never reproduced the original fault, say so in the closing comment.
+
+#### Task 7 owner instructions (NOT RUN by the executor, 2026-10-24)
+
+Run when CoreVideo Pro is closed (not streaming, recording or holding the virtual camera).
+Every step is read-only except step 3, the install itself.
+
+1. **Before, in a Windows PowerShell window** (any bitness), with the installed helper:
+   ```powershell
+   $root = "$env:LOCALAPPDATA\Programs\CoreVideoPro"
+   $out = "$env:USERPROFILE\Desktop\cvp-883-before"; New-Item -ItemType Directory -Force $out | Out-Null
+   Get-ChildItem $root -Directory | ForEach-Object { [pscustomobject]@{ name=$_.Name; files=@(Get-ChildItem $_.FullName -Recurse -File -Force).Count } } | Export-Csv "$out\folders.csv" -NoTypeInformation
+   Get-ChildItem HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall | Where-Object PSChildName -like 'CoreVideoPro-*' | Select-Object PSChildName | Export-Csv "$out\uninstall.csv" -NoTypeInformation
+   Get-FileHash "$env:LOCALAPPDATA\CoreVideoPro\*.json" | Export-Csv "$out\settings-hash.csv" -NoTypeInformation
+   ```
+   Expect 33 folders (29 holding only `.camera-desktop-registration-before.json`, 2 with
+   `Recordings\` = 12 files, 2 full payloads) and 1 uninstall entry.
+2. Optional read-only dry run from a checkout of this branch (it changes nothing; it only
+   writes `installer-logs\inspect-retire.log`):
+   `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\alpha\Remove-PreviousInstallations.ps1 -AppDirectory "$root\beta-2026-10-23-1072a50" -InspectOnly -ReleaseId inspect`.
+   Expect 32 residual plans, all `ready`: 29 metadata-only, 2 with unknown recordings
+   (10 and 2 files), 1 with 875 proven payload files and 0 unknown.
+3. **Install the next beta that contains this PR** with the standard interactive installer,
+   double-clicked from Explorer (not `/S`, not `Test-AlphaInstaller.ps1`). Expect an
+   information box saying files were moved and naming
+   `%LOCALAPPDATA%\CoreVideoPro\backups\retired-install-remnants-<stamp>-<id>`.
+   For the inherited-environment case, a later upgrade can be launched from a PowerShell 7
+   window (`Start-Process .\CoreVideoPro-Setup-<release>.exe`) if pwsh is installed.
+4. **Verify all of these** (folder inventory, not entry count):
+   - `Get-ChildItem $root -Directory` lists exactly one folder, the new release.
+   - exactly one `CoreVideoPro-*` uninstall entry, for the new release.
+   - `<new install>\previous-installations-cleanup.json`: `summary.retained` = 0,
+     `summary.residualBackedUp` = 2, `summary.filesBackedUp` = 12.
+   - the backup folder's `backup-manifest.json` lists 12 entries, all `status: moved`, and
+     each destination's SHA-256 matches its `sha256` field.
+   - `%LOCALAPPDATA%\CoreVideoPro\installer-logs\<release>-retire.log` shows
+     `is64Bit=False` and `psModulePathEffective=C:\Windows\SysWOW64\WindowsPowerShell\v1.0\Modules;...`.
+   - both stable `CoreVideo Pro` shortcuts and the HKLM/HKCU camera ownership point at the
+     new install; `settings-hash.csv` hashes unchanged.
+5. Post the evidence on #883. Close it only if every item holds, saying the fault was
+   reproduced under a PS7-inherited environment but the 10-13 launch environment was never
+   captured.
 
 ## Effort and executors
 
