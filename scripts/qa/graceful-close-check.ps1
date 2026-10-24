@@ -22,12 +22,21 @@
       %LOCALAPPDATA%\CoreVideoPro\crashes;
     - no new Application event 1000 for CoreVideoPro.WinUI.exe within 60 s.
 
+  WHO RUNS IT: the operator who owns the running session, at the end of THEIR
+  run. It closes the app. Never point it at someone else's show.
+
   Safety (owner rules): no SendKeys, no focus stealing, no UI Automation. The
   only interaction is the control API (read-only GET /state and /snapshot) and
-  ONE WM_CLOSE (Process.CloseMainWindow). The check refuses while recording or
-  streaming is live or finalizing (Test-DrillSafeToClose from
+  ONE WM_CLOSE posted to the shell's main window. The check refuses while
+  recording or streaming is live or finalizing (Test-DrillSafeToClose from
   outputs-drill-lib.ps1), because the shell's close guard would prompt and
-  activate its window. It never sends a second close: a second close during
+  activate its window. It also refuses while the virtual camera is live or
+  starting (unless -AllowVirtualCamera): the close guard never asks about the
+  camera, so the app would just close under whatever app is using it, which is
+  exactly the vcam-to-Zoom show this check would otherwise look like. And it
+  refuses unless the shell has exactly one visible, unowned top-level window:
+  with a popout open (multiview, program/preview, audio mixer, diagnostics,
+  settings) a WM_CLOSE to "the main window" can land on the popout instead. It never sends a second close: a second close during
   cleanup makes the shell take the ApplicationLifecycle.ForceExit path, which is
   a different exit than the one being judged. Evidence goes to D: only.
 
@@ -40,6 +49,7 @@ param(
   [string]$Out = (Join-Path 'D:\CoreVideo-QA\graceful-close' (Get-Date -Format 'yyyyMMdd-HHmmss')),
   [int]$MinSessionMinutes = 30,
   [switch]$AllowOutsideMeeting,
+  [switch]$AllowVirtualCamera,
   [string]$Api = 'http://127.0.0.1:8011'
 )
 $ErrorActionPreference = 'Stop'
@@ -75,7 +85,7 @@ function Get-GracefulCloseLastLine {
 }
 
 function Get-GracefulCloseRefusals {
-  param($State, $Snapshot, [datetime]$ProcessStart, [datetime]$Now, [int]$MinSessionMinutes, [switch]$AllowOutsideMeeting)
+  param($State, $Snapshot, [datetime]$ProcessStart, [datetime]$Now, [int]$MinSessionMinutes, [switch]$AllowOutsideMeeting, [switch]$AllowVirtualCamera)
   # Reuse the outputs drill's close guard. It also lists 'engine on' because the
   # drill turns the engine off before closing; the shell's close guard
   # (CloseGuardPolicy) only prompts for recording and streaming, and this check
@@ -85,7 +95,60 @@ function Get-GracefulCloseRefusals {
   $upMinutes = ($Now - $ProcessStart).TotalMinutes
   if ($upMinutes -lt $MinSessionMinutes) { $reasons += ('shell up {0:N1} min, below the {1} min minimum' -f $upMinutes, $MinSessionMinutes) }
   if (-not $AllowOutsideMeeting -and $Snapshot.meetingState -ne 'in_meeting') { $reasons += "not in a meeting (meetingState '$($Snapshot.meetingState)')" }
+  # The close guard (CloseGuardPolicy) never asks about the virtual camera, so a live camera
+  # would be cut off with no prompt. Status values: off | starting | live | failed.
+  $vcam = if ($Snapshot.PSObject.Properties['virtualCamera'] -and $Snapshot.virtualCamera) { [string]$Snapshot.virtualCamera.status } else { $null }
+  if (-not $AllowVirtualCamera -and $vcam -in @('live', 'starting')) { $reasons += "virtual camera is $vcam (pass -AllowVirtualCamera only if nothing is using it)" }
   return $reasons   # callers wrap in @()
+}
+
+function Select-GracefulCloseWindow {
+  # Pick the window to send the one WM_CLOSE to. Process.MainWindowHandle is the first visible
+  # unowned top-level window in Z-order, which is a popout whenever one is on top, so the
+  # check refuses unless there is exactly one candidate. Windows: objects with
+  # handle, processId, visible, owner (as returned by Get-GracefulCloseTopLevelWindows).
+  param([object[]]$Windows = @(), [int]$ProcessId)
+  $candidates = @($Windows | Where-Object { [int]$_.processId -eq $ProcessId -and $_.visible -and [int64]$_.owner -eq 0 })
+  if ($candidates.Count -eq 1) { return [ordered]@{ handle = $candidates[0].handle; reasons = @() } }
+  if ($candidates.Count -eq 0) { return [ordered]@{ handle = $null; reasons = @("pid $ProcessId has no visible unowned top-level window") } }
+  $titles = @($candidates | ForEach-Object { "'$($_.title)'" }) -join ', '
+  return [ordered]@{ handle = $null; reasons = @("pid $ProcessId has $($candidates.Count) visible top-level windows ($titles); close the popouts first so WM_CLOSE reaches the main window") }
+}
+
+function Get-GracefulCloseTopLevelWindows([int]$ProcessId) {
+  if (-not ('GracefulCloseWin32' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class GracefulCloseWin32 {
+  private delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+  [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
+  [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+  [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int max);
+  [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
+  public static List<object[]> TopLevel(uint wantPid) {
+    var list = new List<object[]>();
+    EnumWindows((h, l) => {
+      uint pid; GetWindowThreadProcessId(h, out pid);
+      if (pid == wantPid) {
+        var sb = new StringBuilder(256); GetWindowText(h, sb, sb.Capacity);
+        list.Add(new object[] { h.ToInt64(), (long)pid, IsWindowVisible(h), GetWindow(h, 4 /* GW_OWNER */).ToInt64(), sb.ToString() });
+      }
+      return true;
+    }, IntPtr.Zero);
+    return list;
+  }
+  public static bool PostClose(long hwnd) { return PostMessage(new IntPtr(hwnd), 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero); }
+}
+'@
+  }
+  @([GracefulCloseWin32]::TopLevel([uint32]$ProcessId) | ForEach-Object {
+      [pscustomobject]@{ handle = [int64]$_[0]; processId = [int64]$_[1]; visible = [bool]$_[2]; owner = [int64]$_[3]; title = [string]$_[4] }
+    })
 }
 
 function Get-GracefulCloseVerdict {
@@ -170,13 +233,14 @@ function Refuse([string[]]$Reasons) {
 $shells = @(Get-Process CoreVideoPro.WinUI -ErrorAction SilentlyContinue)
 if ($shells.Count -ne 1) { Refuse @("expected exactly one CoreVideoPro.WinUI process, found $($shells.Count)") }
 $app = $shells[0]
-if ($app.MainWindowHandle -eq [IntPtr]::Zero) { Refuse @("pid $($app.Id) has no main window to send WM_CLOSE to") }
+$target = Select-GracefulCloseWindow -Windows (Get-GracefulCloseTopLevelWindows $app.Id) -ProcessId $app.Id
+if (@($target.reasons).Count) { Refuse $target.reasons }
 
 try {
   $state = Invoke-RestMethod "$Api/state" -TimeoutSec 5
   $snapshot = (Invoke-RestMethod "$Api/snapshot" -TimeoutSec 5).snapshot
 } catch { $state = $null; $snapshot = $null }
-$refusals = @(Get-GracefulCloseRefusals -State $state -Snapshot $snapshot -ProcessStart $app.StartTime -Now (Get-Date) -MinSessionMinutes $MinSessionMinutes -AllowOutsideMeeting:$AllowOutsideMeeting)
+$refusals = @(Get-GracefulCloseRefusals -State $state -Snapshot $snapshot -ProcessStart $app.StartTime -Now (Get-Date) -MinSessionMinutes $MinSessionMinutes -AllowOutsideMeeting:$AllowOutsideMeeting -AllowVirtualCamera:$AllowVirtualCamera)
 if ($refusals.Count) { Refuse $refusals }
 
 $session = Get-GracefulCloseSession -Lines (Read-GracefulCloseLog $logPath) -ProcessId $app.Id
@@ -193,7 +257,10 @@ Write-CheckLog "Closing pid $($app.Id) session $session build $build after $sess
 $closeAt = Get-Date
 $eventsSince = $closeAt.AddSeconds(-1)
 $watch = [Diagnostics.Stopwatch]::StartNew()
-if (-not $app.CloseMainWindow()) { Refuse @('CloseMainWindow returned false; WM_CLOSE was not posted') }
+# Re-check right before closing: a popout opened since the preflight would take the WM_CLOSE.
+$target = Select-GracefulCloseWindow -Windows (Get-GracefulCloseTopLevelWindows $app.Id) -ProcessId $app.Id
+if (@($target.reasons).Count) { Refuse $target.reasons }
+if (-not [GracefulCloseWin32]::PostClose([int64]$target.handle)) { Refuse @('PostMessage(WM_CLOSE) failed; nothing was closed') }
 $exited = $app.WaitForExit($script:ExitBudgetMs)
 $exitMs = if ($exited) { [int]$watch.ElapsedMilliseconds } else { $null }
 if (-not $exited) {

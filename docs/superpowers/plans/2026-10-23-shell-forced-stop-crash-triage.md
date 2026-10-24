@@ -176,14 +176,14 @@ Expected for the drain: the faulting OS thread is the STA UI thread with no mana
   The pass condition: the last line is `terminating the process directly`, the exit took 6 s or less, and there is no new dump and no new event.
 - [x] **Step 3:** Run the test again. Expected: PASS.
 
-**5b. (Optional, owner ruling) ForceExit hardening.**
+**5b. (Optional; approved as D22, one-call change) ForceExit hardening.**
 
 **Files:** Modify `native-shell/CoreVideoPro.WinUI/Services/ApplicationLifecycle.cs`. Test in `native-shell/CoreVideoPro.WinUI.Tests/`.
 
 - [x] **Step 1:** Make the final exit an injected seam, defaulting to `ShutdownCompletion.TerminateCurrentProcess`. Write a test that asserts the log line is written before the terminate call and that a second call is a no-op. It should fail first.
 - [x] **Step 2:** Run `dotnet test native-shell/CoreVideoPro.WinUI.Tests --filter "FullyQualifiedName~ApplicationLifecycle|FullyQualifiedName~ShutdownCompletion"`. Expected: all pass.
 
-**5c. Run the gate live.**
+**5c. Run the gate live.** (Cross-reference: 5c belongs in the soak plan, `2026-10-23-rc-beta-acceptance-soak.md` Task 5 Step 3, which runs `scripts/qa/graceful-close-check.ps1` at the end of the owner's show run. Do not schedule a separate 30-minute meeting for it if the soak is running.)
 
 - [ ] **Step 1:** In the authorized test meeting (full pwd link), with Engine on, no recording and no stream, let the app run for 30 min or more. Then run `powershell -File scripts/qa/graceful-close-check.ps1`. Expected: `pass=true`. Record the build stamp and session length in the issue comment.
 - [ ] **Step 2:** If it FAILS, keep #457 open. Apply the spec's capture plan:
@@ -254,8 +254,17 @@ Outcome (a): 7 long in-meeting closes (threshold 5), 0 recurrences, 0 ShutdownCo
 
 Left unchecked on purpose. Owner steps:
 
-1. Build and launch this branch (`npm run app`), join the authorized test meeting with the full pwd link, turn Engine on. No recording, no stream.
+1. Build and launch this branch (`npm run app`), join the authorized test meeting with the full pwd link, turn Engine on. No recording, no stream, virtual camera off, and close every popout window before step 3.
 2. Leave it running 30 minutes or more. Do not close or restart it in that time.
 3. Run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\qa\graceful-close-check.ps1` from the repo root. It closes the app itself (one WM_CLOSE) and takes about 70 s. Do not touch the window while it runs.
 4. Expect `Verdict: PASS` and exit 0. Evidence: `D:\CoreVideo-QA\graceful-close\<timestamp>\verdict.json`. Exit 2 means it refused and closed nothing (the reason is printed). Exit 1 is a FAIL: copy any new dump, the publish folder and the logs to `D:\CoreVideo-QA\dumps\457\` before rebuilding, then reopen #457.
 5. Post the build stamp, session minutes and verdict to #457.
+
+### Review fixes (2026-10-24, PR #1043)
+
+- The check refuses unless the shell has exactly one visible, unowned top-level window (EnumWindows + GetWindowThreadProcessId + IsWindowVisible + GW_OWNER), checked again just before the close. It posts `WM_CLOSE` to that handle. `Process.CloseMainWindow` would have hit an unowned popout on top and given a false FAIL.
+- The check refuses while `snapshot.virtualCamera.status` is `live` or `starting`, unless `-AllowVirtualCamera` is passed. The close guard never asks about the camera. The header now says the operator who owns the session runs it.
+- Tests: 21/21 (window selection over a fake window list, the vcam refusal).
+- This file was rebased verbatim onto the rc-plans version (PR #1040, with the 5c soak-plan cross-reference), with the ticks and this record on top.
+- New page `docs/qa/graceful-close-check.md`. All seven clean long closes are on September builds, so 5c (or the soak's last step) is the first long in-meeting close on an October build.
+- 5c is still NOT RUN. It belongs in the soak plan's Task 5 Step 3 (see the cross-reference above). If no soak is running, follow the owner steps in the Task 5c section above.

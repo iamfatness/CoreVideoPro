@@ -117,6 +117,39 @@ Check 'not in a meeting refuses unless allowed' {
 Check 'no control API answer refuses' {
   Assert (@(Get-GracefulCloseRefusals -State $null -Snapshot $null -ProcessStart $now.AddMinutes(-31) -Now $now -MinSessionMinutes 30).Count -ge 1) 'null accepted'
 }
+Check 'a live or starting virtual camera refuses (the close guard never asks about it)' {
+  foreach ($status in 'live', 'starting') {
+    $snap = [pscustomobject]@{ meetingState = 'in_meeting'; recording = $null; outputSenderSession = $null; virtualCamera = [pscustomobject]@{ status = $status } }
+    $r = @(Get-GracefulCloseRefusals -State $idleState -Snapshot $snap -ProcessStart $now.AddMinutes(-31) -Now $now -MinSessionMinutes 30)
+    Assert ($r.Count -eq 1 -and $r[0] -match 'virtual camera') "$status : $($r -join ';')"
+    Assert (@(Get-GracefulCloseRefusals -State $idleState -Snapshot $snap -ProcessStart $now.AddMinutes(-31) -Now $now -MinSessionMinutes 30 -AllowVirtualCamera).Count -eq 0) "$status : allow ignored"
+  }
+  foreach ($status in 'off', 'failed') {
+    $snap = [pscustomobject]@{ meetingState = 'in_meeting'; recording = $null; outputSenderSession = $null; virtualCamera = [pscustomobject]@{ status = $status } }
+    Assert (@(Get-GracefulCloseRefusals -State $idleState -Snapshot $snap -ProcessStart $now.AddMinutes(-31) -Now $now -MinSessionMinutes 30).Count -eq 0) "$status refused"
+  }
+}
+
+# ---------------------------------------------------------------- window selection
+function W([int64]$Handle, [int]$ProcessId, [bool]$Visible, [int64]$Owner, [string]$Title) { [pscustomobject]@{ handle = $Handle; processId = $ProcessId; visible = $Visible; owner = $Owner; title = $Title } }
+Check 'one visible unowned window is the target; hidden, owned and foreign windows are ignored' {
+  $wins = @((W 100 4242 $false 0 'hidden helper'), (W 200 4242 $true 0 'CoreVideo Pro'), (W 300 4242 $true 200 'owned dialog'), (W 400 777 $true 0 'other app'))
+  $t = Select-GracefulCloseWindow -Windows $wins -ProcessId 4242
+  Assert ($t.handle -eq 200) "handle $($t.handle)"
+  Assert (@($t.reasons).Count -eq 0) ($t.reasons -join ';')
+}
+Check 'an unowned popout on top refuses (WM_CLOSE would close the popout)' {
+  $wins = @((W 500 4242 $true 0 'Multiview'), (W 200 4242 $true 0 'CoreVideo Pro'))
+  $t = Select-GracefulCloseWindow -Windows $wins -ProcessId 4242
+  Assert ($null -eq $t.handle) "handle $($t.handle)"
+  Assert (($t.reasons -join ';') -match '2 visible top-level windows') ($t.reasons -join ';')
+}
+Check 'no visible window refuses' {
+  $t = Select-GracefulCloseWindow -Windows @((W 100 4242 $false 0 'x')) -ProcessId 4242
+  Assert ($null -eq $t.handle) 'handle set'
+  Assert (@($t.reasons).Count -eq 1) ($t.reasons -join ';')
+}
+
 Check 'evidence folder must be absolute on D:' {
   Assert (@(Test-GracefulCloseOut 'D:\CoreVideo-QA\graceful-close\x').Count -eq 0) 'D: refused'
   Assert (@(Test-GracefulCloseOut 'C:\temp\x').Count -eq 1) 'C: accepted'
