@@ -9654,3 +9654,23 @@ TEST(MediaCoreIsoDeparture, RosterDropMarksTheIsoDepartedThroughTheGatherWithout
   EXPECT_GT(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore);
   core.reset();
 }
+
+// #1037: a sanctioned exception inside a forbidden scope is NOT counted, and
+// the forbidden scope is restored on exit.
+TEST(EngineMutexGuardrail, AllowScopeSanctionsOneSiteAndRestoresTheForbiddenScope) {
+  corevideo::modules::EngineMutex mutex;
+  const auto before = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  {
+    corevideo::modules::ForbidEngineMutexScope forbidden("test.outer");
+    {
+      corevideo::modules::AllowEngineMutexScope allowed("test.sanctioned");
+      std::lock_guard<corevideo::modules::EngineMutex> lock(mutex);
+    }
+    EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before);
+    EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenDepth(), 1);
+    EXPECT_EQ(std::string(corevideo::modules::EngineMutexGuardrail::forbiddenSite()), "test.outer");
+    std::lock_guard<corevideo::modules::EngineMutex> lock(mutex);  // forbidden again
+  }
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before + 1);
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenDepth(), 0);
+}
