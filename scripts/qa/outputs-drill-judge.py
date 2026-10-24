@@ -186,6 +186,8 @@ def aggregate(rows, context):
     return {'schema': 'outputs-drill-verdict-v2', 'overall': overall,
             'rule': 'PASS only if every enabled output PASSes with zero missing, repeated, reordered or invalid identities '
                     'inside an OS-camera-bounded interval, and every workload assertion held throughout; '
+                    'an ISO\'s writer-reported held frames (and its one close-time tail hold) are excused repeats that '
+                    'pass and are reported as held=N, and the repeated column excludes them by design; '
                     'NOT JUDGED and UNBOUNDED never count as PASS.',
             'throughoutFailures': broken,
             'seconds': context.get('seconds'), 'workload': context.get('workload'),
@@ -341,8 +343,10 @@ def run(evidence):
         else:
             name = 'iso-' + source.replace(':', '_') + '.json'
             held_frames = int(track.get('heldFrames') or 0)
+            tail_frames = int(track.get('tailFrames') or 0)
+            frame_rate = float(track.get('frameRate') or 0)
             verdict, proof = attempt(name, lambda: iso_module.judge(track['path'], str(trace), source, start, end, seconds,
-                                                                    ffmpeg, ffprobe, held_frames))
+                                                                    ffmpeg, ffprobe, held_frames, tail_frames, frame_rate))
             rows.append(iso_row(source, verdict, proof))
 
     if enabled.get('stream'):

@@ -601,6 +601,8 @@ struct IsoStreamStatus {
   // a held slot. The ISO pixel judge excuses exactly heldVideoFrameCount repeats.
   int64_t heldVideoFrameCount = 0;
   int64_t videoFramesPlacedAtHold = 0;
+  // Close-time A/V tail hold (one repeat of the last picture at Finalize).
+  int64_t tailVideoFrameCount = 0;
   RecordingWriteQueueEvidence writeQueue;
   uint64_t droppedVideoFrames = 0, droppedAudioPackets = 0;
   uint64_t queuedVideoFrames = 0, queuedAudioPackets = 0;

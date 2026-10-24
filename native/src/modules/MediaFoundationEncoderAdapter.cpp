@@ -1285,6 +1285,7 @@ void publishIsoTrack(IsoWriterEntry& entry) {
   status.muxVideoFrameCount = entry.writer.videoFrameCount();
   status.heldVideoFrameCount = entry.writer.videoHoldFrameCount();
   status.videoFramesPlacedAtHold = entry.writer.videoFramesBehindHold();
+  status.tailVideoFrameCount = entry.writer.videoTailFrameCount();
   status.audioSampleCount = entry.writer.audioSampleCount(); status.bytesWritten = entry.writer.bytesWritten();
   status.trackOpen = entry.opened && !entry.failed;
   status.encoderPath = isoEncoderPathId(entry.encoderPath); status.fallbackReason = entry.encoderReason;

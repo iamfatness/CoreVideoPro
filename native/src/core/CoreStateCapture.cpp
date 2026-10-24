@@ -1941,6 +1941,9 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
           // outputs drill excuses exactly this many hold-pattern repeats.
           {"heldFrames", static_cast<double>(iso.heldVideoFrameCount)},
           {"framesPlacedAtHold", static_cast<double>(iso.videoFramesPlacedAtHold)},
+          // The close-time tail hold: a final repeat the drill judge excuses
+          // only as the file's last frame.
+          {"tailFrames", static_cast<double>(iso.tailVideoFrameCount)},
           {"muxVideoFrameCount", iso.muxVideoFrameCount ? rpc::Json(static_cast<double>(*iso.muxVideoFrameCount)) : rpc::Json(nullptr)},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},

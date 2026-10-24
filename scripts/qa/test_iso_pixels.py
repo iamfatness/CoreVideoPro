@@ -48,8 +48,9 @@ class IsoPixelsTest(unittest.TestCase):
 
     def test_stall_with_the_writer_hold_pattern_passes_and_reports_held(self):
         # The last picture (101) is held once per second while the video is
-        # stalled; the first hold is 1 s after it, minus up to one frame period.
-        decoded = [(100, 0.0), (101, self.PERIOD), (101, 1.0), (101, 2.02), (101, 3.03), (102, 3.5)]
+        # stalled; the first hold sits one frame period past the threshold
+        # (1 s minus one frame period after 101), never exactly on it.
+        decoded = [(100, 0.0), (101, self.PERIOD), (101, self.PERIOD + 1.0), (101, 2.06), (101, 3.07), (102, 3.5)]
         result = iso.compare_identities([100, 101, 102], decoded, 3, self.PERIOD)
         self.assertTrue(result['isoPixelArrivalFidelityPassed'], result)
         self.assertEqual((result['heldExcused'], result['holdsMatched'], result['repeated']), (3, True, 0))
@@ -73,6 +74,36 @@ class IsoPixelsTest(unittest.TestCase):
                 self.assertFalse(result['isoPixelArrivalFidelityPassed'])
                 self.assertFalse(result['holdsMatched'])
         self.assertTrue(iso.compare_identities([100, 101, 102], decoded, 2, self.PERIOD)['isoPixelArrivalFidelityPassed'])
+
+    def test_a_stall_that_runs_through_stop_excuses_the_tail_hold(self):
+        # The camera stops before the window ends and never returns: holds,
+        # then the close-time tail hold as the file's last frame. No identity
+        # past the window end exists to stop the scan, so the tail is judged.
+        holds = [(100, 0.0), (101, self.PERIOD), (101, 1.1), (101, 2.1), (101, 3.1)]
+        for tail_at in (3.2, 4.5):  # closer than 1 s, and further than 1 s
+            with self.subTest(tail_at=tail_at):
+                result = iso.compare_identities([100, 101], holds + [(101, tail_at)], 3, self.PERIOD, tail_frames=1)
+                self.assertTrue(result['isoPixelArrivalFidelityPassed'], result)
+                self.assertEqual((result['heldExcused'], result['tailExcused'], result['repeated']), (3, 1, 0))
+                # Without the writer's tailFrames the same file fails.
+                self.assertFalse(iso.compare_identities([100, 101], holds + [(101, tail_at)], 3, self.PERIOD)
+                                 ['isoPixelArrivalFidelityPassed'])
+        # tailFrames excuses only the LAST frame, and only a repeat of the one before it.
+        self.assertFalse(iso.compare_identities([100, 101], [(100, 0.0), (101, 0.03), (101, 0.06), (101, 0.09)], 0,
+                                                self.PERIOD, tail_frames=1)['isoPixelArrivalFidelityPassed'])
+        self.assertFalse(iso.compare_identities([100, 101], [(100, 0.0), (101, 0.03), (100, 0.06)], 0,
+                                                self.PERIOD, tail_frames=1)['isoPixelArrivalFidelityPassed'])
+
+    def test_hold_tolerance_is_clamped_on_a_mostly_stalled_file(self):
+        # 3 real frames then 40 holds: the median packet interval is ~1 s.
+        times = [0.0, self.PERIOD, 2 * self.PERIOD] + [2 * self.PERIOD + 1.0 * (i + 1) for i in range(40)]
+        self.assertAlmostEqual(iso.hold_frame_period(times, 30), self.PERIOD)
+        self.assertLessEqual(iso.hold_frame_period(times), 1 / 24)  # no frame rate: still a frame, not ~1 s
+        # With the clamp a repeat 0.1 s later is NOT a hold.
+        decoded = [(100, 0.0), (101, self.PERIOD), (101, self.PERIOD + 0.1), (102, 0.5)]
+        result = iso.compare_identities([100, 101, 102], decoded, 1, iso.hold_frame_period(times, 30))
+        self.assertFalse(result['isoPixelArrivalFidelityPassed'])
+        self.assertEqual(result['heldExcused'], 0)
 
     def test_untimed_repeats_are_never_excused(self):
         result = iso.compare_identities([100, 101, 102], [100, 101, 101, 102], 1)

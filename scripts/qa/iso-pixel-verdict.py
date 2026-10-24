@@ -69,7 +69,18 @@ def expected_arrivals(path, source_id, start, end, minimum_seconds):
 HOLD_SPACING_SECONDS = 1.0
 
 
-def compare_identities(expected, decoded, held_frames=0, frame_period=0.0):
+def hold_frame_period(times, frame_rate=0.0):
+    """One frame period for the hold tolerance: the median packet interval,
+    clamped to 1/frame_rate. On a mostly-stalled file the median approaches the
+    1 s hold spacing, which would collapse the threshold toward zero."""
+    deltas = sorted(b - a for a, b in zip(times, times[1:]) if b > a)
+    period = deltas[len(deltas) // 2] if deltas else 0.0
+    if frame_rate and frame_rate > 0:
+        period = min(period, 1.0 / frame_rate) if period else 1.0 / frame_rate
+    return min(period, 1.0 / 24)
+
+
+def compare_identities(expected, decoded, held_frames=0, frame_period=0.0, tail_frames=0):
     """`decoded` yields identities, or (identity, presentation seconds) pairs.
 
     #1030: while a source's video is stalled the ISO writer re-submits its
@@ -77,8 +88,11 @@ def compare_identities(expected, decoded, held_frames=0, frame_period=0.0):
     the recording snapshot (`heldFrames`). A repeat is excused ONLY when it is
     the same identity as the immediately preceding frame, placed at least
     HOLD_SPACING_SECONDS minus one frame period after it, AND the number of
-    excused repeats equals the writer's held_frames. Any other repeat fails.
+    excused repeats equals the writer's held_frames. The close-time tail hold
+    (`tailFrames` == 1) is excused separately, only as the file's LAST frame
+    repeating the frame before it. Any other repeat fails.
     """
+    decoded = list(decoded)
     if not expected or any(b <= a for a, b in zip(expected, expected[1:])):
         raise ValueError('Ordered source identities required')
     first, last = expected[0], expected[-1]
@@ -86,8 +100,9 @@ def compare_identities(expected, decoded, held_frames=0, frame_period=0.0):
     started = ended = False
     range_violations = 0
     excused = 0
+    tail_excused = 0
     previous = None  # (identity, seconds) of the last frame kept or excused
-    for item in decoded:
+    for index, item in enumerate(decoded):
         identity, at = item if isinstance(item, tuple) else (item, None)
         if not started:
             if identity is None or identity < first:
@@ -99,6 +114,10 @@ def compare_identities(expected, decoded, held_frames=0, frame_period=0.0):
             continue
         if identity is not None and identity > last:
             ended = True
+            continue
+        if (tail_frames == 1 and index == len(decoded) - 1 and identity is not None
+                and previous is not None and previous[0] == identity):
+            tail_excused = 1
             continue
         if (identity is not None and previous is not None and previous[0] == identity and at is not None
                 and previous[1] is not None and at - previous[1] >= HOLD_SPACING_SECONDS - frame_period):
@@ -114,6 +133,7 @@ def compare_identities(expected, decoded, held_frames=0, frame_period=0.0):
     holds_matched = excused == held_frames
     return {'isoPixelArrivalFidelityPassed': actual == expected and range_violations == 0 and holds_matched,
             'heldFrames': held_frames, 'heldExcused': excused, 'holdsMatched': holds_matched,
+            'tailFrames': tail_frames, 'tailExcused': tail_excused,
             'expectedSamples': len(expected), 'recordedSamples': len(actual),
             'missing': sum(1 for identity in expected if identity not in seen),
             'repeated': len(present) - len(seen),
@@ -127,13 +147,11 @@ def frame_times(recording, ffprobe):
     """Video presentation times in decode-output order (sorted packet PTS)."""
     probe = subprocess.run([ffprobe, '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time',
                             '-of', 'csv=p=0', recording], capture_output=True, text=True, check=True)
-    times = sorted(float(line) for line in probe.stdout.split() if line.strip() and line.strip() != 'N/A')
-    deltas = sorted(b - a for a, b in zip(times, times[1:]) if b > a)
-    return times, (deltas[len(deltas) // 2] if deltas else 0.0)
+    return sorted(float(line) for line in probe.stdout.split() if line.strip() and line.strip() != 'N/A')
 
 
 def judge(recording, trace, source_id, start, end, minimum_seconds=1800, ffmpeg='ffmpeg', ffprobe='ffprobe',
-          held_frames=0):
+          held_frames=0, tail_frames=0, frame_rate=0.0):
     expected, coverage = expected_arrivals(trace, source_id, start, end, minimum_seconds)
     probe = subprocess.run([ffprobe, '-v', 'error', '-select_streams', 'v:0', '-show_entries',
                             'stream=width,height,time_base', '-of', 'json', recording], capture_output=True, text=True, check=True)
@@ -146,7 +164,8 @@ def judge(recording, trace, source_id, start, end, minimum_seconds=1800, ffmpeg=
     spec = importlib.util.spec_from_file_location('recording_pixels', pathlib.Path(__file__).with_name('recording-pixel-verdict.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    times, frame_period = frame_times(recording, ffprobe)
+    times = frame_times(recording, ffprobe)
+    frame_period = hold_frame_period(times, frame_rate)
     filters = 'format=gray,split[t][b];[t]crop=1920:1:0:16[top];[b]crop=1920:1:0:1064[bottom];[top][bottom]vstack'
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen([ffmpeg, '-nostdin', '-v', 'error', '-i', recording, '-filter_complex', filters,
@@ -162,7 +181,7 @@ def judge(recording, trace, source_id, start, end, minimum_seconds=1800, ffmpeg=
                     raise ValueError('ISO exceeds bounded decoder capacity')
                 yield module.decode_rows(pixels), (times[index] if index < len(times) else None)
         try:
-            verdict = compare_identities(expected, identities(), held_frames, frame_period)
+            verdict = compare_identities(expected, identities(), held_frames, frame_period, tail_frames)
             result = process.wait(timeout=30)
             errors.seek(0)
             text = errors.read(4096).decode('utf8', errors='replace')
@@ -186,10 +205,15 @@ if __name__ == '__main__':
     parser.add_argument('--ffmpeg', default='ffmpeg'); parser.add_argument('--ffprobe', default='ffprobe')
     parser.add_argument('--held-frames', type=int, default=0,
                         help="the writer's heldFrames for this ISO (recording snapshot)")
+    parser.add_argument('--tail-frames', type=int, default=0,
+                        help="the writer's tailFrames for this ISO (recording snapshot)")
+    parser.add_argument('--frame-rate', type=float, default=0.0,
+                        help='recording frame rate (snapshot frameRate); clamps the hold tolerance')
     args = parser.parse_args()
     try:
         result = judge(args.recording, args.trace, args.source_id, args.start_ticks, args.end_ticks,
-                       args.minimum_seconds, args.ffmpeg, args.ffprobe, args.held_frames)
+                       args.minimum_seconds, args.ffmpeg, args.ffprobe, args.held_frames,
+                       args.tail_frames, args.frame_rate)
         print(json.dumps(result, indent=2))
         raise SystemExit(0 if result['isoPixelArrivalFidelityPassed'] else 1)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
