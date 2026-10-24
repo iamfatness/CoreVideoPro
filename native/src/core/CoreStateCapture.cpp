@@ -1968,6 +1968,9 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
       if (!iso.warning.empty()) {
         node.emplace("warning", iso.warning);
       }
+      if (iso.isoIndex > 0) {
+        node.emplace("isoIndex", static_cast<double>(iso.isoIndex));  // #935: the NN in ISO-NN-<name>.mp4
+      }
       streams.emplace_back(std::move(node));
     }
   } else {
@@ -2060,6 +2063,25 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
   };
   if (session.lifecycle) {
     recording.emplace("lifecycle", contracts::toJson(*session.lifecycle));
+  }
+  if (session.isoAdmission) {
+    // #935: the arm-time verdict, structured. Readers use this, not the text of
+    // recording.warning (which a later ISO note may overwrite).
+    const auto& adm = *session.isoAdmission;
+    recording.emplace("isoAdmission", rpc::Json::Object{
+        {"decision", adm.decision},
+        {"code", adm.code},
+        {"message", adm.message},
+        {"hardwareCount", static_cast<double>(adm.hardwareCount)},
+        {"softwareCount", static_cast<double>(adm.softwareCount)},
+        {"unplacedCount", static_cast<double>(adm.unplacedCount)},
+        {"admissibleIsoCount", adm.admissibleIsoCount < 0 ? rpc::Json(nullptr)
+                                                          : rpc::Json(static_cast<double>(adm.admissibleIsoCount))},
+        {"probed", adm.probed},
+        {"probeStatus", adm.probeStatus},
+        {"capacity", adm.capacity},
+        {"workload", adm.workload},
+    });
   }
   if (!session.recordingArtifactPath.empty()) {
     recording.emplace("artifactPath", session.recordingArtifactPath);

@@ -308,7 +308,7 @@ Check 'throughout: a healthy interval keeps every flag true' {
   $t = New-DrillThroughout -Plan $plan; $progress = @{}
   for ($i = 0; $i -lt 5; $i++) { $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -WebcamFrames (100 + $i * 60)) -Plan $plan -Progress $progress -ElapsedMs ($i * 1000) }
   Assert ($t.samples -eq 5) "$($t.samples)"
-  foreach ($k in 'hardwareEncodersThroughout', 'remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout') { Assert $t[$k] "$k went false" }
+  foreach ($k in 'hardwareEncodersThroughout', 'programEncoderHardwareThroughout', 'remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout') { Assert $t[$k] "$k went false" }
 }
 Check 'throughout: a frozen webcam fails capture progress after 2 s' {
   $t = New-DrillThroughout -Plan $plan; $progress = @{}
@@ -325,12 +325,70 @@ Check 'throughout: sub-1080 capture, 720p remote, software encoder, slow stream 
   $e = New-Envelope; $e.snapshot.zoomSubscriptionChurn.sources = @([pscustomobject]@{ kind = 'participant-video'; participantId = '77'; receivedWidth = 1280; receivedHeight = 720; coreFramesIngested = 9; lastCoreFrameAgeMs = 10 })
   $t = New-DrillThroughout -Plan $remote; $null = Update-DrillThroughout -Throughout $t -Envelope $e -Plan $remote -Progress @{} -ElapsedMs 0
   Assert (-not $t.remotes1080Throughout) '720p remote passed'
-  $t = New-DrillThroughout -Plan $plan; $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -EncoderPath 'software') -Plan $plan -Progress @{} -ElapsedMs 0
-  Assert (-not $t.hardwareEncodersThroughout) 'software ISO passed'
   $t = New-DrillThroughout -Plan $plan; $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -ProgramHardware $false) -Plan $plan -Progress @{} -ElapsedMs 0
-  Assert (-not $t.hardwareEncodersThroughout) 'software Program passed'
+  Assert (-not $t.hardwareEncodersThroughout) 'software Program not recorded as a fact'
+  Assert (-not $t.programEncoderHardwareThroughout) 'software Program passed (D8: Program on software is a FAIL for RC)'
+  Assert (@($t.firstFailures | Where-Object { $_.flag -eq 'programEncoderHardwareThroughout' }).Count -eq 1) 'software Program not a first failure'
   $t = New-DrillThroughout -Plan $plan; $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -Fps 40) -Plan $plan -Progress @{} -ElapsedMs 0
   Assert (-not $t.streamHealthyThroughout) 'slow stream passed'
+}
+Check 'throughout: a software ISO is a recorded fact, never a gating failure (#935, D8)' {
+  $t = New-DrillThroughout -Plan $plan; $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -EncoderPath 'software') -Plan $plan -Progress @{} -ElapsedMs 0
+  Assert (-not $t.hardwareEncodersThroughout) 'software ISO not recorded as a fact'
+  Assert ((@($t.encoderPlacement['capture:f4978a7f6d614c0d'].paths) -join ',') -eq 'software') 'placement not recorded'
+  Assert (-not $t.encoderPlacement['capture:f4978a7f6d614c0d'].changed) 'one sample reported as a change'
+  foreach ($k in 'programEncoderHardwareThroughout', 'remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout') { Assert $t[$k] "$k failed on a placement-only difference" }
+  Assert (@($t.firstFailures).Count -eq 0) ('placement became a first failure: ' + (@($t.firstFailures | ForEach-Object { $_.flag }) -join ','))
+}
+Check 'throughout: an ISO whose encoder path changes between samples is reported as changed' {
+  $t = New-DrillThroughout -Plan $plan
+  $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope) -Plan $plan -Progress @{} -ElapsedMs 0
+  Assert (-not $t.encoderPlacement['capture:f4978a7f6d614c0d'].changed) 'stable path reported as changed'
+  $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -EncoderPath 'software') -Plan $plan -Progress @{} -ElapsedMs 1000
+  Assert $t.encoderPlacement['capture:f4978a7f6d614c0d'].changed 'change not reported'
+  Assert ((@($t.encoderPlacement['capture:f4978a7f6d614c0d'].paths) -join ',') -eq 'hardware,software') 'paths not accumulated'
+}
+function New-CostStream([string]$Path = 'software', $Work = 9400000, $Mux = 1000, $Dropped = 0, $Index = 1) {
+  [pscustomobject]@{ kind = 'iso'; sourceId = 'zoom:8'; isoIndex = $Index; encoderPath = $Path; videoWorkUs = $Work; muxVideoFrameCount = $Mux; droppedFrames = $Dropped; frameRate = 60 }
+}
+Check 'encoder cost: measured from deltas, absent is null, never zero' {
+  $c = Get-DrillEncoderCost -PreviousCpuMs 1000 -CurrentCpuMs 1700 -PreviousWallMs 0 -CurrentWallMs 1000 -LogicalProcessors 28 `
+    -PreviousStreams @(New-CostStream -Work 9400000 -Mux 1000) -CurrentStreams @(New-CostStream -Work 10000000 -Mux 1060 -Dropped 2)
+  Assert ([math]::Abs($c.cpuPercent - 2.5) -lt 0.001) "cpu $($c.cpuPercent)"
+  $sw = $c.software['zoom:8']
+  Assert ($sw.isoIndex -eq 1 -and [math]::Abs($sw.meanVideoWorkUs - 10000000 / 1060) -lt 0.001) "mean $($sw.meanVideoWorkUs)"
+  Assert ($sw.intervalVideoWorkUs -eq 10000) "interval $($sw.intervalVideoWorkUs)"
+  Assert ($sw.droppedFrames -eq 2 -and $sw.frameRate -eq 60) 'dropped/fps'
+  $none = Get-DrillEncoderCost -PreviousCpuMs $null -CurrentCpuMs 1700 -PreviousWallMs $null -CurrentWallMs 1000 -LogicalProcessors 28 `
+    -PreviousStreams @() -CurrentStreams @(New-CostStream -Work 0 -Mux 0)
+  Assert ($null -eq $none.cpuPercent) 'cpu without a previous sample must be null'
+  Assert ($null -eq $none.software['zoom:8'].meanVideoWorkUs) 'zero frames gave a mean'
+  Assert ($null -eq $none.software['zoom:8'].intervalVideoWorkUs) 'no previous sample gave an interval cost'
+  $missing = Get-DrillEncoderCost -PreviousCpuMs 1 -CurrentCpuMs 2 -PreviousWallMs 0 -CurrentWallMs 1000 -LogicalProcessors 28 `
+    -PreviousStreams @() -CurrentStreams @([pscustomobject]@{ kind = 'iso'; sourceId = 'zoom:8'; encoderPath = 'software' })
+  Assert ($null -eq $missing.software['zoom:8'].meanVideoWorkUs -and $null -eq $missing.software['zoom:8'].droppedFrames) 'absent counters became numbers'
+  $hw = Get-DrillEncoderCost -PreviousCpuMs 1 -CurrentCpuMs 2 -PreviousWallMs 0 -CurrentWallMs 1000 -LogicalProcessors 28 -PreviousStreams @() -CurrentStreams @(New-CostStream -Path 'hardware')
+  Assert ($hw.software.Count -eq 0) 'hardware ISO costed as software'
+}
+Check 'encoder cost record: mean and peak over intervals, start and end drops' {
+  $acc = New-DrillEncoderCostRecord -LogicalProcessors 28
+  Add-DrillEncoderCost -Record $acc -Interval ([pscustomobject]@{ cpuPercent = $null; software = @{ 'zoom:8' = [ordered]@{ isoIndex = 8; meanVideoWorkUs = $null; intervalVideoWorkUs = $null; droppedFrames = 0; frameRate = 60 } } })
+  Add-DrillEncoderCost -Record $acc -Interval ([pscustomobject]@{ cpuPercent = 20.0; software = @{ 'zoom:8' = [ordered]@{ isoIndex = 8; meanVideoWorkUs = 9000.0; intervalVideoWorkUs = 9000.0; droppedFrames = 0; frameRate = 60 } } })
+  Add-DrillEncoderCost -Record $acc -Interval ([pscustomobject]@{ cpuPercent = 40.0; software = @{ 'zoom:8' = [ordered]@{ isoIndex = 8; meanVideoWorkUs = 9500.0; intervalVideoWorkUs = 14000.0; droppedFrames = 1; frameRate = 60 } } })
+  $r = ConvertTo-DrillEncoderCostJson -Record $acc
+  Assert ($r.samples -eq 3 -and $r.cpuSamples -eq 2 -and $r.logicalProcessors -eq 28) 'counts'
+  Assert ($r.coreCpuPercent.mean -eq 30.0 -and $r.coreCpuPercent.peak -eq 40.0) "cpu $($r.coreCpuPercent | ConvertTo-Json -Compress)"
+  $sw = $r.software['zoom:8']
+  Assert ($sw.isoIndex -eq 8 -and $sw.meanVideoWorkUs -eq 9500.0 -and $sw.peakIntervalVideoWorkUs -eq 14000.0) 'software cost'
+  Assert ($sw.droppedFramesStart -eq 0 -and $sw.droppedFramesEnd -eq 1 -and $sw.frameRate -eq 60) 'drops'
+  $empty = ConvertTo-DrillEncoderCostJson -Record (New-DrillEncoderCostRecord -LogicalProcessors 28)
+  Assert ($null -eq $empty.coreCpuPercent.mean -and $null -eq $empty.coreCpuPercent.peak) 'no CPU samples must be null, not zero'
+}
+Check 'parameters: -ProbeMaxSessions is optional and limited to 1..16' {
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -ProbeMaxSessions 0).Count -eq 0) 'unset (0) refused'
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -ProbeMaxSessions 8).Count -eq 0) '8 refused'
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -ProbeMaxSessions 17).Count -eq 1) '17 accepted'
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -ProbeMaxSessions -1).Count -eq 1) '-1 accepted'
 }
 Check 'throughout: samples outside the interval only refresh progress' {
   $t = New-DrillThroughout -Plan $plan

@@ -38,7 +38,7 @@ CAMERA_PASS = {'schema': 'camera-pixel-verdict-v1', 'osCameraContinuityVerified'
                'reordered': 0, 'errors': [], 'coverage': {'complete': True}}
 ADMISSIONS_PASS = {'schema': 'program-source-admission-capture-v1', 'samples': 1800, 'failedSamples': 0,
                    'missingEvidenceSamples': 0, 'sourceAdmissionsVerified': True}
-FLAGS_TRUE = {flag: True for flag in judge.THROUGHOUT_FLAGS}
+FLAGS_TRUE = {flag: True for flag in judge.GATING_FLAGS}
 
 
 class RowsAndAggregation(unittest.TestCase):
@@ -126,6 +126,46 @@ class RowsAndAggregation(unittest.TestCase):
         verdict = judge.aggregate(self.all_pass_rows(), {'throughoutFailures': ['remotes1080Throughout']})
         self.assertEqual(verdict['overall'], 'FAIL')
         self.assertIn('remotes1080Throughout', verdict['notes'][0])
+
+    def test_hardware_placement_is_not_a_gating_flag_but_program_encoder_is(self):
+        # #935 / owner ruling D8: an ISO on the software encoder is a note; Program on it is a FAIL.
+        self.assertNotIn('hardwareEncodersThroughout', judge.GATING_FLAGS)
+        self.assertIn('programEncoderHardwareThroughout', judge.GATING_FLAGS)
+        self.assertEqual(judge.throughout_failures(dict(FLAGS_TRUE, hardwareEncodersThroughout=False)), [])
+        self.assertEqual(judge.throughout_failures(dict(FLAGS_TRUE, programEncoderHardwareThroughout=False)),
+                         ['programEncoderHardwareThroughout'])
+
+    def test_required_flags_are_named_explicitly(self):
+        self.assertEqual(judge.REQUIRED_FLAGS, ('programEncoderHardwareThroughout', 'remotes1080Throughout',
+                                                'captureProgressThroughout', 'programSourcesAdmittedThroughout'))
+
+    def test_software_iso_notes_carry_the_measured_cost_or_say_not_measured(self):
+        measurement = {'encoderPlacement': {'zoom:8': {'paths': ['software'], 'changed': False},
+                                            'zoom:1': {'paths': ['hardware'], 'changed': False}},
+                       'encoderCost': {'samples': 1800, 'logicalProcessors': 28, 'coreCpuPercent': {'mean': 31.2, 'peak': 47.9},
+                                       'software': {'zoom:8': {'isoIndex': 8, 'meanVideoWorkUs': 9400, 'peakIntervalVideoWorkUs': 14100,
+                                                               'droppedFramesStart': 0, 'droppedFramesEnd': 0, 'frameRate': 60}}}}
+        self.assertEqual(judge.software_iso_sources(measurement), ['zoom:8'])
+        notes = judge.software_iso_notes(measurement)
+        self.assertEqual(notes, ['ISO-8 zoom:8 on software encoder: mean 9.4 ms of 16.7 ms per frame, peak interval 14.1 ms, '
+                                 'dropped frames 0 -> 0, core CPU mean 31.2 % / peak 47.9 %'])
+        bare = judge.software_iso_notes({'encoderPlacement': {'zoom:8': {'paths': ['software'], 'changed': False}}})
+        self.assertEqual(bare, ['ISO zoom:8 on software encoder: mean not measured, peak interval not measured, '
+                                'dropped frames not measured, core CPU not measured'])
+        changed = judge.software_iso_notes({'encoderPlacement': {'zoom:8': {'paths': ['hardware', 'software'], 'changed': True}}})
+        self.assertTrue(any('changed encoder during the run' in n for n in changed), changed)
+        self.assertEqual(judge.software_iso_notes({}), [])
+
+    def test_iso_row_carries_encoder_but_status_comes_only_from_identity(self):
+        row = judge.with_encoder(judge.iso_row('zoom:8', ISO_PASS, 'p'), 'software')
+        self.assertEqual((row['status'], row['encoder']), ('PASS', 'software'))
+        bad = judge.with_encoder(judge.iso_row('zoom:8', dict(ISO_PASS, isoPixelArrivalFidelityPassed=False, missing=1), 'p'), 'software')
+        self.assertEqual(bad['status'], 'FAIL')
+        text = judge.summary_text(judge.aggregate([row], {'seconds': 60, 'workload': 'w'}))
+        self.assertRegex(text, r'ISO zoom:8\s+PASS.* encoder=software')
+
+    def test_verdict_schema_is_v3(self):
+        self.assertEqual(judge.aggregate([], {})['schema'], 'outputs-drill-verdict-v3')
 
     def test_fail_outranks_not_judged(self):
         rows = [judge.not_judged('ISO a', 'iso', 'x'),
@@ -243,7 +283,7 @@ def write_samples(path, admissions_ok=True):
 class EndToEndOffline(unittest.TestCase):
     """run() over synthetic evidence through the real judges."""
 
-    def evidence(self, root, identities, camera=True, flags=None, admissions_ok=True, camera_drop=None):
+    def evidence(self, root, identities, camera=True, flags=None, admissions_ok=True, camera_drop=None, extra_measurement=None):
         recordings = root / 'recordings'
         recordings.mkdir()
         encode(recordings / 'Program.mp4', identities)
@@ -260,7 +300,7 @@ class EndToEndOffline(unittest.TestCase):
             'tools': {'ffmpeg': 'ffmpeg', 'ffprobe': 'ffprobe', 'node': shutil.which('node')}, 'notes': []}), encoding='utf-8')
         (root / 'measurement.json').write_text(json.dumps({
             'start': {'qpc': str(START)}, 'end': {'qpc': str(END)}, 'qpcFrequency': FREQUENCY, 'minimumSeconds': 1,
-            **(flags if flags is not None else FLAGS_TRUE)}), encoding='utf-8')
+            **(flags if flags is not None else FLAGS_TRUE), **(extra_measurement or {})}), encoding='utf-8')
         (root / 'finalized.json').write_text(json.dumps({
             'recording': {'lifecycle': {'finalized': True}, 'artifactPath': str(recordings / 'Program.mp4'),
                           'streams': [{'kind': 'program'}, {'kind': 'iso', 'sourceId': WEBCAM, 'path': str(recordings / 'ISO-01.mp4')}]},
@@ -314,7 +354,32 @@ class EndToEndOffline(unittest.TestCase):
     def test_missing_throughout_flags_fail(self):
         verdict, _ = self.run_drill(flags={})
         self.assertEqual(verdict['overall'], 'FAIL')
-        self.assertIn('hardwareEncodersThroughout (not recorded)', verdict['throughoutFailures'])
+        self.assertIn('remotes1080Throughout (not recorded)', verdict['throughoutFailures'])
+        self.assertIn('programEncoderHardwareThroughout (not recorded)', verdict['throughoutFailures'])
+        self.assertNotIn('hardwareEncodersThroughout (not recorded)', verdict['throughoutFailures'])
+
+    def test_software_iso_placement_alone_does_not_fail_a_clean_run(self):
+        verdict, rows = self.run_drill(flags=dict(FLAGS_TRUE, hardwareEncodersThroughout=False),
+                                       extra_measurement={'encoderCost': {'software': {WEBCAM: {'isoIndex': 1, 'meanVideoWorkUs': 9400}}}})
+        self.assertEqual(verdict['overall'], 'PASS', verdict)
+        self.assertEqual(verdict['throughoutFailures'], [])
+        self.assertEqual(rows['ISO ' + WEBCAM]['encoder'], 'software')
+        self.assertTrue(any('on software encoder' in n for n in verdict['notes']), verdict['notes'])
+        self.assertEqual(verdict['schema'], 'outputs-drill-verdict-v3')
+
+    def test_software_iso_with_missing_identity_still_fails(self):
+        verdict, rows = self.run_drill([i for i in range(100, 166) if i != 130],
+                                       flags=dict(FLAGS_TRUE, hardwareEncodersThroughout=False),
+                                       extra_measurement={'encoderPlacement': {WEBCAM: {'paths': ['software'], 'changed': False}}})
+        self.assertEqual(rows['ISO ' + WEBCAM]['status'], 'FAIL')
+        self.assertEqual(rows['ISO ' + WEBCAM]['encoder'], 'software')
+        self.assertEqual(verdict['overall'], 'FAIL')
+
+    def test_program_on_software_encoder_fails_a_clean_run(self):
+        # Owner ruling D8: Program on the software encoder stays a FAIL for RC.
+        verdict, _ = self.run_drill(flags=dict(FLAGS_TRUE, hardwareEncodersThroughout=False, programEncoderHardwareThroughout=False))
+        self.assertEqual(verdict['overall'], 'FAIL')
+        self.assertEqual(verdict['throughoutFailures'], ['programEncoderHardwareThroughout'])
 
     def test_unadmitted_program_source_fails_program(self):
         verdict, rows = self.run_drill(admissions_ok=False)

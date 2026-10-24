@@ -26,6 +26,14 @@
   exited; otherwise preferences-restore-pending.json is written and the script
   exits 3.
 
+  #935 (owner ruling D8): an ISO on the software encoder is a NOTE and its row
+  passes on frame identity alone; Program on the software encoder stays a FAIL.
+  -ProbeMaxSessions sets COREVIDEO_ENCODER_PROBE_MAX_SESSIONS for the launch
+  (discovery depth only; it does not change probe semantics), which is how a
+  software-ISO spill is forced on a GPU with spare sessions. Each second the
+  collector also measures the core process CPU % and every software ISO's
+  encode work per frame (measurement.json `encoderCost`, supplementary).
+
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\qa\outputs-drill.ps1 -Seconds 1800
 #>
@@ -38,7 +46,8 @@ param(
   [string]$WebcamSourceId,
   [string]$CameraReceiver,
   [switch]$SkipStream,
-  [switch]$SkipVirtualCamera
+  [switch]$SkipVirtualCamera,
+  [int]$ProbeMaxSessions = 0
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'outputs-drill-lib.ps1')
@@ -66,7 +75,7 @@ function Wait-DrillUntil([int]$Seconds, [scriptblock]$Condition) {
 
 # ---------------------------------------------------------------- preflight
 $RemoteIds = ConvertTo-DrillIdList $RemoteIds   # -File passes '1,2,3' as one string
-$problems = Test-DrillParameters -Seconds $Seconds -Out $Out -RemoteIds $RemoteIds -MeetingUrl $MeetingUrl -WebcamSourceId $WebcamSourceId
+$problems = Test-DrillParameters -Seconds $Seconds -Out $Out -RemoteIds $RemoteIds -MeetingUrl $MeetingUrl -WebcamSourceId $WebcamSourceId -ProbeMaxSessions $ProbeMaxSessions
 if ($problems.Count) { throw ('Invalid parameters: ' + ($problems -join ' ')) }
 $running = @(Get-Process CoreVideoPro.WinUI, corevideo-native, corevideo-zoom-engine -ErrorAction SilentlyContinue)
 if ($running.Count) { throw ('CoreVideo Pro is already running (' + (($running | ForEach-Object { "$($_.ProcessName) $($_.Id)" }) -join ', ') + '); close it first (the drill must own the launch).') }
@@ -112,9 +121,15 @@ $plan = Get-DrillWorkloadPlan -RemoteIds $RemoteIds -WebcamSourceId $WebcamSourc
 $notes = @()
 if ($plan.LocalOnly) { $notes += 'Local sources only: no remote Zoom feeds were requested (-RemoteIds), so no Zoom ISO was judged.' }
 $notes += 'Screen capture is in Program but has no QA ISO identity stamp, so it is not ISO-recorded.'
+$workload = $plan.Workload
+if ($ProbeMaxSessions -gt 0) {
+  $workload += "; encoder probe limited to $ProbeMaxSessions sessions (COREVIDEO_ENCODER_PROBE_MAX_SESSIONS)"
+  $notes += "Encoder capacity discovery was limited to $ProbeMaxSessions sessions for this run (COREVIDEO_ENCODER_PROBE_MAX_SESSIONS); ISO placement follows from that."
+}
 $backupDir = Join-Path $env:LOCALAPPDATA ('CoreVideoPro\outputs-drill-backups\' + (Split-Path -Leaf $Out) + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 $drill = [ordered]@{
-  schema = 'outputs-drill-v2'; seconds = $Seconds; installRoot = $InstallRoot; workload = $plan.Workload
+  schema = 'outputs-drill-v2'; seconds = $Seconds; installRoot = $InstallRoot; workload = $workload
+  probeMaxSessions = $(if ($ProbeMaxSessions -gt 0) { $ProbeMaxSessions } else { $null })
   remoteIds = $plan.RemoteIds; webcamSourceId = $WebcamSourceId; programSourceIds = $plan.ProgramSourceIds
   outputs = [ordered]@{ program = $true; iso = $plan.IsoSourceIds; stream = $plan.Stream; camera = $plan.Camera }
   tools = [ordered]@{ python = $python; node = $node; ffmpeg = $decodeFfmpeg; ffprobe = $ffprobe; sinkFfmpeg = $sinkFfmpeg; cameraReceiver = $CameraReceiver }
@@ -123,7 +138,7 @@ $drill = [ordered]@{
   operator = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 }
 Write-DrillJson $drill 'drill.json'
-Write-DrillLog "Outputs drill: $Seconds s, $($plan.Workload); evidence $Out"
+Write-DrillLog "Outputs drill: $Seconds s, $workload; evidence $Out"
 
 # ---------------------------------------------------------------- live run
 $manifest = Backup-DrillPreferenceFiles -Path $prefsPath -BackupDirectory $backupDir
@@ -131,7 +146,7 @@ Write-DrillLog "Preferences and .bak sidecar backed up to $backupDir"
 $savedEnv = @{}
 $envNames = 'COREVIDEO_QA_ISO_COUNTER', 'COREVIDEO_QA_PROGRAM_COUNTER', 'COREVIDEO_DELIVERY_TRACE', 'COREVIDEO_DELIVERY_TRACE_STAGES',
   'COREVIDEO_DELIVERY_TRACE_PATH', 'COREVIDEO_GPU_CAPTURE', 'COREVIDEO_PREPARE_PROGRAM_WITHIN_BUDGET', 'COREVIDEO_NATIVE_MONITOR_DLL_PATH',
-  'COREVIDEO_ZOOM_ENGINE_PATH', 'COREVIDEO_FFMPEG_BIN_DIR', 'COREVIDEO_MONITOR_DIAGNOSTICS'
+  'COREVIDEO_ZOOM_ENGINE_PATH', 'COREVIDEO_FFMPEG_BIN_DIR', 'COREVIDEO_MONITOR_DIAGNOSTICS', 'COREVIDEO_ENCODER_PROBE_MAX_SESSIONS'
 foreach ($name in $envNames) { $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $self = [Diagnostics.Process]::GetCurrentProcess()
 $savedPriority = $self.PriorityClass
@@ -173,6 +188,7 @@ try {
   $env:COREVIDEO_QA_ISO_COUNTER = '1'; $env:COREVIDEO_QA_PROGRAM_COUNTER = '1'
   $env:COREVIDEO_DELIVERY_TRACE = '1'; $env:COREVIDEO_DELIVERY_TRACE_STAGES = 'all'
   $env:COREVIDEO_DELIVERY_TRACE_PATH = Join-Path $Out 'arrival-trace.bin'
+  if ($ProbeMaxSessions -gt 0) { $env:COREVIDEO_ENCODER_PROBE_MAX_SESSIONS = [string]$ProbeMaxSessions }
   $null = Start-Process -FilePath $launcher -WorkingDirectory $InstallRoot -WindowStyle Normal -PassThru
   $deadline = [DateTime]::UtcNow.AddSeconds(90)
   do {
@@ -297,6 +313,13 @@ try {
   $samples = [IO.StreamWriter]::new((Join-Path $Out 'samples.ndjson'), $false, [Text.UTF8Encoding]::new($false))
   $throughout = New-DrillThroughout -Plan $plan
   $progress = @{}
+  # #935: measured encoder cost (supplementary). The core is the installed
+  # corevideo-native.exe the shell spawned; if it cannot be found, CPU is null.
+  $costRecord = New-DrillEncoderCostRecord -LogicalProcessors ([Environment]::ProcessorCount)
+  $coreExe = Join-Path $InstallRoot 'corevideo-native.exe'
+  $coreProcess = @(Get-Process corevideo-native -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $coreExe }) | Select-Object -First 1
+  if (-not $coreProcess) { Write-DrillLog 'WARNING: installed corevideo-native.exe not found; core CPU will be reported as not measured' }
+  $lastCpuMs = $null; $lastWallMs = $null; $lastStreams = @()
   $clock = [Diagnostics.Stopwatch]::StartNew(); $start = $null; $end = $null; $startElapsed = $null
   try {
     do {
@@ -308,6 +331,15 @@ try {
       $elapsedMs = $clock.Elapsed.TotalMilliseconds
       $inInterval = $null -ne $start -and $null -eq $end
       $sample = Update-DrillThroughout -Throughout $throughout -Envelope $e -Plan $plan -Progress $progress -ElapsedMs $elapsedMs -Measuring $inInterval
+      $cpuMs = $null
+      if ($coreProcess) { try { $coreProcess.Refresh(); if (-not $coreProcess.HasExited) { $cpuMs = $coreProcess.TotalProcessorTime.TotalMilliseconds } } catch { $cpuMs = $null } }
+      $streamsNow = @($e.snapshot.recording.streams)
+      if ($inInterval) {
+        $cost = Get-DrillEncoderCost -PreviousCpuMs $lastCpuMs -CurrentCpuMs $cpuMs -PreviousWallMs $lastWallMs -CurrentWallMs $elapsedMs `
+          -LogicalProcessors ([Environment]::ProcessorCount) -PreviousStreams $lastStreams -CurrentStreams $streamsNow
+        Add-DrillEncoderCost -Record $costRecord -Interval $cost
+      }
+      $lastCpuMs = $cpuMs; $lastWallMs = $elapsedMs; $lastStreams = $streamsNow
       $row = Get-DrillSampleRow -Envelope $e -ElapsedMs $elapsedMs -Checks $sample.Checks -Captures $sample.Captures
       $samples.WriteLine(($row | ConvertTo-Json -Depth 12 -Compress)); $samples.Flush()
       if ($null -eq $start -and $clock.Elapsed.TotalSeconds -ge 45) { $start = @{ utc = $row.utc; qpc = $row.qpc }; $startElapsed = $clock.Elapsed.TotalSeconds; Write-DrillLog 'Measured interval started' }
@@ -316,6 +348,7 @@ try {
         $m = [ordered]@{ start = $start; end = $end; qpcFrequency = [Diagnostics.Stopwatch]::Frequency; minimumSeconds = $Seconds
           expectedRemoteIds = $plan.RemoteIds; expectedProgramSourceIds = $plan.ProgramSourceIds }
         foreach ($k in $throughout.Keys) { $m[$k] = $throughout[$k] }
+        $m.encoderCost = ConvertTo-DrillEncoderCostJson -Record $costRecord
         Write-DrillJson $m 'measurement.json'
         Write-DrillLog 'Measured interval complete'
       }

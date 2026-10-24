@@ -1160,6 +1160,11 @@
                                             <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
                                                      Message="{x:Bind ViewModel.IsoHealthWarning, Mode=OneWay}"
                                                      Visibility="{x:Bind ViewModel.IsoHealthWarningVisibility, Mode=OneWay}" />
+                                            <InfoBar IsOpen="True" IsClosable="False"
+                                                     Severity="{x:Bind ViewModel.IsoEncoderPlacementSeverity, Mode=OneWay}"
+                                                     Message="{x:Bind ViewModel.IsoEncoderPlacementMessage, Mode=OneWay}"
+                                                     Visibility="{x:Bind ViewModel.IsoEncoderPlacementVisibility, Mode=OneWay}"
+                                                     AutomationProperties.Name="ISO encoder placement" />
                                             <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
                                                      Message="{x:Bind ViewModel.RecordingDiskWarning, Mode=OneWay}"
                                                      Visibility="{x:Bind ViewModel.RecordingDiskWarningVisibility, Mode=OneWay}" />

@@ -350,6 +350,72 @@ public sealed class TransportCoordinatorTests
         Assert.StartsWith("Recording start failed:", host.OutputStatus);
     }
 
+    private const string SoftwareIsoAdmissionNotice935 =
+        "1 ISO source will record on the CPU software encoder, not the GPU (7 on hardware): x.";
+
+    private static NativeMediaCoreStateSnapshot SoftwareIsoNoticeSnapshot935(
+        string lifecycleState, string lifecycleHealth, string? lifecycleError = null) => new()
+    {
+        Recording = new NativeMediaCoreRecordingSession
+        {
+            SessionId = "s-935", Active = true, Status = "warning", WriterStatus = "preparing",
+            TargetFolder = @"C:/r", FilenamePrefix = "show", Format = "mp4", Quality = "high",
+            ProgramPath = @"C:/r/show.mp4", Warning = SoftwareIsoAdmissionNotice935,
+            Lifecycle = new CoreVideoPro.MediaCore.Contracts.OutputLifecycle
+            {
+                SessionId = "s-935", DesiredActive = true, State = lifecycleState, Health = lifecycleHealth,
+                Finalized = false, Error = lifecycleError
+            },
+            IsoAdmission = new NativeMediaCoreIsoAdmission
+            {
+                Decision = "admit-with-warning", Code = "iso-encoder-software-spill",
+                Message = SoftwareIsoAdmissionNotice935, HardwareCount = 7, SoftwareCount = 1
+            },
+        },
+        OutputHealth =
+        [
+            new NativeMediaCoreOutputHealth
+            {
+                Destination = "recording", Status = "warning", Message = SoftwareIsoAdmissionNotice935
+            }
+        ],
+    };
+
+    // #935: a software-ISO admission NOTICE (recording status "warning", health "warning") is not a
+    // failed start. The coordinator must not run the rollback that cancels the writers before their
+    // first sample. Pins the behaviour shipped in 935b2800.
+    [Fact]
+    public async Task ToggleRecording_DoesNotRollBack_OnSoftwareIsoAdmissionNotice_935()
+    {
+        var (coordinator, _, host) = Build();
+        host.Recording = false;
+        host.SyncResult = SoftwareIsoNoticeSnapshot935("producing", "degraded");
+        var syncsBefore = host.SyncCallCount;
+
+        await coordinator.ToggleRecordingAsync();
+        await Task.Delay(800);   // longer than the 4 x 150 ms failed-start rollback window
+
+        Assert.True(host.Recording);
+        Assert.Equal("Recording start requested.", host.OutputStatus);
+        Assert.Equal(syncsBefore + 1, host.SyncCallCount);   // the start sync only, no rollback sync
+        Assert.DoesNotContain(false, host.AppliedRecordingIntents);
+    }
+
+    // The same snapshot shape with a FAILED lifecycle is still fatal: a real inability to record stops.
+    [Fact]
+    public async Task ToggleRecording_StillRollsBack_WhenLifecycleFailed_935()
+    {
+        var (coordinator, _, host) = Build();
+        host.Recording = false;
+        host.SyncResult = SoftwareIsoNoticeSnapshot935(
+            "failed", "failed", "Media Foundation could not open program MP4 writer");
+
+        await coordinator.ToggleRecordingAsync();
+
+        Assert.False(host.Recording);
+        Assert.StartsWith("Recording start failed:", host.OutputStatus);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]

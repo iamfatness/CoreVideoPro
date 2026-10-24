@@ -1262,6 +1262,7 @@ struct IsoWriterEntry {
   IsoEncoderPath encoderPath = IsoEncoderPath::Software;
   std::string encoderReason = "hardware-unavailable";
   bool hasAudio = true;  // ISO-3: false → VIDEO-ONLY (no AAC stream added at open)
+  int isoIndex = 0;      // #935: 1-based, the NN in ISO-NN-<name>.mp4
   int64_t videoFrameCount = 0;
   std::string warning;
   std::vector<uint8_t> nv12Scratch;   // reused I420->NV12 buffer (writer thread)
@@ -1290,6 +1291,7 @@ void publishIsoTrack(IsoWriterEntry& entry) {
   status.trackOpen = entry.opened && !entry.failed;
   status.encoderPath = isoEncoderPathId(entry.encoderPath); status.fallbackReason = entry.encoderReason;
   status.warning = entry.warning;
+  status.isoIndex = entry.isoIndex;
   std::lock_guard<std::mutex> lock(entry.snapshotMutex);
   entry.snapshot = std::move(status);
 }
@@ -1648,6 +1650,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingAudioSampleRate = 0;
     session_.recordingMetadataValid = false;
     session_.recordingWarning.clear();
+    session_.isoAdmission.reset();  // #935: never carry a previous take's spill
     session_.recordingError.clear();
     session_.recordingSessionId = request_.sessionId;
     session_.recordingTargetFolder = request_.targetFolder;
@@ -2267,6 +2270,23 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     const auto admission =
         evaluateIsoAdmission(isoPlacement, IsoEncoderMode::Auto, capacity, capacitySource);
     isoAdmissionCode_ = admission.code;
+    // #935: publish the verdict structured, before a refusal clears the
+    // selection, so a refusal is visible too. Absent when no ISO was selected.
+    if (!isoSourceIds.empty()) {
+      IsoAdmissionStatus published;
+      published.decision = isoAdmissionDecisionId(admission.decision);
+      published.code = admission.code;
+      published.message = admission.message;
+      published.hardwareCount = admission.hardwareCount;
+      published.softwareCount = admission.softwareCount;
+      published.unplacedCount = admission.unplacedCount;
+      published.admissibleIsoCount = admission.admissibleIsoCount;
+      published.probed = capacitySource.probed;
+      published.probeStatus = capacitySource.status;
+      published.capacity = isoCapacitySummary_;
+      published.workload = capacitySource.workload;
+      session_.isoAdmission = std::move(published);
+    }
     if (!admission.message.empty()) {
       ::corevideo::core::nativeLogf("[recording] iso-admission %s: %s | %s\n",
                                     admission.code.c_str(), admission.message.c_str(),
@@ -2317,6 +2337,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       char idxBuf[8];
       std::snprintf(idxBuf, sizeof(idxBuf), "%02zu", i + 1);
       entry.path = sessionDir_ / ("ISO-" + std::string(idxBuf) + "-" + safe + ".mp4");
+      entry.isoIndex = static_cast<int>(i + 1);
       isoIndexBySource_[entry.sourceId] = isoWriters_.size();
       publishIsoTrack(entry);
       isoWriters_.push_back(std::move(owned));

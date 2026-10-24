@@ -393,6 +393,12 @@ public sealed class NativeMediaCoreRecordingStream
     public required string Status { get; init; }
     public int FramesWritten { get; init; }
     public long? MuxVideoFrameCount { get; init; }
+    /// <summary>1-based ISO number (matches ISO-NN in the file name); ISO streams only, absent otherwise.</summary>
+    public int? IsoIndex { get; init; }
+    /// <summary>Cumulative video encode work for this writer, microseconds; absent until measured.</summary>
+    public long? VideoWorkUs { get; init; }
+    /// <summary>Writer frame rate as reported by the core; absent when not reported (never defaulted).</summary>
+    public double? FrameRate { get; init; }
     /// <summary>Per-source audio sample-frames muxed into this ISO's raw-stem AAC track (ISO-2).</summary>
     public long AudioSamples { get; init; }
     public int DroppedFrames { get; init; }
@@ -430,6 +436,23 @@ public sealed record NativeMediaCoreRecordingSession
     public long TotalBytesWritten { get; init; }
     public string? Warning { get; init; }
     public string? Error { get; init; }
+    /// <summary>Structured ISO encoder-placement verdict (#935); absent when no ISO was selected.</summary>
+    public NativeMediaCoreIsoAdmission? IsoAdmission { get; init; }
+}
+
+public sealed record NativeMediaCoreIsoAdmission
+{
+    public string? Decision { get; init; }
+    public string? Code { get; init; }
+    public string? Message { get; init; }
+    public int HardwareCount { get; init; }
+    public int SoftwareCount { get; init; }
+    public int UnplacedCount { get; init; }
+    public int? AdmissibleIsoCount { get; init; }
+    public bool Probed { get; init; }
+    public string? ProbeStatus { get; init; }
+    public string? Capacity { get; init; }
+    public string? Workload { get; init; }
 }
 
 public sealed class NativeMediaCoreRecordingProof

@@ -27,6 +27,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\qa\outputs-drill.ps1
 | `-WebcamSourceId` | the one `capture:<id>` in the profile | refuses if the profile names zero or several |
 | `-CameraReceiver` | `native\build-dev\corevideo-shared-camera-receiver.exe` | build target `corevideo-shared-camera-receiver`; it is not in the installer |
 | `-SkipStream`, `-SkipVirtualCamera` | off | see below: skipping the camera means the run cannot PASS |
+| `-ProbeMaxSessions` | unset | 1..16; sets `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS` for the launch (discovery depth only) to force a software-ISO spill; recorded in `drill.json` and the workload line |
 
 Without `-RemoteIds` the drill uses local sources only: webcam and screen
 capture in Program (scene `speaker-slides`), the webcam as the only ISO, and
@@ -75,11 +76,23 @@ Media sources are not part of the workload yet.
    Program sources, an RTMP sender, or a dead sink or receiver aborts the run
    as FAIL. It also accumulates the throughout-assertions of the reference
    `Collect-Identity.ps1` into `measurement.json`:
-   - `hardwareEncodersThroughout`: the Program encoder and every ISO on hardware.
+   - `programEncoderHardwareThroughout`: Program on the hardware encoder
+     (gating; owner ruling D8: Program on software is a FAIL for RC).
+   - `hardwareEncodersThroughout`: Program and every ISO on hardware. **Recorded
+     as a fact only, never gating** (#935, D8): an ISO on the software encoder
+     is a note. `encoderPlacement` lists each ISO's reported `encoderPath`
+     values and whether it changed during the run.
    - `remotes1080Throughout`: every remote live at 1920x1080.
    - `captureProgressThroughout`: every capture at 1920x1080 or larger, with frames advancing within 2 s.
    - `programSourcesAdmittedThroughout`.
    - `streamHealthyThroughout`.
+
+   It also measures, once per second and supplementary only (it explains a
+   FAIL, never causes one), `encoderCost`: the installed core process CPU %
+   normalized to logical processors (mean and peak), and for each software ISO
+   its `isoIndex`, mean and peak-interval encode work per frame
+   (`videoWorkUs / muxVideoFrameCount`), `frameRate`, and `droppedFrames` at
+   start and end. A value that could not be measured is null, never 0.
 8. **Shutdown, in a `finally` that also runs on Ctrl-C:**
    - Stops in `Collect-Identity` order: stream, then record. It waits up to
      90 s for the recording to finalize.
@@ -108,8 +121,20 @@ identities expected / decoded / missing / repeated and one of these statuses:
 
 The overall verdict is PASS only when every enabled output is PASS (zero
 missing, repeated, reordered or invalid identities inside the camera-bounded
-interval) **and** every throughout-assertion held. NOT JUDGED and UNBOUNDED
-never count as PASS. With `-SkipVirtualCamera`, Program and stream can only be
+interval) **and** every gating throughout-assertion held. NOT JUDGED and UNBOUNDED
+never count as PASS. **Encoder placement is reported, never gated; a run fails
+only on measured loss** (#935): an ISO on the software encoder keeps its row's
+PASS/FAIL from `iso-pixel-verdict.py` alone, its summary row gets
+` encoder=software`, and a note gives its measured cost ("ISO-n <source> on
+software encoder: mean X ms of Y ms per frame, peak interval Z ms, dropped
+frames a -> b, core CPU mean m % / peak p %", with "not measured" for anything
+absent). Program on the software encoder fails through
+`programEncoderHardwareThroughout`. A required flag missing from
+`measurement.json` (`programEncoderHardwareThroughout`, `remotes1080Throughout`,
+`captureProgressThroughout`, `programSourcesAdmittedThroughout`) fails as
+"(not recorded)". The verdict schema is `outputs-drill-verdict-v3`; evidence
+judged as v2 failed on `hardwareEncodersThroughout` and lacks the Program flag,
+so never compare the two. With `-SkipVirtualCamera`, Program and stream can only be
 UNBOUNDED, so such a run reports counts but can never PASS. The reference
 harness refused to judge Program without the camera bound.
 
@@ -142,7 +167,10 @@ The PowerShell test covers:
 - Backup and byte-exact restore of the primary and the `.bak` sidecar,
   including removing a sidecar the drill created.
 - Readiness, invariants and throughout flags on sample snapshots: a frozen
-  webcam, a 720p remote, software encoders and a slow stream each fail.
+  webcam, a 720p remote, a software Program encoder and a slow stream each fail;
+  a software ISO is recorded as a fact and in `encoderPlacement` without failing
+  any gating flag; an encoder-path change is reported; `Get-DrillEncoderCost`
+  and the cost record give null, not 0, for anything unmeasured.
 - The close-guard predicate.
 - When dotnet and an installed app are present, the installed app's own
   `ProductionOutputPreferencesSerializer`, loaded by reflection through
@@ -161,3 +189,12 @@ app, the sink, the receiver, the stop and close sequence, and the restore
 against the real files. It is a transcription of the 2026-10-22 harness
 (`D:\CoreVideo-QA\beta-20261021-build\artifacts\qualification-1008-25`),
 which passed a 30-minute soak. Tested on Windows PowerShell 5.1 only.
+
+**#935 software-ISO run: not run yet.** The 30-minute drill with one ISO forced
+onto the software encoder (`-ProbeMaxSessions 8`) is the measurement #935 Task 8
+reports: per-output identity, the software ISO's mean and peak ms/frame, its
+dropped frames, core CPU mean and peak, Program `programMissingFrames`,
+`programBuffer.underruns` and the GPU deadlines line, with hardware, workload and
+duration. Its numbers go here when it has run. A software-ISO identity FAIL there
+is a finding (the software budget admitted a stream this machine cannot carry at
+1080p60), not something to waive.

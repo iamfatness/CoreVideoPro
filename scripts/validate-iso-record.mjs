@@ -11,7 +11,13 @@
  *   - each ISO stream muxed video frames (framesWritten > 0) with no per-stream
  *     warning, frameId-DEDUPED (well below the raw ~50 submit/s tick rate),
  *   - each ISO stream reports audioSamples > 0 and hasAudio (ISO-2 stems),
- *   - recording.warning stays empty (program never regressed — the #286 class),
+ *   - recording.warning is empty, OR is exactly the structured ISO admission message
+ *     (recording.isoAdmission.decision "admit-with-warning"); that is a NOTE, never a
+ *     failure. Any other warning text, a refused ISO, or measured ISO frame loss
+ *     (droppedFrames / writeQueue.dropped growing past the steady-state baseline) FAILS.
+ *     An ISO on the software encoder passes on identity/loss checks alone, but PROGRAM
+ *     on the software encoder (recording.encoder.hardwareAccelerated !== true) FAILS,
+ *     and an unreported value is a failure, never assumed hardware,
  *   - each ISO-NN-*.mp4 exists on disk, non-zero, and (with ffprobe) carries
  *     BOTH a video stream AND an aac audio stream,
  *   - **Demo E head-clap alignment**: each ISO audio start vs the PROGRAM audio
@@ -23,6 +29,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, statSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { classifyRecordingWarning, isoPlacementNotes, isoLossRegressions, programEncoderFailure } from "./qa/iso-record-rules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
@@ -44,6 +51,7 @@ const stallMs = Number(argValue("stall-ms", 100));
 const writeQueueDepth = Number(argValue("write-queue-depth", 10));
 const evidencePath = argValue("evidence", "");
 const allowCapacityWarning = args.includes("--allow-capacity-warning");
+if (allowCapacityWarning) console.log("allow-capacity-warning: now the default; the flag waives nothing more");
 if (!Number.isInteger(sourceCount) || sourceCount < 2 || sourceCount > 8 ||
     !Number.isInteger(writeQueueDepth) || writeQueueDepth < 4 || writeQueueDepth > 30 ||
     (stallSource && (stallMs < 1 || stallMs > 10000))) throw new Error("Invalid recording queue QA options");
@@ -191,6 +199,9 @@ function ffprobeStreams(artifactPath) {
 }
 
 const failures = [];
+const notes = [];
+const warningFailures = new Set();
+let isoAdmissionSeen = null;
 const artifacts = [];
 try {
   for (let i = 0; i < 200 && !handshake; i += 1) await sleep(50);
@@ -259,9 +270,17 @@ try {
     lastStreams = isoStreamsOf(snap);
     lastWarning = snap?.recording?.warning ?? null;
     console.log(`poll          : iso=[${lastStreams.map((s) => `${s.displayName ?? s.sourceId}:${s.framesWritten}f/${s.audioSamples ?? 0}a`).join(", ")}] warning=${lastWarning ?? "none"}`);
-    if (lastWarning && !(allowCapacityWarning && /^\d+ ISO sources? will record on the CPU software encoder, not the GPU/.test(lastWarning)))
-      failures.push(`recording.warning surfaced: ${lastWarning}`);
+    const classified = classifyRecordingWarning(lastWarning, snap?.recording?.isoAdmission);
+    if (classified.kind === "failure") warningFailures.add(classified.text);
+    else if (classified.kind === "note" && !notes.includes(classified.text)) notes.push(classified.text);
+    if (snap?.recording?.isoAdmission) isoAdmissionSeen = snap.recording.isoAdmission;
+    // Program encoder: software is a FAIL for RC; absent is a failure, never "true".
+    if (snap.recording?.lifecycle?.state === "producing") {
+      const programEncoder = programEncoderFailure(snap.recording);
+      if (programEncoder) warningFailures.add(programEncoder);
+    }
   }
+  for (const text of warningFailures) failures.push(text);
 
   let stopSnap = (await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [{ type: "stop-recording-session", reason: "iso-record validation complete" }] })).snapshot;
   for (let attempt = 0; attempt < 200 && !["completed", "failed"].includes(stopSnap.recording?.lifecycle?.state); ++attempt) {
@@ -291,6 +310,17 @@ try {
     }
   } else failures.push("Steady-state baseline missing");
   const finalStreams = isoStreamsOf(stopSnap);
+  const finalAdmission = stopSnap.recording?.isoAdmission ?? isoAdmissionSeen;
+  if (finalAdmission?.decision === "refuse-iso") failures.push(`ISO admission refused: ${finalAdmission.message}`);
+  if (stopSnap.recording?.encoder?.hardwareAccelerated === false) {
+    const text = programEncoderFailure(stopSnap.recording);
+    if (!failures.includes(text)) failures.push(text);
+  }
+  if (lossBaseline) failures.push(...isoLossRegressions(isoStreamsOf(lossBaseline), finalStreams));
+  // Note fps: the stream's own reported frameRate if present, else the requested recording fps.
+  const requestedFps = 60;
+  for (const s of finalStreams)
+    for (const line of isoPlacementNotes([s], Number(s.frameRate) > 0 ? Number(s.frameRate) : requestedFps)) notes.push(line);
   const programPath = stopSnap?.recording?.programPath ??
     (stopSnap?.recording?.streams ?? []).find((s) => s.kind === "program")?.path ?? null;
 
@@ -377,6 +407,7 @@ try {
     console.log(`Demo E clap   : worst ISO-vs-program audio-start skew ${worst.toFixed(1)}ms (budget 50ms)`);
   }
   console.log(`Measured at   : source ${sourceFps} fps/participant, ${recordSeconds}s -> ${finalStreams.map((s) => `${s.displayName ?? s.sourceId}:${(Number(s.framesWritten) / recordSeconds).toFixed(1)}fps`).join(", ")}`);
+  for (const line of notes) console.log(`Note          : ${line}`);
   console.log(`Result        : ${finalStreams.length} ISO streams -> [${finalStreams.map((s) => `${s.displayName ?? s.sourceId}:${s.framesWritten}f/${s.audioSamples ?? 0}a`).join(", ")}]`);
   if (failures.length === 0) {
     console.log("ISO-RECORD VALIDATION PASS");
@@ -390,7 +421,10 @@ try {
 } finally {
   if (evidencePath) {
     mkdirSync(dirname(resolve(evidencePath)), {recursive:true});
-    writeFileSync(evidencePath, JSON.stringify({sourceCount,sourceFps,recordSeconds,stallSource,stallMs,writeQueueDepth,allowCapacityWarning,programBufferFrames:2,monitorIsolation:true,cpuSourcePreparation:true,verboseDiagnostics:false,stallBegin,stallEnd,failures,probes,snapshots}, null, 2));
+    const lastSnap = snapshots[snapshots.length - 1];
+    const isoPlacement = isoStreamsOf(lastSnap).map(({sourceId, isoIndex, encoderPath, fallbackReason, videoWorkUs, muxVideoFrameCount, droppedFrames}) =>
+      ({sourceId, isoIndex, encoderPath, fallbackReason, videoWorkUs, muxVideoFrameCount, droppedFrames}));
+    writeFileSync(evidencePath, JSON.stringify({sourceCount,sourceFps,recordSeconds,stallSource,stallMs,writeQueueDepth,allowCapacityWarning,programBufferFrames:2,monitorIsolation:true,cpuSourcePreparation:true,verboseDiagnostics:false,stallBegin,stallEnd,failures,notes,isoAdmission:lastSnap?.recording?.isoAdmission ?? isoAdmissionSeen ?? null,isoPlacement,programEncoder:lastSnap?.recording?.encoder ?? null,probes,snapshots}, null, 2));
   }
   child.kill();
   if (!keepArtifacts) {

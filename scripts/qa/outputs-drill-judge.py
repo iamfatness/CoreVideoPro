@@ -12,9 +12,16 @@ is judged by the existing modules in scripts/qa/:
   Program source admissions  -> program-source-admission-capture.mjs (gates Program)
   Program GPU deadlines      -> delivery-trace.py           (supplementary only)
 
-The live collector's throughout-assertions (hardware encoders, remotes at
-1080p, capture progress, Program admissions, stream health) arrive in
+The live collector's throughout-assertions (Program on the hardware encoder,
+remotes at 1080p, capture progress, Program admissions, stream health) arrive in
 measurement.json; any false one fails the drill, as in Collect-Identity.ps1.
+
+#935, owner ruling D8: ENCODER PLACEMENT OF AN ISO IS REPORTED, NEVER GATED. An
+ISO on the software encoder is a note; its row PASSes or FAILs on frame identity
+alone. Program on the software encoder stays a FAIL for RC
+(programEncoderHardwareThroughout). hardwareEncodersThroughout (Program and every
+ISO on hardware) is still recorded in measurement.json as a fact, and the
+measured cost of each software ISO (encoderCost) becomes a note.
 
 This file only orchestrates them and aggregates their results into
 verdict.json and summary.txt. An output whose judge could not run is NOT JUDGED
@@ -37,8 +44,15 @@ PASS, FAIL, NOT_JUDGED = 'PASS', 'FAIL', 'NOT JUDGED'
 # (no OS camera). The reference refused to judge without bounds; this status
 # reports the counts and can never make the overall verdict PASS.
 UNBOUNDED = 'UNBOUNDED'
-THROUGHOUT_FLAGS = ('hardwareEncodersThroughout', 'remotes1080Throughout', 'captureProgressThroughout',
-                    'programSourcesAdmittedThroughout', 'streamHealthyThroughout')
+# Any of these false fails the run. hardwareEncodersThroughout is NOT here (#935, D8).
+GATING_FLAGS = ('programEncoderHardwareThroughout', 'remotes1080Throughout', 'captureProgressThroughout',
+                'programSourcesAdmittedThroughout', 'streamHealthyThroughout')
+# Absent from measurement.json = not recorded = FAIL. Named explicitly so that
+# adding or removing a gating flag can never shift this list. The stream flag is
+# only written when a stream was enabled.
+REQUIRED_FLAGS = ('programEncoderHardwareThroughout', 'remotes1080Throughout', 'captureProgressThroughout',
+                  'programSourcesAdmittedThroughout')
+SCHEMA = 'outputs-drill-verdict-v3'
 
 
 def load_module(name, file):
@@ -161,7 +175,57 @@ def gate_program_admissions(row, admissions):
 
 def throughout_failures(measurement):
     """Collect-Identity.ps1 throughout-assertions recorded in measurement.json."""
-    return [flag for flag in THROUGHOUT_FLAGS if flag in measurement and measurement[flag] is not True]
+    return [flag for flag in GATING_FLAGS if flag in measurement and measurement[flag] is not True]
+
+
+def software_iso_sources(measurement):
+    """ISOs the collector saw on the software encoder (placement or cost record)."""
+    placement = measurement.get('encoderPlacement') or {}
+    cost = (measurement.get('encoderCost') or {}).get('software') or {}
+    found = [source for source, entry in placement.items() if 'software' in (entry or {}).get('paths', [])]
+    found += [source for source in cost if source not in found]
+    return found
+
+
+def _ms(us):
+    return None if not isinstance(us, (int, float)) or isinstance(us, bool) or us <= 0 else us / 1000.0
+
+
+def software_iso_notes(measurement):
+    """One note per software ISO with its measured cost; anything absent says so."""
+    placement = measurement.get('encoderPlacement') or {}
+    cost = measurement.get('encoderCost') or {}
+    cpu = cost.get('coreCpuPercent') or {}
+    software = cost.get('software') or {}
+    notes = []
+    for source in software_iso_sources(measurement):
+        entry = software.get(source) or {}
+        index = entry.get('isoIndex')
+        label = (f'ISO-{int(index)} {source}' if isinstance(index, (int, float)) and not isinstance(index, bool) and index > 0
+                 else f'ISO {source}')
+        mean, peak, fps = _ms(entry.get('meanVideoWorkUs')), _ms(entry.get('peakIntervalVideoWorkUs')), entry.get('frameRate')
+        if mean is None:
+            mean_text = 'mean not measured'
+        elif isinstance(fps, (int, float)) and not isinstance(fps, bool) and fps > 0:
+            mean_text = f'mean {mean:.1f} ms of {1000.0 / fps:.1f} ms per frame'
+        else:
+            mean_text = f'mean {mean:.1f} ms per frame (frame budget not reported)'
+        peak_text = 'peak interval not measured' if peak is None else f'peak interval {peak:.1f} ms'
+        start, end = entry.get('droppedFramesStart'), entry.get('droppedFramesEnd')
+        drops = ('dropped frames not measured' if start is None or end is None
+                 else f'dropped frames {int(start)} -> {int(end)}')
+        cpu_text = ('core CPU not measured' if cpu.get('mean') is None or cpu.get('peak') is None
+                    else f"core CPU mean {cpu['mean']} % / peak {cpu['peak']} %")
+        note = f'{label} on software encoder: {mean_text}, {peak_text}, {drops}, {cpu_text}'
+        if (placement.get(source) or {}).get('changed'):
+            note += ' (changed encoder during the run: ' + ' -> '.join(placement[source].get('paths', [])) + ')'
+        notes.append(note)
+    return notes
+
+
+def with_encoder(row, encoder):
+    """Placement is reported on the row; it never changes the row's status."""
+    return {**row, 'encoder': encoder} if encoder else row
 
 
 def aggregate(rows, context):
@@ -183,12 +247,13 @@ def aggregate(rows, context):
         notes.insert(0, 'Workload assertions failed during the interval: ' + ', '.join(broken))
     if failure:
         notes.insert(0, 'Live collection aborted: ' + failure)
-    return {'schema': 'outputs-drill-verdict-v2', 'overall': overall,
+    return {'schema': SCHEMA, 'overall': overall,
             'rule': 'PASS only if every enabled output PASSes with zero missing, repeated, reordered or invalid identities '
                     'inside an OS-camera-bounded interval, and every workload assertion held throughout; '
                     'an ISO\'s writer-reported held frames (and its one close-time tail hold) are excused repeats that '
                     'pass and are reported as held=N, and the repeated column excludes them by design; '
-                    'NOT JUDGED and UNBOUNDED never count as PASS.',
+                    'NOT JUDGED and UNBOUNDED never count as PASS. ISO encoder placement is reported, never gated; '
+                    'Program on the software encoder fails (programEncoderHardwareThroughout).',
             'throughoutFailures': broken,
             'seconds': context.get('seconds'), 'workload': context.get('workload'),
             'outputs': rows, 'skipped': context.get('skipped', []),
@@ -204,6 +269,8 @@ def summary_text(verdict):
     for row in verdict['outputs']:
         line = (f"{row['output']:<{width}}  {row['status']:<10}  expected={number(row['expected'])} "
                 f"decoded={number(row['decoded'])} missing={number(row['missing'])} repeated={number(row['repeated'])}")
+        if row.get('encoder'):
+            line += f" encoder={row['encoder']}"
         if row.get('reason'):
             line += f"  ({row['reason']})"
         lines.append(line)
@@ -274,9 +341,11 @@ def run(evidence):
     start, end = int(measurement['start']['qpc']), int(measurement['end']['qpc'])
     frequency = int(measurement['qpcFrequency'])
     context['throughoutFailures'] = throughout_failures(measurement)
-    missing_flags = [flag for flag in THROUGHOUT_FLAGS[:4] if flag not in measurement]
+    missing_flags = [flag for flag in REQUIRED_FLAGS if flag not in measurement]
     if missing_flags:
         context['throughoutFailures'] += [flag + ' (not recorded)' for flag in missing_flags]
+    software_isos = set(software_iso_sources(measurement))
+    notes.extend(software_iso_notes(measurement))
     trace = evidence / 'arrival-trace.bin'
     ffmpeg, ffprobe = tools['ffmpeg'], tools['ffprobe']
     finalized_ok = bool(final.get('recording', {}).get('lifecycle', {}).get('finalized'))
@@ -337,7 +406,8 @@ def run(evidence):
         if not finalized_ok:
             rows.append(not_judged('ISO ' + source, 'iso', 'recording did not finalize', source))
         elif track is None or not track.get('path'):
-            rows.append({**not_judged('ISO ' + source, 'iso', 'ISO track missing from the finalized recording', source), 'status': FAIL})
+            rows.append(with_encoder({**not_judged('ISO ' + source, 'iso', 'ISO track missing from the finalized recording', source), 'status': FAIL},
+                                     'software' if source in software_isos else None))
         elif not trace_ok:
             rows.append(not_judged('ISO ' + source, 'iso', 'delivery trace incomplete or missing', source))
         else:
@@ -347,7 +417,7 @@ def run(evidence):
             frame_rate = float(track.get('frameRate') or 0)
             verdict, proof = attempt(name, lambda: iso_module.judge(track['path'], str(trace), source, start, end, seconds,
                                                                     ffmpeg, ffprobe, held_frames, tail_frames, frame_rate))
-            rows.append(iso_row(source, verdict, proof))
+            rows.append(with_encoder(iso_row(source, verdict, proof), 'software' if source in software_isos else None))
 
     if enabled.get('stream'):
         received = evidence / 'stream-received.ts'
