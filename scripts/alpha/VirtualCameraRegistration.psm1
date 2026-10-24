@@ -156,4 +156,79 @@ function Remove-UnreferencedCameraRuntime {
         return 'removed'
     } catch { return 'retained_in_use_or_unverified' }
 }
-Export-ModuleMember -Function Get-CameraPayloadSha256,Get-CameraOwnershipDecision,Get-CameraMachineRegistration,Set-CameraMachineRegistration,Get-CameraTransactionName,Test-OwnedLegacyCamera,Get-CameraRuntimeRoot,Assert-CameraRuntimePath,New-CameraRuntimeAcl,Remove-UnreferencedCameraRuntime
+# ---- #781: Frame Server refresh after a camera DLL upgrade -------------------
+# The Frame Server keeps a loaded in-proc camera DLL mapped until its service
+# host exits, so a correct registration can still be served by an older image.
+# These are the pure halves of Refresh-FrameServer.ps1; they touch nothing.
+
+function ConvertTo-CameraDllPathKey {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    $key = $Path.Trim().Replace('/', '\')
+    if ($key.StartsWith('\\?\')) { $key = $key.Substring(4) }
+    return $key.TrimEnd('\').ToLowerInvariant()
+}
+
+function Test-CoreVideoCameraDllPath {
+    param([string]$Path)
+    return (ConvertTo-CameraDllPathKey $Path).EndsWith('\corevideo-virtualcam.dll')
+}
+
+# NotRunning | Current | NotLoaded | Stale | Unknown. Only Stale and Unknown
+# justify stopping the service; Unknown refreshes because a needless restart is
+# cheaper than validating against the wrong DLL. Observed modules outrank the
+# serve log (a log line is a historical claim, a mapped module is a fact). An
+# empty -ExpectedDll means nothing is registered (uninstall/rollback to none),
+# so any loaded CoreVideo camera DLL is stale.
+function Get-FrameServerRefreshDecision {
+    param([string]$ServiceState, [string]$ExpectedDll,
+        [ValidateSet('observed','unavailable')][string]$ModuleInspection = 'unavailable',
+        [string[]]$LoadedPaths = @(), [string[]]$ServeLogPaths = @())
+    if ($ServiceState -eq 'Stopped') { return 'NotRunning' }
+    if ($ServiceState -ne 'Running') { return 'Unknown' }
+    $expectedKey = ConvertTo-CameraDllPathKey $ExpectedDll
+    if ($ModuleInspection -eq 'observed') {
+        $camera = @($LoadedPaths | Where-Object { Test-CoreVideoCameraDllPath $_ })
+        if ($camera.Count -eq 0) { return 'NotLoaded' }
+        if (-not $expectedKey -or @($camera | Where-Object { (ConvertTo-CameraDllPathKey $_) -ne $expectedKey }).Count) { return 'Stale' }
+        return 'Current'
+    }
+    $served = @($ServeLogPaths | Where-Object { Test-CoreVideoCameraDllPath $_ })
+    if ($served.Count -eq 0) { return 'Unknown' }
+    if (-not $expectedKey -or (ConvertTo-CameraDllPathKey $served[-1]) -ne $expectedKey) { return 'Stale' }
+    return 'Current'
+}
+
+# The DLL logs "[hh:mm:ss.mmm pid=N] Serving module path=<GetModuleFileNameW>"
+# (native/virtualcam-dll/dllmain.cpp, VcamLog.h). Same line rule as
+# scripts/qa/camera_serving_evidence.py. Returns this PID's paths in log order
+# (the caller takes the last); overlong, control-character and relative paths
+# are dropped rather than trusted.
+function Read-ServeLogModulePaths {
+    param([string[]]$Lines = @(), [int]$ProcessId)
+    if ($ProcessId -le 0) { return @() }
+    $result = [Collections.Generic.List[string]]::new()
+    foreach ($line in $Lines) {
+        if (-not $line -or $line.Length -gt 1100) { continue }
+        $match = [regex]::Match($line, '^\[\d{2}:\d{2}:\d{2}\.\d{3} pid=(\d{1,10})\] Serving module path=(.+)$')
+        if (-not $match.Success -or [int64]$match.Groups[1].Value -ne $ProcessId) { continue }
+        $path = $match.Groups[2].Value.TrimEnd("`r")
+        if ($path -match '[\x00-\x1f]' -or $path.Length -gt 1024) { continue }
+        try { if (-not [IO.Path]::IsPathRooted($path)) { continue } } catch { continue }
+        $result.Add($path)
+    }
+    return $result.ToArray()
+}
+
+# The installer is 32-bit NSIS: its $SYSDIR PowerShell is the SysWOW64 host,
+# which cannot enumerate a 64-bit process's modules (measured: not even the
+# user's own explorer.exe). Sysnative is the WOW64 alias for the real System32.
+# Windows PowerShell 5.1, never $PSHOME: a pwsh 7 parent must not leak in.
+function Get-NativePowerShellPath {
+    param([bool]$Is64BitOperatingSystem = [Environment]::Is64BitOperatingSystem,
+        [bool]$Is64BitProcess = [Environment]::Is64BitProcess,
+        [string]$WindowsDirectory = $env:windir)
+    $folder = if ($Is64BitOperatingSystem -and -not $Is64BitProcess) { 'Sysnative' } else { 'System32' }
+    return Join-Path $WindowsDirectory "$folder\WindowsPowerShell\v1.0\powershell.exe"
+}
+Export-ModuleMember -Function Get-CameraPayloadSha256,Get-FrameServerRefreshDecision,Read-ServeLogModulePaths,Get-NativePowerShellPath,Test-CoreVideoCameraDllPath,ConvertTo-CameraDllPathKey,Get-CameraOwnershipDecision,Get-CameraMachineRegistration,Set-CameraMachineRegistration,Get-CameraTransactionName,Test-OwnedLegacyCamera,Get-CameraRuntimeRoot,Assert-CameraRuntimePath,New-CameraRuntimeAcl,Remove-UnreferencedCameraRuntime
