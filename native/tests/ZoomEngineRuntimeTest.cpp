@@ -847,6 +847,38 @@ TEST(ZoomEngineRuntime, CoalescesVersionedRosterFactsOnExistingEventDrain) {
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
 
+// #1037 (characterization for the applyEvent hold shrink): a roster fact is
+// published exactly when the meeting generation or roster revision moves.
+TEST(ZoomEngineRuntime, RosterFactOnlyWhenGenerationOrRevisionMoves) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    const auto apply = [&](int generation, int revision, const char* name) {
+      const auto event = corevideo::modules::parseZoomEngineEvent(
+          std::string(R"({"cmd":"participants","meeting_generation":)") + std::to_string(generation) +
+          R"(,"roster_revision":)" + std::to_string(revision) +
+          R"(,"participants":[{"id":42,"name":")" + name + R"("}]})");
+      ASSERT_TRUE(event.has_value());
+      runtime.applyEngineEventForTest(*event);
+    };
+    const auto facts = [&] {
+      int count = 0;
+      for (const auto& event : runtime.drainFrameEvents())
+        if (event.getString("type") == "zoom-roster-fact") ++count;
+      return count;
+    };
+    apply(1, 1, "Guest");
+    EXPECT_EQ(facts(), 1) << "a revision bump publishes one fact";
+    apply(1, 1, "Renamed");
+    EXPECT_EQ(facts(), 0) << "the same generation and revision publishes none";
+    apply(2, 1, "Guest");
+    EXPECT_EQ(facts(), 1) << "a new meeting generation publishes one";
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
 // #1037: the render tick's one-acquisition roster view agrees with the
 // existing accessors and with what a snapshot reports as the speaker.
 TEST(ZoomEngineRuntime, RenderViewCarriesTheFloorRosterAndTheDirectedSpeaker) {
