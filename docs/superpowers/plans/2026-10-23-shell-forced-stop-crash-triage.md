@@ -164,8 +164,8 @@ Expected for the drain: the faulting OS thread is the STA UI thread with no mana
 
 **Interfaces:** consumes `Test-DrillSafeToClose` from `scripts/qa/outputs-drill-lib.ps1` and the control API `/state` and `/snapshot`. Produces a verdict JSON: `{ pass, terminateLine, exitMs, newDumps[], newEvent1000[] }`.
 
-- [ ] **Step 1: Write the failing test.** Feed the judge a fixture log with `shutdown: resources released` but no terminate line, plus one fake 1000 event. Expected: `pass=false` with both reasons. A fixture with the terminate line, exit within 6 s and no new dump gives `pass=true`. Run `powershell -File scripts/qa/graceful-close-check.test.ps1`. It should FAIL before the judge exists.
-- [ ] **Step 2: Implement.**
+- [x] **Step 1: Write the failing test.** Feed the judge a fixture log with `shutdown: resources released` but no terminate line, plus one fake 1000 event. Expected: `pass=false` with both reasons. A fixture with the terminate line, exit within 6 s and no new dump gives `pass=true`. Run `powershell -File scripts/qa/graceful-close-check.test.ps1`. It should FAIL before the judge exists.
+- [x] **Step 2: Implement.**
   1. Record the shell PID, the existing `CrashDumps` and `crashes` file names, and the time.
   2. Refuse the run if `Test-DrillSafeToClose` returns reasons.
   3. Close with `(Get-Process -Id $pid).CloseMainWindow()`.
@@ -174,7 +174,7 @@ Expected for the drain: the faulting OS thread is the STA UI thread with no mana
   6. Find this PID's last `launch.log` line.
 
   The pass condition: the last line is `terminating the process directly`, the exit took 6 s or less, and there is no new dump and no new event.
-- [ ] **Step 3:** Run the test again. Expected: PASS.
+- [x] **Step 3:** Run the test again. Expected: PASS.
 
 **5b. (Optional, owner ruling) ForceExit hardening.**
 
@@ -237,3 +237,9 @@ Outcome (a): 7 long in-meeting closes (threshold 5), 0 recurrences, 0 ShutdownCo
 - `docs/reference/winui-crash-class-0xc000027b.md`: T1.7 bullet gained the live-confirmation sentence.
 - `docs/BACKLOG.md`: #457 row marked closed; #444 and #446 stay open on the same row.
 - Closed with `gh issue close 457 --reason completed --comment` citing owner ruling D12 (2026-10-23 23:50 EDT).
+
+### Task 5a result: gate script and test
+
+- `scripts/qa/graceful-close-check.ps1`: refuses (exit 2, nothing closed) unless exactly one shell is running, the control API answers, `Test-DrillSafeToClose` has no reasons other than `engine on` (the shell's close guard prompts only for recording/streaming), the shell has been up `-MinSessionMinutes` (default 30) and the snapshot says `in_meeting` (or `-AllowOutsideMeeting`). It then sends ONE `WM_CLOSE` (`CloseMainWindow`), never a second (a second close during cleanup takes `ForceExit`), waits 6 s (and up to 60 s more, sending nothing), watches 60 s from the close, and writes `before.json`, `check.log` and `verdict.json` under `D:\CoreVideo-QA\graceful-close\<timestamp>\`. Exit 0 pass, 1 fail.
+- The session is keyed on the log's `session=` id, not the PID (PID 17304 itself was reused a day later).
+- `scripts/qa/graceful-close-check.test.ps1`: 17 cases (failed first with the script missing; 17/17 after). The parsers were also checked against the real `launch.log` (the 2026-10-23 09:00 close is read as a terminate line) and the real Event Log (the 2026-10-16 entry is decoded).
