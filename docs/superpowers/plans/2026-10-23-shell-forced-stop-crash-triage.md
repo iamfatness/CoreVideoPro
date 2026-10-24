@@ -1,0 +1,194 @@
+# Shell Forced-Stop Crash Triage (#457) Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (this is evidence work, mostly sequential). Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Close #457 on evidence. Either confirm it as the post-Exit dispatcher-drain crash fixed by #462, with a standing gate that would catch a regression, or leave it open with a named capture plan.
+
+**Architecture:** No product code is needed to triage. Dump 17304 and its build are gone. Classification rests on three surrogate sources that survived: event 1000/1001, the shell's `launch.pre-live-confirm.log` and the post-fix close record. If the dump is found, cdb and dotnet-dump re-read it. Task 5 adds one regression gate: a graceful close at the end of a long in-meeting session, judged from the log and the Event Log. A one-line fallback hardening is optional and needs an owner ruling.
+
+**Tech Stack:** PowerShell 5.1, cdb (Windows Kits 10 x64), dotnet-dump 10.0.745401, `gh`, the WinUI shell (`native-shell/CoreVideoPro.WinUI`), xUnit (`CoreVideoPro.WinUI.Tests`).
+
+**Spec:** `docs/superpowers/specs/2026-10-23-shell-forced-stop-crash-triage-design.md`
+
+**Recommended executor:**
+
+| Task | Model | Effort | Reason |
+|---|---|---|---|
+| 1 Locate and validate dump + symbols | haiku | low | Mechanical file and registry checks with fixed expected outputs. |
+| 2 Extract evidence (surrogate, or the dump if found) | opus | high | Reading a stowed-exception fail-fast or a managed/native thread set is judgement work. A misread thread or stowed HRESULT changes the classification. If a dump is found: **fable, high**, because the read has to tell a UI-thread drain from a finalizer release from a supervisor-gate hang with no app frames on the stack, and the #513 history shows how easily that goes wrong. |
+| 3 Classify against the three hypotheses | opus | high | It must weigh second-hand stack evidence against first-hand log timing and say plainly where the evidence stops. |
+| 4 Write the finding into the issue and docs | sonnet | medium | Prose from a settled table. The facts are fixed by Task 3. |
+| 5a Graceful-close gate script + test | sonnet | high | Small script, but it reuses the outputs-drill close guard and has to respect the no-input-injection rule. |
+| 5b (optional) ForceExit hardening | sonnet | medium | A one-call change behind an existing seam test pattern. |
+| 5c Run the gate live (≥30 min in-meeting) | opus | medium | A live run on the owner's box, judging an all-or-nothing gate. |
+
+**Estimated AI-assisted effort:** 0.25 + 0.75 + 0.5 + 0.5 + 1.5 + 0.5 (optional) + 1.0 (mostly wall-clock soak) = about **4.5 h**, or 4.0 h without 5b. If the dump is found in Task 1, add about 2 h to Task 2.
+
+## Global Constraints
+
+- **Read-only on all evidence.** Never move, open-in-place or delete an original `.dmp`, log or WER folder. Copy first to `D:\CoreVideo-QA\dumps\457\`.
+- Check free space before copying a full dump (the C: drive is often nearly full): `Get-PSDrive C,D | Select Name,Free`. Copy to D: only.
+- **Never send keys or steal focus** (owner rule). Close the app with `WM_CLOSE` (`Process.CloseMainWindow()`), the control API, or UIA Invoke only.
+- Do not close the owner's app while it is recording or streaming. Gate on `Test-DrillSafeToClose` (`scripts/qa/outputs-drill-lib.ps1`).
+- Do not rebuild the shell before analyzing a newly found dump (the PDB rule).
+- Closing #457 is the owner's decision. Task 4 drafts and posts the evidence comment. It closes the issue only on the owner's word.
+- A stability claim is bounded by the window watched. Say "N closes, 0 recurrences". Never say "fixed forever".
+
+---
+
+### Task 1: Locate and validate the dump and symbols
+
+**Files:** none (read-only).
+
+- [ ] **Step 1: Search for the dump.**
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA\CrashDumps","$env:LOCALAPPDATA\CoreVideoPro\crashes" -Filter 'CoreVideoPro.WinUI.exe.*.dmp' -ErrorAction SilentlyContinue | Select Name,Length,LastWriteTime
+Get-ChildItem D:\ -Recurse -Filter '*17304*.dmp' -ErrorAction SilentlyContinue | Select FullName
+```
+
+Expected (2026-10-23): only `CoreVideoPro.WinUI.exe.28528.dmp` (2026-10-16, about 384 MB). No 17304 anywhere.
+
+- [ ] **Step 2: Check for the WER archive copy.**
+
+```powershell
+Get-ChildItem C:\ProgramData\Microsoft\Windows\WER\ReportArchive -Directory | ? Name -like '*9ecd7d6e*'
+```
+
+Expected: nothing (the 1001 event's folder `AppCrash_CoreVideoPro.Win_698abece..._9ecd7d6e-...` is gone).
+
+- [ ] **Step 3: Check for the build folder and PDBs.**
+
+```powershell
+Test-Path "C:\Users\walla\OneDrive\Documents\ChatGPT\CoreVideo Pro\beta-release\native-shell\CoreVideoPro.WinUI\bin\Release\net9.0-windows10.0.19041.0\win-x64\publish\CoreVideoPro.WinUI.pdb"
+git -C D:\CoreVideo-QA\wt-plans branch -r --contains 46b07ff5
+```
+
+Expected: `False`, and only `origin/backup/419-pre-rebase-1d164b7`. Ask the owner ONCE whether the dump or that folder exists elsewhere (another machine, a OneDrive version). If not, record "dump and symbols unavailable" and go to Task 2 surrogate mode. Do not spend more time searching.
+
+- [ ] **Step 4: Confirm the tooling.** `Test-Path "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"` → `True`. `dotnet tool list -g` lists `dotnet-dump`.
+
+### Task 2: Extract the evidence
+
+**Files:** scratch only, `D:\CoreVideo-QA\dumps\457\evidence.txt`.
+
+**Surrogate mode (dump unavailable — the expected path):**
+
+- [ ] **Step 1: Event Log signature.**
+
+```powershell
+Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000,1001; StartTime=[datetime]'2026-09-10 08:50'; EndTime=[datetime]'2026-09-10 08:56'} | Format-List TimeCreated,Id,Message
+```
+
+Expected: 1000 at 08:52:36 with `CoreMessagingXP.dll` 10.0.27200.1048, `0xc000027b`, offset `0x97de6`, PID `0x4398`. 1001 at 08:52:40 with P4 `combase.dll`, P7 `80004004`, report `7f60387a-...`.
+
+- [ ] **Step 2: Last shell lines of PID 17304.**
+
+```powershell
+Select-String -Path "$env:LOCALAPPDATA\CoreVideoPro\launch.pre-live-confirm.log" -Pattern 'pid=17304 session=4118cc2c' | Select -Last 6 | % Line
+```
+
+Expected: the build stamp `46b07ff5...`. The last five lines run from `shutdown: close requested` (08:52:35.764) to `shutdown: resources released` (08:52:36.125), and nothing follows.
+
+- [ ] **Step 3: Recurrence census, shell crashes since the fix.**
+
+```powershell
+Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=[datetime]'2026-09-10'} | ? Message -like '*CoreVideoPro.WinUI.exe*' | % { ($_.Message -split "`n" | Select-String 'Faulting module name|Fault offset|Exception code').Line -join ' | ' }
+```
+
+Expected: exactly one `CoreMessagingXP.dll ... 0x97de6` entry (17304). Every other entry is `Microsoft.UI.Xaml.dll 0x3a9c5d`, `coreclr 0xc0000005` or `CoreMessagingXP 0xc0000602`. Before treating a new entry as unrelated, match its time against a close in the log.
+
+- [ ] **Step 4: Post-fix close census.** Count `shutdown: cleanup complete; terminating the process directly` across the retained logs, and check that the fallback never fired:
+
+```powershell
+$logs = Get-ChildItem "$env:LOCALAPPDATA\CoreVideoPro\launch*.log"
+(Select-String $logs -Pattern 'terminating the process directly').Count
+(Select-String $logs -Pattern 'force-exit fallback|cleanup did not complete|TerminateProcess returned').Count
+```
+
+Expected: at least 41, and 0. Then list the in-meeting closes after 30 min or more. For each session id with a terminate line: first-line time, `zoom-join: Connected` present, terminate time. Expected: at least 7 (60, 612, 123, 63, 41, 225, 67 min). Write the table into `evidence.txt`.
+
+**Dump mode (only if Task 1 found the dump):**
+
+- [ ] **Step 5: Native.** Copy the dump and publish folder to `D:\CoreVideo-QA\dumps\457\`, then:
+
+```powershell
+$cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
+& $cdb -z D:\CoreVideo-QA\dumps\457\CoreVideoPro.WinUI.exe.17304.dmp -y "srv*D:\symcache*https://msdl.microsoft.com/download/symbols;D:\CoreVideo-QA\dumps\457\publish" -logo D:\CoreVideo-QA\dumps\457\native.txt -c "!analyze -v; .exr -1; .ecxr; kPn 60; ~; ~*kn 30; lmvm CoreMessagingXP; q"
+```
+
+Expected for the drain: `ExceptionCode: c000027b`, a `STOWED_EXCEPTION` with HRESULT `80004004`, and on the faulting thread `CoreMessagingXP!...DeferInvokeCallback` under `DispatcherQueueController::ShutdownQueue` under `FrameworkApplication::StartDesktop`.
+
+- [ ] **Step 6: Managed.**
+
+```powershell
+dotnet-dump analyze D:\CoreVideo-QA\dumps\457\CoreVideoPro.WinUI.exe.17304.dmp -c "clrthreads" -c "clrstack -all" -c "pe -nested" -c "syncblk" -c "exit" > D:\CoreVideo-QA\dumps\457\managed.txt
+```
+
+Expected for the drain: the faulting OS thread is the STA UI thread with no managed frames above `StartDesktop`. `pe` is empty. No `Finalize` or `RunFinalizers` on the faulting thread. `syncblk` holds nothing. No thread is in `WaitForExit` or the supervisor gate.
+
+### Task 3: Classify against the three hypotheses
+
+**Files:** scratch `evidence.txt`.
+
+- [ ] **Step 1:** Fill the spec's hypothesis table from Task 2. Each verdict cites a row of evidence.
+  - H1 (#513 finalizer) is excluded when the module/offset is not `Microsoft.UI.Xaml+0x3a9c5d`, the stowed code is not `0x8000000E`, and the fault came within seconds of a lifecycle event.
+  - H2 (engine-off deadlock) is excluded when every `ShutdownAsync` step logged and the fault came after `resources released`.
+  - H3 (new member: post-Exit drain) is confirmed when the fault came after `resources released` with an E_ABORT/E_UNEXPECTED stowed code in combase/CoreMessagingXP.
+- [ ] **Step 2:** Record the confidence statement. In surrogate mode the stack is second-hand (the 2026-09-10 report) and consistent with three first-hand sources. Say exactly that.
+- [ ] **Step 3:** Decide the outcome. Choose (a) close as fixed by #462 when the census is ≥5 long in-meeting closes with 0 recurrences and 0 fallbacks. Otherwise choose (b) keep open plus the capture plan.
+
+### Task 4: Write the finding into the issue and the docs
+
+**Files:**
+- Modify: `docs/reference/winui-crash-class-0xc000027b.md` (the T1.7 bullet only)
+- Modify: `docs/BACKLOG.md` (the #457 row only)
+
+- [ ] **Step 1: Post the evidence comment** (no close yet). Use `gh issue comment 457 -R iamfatness/CoreVideoPro --body-file <tmp>` with:
+  - the corrections (build `46b07ff`, not `c36d80a`; a graceful close, not a forced-stop artefact; dump and PDBs not retained);
+  - the three-hypothesis verdict;
+  - the post-fix census table;
+  - a link to the spec.
+
+  Expected: `gh` prints the comment URL.
+- [ ] **Step 2: Add one sentence to the T1.7 bullet** of the crash-class doc: "Live confirmation (2026-10-23 census): N in-meeting closes after 41–612 min on the fixed path, 0 recurrences of `CoreMessagingXP+0x97de6`, 0 fallbacks. The original dump was not retained." Update the BACKLOG row to match the outcome.
+- [ ] **Step 3: Ask the owner** whether to close #457 now (outcome a) or after Task 5c. Close only on their word: `gh issue close 457 -R iamfatness/CoreVideoPro --reason completed`.
+
+### Task 5: Fix proposal and regression gate (or the capture plan)
+
+**5a. The graceful-close gate (recommended).**
+
+**Files:**
+- Create: `scripts/qa/graceful-close-check.ps1`
+- Create: `scripts/qa/graceful-close-check.test.ps1`
+
+**Interfaces:** consumes `Test-DrillSafeToClose` from `scripts/qa/outputs-drill-lib.ps1` and the control API `/state` and `/snapshot`. Produces a verdict JSON: `{ pass, terminateLine, exitMs, newDumps[], newEvent1000[] }`.
+
+- [ ] **Step 1: Write the failing test.** Feed the judge a fixture log with `shutdown: resources released` but no terminate line, plus one fake 1000 event. Expected: `pass=false` with both reasons. A fixture with the terminate line, exit within 6 s and no new dump gives `pass=true`. Run `powershell -File scripts/qa/graceful-close-check.test.ps1`. It should FAIL before the judge exists.
+- [ ] **Step 2: Implement.**
+  1. Record the shell PID, the existing `CrashDumps` and `crashes` file names, and the time.
+  2. Refuse the run if `Test-DrillSafeToClose` returns reasons.
+  3. Close with `(Get-Process -Id $pid).CloseMainWindow()`.
+  4. Wait up to 6 s for exit.
+  5. Wait 60 s, then diff the dump folders and query event 1000 for `CoreVideoPro.WinUI.exe` since the recorded time.
+  6. Find this PID's last `launch.log` line.
+
+  The pass condition: the last line is `terminating the process directly`, the exit took 6 s or less, and there is no new dump and no new event.
+- [ ] **Step 3:** Run the test again. Expected: PASS.
+
+**5b. (Optional; approved as D22, one-call change) ForceExit hardening.**
+
+**Files:** Modify `native-shell/CoreVideoPro.WinUI/Services/ApplicationLifecycle.cs`. Test in `native-shell/CoreVideoPro.WinUI.Tests/`.
+
+- [ ] **Step 1:** Make the final exit an injected seam, defaulting to `ShutdownCompletion.TerminateCurrentProcess`. Write a test that asserts the log line is written before the terminate call and that a second call is a no-op. It should fail first.
+- [ ] **Step 2:** Run `dotnet test native-shell/CoreVideoPro.WinUI.Tests --filter "FullyQualifiedName~ApplicationLifecycle|FullyQualifiedName~ShutdownCompletion"`. Expected: all pass.
+
+**5c. Run the gate live.** (Cross-reference: 5c belongs in the soak plan, `2026-10-23-rc-beta-acceptance-soak.md` Task 5 Step 3, which runs `scripts/qa/graceful-close-check.ps1` at the end of the owner's show run. Do not schedule a separate 30-minute meeting for it if the soak is running.)
+
+- [ ] **Step 1:** In the authorized test meeting (full pwd link), with Engine on, no recording and no stream, let the app run for 30 min or more. Then run `powershell -File scripts/qa/graceful-close-check.ps1`. Expected: `pass=true`. Record the build stamp and session length in the issue comment.
+- [ ] **Step 2:** If it FAILS, keep #457 open. Apply the spec's capture plan:
+  - copy the dump, publish folder and logs to `D:\CoreVideo-QA\dumps\457\`;
+  - run Task 2 in dump mode;
+  - re-classify in Task 3.
+
+**Capture plan (if the outcome is b, or 5c fails):** Confirm that the HKLM LocalDumps key for `CoreVideoPro.WinUI.exe` has DumpType 2. On this box it is `%LOCALAPPDATA%\CrashDumps`, count 20. On a #1033 install it is `%LOCALAPPDATA%\CoreVideoPro\crashes`, count 5. Copy any new shell dump with its exact publish folder before any rebuild or rotation. Pull events 1000/1001 for the signature even if the dump is lost.
