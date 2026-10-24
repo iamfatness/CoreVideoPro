@@ -28,6 +28,87 @@ class IsoPixelsTest(unittest.TestCase):
             with self.subTest(decoded=decoded):
                 self.assertFalse(iso.compare_identities([100, 102, 108, 110], decoded)['isoPixelArrivalFidelityPassed'])
 
+    # #1030 held frames. Times are presentation seconds; 30 fps frame period.
+    PERIOD = 1 / 30
+
+    def test_healthy_file_passes_with_no_held_frames(self):
+        decoded = [(100 + i, i * self.PERIOD) for i in range(4)]
+        result = iso.compare_identities([100, 101, 102, 103], decoded, 0, self.PERIOD)
+        self.assertTrue(result['isoPixelArrivalFidelityPassed'])
+        self.assertEqual((result['heldFrames'], result['heldExcused'], result['repeated']), (0, 0, 0))
+
+    def test_a_source_stall_without_holds_loses_no_arrival(self):
+        # Pins the drill's behaviour before held frames: the trace expects only
+        # OFFERED arrivals, so a 2 s video stall (no arrivals) is not "missing";
+        # the stall shows only in coverage.maximumSourceArrivalGapMs.
+        decoded = [(100, 0.0), (101, self.PERIOD), (102, 2.0 + self.PERIOD)]
+        result = iso.compare_identities([100, 101, 102], decoded, 0, self.PERIOD)
+        self.assertTrue(result['isoPixelArrivalFidelityPassed'])
+        self.assertEqual((result['missing'], result['repeated']), (0, 0))
+
+    def test_stall_with_the_writer_hold_pattern_passes_and_reports_held(self):
+        # The last picture (101) is held once per second while the video is
+        # stalled; the first hold sits one frame period past the threshold
+        # (1 s minus one frame period after 101), never exactly on it.
+        decoded = [(100, 0.0), (101, self.PERIOD), (101, self.PERIOD + 1.0), (101, 2.06), (101, 3.07), (102, 3.5)]
+        result = iso.compare_identities([100, 101, 102], decoded, 3, self.PERIOD)
+        self.assertTrue(result['isoPixelArrivalFidelityPassed'], result)
+        self.assertEqual((result['heldExcused'], result['holdsMatched'], result['repeated']), (3, True, 0))
+
+    def test_a_repeat_that_is_not_a_hold_fails(self):
+        # Adjacent duplicate (one frame period later) is a real repeat even when
+        # the writer reported a hold.
+        adjacent = [(100, 0.0), (101, self.PERIOD), (101, 2 * self.PERIOD), (102, 3 * self.PERIOD)]
+        result = iso.compare_identities([100, 101, 102], adjacent, 1, self.PERIOD)
+        self.assertFalse(result['isoPixelArrivalFidelityPassed'])
+        self.assertEqual((result['repeated'], result['heldExcused']), (1, 0))
+        # A repeat of an EARLIER identity is never a hold.
+        earlier = [(100, 0.0), (101, self.PERIOD), (100, 1.5), (102, 1.6)]
+        self.assertFalse(iso.compare_identities([100, 101, 102], earlier, 1, self.PERIOD)['isoPixelArrivalFidelityPassed'])
+
+    def test_hold_count_must_match_the_writer(self):
+        decoded = [(100, 0.0), (101, self.PERIOD), (101, 1.1), (101, 2.1), (102, 2.5)]
+        for reported in (0, 1, 3):
+            with self.subTest(reported=reported):
+                result = iso.compare_identities([100, 101, 102], decoded, reported, self.PERIOD)
+                self.assertFalse(result['isoPixelArrivalFidelityPassed'])
+                self.assertFalse(result['holdsMatched'])
+        self.assertTrue(iso.compare_identities([100, 101, 102], decoded, 2, self.PERIOD)['isoPixelArrivalFidelityPassed'])
+
+    def test_a_stall_that_runs_through_stop_excuses_the_tail_hold(self):
+        # The camera stops before the window ends and never returns: holds,
+        # then the close-time tail hold as the file's last frame. No identity
+        # past the window end exists to stop the scan, so the tail is judged.
+        holds = [(100, 0.0), (101, self.PERIOD), (101, 1.1), (101, 2.1), (101, 3.1)]
+        for tail_at in (3.2, 4.5):  # closer than 1 s, and further than 1 s
+            with self.subTest(tail_at=tail_at):
+                result = iso.compare_identities([100, 101], holds + [(101, tail_at)], 3, self.PERIOD, tail_frames=1)
+                self.assertTrue(result['isoPixelArrivalFidelityPassed'], result)
+                self.assertEqual((result['heldExcused'], result['tailExcused'], result['repeated']), (3, 1, 0))
+                # Without the writer's tailFrames the same file fails.
+                self.assertFalse(iso.compare_identities([100, 101], holds + [(101, tail_at)], 3, self.PERIOD)
+                                 ['isoPixelArrivalFidelityPassed'])
+        # tailFrames excuses only the LAST frame, and only a repeat of the one before it.
+        self.assertFalse(iso.compare_identities([100, 101], [(100, 0.0), (101, 0.03), (101, 0.06), (101, 0.09)], 0,
+                                                self.PERIOD, tail_frames=1)['isoPixelArrivalFidelityPassed'])
+        self.assertFalse(iso.compare_identities([100, 101], [(100, 0.0), (101, 0.03), (100, 0.06)], 0,
+                                                self.PERIOD, tail_frames=1)['isoPixelArrivalFidelityPassed'])
+
+    def test_hold_tolerance_is_clamped_on_a_mostly_stalled_file(self):
+        # 3 real frames then 40 holds: the median packet interval is ~1 s.
+        times = [0.0, self.PERIOD, 2 * self.PERIOD] + [2 * self.PERIOD + 1.0 * (i + 1) for i in range(40)]
+        self.assertAlmostEqual(iso.hold_frame_period(times, 30), self.PERIOD)
+        self.assertLessEqual(iso.hold_frame_period(times), 1 / 24)  # no frame rate: still a frame, not ~1 s
+        # With the clamp a repeat 0.1 s later is NOT a hold.
+        decoded = [(100, 0.0), (101, self.PERIOD), (101, self.PERIOD + 0.1), (102, 0.5)]
+        result = iso.compare_identities([100, 101, 102], decoded, 1, iso.hold_frame_period(times, 30))
+        self.assertFalse(result['isoPixelArrivalFidelityPassed'])
+        self.assertEqual(result['heldExcused'], 0)
+
+    def test_untimed_repeats_are_never_excused(self):
+        result = iso.compare_identities([100, 101, 102], [100, 101, 101, 102], 1)
+        self.assertFalse(result['isoPixelArrivalFidelityPassed'])
+
     def write_trace(self, path, *, lost=0, complete=1, second_epoch=5, source='zoom:1000', dimensions=(1920, 1080), v2=False):
         tag = iso.source_tag(source, 777)
         records = [iso.EVENT.pack(777, tag, epoch, -1, frame, at, at * 10000,
