@@ -51,3 +51,17 @@
 - 2026-10-23: three GPU tiers by VRAM, overrides allowed and logged (#439).
 - 2026-10-23: production hostnames `telemetry.corevideo.io`, `ops.corevideo.io`, `auth.corevideo.io` (#434/#436).
 - 2026-10-23: the installer stays 32-bit NSIS; 64-bit registry view and Sysnative at the seams.
+
+## Rulings 2026-10-23 23:50 EDT (owner, via the pick-one tool)
+
+D1 CI secret baked per channel (one revocable beta key via release.yml). D2 `/oauth/callback`.
+D3 signed key file at launch, hand-issued for the first cohort. D4 move operator content to a dated
+backup with a manifest, never delete, report loudly. D5 helper may reset PSModulePath for its own
+process, logged. D8 ISO on the software encoder = note, passes on identity; Program on the software
+encoder stays FAIL for RC. D9 Informational with measured per-frame cost; Warning only when frames
+drop. D10 all five ZoomISO rules confirmed as worded. D11 env-var fault switch allowed, documented,
+never set by the installer. D12 close #457 on the evidence; add the graceful-close check. D13 absorb
+CRT invalid-parameter faults and continue. D14 skip-and-count bad IPC messages. D15 helper dumps
+listed only, never uploaded. D16 mini dumps by default, full under the QA env var. D17 accept the
+A/V-trim race for this slice. D18 1.5 s / 2.0 s / 5.0 s confirmed. D19 named slate after the
+deadline even for "black". D20 failed slate in Preview and multiview too. D6 and D7: pending.
