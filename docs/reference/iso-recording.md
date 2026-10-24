@@ -128,19 +128,33 @@ Four guards, each sufficient for a different failure:
    queued inside the sink writer and zero bytes on disk** (PCM accumulating,
    ~690 MB per hour of camera-off). That is the case a present participant
    with the camera off produces (IsoVideoIngress submits only distinct frames,
-   and they keep their stem). The fix is MF's own sparse-stream signal:
-   `Mp4Writer::tickStalledVideo` sends `IMFSinkWriter::SendStreamTick` on the
-   video stream once per second of media while video is more than 1 s behind
-   the audio (trailing audio by 0.5 s so a resumed camera is never stamped
-   behind the gap marker; the held VFR frame is flushed first). Measured with
-   it: the same 30 s reached disk as audio-only fragments before Stop
-   (+522 KB, about 63 MB per hour of audio-only on disk), `queued_bytes=0` at
-   the Finalize drain, and a camera that resumed afterwards muxed every frame
-   with no dropped-video warning. In memory the sink holds at most about 1.5 s
-   of PCM per stalled file (~290 KB) between ticks. Evidence: the
-   `[recording-writer] ... queued_bytes=` diagnostic now fires from the audio
-   path too (`via=audio`), so it no longer goes silent exactly when video
-   stops, and the Finalize `drain` line reports `queued_bytes`.
+   and they keep their stem). The fix: while video is more than 1 s behind
+   the audio, `Mp4Writer::holdStalledVideo` re-submits the last real picture
+   once per second of media, 0.5 s behind the audio (a held frame, like the
+   close-time tail hold; counted in the mux frame count, never in
+   `framesWritten`). The VFR pending logic gives every sample its exact
+   duration, so the picture freezes through the gap and the timeline is kept.
+   Measured with it: the same 30 s reached disk as fragments before Stop
+   (+473 KB, about 57 MB per hour of camera-off on disk), `queued_bytes=0` at
+   the Finalize drain, and the sink writer's own queue peaked at 7,680 bytes
+   per stalled file (`stall_max_queued_bytes`, sampled just before each hold
+   on the drain line, which also reports `held_frames`; 28-29 holds in the
+   30 s stall). That statistic excludes encoded AAC waiting inside the fMP4
+   sink for interleave, which the hold cadence bounds to under 1.5 s of AAC
+   (~24 KB at 128 kbps). **A resumed camera frame stamped at
+   or behind the last held frame takes that hold's slot** (the still-pending
+   held picture is discarded and the real frame is placed at the hold's time;
+   it is never dropped, file PTS stay strictly monotonic, and the following
+   frames land on their own capture times), pinned by
+   `MediaFoundationIsoFrameStampedBehindTheLastHeldFrame`.
+   `IMFSinkWriter::SendStreamTick` was tried first and rejected by that test:
+   it did flush the audio, but the fMP4 sink lays video out by accumulated
+   sample durations and the tick collapsed the gap, so a camera resumed at
+   31 s muxed at 2.8 s against its audio (monotonic, but desynchronized).
+   Evidence: the `[recording-writer] ... queued_bytes=` diagnostic now fires
+   from the audio path too (`via=audio`), so it no longer goes silent exactly
+   when video stops; the Finalize `drain` line reports `queued_bytes`; the
+   first hold of a file logs `[recording] video stalled ...`.
 2. **No silence for a departed participant.** The audio worker reads the
    meeting roster's ids BEFORE taking coreMutex
    (`MediaCore::readZoomRosterIdsUnlocked`, through
@@ -157,7 +171,7 @@ Four guards, each sufficient for a different failure:
    participant who returns resumes the stem; `isoAudioAdvance` bridges the gap
    with silence at that moment, so sync is unchanged. Camera-off participants
    still in the meeting are deliberately NOT treated as departed: their stems
-   keep full length (guard 1 keeps that bounded).
+   keep full length (guard 1's held frames keep that bounded).
    **Lock guardrail:** `ZoomEngineRuntime::mutex_` is an `EngineMutex`
    (`modules/EngineMutexGuardrail.h`); `gatherAudioOutputWork` opens a
    `ForbidEngineMutexScope`, and any engine-mutex acquisition inside it is
@@ -204,7 +218,9 @@ and, Windows MF only,
 `EncoderRecordingSession.MediaFoundationIsoWhoseVideoStopsWhileAudioContinuesClosesWithinBound`
 (30 s of silence ahead of stopped video must reach disk before Stop, the
 camera then resumes cleanly, Stop finishes inside 3.5 s and never by
-abandonment), `...DepartedIsoParticipantIsNotSilenceFilled` (the stem stays
+abandonment), `...IsoFrameStampedBehindTheLastHeldFrame` (a resumed frame
+stamped behind the last hold is muxed in its slot, PTS monotonic, the resumed
+camera on its capture times), `...DepartedIsoParticipantIsNotSilenceFilled` (the stem stays
 under 3 s instead of 31 s), `...StopAbandonsAnIsoWriterThatMissesTheJoinBound`
 (the stall QA seam held past a 3 s bound: Stop returns, the file is named, the
 next take runs, the late writer is reaped) and

@@ -255,9 +255,12 @@ class Mp4Writer {
     lastVideoEnd100ns_ = 0;
     lastAudioEnd100ns_ = 0;
     maxAudioPtsEnd100ns_ = 0;
-    lastVideoTick100ns_ = 0;
-    videoStreamTicks_ = 0;
-    videoTickFailureLogged_ = false;
+    lastVideoHold100ns_ = 0;
+    videoHoldFrameCount_ = 0;
+    videoFramesBehindHold_ = 0;
+    pendingIsHold_ = false;
+    stallMaxQueuedBytes_ = 0;
+    videoHoldFailureLogged_ = false;
     path_ = path;
     videoInput_ = videoInput;
     // NV12 requires even luma dimensions; floor to even (Zoom I420 is already even).
@@ -710,7 +713,7 @@ class Mp4Writer {
     ++audioPacketCount_;
     audioSampleCount_ += frameCount;
     muxAudioSampleCount_ += frameCount;
-    tickStalledVideo(muxPts100ns + duration100ns);
+    holdStalledVideo(muxPts100ns + duration100ns);
     // Media Foundation's AAC transform emits one continuous sample-counted
     // stream (including synthetic silence) even when input PTS are sparse.
     // This cumulative endpoint therefore matches the finalized container;
@@ -843,14 +846,16 @@ class Mp4Writer {
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
         } while (std::chrono::steady_clock::now() < deadline);
         ::corevideo::core::nativeLogf("[recording] drain file=%s received=%llu encoded=%llu processed=%llu "
-                     "lastReceived=%.3fs lastProcessed=%.3fs queued_bytes=%llu\n",
+                     "lastReceived=%.3fs lastProcessed=%.3fs queued_bytes=%llu held_frames=%lld stall_max_queued_bytes=%llu\n",
                      path_.filename().string().c_str(),
                      static_cast<unsigned long long>(stats.qwNumSamplesReceived),
                      static_cast<unsigned long long>(stats.qwNumSamplesEncoded),
                      static_cast<unsigned long long>(stats.qwNumSamplesProcessed),
                      stats.llLastTimestampReceived / 10'000'000.0,
                      stats.llLastTimestampProcessed / 10'000'000.0,
-                     static_cast<unsigned long long>(sinkQueuedBytes()));
+                     static_cast<unsigned long long>(sinkQueuedBytes()),
+                     static_cast<long long>(videoHoldFrameCount_),
+                     static_cast<unsigned long long>(stallMaxQueuedBytes_));
       }
       const auto closeResult = sinkWriter_->Finalize();
       if (SUCCEEDED(finalizeResult)) finalizeResult = closeResult;
@@ -938,6 +943,30 @@ class Mp4Writer {
 
   HRESULT writeVideoSample(IMFSample* sample) {
     if (!variableVideoDurations_) return submitVideoSample(sample);
+    // #1030: a real frame stamped at or behind the last held frame (a camera
+    // that resumes inside the hold's 0.5 s trail) TAKES that hold's slot: the
+    // still-pending held picture is discarded (the file already runs to its
+    // time) and the real frame is placed there; its following frame then gets
+    // the duration that lands it on its own capture time, so A/V sync is kept.
+    // Placing it 100 ns after the hold collided in the file's timescale.
+    if (lastVideoHold100ns_ > 0) {
+      LONGLONG at = 0;
+      if (SUCCEEDED(sample->GetSampleTime(&at)) && at <= lastVideoHold100ns_) {
+        LONGLONG placed = lastVideoHold100ns_;
+        LONGLONG held = 0;
+        if (pendingIsHold_ && pendingVideoSample_) {
+          pendingVideoSample_.Reset();
+          pendingIsHold_ = false;
+          --videoFrameCount_;
+          --videoHoldFrameCount_;
+        } else if (pendingVideoSample_ && SUCCEEDED(pendingVideoSample_->GetSampleTime(&held)) && placed <= held) {
+          // A second late frame behind the same hold: half a frame later.
+          placed = held + (std::max<LONGLONG>)(frameDuration100ns_ / 2, 10'000);
+        }
+        (void)sample->SetSampleTime(placed);
+        ++videoFramesBehindHold_;
+      }
+    }
     // The fragmented MP4 sink does not preserve gaps after a fragment's last
     // nominal-duration sample. Keep one real frame until the next capture PTS
     // gives its actual duration; otherwise VFR ISOs gradually outrun their audio.
@@ -954,41 +983,62 @@ class Mp4Writer {
       if (FAILED(hr)) return hr;
     }
     pendingVideoSample_ = sample;
+    pendingIsHold_ = false;
     return S_OK;
   }
 
   // #1030: with throttling disabled, audio that runs ahead of a stopped video
   // stream is accepted but the fragmented-MP4 sink holds it for interleave, so
   // it accumulated in memory (measured: 30 s of audio, 4.7 MB queued, zero
-  // bytes on disk). MF's own signal for a sparse stream is a stream tick: it
-  // tells the sink there is no video up to that time so audio-only fragments
-  // can be written. Sent at most once per second of media while video is
-  // more than one second behind.
-  void tickStalledVideo(LONGLONG audioEnd100ns) {
-    if (!sinkWriter_ || videoFrameCount_ <= 0) return;
+  // bytes on disk). While video is more than 1 s behind the audio, re-submit
+  // the last real picture once per second of media (a held frame, like the
+  // close-time tail hold), trailing the audio by 0.5 s. The VFR pending logic
+  // gives every sample its exact duration, so the picture freezes through the
+  // gap and a resumed camera lands on its own capture time.
+  // NOT IMFSinkWriter::SendStreamTick: it did flush the audio, but the sink
+  // lays video out by accumulated sample durations and the tick collapsed the
+  // gap (measured: a camera resumed at 31.0 s muxed at 2.8 s against its audio).
+  void holdStalledVideo(LONGLONG audioEnd100ns) {
+    if (!sinkWriter_ || videoFrameCount_ <= 0 || !lastVideoBuffer_) return;
     constexpr LONGLONG kBehind100ns = 10'000'000LL;
-    const LONGLONG videoEnd = (std::max)(lastVideoEnd100ns_, lastVideoTick100ns_ + kBehind100ns / 2);
+    const LONGLONG videoEnd = (std::max)(lastVideoEnd100ns_, lastVideoHold100ns_ + kBehind100ns / 2);
     if (audioEnd100ns - videoEnd < kBehind100ns) return;
-    // The held VFR frame cannot follow a tick (its PTS would be behind it):
-    // give it its nominal duration now. The tick trails audio by 0.5 s so a
-    // camera that resumes is never stamped behind the gap marker.
-    if (FAILED(flushPendingVideoSample())) return;
-    const LONGLONG tickAt = audioEnd100ns - kBehind100ns / 2;
-    const HRESULT hr = sinkWriter_->SendStreamTick(videoStreamIndex_, tickAt);
-    if (SUCCEEDED(hr)) {
-      lastVideoTick100ns_ = tickAt;
-      ++videoStreamTicks_;
-    } else if (!videoTickFailureLogged_) {
-      videoTickFailureLogged_ = true;
-      ::corevideo::core::nativeLogf("[recording] video stream tick FAILED hr=%s file=%s\n",
-                                    hresultString(hr).c_str(), path_.filename().string().c_str());
+    const LONGLONG holdAt = audioEnd100ns - kBehind100ns / 2;
+    if (holdAt <= lastVideoPts100ns_) return;
+    // Evidence for the bound: what the sink holds just before each hold
+    // releases it (reported on the Finalize drain line).
+    stallMaxQueuedBytes_ = (std::max)(stallMaxQueuedBytes_, sinkQueuedBytes());
+    ComPtr<IMFSample> sample;
+    HRESULT hr = MFCreateSample(&sample);
+    if (SUCCEEDED(hr)) hr = sample->AddBuffer(lastVideoBuffer_.Get());
+    if (SUCCEEDED(hr)) hr = sample->SetSampleTime(holdAt);
+    if (SUCCEEDED(hr)) hr = sample->SetSampleDuration(frameDuration100ns_);
+    if (SUCCEEDED(hr)) hr = writeVideoSample(sample.Get());
+    if (SUCCEEDED(hr) && variableVideoDurations_) pendingIsHold_ = true;
+    if (FAILED(hr)) {
+      if (!videoHoldFailureLogged_) {
+        videoHoldFailureLogged_ = true;
+        ::corevideo::core::nativeLogf("[recording] held video frame FAILED hr=%s file=%s\n",
+                                      hresultString(hr).c_str(), path_.filename().string().c_str());
+      }
+      return;
     }
+    if (videoHoldFrameCount_ == 0)
+      ::corevideo::core::nativeLogf("[recording] video stalled file=%s at %.3fs; holding the last picture "
+                                    "once per second so audio keeps reaching disk\n",
+                                    path_.filename().string().c_str(), lastVideoEnd100ns_ / 10'000'000.0);
+    lastVideoHold100ns_ = holdAt;
+    lastVideoPts100ns_ = holdAt;
+    lastVideoEnd100ns_ = holdAt + frameDuration100ns_;
+    ++videoFrameCount_;
+    ++videoHoldFrameCount_;
   }
 
   HRESULT flushPendingVideoSample() {
     if (!pendingVideoSample_) return S_OK;
     const auto hr = submitVideoSample(pendingVideoSample_.Get());
     pendingVideoSample_.Reset();
+    pendingIsHold_ = false;
     return hr;
   }
 
@@ -1144,9 +1194,12 @@ class Mp4Writer {
   LONGLONG lastVideoEnd100ns_ = 0;
   LONGLONG lastAudioEnd100ns_ = 0;
   LONGLONG maxAudioPtsEnd100ns_ = 0;
-  LONGLONG lastVideoTick100ns_ = 0;  // #1030 last SendStreamTick on video
-  int64_t videoStreamTicks_ = 0;
-  bool videoTickFailureLogged_ = false;
+  LONGLONG lastVideoHold100ns_ = 0;  // #1030 last held-frame time on a stalled video
+  int64_t videoHoldFrameCount_ = 0;
+  int64_t videoFramesBehindHold_ = 0;
+  bool pendingIsHold_ = false;  // the pending VFR sample is a held picture
+  uint64_t stallMaxQueuedBytes_ = 0;
+  bool videoHoldFailureLogged_ = false;
   bool open_ = false;
   bool variableVideoDurations_ = false;
   ComPtr<IMFSample> pendingVideoSample_;

@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <functional>
 #include <string>
 #include <thread>
@@ -2155,8 +2156,8 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWhoseVideoStopsWhileAudioContinu
   EXPECT_GT(bytesAfterSilence, bytesAtDeparture + 100'000)
       << "audio after the video stopped did not reach disk; the sink writer is holding it";
 
-  // The camera comes back after the gap: frames stamped after the video
-  // stream ticks are accepted (no dropped-video warning) and muxed.
+  // The camera comes back after the gap: frames stamped after the held
+  // frames are accepted (no dropped-video warning) and muxed.
   constexpr int64_t kTick = 200'000;
   for (int tick = 1551; tick <= 1560; ++tick) {
     const int64_t at = base + tick * kTick;
@@ -2186,6 +2187,115 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWhoseVideoStopsWhileAudioContinu
   EXPECT_GE(s.isoStreams[0].videoFrameCount, 60) << "resumed camera frames must be muxed after the stall";
   encoder.reset();
   fs::remove_all(targetDir, ec);
+}
+
+// #1030 re-review: the camera returns with a frame stamped BEHIND the last
+// held video frame. While video is stalled the writer holds the last picture
+// once per second of media, 0.5 s behind the audio, so after a silent run
+// ending at A the last hold lies within [A - 1.52 s, A - 0.5 s]; a frame at
+// A - 1.8 s is therefore at least 0.28 s behind it (and after the last real
+// frame at ~1 s). Pinned behaviour: the late frame is muxed just after that
+// hold (never dropped, PTS strictly monotonic) and the resumed camera lands on
+// its own capture times, so A/V sync holds. This test is what rejected the
+// first design (IMFSinkWriter::SendStreamTick): the fMP4 sink lays video out
+// by accumulated sample durations and the tick collapsed the 28 s gap, so the
+// resumed frames muxed at ~2.8 s against audio at 31 s (monotonic, wrong).
+TEST(EncoderRecordingSession, MediaFoundationIsoFrameStampedBehindTheLastHeldFrame) {
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) return;  // Media Foundation unavailable.
+  encoder->enableIndependentIsoWriters();
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() /
+      ("corevideo-iso-behind-tick-" + std::to_string(GetCurrentProcessId()));
+  fs::remove_all(targetDir, ec);
+  encoder->configureRecording(departureRequest(targetDir, "iso-behind-tick"));
+  corevideo::modules::ProgramFrame frame;
+  int64_t base = 0;
+  ASSERT_TRUE(openDepartureTake(*encoder, base, frame));
+
+  driveDeparture(*encoder, base, frame, 1500, /*markDeparted=*/false);
+  (void)drainedIsoFileBytes(*encoder);  // the holds have been written by now
+  constexpr int64_t kTick = 200'000;
+  const int64_t audioEnd = base + 1550 * kTick;  // A = 31.0 s of media
+  // The returning camera's first frame, behind the last held frame.
+  auto late = makeIsoI420("zoom:1", 640, 360, 5000, 40);
+  late.timelineTimestamp100ns = audioEnd - 18'000'000;
+  encoder->submitIsoVideo({late});
+  // Then the camera runs normally again with its audio.
+  for (int i = 1; i <= 10; ++i) {
+    const int64_t at = audioEnd + i * kTick;
+    auto video = makeIsoI420("zoom:1", 640, 360, 5000 + i, 40);
+    video.timelineTimestamp100ns = at;
+    encoder->submitIsoVideo({video});
+    auto tone = makeIsoTone("zoom:1", 960, 1, 220.0, (1550 + i) * 960LL);
+    tone.timelineTimestamp100ns = at;
+    encoder->submitIsoAudio({tone});
+  }
+  (void)drainedIsoFileBytes(*encoder);
+  encoder->stopRecording();
+
+  const auto s = encoder->session();
+  ASSERT_EQ(s.isoStreams.size(), 1u);
+  const auto& iso = s.isoStreams[0];
+  const fs::path path = iso.path;
+  Microsoft::WRL::ComPtr<IMFSourceReader> reader;
+  ASSERT_TRUE(SUCCEEDED(MFCreateSourceReaderFromURL(path.wstring().c_str(), nullptr, &reader)));
+  std::vector<LONGLONG> pts;
+  for (;;) {
+    DWORD flags = 0; LONGLONG at = 0;
+    Microsoft::WRL::ComPtr<IMFSample> sample;
+    ASSERT_TRUE(SUCCEEDED(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &at, &sample)));
+    if (sample) pts.push_back(at);
+    if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+  }
+  PROPVARIANT duration; PropVariantInit(&duration);
+  ASSERT_TRUE(SUCCEEDED(reader->GetPresentationAttribute(
+      static_cast<DWORD>(MF_SOURCE_READER_MEDIASOURCE), MF_PD_DURATION, &duration)));
+  const auto fileDuration100ns = static_cast<int64_t>(duration.uhVal.QuadPart);
+  PropVariantClear(&duration);
+  bool monotonic = true;
+  for (size_t i = 1; i < pts.size(); ++i) {
+    if (pts[i] <= pts[i - 1]) {
+      monotonic = false;
+      std::printf("[iso-behind-tick] non-monotonic at %zu: %lld then %lld%c", i,
+                  static_cast<long long>(pts[i - 1]), static_cast<long long>(pts[i]), 10);
+    }
+  }
+  const auto latePts = audioEnd - 18'000'000 - base;
+  // The last hold lies in [A - 1.52 s, A - 0.5 s]; the late frame follows it.
+  const bool lateMuxed = std::any_of(pts.begin(), pts.end(),
+      [&](LONGLONG at) { return at >= latePts && at <= latePts + 13'200'000; });
+  std::printf("[iso-behind-tick] samples=%zu framesWritten=%lld late_muxed=%d monotonic=%d last_pts=%.3f "
+              "file_duration=%.3f warning='%s'\n",
+              pts.size(), static_cast<long long>(iso.videoFrameCount), lateMuxed ? 1 : 0, monotonic ? 1 : 0,
+              pts.empty() ? -1.0 : pts.back() / 1e7, fileDuration100ns / 1e7, iso.warning.c_str());
+
+  // Pinned behaviour (measured on the dev box, see iso-recording.md #1030):
+  EXPECT_TRUE(monotonic) << "video PTS in the file went backwards";
+  EXPECT_TRUE(lateMuxed) << "the frame stamped behind the held frame was not muxed after it";
+  // A/V sync after the gap: the resumed frames sit on their capture times.
+  const auto nearest = [&](int64_t want) {
+    int64_t best = (std::numeric_limits<int64_t>::max)();
+    for (const auto at : pts) best = (std::min)(best, std::abs(static_cast<int64_t>(at) - want));
+    return best;
+  };
+  // Within one 30 fps frame (the VFR writer's existing placement is 20 ms
+  // early here with or without a stall); the defect this guards was 28 s.
+  EXPECT_LE(nearest(audioEnd - base + kTick), 333'333) << "the first resumed frame is not at its capture time";
+  EXPECT_LE(nearest(audioEnd - base + 10 * kTick), 333'333) << "the last resumed frame is not at its capture time";
+  EXPECT_NEAR(static_cast<double>(pts.back()), static_cast<double>(audioEnd - base + 10 * kTick), 333'333.0)
+      << "the timeline after the gap is wrong (gap collapsed?)";
+  // The stall itself was filled by held pictures, about one per second.
+  EXPECT_GE(pts.size(), 61u + 25u) << "no held frames bridged the 30 s video stall";
+  EXPECT_EQ(iso.warning.find("dropped video"), std::string::npos) << iso.warning;
+  EXPECT_EQ(iso.videoFrameCount, 61) << "50 live + the late frame + 10 resumed";
+  // The file still finalizes to its real end: A + 0.2 s of resumed media.
+  EXPECT_GE(fileDuration100ns, audioEnd - base + 1'900'000);
+  EXPECT_LE(fileDuration100ns, audioEnd - base + 3'000'000);
+  reader.Reset(); encoder.reset();
+  if (monotonic && lateMuxed) fs::remove_all(targetDir, ec);
 }
 
 // Part 2: once the core marks the participant departed, the stem is no
