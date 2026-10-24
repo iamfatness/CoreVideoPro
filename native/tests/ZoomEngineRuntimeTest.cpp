@@ -847,6 +847,38 @@ TEST(ZoomEngineRuntime, CoalescesVersionedRosterFactsOnExistingEventDrain) {
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
 
+// #1037: the render tick's one-acquisition roster view agrees with the
+// existing accessors and with what a snapshot reports as the speaker.
+TEST(ZoomEngineRuntime, RenderViewCarriesTheFloorRosterAndTheDirectedSpeaker) {
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+  {
+    corevideo::modules::ZoomEngineRuntime unconfigured;
+    EXPECT_FALSE(unconfigured.renderViewIfConfigured().has_value());
+  }
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    const auto roster = corevideo::modules::parseZoomEngineEvent(
+        R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Talker","has_video":true,"is_talking":true},{"id":2,"name":"Quiet","has_video":true}]})");
+    ASSERT_TRUE(roster.has_value());
+    runtime.applyEngineEventForTest(*roster);
+    const auto view = runtime.renderViewIfConfigured();
+    ASSERT_TRUE(view.has_value());
+    const auto floor = runtime.floorParticipants();
+    ASSERT_EQ(view->floorParticipants.size(), 2u);
+    ASSERT_EQ(view->floorParticipants.size(), floor.size());
+    for (size_t i = 0; i < floor.size(); ++i) {
+      EXPECT_EQ(view->floorParticipants[i].id, floor[i].id);
+      EXPECT_EQ(view->floorParticipants[i].directorExcluded, floor[i].directorExcluded);
+      EXPECT_EQ(view->floorParticipants[i].displayName, floor[i].displayName);
+    }
+    EXPECT_FALSE(view->directedSpeakerId.empty());
+    EXPECT_EQ(view->directedSpeakerId, runtime.snapshot().getString("activeSpeakerId"));
+    EXPECT_EQ(view->directedSpeakerId, runtime.directedSpeakerId());
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
 
 namespace corevideo::modules {
 struct ZoomEngineRuntimeTestAccess {

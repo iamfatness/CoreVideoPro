@@ -648,8 +648,9 @@ std::string MediaCore::followSpeakerForRoutes(const std::vector<modules::VideoFr
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     // L3: the EPOCH first. join() runs off coreMutex; reading the id first could record
     // the previous meeting's speaker under the new meeting's epoch.
-    epoch = zoomEngineRuntime_->speakerEpoch();
-    current = zoomEngineRuntime_->directedSpeakerId();
+    // #1037 R6: both from the tick's pre-read, taken in that order before coreMutex.
+    epoch = renderEngineInputs_.speakerEpoch;
+    current = renderEngineInputs_.directedSpeakerId;
   } else {
     // N6: the stub's speaker is a constant; never build a whole stub snapshot per tick.
     current = zoomJoined_ ? kStubActiveSpeakerId : "";
@@ -661,6 +662,12 @@ std::string MediaCore::followSpeakerForRoutes(const std::vector<modules::VideoFr
       return frame.participantId == id && frame.hasContent();
     });
   });
+}
+
+std::string MediaCore::tallySpeakerId() const {
+  // #1037 R7-R9: never build a full roster snapshot under coreMutex for one id.
+  if (renderEngineInputs_.engineConfigured) return renderEngineInputs_.directedSpeakerId;
+  return zoomSnapshot().getString("activeSpeakerId");
 }
 
 rpc::Json MediaCore::zoomSnapshot() const {
@@ -3761,7 +3768,7 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
   const float mvCanvasW = static_cast<float>(renderPlan.width > 0 ? renderPlan.width : 1920);
   const float mvCanvasH = static_cast<float>(renderPlan.height > 0 ? renderPlan.height : 1080);
 
-  const std::string activeSpeakerId = zoomSnapshot().getString("activeSpeakerId");
+  const std::string activeSpeakerId = tallySpeakerId();
   const int totalSources = static_cast<int>(multiviewSources_.size());
   const bool pgmPvw = multiviewLayoutMode_ != "grid";
   // Grid shows every source; the pgmPvw modes show up to tileCount source tiles.
@@ -5012,7 +5019,37 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   return renderPlan;
 }
 
+MediaCore::RenderEngineInputs MediaCore::prepareRenderEngineInputsUnlocked() {
+  // #1037: the render tick's only roster/speaker read, made with coreMutex
+  // FREE. zoomEngineRuntime_ is created once in the constructor and never
+  // reset, so calling it unlocked is safe (the pollZoomAudioUnlocked
+  // argument). Touch NO coreMutex-domain state here.
+  RenderEngineInputs inputs;
+  inputs.valid = true;
+  if (!zoomEngineRuntime_ || !zoomEngineRuntime_->configured()) return inputs;
+  inputs.engineConfigured = true;
+  // L3: the EPOCH first, then the view, then the epoch again. The graphics
+  // binding only trusts a roster read entirely inside one speaker epoch.
+  const auto before = zoomEngineRuntime_->speakerEpoch();
+  auto view = zoomEngineRuntime_->renderViewIfConfigured();
+  const auto after = zoomEngineRuntime_->speakerEpoch();
+  inputs.speakerEpoch = before;
+  inputs.rosterSpeakerEpoch = before == after ? before : 0;
+  if (view) {
+    inputs.floorRoster = std::move(view->floorParticipants);
+    inputs.directedSpeakerId = std::move(view->directedSpeakerId);
+  }
+  return inputs;
+}
+
 void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnchorNs) {
+  // Tests and direct callers only (see MediaCore.h): the production render
+  // loop prepares the inputs before it takes coreMutex.
+  renderDisplayTick(productionSlot, productionAnchorNs, prepareRenderEngineInputsUnlocked());
+}
+
+void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnchorNs,
+                                  RenderEngineInputs inputs) {
   modules_.compositor->setProgramProductionTiming(productionSlot, productionAnchorNs);
   modules_.compositor->beginMonitorTick(!multiviewSources_.empty() || multiviewLayoutMode_ != "grid");
   // Sample file media on the scheduled content slot, before Program buffering.
@@ -5021,7 +5058,13 @@ void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnch
       ? (productionAnchorNs + (productionSlot / 60) * 1'000'000'000 +
          ((productionSlot % 60) * 1'000'000'000 + 59) / 60) / 100
       : -1;
-  renderSyntheticTick(/*videoOnly=*/true, mediaPresentationTime100ns);
+  {
+    // #1037 guardrail: this is the whole production render tick, under
+    // coreMutex. Any Zoom engine mutex acquisition in here outside a named
+    // AllowEngineMutexScope is counted and fails MediaCoreRenderGather.
+    modules::ForbidEngineMutexScope noEngineMutex("render.display-tick");
+    renderSyntheticTick(/*videoOnly=*/true, mediaPresentationTime100ns, std::move(inputs));
+  }
   static int64_t s_displayTickCount = 0;
   static auto s_displayTickStamp = std::chrono::steady_clock::now();
   if (::corevideo::core::nativeVerboseLoggingEnabled() && ++s_displayTickCount % 120 == 0) {
@@ -5033,7 +5076,11 @@ void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnch
   }
 }
 
-void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTime100ns) {
+void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTime100ns,
+                                    std::optional<RenderEngineInputs> inputs) {
+  // #1037: one home for this tick's engine inputs. The command-lane/test
+  // callers (no pre-read) prepare inline, outside any guardrail scope.
+  renderEngineInputs_ = inputs ? std::move(*inputs) : prepareRenderEngineInputsUnlocked();
   // T1.4: the monitor load-shedding policy needs this tick's total render cost
   // on EVERY tick, not just when verbose stage diagnostics are on. One clock
   // read here and a few around the monitor passes below; nothing else.
@@ -5092,10 +5139,16 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // roster the merge below starts from.
   std::vector<modules::VideoFrame> engineFrames;
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    // #1037 R1: frame-selection group, sanctioned until its fetch-before-lock A/B.
+    modules::AllowEngineMutexScope frameGroup("render.frame-group #1037-followup");
     engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
   }
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
+    const auto decoded = [&] {
+      // #1037 R2: frame-selection group (frame sync runs against now()).
+      modules::AllowEngineMutexScope frameGroup("render.frame-group #1037-followup");
+      return zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
+    }();
     markStage(s_subFetchUs, 0);
     std::vector<modules::VideoFrame> zoomFrames;
     zoomFrames.reserve(decoded.size());
@@ -5229,10 +5282,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
           ? std::string_view(found->second.displayName) : std::string_view(id);
     };
     if (engineLive) {
-      const auto graphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
-      const auto roster = zoomEngineRuntime_->floorParticipants();
-      const auto confirmedGraphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
-      graphicsInstances_.observeSources(roster, graphicsSourceEpoch == confirmedGraphicsSourceEpoch ? graphicsSourceEpoch : 0, videoFrames, captureLabel);
+      // #1037 R4: the roster pre-read before coreMutex, bracketed by the
+      // speaker epoch (rosterSpeakerEpoch is 0 if the epoch moved across it).
+      const auto& roster = renderEngineInputs_.floorRoster;
+      graphicsInstances_.observeSources(roster, renderEngineInputs_.rosterSpeakerEpoch, videoFrames, captureLabel);
       // A manual trim belongs to this participant incarnation, not to a
       // numeric SDK id that a later join could reuse inside the same meeting.
       if (!zoomGuestAvOffsets_.empty()) {
@@ -5283,13 +5336,18 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     };
     captureLinked(sceneRoutes_);
     captureLinked(previewSceneRoutes_);
-    const auto epoch = engineLive ? zoomEngineRuntime_->speakerEpoch() : zoomStubEpoch_;
+    // #1037: the epoch the roster above was read under (read before it, L3).
+    const auto epoch = engineLive ? renderEngineInputs_.speakerEpoch : zoomStubEpoch_;
     speakerFloor_.observeFrame(epoch, static_cast<std::uint64_t>(monotonicMs()), observations);
   }
   // Conversion has its own bounded arrival stream. Metadata/ref transfers only:
   // no readback or conversion may run on this gather/Program thread.
   auto captureCpuFrames = modules_.captureDevice->takeCpuVideoFrames();
-  if (engineLive) zoomEngineRuntime_->appendCpuVideoFrames(captureCpuFrames);
+  if (engineLive) {
+    // #1037 R5: frame-selection group (ISO CPU arrival transfer).
+    modules::AllowEngineMutexScope frameGroup("render.frame-group #1037-followup");
+    zoomEngineRuntime_->appendCpuVideoFrames(captureCpuFrames);
+  }
   if ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
       !recordingIsoParticipantIds_.empty()) {
     isoVideoIngress_.observe(recordingIsoParticipantIds_, videoFrames, captureCpuFrames, monotonic100ns(),
@@ -5862,7 +5920,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // Per-tile rects (geometry + role + tally + label) for the active layout mode.
     // buildMultiviewTiles derives the same cell geometry buildMultiviewRenderPlan
     // placed its layers into, plus the PGM/PVW cells for the pgmPvw modes.
-    const std::string activeSpeakerId = zoomSnapshot().getString("activeSpeakerId");
+    const std::string activeSpeakerId = tallySpeakerId();
     lastProgramFrame_.multiviewTiles = buildMultiviewTiles(activeSpeakerId);
     // Cache for the throttled ticks below.
     lastMultiviewTexture_ = lastProgramFrame_.multiviewSharedTexture;

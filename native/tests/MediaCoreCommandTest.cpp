@@ -9674,3 +9674,116 @@ TEST(EngineMutexGuardrail, AllowScopeSanctionsOneSiteAndRestoresTheForbiddenScop
   EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before + 1);
   EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenDepth(), 0);
 }
+
+// #1037: the production render tick reads the roster and the directed speaker
+// through a pre-read made BEFORE coreMutex; nothing inside it takes the Zoom
+// engine mutex except the three sanctioned frame-group calls.
+namespace {
+// The SourcePreviewRequestProbe pattern (MediaCoreBatchSnapshotTest.cpp): the
+// stub compositor plus isolated monitors, so the monitor request path runs.
+class RenderGatherMonitorProbe final : public corevideo::modules::ICompositor {
+ public:
+  explicit RenderGatherMonitorProbe(std::unique_ptr<corevideo::modules::ICompositor> inner)
+      : inner_(std::move(inner)) {}
+  std::string rendererName() const override { return inner_->rendererName(); }
+  corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    return inner_->render(plan, frames);
+  }
+  bool hasIsolatedMonitors() const override { return true; }
+  void submitMonitors(corevideo::modules::MonitorRenderRequest request) override {
+    lastTiles = request.tiles.size();
+    ++monitorCalls;
+  }
+  int monitorCalls = 0;
+  size_t lastTiles = 0;
+
+ private:
+  std::unique_ptr<corevideo::modules::ICompositor> inner_;
+};
+
+std::uint64_t runRenderGatherRosterChurn(bool isolatedMonitors) {
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto modules = corevideo::modules::createStubModules();
+  RenderGatherMonitorProbe* monitors = nullptr;
+  if (isolatedMonitors) {
+    auto probe = std::make_unique<RenderGatherMonitorProbe>(std::move(modules.compositor));
+    monitors = probe.get();
+    modules.compositor = std::move(probe);
+  }
+  auto core = std::make_unique<corevideo::core::MediaCore>(std::move(modules));
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  EXPECT_TRUE(runtime && runtime->configured());
+  if (!runtime || !runtime->configured()) return 0;
+  const auto roster = [&](const char* json) {
+    const auto event = corevideo::modules::parseZoomEngineEvent(json);
+    ASSERT_TRUE(event.has_value());
+    runtime->applyEngineEventForTest(*event);
+  };
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Stays"},{"id":2,"name":"Leaves"}]})");
+
+  // Multiview (plan + tiles), a follow-speaker route with frames in the gather
+  // (followSpeakerForRoutes is skipped with no frames), and a guest A/V trim
+  // for participant 2 (the observable roster consumer).
+  corevideo::rpc::Json::Array tiles;
+  for (int i = 0; i < 2; ++i)
+    tiles.emplace_back(corevideo::rpc::Json::Object{{"sourceId", "zoom:" + std::to_string(i + 1)},
+        {"kind", "participant"}, {"participantId", std::to_string(i + 1)}, {"slot", i},
+        {"label", "Tile " + std::to_string(i + 1)}});
+  (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "set-multiview-layout"},
+      {"canvasWidth", 1920}, {"canvasHeight", 1080}, {"sources", tiles}});
+  (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "load-scene-graph"},
+      {"sceneId", "speaker"}, {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"routeId", "follow"}, {"mode", "active-speaker"}}}}});
+  core->addSourceForTest(std::make_shared<corevideo::core::TestPatternSource>("test:gather", 16, 16));
+  (void)core->setZoomGuestAvSyncOffset("2", 120);
+
+  const auto tick = [&] {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();  // BEFORE the lock
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  };
+  const auto trimmed = [&](const std::string& id) {
+    const auto state = core->sessionState();
+    const auto* sync = state.get("zoomGuestAvSync");
+    if (!sync || !sync->isArray()) return false;
+    return std::any_of(sync->asArray().begin(), sync->asArray().end(),
+        [&](const auto& row) { return row.getString("participantId") == id; });
+  };
+
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  tick();
+  EXPECT_TRUE(trimmed("2")) << "participant 2 is present: the trim must survive the gather";
+  if (monitors) EXPECT_GT(monitors->monitorCalls, 0) << "the isolated-monitor path must have run";
+
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":2,"participants":[{"id":1,"name":"Stays"}]})");
+  tick();
+  EXPECT_FALSE(trimmed("2")) << "a roster drop must reach the render gather (guest A/V prune)";
+  const auto delta = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load() - guardBefore;
+  core.reset();
+  return delta;
+}
+}  // namespace
+
+TEST(MediaCoreRenderGather, RosterChurnReachesTheRenderGatherWithoutTheEngineMutex) {
+  for (const bool isolated : {false, true}) {
+    const auto delta = runRenderGatherRosterChurn(isolated);
+    // R3 (setVideoConsumerDemand) only, one per tick; Task 5 moves it.
+    EXPECT_EQ(delta, 2u) << "the render tick (under coreMutex) took the Zoom engine mutex "
+                         << delta << " time(s) outside the frame group (isolatedMonitors="
+                         << (isolated ? "true" : "false") << ")";
+  }
+  // The guardrail itself is live on this thread: an engine call inside a
+  // forbidden scope counts, and the frame-group sanction does not leak.
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  const auto before = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  {
+    corevideo::modules::ForbidEngineMutexScope forbidden("test");
+    (void)core->zoomEngineRuntimeForTest()->floorParticipants();
+  }
+  EXPECT_GT(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before);
+}

@@ -1173,6 +1173,15 @@ std::optional<std::vector<std::uint32_t>> ZoomEngineRuntime::rosterIdsIfConfigur
   return state_.participantIds();
 }
 
+std::optional<ZoomRenderView> ZoomEngineRuntime::renderViewIfConfigured() {
+  if (!configured()) return std::nullopt;
+  std::lock_guard<EngineMutex> lock(mutex_);
+  // The multiview/monitor tally used to read the speaker from a full snapshot,
+  // which advances the (purely time-driven) director first. Keep that tick.
+  state_.advanceActiveSpeaker(monotonicMs());
+  return ZoomRenderView{state_.floorParticipants(), state_.directedSpeakerIdString()};
+}
+
 std::vector<ZoomEngineParticipant> ZoomEngineRuntime::floorParticipants() {
   if (!configured()) return {};
   std::lock_guard<EngineMutex> lock(mutex_);
