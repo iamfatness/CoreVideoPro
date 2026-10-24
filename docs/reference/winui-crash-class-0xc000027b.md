@@ -41,13 +41,21 @@ off-thread guards never fired). Confirmed and suspected triggers:
   `Application.Current.Exit()`. It uses TerminateProcess, not `Environment.Exit`, because
   `ExitProcess` would still run `DLL_PROCESS_DETACH` in Microsoft.UI.Xaml and CoreMessagingXP.
   The logs are synchronous, and no ProcessExit handlers exist. A failed or timed-out cleanup
-  keeps the `ApplicationLifecycle.ForceExit` fallback. `PrepareForShutdown` also stops the view
+  keeps the `ApplicationLifecycle.ForceExit` fallback. Since the #457 closure (2026-10-23) `ForceExit` also ends in
+  `TerminateProcess` (`Environment.Exit` only if that call returns); `ApplicationLifecycleForceExitTests`
+  pin the order and the run-once latch. `PrepareForShutdown` also stops the view
   model's DispatcherQueueTimers (defence in depth). **Rule: never hand a torn-down shell back to
   WinUI's shutdown drain.** Unit tests (`ShutdownCompletionTests`) pin the order and the gate.
   (T1.8 put a close guard in FRONT of this path — see "Engine teardown order": closing while
   recording/streaming asks first and finishes the files before `ShutdownAsync` starts.)
   The proof is a scripted close-cycle loop on the real app: zero new
   `CoreVideoPro.WinUI.exe.*.dmp` and zero Application Error 1000 events.
+  Live confirmation (2026-10-23 census, #457 closed): 7 in-meeting closes after 41-612 min on the
+  fixed path, 0 recurrences of `CoreMessagingXP+0x97de6`, 0 `ShutdownCompletion` fallbacks. The
+  original dump 17304 was not retained, so the stack is the 2026-09-10 reading, consistent with
+  events 1000/1001 and the log timing. The standing check is `scripts/qa/graceful-close-check.ps1`
+  (one `WM_CLOSE` after a 30-minute in-meeting run; a second close during cleanup takes the
+  `ForceExit` path instead, so the check never sends one).
 
 - **The GC FINALIZER THREAD releasing a XAML object (#513, 2026-09-13) — the first
   member of this family that is ASYNCHRONOUS and TIME-DELAYED, and it is NOT
