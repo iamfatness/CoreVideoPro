@@ -7,6 +7,8 @@ every ISO, the registered OS virtual camera, the stream), judged by pixel
 identity with zero tolerance. On-screen Studio cells are a UX metric with a
 tolerance and are **not** part of this command.
 
+**Amendment, owner ruling 2026-10-23 23:27 EDT (#1030, #1038):** a held frame passes the per-frame identity gate as a labelled, counted, source-caused repeat. A held frame is the last picture that an ISO writer re-submits while that source's video is stalled. It passes only when all three conditions hold: (1) it repeats the immediately preceding picture; (2) it lies at least 1 s, minus one frame period, after that picture; (3) the number of such repeats in the file equals the writer's `heldFrames` in the finalized recording snapshot. The close-time tail hold is excused the same way, only as the file's last frame when `tailFrames` is 1. Zero tolerance remains for anything the pipeline itself loses or duplicates: a missing arrival, any other repeat, a reorder, an invalid picture, or a hold count that disagrees with the writer still fails. A passing row with holds must read `held=N, source stalled`, so the stall is never a silent pass.
+
 ```powershell
 # 30-minute local-sources drill (webcam + screen capture), all outputs:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\qa\outputs-drill.ps1
@@ -121,7 +123,8 @@ harness refused to judge Program without the camera bound.
 Program GPU deadlines (`delivery-trace.py --require-program-deadlines`) are
 printed as supplementary evidence only, outside the overall verdict.
 `iso-pixel-verdict.py` gained additive `missing`/`repeated` counts for the
-summary; its pass rule is unchanged.
+summary (#443), and #1030 extended its pass rule as follows.
+**Held frames (#1030):** a repeat is excused only when it repeats the immediately preceding picture at least 1 s (minus one frame period, the median packet interval clamped to 1/frameRate) after it AND the excused count equals that ISO's `heldFrames` in the finalized recording snapshot; the close-time tail hold is excused only as the file's last frame repeating the one before it when that ISO's `tailFrames` is 1 (a stall that runs through Stop); any other repeat fails, and an excused stall is reported on the row as `held=N, source stalled` with the longest arrival gap. The summary's `repeated=` column excludes excused repeats by design. Accepted narrow hole: a stale-stamped duplicate from upstream that lands in a hold's slot is pixel-identical to the hold, so it passes as that hold. A source stall by itself never counted as missing: the ISO judge expects only arrivals the trace OFFERED, so a stall (no arrivals) passed before held frames existed and still does (pinned by `test_iso_pixels.test_a_source_stall_without_holds_loses_no_arrival`); the stall shows in `coverage.maximumSourceArrivalGapMs`.
 
 ## Tests
 
