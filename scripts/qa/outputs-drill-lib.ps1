@@ -22,8 +22,10 @@ function ConvertTo-DrillIdList {
 }
 
 function Test-DrillParameters {
-  param([int]$Seconds, [string]$Out, [string[]]$RemoteIds = @(), [string]$MeetingUrl, [string]$WebcamSourceId)
+  param([int]$Seconds, [string]$Out, [string[]]$RemoteIds = @(), [string]$MeetingUrl, [string]$WebcamSourceId, [int]$ProbeMaxSessions = 0)
   $errors = [System.Collections.Generic.List[string]]::new()
+  # 0 = not set. Otherwise the COREVIDEO_ENCODER_PROBE_MAX_SESSIONS QA override (discovery depth only).
+  if ($ProbeMaxSessions -ne 0 -and ($ProbeMaxSessions -lt 1 -or $ProbeMaxSessions -gt 16)) { $errors.Add("ProbeMaxSessions must be between 1 and 16; got $ProbeMaxSessions.") }
   if ($Seconds -lt 60 -or $Seconds -gt 7200) { $errors.Add('Seconds must be between 60 and 7200 (the OS camera receiver caps at 7500 s including warmup).') }
   if ([string]::IsNullOrWhiteSpace($Out)) { $errors.Add('Out is required.') }
   elseif (-not [IO.Path]::IsPathRooted($Out) -or ([IO.Path]::GetPathRoot($Out)).TrimEnd('\', '/').ToUpperInvariant() -ne 'D:') {
@@ -352,13 +354,22 @@ function Test-DrillInvariant {
 
 function New-DrillThroughout {
   # Throughout-flags of Collect-Identity.ps1 (lines 75-94), accumulated over the
-  # declared interval and written to measurement.json; any false fails the drill.
+  # declared interval and written to measurement.json; any false GATING flag
+  # fails the drill. #935 (owner ruling D8): an ISO on the software encoder is a
+  # note, so hardwareEncodersThroughout (Program AND every ISO on hardware) is a
+  # recorded FACT that never fails the run; Program on the software encoder
+  # stays a FAIL for RC through programEncoderHardwareThroughout. encoderPlacement
+  # lists every encoderPath each ISO reported, and whether it ever changed.
   param([Parameter(Mandatory)]$Plan)
-  $flags = [ordered]@{ samples = 0; hardwareEncodersThroughout = $true; remotes1080Throughout = $true
-    captureProgressThroughout = $true; programSourcesAdmittedThroughout = $true; firstFailures = @() }
+  $flags = [ordered]@{ samples = 0; hardwareEncodersThroughout = $true; programEncoderHardwareThroughout = $true
+    remotes1080Throughout = $true; captureProgressThroughout = $true; programSourcesAdmittedThroughout = $true
+    encoderPlacement = @{}; firstFailures = @() }
   if ($Plan.Stream) { $flags.streamHealthyThroughout = $true }
   return $flags
 }
+
+# Facts recorded beside the throughout flags that never fail the run (#935, D8).
+$script:DrillThroughoutFacts = @('hardwareEncodersThroughout')
 
 function Update-DrillThroughout {
   # $Progress (hashtable) carries per-capture last-advance times between calls.
@@ -368,8 +379,10 @@ function Update-DrillThroughout {
   $s = $Envelope.snapshot
   $checks = [ordered]@{}
   $iso = @($s.recording.streams | Where-Object { $_.kind -eq 'iso' })
-  $checks.hardwareEncodersThroughout = [bool]$s.recording.encoder.hardwareAccelerated -and
+  $programHardware = $null -ne $s.recording -and $null -ne $s.recording.encoder -and $s.recording.encoder.hardwareAccelerated -eq $true
+  $checks.hardwareEncodersThroughout = $programHardware -and
     @($Plan.IsoSourceIds | Where-Object { $id = $_; -not @($iso | Where-Object { $_.sourceId -eq $id -and $_.encoderPath -eq 'hardware' -and $_.framesWritten -gt 0 }).Count }).Count -eq 0
+  $checks.programEncoderHardwareThroughout = $programHardware
   $checks.remotes1080Throughout = @($Plan.RemoteIds | Where-Object { -not (Test-DrillRemoteLive1080 $s $_) }).Count -eq 0
   $captureOk = $true
   $captures = foreach ($id in $Plan.CaptureSourceIds) {
@@ -389,11 +402,103 @@ function Update-DrillThroughout {
     foreach ($name in $checks.Keys) {
       if (-not $checks[$name] -and $Throughout[$name]) {
         $Throughout[$name] = $false
+        if ($script:DrillThroughoutFacts -contains $name) { continue }
         if (@($Throughout.firstFailures).Count -lt 16) { $Throughout.firstFailures += [ordered]@{ flag = $name; utc = [DateTime]::UtcNow.ToString('o'); elapsedMs = $ElapsedMs } }
+      }
+    }
+    if ($null -eq $Throughout.encoderPlacement) { $Throughout.encoderPlacement = @{} }
+    foreach ($id in $Plan.IsoSourceIds) {
+      $track = @($iso | Where-Object { $_.sourceId -eq $id }) | Select-Object -First 1
+      $path = if ($track -and $track.PSObject.Properties['encoderPath'] -and $track.encoderPath) { [string]$track.encoderPath } else { 'not reported' }
+      if (-not $Throughout.encoderPlacement.ContainsKey($id)) { $Throughout.encoderPlacement[$id] = [ordered]@{ paths = @(); changed = $false } }
+      $entry = $Throughout.encoderPlacement[$id]
+      if (@($entry.paths) -notcontains $path) {
+        if (@($entry.paths).Count) { $entry.changed = $true }
+        $entry.paths = @($entry.paths) + $path
       }
     }
   }
   return [pscustomobject]@{ Checks = $checks; Captures = @($captures) }
+}
+
+function Get-DrillStreamNumber($Stream, [string]$Name) {
+  # A counter the snapshot did not report is $null, never 0.
+  if ($null -eq $Stream -or -not $Stream.PSObject.Properties[$Name] -or $null -eq $Stream.$Name) { return $null }
+  $value = 0.0
+  if ([double]::TryParse([string]$Stream.$Name, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$value)) { return $value }
+  return $null
+}
+
+function Get-DrillEncoderCost {
+  # #935: one interval of measured encoder cost, pure. Core CPU % is the core
+  # process's CPU time delta over the wall delta, normalized to logical
+  # processors. Each SOFTWARE ISO gets its cumulative mean encode work per muxed
+  # frame (videoWorkUs / muxVideoFrameCount), the same per-interval mean, and its
+  # droppedFrames. Anything not measurable from the two samples is $null, never 0.
+  param($PreviousCpuMs, $CurrentCpuMs, $PreviousWallMs, $CurrentWallMs, [int]$LogicalProcessors,
+        [object[]]$PreviousStreams = @(), [object[]]$CurrentStreams = @())
+  $cpu = $null
+  if ($null -ne $PreviousCpuMs -and $null -ne $CurrentCpuMs -and $null -ne $PreviousWallMs -and $null -ne $CurrentWallMs -and
+      $LogicalProcessors -gt 0 -and [double]$CurrentWallMs -gt [double]$PreviousWallMs) {
+    $cpu = 100.0 * ([double]$CurrentCpuMs - [double]$PreviousCpuMs) / (([double]$CurrentWallMs - [double]$PreviousWallMs) * $LogicalProcessors)
+  }
+  $software = @{}
+  foreach ($stream in @($CurrentStreams | Where-Object { $_ -and $_.kind -eq 'iso' -and $_.encoderPath -eq 'software' })) {
+    $work = Get-DrillStreamNumber $stream 'videoWorkUs'
+    $frames = Get-DrillStreamNumber $stream 'muxVideoFrameCount'
+    $mean = if ($null -ne $work -and $null -ne $frames -and $work -gt 0 -and $frames -gt 0) { $work / $frames } else { $null }
+    $interval = $null
+    $previous = @($PreviousStreams | Where-Object { $_ -and $_.sourceId -eq $stream.sourceId }) | Select-Object -First 1
+    if ($previous) {
+      $pw = Get-DrillStreamNumber $previous 'videoWorkUs'; $pf = Get-DrillStreamNumber $previous 'muxVideoFrameCount'
+      if ($null -ne $work -and $null -ne $frames -and $null -ne $pw -and $null -ne $pf -and $frames -gt $pf -and $work -ge $pw) {
+        $interval = ($work - $pw) / ($frames - $pf)
+      }
+    }
+    $software[[string]$stream.sourceId] = [ordered]@{ isoIndex = $(Get-DrillStreamNumber $stream 'isoIndex'); meanVideoWorkUs = $mean
+      intervalVideoWorkUs = $interval; droppedFrames = $(Get-DrillStreamNumber $stream 'droppedFrames'); frameRate = $(Get-DrillStreamNumber $stream 'frameRate') }
+  }
+  return [pscustomobject]@{ cpuPercent = $cpu; software = $software }
+}
+
+function New-DrillEncoderCostRecord {
+  param([int]$LogicalProcessors)
+  return @{ samples = 0; cpuSamples = 0; cpuSum = 0.0; cpuPeak = $null; logicalProcessors = $LogicalProcessors; software = @{} }
+}
+
+function Add-DrillEncoderCost {
+  # Accumulates one Get-DrillEncoderCost interval into the run record.
+  param([Parameter(Mandatory)]$Record, [Parameter(Mandatory)]$Interval)
+  $Record.samples++
+  if ($null -ne $Interval.cpuPercent) {
+    $Record.cpuSamples++; $Record.cpuSum += [double]$Interval.cpuPercent
+    if ($null -eq $Record.cpuPeak -or [double]$Interval.cpuPercent -gt $Record.cpuPeak) { $Record.cpuPeak = [double]$Interval.cpuPercent }
+  }
+  foreach ($id in @($Interval.software.Keys)) {
+    $now = $Interval.software[$id]
+    if (-not $Record.software.ContainsKey($id)) {
+      $Record.software[$id] = [ordered]@{ isoIndex = $now.isoIndex; meanVideoWorkUs = $null; peakIntervalVideoWorkUs = $null
+        droppedFramesStart = $now.droppedFrames; droppedFramesEnd = $now.droppedFrames; frameRate = $now.frameRate }
+    }
+    $entry = $Record.software[$id]
+    if ($null -ne $now.isoIndex) { $entry.isoIndex = $now.isoIndex }
+    if ($null -ne $now.frameRate) { $entry.frameRate = $now.frameRate }
+    if ($null -ne $now.meanVideoWorkUs) { $entry.meanVideoWorkUs = $now.meanVideoWorkUs }
+    if ($null -ne $now.intervalVideoWorkUs -and ($null -eq $entry.peakIntervalVideoWorkUs -or $now.intervalVideoWorkUs -gt $entry.peakIntervalVideoWorkUs)) {
+      $entry.peakIntervalVideoWorkUs = $now.intervalVideoWorkUs
+    }
+    if ($null -eq $entry.droppedFramesStart) { $entry.droppedFramesStart = $now.droppedFrames }
+    if ($null -ne $now.droppedFrames) { $entry.droppedFramesEnd = $now.droppedFrames }
+  }
+}
+
+function ConvertTo-DrillEncoderCostJson {
+  # measurement.json `encoderCost`: supplementary, explains a FAIL, never causes one.
+  param([Parameter(Mandatory)]$Record)
+  $mean = if ($Record.cpuSamples -gt 0) { [math]::Round($Record.cpuSum / $Record.cpuSamples, 1) } else { $null }
+  $peak = if ($null -ne $Record.cpuPeak) { [math]::Round($Record.cpuPeak, 1) } else { $null }
+  return [ordered]@{ samples = $Record.samples; cpuSamples = $Record.cpuSamples; logicalProcessors = $Record.logicalProcessors
+    coreCpuPercent = [ordered]@{ mean = $mean; peak = $peak }; software = $Record.software }
 }
 
 function Get-DrillSampleRow {
@@ -406,7 +511,8 @@ function Get-DrillSampleRow {
     utc = [DateTime]::UtcNow.ToString('o'); qpc = [Diagnostics.Stopwatch]::GetTimestamp().ToString(); elapsedMs = $ElapsedMs
     ageMs = $Envelope.ageMs; coreEpoch = $s.graphics.coreEpoch; recording = $s.recording.lifecycle.state
     programBuffer = $s.programBuffer; programEncoderHardware = $s.recording.encoder.hardwareAccelerated
-    iso = @($s.recording.streams | ForEach-Object { [ordered]@{ kind = $_.kind; sourceId = $_.sourceId; framesWritten = $_.framesWritten; encoderPath = $_.encoderPath } })
+    iso = @($s.recording.streams | ForEach-Object { [ordered]@{ kind = $_.kind; sourceId = $_.sourceId; framesWritten = $_.framesWritten; encoderPath = $_.encoderPath
+        isoIndex = $_.isoIndex; videoWorkUs = $_.videoWorkUs; muxVideoFrameCount = $_.muxVideoFrameCount; droppedFrames = $_.droppedFrames } })
     senders = @($s.outputSenderSession.senders | ForEach-Object { [ordered]@{ destination = $_.destination; framesSent = $_.framesSent; fps = $_.fps; retryCount = $_.retryCount; status = $_.status } })
     senderWarnings = @($s.outputSenderSession.warnings)
     virtualCamera = $(if ($s.PSObject.Properties['virtualCamera']) { [ordered]@{ status = $s.virtualCamera.status; framesPublished = $s.virtualCamera.framesPublished } } else { $null })
