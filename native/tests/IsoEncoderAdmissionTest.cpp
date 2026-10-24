@@ -225,3 +225,11 @@ TEST(IsoEncoderAdmission, ExplicitSoftwareIsOperatorIntentAndStillGetsBudgetChec
   EXPECT_EQ(verdict.decision, IsoAdmissionDecision::RefuseIso);
   EXPECT_EQ(verdict.code, "iso-encoder-oversubscribed");
 }
+
+TEST(IsoEncoderAdmission, DecisionIdsAreStableStrings) {
+  using corevideo::modules::isoAdmissionDecisionId;
+  // #935: published as recording.isoAdmission.decision; readers match these exactly.
+  EXPECT_STREQ(isoAdmissionDecisionId(IsoAdmissionDecision::Admit), "admit");
+  EXPECT_STREQ(isoAdmissionDecisionId(IsoAdmissionDecision::AdmitWithWarning), "admit-with-warning");
+  EXPECT_STREQ(isoAdmissionDecisionId(IsoAdmissionDecision::RefuseIso), "refuse-iso");
+}

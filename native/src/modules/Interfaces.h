@@ -611,6 +611,24 @@ struct IsoStreamStatus {
   std::string encoderPath;       // "hardware" or "software" placement for this ISO
   std::string fallbackReason;    // e.g. hardware-capacity-exhausted
   std::string warning;           // per-source open/write failure (empty = healthy)
+  int isoIndex = 0;              // #935: 1-based, matches ISO-NN in the file name; 0 = not an ISO
+};
+
+// #935: the arm-time ISO admission verdict, structured, so no reader has to
+// parse recording.warning. Every field is copied from IsoAdmissionVerdict /
+// IsoCapacitySource / the probe summary; nothing is derived.
+struct IsoAdmissionStatus {
+  std::string decision;          // "admit" | "admit-with-warning" | "refuse-iso"
+  std::string code;              // verdict.code, e.g. "iso-encoder-software-spill"
+  std::string message;           // verdict.message, verbatim (same text as recording.warning)
+  int hardwareCount = 0;
+  int softwareCount = 0;
+  int unplacedCount = 0;
+  int admissibleIsoCount = -1;   // -1 = unknown, published as null
+  bool probed = false;
+  std::string probeStatus;       // IsoCapacitySource::status
+  std::string capacity;          // probe.describe()
+  std::string workload;          // probeKey.describe()
 };
 
 struct OutputSession {
@@ -627,6 +645,8 @@ struct OutputSession {
   // Real per-ISO-writer health from the Media Foundation sink (empty on the
   // stub, where the snapshot synthesizes ISO nodes from the selected ids).
   std::vector<IsoStreamStatus> isoStreams;
+  // #935: absent when no ISO was selected (or ISO was refused before placement).
+  std::optional<IsoAdmissionStatus> isoAdmission;
   int64_t encodedFrameCount = 0;
   std::string encoderName = "software-counting";
   std::string codec = "h264";
