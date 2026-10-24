@@ -117,11 +117,13 @@
 - Last stdout line: `Previous installation cleanup: <n> retired, <n> backed up, <n> retained.` (captured into NSIS `$2`).
 - Exit 1 when any folder is `retained` for an error reason.
 
-- [ ] **Step 1: Tests first.** End-to-end: a root with one registered old install, three metadata-only residual folders, one `Recordings` folder and the current install -> afterwards only the current folder plus the backup folder remain; summary counts exact; JSON parses; a locked file gives exit 1 and a last line saying `1 retained`. Run: fail.
-- [ ] **Step 2: Implement** the registered pass, then the residual pass, then report and `installer-logs` copy; update the NSIS warning text (folder counts, backup hint). Keep `/SD IDOK`.
-- [ ] **Step 3: Compile the installer** with `scripts/package-alpha-installer.ps1` against the current beta zip (short staging root from #1026) to prove the `.nsi` builds. Do not run `Test-AlphaInstaller.ps1` yet.
-- [ ] **Step 4: Run** all three PowerShell tests under both hosts. Expect pass.
-- [ ] **Step 5: Commit** (when asked): `Retire residual version folders and report them honestly (#883)`.
+- [x] **Step 1: Tests first.** End-to-end: a root with one registered old install, three metadata-only residual folders, one `Recordings` folder and the current install -> afterwards only the current folder plus the backup folder remain; summary counts exact; JSON parses; a locked file gives exit 1 and a last line saying `1 retained`. Run: fail.
+- [x] **Step 2: Implement** the registered pass, then the residual pass, then report and `installer-logs` copy; update the NSIS warning text (folder counts, backup hint). Keep `/SD IDOK`.
+- [x] **Step 3: Compile the installer** with `scripts/package-alpha-installer.ps1` against the current beta zip (short staging root from #1026) to prove the `.nsi` builds. Do not run `Test-AlphaInstaller.ps1` yet.
+- [x] **Step 4: Run** all three PowerShell tests under both hosts. Expect pass.
+- [x] **Step 5: Commit** (when asked): `Retire residual version folders and report them honestly (#883)`.
+
+_Executed 2026-10-24._ The end-to-end cases live in `Test-CleanupEnvironment.ps1` (it already runs the real helper in a child host per bitness), not in `Test-PreviousInstallations.ps1` (in-process module tests). Exit code 2 was added: clean, but operator files were moved; NSIS shows an information box naming the backup folder (ruling D4). Step 3 compiled `installer.nsi` with makensis against a stub staging tree (exit 0); the newest local beta zip predates #1033 and fails `Test-AlphaPackage.ps1`, so `package-alpha-installer.ps1` could not be used. Read-only `-InspectOnly` dry run against the real root: 29 metadata-only folders, 2 `Recordings\` folders (10 + 2 = 12 files), 1 unregistered full payload (875 proven payload + 5 metadata, 0 unknown).
 
 ### Task 6: CI and documentation
 

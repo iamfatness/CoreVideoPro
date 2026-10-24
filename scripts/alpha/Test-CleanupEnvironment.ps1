@@ -192,6 +192,48 @@ try {
         $log = Join-Path $w.Local 'CoreVideoPro\installer-logs\beta-2026-10-23-current-retire.log'
         Assert ((Test-Path -LiteralPath $log) -and ((Get-Content -LiteralPath $log -Raw) -match 'FAILED: .*Get-CoreVideo883Missing.*psModulePathEffective=')) "$label failure not logged with diagnostics."
         $results.Add("$label ok")
+
+        # Task 5 end to end: registered + residual passes, honest report, loud backup path.
+        $label = "[$hostName, residual sweep end to end]"
+        $w = New-World $hosts[$hostName]
+        foreach ($id in 'beta-2026-10-01-meta1', 'beta-2026-10-02-meta2', 'beta-2026-10-03-meta3') {
+            New-Item -ItemType Directory -Path (Join-Path $w.Root $id) | Out-Null
+            [IO.File]::WriteAllText((Join-Path $w.Root "$id\.camera-desktop-registration-before.json"), '{}')
+        }
+        $rec = Join-Path $w.Root 'beta-2026-10-04-recordings\Recordings\CoreVideo Pro'
+        New-Item -ItemType Directory -Force -Path $rec | Out-Null
+        [IO.File]::WriteAllText((Join-Path $rec 'take.mp4'), 'operator recording')
+        $r = Invoke-Helper $hosts[$hostName] @{ LOCALAPPDATA = $w.Local; PSModuleAnalysisCachePath = (Join-Path $w.Local 'ModuleAnalysisCache') } $w.Args
+        Assert ($r.Code -eq 2) "$label expected exit 2 (done, operator files moved); got $($r.Code). $($r.Out) $($r.Err)"
+        $left = @(Get-ChildItem -LiteralPath $w.Root -Directory -Force | ForEach-Object Name)
+        Assert ($left.Count -eq 1 -and $left[0] -eq 'beta-2026-10-23-current') "$label folders left: $($left -join ', ')"
+        $backups = @(Get-ChildItem -LiteralPath (Join-Path $w.Local 'CoreVideoPro\backups') -Directory -Filter 'retired-install-remnants-*')
+        Assert ($backups.Count -eq 1) "$label expected one dated backup folder."
+        Assert ((Get-Content -LiteralPath (Join-Path $backups[0].FullName 'beta-2026-10-04-recordings\Recordings\CoreVideo Pro\take.mp4') -Raw) -eq 'operator recording') "$label recording not in the backup."
+        $report = Get-Content -LiteralPath (Join-Path $w.Current 'previous-installations-cleanup.json') -Raw | ConvertFrom-Json
+        $s = $report.summary
+        Assert ($s.registeredRetired -eq 1 -and $s.residualRemoved -eq 3 -and $s.residualBackedUp -eq 1 -and $s.retained -eq 0) "$label summary wrong: $($s | ConvertTo-Json -Compress)"
+        Assert ($s.backupFolder -eq $backups[0].FullName) "$label summary lacks the backup folder."
+        Assert (@($report.residual).Count -eq 4 -and @($report.registered).Count -eq 1) "$label report lists are wrong."
+        $lines = @($r.Out -split "`r?`n" | Where-Object { $_.Trim() })
+        Assert ($lines[-1] -match '^Previous installation cleanup: 4 retired, 1 backed up, 0 retained\.') "$label last line: $($lines[-1])"
+        Assert ($r.Out -match [regex]::Escape($backups[0].FullName)) "$label backup path not reported on stdout."
+        Assert (Test-Path -LiteralPath (Join-Path $w.Local 'CoreVideoPro\installer-logs\beta-2026-10-23-current-retire.json')) "$label report copy not kept in installer-logs."
+        $results.Add("$label ok")
+
+        # A locked operator file: exit 1, folder kept, the last line counts it.
+        $label = "[$hostName, residual sweep locked file]"
+        $w = New-World $hosts[$hostName]
+        $rec = Join-Path $w.Root 'beta-2026-10-04-recordings\Recordings'
+        New-Item -ItemType Directory -Force -Path $rec | Out-Null
+        [IO.File]::WriteAllText((Join-Path $rec 'take.mp4'), 'in use')
+        $lock = [IO.File]::Open((Join-Path $rec 'take.mp4'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+        try { $r = Invoke-Helper $hosts[$hostName] @{ LOCALAPPDATA = $w.Local; PSModuleAnalysisCachePath = (Join-Path $w.Local 'ModuleAnalysisCache') } $w.Args } finally { $lock.Dispose() }
+        $lines = @($r.Out -split "`r?`n" | Where-Object { $_.Trim() })
+        Assert ($r.Code -eq 1) "$label expected exit 1; got $($r.Code). $($r.Out) $($r.Err)"
+        Assert ($lines[-1] -match '1 retained') "$label last line: $($lines[-1])"
+        Assert ((Get-Content -LiteralPath (Join-Path $rec 'take.mp4') -Raw) -eq 'in use') "$label locked file changed."
+        $results.Add("$label ok")
     }
     [ordered]@{ passed=$true; checks=$checks; cases=@($results); evidence=$work } | ConvertTo-Json
 } finally {
