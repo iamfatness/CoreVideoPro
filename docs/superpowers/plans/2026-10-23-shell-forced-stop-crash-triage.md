@@ -40,7 +40,7 @@
 
 **Files:** none (read-only).
 
-- [ ] **Step 1: Search for the dump.**
+- [x] **Step 1: Search for the dump.**
 
 ```powershell
 Get-ChildItem "$env:LOCALAPPDATA\CrashDumps","$env:LOCALAPPDATA\CoreVideoPro\crashes" -Filter 'CoreVideoPro.WinUI.exe.*.dmp' -ErrorAction SilentlyContinue | Select Name,Length,LastWriteTime
@@ -49,7 +49,7 @@ Get-ChildItem D:\ -Recurse -Filter '*17304*.dmp' -ErrorAction SilentlyContinue |
 
 Expected (2026-10-23): only `CoreVideoPro.WinUI.exe.28528.dmp` (2026-10-16, about 384 MB). No 17304 anywhere.
 
-- [ ] **Step 2: Check for the WER archive copy.**
+- [x] **Step 2: Check for the WER archive copy.**
 
 ```powershell
 Get-ChildItem C:\ProgramData\Microsoft\Windows\WER\ReportArchive -Directory | ? Name -like '*9ecd7d6e*'
@@ -57,7 +57,7 @@ Get-ChildItem C:\ProgramData\Microsoft\Windows\WER\ReportArchive -Directory | ? 
 
 Expected: nothing (the 1001 event's folder `AppCrash_CoreVideoPro.Win_698abece..._9ecd7d6e-...` is gone).
 
-- [ ] **Step 3: Check for the build folder and PDBs.**
+- [x] **Step 3: Check for the build folder and PDBs.**
 
 ```powershell
 Test-Path "C:\Users\walla\OneDrive\Documents\ChatGPT\CoreVideo Pro\beta-release\native-shell\CoreVideoPro.WinUI\bin\Release\net9.0-windows10.0.19041.0\win-x64\publish\CoreVideoPro.WinUI.pdb"
@@ -66,7 +66,7 @@ git -C D:\CoreVideo-QA\wt-plans branch -r --contains 46b07ff5
 
 Expected: `False`, and only `origin/backup/419-pre-rebase-1d164b7`. Ask the owner ONCE whether the dump or that folder exists elsewhere (another machine, a OneDrive version). If not, record "dump and symbols unavailable" and go to Task 2 surrogate mode. Do not spend more time searching.
 
-- [ ] **Step 4: Confirm the tooling.** `Test-Path "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"` → `True`. `dotnet tool list -g` lists `dotnet-dump`.
+- [x] **Step 4: Confirm the tooling.** `Test-Path "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"` → `True`. `dotnet tool list -g` lists `dotnet-dump`.
 
 ### Task 2: Extract the evidence
 
@@ -110,7 +110,7 @@ Expected: at least 41, and 0. Then list the in-meeting closes after 30 min or mo
 
 **Dump mode (only if Task 1 found the dump):**
 
-- [ ] **Step 5: Native.** Copy the dump and publish folder to `D:\CoreVideo-QA\dumps\457\`, then:
+- [ ] ~~**Step 5: Native.**~~ (not run: no dump) Copy the dump and publish folder to `D:\CoreVideo-QA\dumps\457\`, then:
 
 ```powershell
 $cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
@@ -119,7 +119,7 @@ $cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
 
 Expected for the drain: `ExceptionCode: c000027b`, a `STOWED_EXCEPTION` with HRESULT `80004004`, and on the faulting thread `CoreMessagingXP!...DeferInvokeCallback` under `DispatcherQueueController::ShutdownQueue` under `FrameworkApplication::StartDesktop`.
 
-- [ ] **Step 6: Managed.**
+- [ ] ~~**Step 6: Managed.**~~ (not run: no dump)
 
 ```powershell
 dotnet-dump analyze D:\CoreVideo-QA\dumps\457\CoreVideoPro.WinUI.exe.17304.dmp -c "clrthreads" -c "clrstack -all" -c "pe -nested" -c "syncblk" -c "exit" > D:\CoreVideo-QA\dumps\457\managed.txt
@@ -192,3 +192,19 @@ Expected for the drain: the faulting OS thread is the STA UI thread with no mana
   - re-classify in Task 3.
 
 **Capture plan (if the outcome is b, or 5c fails):** Confirm that the HKLM LocalDumps key for `CoreVideoPro.WinUI.exe` has DumpType 2. On this box it is `%LOCALAPPDATA%\CrashDumps`, count 20. On a #1033 install it is `%LOCALAPPDATA%\CoreVideoPro\crashes`, count 5. Copy any new shell dump with its exact publish folder before any rebuild or rotation. Pull events 1000/1001 for the signature even if the dump is lost.
+
+---
+
+## Execution record (2026-10-23, branch `codex/rc-457`)
+
+Evidence copies are in `D:\CoreVideo-QA\triage-457\` (never on C:). Originals were only read.
+
+### Task 1 result: dump and symbols unavailable, surrogate mode
+
+- `%LOCALAPPDATA%\CrashDumps` holds only `CoreVideoPro.WinUI.exe.28528.dmp` (383,866,429 bytes, 2026-10-16 18:55). `%LOCALAPPDATA%\CoreVideoPro\crashes` does not exist. No `*17304*.dmp` anywhere on `D:\`.
+- No WER ReportArchive or ReportQueue folder matching `9ecd7d6e` or `7f60387a`.
+- The `beta-release` build folder and its `CoreVideoPro.WinUI.pdb` do not exist.
+- `46b07ff5` is reachable only from `origin/backup/419-pre-rebase-1d164b7`; it is not an ancestor of `origin/main`.
+- cdb present; `dotnet-dump` 10.0.745401 installed.
+- The owner question ("does the dump exist elsewhere?") is superseded by owner ruling D12 (2026-10-23 23:50 EDT): close on the retained-log evidence. Dump mode (Task 2 steps 5-6) is not run.
+- Evidence: `D:\CoreVideo-QA\triage-457\task1.txt`.
