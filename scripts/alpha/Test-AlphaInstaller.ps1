@@ -263,3 +263,8 @@ $succeeded = $true
     }
     if (-not $succeeded) { Write-Warning "Installer test failed. Working folder: $work; evidence copy: $evidenceCopy" }
 }
+# The verdict is the JSON above. Reset the process exit code explicitly: the #781 Frame Server negative
+# control is the last native command and leaves $LASTEXITCODE = 3, which the pwsh step wrapper
+# (`if (Test-Path variable:\LASTEXITCODE) { exit $LASTEXITCODE }`) would otherwise report as a failure
+# (hosted qualification run 40244113095: every check true, step exit 1). Failures still throw -> exit 1.
+exit 0
