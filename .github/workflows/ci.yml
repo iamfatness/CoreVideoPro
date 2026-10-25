@@ -290,6 +290,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:WINDIR/SysWOW64/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File scripts/alpha/Test-VirtualCameraOwnership.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Alpha Node packaging validator (synthetic package)
+        shell: pwsh
+        run: |
+          $pin = Get-Content scripts/alpha/node-runtime.json -Raw | ConvertFrom-Json
+          $node = Join-Path $env:RUNNER_TEMP 'pinned-node.exe'
+          Invoke-WebRequest $pin.url -OutFile $node
+          powershell.exe -NoProfile -File scripts/alpha/Test-AlphaNodePackaging.ps1 -NodeExe $node
+          if ($LASTEXITCODE -ne 0) { throw "Test-AlphaNodePackaging failed ($LASTEXITCODE)" }
       - uses: actions/setup-node@v4
         with:
           node-version: 22
