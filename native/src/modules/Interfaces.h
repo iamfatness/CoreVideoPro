@@ -615,7 +615,11 @@ struct IsoStreamStatus {
   int64_t audioSampleCount = 0;  // 0 until ISO-2 muxes per-source audio
   int64_t bytesWritten = 0;
   bool trackOpen = false;        // the writer opened + began writing its video track
-  std::string encoderPath;       // "hardware" or "software" placement for this ISO
+  // #935: MEASURED from the encoder MFT the sink writer actually instantiated
+  // (Mp4Writer readback at BeginWriting): "hardware" | "software"; empty until
+  // the writer has begun. plannedEncoderPath is what arm-time placement asked for.
+  std::string encoderPath;
+  std::string plannedEncoderPath;
   std::string fallbackReason;    // e.g. hardware-capacity-exhausted
   std::string warning;           // per-source open/write failure (empty = healthy)
   int isoIndex = 0;              // #935: 1-based, matches ISO-NN in the file name; 0 = not an ISO
@@ -658,7 +662,14 @@ struct OutputSession {
   std::string encoderName = "software-counting";
   std::string codec = "h264";
   int targetBitrateMbps = 10;
+  // A real hardware-capable encoder is configured and hardware MFTs are
+  // REQUESTED. Not evidence of what Program uses: see programEncoderPath.
   bool hardwareAccelerated = false;
+  // #935: MEASURED Program encoder ("hardware" | "software"), read back from the
+  // MFT the Program sink writer instantiated; empty until Program began writing.
+  std::string programEncoderPath;
+  // Cumulative Program video write work (independent writer lane only).
+  std::optional<uint64_t> programVideoWorkUs;
   std::string recordingSessionId;
   std::string recordingStatus = "idle";
   std::string recordingTargetFolder;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyRecordingWarning, isoPlacementNotes, isoLossRegressions, programEncoderFailure } from './iso-record-rules.mjs';
+import { classifyRecordingWarning, isoPlacementNotes, isoLossRegressions, isoDropFailures, programEncoderFailure } from './iso-record-rules.mjs';
 
 const note = '1 ISO source will record on the CPU software encoder, not the GPU (7 on hardware): x.';
 const adm = { decision: 'admit-with-warning', code: 'iso-encoder-software-spill', message: note };
@@ -45,11 +45,26 @@ test('unchanged counters pass', () =>
                                       [{ kind: 'iso', sourceId: 'a', droppedFrames: 1, writeQueue: { dropped: 0 } }]), []));
 test('missing counters are a failure, not zero', () =>
   assert.equal(isoLossRegressions([{ kind: 'iso', sourceId: 'zoom:8' }], [{ kind: 'iso', sourceId: 'zoom:8' }]).length > 0, true));
-test('program encoder: hardware passes', () => assert.equal(programEncoderFailure({ encoder: { hardwareAccelerated: true } }), null));
-test('program encoder: software fails', () =>
-  assert.equal(programEncoderFailure({ encoder: { hardwareAccelerated: false } }),
+test('program encoder: measured hardware passes', () =>
+  assert.equal(programEncoderFailure({ encoder: { encoderPath: 'hardware', hardwareAccelerated: true } }), null));
+test('program encoder: measured software fails even when hardware was requested (#935 B1)', () =>
+  assert.equal(programEncoderFailure({ encoder: { encoderPath: 'software', hardwareAccelerated: false, hardwareRequested: true } }),
     'Program recorded on the CPU software encoder (Program on software is a FAIL for RC)'));
-test('program encoder: absent is a failure, never true', () => {
-  assert.match(programEncoderFailure({ encoder: {} }), /not reported/);
-  assert.match(programEncoderFailure(undefined), /not reported/);
+test('program encoder: the request flag alone never passes', () => {
+  assert.match(programEncoderFailure({ encoder: { hardwareAccelerated: true, hardwareRequested: true } }), /not measured/);
+  assert.match(programEncoderFailure({ encoder: { encoderPath: null, hardwareRequested: true } }), /not measured/);
+  assert.match(programEncoderFailure(undefined), /not measured/);
 });
+test('any ISO drop fails, including drops before the steady-state baseline (#935 M1)', () => {
+  assert.deepEqual(isoDropFailures([{ kind: 'iso', sourceId: 'zoom:8', droppedFrames: 2, writeQueue: { dropped: 0, droppedAudio: 0 } }]),
+    ['ISO zoom:8 droppedFrames = 2 (any ISO drop fails)']);
+  assert.deepEqual(isoDropFailures([{ kind: 'iso', sourceId: 'zoom:8', droppedFrames: 0, writeQueue: { dropped: 0, droppedAudio: 1 } }]),
+    ['ISO zoom:8 writeQueue.droppedAudio = 1 (any ISO drop fails)']);
+  assert.deepEqual(isoDropFailures([{ kind: 'iso', sourceId: 'a', droppedFrames: 0, writeQueue: { dropped: 0, droppedAudio: 0 } },
+                                    { kind: 'program', droppedFrames: 9 }]), []);
+  assert.deepEqual(isoDropFailures([{ kind: 'iso', sourceId: 'a' }]),
+    ['ISO a droppedFrames not reported', 'ISO a writeQueue.dropped not reported']);
+});
+test('the hardware-requested-software-used reason is named', () =>
+  assert.match(isoPlacementNotes([{ kind: 'iso', isoIndex: 2, displayName: 'G', encoderPath: 'software',
+    fallbackReason: 'hardware-requested-software-used', muxVideoFrameCount: 0 }], 60)[0], /GPU encoder requested, software encoder used/));

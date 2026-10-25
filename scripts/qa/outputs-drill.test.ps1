@@ -255,7 +255,7 @@ function New-Envelope([switch]$Stale, [string]$Recording = 'producing', [int]$Is
   [pscustomobject]@{ available = $true; ageMs = $(if ($Stale) { 2000 } else { 40 }); snapshot = [pscustomobject]@{
       graphics = [pscustomobject]@{ coreEpoch = 3 }
       recording = [pscustomobject]@{ targetFolder = $TargetFolder; lifecycle = [pscustomobject]@{ state = $Recording }
-        encoder = [pscustomobject]@{ hardwareAccelerated = $ProgramHardware }; streams = @(
+        encoder = [pscustomobject]@{ hardwareAccelerated = $ProgramHardware; hardwareRequested = $true; encoderPath = $(if ($ProgramHardware) { 'hardware' } else { 'software' }) }; streams = @(
           [pscustomobject]@{ kind = 'program'; framesWritten = 10 },
           [pscustomobject]@{ kind = 'iso'; sourceId = 'capture:f4978a7f6d614c0d'; readiness = 'ready'; framesWritten = $IsoFrames; encoderPath = $EncoderPath }) }
       sources = @([pscustomobject]@{ sourceId = $Webcam; hasVideo = $true; framesIngested = $WebcamFrames; width = $WebcamWidth; height = 1080 },
@@ -339,6 +339,14 @@ Check 'throughout: a software ISO is a recorded fact, never a gating failure (#9
   Assert (-not $t.encoderPlacement['capture:f4978a7f6d614c0d'].changed) 'one sample reported as a change'
   foreach ($k in 'programEncoderHardwareThroughout', 'remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout') { Assert $t[$k] "$k failed on a placement-only difference" }
   Assert (@($t.firstFailures).Count -eq 0) ('placement became a first failure: ' + (@($t.firstFailures | ForEach-Object { $_.flag }) -join ','))
+}
+Check 'throughout: Program hardware is judged on the MEASURED encoderPath, never the request flag (#935 B1)' {
+  $e = New-Envelope; $e.snapshot.recording.encoder = [pscustomobject]@{ hardwareAccelerated = $true; hardwareRequested = $true }
+  $t = New-DrillThroughout -Plan $plan; $null = Update-DrillThroughout -Throughout $t -Envelope $e -Plan $plan -Progress @{} -ElapsedMs 0
+  Assert (-not $t.programEncoderHardwareThroughout) 'unmeasured Program encoder passed as hardware'
+  $e = New-Envelope; $e.snapshot.recording.encoder = [pscustomobject]@{ hardwareAccelerated = $false; hardwareRequested = $true; encoderPath = 'software' }
+  $t = New-DrillThroughout -Plan $plan; $null = Update-DrillThroughout -Throughout $t -Envelope $e -Plan $plan -Progress @{} -ElapsedMs 0
+  Assert (-not $t.programEncoderHardwareThroughout) 'hardware requested but software MFT measured passed'
 }
 Check 'throughout: an ISO whose encoder path changes between samples is reported as changed' {
   $t = New-DrillThroughout -Plan $plan

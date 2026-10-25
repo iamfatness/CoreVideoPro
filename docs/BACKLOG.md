@@ -335,6 +335,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
 | RC blocker — October 23 live show | A | [#1030](https://github.com/iamfatness/CoreVideoPro/issues/1030) | ISO participant leaving mid-recording wedged the recording lane. Fix PR (throttling off, no departed silence-fill, bounded track joins, honest loss text) built and tested on Windows; live acceptance: a participant leaves during a take, the file finalizes at its real duration, the next Record works without a restart. |
+| RC — October 23 gate | A | [#935](https://github.com/iamfatness/CoreVideoPro/issues/935) | Software-encoder ISO admission notice failed the headless gate and was invisible to the operator. PR [#1045](https://github.com/iamfatness/CoreVideoPro/pull/1045): structured `recording.isoAdmission`, MEASURED encoder path (read back from the instantiated MFT) for Program and every ISO, operator InfoBar, validator/drill judge placement as a note and Program-on-software as a FAIL (owner D8/D9). Owner acceptance (plan Task 8): validator runs, stall run, 30-minute drill with `-ProbeMaxSessions 8`. |
 | Owner current — October 20 UIUX | B | [#978](https://github.com/iamfatness/CoreVideoPro/issues/978) | Graphics workflow clarity and preserved automation drafts; source/CPU-only and hosted checks during #975's quiet GPU window. Companion acceptance under #927/#593/#929 remains independent. |
 | Owner review regression — October 19 | B | [#951](https://github.com/iamfatness/CoreVideoPro/issues/951) | Reproduce full Studio footer clipping at 1080p; restore visible, non-overlapping production actions with compiled full-workspace geometry and renders. |
 | Owner Sources regression — October 19 | B | [#956](https://github.com/iamfatness/CoreVideoPro/issues/956) | Keep an unassigned input's unified picker enabled; prove repeated source reassignment restores its controls on the retained row without restart or unintended routing/output changes. |
@@ -418,7 +419,6 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 - [#968](https://github.com/iamfatness/CoreVideoPro/issues/968): intermittent decoded PCM gaps found during #960 full Studio crash qualification; blocks its audio-continuity evidence. Owner-authorized October 21 within active #960; retain failed trials.
 
-| [#1042](https://github.com/iamfatness/CoreVideoPro/issues/1042) | Found in #935 Task 1 (2026-10-24): an 8-ISO 1080p60 take armed while the 1080p60 capacity prewarm was still `pending`, so placement used the unprobed 8-session fallback (7 hardware + 1 software spill) on an RTX 4090 that probes `sessions<=9`; the late probe result was discarded as overlapping live encoding. Not fixed by #935 (probe semantics out of scope). |
 | [#908](https://github.com/iamfatness/CoreVideoPro/issues/908) | Owner-ranked October 14: follows the #517 camera-reader repair in the active delivery lane. Retained Program frames report unavailable/preparation-stopped source pixels during real SDK epoch transitions; preserve pixels through replacement readiness without retaining removed/reassigned guests. |
 
 | [#906](https://github.com/iamfatness/CoreVideoPro/issues/906) | Attribute the Windows GradePreviewCoordinator disposal-test timeout; preserve the failed gate and verify the initiating condition. Owner rank pending. |
@@ -428,6 +428,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#1042](https://github.com/iamfatness/CoreVideoPro/issues/1042) | Found in #935 Task 1 (2026-10-24): an 8-ISO 1080p60 take armed while the 1080p60 capacity prewarm was still `pending`, so placement used the unprobed 8-session fallback (7 hardware + 1 software spill) on an RTX 4090 that probes `sessions<=9`; the late probe result was discarded as overlapping live encoding. Not fixed by #935 (probe semantics out of scope). |
 | [#915](https://github.com/iamfatness/CoreVideoPro/issues/915) | Node package fixture uses filenames rejected by the production validator. Repair the fixture contract without weakening validation; the actual October 15 beta archive passed. |
 | [#920](https://github.com/iamfatness/CoreVideoPro/issues/920) | Repeated active Zoom Join can retain stale subscription bookkeeping and held video; explicit Leave/Join/Engine On restored eight inputs in API reproduction. Needs owner rank and causal ordering regression. |
 | [#919](https://github.com/iamfatness/CoreVideoPro/issues/919) | Deferred participant-list clear/rebind can access XAML after its window closes; caught during isolated #916 teardown, unrelated to proven live-video cause. Needs owner rank. |

@@ -76,12 +76,15 @@ Media sources are not part of the workload yet.
    Program sources, an RTMP sender, or a dead sink or receiver aborts the run
    as FAIL. It also accumulates the throughout-assertions of the reference
    `Collect-Identity.ps1` into `measurement.json`:
-   - `programEncoderHardwareThroughout`: Program on the hardware encoder
-     (gating; owner ruling D8: Program on software is a FAIL for RC).
+   - `programEncoderHardwareThroughout`: Program's MEASURED
+     `recording.encoder.encoderPath` is `hardware` on every sample (gating; owner
+     ruling D8: Program on software is a FAIL for RC). The path is read back from
+     the encoder MFT the Program writer instantiated, never inferred from the
+     hardware request (`hardwareRequested`); absent fails.
    - `hardwareEncodersThroughout`: Program and every ISO on hardware. **Recorded
      as a fact only, never gating** (#935, D8): an ISO on the software encoder
-     is a note. `encoderPlacement` lists each ISO's reported `encoderPath`
-     values and whether it changed during the run.
+     is a note. `encoderPlacement` lists each ISO's MEASURED `encoderPath`
+     values (`not reported` until its writer began) and whether it changed.
    - `remotes1080Throughout`: every remote live at 1920x1080.
    - `captureProgressThroughout`: every capture at 1920x1080 or larger, with frames advancing within 2 s.
    - `programSourcesAdmittedThroughout`.

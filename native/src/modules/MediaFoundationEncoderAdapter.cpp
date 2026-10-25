@@ -230,6 +230,7 @@ class Mp4Writer {
     sinkWriter_.Reset();
     mediaSink_.Reset();
     byteStream_.Reset();
+    encoderPath_.clear();
     videoOutputType_.Reset();
     videoInputType_.Reset();
     audioOutputType_.Reset();
@@ -393,20 +394,32 @@ class Mp4Writer {
         if (FAILED(extended->GetTransformForStream(videoStreamIndex_, index, &category, &transform))) break;
         ComPtr<IMFAttributes> attributes;
         GUID clsid{}; WCHAR name[256]{}; UINT32 length = 0;
+        bool hardwareMft = false;
         if (SUCCEEDED(transform->GetAttributes(&attributes))) {
           attributes->GetGUID(MFT_TRANSFORM_CLSID_Attribute, &clsid);
           attributes->GetString(MFT_FRIENDLY_NAME_Attribute, name, 256, &length);
+          // #935: a hardware MFT carries its device symbolic link / vendor id in
+          // its own attribute store; the OS software H.264 MFT carries neither.
+          UINT32 attributeLength = 0;
+          hardwareMft = SUCCEEDED(attributes->GetStringLength(MFT_ENUM_HARDWARE_URL_Attribute, &attributeLength)) ||
+                        SUCCEEDED(attributes->GetStringLength(MFT_ENUM_HARDWARE_VENDOR_ID_Attribute, &attributeLength));
         }
+        if (category == MFT_CATEGORY_VIDEO_ENCODER) encoderPath_ = hardwareMft ? "hardware" : "software";
         WCHAR id[40]{}; StringFromGUID2(clsid, id, 40);
         char idUtf8[80]{}, nameUtf8[768]{};
         WideCharToMultiByte(CP_UTF8, 0, id, -1, idUtf8, sizeof(idUtf8), nullptr, nullptr);
         WideCharToMultiByte(CP_UTF8, 0, name, -1, nameUtf8, sizeof(nameUtf8), nullptr, nullptr);
-        ::corevideo::core::nativeLogf("[recording-transform] file=%s index=%lu clsid=%s name=%s\n",
-            path_.filename().string().c_str(), static_cast<unsigned long>(index), idUtf8, nameUtf8);
+        ::corevideo::core::nativeLogf("[recording-transform] file=%s index=%lu clsid=%s name=%s encoder=%s\n",
+            path_.filename().string().c_str(), static_cast<unsigned long>(index), idUtf8, nameUtf8,
+            category == MFT_CATEGORY_VIDEO_ENCODER ? (hardwareMft ? "hardware" : "software") : "-");
       }
     }
     return true;
   }
+
+  // #935: "hardware" | "software" from the instantiated encoder MFT; empty
+  // before BeginWriting or when the sink writer exposed no encoder transform.
+  const std::string& encoderPath() const { return encoderPath_; }
 
   // Writes one BGRA frame. `bgra` is tightly packed top-down at `srcStride`
   // bytes per row; pixels outside the configured size are letterbox/cropped to
@@ -1222,6 +1235,7 @@ class Mp4Writer {
   bool variableVideoDurations_ = false;
   ComPtr<IMFSample> pendingVideoSample_;
   bool writing_ = false;
+  std::string encoderPath_;  // #935: measured at BeginWriting; empty = not read back
   bool audioConfigured_ = false;
   VideoInput videoInput_ = VideoInput::Bgra;
   std::vector<int16_t> pcm16_;
@@ -1289,7 +1303,12 @@ void publishIsoTrack(IsoWriterEntry& entry) {
   status.tailVideoFrameCount = entry.writer.videoTailFrameCount();
   status.audioSampleCount = entry.writer.audioSampleCount(); status.bytesWritten = entry.writer.bytesWritten();
   status.trackOpen = entry.opened && !entry.failed;
-  status.encoderPath = isoEncoderPathId(entry.encoderPath); status.fallbackReason = entry.encoderReason;
+  status.plannedEncoderPath = isoEncoderPathId(entry.encoderPath); status.fallbackReason = entry.encoderReason;
+  // #935: publish the MEASURED path only; a hardware request that Media
+  // Foundation served with the software MFT says so instead of claiming GPU.
+  status.encoderPath = entry.opened ? entry.writer.encoderPath() : std::string();
+  if (status.encoderPath == "software" && status.plannedEncoderPath == "hardware")
+    status.fallbackReason = "hardware-requested-software-used";
   status.warning = entry.warning;
   status.isoIndex = entry.isoIndex;
   std::lock_guard<std::mutex> lock(entry.snapshotMutex);
@@ -1651,6 +1670,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingMetadataValid = false;
     session_.recordingWarning.clear();
     session_.isoAdmission.reset();  // #935: never carry a previous take's spill
+    session_.programEncoderPath.clear();
+    session_.programVideoWorkUs.reset();
     session_.recordingError.clear();
     session_.recordingSessionId = request_.sessionId;
     session_.recordingTargetFolder = request_.targetFolder;
@@ -2134,6 +2155,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     if (programWorker_) {
       const auto e = programWorker_->evidence();
       result.programWriteQueue = queueEvidence(e);
+      result.programVideoWorkUs = e.videoWorkUs;
       result.encoderQueueDroppedVideoFrames += e.droppedVideo - e.startupDroppedVideo;
       result.encoderQueueDroppedAudioPackets += e.droppedAudio - e.startupDroppedAudio;
       result.recordingStartupDroppedVideoFrames += e.startupDroppedVideo;
@@ -2307,9 +2329,13 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // Program can miss delivery slots under load. Preserve the elapsed gap
     // across MP4 fragments just as the ISO writers do; nominal durations make
     // later video drift ahead of continuous audio. This does not add frames.
+    // COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER=1 (QA only, #935) withholds the
+    // hardware-transform request so a test can prove the measured-path gates.
+    const char* forceSoftware = std::getenv("COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER");
+    const bool requestHardware = !(forceSoftware && std::string(forceSoftware) == "1");
     if (!program_.open(programPath, width, height, fps, bitrate, codec, error,
                        programWritesNv12_ ? VideoInput::Nv12 : VideoInput::Bgra,
-                       true, true)) {
+                       requestHardware, true)) {
       setRecordingFailure("Media Foundation could not open program MP4 writer", error);
       return;
     }
@@ -2364,6 +2390,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       setRecordingFailure("Media Foundation could not begin program writing", error);
       return;
     }
+    session_.programEncoderPath = program_.encoderPath();
 
     // Preserve request/readiness timing, then select the first real scheduled
     // Program frame after readiness as the shared mux epoch. Startup remains

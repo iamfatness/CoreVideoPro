@@ -1545,11 +1545,20 @@ TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCa
     EXPECT_TRUE(iso.warning.empty()) << iso.sourceId << ": " << iso.warning;
     EXPECT_GT(iso.videoFrameCount, 0) << iso.sourceId;
     EXPECT_GT(iso.audioSampleCount, 0) << iso.sourceId;
-    hardwareIsoCount += iso.encoderPath == "hardware" ? 1 : 0;
-    softwareIsoCount += iso.encoderPath == "software" ? 1 : 0;
+    hardwareIsoCount += iso.plannedEncoderPath == "hardware" ? 1 : 0;
+    softwareIsoCount += iso.plannedEncoderPath == "software" ? 1 : 0;
+    // #935: encoderPath is MEASURED from the instantiated MFT once the writer began.
+    EXPECT_TRUE(iso.encoderPath == "hardware" || iso.encoderPath == "software") << iso.sourceId << ": '" << iso.encoderPath << "'";
+    if (iso.plannedEncoderPath == "software") EXPECT_EQ(iso.encoderPath, "software") << iso.sourceId;
+    // On a machine whose Program got a hardware MFT, every planned-hardware ISO must too.
+    if (session.programEncoderPath == "hardware" && iso.plannedEncoderPath == "hardware")
+      EXPECT_EQ(iso.encoderPath, "hardware") << iso.sourceId;
   }
   EXPECT_EQ(hardwareIsoCount, 7);
   EXPECT_EQ(softwareIsoCount, 1);
+  EXPECT_TRUE(session.programEncoderPath == "hardware" || session.programEncoderPath == "software")
+      << "Program encoder was not read back: '" << session.programEncoderPath << "'";
+  std::printf("[iso935] measured program=%s\n", session.programEncoderPath.c_str());
   // #935: the same verdict, structured, so no reader parses recording.warning.
   ASSERT_TRUE(session.isoAdmission.has_value());
   EXPECT_EQ(session.isoAdmission->decision, "admit-with-warning");
@@ -1627,6 +1636,56 @@ TEST(EncoderRecordingSession, MediaFoundationProgramOnlyTakeAfterSpillClearsIsoA
   const auto session = encoder->session();
   EXPECT_FALSE(session.isoAdmission.has_value()) << "stale admission from the previous take";
   EXPECT_TRUE(session.isoStreams.empty());
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationProgramForcedOntoSoftwareMftIsMeasuredSoftware) {
+  // #935 B1: requesting hardware is not evidence of hardware. With the hardware
+  // request withheld, the Program writer gets the OS software H.264 MFT, and the
+  // MEASURED path must say so while the request flag is unchanged.
+  struct ScopedEnv {
+    ScopedEnv() { _putenv_s("COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER", "1"); }
+    ~ScopedEnv() { _putenv_s("COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER", ""); }
+  } forceSoftware;
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  ASSERT_TRUE(encoder);
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso935-program-software";
+  fs::remove_all(targetDir, ec);
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso935-program-software";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 8;
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 640;
+  frame.height = 360;
+  frame.preview.width = 640;
+  frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  std::vector<float> pcm(static_cast<size_t>(960) * 2, 0.2f);
+  for (int tick = 0; tick < 6; ++tick) {
+    frame.frameNumber = tick + 1;
+    encoder->submit(frame);
+    encoder->submitAudio(pcm.data(), 960, 2, 48000);
+  }
+  const auto session = encoder->session();
+  EXPECT_EQ(session.programEncoderPath, "software");
+  EXPECT_TRUE(session.hardwareAccelerated) << "the request flag is unchanged; only the measurement moved";
   encoder->stopRecording();
   encoder.reset();
   fs::remove_all(targetDir, ec);
@@ -2954,6 +3013,39 @@ TEST(EncoderRecordingSession, IsoAdmissionAndIsoIndexSurfaceInSnapshotRecordingS
     EXPECT_EQ(stream.getString("encoderPath"), "software");
   }
   EXPECT_TRUE(foundIso);
+
+  // #935 B1: hardwareAccelerated is the MEASURED path, hardwareRequested the request.
+  sink->session_.hardwareAccelerated = true;
+  sink->session_.programEncoderPath = "software";
+  sink->session_.programVideoWorkUs = 6000;
+  sink->session_.recordingMuxVideoFrameCount = 3;
+  {
+    const auto measured = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 16.0);
+    const auto* rec = measured.get("recording");
+    ASSERT_NE(rec, nullptr);
+    const auto* enc = rec->get("encoder");
+    ASSERT_NE(enc, nullptr);
+    EXPECT_FALSE(enc->get("hardwareAccelerated")->asBool(true)) << "software MFT reported as hardware";
+    EXPECT_TRUE(enc->get("hardwareRequested")->asBool(false));
+    EXPECT_EQ(enc->getString("encoderPath"), "software");
+    const auto& program = rec->get("streams")->asArray().front();
+    EXPECT_EQ(program.getString("kind"), "program");
+    EXPECT_EQ(program.getString("encoderPath"), "software");
+    EXPECT_EQ(program.getNumber("videoWorkUs"), 6000);
+    EXPECT_EQ(program.getNumber("muxVideoFrameCount"), 3);
+  }
+  sink->session_.programEncoderPath.clear();
+  sink->session_.programVideoWorkUs.reset();
+  {
+    const auto unmeasured = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 16.0);
+    const auto* enc = unmeasured.get("recording")->get("encoder");
+    EXPECT_FALSE(enc->get("hardwareAccelerated")->asBool(true)) << "an unmeasured path must not read as hardware";
+    ASSERT_NE(enc->get("encoderPath"), nullptr);
+    EXPECT_TRUE(enc->get("encoderPath")->isNull());
+    const auto& program = unmeasured.get("recording")->get("streams")->asArray().front();
+    EXPECT_EQ(program.get("encoderPath"), nullptr);
+    EXPECT_EQ(program.get("videoWorkUs"), nullptr);
+  }
 
   // Program-only: the node is absent, never an empty object.
   sink->session_.isoAdmission.reset();

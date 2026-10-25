@@ -1172,7 +1172,7 @@ rpc::Json CoreStateCapture::health(const AudioOutputObservation& observation) co
   if (modules_.compositor->rendererName() != "software") {
     messages.emplace_back("GPU compositor active: " + modules_.compositor->rendererName());
   }
-  if (session.hardwareAccelerated) {
+  if (session.programEncoderPath == "hardware") {
     messages.emplace_back("Hardware encoder active: " + session.encoderName);
   }
   for (const auto& warning : lastProgramFrame_.warnings) {
@@ -1901,8 +1901,7 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
                                       ? session.recordingArtifactPath
                                       : recordingTargetFolder_ + "/" + recordingFilenamePrefix_ +
                                             "-program-0." + recordingFormat_;
-  rpc::Json::Array streams{
-      rpc::Json::Object{
+  rpc::Json::Object programStream{
           {"kind", "program"},
           {"path", programPath},
           {"status", publishedWriterStatus},
@@ -1919,8 +1918,15 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
           {"writeQueue", recordingWriteQueueJson(session.programWriteQueue)},
           {"bytesWritten", static_cast<double>(programBytesWritten)},
           {"metadataValid", metadataValid},
-      },
   };
+  // #935: the MEASURED Program encoder and its work, so a readout or gate
+  // never infers placement from the hardware request.
+  if (!session.programEncoderPath.empty()) programStream.emplace("encoderPath", session.programEncoderPath);
+  if (session.programVideoWorkUs) {
+    programStream.emplace("videoWorkUs", static_cast<double>(*session.programVideoWorkUs));
+    programStream.emplace("muxVideoFrameCount", static_cast<double>(session.recordingMuxVideoFrameCount));
+  }
+  rpc::Json::Array streams{std::move(programStream)};
   if (!session.isoStreams.empty()) {
     // ISO-1: real per-writer health from the Media Foundation sink — one node per
     // selected ISO source with its own path, frame count, open state and warning.
@@ -1954,7 +1960,7 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
           {"audioSamples", static_cast<double>(iso.audioSampleCount)},
           {"bytesWritten", static_cast<double>(iso.bytesWritten)},
           {"metadataValid", iso.trackOpen},
-          {"encoderPath", iso.encoderPath},
+          {"encoderPath", iso.encoderPath.empty() ? rpc::Json(nullptr) : rpc::Json(iso.encoderPath)},
           {"fallbackReason", iso.fallbackReason},
           {"droppedFrames", static_cast<double>(iso.droppedVideoFrames)},
           {"droppedAudioPackets", static_cast<double>(iso.droppedAudioPackets)},
@@ -1968,6 +1974,7 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
       if (!iso.warning.empty()) {
         node.emplace("warning", iso.warning);
       }
+      if (!iso.plannedEncoderPath.empty()) node.emplace("plannedEncoderPath", iso.plannedEncoderPath);
       if (iso.isoIndex > 0) {
         node.emplace("isoIndex", static_cast<double>(iso.isoIndex));  // #935: the NN in ISO-NN-<name>.mp4
       }
@@ -2011,7 +2018,11 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
       {"encoder",
        rpc::Json::Object{
            {"codec", session.codec},
-           {"hardwareAccelerated", session.hardwareAccelerated},
+           // #935: MEASURED. True only when the Program writer's instantiated
+           // encoder MFT is a hardware MFT; hardwareRequested is the request.
+           {"hardwareAccelerated", session.programEncoderPath == "hardware"},
+           {"hardwareRequested", session.hardwareAccelerated},
+           {"encoderPath", session.programEncoderPath.empty() ? rpc::Json(nullptr) : rpc::Json(session.programEncoderPath)},
            {"targetBitrateMbps", session.targetBitrateMbps},
            {"audioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
        }},

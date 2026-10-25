@@ -40,10 +40,10 @@ public static class IsoEncoderPlacementReadout
             string.Equals(s.Kind, "program", StringComparison.OrdinalIgnoreCase));
         if (program is not null)
         {
-            // The stream's own encoderPath wins; the encoder flag is the fallback when it is absent.
-            var onSoftware = program.EncoderPath is null
-                ? !programHardwareAccelerated
-                : string.Equals(program.EncoderPath, "software", StringComparison.OrdinalIgnoreCase);
+            // #935 B1: only the MEASURED path (read back from the encoder the Program writer
+            // instantiated) may claim software. Absent = not measured yet = no claim either way;
+            // programHardwareAccelerated is never used to infer placement.
+            var onSoftware = string.Equals(program.EncoderPath, "software", StringComparison.OrdinalIgnoreCase);
             if (onSoftware)
             {
                 lines.Add(BuildLine("Program is on the CPU software encoder", program, out var w));
@@ -110,6 +110,7 @@ public static class IsoEncoderPlacementReadout
         "hardware-capacity-exhausted" => "GPU sessions used up",
         "hardware-unavailable" => "no GPU encoder",
         "operator-selected" => "set to software",
+        "hardware-requested-software-used" => "GPU encoder requested, software encoder used",
         _ => reason,
     };
 }

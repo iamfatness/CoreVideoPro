@@ -66,10 +66,14 @@ public sealed class IsoEncoderPlacementReadoutTests
     [Fact]
     public void ProgramOnSoftware_GetsItsOwnLine()
     {
-        var r = IsoEncoderPlacementReadout.Describe(Rec(), programHardwareAccelerated: false);
+        var r = IsoEncoderPlacementReadout.Describe(RecP(Program("software")), programHardwareAccelerated: false);
         Assert.Contains(r.Lines, l => l.StartsWith("Program is on the CPU software encoder", StringComparison.Ordinal));
         Assert.Equal(PlacementSeverity.Informational, r.Severity);
     }
+
+    [Fact]
+    public void ProgramEncoderNotMeasured_MakesNoClaim_935B1()
+        => Assert.Empty(IsoEncoderPlacementReadout.Describe(Rec(), programHardwareAccelerated: false).Lines);
 
     [Fact]
     public void ProgramStreamSaysHardware_NoProgramLineEvenIfFlagFalse()
@@ -100,6 +104,7 @@ public sealed class IsoEncoderPlacementReadoutTests
     [Theory]
     [InlineData("hardware-unavailable", "no GPU encoder")]
     [InlineData("operator-selected", "set to software")]
+    [InlineData("hardware-requested-software-used", "GPU encoder requested, software encoder used")]
     [InlineData("something-new", "something-new")]
     public void ReasonMap(string reason, string expected)
         => Assert.Contains($"({expected})", Assert.Single(IsoEncoderPlacementReadout.Describe(

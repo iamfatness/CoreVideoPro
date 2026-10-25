@@ -16,7 +16,8 @@
  *     failure. Any other warning text, a refused ISO, or measured ISO frame loss
  *     (droppedFrames / writeQueue.dropped growing past the steady-state baseline) FAILS.
  *     An ISO on the software encoder passes on identity/loss checks alone, but PROGRAM
- *     on the software encoder (recording.encoder.hardwareAccelerated !== true) FAILS,
+ *     on the software encoder FAILS, judged on the MEASURED recording.encoder.encoderPath (the MFT the
+ *     Program writer instantiated); any ISO drop at Stop FAILS (zero tolerance, not only growth),
  *     and an unreported value is a failure, never assumed hardware,
  *   - each ISO-NN-*.mp4 exists on disk, non-zero, and (with ffprobe) carries
  *     BOTH a video stream AND an aac audio stream,
@@ -29,7 +30,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, statSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyRecordingWarning, isoPlacementNotes, isoLossRegressions, programEncoderFailure } from "./qa/iso-record-rules.mjs";
+import { classifyRecordingWarning, isoPlacementNotes, isoLossRegressions, isoDropFailures, programEncoderFailure } from "./qa/iso-record-rules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
@@ -312,11 +313,11 @@ try {
   const finalStreams = isoStreamsOf(stopSnap);
   const finalAdmission = stopSnap.recording?.isoAdmission ?? isoAdmissionSeen;
   if (finalAdmission?.decision === "refuse-iso") failures.push(`ISO admission refused: ${finalAdmission.message}`);
-  if (stopSnap.recording?.encoder?.hardwareAccelerated === false) {
-    const text = programEncoderFailure(stopSnap.recording);
-    if (!failures.includes(text)) failures.push(text);
-  }
+  // M2: absent at Stop is a failure too, never assumed hardware.
+  const programEncoderAtStop = programEncoderFailure(stopSnap.recording);
+  if (programEncoderAtStop && !failures.includes(programEncoderAtStop)) failures.push(programEncoderAtStop);
   if (lossBaseline) failures.push(...isoLossRegressions(isoStreamsOf(lossBaseline), finalStreams));
+  for (const text of isoDropFailures(finalStreams)) if (!failures.includes(text)) failures.push(text);
   // Note fps: the stream's own reported frameRate if present, else the requested recording fps.
   const requestedFps = 60;
   for (const s of finalStreams)

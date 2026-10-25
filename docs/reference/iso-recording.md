@@ -115,14 +115,34 @@ software encoder stays a FAIL for RC.
   `AsyncEncoderSink.CarriesIsoAdmissionAndIsoIndexFromTheWrappedSink`,
   `EncoderRecordingSession.MediaFoundationEightZoomIsoWritersSurviveEncoderCapacity` and
   `EncoderRecordingSession.MediaFoundationProgramOnlyTakeAfterSpillClearsIsoAdmission`.
+- **Encoder placement is MEASURED, not requested (#935 review B1).** Asking Media
+  Foundation for hardware (`MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS`) proves nothing:
+  it silently falls back to the OS software H.264 MFT. At `BeginWriting` each writer
+  reads back the encoder MFT it actually instantiated (`GetTransformForStream`,
+  category `MFT_CATEGORY_VIDEO_ENCODER`) and classifies it `hardware` when the MFT's
+  attribute store carries `MFT_ENUM_HARDWARE_URL_Attribute` or
+  `MFT_ENUM_HARDWARE_VENDOR_ID_Attribute`, else `software` (logged as
+  `[recording-transform] ... encoder=`). Measured on the RTX 4090: "NVIDIA H.264 Encoder
+  MFT" reads hardware, the spilled ISO and a Program forced with
+  `COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER=1` (QA only) read software. Published as
+  `recording.encoder.encoderPath` (null until Program began writing),
+  `recording.encoder.hardwareAccelerated` (= measured path is hardware) beside
+  `hardwareRequested` (the request), the Program stream's `encoderPath`, `videoWorkUs`
+  and `muxVideoFrameCount`, and each ISO's `encoderPath` (measured, null until its
+  writer began) beside `plannedEncoderPath`. A hardware plan served by the software
+  MFT reports `fallbackReason: hardware-requested-software-used`. Pinned by
+  `MediaFoundationProgramForcedOntoSoftwareMftIsMeasuredSoftware` and the two
+  eight-ISO MF tests.
 - `validate-iso-record.mjs` (rules in `scripts/qa/iso-record-rules.mjs`,
   tests `iso-record-rules.test.mjs`) treats a `recording.warning` that EQUALS
   `isoAdmission.message` with `decision == admit-with-warning` as a note; any
   other text, including the sentence with anything prepended or appended, still
   fails, and each distinct failure is reported once. `refuse-iso` with ISOs
-  requested fails. Per-ISO `droppedFrames` / `writeQueue.dropped` must not grow
-  between the steady-state baseline and Stop. Program `encoder.hardwareAccelerated`
-  false or absent fails (D8). Each software ISO prints a `Note :` line with its
+  requested fails. Any ISO drop at Stop fails, zero tolerance: `droppedFrames`,
+  `writeQueue.dropped` and `writeQueue.droppedAudio` must be 0 (the core already
+  excludes the startup-clipped head), and must also not grow after the steady-state
+  baseline. Program `recording.encoder.encoderPath` must be the MEASURED `hardware`,
+  per poll while producing and at Stop; `software` or absent fails (D8). Each software ISO prints a `Note :` line with its
   measured ms/frame (`videoWorkUs / muxVideoFrameCount`), or "cost not measured
   yet". `--allow-capacity-warning` is accepted, says it is now the default, and
   waives nothing more.

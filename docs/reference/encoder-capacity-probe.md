@@ -68,6 +68,24 @@ to remove.
   the software budget are unchanged. Encoder placement is reported, never gated;
   a run fails only on measured loss (Program on software stays a FAIL, D8). See
   `docs/reference/iso-recording.md` "The software-encoder admission is a note".
+- **Placement vs the encoder actually used: MEASURED, not requested (#935 review B1).** Asking Media
+  Foundation for hardware (`MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS`) proves nothing:
+  it silently falls back to the OS software H.264 MFT. At `BeginWriting` each writer
+  reads back the encoder MFT it actually instantiated (`GetTransformForStream`,
+  category `MFT_CATEGORY_VIDEO_ENCODER`) and classifies it `hardware` when the MFT's
+  attribute store carries `MFT_ENUM_HARDWARE_URL_Attribute` or
+  `MFT_ENUM_HARDWARE_VENDOR_ID_Attribute`, else `software` (logged as
+  `[recording-transform] ... encoder=`). Measured on the RTX 4090: "NVIDIA H.264 Encoder
+  MFT" reads hardware, the spilled ISO and a Program forced with
+  `COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER=1` (QA only) read software. Published as
+  `recording.encoder.encoderPath` (null until Program began writing),
+  `recording.encoder.hardwareAccelerated` (= measured path is hardware) beside
+  `hardwareRequested` (the request), the Program stream's `encoderPath`, `videoWorkUs`
+  and `muxVideoFrameCount`, and each ISO's `encoderPath` (measured, null until its
+  writer began) beside `plannedEncoderPath`. A hardware plan served by the software
+  MFT reports `fallbackReason: hardware-requested-software-used`. Pinned by
+  `MediaFoundationProgramForcedOntoSoftwareMftIsMeasuredSoftware` and the two
+  eight-ISO MF tests.
 - **Arm can read `pending` (#1042):** on 2026-10-24 the validator's 8-ISO 1080p60
   take armed while the `configureRecording` prewarm for that workload was still
   running, so it got the unprobed fallback (7 + 1 spill), and the late probe

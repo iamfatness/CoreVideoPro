@@ -483,7 +483,12 @@ public sealed class NativeMediaCoreRecordingProof
 public sealed class NativeMediaCoreRecordingEncoder
 {
     public string Codec { get; init; } = "h264";
+    /// <summary>#935: MEASURED. True only when the Program writer's instantiated encoder MFT is hardware.</summary>
     public bool HardwareAccelerated { get; init; }
+    /// <summary>Hardware MFTs were requested. Not evidence of what Program uses.</summary>
+    public bool HardwareRequested { get; init; }
+    /// <summary>#935: measured "hardware" | "software"; null until Program began writing.</summary>
+    public string? EncoderPath { get; init; }
     public double TargetBitrateMbps { get; init; }
 }
 

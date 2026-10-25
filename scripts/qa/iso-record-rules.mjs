@@ -14,6 +14,7 @@ const REASONS = {
   'hardware-capacity-exhausted': 'GPU sessions used up',
   'hardware-unavailable': 'no GPU encoder',
   'operator-selected': 'set to software',
+  'hardware-requested-software-used': 'GPU encoder requested, software encoder used',
 };
 
 export function isoPlacementNotes(streams, fps) {
@@ -49,10 +50,29 @@ export function isoLossRegressions(baselineStreams, stopStreams) {
   return out;
 }
 
-// Owner ruling D8: Program on the software encoder is a FAIL for RC; absent is never "true".
+// Zero tolerance (#935 review M1): any ISO frame or packet the writer dropped is
+// loss, whenever it happened. The core already excludes the startup-clipped head
+// (droppedFrames = dropped - startupDropped), so a nonzero count is real loss.
+export function isoDropFailures(stopStreams) {
+  const out = [];
+  for (const s of (stopStreams ?? []).filter((x) => x?.kind === 'iso')) {
+    for (const [name, value] of [['droppedFrames', s.droppedFrames], ['writeQueue.dropped', s.writeQueue?.dropped],
+                                 ['writeQueue.droppedAudio', s.writeQueue?.droppedAudio]]) {
+      if (name === 'writeQueue.droppedAudio' && value === undefined) continue;  // older cores never reported it
+      if (typeof value !== 'number') out.push(`ISO ${s.sourceId} ${name} not reported`);
+      else if (value > 0) out.push(`ISO ${s.sourceId} ${name} = ${value} (any ISO drop fails)`);
+    }
+  }
+  return out;
+}
+
+// Owner ruling D8: Program on the software encoder is a FAIL for RC. The value is
+// MEASURED (recording.encoder.encoderPath, read back from the encoder MFT the
+// Program writer instantiated, #935 B1); hardwareRequested is only the request.
+// Not measured is a failure, never assumed hardware.
 export function programEncoderFailure(recording) {
-  const hw = recording?.encoder?.hardwareAccelerated;
-  if (hw === true) return null;
-  if (hw === false) return 'Program recorded on the CPU software encoder (Program on software is a FAIL for RC)';
-  return 'Program encoder hardwareAccelerated was not reported (cannot confirm hardware encoding)';
+  const path = recording?.encoder?.encoderPath;
+  if (path === 'hardware') return null;
+  if (path === 'software') return 'Program recorded on the CPU software encoder (Program on software is a FAIL for RC)';
+  return 'Program encoder path was not measured (recording.encoder.encoderPath absent; cannot confirm hardware encoding)';
 }

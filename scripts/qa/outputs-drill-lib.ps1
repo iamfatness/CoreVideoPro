@@ -379,7 +379,11 @@ function Update-DrillThroughout {
   $s = $Envelope.snapshot
   $checks = [ordered]@{}
   $iso = @($s.recording.streams | Where-Object { $_.kind -eq 'iso' })
-  $programHardware = $null -ne $s.recording -and $null -ne $s.recording.encoder -and $s.recording.encoder.hardwareAccelerated -eq $true
+  # #935 B1: MEASURED. recording.encoder.encoderPath is read back from the encoder
+  # MFT the Program writer instantiated; hardwareAccelerated/hardwareRequested
+  # alone never prove hardware. Absent = not measured = not hardware.
+  $programHardware = $null -ne $s.recording -and $null -ne $s.recording.encoder -and
+    $s.recording.encoder.PSObject.Properties['encoderPath'] -and $s.recording.encoder.encoderPath -eq 'hardware'
   $checks.hardwareEncodersThroughout = $programHardware -and
     @($Plan.IsoSourceIds | Where-Object { $id = $_; -not @($iso | Where-Object { $_.sourceId -eq $id -and $_.encoderPath -eq 'hardware' -and $_.framesWritten -gt 0 }).Count }).Count -eq 0
   $checks.programEncoderHardwareThroughout = $programHardware
@@ -511,6 +515,7 @@ function Get-DrillSampleRow {
     utc = [DateTime]::UtcNow.ToString('o'); qpc = [Diagnostics.Stopwatch]::GetTimestamp().ToString(); elapsedMs = $ElapsedMs
     ageMs = $Envelope.ageMs; coreEpoch = $s.graphics.coreEpoch; recording = $s.recording.lifecycle.state
     programBuffer = $s.programBuffer; programEncoderHardware = $s.recording.encoder.hardwareAccelerated
+    programEncoderPath = $(if ($s.recording.encoder -and $s.recording.encoder.PSObject.Properties['encoderPath']) { $s.recording.encoder.encoderPath } else { $null })
     iso = @($s.recording.streams | ForEach-Object { [ordered]@{ kind = $_.kind; sourceId = $_.sourceId; framesWritten = $_.framesWritten; encoderPath = $_.encoderPath
         isoIndex = $_.isoIndex; videoWorkUs = $_.videoWorkUs; muxVideoFrameCount = $_.muxVideoFrameCount; droppedFrames = $_.droppedFrames } })
     senders = @($s.outputSenderSession.senders | ForEach-Object { [ordered]@{ destination = $_.destination; framesSent = $_.framesSent; fps = $_.fps; retryCount = $_.retryCount; status = $_.status } })

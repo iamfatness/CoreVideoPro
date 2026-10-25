@@ -292,6 +292,11 @@ the software encoder is a qualification FAIL for RC (D8).
   `hardwareAccelerated == false` or does not report it. Only the ISO half of the old combined
   `hardwareEncodersThroughout` flag is demoted to a recorded fact. At record start Program on
   software is still not a cancel (section 1): the take proceeds, and the qualification fails.
+- **D8 is judged on a MEASURED value (review B1, 2026-10-24).** `recording.encoder.hardwareAccelerated`
+  used to be a constant set in the sink constructor; Media Foundation silently falls back to the
+  software MFT when hardware is only requested. The core now reads back the encoder MFT each writer
+  instantiated and publishes `recording.encoder.encoderPath`, per-stream `encoderPath` (Program and
+  every ISO) and `hardwareRequested` separately. Both gates read the measured path; absent fails.
 - **D9 — UI severity.** The shell shows a software ISO as **Informational**, with its measured
   per-frame cost. It turns **Warning** only when that writer drops frames (or its measured mean
   work exceeds the frame budget). Program on the software encoder gets its own line in the same
