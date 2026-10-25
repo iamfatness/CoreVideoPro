@@ -133,8 +133,12 @@ if (-not $admin -and $machineChangeNeeded) {
     $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -Action ' + $Action + ' -AppDirectory "' + $app + '" -OwnerSid ' + $OwnerSid + ' -MachineOnly'
     if ($FrameServerFault -match '^[a-z]+$') { $arguments += ' -FrameServerFault ' + $FrameServerFault }
     if (Test-Path -LiteralPath $frameServerResultPath) { Remove-Item -LiteralPath $frameServerResultPath -Force }
-    # 64-bit child (#781): the Frame Server refresh needs the native host.
-    $child = Start-Process (Get-NativePowerShellPath) -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments -PassThru -Wait
+    # Plain powershell.exe, never a Sysnative path: ShellExecute RunAs resolves the
+    # target in the 64-bit AppInfo service, where Sysnative does not exist ("The
+    # system cannot find the path specified" from the SysWOW64 host, which is the
+    # real install path). The 64-bit Frame Server refresh (#781) is still met:
+    # Invoke-FrameServerRefresh relays through Sysnative inside the elevated child.
+    $child = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments -PassThru -Wait
     if ($child.ExitCode -ne 0 -and $child.ExitCode -ne 3) { throw "Machine camera $Action failed (exit $($child.ExitCode)); the app's user registration was not changed." }
     if (Test-Path -LiteralPath $frameServerResultPath -PathType Leaf) {
         try { $frameServerRefresh = Get-Content -LiteralPath $frameServerResultPath -Raw | ConvertFrom-Json } catch { }

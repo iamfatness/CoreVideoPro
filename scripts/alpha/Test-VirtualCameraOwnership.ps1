@@ -39,8 +39,27 @@ foreach ($directory in @($true, $false)) {
         $count++
     }
 }
-[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Install-VirtualCamera.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+$installAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Install-VirtualCamera.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
+# #781 review: the UAC target must be plain powershell.exe. ShellExecute RunAs goes through
+# the 64-bit AppInfo service, which cannot resolve a Sysnative path (measured from the
+# SysWOW64 host: "The system cannot find the path specified"), so every interactive install
+# would roll back. The 64-bit requirement is met inside the elevated child instead:
+# Invoke-FrameServerRefresh relays through Sysnative directly.
+$runAsCommands = @($installAst.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Start-Process' -and
+    @($node.CommandElements | Where-Object { $_ -is [Management.Automation.Language.StringConstantExpressionAst] -and $_.Value -eq 'RunAs' }).Count -gt 0 }, $true))
+if ($runAsCommands.Count -lt 1) { throw 'Install-VirtualCamera.ps1 has no RunAs Start-Process to check.' }
+foreach ($command in $runAsCommands) {
+    $elements = @($command.CommandElements)
+    $target = $elements[1]
+    for ($i = 1; $i -lt $elements.Count - 1; $i++) {
+        if ($elements[$i] -is [Management.Automation.Language.CommandParameterAst] -and $elements[$i].ParameterName -eq 'FilePath') { $target = $elements[$i + 1] }
+    }
+    if ($target -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $target.Value -ne 'powershell.exe' -or $command.Extent.Text -match '(?i)Sysnative|Get-NativePowerShellPath') {
+        throw "RunAs target must be the literal powershell.exe (AppInfo cannot resolve Sysnative): $($command.Extent.Text)"
+    }
+    $count++
+}
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('CoreVideoCameraCleanup-' + [Guid]::NewGuid().ToString('N'))
 $transactions = Join-Path $temporary 'transactions'
 New-Item -ItemType Directory -Path $transactions -Force | Out-Null
