@@ -18,7 +18,8 @@ try {
     $prefix = "CoreVideoPro-$channelTitle/"
     $entries = @{}
     foreach ($entry in $zip.Entries) {
-        $name = $entry.FullName.Replace('\','/')
+        if ($entry.FullName.Contains('\')) { throw "Archive entry uses backslash separators: $($entry.FullName)" }
+        $name = $entry.FullName
         if (-not $name.StartsWith($prefix) -or $name -match '(^|/)\.\.(/|$)') { throw 'Unexpected archive path.' }
         if ($name.EndsWith('/')) { continue }
         $relative = $name.Substring($prefix.Length)

@@ -70,6 +70,7 @@ jobs:
           $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $archive))
           try {
             $node = $zip.GetEntry('CoreVideoPro-Beta/node/node.exe')
+            if (-not $node) { throw 'Archive entry CoreVideoPro-Beta/node/node.exe not found; entry names must use forward slashes (#1047).' }
             [IO.Compression.ZipFileExtensions]::ExtractToFile($node, (Join-Path $PWD 'artifacts/beta-package/node.exe'))
           } finally { $zip.Dispose() }
           & scripts/alpha/Test-AlphaNodePackaging.ps1 -NodeExe artifacts/beta-package/node.exe

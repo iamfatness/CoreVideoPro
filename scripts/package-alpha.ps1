@@ -174,7 +174,16 @@ $manifest = [ordered]@{
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $app 'build-manifest.json') -Encoding UTF8
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zipPath = Join-Path $output "CoreVideoPro-win-x64-$ReleaseId.zip"
-[IO.Compression.ZipFile]::CreateFromDirectory($app, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $true)
+# Write entries one by one with '/' separators. CreateFromDirectory under Windows PowerShell 5.1
+# (.NET Framework) emits backslash entry names, which GetEntry('a/b') on any .NET runtime cannot find (#1047).
+$zipRoot = [IO.Path]::GetFileName($app)
+$zipArchive = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Create)
+try {
+    foreach ($file in (Get-ChildItem -LiteralPath $app -Recurse -File | Sort-Object FullName)) {
+        $entryName = $zipRoot + '/' + $file.FullName.Substring($app.Length + 1).Replace('\', '/')
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zipArchive, $file.FullName, $entryName, [IO.Compression.CompressionLevel]::Optimal) | Out-Null
+    }
+} finally { $zipArchive.Dispose() }
 $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  $([IO.Path]::GetFileName($zipPath))" | Set-Content -LiteralPath ($zipPath + '.sha256') -Encoding ASCII
 [pscustomobject]@{ package=$zipPath; sha256=$hash; sourceCommit=$commit } | ConvertTo-Json
