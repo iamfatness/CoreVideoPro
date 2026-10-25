@@ -41,7 +41,7 @@ void MediaCore::submitIsolatedMonitorTick(const modules::CompositorRenderPlan& r
   if (request.multiviewActive) {
     request.multiviewPlan = buildMultiviewRenderPlan(videoFrames);
     request.multiviewPlan.skipCpuReadback = true;
-    request.tiles = buildMultiviewTiles(zoomSnapshot().getString("activeSpeakerId"));
+    request.tiles = buildMultiviewTiles(tallySpeakerId());
   }
   if (request.previewActive) {
     request.previewPlan = buildPreviewCompositorRenderPlan(videoFrames);

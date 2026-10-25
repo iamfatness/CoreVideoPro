@@ -280,6 +280,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Installer upgrade retirement safety tests
         run: powershell.exe -NoProfile -File scripts/alpha/Test-PreviousInstallations.ps1
+      - name: Installer residual version-folder sweep tests (#883)
+        run: powershell.exe -NoProfile -File scripts/alpha/Test-ResidualInstallations.ps1
+      - name: Installer cleanup helper environment tests, 64-bit and 32-bit hosts (#883)
+        run: powershell.exe -NoProfile -File scripts/alpha/Test-CleanupEnvironment.ps1
       - name: Installer crash-dump (WER LocalDumps) tests
         run: powershell.exe -NoProfile -File scripts/alpha/Test-CrashDumps.ps1
       - name: Alpha Node packaging validator (synthetic package)
