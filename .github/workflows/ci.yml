@@ -286,6 +286,14 @@ jobs:
         run: powershell.exe -NoProfile -File scripts/alpha/Test-CleanupEnvironment.ps1
       - name: Installer crash-dump (WER LocalDumps) tests
         run: powershell.exe -NoProfile -File scripts/alpha/Test-CrashDumps.ps1
+      - name: Installer Frame Server refresh tests (#781; fake service, 64-bit and SysWOW64 hosts)
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/alpha/Test-FrameServerRefresh.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:WINDIR/SysWOW64/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File scripts/alpha/Test-FrameServerRefresh.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:WINDIR/SysWOW64/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File scripts/alpha/Test-VirtualCameraOwnership.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Alpha Node packaging validator (synthetic package)
         shell: pwsh
         run: |

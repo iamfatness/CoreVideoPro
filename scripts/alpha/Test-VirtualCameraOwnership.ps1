@@ -39,8 +39,42 @@ foreach ($directory in @($true, $false)) {
         $count++
     }
 }
-[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Install-VirtualCamera.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+$installAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Install-VirtualCamera.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
+# #781 review: the UAC target must be plain powershell.exe. ShellExecute RunAs goes through
+# the 64-bit AppInfo service, which cannot resolve a Sysnative path (measured from the
+# SysWOW64 host: "The system cannot find the path specified"), so every interactive install
+# would roll back. The 64-bit requirement is met inside the elevated child instead:
+# Invoke-FrameServerRefresh relays through Sysnative directly.
+$runAsCommands = @($installAst.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Start-Process' -and
+    @($node.CommandElements | Where-Object { $_ -is [Management.Automation.Language.StringConstantExpressionAst] -and $_.Value -eq 'RunAs' }).Count -gt 0 }, $true))
+if ($runAsCommands.Count -lt 1) { throw 'Install-VirtualCamera.ps1 has no RunAs Start-Process to check.' }
+foreach ($command in $runAsCommands) {
+    $elements = @($command.CommandElements)
+    $target = $elements[1]
+    for ($i = 1; $i -lt $elements.Count - 1; $i++) {
+        if ($elements[$i] -is [Management.Automation.Language.CommandParameterAst] -and $elements[$i].ParameterName -eq 'FilePath') { $target = $elements[$i + 1] }
+    }
+    if ($target -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $target.Value -ne 'powershell.exe' -or $command.Extent.Text -match '(?i)Sysnative|Get-NativePowerShellPath') {
+        throw "RunAs target must be the literal powershell.exe (AppInfo cannot resolve Sysnative): $($command.Extent.Text)"
+    }
+    $count++
+}
+# #781 review: the NSIS exit-3 branch writes a setup-log line (CreateDirectory/FileOpen/
+# FileSeek/FileWrite). A failed write sets the NSIS error flag, and the later
+# "IfErrors install_failed" would roll back a correctly registered install. The branch
+# must ClearErrors after that log block, before anything else can test the flag.
+$nsi = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'installer.nsi') -Raw
+$exit3Branch = [regex]::Match($nsi, '(?s)\$\{If\} \$1 == 3\r?\n(.*?)\$\{ElseIf\} \$1 != 0')
+if (-not $exit3Branch.Success) { throw 'installer.nsi: the camera exit-3 branch was not found.' }
+if ($exit3Branch.Groups[1].Value -notmatch 'FileClose \$R8[ \t]*\r?\n(?:[ \t]*;[^\r\n]*\r?\n)*[ \t]*ClearErrors') { throw 'installer.nsi: the exit-3 setup-log write is not followed by ClearErrors; a failed log write would roll back a verified install.' }
+$count++
+# #781 review: fault injection is honored only through the explicit -FrameServerFault
+# parameter (the test-provider path). Production camera setup never reads the env var.
+foreach ($file in @('Install-VirtualCamera.ps1','Refresh-FrameServer.ps1')) {
+    if ((Get-Content -LiteralPath (Join-Path $PSScriptRoot $file) -Raw) -match '(?i)\$env:COREVIDEO_FRAMESERVER_FAULT') { throw "$file reads COREVIDEO_FRAMESERVER_FAULT from the environment; production must ignore it." }
+    $count++
+}
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('CoreVideoCameraCleanup-' + [Guid]::NewGuid().ToString('N'))
 $transactions = Join-Path $temporary 'transactions'
 New-Item -ItemType Directory -Path $transactions -Force | Out-Null
@@ -81,4 +115,68 @@ try {
     if ([IO.Directory]::Exists($version)) { [IO.Directory]::Delete($version, $false) }
     [IO.Directory]::Delete($transactions, $false); [IO.Directory]::Delete($temporary, $false)
 }
+# #781: Frame Server refresh decision. Current/NotLoaded/NotRunning must never
+# restart the service; Stale/Unknown must. Module evidence wins over the serve log.
+$expected = 'C:\Program Files\Common Files\CoreVideoProCamera\' + ('b' * 64) + '\corevideo-virtualcam.dll'
+$old = 'C:\Program Files\Common Files\CoreVideoProCamera\' + ('a' * 64) + '\corevideo-virtualcam.dll'
+function Assert-Refresh([string]$Expected, [hashtable]$Arguments) {
+    $actual = Get-FrameServerRefreshDecision @Arguments
+    if ($actual -ne $Expected) { throw "Refresh decision: expected $Expected; got $actual for $($Arguments | ConvertTo-Json -Compress)" }
+    $script:count++
+}
+Assert-Refresh 'NotRunning' @{ServiceState='Stopped';ExpectedDll=$expected;ModuleInspection='unavailable'}
+Assert-Refresh 'NotRunning' @{ServiceState='Stopped';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($old)}
+Assert-Refresh 'NotRunning' @{ServiceState='Absent';ExpectedDll=$expected;ModuleInspection='unavailable'}
+Assert-Refresh 'Unknown' @{ServiceState='StopPending';ExpectedDll=$expected;ModuleInspection='unavailable'}
+Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@('C:\Windows\System32\mfsensorgroup.dll',$expected)}
+Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($expected.ToUpperInvariant())}
+Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=($expected + '\');ModuleInspection='observed';LoadedPaths=@($expected.Replace('\','/'))}
+Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@('\\?\' + $expected)}
+Assert-Refresh 'NotLoaded' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@('C:\Windows\System32\mfsensorgroup.dll')}
+Assert-Refresh 'NotLoaded' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@()}
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($old)}
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($expected,$old)}
+# Observed modules outrank an older serve-log claim in either direction.
+Assert-Refresh 'NotLoaded' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@();ServeLogPaths=@($old)}
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='observed';LoadedPaths=@($old);ServeLogPaths=@($expected)}
+# Module API unavailable: the serve log for this PID decides, last line wins.
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='unavailable';ServeLogPaths=@($expected,$old)}
+Assert-Refresh 'Current' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='unavailable';ServeLogPaths=@($old,$expected)}
+Assert-Refresh 'Unknown' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='unavailable';ServeLogPaths=@()}
+Assert-Refresh 'Unknown' @{ServiceState='Running';ExpectedDll=$expected;ModuleInspection='unavailable';ServeLogPaths=@('C:\Other\not-the-camera.dll')}
+# Uninstall/rollback-to-nothing: nothing is registered, so any loaded CoreVideo camera is stale.
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll='';ModuleInspection='observed';LoadedPaths=@($expected)}
+Assert-Refresh 'NotLoaded' @{ServiceState='Running';ExpectedDll='';ModuleInspection='observed';LoadedPaths=@()}
+Assert-Refresh 'Stale' @{ServiceState='Running';ExpectedDll='';ModuleInspection='unavailable';ServeLogPaths=@($expected)}
+# Serve-log parsing: exact dllmain.cpp shape, PID filter, order kept, hostile lines ignored.
+$lines = @(
+    '[01:02:03.004 pid=4242] ClassFactory::CreateInstance (DLL loaded by a consumer)',
+    "[01:02:03.005 pid=4242] Serving module path=$old",
+    "[01:02:04.005 pid=999] Serving module path=$expected",
+    "[01:02:05.006 pid=4242] Serving module path=$expected",
+    ("[01:02:06.007 pid=4242] Serving module path=C:\" + ('x' * 5000) + '\corevideo-virtualcam.dll'),
+    ("[01:02:07.008 pid=4242] Serving module path=C:\evil" + [char]7 + "\corevideo-virtualcam.dll"),
+    "[01:02:08.009 pid=4242] Serving module path=relative\corevideo-virtualcam.dll",
+    "garbage [01:02:09.010 pid=4242] Serving module path=$old",
+    "[01:02:10.011 pid=42420] Serving module path=$old",
+    "[01:02:11.012 pid=99999999999999999999] Serving module path=$old")
+$parsed = @(Read-ServeLogModulePaths -Lines $lines -ProcessId 4242)
+if ($parsed.Count -ne 2 -or $parsed[0] -ne $old -or $parsed[1] -ne $expected) { throw "Serve-log parse wrong: $($parsed -join ' | ')" }
+$count++
+if (@(Read-ServeLogModulePaths -Lines @() -ProcessId 4242).Count -ne 0 -or @(Read-ServeLogModulePaths -Lines $lines -ProcessId 0).Count -ne 0) { throw 'Empty log or PID 0 produced serving evidence.' }
+$count++
+# Native PowerShell: Sysnative only for a 32-bit process on 64-bit Windows.
+$nativeCases = @(
+    @{Os=$true;Process=$false;Expect='C:\WinTest\Sysnative\WindowsPowerShell\v1.0\powershell.exe'},
+    @{Os=$true;Process=$true;Expect='C:\WinTest\System32\WindowsPowerShell\v1.0\powershell.exe'},
+    @{Os=$false;Process=$false;Expect='C:\WinTest\System32\WindowsPowerShell\v1.0\powershell.exe'})
+foreach ($case in $nativeCases) {
+    $got = Get-NativePowerShellPath -Is64BitOperatingSystem $case.Os -Is64BitProcess $case.Process -WindowsDirectory 'C:\WinTest'
+    if ($got -ne $case.Expect) { throw "Native PowerShell path: expected $($case.Expect); got $got" }
+    $count++
+}
+$hostNative = Get-NativePowerShellPath
+if (-not (Test-Path -LiteralPath $hostNative -PathType Leaf)) { throw "Resolved native PowerShell does not exist from this host: $hostNative" }
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess -and $hostNative -notlike '*\Sysnative\*') { throw 'A 32-bit host did not resolve Sysnative.' }
+$count++
 Write-Output "$count ownership/path cases passed; installer script parsed. Only process-owned temporary files changed; production registry/runtime untouched."

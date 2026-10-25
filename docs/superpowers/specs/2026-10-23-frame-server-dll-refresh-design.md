@@ -184,3 +184,27 @@ serving path from a new PID does not count. This does not claim reboot, fresh-us
 - **Policy or EDR blocking service control or module inspection** (the agent environment already blocked elevated module
   inspection). The code reports `unverified` / exit 3, never a pass.
 - **Lazy load** means install cannot prove the new image; only acceptance step 4 can. The docs must say so.
+
+## Outcome: Task 1 probe (2026-10-23, partial; Stop half left for acceptance)
+
+Measured on the dev box with `scripts/qa/probe-frameserver-stop.ps1 -Mode Observe`, unelevated, Zoom running (camera not
+open), CoreVideo not running:
+
+- `FrameServer` and `FrameServerMonitor`: both `Stopped`, start type `Manual`, each depends only on `rpcss`, neither has
+  dependents. Image paths are separate service groups (`svchost.exe -k Camera` and `-k CameraMonitor`), so the camera
+  host is not expected to be shared with unrelated services; `sharedHostServices` is recorded on a running instance.
+- Bitness, measured: from the 32-bit SysWOW64 PowerShell, `Get-Process -Module` fails even on the user's own 64-bit
+  `explorer.exe` ("Cannot enumerate the modules"); from the 64-bit PowerShell it lists 409 modules for `explorer.exe`
+  but still fails on a LocalService `svchost` unelevated. So module evidence needs **64-bit and elevated**; the
+  unelevated `Inspect` must fall back to the serve log.
+- `[Environment]::Is64BitOS` does not exist in .NET Framework (it evaluates to `$null` in Windows PowerShell 5.1);
+  the property is `Is64BitOperatingSystem`. The implementation uses that.
+
+**Not measured (gate still open):** Steps 3-4 (timed `Stop-Service FrameServer -Force` with the camera open, consumer
+behaviour, Windows self-restart, new PID + fresh `Serving module path=` line, stale image gone) were NOT run: the
+brief allowed a stop only with no Zoom/CoreVideo process and the camera unused, and Zoom was running; it also needs
+elevation. The owner runs them at acceptance (plan Task 7, step 0) with
+`scripts/qa/probe-frameserver-stop.ps1 -Mode Stop -RestartAfter -AllowConsumers -OutDir D:\...` from an elevated
+64-bit PowerShell. The implementation proceeds on the issue's evidence that an owner-authorised manual Stop refresh
+replaced the instance and the repeat trial passed; if the probe shows Stop cannot remove the instance within 20 s,
+the mechanism is wrong and the PR must not merge.
