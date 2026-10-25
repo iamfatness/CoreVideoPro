@@ -173,6 +173,7 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $app 'build-manifest.json') -Encoding UTF8
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression
 $zipPath = Join-Path $output "CoreVideoPro-win-x64-$ReleaseId.zip"
 # Write entries one by one with '/' separators. CreateFromDirectory under Windows PowerShell 5.1
 # (.NET Framework) emits backslash entry names, which GetEntry('a/b') on any .NET runtime cannot find (#1047).
