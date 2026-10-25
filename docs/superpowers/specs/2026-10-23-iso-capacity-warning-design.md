@@ -1,7 +1,7 @@
 # ISO software-encoder capacity notice: report it, never cancel on it (#935) — design
 
 **Date:** 2026-10-23
-**Status:** proposed (two owner rulings requested, see "Open questions")
+**Status:** approved (owner rulings D8 and D9, 2026-10-23 23:50 EDT, see "Decisions")
 **Issue:** [#935](https://github.com/iamfatness/CoreVideoPro/issues/935) (OPEN)
 **Related:** #930 / PR #932 (full-workload validation where it was found), #1013 (probe cap raised to 9, CLOSED, `8f2e9928`), #1030 (writer-loss note on the same warning channel), #443 (outputs drill), PR #1025 (`RecordingControlPolicy`, #1009)
 
@@ -91,7 +91,7 @@ These parts are still open, and #935 stays open until they ship:
 | Condition | Severity | Start | Source of truth |
 |---|---|---|---|
 | ISO admitted with a software spill within budget (`iso-encoder-software-spill`, `-unprobed`) | notice | proceeds | `recording.isoAdmission` (new), per-stream `encoderPath` |
-| Program encoder is the software MFT (`recording.encoder.hardwareAccelerated == false`) | notice | proceeds | `recording.encoder.hardwareAccelerated` |
+| Program encoder is the software MFT (`recording.encoder.hardwareAccelerated == false`) | notice at start; **FAIL for RC qualification** (D8) | proceeds | `recording.encoder.hardwareAccelerated` |
 | Disk pre-flight low-space warning | notice | proceeds (unchanged) | `RecordingDiskWarning` |
 | ISO refused before the show (`iso-encoder-unplaceable`, `iso-encoder-oversubscribed`, unwritable folder) | ISO disabled, Program records | proceeds for Program (unchanged) | `recording.isoAdmission.decision == "refuse-iso"` |
 | **No encoder at all for Program**: the stub/counting encoder (`MediaCoreOnAirPolicy.RecordBlockReason`, `TransportCoordinator.cs:338`), or `program_.open` / `ensureAudioStream` / `beginWriting` failing (`setRecordingFailure`, `MediaFoundationEncoderAdapter.cpp:2266-2318`) | **fatal** | refused / rolled back (unchanged) | `recording.lifecycle.state == "failed"`, `OutputHealth[recording].status == "failed"` |
@@ -205,7 +205,8 @@ misattribute it. The drill measures process CPU (section 4).
   `measurement.json` under `encoderCost`, and are supplementary. They explain a FAIL; they
   never cause one.
 - Gating stays: every ISO writing (`Test-DrillInvariant`), recording producing, the
-  per-frame identity verdicts, and the other four throughout flags.
+  per-frame identity verdicts, and the other four throughout flags. Per D8, Program's half of
+  the old flag becomes its own gating flag, `programEncoderHardwareThroughout`.
 
 ### 5. What is fatal, restated
 
@@ -213,7 +214,8 @@ The recording start is refused or rolled back only when Program cannot record: n
 encoder (stub/counting encoder), a Program writer that failed to open or begin, or a
 lifecycle `failed`. A qualification run fails only on measured loss: missing, repeated,
 reordered or invalid identities, rising drop counters, a writer that disappeared, or a
-recording that stopped producing. Encoder placement is never fatal by itself.
+recording that stopped producing. ISO encoder placement is never fatal by itself. Program on
+the software encoder is a qualification FAIL for RC (D8).
 
 ## Acceptance
 
@@ -280,13 +282,28 @@ recording that stopped producing. Encoder placement is never fatal by itself.
 - **Text compatibility.** Anything outside the repo that reads `recording.warning` sees the
   same sentence as before. The new JSON fields are additive.
 
-## Open questions (owner)
+## Decisions (owner, 2026-10-23 23:50 EDT)
 
-1. **Program on the software encoder:** this design treats it as a notice, not a drill
-   failure, by the same rule (fail on loss, not placement). The 2026-10-22 gate required
-   `recording.encoder.hardwareAccelerated`. Confirm Program may be judged by identity alone.
-2. **Severity of an under-budget software ISO in the UI:** Informational (proposed) or
-   Warning?
+- **D8 — what fails a run.** An ISO on the software encoder is a **note**: its row passes or
+  fails on frame identity alone (`iso-pixel-verdict.py`, plus the loss counters). **Program on
+  the software encoder stays a FAIL for RC.** The outputs drill therefore keeps a gating
+  `programEncoderHardwareThroughout` flag (Program `recording.encoder.hardwareAccelerated`
+  true on every sample), and `validate-iso-record.mjs` fails when Program reports
+  `hardwareAccelerated == false` or does not report it. Only the ISO half of the old combined
+  `hardwareEncodersThroughout` flag is demoted to a recorded fact. At record start Program on
+  software is still not a cancel (section 1): the take proceeds, and the qualification fails.
+- **D8 is judged on a MEASURED value (review B1, 2026-10-24).** `recording.encoder.hardwareAccelerated`
+  used to be a constant set in the sink constructor; Media Foundation silently falls back to the
+  software MFT when hardware is only requested. The core now reads back the encoder MFT each writer
+  instantiated and publishes `recording.encoder.encoderPath`, per-stream `encoderPath` (Program and
+  every ISO) and `hardwareRequested` separately. Both gates read the measured path; absent fails.
+- **D9 — UI severity.** The shell shows a software ISO as **Informational**, with its measured
+  per-frame cost. It turns **Warning** only when that writer drops frames (or its measured mean
+  work exceeds the frame budget). Program on the software encoder gets its own line in the same
+  readout.
+
+These answer the two open questions this design was waiting on: (1) Program may **not** be
+judged by identity alone; (2) an under-budget software ISO is Informational.
 
 ## Out of scope
 

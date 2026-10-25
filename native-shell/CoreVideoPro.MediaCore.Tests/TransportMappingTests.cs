@@ -312,6 +312,50 @@ public sealed class TransportMappingTests
         Assert.Equal("RTMP output failed: FFmpeg stdin write failed.", status);
     }
 
+    [Fact]
+    public void RecordingSnapshotDeserializesIsoAdmissionAndIsoStreamCost_935()
+    {
+        const string json = """
+        {
+          "sessionId": "s", "active": true, "status": "warning", "writerStatus": "writing",
+          "targetFolder": "C:/r", "filenamePrefix": "show", "format": "mp4", "quality": "high", "programPath": "C:/r/show.mp4",
+          "isoAdmission": {
+            "decision": "admit-with-warning", "code": "iso-encoder-software-spill",
+            "message": "1 ISO source will record on the CPU software encoder", "hardwareCount": 7, "softwareCount": 1,
+            "unplacedCount": 0, "admissibleIsoCount": null, "probed": true, "probeStatus": "ready",
+            "capacity": "hw=yes sessions<=8", "workload": "h264 1920x1080@60"
+          },
+          "streams": [
+            { "kind": "iso", "path": "ISO-08.mp4", "status": "recording", "isoIndex": 8, "displayName": "Guest 8",
+              "sourceId": "zoom:8", "encoderPath": "software", "fallbackReason": "hardware-capacity-exhausted",
+              "videoWorkUs": 5640000, "muxVideoFrameCount": 600, "frameRate": 60, "droppedFrames": 0 },
+            { "kind": "program", "path": "Program.mp4", "status": "recording" }
+          ]
+        }
+        """;
+
+        var recording = System.Text.Json.JsonSerializer.Deserialize<NativeMediaCoreRecordingSession>(
+            json, CoreVideoPro.MediaCore.Json.MediaCoreJson.Options)!;
+
+        var admission = Assert.IsType<NativeMediaCoreIsoAdmission>(recording.IsoAdmission);
+        Assert.Equal("admit-with-warning", admission.Decision);
+        Assert.Equal("iso-encoder-software-spill", admission.Code);
+        Assert.Equal(7, admission.HardwareCount);
+        Assert.Equal(1, admission.SoftwareCount);
+        Assert.Null(admission.AdmissibleIsoCount);
+        Assert.True(admission.Probed);
+        Assert.Equal("ready", admission.ProbeStatus);
+        var iso = recording.Streams.Single(s => s.Kind == "iso");
+        Assert.Equal(8, iso.IsoIndex);
+        Assert.Equal(5_640_000L, iso.VideoWorkUs);
+        Assert.Equal(600L, iso.MuxVideoFrameCount);
+        Assert.Equal(60.0, iso.FrameRate);
+        var program = recording.Streams.Single(s => s.Kind == "program");
+        Assert.Null(program.IsoIndex);
+        Assert.Null(program.VideoWorkUs);
+        Assert.Null(program.FrameRate);
+    }
+
     private static NativeMediaCoreStateSnapshot BuildSnapshot(
         bool recordingActive = false,
         bool streamingLive = false,

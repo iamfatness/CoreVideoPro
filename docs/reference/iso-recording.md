@@ -95,9 +95,69 @@ join it exercises writer abandonment, #1030), and
 It blocks only that file worker once, with begin/end evidence, and is disabled
 by default. `validate-iso-record.mjs --sources 8 --stall-source program
 --stall-ms 100 --seconds 20 --keep-artifacts --evidence <file>` retains
-snapshots, decoded file counts and explicit Program loss judgments. A declared
-`--allow-capacity-warning` permits only the known CPU-placement admission note;
-it does not waive media loss, writer warnings or missing evidence.
+snapshots, decoded file counts and explicit Program loss judgments.
+
+### The software-encoder admission is a note, never a failure (#935)
+
+**Encoder placement is reported, never gated; a run fails only on measured
+loss.** Owner ruling D8 (2026-10-23): an ISO on the CPU software encoder is a
+note and passes on frame identity and the loss counters alone. Program on the
+software encoder stays a FAIL for RC.
+
+- The core publishes the arm-time verdict as `recording.isoAdmission`
+  (`decision` admit / admit-with-warning / refuse-iso, `code`, `message`,
+  hardware/software/unplaced counts, `admissibleIsoCount` or null, `probed`,
+  `probeStatus`, `capacity`, `workload`), and every ISO stream carries
+  `isoIndex` (the NN of `ISO-NN-<name>.mp4`). The node is reset at every take
+  start and absent when no ISO was selected. `recording.warning` keeps the same
+  sentence for text readers, but a later ISO note may overwrite that text; the
+  node is never overwritten. Pinned by `EncoderRecordingSession.IsoAdmissionAndIsoIndexSurfaceInSnapshotRecordingSection`,
+  `AsyncEncoderSink.CarriesIsoAdmissionAndIsoIndexFromTheWrappedSink`,
+  `EncoderRecordingSession.MediaFoundationEightZoomIsoWritersSurviveEncoderCapacity` and
+  `EncoderRecordingSession.MediaFoundationProgramOnlyTakeAfterSpillClearsIsoAdmission`.
+- **Encoder placement is MEASURED, not requested (#935 review B1).** Asking Media
+  Foundation for hardware (`MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS`) proves nothing:
+  it silently falls back to the OS software H.264 MFT. At `BeginWriting` each writer
+  reads back the encoder MFT it actually instantiated (`GetTransformForStream`,
+  category `MFT_CATEGORY_VIDEO_ENCODER`) and classifies it `hardware` when the MFT's
+  attribute store carries `MFT_ENUM_HARDWARE_URL_Attribute` or
+  `MFT_ENUM_HARDWARE_VENDOR_ID_Attribute`, else `software` (logged as
+  `[recording-transform] ... encoder=`). Measured on the RTX 4090: "NVIDIA H.264 Encoder
+  MFT" reads hardware, the spilled ISO and a Program forced with
+  `COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER=1` (QA only) read software. Published as
+  `recording.encoder.encoderPath` (null until Program began writing),
+  `recording.encoder.hardwareAccelerated` (= measured path is hardware) beside
+  `hardwareRequested` (the request), the Program stream's `encoderPath`, `videoWorkUs`
+  and `muxVideoFrameCount`, and each ISO's `encoderPath` (measured, null until its
+  writer began) beside `plannedEncoderPath`. A hardware plan served by the software
+  MFT reports `fallbackReason: hardware-requested-software-used`. Pinned by
+  `MediaFoundationProgramForcedOntoSoftwareMftIsMeasuredSoftware` and the two
+  eight-ISO MF tests.
+- `validate-iso-record.mjs` (rules in `scripts/qa/iso-record-rules.mjs`,
+  tests `iso-record-rules.test.mjs`) treats a `recording.warning` that EQUALS
+  `isoAdmission.message` with `decision == admit-with-warning` as a note; any
+  other text, including the sentence with anything prepended or appended, still
+  fails, and each distinct failure is reported once. `refuse-iso` with ISOs
+  requested fails. Any ISO drop at Stop fails, zero tolerance: `droppedFrames`,
+  `writeQueue.dropped` and `writeQueue.droppedAudio` must be 0 (the core already
+  excludes the startup-clipped head), and must also not grow after the steady-state
+  baseline. Program `recording.encoder.encoderPath` must be the MEASURED `hardware`,
+  per poll while producing and at Stop; `software` or absent fails (D8). Each software ISO prints a `Note :` line with its
+  measured ms/frame (`videoWorkUs / muxVideoFrameCount`), or "cost not measured
+  yet". `--allow-capacity-warning` is accepted, says it is now the default, and
+  waives nothing more.
+- The shell shows the same line in one InfoBar beside the ISO health bar
+  (`IsoEncoderPlacementReadout`, D9): Informational with the measured cost;
+  Warning only when that writer dropped frames or its measured mean exceeded the
+  frame budget. Nothing is shown before the take: placement is decided at arm.
+- The start predicate cancels only on `failed` (`935b2800`), pinned at the
+  coordinator by `TransportCoordinatorTests.ToggleRecording_DoesNotRollBack_OnSoftwareIsoAdmissionNotice_935`.
+- Why the RTX 4090 dev box spilled at all (2026-10-24 baseline): the arm-time
+  probe lookup for 1920x1080@60 was still `pending`, so placement used the
+  unprobed 8-session fallback (7 hardware + 1 software,
+  `iso-encoder-software-spill-unprobed`). The 1080p60 prewarm overlapped the
+  take and was discarded. Tracked in #1042; a probed run gets 9 - 1 = 8 hardware
+  ISO sessions.
 
 _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
 

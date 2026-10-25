@@ -1545,13 +1545,39 @@ TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCa
     EXPECT_TRUE(iso.warning.empty()) << iso.sourceId << ": " << iso.warning;
     EXPECT_GT(iso.videoFrameCount, 0) << iso.sourceId;
     EXPECT_GT(iso.audioSampleCount, 0) << iso.sourceId;
-    hardwareIsoCount += iso.encoderPath == "hardware" ? 1 : 0;
-    softwareIsoCount += iso.encoderPath == "software" ? 1 : 0;
+    hardwareIsoCount += iso.plannedEncoderPath == "hardware" ? 1 : 0;
+    softwareIsoCount += iso.plannedEncoderPath == "software" ? 1 : 0;
+    // #935: encoderPath is MEASURED from the instantiated MFT once the writer began.
+    EXPECT_TRUE(iso.encoderPath == "hardware" || iso.encoderPath == "software") << iso.sourceId << ": '" << iso.encoderPath << "'";
+    if (iso.plannedEncoderPath == "software") EXPECT_EQ(iso.encoderPath, "software") << iso.sourceId;
+    // On a machine whose Program got a hardware MFT, every planned-hardware ISO must too.
+    if (session.programEncoderPath == "hardware" && iso.plannedEncoderPath == "hardware")
+      EXPECT_EQ(iso.encoderPath, "hardware") << iso.sourceId;
   }
   EXPECT_EQ(hardwareIsoCount, 7);
   EXPECT_EQ(softwareIsoCount, 1);
+  EXPECT_TRUE(session.programEncoderPath == "hardware" || session.programEncoderPath == "software")
+      << "Program encoder was not read back: '" << session.programEncoderPath << "'";
+  std::printf("[iso935] measured program=%s\n", session.programEncoderPath.c_str());
+  // #935: the same verdict, structured, so no reader parses recording.warning.
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->decision, "admit-with-warning");
+  EXPECT_EQ(session.isoAdmission->code.rfind("iso-encoder-software-spill", 0), 0u) << session.isoAdmission->code;
+  EXPECT_EQ(session.isoAdmission->hardwareCount, 7);
+  EXPECT_EQ(session.isoAdmission->softwareCount, 1);
+  EXPECT_EQ(session.isoAdmission->unplacedCount, 0);
+  EXPECT_EQ(session.isoAdmission->message.rfind("1 ISO source will record on the CPU software encoder", 0), 0u);
+  EXPECT_EQ(session.isoAdmission->message, session.recordingWarning);
+  EXPECT_FALSE(session.isoAdmission->workload.empty());
+  EXPECT_FALSE(session.isoAdmission->probeStatus.empty());
+  for (size_t i = 0; i < session.isoStreams.size(); ++i) {
+    const auto& iso = session.isoStreams[i];
+    EXPECT_EQ(iso.isoIndex, static_cast<int>(i + 1)) << iso.sourceId;  // matches ISO-NN in the file name
+    if (iso.encoderPath == "software") EXPECT_EQ(iso.isoIndex, 8) << iso.sourceId;  // the overflow is the last placed
+  }
 
   encoder->stopRecording();
+  EXPECT_TRUE(encoder->session().isoAdmission.has_value()) << "the finished take keeps its admission";
   ASSERT_FALSE(session.recordingSessionDir.empty());
   const fs::path dir(session.recordingSessionDir);
   for (int source = 0; source < 8; ++source) {
@@ -1564,6 +1590,103 @@ TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCa
     }
   }
 
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationProgramOnlyTakeAfterSpillClearsIsoAdmission) {
+  // #935 review focus: a Program-only take must not show the previous take's spill.
+  const corevideo::testing::ForcedEncoderCapacity eightSessionMachine(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable.
+  }
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso935-admission-reset";
+  fs::remove_all(targetDir, ec);
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso935-spill";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 8;
+  for (int source = 0; source < 8; ++source) {
+    request.isoSources.push_back(
+        {"zoom:" + std::to_string(source + 1), "Guest " + std::to_string(source + 1), true});
+  }
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+  ASSERT_TRUE(encoder->session().isoAdmission.has_value());
+  EXPECT_EQ(encoder->session().isoAdmission->decision, "admit-with-warning");
+  encoder->stopRecording();
+
+  request.sessionId = "iso935-program-only";
+  request.isoSources.clear();
+  request.isoParticipantIds.clear();
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+  const auto session = encoder->session();
+  EXPECT_FALSE(session.isoAdmission.has_value()) << "stale admission from the previous take";
+  EXPECT_TRUE(session.isoStreams.empty());
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationProgramForcedOntoSoftwareMftIsMeasuredSoftware) {
+  // #935 B1: requesting hardware is not evidence of hardware. With the hardware
+  // request withheld, the Program writer gets the OS software H.264 MFT, and the
+  // MEASURED path must say so while the request flag is unchanged.
+  struct ScopedEnv {
+    ScopedEnv() { _putenv_s("COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER", "1"); }
+    ~ScopedEnv() { _putenv_s("COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER", ""); }
+  } forceSoftware;
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  ASSERT_TRUE(encoder);
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso935-program-software";
+  fs::remove_all(targetDir, ec);
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso935-program-software";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 8;
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 640;
+  frame.height = 360;
+  frame.preview.width = 640;
+  frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  std::vector<float> pcm(static_cast<size_t>(960) * 2, 0.2f);
+  for (int tick = 0; tick < 6; ++tick) {
+    frame.frameNumber = tick + 1;
+    encoder->submit(frame);
+    encoder->submitAudio(pcm.data(), 960, 2, 48000);
+  }
+  const auto session = encoder->session();
+  EXPECT_EQ(session.programEncoderPath, "software");
+  EXPECT_TRUE(session.hardwareAccelerated) << "the request flag is unchanged; only the measurement moved";
+  encoder->stopRecording();
   encoder.reset();
   fs::remove_all(targetDir, ec);
 }
@@ -2800,6 +2923,169 @@ TEST(EncoderRecordingSession, EncoderRecordingWarningSurfacesInSnapshotRecording
   ASSERT_NE(recording, nullptr);
   EXPECT_EQ(recording->getString("warning"), dropWarning);
   EXPECT_EQ(recording->getString("status"), "recording");  // still recording; warning, not failure
+}
+
+namespace {
+// #935: a sink whose session carries the structured admission + an ISO index.
+class AdmissionEncoderSink final : public corevideo::modules::IEncoderSink {
+ public:
+  void configureRecording(const corevideo::modules::RecordingSessionRequest& request) override {
+    session_.recordingSessionId = request.sessionId;
+  }
+  corevideo::modules::OutputSession start(const std::vector<std::string>& destinations,
+                                          const std::vector<std::string>&) override {
+    session_.active = true;
+    session_.destinations = destinations;
+    session_.recordingStatus = "recording";
+    return session_;
+  }
+  void submit(const corevideo::modules::ProgramFrame&) override { ++session_.encodedFrameCount; }
+  corevideo::modules::OutputSession session() const override { return session_; }
+  corevideo::modules::OutputSession session_;
+};
+}  // namespace
+
+TEST(EncoderRecordingSession, IsoAdmissionAndIsoIndexSurfaceInSnapshotRecordingSection) {
+  auto modules = corevideo::modules::createStubModules();
+  auto owned = std::make_unique<AdmissionEncoderSink>();
+  auto* sink = owned.get();
+  modules.encoder = std::move(owned);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-recording-session"}, {"sessionId", "adm-1"},
+      {"isoParticipantIds", corevideo::rpc::Json::Array{}}});
+
+  const std::string note =
+      "1 ISO source will record on the CPU software encoder, not the GPU (7 on hardware): x.";
+  corevideo::modules::IsoAdmissionStatus adm;
+  adm.decision = "admit-with-warning";
+  adm.code = "iso-encoder-software-spill";
+  adm.message = note;
+  adm.hardwareCount = 7;
+  adm.softwareCount = 1;
+  adm.admissibleIsoCount = -1;
+  adm.probed = true;
+  adm.probeStatus = "ready";
+  adm.capacity = "hw=yes sessions<=8";
+  adm.workload = "h264 1920x1080@60";
+  sink->session_.isoAdmission = adm;
+  sink->session_.recordingWarning = note;
+  corevideo::modules::IsoStreamStatus iso;
+  iso.sourceId = "zoom:8";
+  iso.displayName = "Guest 8";
+  iso.path = "ISO-08-Guest-8.mp4";
+  iso.encoderPath = "software";
+  iso.fallbackReason = "hardware-capacity-exhausted";
+  iso.isoIndex = 8;
+  sink->session_.isoStreams.push_back(iso);
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 16.0);
+  const auto* recording = state.get("recording");
+  ASSERT_NE(recording, nullptr);
+  const auto* node = recording->get("isoAdmission");
+  ASSERT_NE(node, nullptr);
+  EXPECT_EQ(node->getString("decision"), "admit-with-warning");
+  EXPECT_EQ(node->getString("code"), "iso-encoder-software-spill");
+  EXPECT_EQ(node->getString("message"), note);
+  EXPECT_EQ(node->getNumber("hardwareCount"), 7);
+  EXPECT_EQ(node->getNumber("softwareCount"), 1);
+  EXPECT_EQ(node->getNumber("unplacedCount"), 0);
+  ASSERT_NE(node->get("admissibleIsoCount"), nullptr);
+  EXPECT_TRUE(node->get("admissibleIsoCount")->isNull()) << "unknown must be null, never -1 or 0";
+  ASSERT_NE(node->get("probed"), nullptr);
+  EXPECT_TRUE(node->get("probed")->asBool(false));
+  EXPECT_EQ(node->getString("probeStatus"), "ready");
+  EXPECT_EQ(node->getString("capacity"), "hw=yes sessions<=8");
+  EXPECT_EQ(node->getString("workload"), "h264 1920x1080@60");
+  EXPECT_EQ(recording->getString("warning"), note);        // text unchanged
+  EXPECT_EQ(recording->getString("status"), "recording");  // a notice, not a failure
+
+  const auto* streams = recording->get("streams");
+  ASSERT_NE(streams, nullptr);
+  bool foundIso = false;
+  for (const auto& stream : streams->asArray()) {
+    if (stream.getString("kind") != "iso") {
+      EXPECT_EQ(stream.get("isoIndex"), nullptr) << "only ISO streams carry an index";
+      continue;
+    }
+    foundIso = true;
+    EXPECT_EQ(stream.getNumber("isoIndex"), 8);
+    EXPECT_EQ(stream.getString("encoderPath"), "software");
+  }
+  EXPECT_TRUE(foundIso);
+
+  // #935 B1: hardwareAccelerated is the MEASURED path, hardwareRequested the request.
+  sink->session_.hardwareAccelerated = true;
+  sink->session_.programEncoderPath = "software";
+  sink->session_.programVideoWorkUs = 6000;
+  sink->session_.recordingMuxVideoFrameCount = 3;
+  {
+    const auto measured = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 16.0);
+    const auto* rec = measured.get("recording");
+    ASSERT_NE(rec, nullptr);
+    const auto* enc = rec->get("encoder");
+    ASSERT_NE(enc, nullptr);
+    EXPECT_FALSE(enc->get("hardwareAccelerated")->asBool(true)) << "software MFT reported as hardware";
+    EXPECT_TRUE(enc->get("hardwareRequested")->asBool(false));
+    EXPECT_EQ(enc->getString("encoderPath"), "software");
+    const auto& program = rec->get("streams")->asArray().front();
+    EXPECT_EQ(program.getString("kind"), "program");
+    EXPECT_EQ(program.getString("encoderPath"), "software");
+    EXPECT_EQ(program.getNumber("videoWorkUs"), 6000);
+    EXPECT_EQ(program.getNumber("muxVideoFrameCount"), 3);
+  }
+  sink->session_.programEncoderPath.clear();
+  sink->session_.programVideoWorkUs.reset();
+  {
+    const auto unmeasured = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 16.0);
+    const auto* enc = unmeasured.get("recording")->get("encoder");
+    EXPECT_FALSE(enc->get("hardwareAccelerated")->asBool(true)) << "an unmeasured path must not read as hardware";
+    ASSERT_NE(enc->get("encoderPath"), nullptr);
+    EXPECT_TRUE(enc->get("encoderPath")->isNull());
+    const auto& program = unmeasured.get("recording")->get("streams")->asArray().front();
+    EXPECT_EQ(program.get("encoderPath"), nullptr);
+    EXPECT_EQ(program.get("videoWorkUs"), nullptr);
+  }
+
+  // Program-only: the node is absent, never an empty object.
+  sink->session_.isoAdmission.reset();
+  sink->session_.isoStreams.clear();
+  const auto programOnly = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 16.0);
+  ASSERT_NE(programOnly.get("recording"), nullptr);
+  EXPECT_EQ(programOnly.get("recording")->get("isoAdmission"), nullptr);
+}
+
+TEST(AsyncEncoderSink, CarriesIsoAdmissionAndIsoIndexFromTheWrappedSink) {
+  // #935 review focus: the product wraps the MF sink in AsyncEncoderSink, so the
+  // node must survive its snapshot copy, not only the direct-sink path.
+  auto inner = std::make_unique<AdmissionEncoderSink>();
+  auto* sink = inner.get();
+  corevideo::modules::IsoAdmissionStatus adm;
+  adm.decision = "admit-with-warning";
+  adm.code = "iso-encoder-software-spill";
+  adm.softwareCount = 1;
+  sink->session_.isoAdmission = adm;
+  corevideo::modules::IsoStreamStatus iso;
+  iso.sourceId = "zoom:8";
+  iso.isoIndex = 8;
+  iso.encoderPath = "software";
+  sink->session_.isoStreams.push_back(iso);
+  auto wrapped = std::make_unique<corevideo::modules::AsyncEncoderSink>(std::move(inner));
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "async-935";
+  wrapped->configureRecording(request);
+  (void)wrapped->start({"recording"}, {});
+  corevideo::modules::OutputSession session;
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    session = wrapped->session();
+    if (session.isoAdmission) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->decision, "admit-with-warning");
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  EXPECT_EQ(session.isoStreams[0].isoIndex, 8);
+  wrapped->stopRecording();
 }
 
 TEST(RecordingPtsClock, SessionBoundaryRejectsPreEpochVideoWithoutConsumingIdentity) {

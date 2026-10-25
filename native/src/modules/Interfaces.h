@@ -615,9 +615,31 @@ struct IsoStreamStatus {
   int64_t audioSampleCount = 0;  // 0 until ISO-2 muxes per-source audio
   int64_t bytesWritten = 0;
   bool trackOpen = false;        // the writer opened + began writing its video track
-  std::string encoderPath;       // "hardware" or "software" placement for this ISO
+  // #935: MEASURED from the encoder MFT the sink writer actually instantiated
+  // (Mp4Writer readback at BeginWriting): "hardware" | "software"; empty until
+  // the writer has begun. plannedEncoderPath is what arm-time placement asked for.
+  std::string encoderPath;
+  std::string plannedEncoderPath;
   std::string fallbackReason;    // e.g. hardware-capacity-exhausted
   std::string warning;           // per-source open/write failure (empty = healthy)
+  int isoIndex = 0;              // #935: 1-based, matches ISO-NN in the file name; 0 = not an ISO
+};
+
+// #935: the arm-time ISO admission verdict, structured, so no reader has to
+// parse recording.warning. Every field is copied from IsoAdmissionVerdict /
+// IsoCapacitySource / the probe summary; nothing is derived.
+struct IsoAdmissionStatus {
+  std::string decision;          // "admit" | "admit-with-warning" | "refuse-iso"
+  std::string code;              // verdict.code, e.g. "iso-encoder-software-spill"
+  std::string message;           // verdict.message, verbatim (same text as recording.warning)
+  int hardwareCount = 0;
+  int softwareCount = 0;
+  int unplacedCount = 0;
+  int admissibleIsoCount = -1;   // -1 = unknown, published as null
+  bool probed = false;
+  std::string probeStatus;       // IsoCapacitySource::status
+  std::string capacity;          // probe.describe()
+  std::string workload;          // probeKey.describe()
 };
 
 struct OutputSession {
@@ -634,11 +656,20 @@ struct OutputSession {
   // Real per-ISO-writer health from the Media Foundation sink (empty on the
   // stub, where the snapshot synthesizes ISO nodes from the selected ids).
   std::vector<IsoStreamStatus> isoStreams;
+  // #935: absent when no ISO was selected (or ISO was refused before placement).
+  std::optional<IsoAdmissionStatus> isoAdmission;
   int64_t encodedFrameCount = 0;
   std::string encoderName = "software-counting";
   std::string codec = "h264";
   int targetBitrateMbps = 10;
+  // A real hardware-capable encoder is configured and hardware MFTs are
+  // REQUESTED. Not evidence of what Program uses: see programEncoderPath.
   bool hardwareAccelerated = false;
+  // #935: MEASURED Program encoder ("hardware" | "software"), read back from the
+  // MFT the Program sink writer instantiated; empty until Program began writing.
+  std::string programEncoderPath;
+  // Cumulative Program video write work (independent writer lane only).
+  std::optional<uint64_t> programVideoWorkUs;
   std::string recordingSessionId;
   std::string recordingStatus = "idle";
   std::string recordingTargetFolder;

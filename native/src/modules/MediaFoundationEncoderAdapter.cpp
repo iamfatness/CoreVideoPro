@@ -1,4 +1,4 @@
-#include "core/BoundedAsyncLog.h"
+﻿#include "core/BoundedAsyncLog.h"
 #include <deque>
 #include <limits>
 #include "modules/IsoFrameConform.h"
@@ -230,6 +230,7 @@ class Mp4Writer {
     sinkWriter_.Reset();
     mediaSink_.Reset();
     byteStream_.Reset();
+    encoderPath_.clear();
     videoOutputType_.Reset();
     videoInputType_.Reset();
     audioOutputType_.Reset();
@@ -393,20 +394,32 @@ class Mp4Writer {
         if (FAILED(extended->GetTransformForStream(videoStreamIndex_, index, &category, &transform))) break;
         ComPtr<IMFAttributes> attributes;
         GUID clsid{}; WCHAR name[256]{}; UINT32 length = 0;
+        bool hardwareMft = false;
         if (SUCCEEDED(transform->GetAttributes(&attributes))) {
           attributes->GetGUID(MFT_TRANSFORM_CLSID_Attribute, &clsid);
           attributes->GetString(MFT_FRIENDLY_NAME_Attribute, name, 256, &length);
+          // #935: a hardware MFT carries its device symbolic link / vendor id in
+          // its own attribute store; the OS software H.264 MFT carries neither.
+          UINT32 attributeLength = 0;
+          hardwareMft = SUCCEEDED(attributes->GetStringLength(MFT_ENUM_HARDWARE_URL_Attribute, &attributeLength)) ||
+                        SUCCEEDED(attributes->GetStringLength(MFT_ENUM_HARDWARE_VENDOR_ID_Attribute, &attributeLength));
         }
+        if (category == MFT_CATEGORY_VIDEO_ENCODER) encoderPath_ = hardwareMft ? "hardware" : "software";
         WCHAR id[40]{}; StringFromGUID2(clsid, id, 40);
         char idUtf8[80]{}, nameUtf8[768]{};
         WideCharToMultiByte(CP_UTF8, 0, id, -1, idUtf8, sizeof(idUtf8), nullptr, nullptr);
         WideCharToMultiByte(CP_UTF8, 0, name, -1, nameUtf8, sizeof(nameUtf8), nullptr, nullptr);
-        ::corevideo::core::nativeLogf("[recording-transform] file=%s index=%lu clsid=%s name=%s\n",
-            path_.filename().string().c_str(), static_cast<unsigned long>(index), idUtf8, nameUtf8);
+        ::corevideo::core::nativeLogf("[recording-transform] file=%s index=%lu clsid=%s name=%s encoder=%s\n",
+            path_.filename().string().c_str(), static_cast<unsigned long>(index), idUtf8, nameUtf8,
+            category == MFT_CATEGORY_VIDEO_ENCODER ? (hardwareMft ? "hardware" : "software") : "-");
       }
     }
     return true;
   }
+
+  // #935: "hardware" | "software" from the instantiated encoder MFT; empty
+  // before BeginWriting or when the sink writer exposed no encoder transform.
+  const std::string& encoderPath() const { return encoderPath_; }
 
   // Writes one BGRA frame. `bgra` is tightly packed top-down at `srcStride`
   // bytes per row; pixels outside the configured size are letterbox/cropped to
@@ -1222,6 +1235,7 @@ class Mp4Writer {
   bool variableVideoDurations_ = false;
   ComPtr<IMFSample> pendingVideoSample_;
   bool writing_ = false;
+  std::string encoderPath_;  // #935: measured at BeginWriting; empty = not read back
   bool audioConfigured_ = false;
   VideoInput videoInput_ = VideoInput::Bgra;
   std::vector<int16_t> pcm16_;
@@ -1262,6 +1276,7 @@ struct IsoWriterEntry {
   IsoEncoderPath encoderPath = IsoEncoderPath::Software;
   std::string encoderReason = "hardware-unavailable";
   bool hasAudio = true;  // ISO-3: false → VIDEO-ONLY (no AAC stream added at open)
+  int isoIndex = 0;      // #935: 1-based, the NN in ISO-NN-<name>.mp4
   int64_t videoFrameCount = 0;
   std::string warning;
   std::vector<uint8_t> nv12Scratch;   // reused I420->NV12 buffer (writer thread)
@@ -1288,8 +1303,14 @@ void publishIsoTrack(IsoWriterEntry& entry) {
   status.tailVideoFrameCount = entry.writer.videoTailFrameCount();
   status.audioSampleCount = entry.writer.audioSampleCount(); status.bytesWritten = entry.writer.bytesWritten();
   status.trackOpen = entry.opened && !entry.failed;
-  status.encoderPath = isoEncoderPathId(entry.encoderPath); status.fallbackReason = entry.encoderReason;
+  status.plannedEncoderPath = isoEncoderPathId(entry.encoderPath); status.fallbackReason = entry.encoderReason;
+  // #935: publish the MEASURED path only; a hardware request that Media
+  // Foundation served with the software MFT says so instead of claiming GPU.
+  status.encoderPath = entry.opened ? entry.writer.encoderPath() : std::string();
+  if (status.encoderPath == "software" && status.plannedEncoderPath == "hardware")
+    status.fallbackReason = "hardware-requested-software-used";
   status.warning = entry.warning;
+  status.isoIndex = entry.isoIndex;
   std::lock_guard<std::mutex> lock(entry.snapshotMutex);
   entry.snapshot = std::move(status);
 }
@@ -1648,6 +1669,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingAudioSampleRate = 0;
     session_.recordingMetadataValid = false;
     session_.recordingWarning.clear();
+    session_.isoAdmission.reset();  // #935: never carry a previous take's spill
+    session_.programEncoderPath.clear();
+    session_.programVideoWorkUs.reset();
     session_.recordingError.clear();
     session_.recordingSessionId = request_.sessionId;
     session_.recordingTargetFolder = request_.targetFolder;
@@ -2131,6 +2155,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     if (programWorker_) {
       const auto e = programWorker_->evidence();
       result.programWriteQueue = queueEvidence(e);
+      result.programVideoWorkUs = e.videoWorkUs;
       result.encoderQueueDroppedVideoFrames += e.droppedVideo - e.startupDroppedVideo;
       result.encoderQueueDroppedAudioPackets += e.droppedAudio - e.startupDroppedAudio;
       result.recordingStartupDroppedVideoFrames += e.startupDroppedVideo;
@@ -2267,6 +2292,23 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     const auto admission =
         evaluateIsoAdmission(isoPlacement, IsoEncoderMode::Auto, capacity, capacitySource);
     isoAdmissionCode_ = admission.code;
+    // #935: publish the verdict structured, before a refusal clears the
+    // selection, so a refusal is visible too. Absent when no ISO was selected.
+    if (!isoSourceIds.empty()) {
+      IsoAdmissionStatus published;
+      published.decision = isoAdmissionDecisionId(admission.decision);
+      published.code = admission.code;
+      published.message = admission.message;
+      published.hardwareCount = admission.hardwareCount;
+      published.softwareCount = admission.softwareCount;
+      published.unplacedCount = admission.unplacedCount;
+      published.admissibleIsoCount = admission.admissibleIsoCount;
+      published.probed = capacitySource.probed;
+      published.probeStatus = capacitySource.status;
+      published.capacity = isoCapacitySummary_;
+      published.workload = capacitySource.workload;
+      session_.isoAdmission = std::move(published);
+    }
     if (!admission.message.empty()) {
       ::corevideo::core::nativeLogf("[recording] iso-admission %s: %s | %s\n",
                                     admission.code.c_str(), admission.message.c_str(),
@@ -2287,9 +2329,18 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // Program can miss delivery slots under load. Preserve the elapsed gap
     // across MP4 fragments just as the ISO writers do; nominal durations make
     // later video drift ahead of continuous audio. This does not add frames.
+    // COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER=1 (QA only, #935) withholds the
+    // hardware-transform request so a test can prove the measured-path gates.
+    const char* forceSoftware = std::getenv("COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER");
+    const bool requestHardware = !(forceSoftware && std::string(forceSoftware) == "1");
+    if (!requestHardware) {
+      // Loud on purpose: a stale QA override in an operator's environment would otherwise
+      // put Program on the CPU with nothing but the measured path to explain it.
+      ::corevideo::core::nativeLogf("[recording] WARNING COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER=1: Program hardware encoder request WITHHELD (QA override, not a capacity decision)\n");
+    }
     if (!program_.open(programPath, width, height, fps, bitrate, codec, error,
                        programWritesNv12_ ? VideoInput::Nv12 : VideoInput::Bgra,
-                       true, true)) {
+                       requestHardware, true)) {
       setRecordingFailure("Media Foundation could not open program MP4 writer", error);
       return;
     }
@@ -2317,6 +2368,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       char idxBuf[8];
       std::snprintf(idxBuf, sizeof(idxBuf), "%02zu", i + 1);
       entry.path = sessionDir_ / ("ISO-" + std::string(idxBuf) + "-" + safe + ".mp4");
+      entry.isoIndex = static_cast<int>(i + 1);
       isoIndexBySource_[entry.sourceId] = isoWriters_.size();
       publishIsoTrack(entry);
       isoWriters_.push_back(std::move(owned));
@@ -2343,6 +2395,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       setRecordingFailure("Media Foundation could not begin program writing", error);
       return;
     }
+    session_.programEncoderPath = program_.encoderPath();
 
     // Preserve request/readiness timing, then select the first real scheduled
     // Program frame after readiness as the shared mux epoch. Startup remains
@@ -2505,9 +2558,12 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       out << ",\n    { \"sourceId\": \"" << jsonEscape(iso.sourceId) << "\", \"name\": \""
           << jsonEscape(iso.displayName) << "\", \"path\": \""
           << jsonEscape(iso.path.filename().string()) << "\", \"kind\": \"iso\", \"hasAudio\": "
-          << (iso.hasAudio ? "true" : "false") << ", \"encoderPath\": \""
+          << (iso.hasAudio ? "true" : "false") << ", \"plannedEncoderPath\": \""
           << isoEncoderPathId(iso.encoderPath) << "\", \"fallbackReason\": \""
           << jsonEscape(iso.encoderReason) << "\" }";
+      // #935: the manifest is written at arm, before any ISO writer has begun, so
+      // it can only carry the PLANNED placement. The measured path lives in the
+      // snapshot (recording.streams[].encoderPath); never copy a request here.
     }
     out << "\n  ]\n}\n";
     out.close();
@@ -2695,8 +2751,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         ::corevideo::core::nativeLogf("[recording] close iso %s joined at %lldms (bound %lldms)\n",
             iso->sourceId.c_str(), sinceJoinBegin(), static_cast<long long>(trackJoinBound_.count()));
         const auto e = iso->worker->evidence();
-        ::corevideo::core::nativeLogf("[iso-writer] source=%s path=%s accepted=%llu written=%lld dropped_video=%llu dropped_audio=%llu video_work_us=%llu audio_work_us=%llu max_work_us=%llu\n",
+        ::corevideo::core::nativeLogf("[iso-writer] source=%s planned_path=%s measured_path=%s accepted=%llu written=%lld dropped_video=%llu dropped_audio=%llu video_work_us=%llu audio_work_us=%llu max_work_us=%llu\n",
             iso->sourceId.c_str(), isoEncoderPathId(iso->encoderPath),
+            iso->opened && !iso->writer.encoderPath().empty() ? iso->writer.encoderPath().c_str() : "-",
             static_cast<unsigned long long>(e.acceptedVideo), static_cast<long long>(iso->videoFrameCount),
             static_cast<unsigned long long>(e.droppedVideo), static_cast<unsigned long long>(e.droppedAudio),
             static_cast<unsigned long long>(e.videoWorkUs), static_cast<unsigned long long>(e.audioWorkUs),

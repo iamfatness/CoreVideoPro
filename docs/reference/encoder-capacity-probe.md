@@ -58,6 +58,39 @@ to remove.
 - **Diagnosability:** the probe summary and the admission code go into the session
   `manifest.json` (`encoderCapacity`, `isoAdmission`) and to `[encoder-probe]` /
   `[recording] iso-admission` log lines.
+- **The verdict is in the snapshot, structured (#935):** `recording.isoAdmission`
+  carries `decision`, `code`, `message`, the hardware/software/unplaced counts,
+  `admissibleIsoCount` (null when unknown), `probed`, `probeStatus`, `capacity`
+  (`probe.describe()`) and `workload`, and each ISO stream carries `isoIndex`.
+  Readers (validator, outputs drill, shell) use these, never the
+  `recording.warning` text. This only PUBLISHES what placement and admission
+  already decided: probe semantics, the cap of 9, the unprobed fallback of 8 and
+  the software budget are unchanged. Encoder placement is reported, never gated;
+  a run fails only on measured loss (Program on software stays a FAIL, D8). See
+  `docs/reference/iso-recording.md` "The software-encoder admission is a note".
+- **Placement vs the encoder actually used: MEASURED, not requested (#935 review B1).** Asking Media
+  Foundation for hardware (`MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS`) proves nothing:
+  it silently falls back to the OS software H.264 MFT. At `BeginWriting` each writer
+  reads back the encoder MFT it actually instantiated (`GetTransformForStream`,
+  category `MFT_CATEGORY_VIDEO_ENCODER`) and classifies it `hardware` when the MFT's
+  attribute store carries `MFT_ENUM_HARDWARE_URL_Attribute` or
+  `MFT_ENUM_HARDWARE_VENDOR_ID_Attribute`, else `software` (logged as
+  `[recording-transform] ... encoder=`). Measured on the RTX 4090: "NVIDIA H.264 Encoder
+  MFT" reads hardware, the spilled ISO and a Program forced with
+  `COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER=1` (QA only) read software. Published as
+  `recording.encoder.encoderPath` (null until Program began writing),
+  `recording.encoder.hardwareAccelerated` (= measured path is hardware) beside
+  `hardwareRequested` (the request), the Program stream's `encoderPath`, `videoWorkUs`
+  and `muxVideoFrameCount`, and each ISO's `encoderPath` (measured, null until its
+  writer began) beside `plannedEncoderPath`. A hardware plan served by the software
+  MFT reports `fallbackReason: hardware-requested-software-used`. Pinned by
+  `MediaFoundationProgramForcedOntoSoftwareMftIsMeasuredSoftware` and the two
+  eight-ISO MF tests.
+- **Arm can read `pending` (#1042):** on 2026-10-24 the validator's 8-ISO 1080p60
+  take armed while the `configureRecording` prewarm for that workload was still
+  running, so it got the unprobed fallback (7 + 1 spill), and the late probe
+  result was discarded as overlapping live encoding. Only the 1080p30
+  default-profile probe completed (`sessions<=9`).
 - **Measured here (RTX 4090, 28 logical CPUs):** `hw=yes sessions<=8 (creation-proof
   only) (probe cap reached; true ceiling may be higher) mft="NVIDIA H.264 Encoder MFT"
   sw=yes`, ~0.5-1.0 s per workload on a background thread. **One machine proves the probe
