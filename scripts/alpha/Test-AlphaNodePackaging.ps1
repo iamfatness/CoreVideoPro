@@ -29,7 +29,8 @@ $cases = @(
     @{ name='wrong-node'; error='Node executable does not match' },
     @{ name='private-provenance'; error='Invalid or private Node runtime provenance' },
     @{ name='test-fixture'; extra='show-engine/dist/fixtures/private.js'; error='Development or unexpected show-engine payload' },
-    @{ name='source-map'; extra='show-engine/dist/host/main.js.map'; error='Development or unexpected show-engine payload' }
+    @{ name='source-map'; extra='show-engine/dist/host/main.js.map'; error='Development or unexpected show-engine payload' },
+    @{ name='backslash-entry'; backslash='node/node.exe'; error='Archive entry uses backslash separators' }
 )
 try {
     foreach ($case in $cases) {
@@ -56,7 +57,9 @@ try {
         $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Create)
         try {
             foreach ($name in $files.Keys) {
-                $entry = $zip.CreateEntry('CoreVideoPro-Alpha/' + $name, [IO.Compression.CompressionLevel]::NoCompression)
+                $entryName = 'CoreVideoPro-Alpha/' + $name
+                if ($case.backslash -eq $name) { $entryName = $entryName.Replace('/', '\') }
+                $entry = $zip.CreateEntry($entryName, [IO.Compression.CompressionLevel]::NoCompression)
                 $stream = $entry.Open()
                 try { $stream.Write($files[$name], 0, $files[$name].Length) } finally { $stream.Dispose() }
             }
