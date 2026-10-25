@@ -17,7 +17,7 @@ $required = @('CoreVideoPro.WinUI.exe','coreclr.dll','hostfxr.dll','Microsoft.UI
     'StartCoreVideo.cmd','Install-MediaRuntime.ps1',
     'corevideo-virtualcam.dll','corevideo-monitor-presenter.dll','Install-VirtualCamera.ps1','VirtualCameraRegistration.psm1','CameraUserSession.ps1',
     'Register-VirtualCamera.cmd','Unregister-VirtualCamera.cmd','Remove-OwnedShortcuts.ps1',
-    'Remove-PreviousInstallations.ps1','PreviousInstallations.psm1',
+    'Remove-PreviousInstallations.ps1','PreviousInstallations.psm1','Install-CrashDumps.ps1',
     'msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.dll','vcruntime140_1.dll',
     'show-engine/dist/host/main.js','show-engine/package.json',"notices/$($pin.license)",'App.xbf','Assets/Fonts/Test.ttf')
 $cases = @(
