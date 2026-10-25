@@ -100,9 +100,10 @@ Process boundaries + where spine features (ISO/NDI/SRT/browser) plug in: `docs/a
 ## Production endpoints
 
 The shell bakes `https://telemetry.corevideo.io` (telemetry + crash upload) and the OAuth broker
-`https://auth.corevideo.io`; `COREVIDEO_TELEMETRY_ENDPOINT` / `COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`
+`https://corevideo.iamfatness.us` (owner ruling 2026-10-25: the Zoom app's registered redirect is
+`https://corevideo.iamfatness.us/oauth/callback`; never move the broker host without the owner); `COREVIDEO_TELEMETRY_ENDPOINT` / `COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`
 override for staging (`scripts/load-staging-env.ps1`). The telemetry API key is never baked.
-**Do not ship a build until owner checklist steps 1-3 are done**: none of the three hostnames resolve yet, so Sign in with Zoom opens a dead host. Details and the checklist: `docs/reference/production-endpoints.md`.
+**Telemetry and ops hostnames do not resolve yet** (owner checklist steps 1 and 5); uploads stay disabled until they do. beta-2026-10-25-ebc974d shipped with a dead `auth.corevideo.io` broker and Sign in with Zoom failed with `No such host is known`; the default is back on the live host. Details and the checklist: `docs/reference/production-endpoints.md`.
 
 ## Build & run (Windows)
 

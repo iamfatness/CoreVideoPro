@@ -44,8 +44,8 @@ Embedded OAuth identity (same broker as [CoreVideo plugin](https://github.com/ia
 
 | Field | Value |
 |-------|-------|
-| Broker start | `https://auth.corevideo.io/oauth/start` |
-| Zoom redirect (broker) | `https://auth.corevideo.io/oauth/callback` |
+| Broker start | `https://corevideo.iamfatness.us/oauth/start` |
+| Zoom redirect (broker) | `https://corevideo.iamfatness.us/oauth/callback` |
 | App return URI | `corevideo://oauth/callback` (broker allowlists exactly this) |
 | Public Client ID | `y6sIWSwiTZe1JygMx4C9EQ` |
 

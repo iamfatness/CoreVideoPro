@@ -1,5 +1,5 @@
 // ZoomOAuth — the mac port of ZoomOAuthService (broker mode only). The
-// broker (auth.corevideo.io, site-worker.js) owns PKCE and the token
+// broker (corevideo.iamfatness.us, site-worker.js) owns PKCE and the token
 // exchange; the shell opens the browser, receives corevideo://oauth/callback,
 // redeems the broker_token, and keeps Zoom tokens in the KEYCHAIN under this
 // app's OWN service string. HARD RULES: never touch the OBS plugin's
@@ -15,8 +15,8 @@ import Security
 actor ZoomOAuth {
     static let shared = ZoomOAuth()
 
-    static let brokerStart = "https://auth.corevideo.io/oauth/start"
-    static let brokerBase = "https://auth.corevideo.io"
+    static let brokerStart = "https://corevideo.iamfatness.us/oauth/start"
+    static let brokerBase = "https://corevideo.iamfatness.us"
     static let appReturnUri = "corevideo://oauth/callback"
 
     struct Tokens: Codable {

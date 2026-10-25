@@ -46,7 +46,7 @@ export function buildTargets(env = {}) {
       name: "oauth-broker",
       // Default: the known broker start URL (reality doc) with NO return_uri, so
       // the broker rejects it before any OAuth state/redirect. Overridable.
-      url: env.OPS_BROKER_START_URL ?? "https://auth.corevideo.io/oauth/start?probe=ops-monitor",
+      url: env.OPS_BROKER_START_URL ?? "https://corevideo.iamfatness.us/oauth/start?probe=ops-monitor",
       readOnlyProbe: true
     },
     {
