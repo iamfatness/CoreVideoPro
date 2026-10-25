@@ -26,9 +26,9 @@ public sealed class ZoomOAuthManifestTests
     [Fact]
     public void BrokerDefaults_PointAtTheProductionDomain()
     {
-        Assert.Equal("https://auth.corevideo.io/oauth/start", ZoomOAuthManifest.DefaultBrokerStartUrl);
+        Assert.Equal("https://corevideo.iamfatness.us/oauth/start", ZoomOAuthManifest.DefaultBrokerStartUrl);
         // Must equal the Zoom Marketplace redirect allow-list entry.
-        Assert.Equal("https://auth.corevideo.io/oauth/callback", ZoomOAuthManifest.DefaultBrokerCallbackUrl);
+        Assert.Equal("https://corevideo.iamfatness.us/oauth/callback", ZoomOAuthManifest.DefaultBrokerCallbackUrl);
     }
 
     [Fact]

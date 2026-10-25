@@ -25,7 +25,7 @@ and `POST /run` (an on-demand check for manual verification).
 
 ## Broker probe — why it is side-effect-free
 
-The OAuth broker (`auth.corevideo.io`) lives in a **different repo**; we
+The OAuth broker (`corevideo.iamfatness.us`) lives in a **different repo**; we
 can only monitor it, not edit it. Hitting `/oauth/start` normally would generate
 OAuth state and redirect to Zoom — a side effect we must not trigger every 5
 minutes.
@@ -55,7 +55,7 @@ the worker is reachable). Once redeployed, `/health` returns a clean `200`.
 | Key | Kind | Default | Meaning |
 |---|---|---|---|
 | `OPS_ALERT_WEBHOOK_URL` | secret | *(unset)* | Discord/Slack incoming webhook. **Unset => log-only** (never crash, never spam). |
-| `OPS_BROKER_START_URL` | var | `https://auth.corevideo.io/oauth/start?probe=ops-monitor` | Broker probe URL (no `return_uri`). |
+| `OPS_BROKER_START_URL` | var | `https://corevideo.iamfatness.us/oauth/start?probe=ops-monitor` | Broker probe URL (no `return_uri`). |
 | `OPS_TELEMETRY_URL` | var | `https://telemetry.corevideo.io/health` | telemetry-ingest probe. |
 | `OPS_SELF_URL` | var | `https://ops.corevideo.io/health` | self probe. |
 
