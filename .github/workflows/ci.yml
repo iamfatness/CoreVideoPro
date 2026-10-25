@@ -36,6 +36,8 @@ jobs:
           python -m unittest discover -s scripts/qa -p test_source_pictures.py -v
           python -m unittest discover -s scripts/qa -p test_desktop_picture_cadence.py -v
           python -m unittest discover -s scripts/qa -p test_render_work_evidence.py -v
+          python -m unittest discover -s scripts/qa -p test_iso_pixels.py -v
+          python -m unittest discover -s scripts/qa -p test_outputs_drill.py -v
       - name: Frame and recording QA harness tests
         run: npm run test:qa-harness
 
@@ -280,6 +282,14 @@ jobs:
         run: powershell.exe -NoProfile -File scripts/alpha/Test-PreviousInstallations.ps1
       - name: Installer crash-dump (WER LocalDumps) tests
         run: powershell.exe -NoProfile -File scripts/alpha/Test-CrashDumps.ps1
+      - name: Alpha Node packaging validator (synthetic package)
+        shell: pwsh
+        run: |
+          $pin = Get-Content scripts/alpha/node-runtime.json -Raw | ConvertFrom-Json
+          $node = Join-Path $env:RUNNER_TEMP 'pinned-node.exe'
+          Invoke-WebRequest $pin.url -OutFile $node
+          powershell.exe -NoProfile -File scripts/alpha/Test-AlphaNodePackaging.ps1 -NodeExe $node
+          if ($LASTEXITCODE -ne 0) { throw "Test-AlphaNodePackaging failed ($LASTEXITCODE)" }
       - uses: actions/setup-node@v4
         with:
           node-version: 22

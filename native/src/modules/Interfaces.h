@@ -596,6 +596,13 @@ struct RecordingWriteQueueEvidence {
 
 struct IsoStreamStatus {
   std::optional<int64_t> muxVideoFrameCount; // committed samples, including A/V tail padding
+  // #1030: pictures re-submitted while this file's video was stalled (part of
+  // muxVideoFrameCount, never of videoFrameCount), and real frames placed onto
+  // a held slot. The ISO pixel judge excuses exactly heldVideoFrameCount repeats.
+  int64_t heldVideoFrameCount = 0;
+  int64_t videoFramesPlacedAtHold = 0;
+  // Close-time A/V tail hold (one repeat of the last picture at Finalize).
+  int64_t tailVideoFrameCount = 0;
   RecordingWriteQueueEvidence writeQueue;
   uint64_t droppedVideoFrames = 0, droppedAudioPackets = 0;
   uint64_t queuedVideoFrames = 0, queuedAudioPackets = 0;
@@ -649,6 +656,7 @@ struct OutputSession {
   bool recordingProgramContinuityObserved = false;
   int64_t recordingVideoPrerollFrameCount = 0;
   int64_t recordingVideoTailFrameCount = 0;
+  int64_t recordingVideoHeldFrameCount = 0;  // #1030 Program held pictures
   int64_t recordingMuxVideoFrameCount = 0;
   int64_t recordingRequestedAt100ns = 0;
   int64_t recordingWriterReadyAt100ns = 0;
