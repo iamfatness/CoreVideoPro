@@ -1,4 +1,4 @@
-# Pester-free tests for scripts/qa/outputs-drill.ps1 (#443), pure parts only.
+﻿# Pester-free tests for scripts/qa/outputs-drill.ps1 (#443), pure parts only.
 # Never launches the app and never touches the real preferences files: the
 # patch/restore round trip runs on temp copies with fake secrets. Also runs:
 #  - the app's OWN serializer (outputs-drill-prefs-probe, loaded from the
@@ -355,6 +355,17 @@ Check 'throughout: an ISO whose encoder path changes between samples is reported
   $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -EncoderPath 'software') -Plan $plan -Progress @{} -ElapsedMs 1000
   Assert $t.encoderPlacement['capture:f4978a7f6d614c0d'].changed 'change not reported'
   Assert ((@($t.encoderPlacement['capture:f4978a7f6d614c0d'].paths) -join ',') -eq 'hardware,software') 'paths not accumulated'
+}
+Check 'throughout: an ISO that reports no path before its lazy open is a first observation, not a change' {
+  $t = New-DrillThroughout -Plan $plan
+  $e = New-Envelope
+  foreach ($s in @($e.snapshot.recording.streams)) { if ($s.sourceId -eq 'capture:f4978a7f6d614c0d') { $s.encoderPath = $null } }
+  $null = Update-DrillThroughout -Throughout $t -Envelope $e -Plan $plan -Progress @{} -ElapsedMs 0
+  $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope) -Plan $plan -Progress @{} -ElapsedMs 1000
+  $entry = $t.encoderPlacement['capture:f4978a7f6d614c0d']
+  Assert (-not $entry.changed) 'lazy open reported as an encoder change'
+  Assert ((@($entry.paths) -join ',') -eq 'hardware') "paths: $(@($entry.paths) -join ',')"
+  Assert ($entry.notReportedSamples -eq 1) "notReportedSamples: $($entry.notReportedSamples)"
 }
 function New-CostStream([string]$Path = 'software', $Work = 9400000, $Mux = 1000, $Dropped = 0, $Index = 1) {
   [pscustomobject]@{ kind = 'iso'; sourceId = 'zoom:8'; isoIndex = $Index; encoderPath = $Path; videoWorkUs = $Work; muxVideoFrameCount = $Mux; droppedFrames = $Dropped; frameRate = 60 }

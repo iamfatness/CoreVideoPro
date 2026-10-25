@@ -1,4 +1,4 @@
-#include "core/BoundedAsyncLog.h"
+﻿#include "core/BoundedAsyncLog.h"
 #include <deque>
 #include <limits>
 #include "modules/IsoFrameConform.h"
@@ -2333,6 +2333,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // hardware-transform request so a test can prove the measured-path gates.
     const char* forceSoftware = std::getenv("COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER");
     const bool requestHardware = !(forceSoftware && std::string(forceSoftware) == "1");
+    if (!requestHardware) {
+      // Loud on purpose: a stale QA override in an operator's environment would otherwise
+      // put Program on the CPU with nothing but the measured path to explain it.
+      ::corevideo::core::nativeLogf("[recording] WARNING COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER=1: Program hardware encoder request WITHHELD (QA override, not a capacity decision)\n");
+    }
     if (!program_.open(programPath, width, height, fps, bitrate, codec, error,
                        programWritesNv12_ ? VideoInput::Nv12 : VideoInput::Bgra,
                        requestHardware, true)) {
@@ -2553,9 +2558,12 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       out << ",\n    { \"sourceId\": \"" << jsonEscape(iso.sourceId) << "\", \"name\": \""
           << jsonEscape(iso.displayName) << "\", \"path\": \""
           << jsonEscape(iso.path.filename().string()) << "\", \"kind\": \"iso\", \"hasAudio\": "
-          << (iso.hasAudio ? "true" : "false") << ", \"encoderPath\": \""
+          << (iso.hasAudio ? "true" : "false") << ", \"plannedEncoderPath\": \""
           << isoEncoderPathId(iso.encoderPath) << "\", \"fallbackReason\": \""
           << jsonEscape(iso.encoderReason) << "\" }";
+      // #935: the manifest is written at arm, before any ISO writer has begun, so
+      // it can only carry the PLANNED placement. The measured path lives in the
+      // snapshot (recording.streams[].encoderPath); never copy a request here.
     }
     out << "\n  ]\n}\n";
     out.close();
@@ -2743,8 +2751,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         ::corevideo::core::nativeLogf("[recording] close iso %s joined at %lldms (bound %lldms)\n",
             iso->sourceId.c_str(), sinceJoinBegin(), static_cast<long long>(trackJoinBound_.count()));
         const auto e = iso->worker->evidence();
-        ::corevideo::core::nativeLogf("[iso-writer] source=%s path=%s accepted=%llu written=%lld dropped_video=%llu dropped_audio=%llu video_work_us=%llu audio_work_us=%llu max_work_us=%llu\n",
+        ::corevideo::core::nativeLogf("[iso-writer] source=%s planned_path=%s measured_path=%s accepted=%llu written=%lld dropped_video=%llu dropped_audio=%llu video_work_us=%llu audio_work_us=%llu max_work_us=%llu\n",
             iso->sourceId.c_str(), isoEncoderPathId(iso->encoderPath),
+            iso->opened && !iso->writer.encoderPath().empty() ? iso->writer.encoderPath().c_str() : "-",
             static_cast<unsigned long long>(e.acceptedVideo), static_cast<long long>(iso->videoFrameCount),
             static_cast<unsigned long long>(e.droppedVideo), static_cast<unsigned long long>(e.droppedAudio),
             static_cast<unsigned long long>(e.videoWorkUs), static_cast<unsigned long long>(e.audioWorkUs),

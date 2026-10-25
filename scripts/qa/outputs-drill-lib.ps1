@@ -1,4 +1,4 @@
-# Pure helpers for scripts/qa/outputs-drill.ps1 (#443). Dot-source only.
+﻿# Pure helpers for scripts/qa/outputs-drill.ps1 (#443). Dot-source only.
 #
 # Everything here is side-effect free except the preference backup/patch/
 # restore functions, which touch only the file path they are given (the tests
@@ -414,9 +414,13 @@ function Update-DrillThroughout {
     foreach ($id in $Plan.IsoSourceIds) {
       $track = @($iso | Where-Object { $_.sourceId -eq $id }) | Select-Object -First 1
       $path = if ($track -and $track.PSObject.Properties['encoderPath'] -and $track.encoderPath) { [string]$track.encoderPath } else { 'not reported' }
-      if (-not $Throughout.encoderPlacement.ContainsKey($id)) { $Throughout.encoderPlacement[$id] = [ordered]@{ paths = @(); changed = $false } }
+      if (-not $Throughout.encoderPlacement.ContainsKey($id)) { $Throughout.encoderPlacement[$id] = [ordered]@{ paths = @(); changed = $false; notReportedSamples = 0 } }
       $entry = $Throughout.encoderPlacement[$id]
-      if (@($entry.paths) -notcontains $path) {
+      if ($path -eq 'not reported') {
+        # Lazy ISO opens report no path until the writer begins; count it, but it is not a path.
+        $entry.notReportedSamples = [int]$entry.notReportedSamples + 1
+      } elseif (@($entry.paths) -notcontains $path) {
+        # Only a MEASURED path following another measured path is a change.
         if (@($entry.paths).Count) { $entry.changed = $true }
         $entry.paths = @($entry.paths) + $path
       }

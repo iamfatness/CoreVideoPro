@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Headless ISO-record validation harness (ISO-1 video + ISO-2 audio = Demo E).
  *
  * Proves the ISO pipeline end-to-end WITHOUT a real meeting or an operator:
@@ -318,8 +318,8 @@ try {
   if (programEncoderAtStop && !failures.includes(programEncoderAtStop)) failures.push(programEncoderAtStop);
   if (lossBaseline) failures.push(...isoLossRegressions(isoStreamsOf(lossBaseline), finalStreams));
   for (const text of isoDropFailures(finalStreams)) if (!failures.includes(text)) failures.push(text);
-  // Note fps: the stream's own reported frameRate if present, else the requested recording fps.
-  const requestedFps = 60;
+  // Note fps: the stream's own reported frameRate if present, else the source rate this run asked for.
+  const requestedFps = Number(sourceFps) > 0 ? Number(sourceFps) : 60;
   for (const s of finalStreams)
     for (const line of isoPlacementNotes([s], Number(s.frameRate) > 0 ? Number(s.frameRate) : requestedFps)) notes.push(line);
   const programPath = stopSnap?.recording?.programPath ??
