@@ -971,15 +971,17 @@ void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<s
   }
   const bool rosterEvent = event.kind == ZoomEngineEventKind::Participants ||
                            event.kind == ZoomEngineEventKind::Left;
-  const auto before = rosterEvent ? std::optional(state_.snapshot()) : std::nullopt;
+  // #1037: detect a roster change by generation/revision. This used to build
+  // two full state_.snapshot() copies per roster event while holding mutex_,
+  // which the render tick's frame group (and, before #1037, its roster read)
+  // waits on.
+  const auto generationBefore = state_.meetingGeneration();
+  const auto revisionBefore = state_.rosterRevision();
   state_.apply(event);
-  if (rosterEvent) {
-    const auto after = state_.snapshot();
-    if (after.meetingGeneration != before->meetingGeneration ||
-        after.rosterRevision != before->rosterRevision) {
-      pendingRosterFact_ = rpc::Json::Object{
-          {"type", "zoom-roster-fact"}, {"roster", rawCaptureSnapshotLocked()}};
-    }
+  if (rosterEvent && (state_.meetingGeneration() != generationBefore ||
+                      state_.rosterRevision() != revisionBefore)) {
+    pendingRosterFact_ = rpc::Json::Object{
+        {"type", "zoom-roster-fact"}, {"roster", rawCaptureSnapshotLocked()}};
   }
   if (event.kind == ZoomEngineEventKind::Joined) {
     // Only auto-start raw media on join if the operator already enabled capture
@@ -997,6 +999,14 @@ void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<s
 }
 
 void ZoomEngineRuntime::applyEngineEventForTest(const ZoomEngineEvent& event) { applyEvent(event); }
+
+std::vector<std::string> ZoomEngineRuntime::isoArrivalDemandIdsForTest() {
+  std::lock_guard<EngineMutex> lock(mutex_);
+  std::vector<std::string> ids;
+  for (const auto& entry : isoArrivalQueues_) ids.push_back(entry.first);
+  std::sort(ids.begin(), ids.end());
+  return ids;
+}
 
 void ZoomEngineRuntime::stopReader() {
   std::shared_ptr<ZoomEngineProcessClient> process;
@@ -1171,6 +1181,15 @@ std::optional<std::vector<std::uint32_t>> ZoomEngineRuntime::rosterIdsIfConfigur
   std::lock_guard<EngineMutex> lock(mutex_);
   if (config_.executablePath.empty()) return std::nullopt;
   return state_.participantIds();
+}
+
+std::optional<ZoomRenderView> ZoomEngineRuntime::renderViewIfConfigured() {
+  if (!configured()) return std::nullopt;
+  std::lock_guard<EngineMutex> lock(mutex_);
+  // The multiview/monitor tally used to read the speaker from a full snapshot,
+  // which advances the (purely time-driven) director first. Keep that tick.
+  state_.advanceActiveSpeaker(monotonicMs());
+  return ZoomRenderView{state_.floorParticipants(), state_.directedSpeakerIdString()};
 }
 
 std::vector<ZoomEngineParticipant> ZoomEngineRuntime::floorParticipants() {

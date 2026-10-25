@@ -1,6 +1,7 @@
 ﻿#include "compositor/CompositorLayout.h"
 #include "core/AudioControlSourcePolicy.h"
 #include "core/BoundedAsyncLog.h"
+#include "core/CoreStateCapture.h"
 #include "core/StreamBackpressurePolicy.h"
 #include "core/MediaCore.h"
 #include "core/ZoomParticipantSource.h"
@@ -9652,5 +9653,269 @@ TEST(MediaCoreIsoDeparture, RosterDropMarksTheIsoDepartedThroughTheGatherWithout
     (void)runtime->floorParticipants();
   }
   EXPECT_GT(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore);
+  core.reset();
+}
+
+// #1037: a sanctioned exception inside a forbidden scope is NOT counted, and
+// the forbidden scope is restored on exit.
+TEST(EngineMutexGuardrail, AllowScopeSanctionsOneSiteAndRestoresTheForbiddenScope) {
+  corevideo::modules::EngineMutex mutex;
+  const auto before = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  {
+    corevideo::modules::ForbidEngineMutexScope forbidden("test.outer");
+    {
+      corevideo::modules::AllowEngineMutexScope allowed("test.sanctioned");
+      std::lock_guard<corevideo::modules::EngineMutex> lock(mutex);
+    }
+    EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before);
+    EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenDepth(), 1);
+    EXPECT_EQ(std::string(corevideo::modules::EngineMutexGuardrail::forbiddenSite()), "test.outer");
+    std::lock_guard<corevideo::modules::EngineMutex> lock(mutex);  // forbidden again
+  }
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before + 1);
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenDepth(), 0);
+}
+
+// #1037: the production render tick reads the roster and the directed speaker
+// through a pre-read made BEFORE coreMutex; nothing inside it takes the Zoom
+// engine mutex except the three sanctioned frame-group calls.
+namespace {
+// The SourcePreviewRequestProbe pattern (MediaCoreBatchSnapshotTest.cpp): the
+// stub compositor plus isolated monitors, so the monitor request path runs.
+class RenderGatherMonitorProbe final : public corevideo::modules::ICompositor {
+ public:
+  explicit RenderGatherMonitorProbe(std::unique_ptr<corevideo::modules::ICompositor> inner)
+      : inner_(std::move(inner)) {}
+  std::string rendererName() const override { return inner_->rendererName(); }
+  corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    return inner_->render(plan, frames);
+  }
+  bool hasIsolatedMonitors() const override { return true; }
+  void submitMonitors(corevideo::modules::MonitorRenderRequest request) override {
+    lastTiles = request.tiles.size();
+    ++monitorCalls;
+  }
+  int monitorCalls = 0;
+  size_t lastTiles = 0;
+
+ private:
+  std::unique_ptr<corevideo::modules::ICompositor> inner_;
+};
+
+std::uint64_t runRenderGatherRosterChurn(bool isolatedMonitors) {
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto modules = corevideo::modules::createStubModules();
+  RenderGatherMonitorProbe* monitors = nullptr;
+  if (isolatedMonitors) {
+    auto probe = std::make_unique<RenderGatherMonitorProbe>(std::move(modules.compositor));
+    monitors = probe.get();
+    modules.compositor = std::move(probe);
+  }
+  auto core = std::make_unique<corevideo::core::MediaCore>(std::move(modules));
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  EXPECT_TRUE(runtime && runtime->configured());
+  if (!runtime || !runtime->configured()) return 0;
+  const auto roster = [&](const char* json) {
+    const auto event = corevideo::modules::parseZoomEngineEvent(json);
+    ASSERT_TRUE(event.has_value());
+    runtime->applyEngineEventForTest(*event);
+  };
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Stays"},{"id":2,"name":"Leaves"}]})");
+
+  // Multiview (plan + tiles), a follow-speaker route with frames in the gather
+  // (followSpeakerForRoutes is skipped with no frames), and a guest A/V trim
+  // for participant 2 (the observable roster consumer).
+  corevideo::rpc::Json::Array tiles;
+  for (int i = 0; i < 2; ++i)
+    tiles.emplace_back(corevideo::rpc::Json::Object{{"sourceId", "zoom:" + std::to_string(i + 1)},
+        {"kind", "participant"}, {"participantId", std::to_string(i + 1)}, {"slot", i},
+        {"label", "Tile " + std::to_string(i + 1)}});
+  (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "set-multiview-layout"},
+      {"canvasWidth", 1920}, {"canvasHeight", 1080}, {"sources", tiles}});
+  (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "load-scene-graph"},
+      {"sceneId", "speaker"}, {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"routeId", "follow"}, {"mode", "active-speaker"}}}}});
+  core->addSourceForTest(std::make_shared<corevideo::core::TestPatternSource>("test:gather", 16, 16));
+  (void)core->setZoomGuestAvSyncOffset("2", 120);
+
+  const auto tick = [&] {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();  // BEFORE the lock
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  };
+  const auto trimmed = [&](const std::string& id) {
+    const auto state = core->sessionState();
+    const auto* sync = state.get("zoomGuestAvSync");
+    if (!sync || !sync->isArray()) return false;
+    return std::any_of(sync->asArray().begin(), sync->asArray().end(),
+        [&](const auto& row) { return row.getString("participantId") == id; });
+  };
+
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  tick();
+  EXPECT_TRUE(trimmed("2")) << "participant 2 is present: the trim must survive the gather";
+  if (monitors) EXPECT_GT(monitors->monitorCalls, 0) << "the isolated-monitor path must have run";
+
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":2,"participants":[{"id":1,"name":"Stays"}]})");
+  tick();
+  EXPECT_FALSE(trimmed("2")) << "a roster drop must reach the render gather (guest A/V prune)";
+  const auto delta = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load() - guardBefore;
+  core.reset();
+  return delta;
+}
+}  // namespace
+
+TEST(MediaCoreRenderGather, RosterChurnReachesTheRenderGatherWithoutTheEngineMutex) {
+  for (const bool isolated : {false, true}) {
+    const auto delta = runRenderGatherRosterChurn(isolated);
+    EXPECT_EQ(delta, 0u) << "the render tick (under coreMutex) took the Zoom engine mutex "
+                         << delta << " time(s) outside the frame group (isolatedMonitors="
+                         << (isolated ? "true" : "false") << ")";
+  }
+  // The guardrail itself is live on this thread: an engine call inside a
+  // forbidden scope counts, and the frame-group sanction does not leak.
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  const auto before = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  {
+    corevideo::modules::ForbidEngineMutexScope forbidden("test");
+    (void)core->zoomEngineRuntimeForTest()->floorParticipants();
+  }
+  EXPECT_GT(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before);
+}
+
+// #1037 R3: the ISO video demand the render tick computes reaches the engine
+// through the NEXT tick's pre-read (coreMutex free), re-arms after a leave, and
+// the render tick itself never takes the engine mutex for it.
+TEST(MediaCoreRenderGather, IsoVideoDemandReachesTheEngineFromBeforeTheLock) {
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_TRUE(runtime && runtime->configured());
+  const auto event = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})");
+  ASSERT_TRUE(event.has_value());
+  runtime->applyEngineEventForTest(*event);
+
+  const auto tick = [&] {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();  // BEFORE the lock
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  };
+  const corevideo::rpc::Json isoIds = corevideo::rpc::Json::Array{std::string("zoom:1")};
+  const auto startRecording = [&] {
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "set-recording-targets"}, {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+        {"filenamePrefix", "iso-demand"}, {"format", "mp4"}, {"isoSourceIds", isoIds}});
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "start-recording-session"}, {"sessionId", "iso-demand"}, {"isoSourceIds", isoIds}});
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "start-program-output"},
+        {"destinations", corevideo::rpc::Json::Array{std::string("recording")}}, {"isoSourceIds", isoIds}});
+  };
+  const auto stopRecording = [&] {
+    (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "stop-recording-session"}});
+    (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "stop-program-output"}});
+  };
+  const bool supported = corevideo::modules::ZoomEngineRuntime::independentIsoVideoSupported();
+  const std::vector<std::string> demanded = supported ? std::vector<std::string>{"1"} : std::vector<std::string>{};
+
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  startRecording();
+  tick();
+  tick();
+  EXPECT_EQ(runtime->isoArrivalDemandIdsForTest(), demanded)
+      << "a recording's Zoom ISO demand must reach the engine";
+
+  stopRecording();
+  tick();
+  tick();
+  EXPECT_TRUE(runtime->isoArrivalDemandIdsForTest().empty()) << "stopping must retire the demand";
+
+  // leave() clears the engine's arrival queues; the next recording must re-arm.
+  (void)core->leaveZoom();
+  runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":2,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})"));
+  startRecording();
+  tick();
+  tick();
+  EXPECT_EQ(runtime->isoArrivalDemandIdsForTest(), demanded) << "the demand must re-arm after a leave";
+  stopRecording();
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
+      << "the render tick took the Zoom engine mutex outside the frame group";
+  core.reset();
+}
+
+// #1037 C3: ISO display names come from the render tick's pre-read roster, so
+// starting a recording (a command, under coreMutex) never builds a full
+// engine snapshot under the engine mutex.
+namespace {
+class IsoNameCapturingEncoder final : public corevideo::modules::IEncoderSink {
+ public:
+  void configureRecording(const corevideo::modules::RecordingSessionRequest& request) override {
+    names.clear();
+    for (const auto& source : request.isoSources) names[source.sourceId] = source.displayName;
+  }
+  corevideo::modules::OutputSession start(const std::vector<std::string>& destinations,
+                                          const std::vector<std::string>&) override {
+    session_.active = true;
+    session_.destinations = destinations;
+    return session_;
+  }
+  void submit(const corevideo::modules::ProgramFrame&) override {}
+  corevideo::modules::OutputSession session() const override { return session_; }
+  std::map<std::string, std::string> names;
+
+ private:
+  corevideo::modules::OutputSession session_;
+};
+}  // namespace
+
+TEST(MediaCoreRenderGather, IsoDisplayNamesComeFromTheTickRosterNotAnEngineSnapshot) {
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto modules = corevideo::modules::createStubModules();
+  auto encoder = std::make_unique<IsoNameCapturingEncoder>();
+  auto* capture = encoder.get();
+  modules.encoder = std::move(encoder);
+  auto core = std::make_unique<corevideo::core::MediaCore>(std::move(modules));
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  // With the audio worker active, commands never render inline (N10), so the
+  // forbidden scope below covers only the command's own work.
+  core->enableAudioOutputWorker();
+  // As in production (cmd.handle), the response snapshot is assembled after
+  // coreMutex is released (N7): defer it so the scope covers the command only.
+  core->setSnapshotDeferrer([](std::unique_ptr<corevideo::core::CoreStateCapture>,
+                               corevideo::core::SnapshotProjection) { return corevideo::rpc::Json(); });
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_TRUE(runtime && runtime->configured());
+  const auto event = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Alice"},{"id":2,"name":""}]})");
+  ASSERT_TRUE(event.has_value());
+  runtime->applyEngineEventForTest(*event);
+  {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  }
+  const corevideo::rpc::Json isoIds = corevideo::rpc::Json::Array{
+      std::string("zoom:1"), std::string("zoom:2"), std::string("zoom:3")};
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  {
+    corevideo::modules::ForbidEngineMutexScope forbid("test.cmd");
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "start-recording-session"}, {"sessionId", "iso-names"}, {"isoSourceIds", isoIds}});
+  }
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
+      << "start-recording-session took the Zoom engine mutex to resolve ISO names";
+  EXPECT_EQ(capture->names["zoom:1"], "Alice");
+  EXPECT_EQ(capture->names["zoom:2"], "Zoom User 2") << "the snapshot's exact empty-name fallback";
+  EXPECT_EQ(capture->names["zoom:3"], "3") << "not in the roster: the bare id, as before";
   core.reset();
 }

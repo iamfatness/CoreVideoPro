@@ -52,6 +52,30 @@ class ForbidEngineMutexScope {
   const char* previous_;
 };
 
+// #1037: the ONLY way to take the engine mutex inside a forbidden scope. Each
+// use is a reviewed, named exception; `grep AllowEngineMutexScope` lists them.
+// It suspends the enclosing forbidden scope(s) on this thread and restores them
+// (depth and site) on exit.
+class AllowEngineMutexScope {
+ public:
+  explicit AllowEngineMutexScope(const char* reason)
+      : savedDepth_(EngineMutexGuardrail::forbiddenDepth()),
+        savedSite_(EngineMutexGuardrail::forbiddenSite()) {
+    EngineMutexGuardrail::forbiddenDepth() = 0;
+    EngineMutexGuardrail::forbiddenSite() = reason;
+  }
+  ~AllowEngineMutexScope() {
+    EngineMutexGuardrail::forbiddenDepth() = savedDepth_;
+    EngineMutexGuardrail::forbiddenSite() = savedSite_;
+  }
+  AllowEngineMutexScope(const AllowEngineMutexScope&) = delete;
+  AllowEngineMutexScope& operator=(const AllowEngineMutexScope&) = delete;
+
+ private:
+  int savedDepth_;
+  const char* savedSite_;
+};
+
 // std::mutex plus the guardrail check. Satisfies Lockable.
 class EngineMutex {
  public:
