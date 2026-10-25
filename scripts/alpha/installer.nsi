@@ -161,6 +161,10 @@ Section "CoreVideo Pro" SEC_APP
         FileSeek $R8 0 END
         FileWrite $R8 "Camera installed; Frame Server refresh failed (exit 3). Camera apps may still load the previous camera DLL until they close or Windows restarts.$\r$\n$2$\r$\n"
         FileClose $R8
+        ; A failed log write must not fail a verified install: the error flag set by
+        ; CreateDirectory/FileOpen/FileWrite above would otherwise reach the later
+        ; "IfErrors install_failed" and roll back a correctly registered camera.
+        ClearErrors
         MessageBox MB_OK|MB_ICONEXCLAMATION "CoreVideo Pro is installed, but Windows is still running the previous virtual camera. Close every app that uses a camera (Zoom, Teams, the Camera app), or restart Windows, before using or testing the CoreVideo camera.$\r$\n$\r$\nDetails: $LOCALAPPDATA\CoreVideoPro\installer-logs\${RELEASE_ID}-frameserver.log" /SD IDOK
     ${ElseIf} $1 != 0
         Goto camera_failed

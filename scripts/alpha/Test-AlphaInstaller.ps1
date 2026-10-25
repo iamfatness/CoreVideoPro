@@ -139,13 +139,13 @@ if ($isAdmin) {
     # #781 negative control: a Frame Server that will not stop yields exit 3 and a
     # loud warning, and leaves the verified registration intact. The built-in
     # fault provider never touches the real service. -MachineOnly keeps the
-    # desktop alias (and its uninstall backup) out of this repeat.
+    # desktop alias (and its uninstall backup) out of this repeat. The fault is
+    # the explicit -FrameServerFault parameter: production ignores the env var.
+    # This exercises only the in-process (admin) branch; the unelevated RunAs
+    # path is not covered here.
     $beforeFault = Get-CameraMachineRegistration
-    $env:COREVIDEO_FRAMESERVER_FAULT = 'unstoppable'
-    try {
-        $faultOutput = & $inspectHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installRoot 'Install-VirtualCamera.ps1') -Action Install -AppDirectory $installRoot -MachineOnly -Quiet
-        $faultExit = $LASTEXITCODE
-    } finally { Remove-Item Env:COREVIDEO_FRAMESERVER_FAULT -ErrorAction SilentlyContinue }
+    $faultOutput = & $inspectHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installRoot 'Install-VirtualCamera.ps1') -Action Install -AppDirectory $installRoot -MachineOnly -Quiet -FrameServerFault unstoppable
+    $faultExit = $LASTEXITCODE
     $faultResultPath = Join-Path $installRoot '.camera-frameserver-refresh.json'
     $faultResult = if (Test-Path -LiteralPath $faultResultPath) { Get-Content -LiteralPath $faultResultPath -Raw | ConvertFrom-Json } else { $null }
     if (Test-Path -LiteralPath $faultResultPath) { Copy-Item -LiteralPath $faultResultPath -Destination (Join-Path $work 'frameserver-fault-result.json'); Remove-Item -LiteralPath $faultResultPath }

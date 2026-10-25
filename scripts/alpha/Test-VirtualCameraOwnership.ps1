@@ -60,6 +60,21 @@ foreach ($command in $runAsCommands) {
     }
     $count++
 }
+# #781 review: the NSIS exit-3 branch writes a setup-log line (CreateDirectory/FileOpen/
+# FileSeek/FileWrite). A failed write sets the NSIS error flag, and the later
+# "IfErrors install_failed" would roll back a correctly registered install. The branch
+# must ClearErrors after that log block, before anything else can test the flag.
+$nsi = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'installer.nsi') -Raw
+$exit3Branch = [regex]::Match($nsi, '(?s)\$\{If\} \$1 == 3\r?\n(.*?)\$\{ElseIf\} \$1 != 0')
+if (-not $exit3Branch.Success) { throw 'installer.nsi: the camera exit-3 branch was not found.' }
+if ($exit3Branch.Groups[1].Value -notmatch 'FileClose \$R8[ \t]*\r?\n(?:[ \t]*;[^\r\n]*\r?\n)*[ \t]*ClearErrors') { throw 'installer.nsi: the exit-3 setup-log write is not followed by ClearErrors; a failed log write would roll back a verified install.' }
+$count++
+# #781 review: fault injection is honored only through the explicit -FrameServerFault
+# parameter (the test-provider path). Production camera setup never reads the env var.
+foreach ($file in @('Install-VirtualCamera.ps1','Refresh-FrameServer.ps1')) {
+    if ((Get-Content -LiteralPath (Join-Path $PSScriptRoot $file) -Raw) -match '(?i)\$env:COREVIDEO_FRAMESERVER_FAULT') { throw "$file reads COREVIDEO_FRAMESERVER_FAULT from the environment; production must ignore it." }
+    $count++
+}
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('CoreVideoCameraCleanup-' + [Guid]::NewGuid().ToString('N'))
 $transactions = Join-Path $temporary 'transactions'
 New-Item -ItemType Directory -Path $transactions -Force | Out-Null

@@ -6,8 +6,9 @@ param([ValidateSet('Install','Uninstall','Rollback','Inspect')][string]$Action =
     [string]$OwnerSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value),
     # #781 fault injection for installed tests only: replaces the Frame Server with
     # a built-in fake that refuses to stop (Refresh-FrameServer.ps1 -Fault). The
-    # real service is never touched in that mode.
-    [string]$FrameServerFault = $env:COREVIDEO_FRAMESERVER_FAULT,
+    # real service is never touched in that mode. Explicit parameter only: production
+    # never reads COREVIDEO_FRAMESERVER_FAULT from the environment.
+    [string]$FrameServerFault = '',
     # Inspect only: the DLL's serve log (tests pass a temp file, never the production one).
     [string]$ServeLog = (Join-Path $env:ProgramData 'CoreVideoPro\vcam-serve.log'))
 $ErrorActionPreference = 'Stop'
