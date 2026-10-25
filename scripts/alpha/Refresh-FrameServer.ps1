@@ -6,9 +6,11 @@
 # DLL, and reports serving evidence for Inspect.
 #
 #   -Action Inspect  read-only; never stops anything.
-#   -Action Refresh  stops FrameServer only when the decision is Stale or Unknown
+#   -Action Refresh  waits (bounded) for a Start/Stop Pending service to settle, then
+#                    stops FrameServer only when the decision is Stale or Unknown
 #                    (Get-FrameServerRefreshDecision), waits for the old instance
-#                    to be gone, then restarts it only if it was running.
+#                    to be gone, then restarts it only if it was running (a service
+#                    that was still pending counts as running).
 #
 # Exit codes: 0 = refreshed or not needed (Inspect: always 0 on success);
 #             3 = a stale/unknown instance could not be removed (would not stop
@@ -109,6 +111,21 @@ function Get-Instance {
 function Test-SameInstance($a, $b) { return $a.pid -gt 0 -and $a.pid -eq $b.pid -and $a.created -eq $b.created }
 
 $before = Get-Instance
+# A service caught mid-transition (Start Pending / Stop Pending) WAS running for
+# restart purposes. Refresh waits, bounded by -StopTimeoutSeconds, for it to settle
+# into Running or Stopped and decides from that; if it never settles the decision
+# is Unknown and the service is stopped AND restarted (never left stopped under a
+# "refreshed" exit 0). Inspect is read-only and never waits.
+$pendingStates = @('Start Pending','Stop Pending','Continue Pending','Pause Pending','StartPending','StopPending','ContinuePending','PausePending')
+$settledFrom = $null
+if ($Action -eq 'Refresh' -and $before.state -in $pendingStates) {
+    $settledFrom = $before.state
+    $settleWaited = 0
+    while ($before.state -in $pendingStates -and $settleWaited -lt $StopTimeoutSeconds * 1000) {
+        & $p.Sleep 200; $settleWaited += 200
+        $before = Get-Instance
+    }
+}
 $moduleInspection = 'unavailable'; $moduleError = $null; $loaded = @(); $served = @(); $logNote = $null
 if ($before.state -eq 'Running' -and $before.pid -gt 0) {
     try { $loaded = @(& $p.GetModules $before.pid); $moduleInspection = 'observed' }
@@ -132,7 +149,7 @@ $cameraLoaded = @($loaded | Where-Object { Test-CoreVideoCameraDllPath $_ })
 $result = [ordered]@{ schema='frameserver-refresh-v1'; action=$Action; expectedDll=$ExpectedDll; decision=$decision; result='not_needed'
     before=[ordered]@{ state=$before.state; pid=$before.pid; created=$before.created }; after=$null
     moduleInspection=$moduleInspection; moduleError=$moduleError; loadedCameraModules=$cameraLoaded
-    servedPaths=$served; serveLogNote=$logNote; restart=$null; error=$null; durationMs=0
+    servedPaths=$served; serveLogNote=$logNote; settledFrom=$settledFrom; restart=$null; error=$null; durationMs=0
     process64=[Environment]::Is64BitProcess; servingIdentityVerified=$false
     limitation='Install time cannot prove the new DLL is serving: Frame Server loads it lazily on the next camera activation.' }
 
@@ -152,7 +169,9 @@ if ($Action -eq 'Inspect') {
 }
 if ($decision -in @('NotRunning','Current','NotLoaded')) { Write-Result 0 }   # zero service calls
 
-$wasRunning = $before.state -eq 'Running'
+# Anything that reached this point and is not Stopped/Absent (Running, or still
+# pending after the bounded settle wait) was running and must come back.
+$wasRunning = $before.state -notin @('Stopped','Absent')
 try { & $p.Stop }
 catch {
     $result.result = 'not_removed'; $result.error = 'Stop failed: ' + $_.Exception.Message

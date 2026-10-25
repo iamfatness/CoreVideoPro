@@ -18,7 +18,9 @@ $t0 = '2026-10-23T10:00:00.0000000Z'; $t1 = '2026-10-23T10:05:00.0000000Z'
 function New-Fake([hashtable]$opts) {
     $state = @{ calls=[Collections.Generic.List[string]]::new(); current=$opts.initial; afterStop=$opts.afterStop
         afterStart=$opts.afterStart; stopThrows=$opts.stopThrows; startThrows=$opts.startThrows; modules=$opts.modules
-        modulesThrow=$opts.modulesThrow; log=$opts.log; stopsAfterSleeps=$opts.stopsAfterSleeps; sleeps=0 }
+        modulesThrow=$opts.modulesThrow; log=$opts.log; stopsAfterSleeps=$opts.stopsAfterSleeps; sleeps=0
+        # A pending service settles to settleTo after settlesAfterSleeps sleeps (once).
+        settlesAfterSleeps=$opts.settlesAfterSleeps; settleTo=$opts.settleTo }
     $provider = @{
         GetService = { $state.calls.Add('GetService'); if ($null -eq $state.current) { return $null }; $state.current }.GetNewClosure()
         GetModules = { param([int]$ProcessId) $state.calls.Add('GetModules'); if ($state.modulesThrow) { throw 'Access is denied' }; @($state.modules) }.GetNewClosure()
@@ -27,6 +29,7 @@ function New-Fake([hashtable]$opts) {
                  if ($null -eq $state.stopsAfterSleeps) { $state.current = $state.afterStop } }.GetNewClosure()
         Start = { $state.calls.Add('Start'); if ($state.startThrows) { throw $state.startThrows }; $state.current = $state.afterStart }.GetNewClosure()
         Sleep = { param([int]$Milliseconds) $state.calls.Add('Sleep'); $state.sleeps++
+                  if ($null -ne $state.settlesAfterSleeps -and $null -ne $state.settleTo -and $state.sleeps -ge $state.settlesAfterSleeps) { $state.current = $state.settleTo; $state.settleTo = $null }
                   if ($null -ne $state.stopsAfterSleeps -and $state.sleeps -ge $state.stopsAfterSleeps) { $state.current = $state.afterStop } }.GetNewClosure()
         Kill = { $state.calls.Add('Kill') }.GetNewClosure()
     }
@@ -166,5 +169,29 @@ if ($IncludeInstalledInspect) {
         Assert (-not $j.servingIdentityVerified) 'installed inspect: verified serving from an empty serve log'
     } finally { [IO.File]::Delete($emptyLog) }
 }
+
+# 17. Pending states (#781 review). A service caught mid-transition WAS running for
+# restart purposes: before, Stop Pending/Start Pending mapped to Unknown, Stop was
+# issued, and $wasRunning=false left the service stopped under a "refreshed" exit 0.
+$stopPending = @{ state='Stop Pending'; pid=4242; created=$t0 }
+$startPending = @{ state='Start Pending'; pid=4242; created=$t0 }
+# a. Never settles within the bound -> Unknown, Stop, then Start (never left stopped).
+$f = New-Fake @{ initial=$stopPending; modules=@($old); afterStop=$stopped; afterStart=$replacement }
+$r = Invoke-Refresh $f 'Refresh' $expected 1
+Assert ($r.code -eq 0 -and $r.json.result -eq 'refreshed' -and $r.json.restart -eq 'restarted' -and (Count $r.calls 'Start') -eq 1) "stop pending unsettled: $($r.code) $($r.json.result) $($r.json.restart)"
+Assert ((Count $r.calls 'Sleep') -le 6) 'stop pending: the settle wait was not bounded by the timeout'
+# b. Start Pending settles to Running with the old DLL -> Stale -> refreshed and restarted.
+$f = New-Fake @{ initial=$startPending; settlesAfterSleeps=2; settleTo=$running; modules=@($old); afterStop=$stopped; afterStart=$replacement }
+$r = Invoke-Refresh $f
+Assert ($r.json.decision -eq 'Stale' -and $r.json.result -eq 'refreshed' -and $r.json.restart -eq 'restarted' -and (Count $r.calls 'Start') -eq 1) "start pending settled: $($r.json.decision) $($r.json.restart)"
+Assert ($r.json.settledFrom -eq 'Start Pending') "start pending: settledFrom not reported ($($r.json.settledFrom))"
+# c. Stop Pending settles to Stopped -> NotRunning, zero service calls.
+$f = New-Fake @{ initial=$stopPending; settlesAfterSleeps=1; settleTo=$stopped }
+$r = Invoke-Refresh $f
+Assert ($r.code -eq 0 -and $r.json.decision -eq 'NotRunning' -and (Count $r.calls 'Stop') + (Count $r.calls 'Start') -eq 0) "stop pending settled stopped: $($r.json.decision)"
+# d. Inspect stays read-only and immediate on a pending service: no wait, no Stop.
+$f = New-Fake @{ initial=$stopPending }
+$r = Invoke-Refresh $f 'Inspect'
+Assert ($r.code -eq 0 -and $r.json.decision -eq 'Unknown' -and (Count $r.calls 'Sleep') -eq 0 -and (Count $r.calls 'Stop') -eq 0) 'inspect on a pending service waited or stopped it'
 
 Write-Output "Test-FrameServerRefresh passed ($checks checks; host 64-bit: $([Environment]::Is64BitProcess)). No real service was stopped."
