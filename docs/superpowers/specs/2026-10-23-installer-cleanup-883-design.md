@@ -1,7 +1,7 @@
 # Installer cleanup #883: prove the Get-FileHash fix, retire residual version folders — design
 
 **Date:** 2026-10-23
-**Status:** proposed (needs two owner rulings, see "Open questions")
+**Status:** approved; owner rulings D4 and D5 recorded below (2026-10-23 23:50 EDT)
 **Issue:** [#883](https://github.com/iamfatness/CoreVideoPro/issues/883) (OPEN, label `backlog`, no comments)
 **Related:** #866 (retire previous installs), #863/#888 (PR #1026, staging root), #433 (PR #1033, crash dumps)
 
@@ -162,7 +162,18 @@ of the log goes to `installer-logs` so it survives the next upgrade's cleanup.
 No launch change. Only the warning text changes: folder counts and the backup location.
 `/SD IDOK` stays so silent setup never blocks.
 
-## Open questions (owner rulings needed before Task 4)
+## Owner rulings (2026-10-23 23:50 EDT)
+
+- **D4 (answers Q1): move, never delete, and say so loudly.** Setup MOVES operator content
+  (for example `Recordings\`) out of retired version folders into a dated backup folder with a
+  manifest, never deletes it, and reports the backup path loudly in the installer message and
+  in the cleanup JSON. `-LeaveUnknown` stays available for manual runs only.
+- **D5 (answers Q2): yes.** The helper MAY reset `PSModulePath` for its own process only, and
+  logs both the inherited and the effective value.
+
+The original questions, kept for the record:
+
+## Open questions (answered by D4/D5 above)
 
 - **Q1.** When a stale version folder holds operator content (the two `Recordings\` folders, 10
   files), should setup **move it to the backup folder automatically** (matches the issue text and
@@ -194,3 +205,61 @@ camera ownership on the new install, settings untouched, `summary.retained = 0`.
   hardened and diagnosable".
 - **The dev box is the owner's machine.** Acceptance touches the real install and camera and needs
   the owner's go-ahead; the no-input-injection rule applies.
+
+## Findings (Task 1, 2026-10-24): REPRODUCED
+
+The original failure is reproduced, through a real `nsExec::ExecToStack` of
+`$SYSDIR\WindowsPowerShell\v1.0\powershell.exe` exactly as `installer.nsi` launches it, on both
+the 32-bit (SysWOW64) and 64-bit Windows PowerShell 5.1.26100 hosts.
+
+**Cause.** In Windows PowerShell 5.1, `Get-FileHash` (like `New-Guid`, `Format-Hex`,
+`New-TemporaryFile`) is a *script function* in `Microsoft.PowerShell.Utility.psm1`, found only
+by module auto-loading. Compiled cmdlets of the same module (`ConvertTo-Json`,
+`ConvertFrom-Json`, `Select-Object`) are loaded with the default session and never need
+discovery. A PowerShell 7 shell exports a `PSModulePath` with PS7's own `$PSHOME\Modules`
+ahead of the Windows PowerShell paths. Recent pwsh versions strip those entries only when pwsh itself launches
+`powershell.exe` directly; when it launches `setup.exe`, the polluted value passes through NSIS
+untouched into the 5.1 child. Discovery then binds `Get-FileHash` to PS7's Core-only
+`Microsoft.PowerShell.Utility` 7.0.0.0 manifest (a cmdlet in an assembly 5.1 cannot load) and
+the command is reported `The term 'Get-FileHash' is not recognized`, the exact text in #883.
+`Get-Command Get-FileHash` in an ordinary Windows PowerShell window succeeds, which is why the
+manual retry worked.
+
+**Variants tried (32-bit host unless noted):**
+
+| `PSModulePath` given to the 5.1 child | `Get-FileHash` |
+|---|---|
+| inherited from cmd / Windows PowerShell | resolves |
+| PS7 paths first, PS7 not installed (dirs absent) | resolves |
+| PS7 paths only, absent | resolves |
+| unset / empty | resolves |
+| nonexistent directory | resolves |
+| stray `Microsoft.PowerShell.Utility` 9.9.9 (exports nothing relevant) first | resolves |
+| corrupt / unwritable / fresh module analysis cache | resolves |
+| `__PSLockdownPolicy=4` | resolves (FullLanguage; not enforced without WDAC) |
+| **PS7 7.4.6 `Modules` dir first (real pwsh layout)** | **NOT RECOGNIZED** (both hosts, also via nsExec) |
+| PS7 `Modules` first, then helper resets `PSModulePath` to `$PSHOME\Modules;System32\...\Modules` in-process | resolves |
+
+A hand-written look-alike of PS7's Utility manifest did not reproduce at the full-helper level;
+PS7's manifest verbatim (signature stripped) does, so `Test-CleanupEnvironment.ps1` embeds it.
+With the `Get-FileHash` call restored and the pin removed (the Task 1 helper, which has the
+test hooks but no environment pin, run with the planner module from `91db55bf^`), the suite
+FAILS with the issue text (old version `retained`, reason `The term 'Get-FileHash' is not
+recognized`, exit 1); it passes against the current code, which proves it bites. The current
+helper cannot be paired with the pre-fix module (it needs `Initialize-SetupHelperEnvironment`). It also runs a real PS7 `Modules` directory when one is installed (the CI
+`windows-latest` image has pwsh 7).
+
+**What is still not proven:** that the 2026-10-13 install was in fact launched from a PS7
+shell. No PowerShell 7 exists on the dev box (the repro borrowed PS7 7.4.6's `Modules` from a
+downloaded zip), and the launching environment was never captured. The PS7-inheritance path
+is therefore a proven MECHANISM for the symptom, not the proven cause of that incident. The closing comment must say "reproduced under a PS7-inherited environment;
+the 10-13 launch environment itself was not captured".
+
+**Bounding the real install root (read-only, 2026-10-24 03:00 EDT):**
+`%LOCALAPPDATA%\Programs\CoreVideoPro` holds 33 folders: 29 with only
+`.camera-desktop-registration-before.json`, 2 with `Recordings\` (10 + 2 files:
+`beta-2026-10-17-089ece2`, `beta-2026-10-18-038594f`), and **2 full payloads** (880 files each):
+`beta-2026-10-23-1072a50` (registered, current) and `beta-2026-10-22-q1022ecd2749`
+(unregistered; it was not in the 2026-10-23 table). One uninstall entry. No CoreVideo process
+running. The residual sweep would delete the hash-proven payload of the unregistered full
+folder and back up anything else in it.

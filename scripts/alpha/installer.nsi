@@ -264,12 +264,18 @@ Section "CoreVideo Pro" SEC_APP
         ${EndIf}
         ; New payload, camera and shortcuts are committed before retirement.
         ; Never run old uninstallers: legacy camera removal can undo the new owner.
-        nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Remove-PreviousInstallations.ps1" -AppDirectory "$INSTDIR"'
+        nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Remove-PreviousInstallations.ps1" -AppDirectory "$INSTDIR" -ReleaseId "${RELEASE_ID}"'
         Pop $1
         Pop $2
         DetailPrint "$2"
-        ${If} $1 != 0
-            MessageBox MB_OK|MB_ICONEXCLAMATION "The new version is installed, but some older versions could not be retired. Close any older CoreVideo sessions and run Remove-PreviousInstallations.ps1 from the new installation. Details: $INSTDIR\previous-installations-cleanup.json" /SD IDOK
+        ; #883: exit 0 = clean, 2 = clean but operator files (e.g. Recordings) were MOVED to a
+        ; dated backup folder (owner ruling D4: say where, loudly), anything else = some old
+        ; version folders were retained. $2 holds the helper's summary, which counts folders
+        ; (not uninstall entries) and names the backup folder.
+        ${If} $1 == 2
+            MessageBox MB_OK|MB_ICONINFORMATION "The new version is installed and older versions were retired. Files you had stored inside old version folders were moved, not deleted:$\r$\n$\r$\n$2$\r$\nDetails: $INSTDIR\previous-installations-cleanup.json" /SD IDOK
+        ${ElseIf} $1 != 0
+            MessageBox MB_OK|MB_ICONEXCLAMATION "The new version is installed, but some older version folders could not be retired:$\r$\n$\r$\n$2$\r$\nClose any older CoreVideo sessions and run Remove-PreviousInstallations.ps1 from the new installation. Details: $INSTDIR\previous-installations-cleanup.json and $LOCALAPPDATA\CoreVideoPro\installer-logs\${RELEASE_ID}-retire.log" /SD IDOK
         ${EndIf}
 SectionEnd
 
