@@ -1,4 +1,4 @@
-# Pester-free tests for scripts/qa/graceful-close-check.ps1 (#457), pure parts only.
+﻿# Pester-free tests for scripts/qa/graceful-close-check.ps1 (#457), pure parts only.
 # Never finds, closes or queries the real app: the script is dot-sourced, which
 # defines its functions and returns before any live step. Exits non-zero on any failure.
 #
@@ -82,6 +82,11 @@ Check 'the ForceExit fallback line fails' {
   $v = Get-GracefulCloseVerdict -LastLine 'x shutdown: force exit code=0' -Exited $true -ExitMs 100 -NewDumps @() -NewEvents @()
   Assert (-not $v.pass) 'passed'
 }
+Check 'an unreadable event log fails the verdict (no evidence is not clean evidence)' {
+  $v = Get-GracefulCloseVerdict -LastLine 'shutdown: cleanup complete; terminating the process directly' -Exited $true -ExitMs 100 -NewDumps @() -NewEvents @() -EventLogError 'Application event log unreadable: boom'
+  Assert (-not $v.pass) 'passed'
+  Assert ($v.reasons[0] -match 'unreadable') ($v.reasons -join ';')
+}
 Check 'missing log line fails' {
   $v = Get-GracefulCloseVerdict -LastLine $null -Exited $true -ExitMs 100 -NewDumps @() -NewEvents @()
   Assert (-not $v.pass) 'passed'
@@ -89,7 +94,7 @@ Check 'missing log line fails' {
 
 # ---------------------------------------------------------------- refusals
 $idleState = [pscustomobject]@{ recording = $false; streaming = $false; engineOn = $true }
-$inMeeting = [pscustomobject]@{ meetingState = 'in_meeting'; recording = [pscustomobject]@{ lifecycle = [pscustomobject]@{ state = 'idle' } }; outputSenderSession = [pscustomobject]@{ activeSenderCount = 0; senders = @() } }
+$inMeeting = [pscustomobject]@{ meetingState = 'in_meeting'; recording = [pscustomobject]@{ lifecycle = [pscustomobject]@{ state = 'idle' } }; outputSenderSession = [pscustomobject]@{ activeSenderCount = 0; senders = @() }; virtualCamera = [pscustomobject]@{ status = 'off' } }
 $now = [datetime]'2026-10-23T10:00:00'
 Check 'engine on, in meeting, 31 min up: no refusal (engine on is not a close-guard prompt)' {
   $r = @(Get-GracefulCloseRefusals -State $idleState -Snapshot $inMeeting -ProcessStart $now.AddMinutes(-31) -Now $now -MinSessionMinutes 30)
@@ -110,7 +115,7 @@ Check 'a short session refuses unless the minimum is lowered' {
   Assert (@(Get-GracefulCloseRefusals -State $idleState -Snapshot $inMeeting -ProcessStart $now.AddMinutes(-10) -Now $now -MinSessionMinutes 0).Count -eq 0) 'override ignored'
 }
 Check 'not in a meeting refuses unless allowed' {
-  $out = [pscustomobject]@{ meetingState = 'idle'; recording = $null; outputSenderSession = $null }
+  $out = [pscustomobject]@{ meetingState = 'idle'; recording = $null; outputSenderSession = $null; virtualCamera = [pscustomobject]@{ status = 'off' } }
   Assert (@(Get-GracefulCloseRefusals -State $idleState -Snapshot $out -ProcessStart $now.AddMinutes(-31) -Now $now -MinSessionMinutes 30).Count -eq 1) 'outside accepted'
   Assert (@(Get-GracefulCloseRefusals -State $idleState -Snapshot $out -ProcessStart $now.AddMinutes(-31) -Now $now -MinSessionMinutes 30 -AllowOutsideMeeting).Count -eq 0) 'allow ignored'
 }
@@ -124,6 +129,11 @@ Check 'a live or starting virtual camera refuses (the close guard never asks abo
     Assert ($r.Count -eq 1 -and $r[0] -match 'virtual camera') "$status : $($r -join ';')"
     Assert (@(Get-GracefulCloseRefusals -State $idleState -Snapshot $snap -ProcessStart $now.AddMinutes(-31) -Now $now -MinSessionMinutes 30 -AllowVirtualCamera).Count -eq 0) "$status : allow ignored"
   }
+  # No virtualCamera block at all (stub core / schema drift): the camera state is unknown, so refuse.
+  $noBlock = [pscustomobject]@{ meetingState = 'in_meeting'; recording = $null; outputSenderSession = $null }
+  $r = @(Get-GracefulCloseRefusals -State $idleState -Snapshot $noBlock -ProcessStart $now.AddMinutes(-31) -Now $now -MinSessionMinutes 30)
+  Assert ($r.Count -eq 1 -and $r[0] -match 'no virtualCamera block') "missing block: $($r -join ';')"
+  Assert (@(Get-GracefulCloseRefusals -State $idleState -Snapshot $noBlock -ProcessStart $now.AddMinutes(-31) -Now $now -MinSessionMinutes 30 -AllowVirtualCamera).Count -eq 0) 'missing block: allow ignored'
   foreach ($status in 'off', 'failed') {
     $snap = [pscustomobject]@{ meetingState = 'in_meeting'; recording = $null; outputSenderSession = $null; virtualCamera = [pscustomobject]@{ status = $status } }
     Assert (@(Get-GracefulCloseRefusals -State $idleState -Snapshot $snap -ProcessStart $now.AddMinutes(-31) -Now $now -MinSessionMinutes 30).Count -eq 0) "$status refused"

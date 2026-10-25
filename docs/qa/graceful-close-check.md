@@ -1,4 +1,4 @@
-# Graceful-close check (#457)
+﻿# Graceful-close check (#457)
 
 `scripts/qa/graceful-close-check.ps1` closes a long-running CoreVideo Pro
 **once** and judges whether it ended on the clean exit path with no crash. It is
@@ -64,6 +64,17 @@ PASS needs all of these:
 On a FAIL with a new dump, copy the dump, the exact publish folder (exe, PDBs,
 DLLs) and the launch/media-core/perf logs to `D:\CoreVideo-QA\dumps\<issue>\`
 **before** any rebuild, then follow the capture plan in the #457 spec.
+
+On a FAIL where the shell is **still running** after 66 s, the shell's own 6 s
+watchdog did not fire, so the watchdog thread itself is wedged and the hang is
+the evidence. Do not kill the process first: create a full dump (Task Manager >
+Details > `CoreVideoPro.WinUI.exe` > Create dump file, or `procdump -ma <pid>`),
+copy it with the publish folder and logs as above, then end the process.
+
+The check refuses (never closes) when `/state` or `/snapshot` is unreachable or
+the snapshot has no `virtualCamera` block: an unknown camera state is treated as
+live. It fails (never passes) when the Application event log cannot be read:
+missing evidence is not clean evidence.
 
 ## Evidence so far
 

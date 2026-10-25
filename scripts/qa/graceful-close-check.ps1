@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   The standing graceful-close check (#457): close a long-running CoreVideo Pro
   ONCE with WM_CLOSE and judge whether it ended on the clean TerminateProcess
@@ -97,8 +97,13 @@ function Get-GracefulCloseRefusals {
   if (-not $AllowOutsideMeeting -and $Snapshot.meetingState -ne 'in_meeting') { $reasons += "not in a meeting (meetingState '$($Snapshot.meetingState)')" }
   # The close guard (CloseGuardPolicy) never asks about the virtual camera, so a live camera
   # would be cut off with no prompt. Status values: off | starting | live | failed.
+  # Fail closed: the real core always emits the block, so a snapshot without it is a stub core
+  # or a schema change, and the guard would otherwise vanish silently.
   $vcam = if ($Snapshot.PSObject.Properties['virtualCamera'] -and $Snapshot.virtualCamera) { [string]$Snapshot.virtualCamera.status } else { $null }
-  if (-not $AllowVirtualCamera -and $vcam -in @('live', 'starting')) { $reasons += "virtual camera is $vcam (pass -AllowVirtualCamera only if nothing is using it)" }
+  if (-not $AllowVirtualCamera) {
+    if ($null -eq $vcam) { $reasons += 'snapshot has no virtualCamera block, so the camera state is unknown (pass -AllowVirtualCamera only if nothing is using it)' }
+    elseif ($vcam -in @('live', 'starting')) { $reasons += "virtual camera is $vcam (pass -AllowVirtualCamera only if nothing is using it)" }
+  }
   return $reasons   # callers wrap in @()
 }
 
@@ -152,8 +157,9 @@ public static class GracefulCloseWin32 {
 }
 
 function Get-GracefulCloseVerdict {
-  param([string]$LastLine, [bool]$Exited, $ExitMs, [string[]]$NewDumps = @(), [object[]]$NewEvents = @())
+  param([string]$LastLine, [bool]$Exited, $ExitMs, [string[]]$NewDumps = @(), [object[]]$NewEvents = @(), [string]$EventLogError = $null)
   $reasons = @()
+  if ($EventLogError) { $reasons += $EventLogError }
   $terminate = [bool]($LastLine -and $LastLine.Contains($script:TerminateMarker))
   if (-not $LastLine) { $reasons += 'no launch.log line found for this session' }
   elseif (-not $terminate) { $reasons += "last log line is not '$($script:TerminateMarker)': $LastLine" }
@@ -183,7 +189,11 @@ function Get-GracefulCloseDumps {
 }
 
 function Get-GracefulCloseEvents([datetime]$Since) {
-  @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = $Since } -ErrorAction SilentlyContinue |
+  # "No events were found" is the normal empty case; any other failure to read the log is NOT
+  # evidence of a clean exit, so it is rethrown and the caller fails the verdict on it.
+  $events = try { @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = $Since } -ErrorAction Stop) }
+  catch { if ($_.Exception.Message -like '*No events were found*') { @() } else { throw "Application event log unreadable: $($_.Exception.Message)" } }
+  @($events |
       Where-Object { $_.Message -like '*CoreVideoPro.WinUI.exe*' } |
       ForEach-Object {
         $m = $_.Message
@@ -260,6 +270,11 @@ $watch = [Diagnostics.Stopwatch]::StartNew()
 # Re-check right before closing: a popout opened since the preflight would take the WM_CLOSE.
 $target = Select-GracefulCloseWindow -Windows (Get-GracefulCloseTopLevelWindows $app.Id) -ProcessId $app.Id
 if (@($target.reasons).Count) { Refuse $target.reasons }
+# ...and the recording/streaming/camera refusals, so a Record pressed since the preflight does not
+# make the close guard prompt and bring the window forward.
+try { $state = Invoke-RestMethod "$Api/state" -TimeoutSec 5; $snapshot = (Invoke-RestMethod "$Api/snapshot" -TimeoutSec 5).snapshot } catch { $state = $null; $snapshot = $null }
+$refusals = @(Get-GracefulCloseRefusals -State $state -Snapshot $snapshot -ProcessStart $app.StartTime -Now (Get-Date) -MinSessionMinutes $MinSessionMinutes -AllowOutsideMeeting:$AllowOutsideMeeting -AllowVirtualCamera:$AllowVirtualCamera)
+if ($refusals.Count) { Refuse $refusals }
 if (-not [GracefulCloseWin32]::PostClose([int64]$target.handle)) { Refuse @('PostMessage(WM_CLOSE) failed; nothing was closed') }
 $exited = $app.WaitForExit($script:ExitBudgetMs)
 $exitMs = if ($exited) { [int]$watch.ElapsedMilliseconds } else { $null }
@@ -269,15 +284,21 @@ if (-not $exited) {
   if ($app.WaitForExit(60000)) { $exited = $true; $exitMs = [int]$watch.ElapsedMilliseconds }
 }
 Write-CheckLog $(if ($exited) { "Exited after $exitMs ms" } else { 'Still running after 66 s' })
+if (-not $exited) {
+  # The shell's own 6 s watchdog should have ForceExited by now, so the watchdog thread itself is
+  # wedged. The hang IS the evidence: capture it before anyone kills the process.
+  Write-Host "!!! Shell still running after WM_CLOSE. Do NOT kill it yet: create a full dump first (Task Manager > Details > CoreVideoPro.WinUI.exe > Create dump file, or procdump -ma $($app.Id)), copy it to D:\CoreVideo-QA\dumps\457\ with the publish folder and logs, then end the process." -ForegroundColor Red
+}
 
 # ---------------------------------------------------------------- crash window
 $remaining = $script:EventWindowSeconds - ((Get-Date) - $closeAt).TotalSeconds
 if ($remaining -gt 0) { Write-CheckLog ('Watching {0:N0} s more for a dump or event 1000' -f $remaining); Start-Sleep -Seconds ([math]::Ceiling($remaining)) }
 $newDumps = @(Get-GracefulCloseDumps | Where-Object { $dumpsBefore -notcontains $_ })
-$newEvents = @(Get-GracefulCloseEvents $eventsSince)
+$eventLogError = $null
+$newEvents = try { @(Get-GracefulCloseEvents $eventsSince) } catch { $eventLogError = $_.Exception.Message; @() }
 $lastLine = Get-GracefulCloseLastLine -Lines (Read-GracefulCloseLog $logPath) -Session $session
 
-$verdict = Get-GracefulCloseVerdict -LastLine $lastLine -Exited $exited -ExitMs $exitMs -NewDumps $newDumps -NewEvents $newEvents
+$verdict = Get-GracefulCloseVerdict -LastLine $lastLine -Exited $exited -ExitMs $exitMs -NewDumps $newDumps -NewEvents $newEvents -EventLogError $eventLogError
 $verdict['pid'] = $app.Id; $verdict['session'] = $session; $verdict['build'] = $build; $verdict['sessionMinutes'] = $sessionMinutes
 $verdict['closedUtc'] = $closeAt.ToUniversalTime().ToString('o')
 Write-CheckJson $verdict 'verdict.json'
