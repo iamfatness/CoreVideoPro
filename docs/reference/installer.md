@@ -154,20 +154,34 @@ What Setup does now, inside the camera step's existing elevated block (no new UA
 - **64-bit / Sysnative required.** The 32-bit NSIS host launches SysWOW64 PowerShell, which cannot enumerate a
   64-bit process's modules (measured: not even the user's own `explorer.exe`). `Get-NativePowerShellPath` returns
   `%windir%\Sysnative\WindowsPowerShell\v1.0\powershell.exe` from a 32-bit process on 64-bit Windows, else System32
-  (never `$PSHOME`, so a pwsh 7 parent cannot leak in). The RunAs child, the refresh and Inspect all go through it, and
+  (never `$PSHOME`, so a pwsh 7 parent cannot leak in). The refresh and Inspect go through it, and
   `Refresh-FrameServer.ps1` re-invokes itself through Sysnative if started 32-bit. Note `[Environment]::Is64BitOS`
   does not exist in .NET Framework (it reads `$null`); use `Is64BitOperatingSystem`.
+- **The UAC RunAs child is plain `powershell.exe`, never a Sysnative path.** `Start-Process -Verb RunAs` hands the
+  target to the 64-bit AppInfo service, where `Sysnative` does not exist; from the SysWOW64 host (the shipped
+  installer is `RequestExecutionLevel user`, so that is the real install path) a Sysnative target fails with "The
+  system cannot find the path specified", NSIS takes `camera_failed` and rolls the install back. Admin CI runners
+  skip the RunAs branch and never see it. The 64-bit requirement is met inside the elevated child, where
+  `Invoke-FrameServerRefresh` relays through Sysnative directly. `Test-VirtualCameraOwnership.ps1` asserts the
+  RunAs target from the script's AST.
+- **Pending states.** A FrameServer caught in Start Pending / Stop Pending WAS running for restart purposes. Refresh
+  waits (bounded by `-StopTimeoutSeconds`) for it to settle, decides from the settled state, and if it never settles
+  treats it as Unknown: stop, then restart. It is never left stopped under a `refreshed` exit 0. The result carries
+  `settledFrom`. Inspect never waits.
+- The NSIS exit-3 branch `ClearErrors` after its setup-log write: a failed log write must not reach the later
+  `IfErrors install_failed` and roll back a verified install.
 - **Lazy load.** A refreshed Frame Server loads the DLL on the next camera activation, so install time can only prove
   the stale image is gone. `servingIdentityVerified` stays `false` until a fresh `Serving module path=` line from the
   current FrameServer PID names the registered DLL. `Install-VirtualCamera.ps1 -Action Inspect` now computes it from
   that evidence (and the manifest hash) instead of a constant; unelevated, module inspection is `unverified` with a
   `moduleInspectionReason` and the serve log decides.
-- Fault injection (tests only): `COREVIDEO_FRAMESERVER_FAULT=unstoppable` (or `-FrameServerFault unstoppable`) swaps
-  in a built-in fake instance that refuses to stop; the real service is never touched in that mode.
+- Fault injection (tests only): the explicit `-FrameServerFault unstoppable` parameter swaps in a built-in fake
+  instance that refuses to stop; the real service is never touched in that mode. Production never reads an
+  environment variable for this (`Test-VirtualCameraOwnership.ps1` asserts it).
 
-Tests: `Test-FrameServerRefresh.ps1` (fake provider, 36 checks, plus a read-only real Inspect; CI runs it from the
+Tests: `Test-FrameServerRefresh.ps1` (fake provider, 42 checks, plus a read-only real Inspect; CI runs it from the
 64-bit and SysWOW64 hosts; `-IncludeInstalledInspect` adds the desktop-user Inspect locally) and the decision/parser
-table in `Test-VirtualCameraOwnership.ps1` (51 cases, both hosts). `Test-AlphaInstaller.ps1` asserts the
+table in `Test-VirtualCameraOwnership.ps1` (55 cases, both hosts). `Test-AlphaInstaller.ps1` asserts the
 frameserver log after a real silent install and, elevated, a fault-injected exit 3 with the registration intact.
 
 **NOT verified until the owner-run acceptance (plan Task 7):** a real `Stop-Service FrameServer` with the camera open
