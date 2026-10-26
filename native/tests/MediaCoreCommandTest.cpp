@@ -9803,21 +9803,26 @@ TEST(MediaCoreRenderGather, DisplayTickAttributesItsHoldToPhasesAndTheFrameGroup
   runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
       R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})"));
 
-  RenderTickPhases phases;
-  {
-    std::mutex coreMutex;
-    auto inputs = core->prepareRenderEngineInputsUnlocked();
-    std::lock_guard<std::mutex> lock(coreMutex);
-    phases.begin();
-    RenderTickPhases::Scope scope(phases);
-    core->renderDisplayTick(-1, 0, std::move(inputs));
+  for (const bool beforeLock : {false, true}) {
+    core->setRenderFrameFetchBeforeLockForTest(beforeLock);
+    RenderTickPhases phases;
+    {
+      std::mutex coreMutex;
+      auto inputs = core->prepareRenderEngineInputsUnlocked();
+      std::lock_guard<std::mutex> lock(coreMutex);
+      phases.begin();
+      RenderTickPhases::Scope scope(phases);
+      core->renderDisplayTick(-1, 0, std::move(inputs));
+    }
+    for (const auto phase : {Phase::Setup, Phase::BusTap, Phase::CapturePoll, Phase::Gather, Phase::StillsFloor,
+                             Phase::IsoIngress, Phase::Plan, Phase::Program, Phase::Monitors, Phase::Emit})
+      EXPECT_TRUE(phases.visited(phase)) << RenderTickPhases::name(phase);
+    // #1049: the frame group is inside the hold only in the under-lock order.
+    for (const auto phase : {Phase::R1Poll, Phase::R2Decoded, Phase::R5CpuArrival})
+      EXPECT_EQ(phases.visited(phase), !beforeLock) << RenderTickPhases::name(phase)
+          << (beforeLock ? " ran inside the hold in the before-lock order" : " missing in the under-lock order");
+    EXPECT_GT(phases.attributedNs(), 0);
   }
-  for (const auto phase : {Phase::Setup, Phase::BusTap, Phase::CapturePoll, Phase::Gather, Phase::StillsFloor,
-                           Phase::IsoIngress, Phase::Plan, Phase::Program, Phase::Monitors, Phase::Emit})
-    EXPECT_TRUE(phases.visited(phase)) << RenderTickPhases::name(phase);
-  for (const auto phase : {Phase::R1Poll, Phase::R2Decoded, Phase::R5CpuArrival})
-    EXPECT_TRUE(phases.visited(phase)) << RenderTickPhases::name(phase);
-  EXPECT_GT(phases.attributedNs(), 0);
 
   // Without a recorder installed (command-lane/test ticks), nothing is marked.
   RenderTickPhases untouched;
@@ -9871,6 +9876,100 @@ TEST(MediaCoreRenderGather, GuestAvTrimSetAfterThePreReadSurvivesThatTick) {
   }
   EXPECT_FALSE(trimmed("2")) << "a departed participant's trim must still be pruned";
   core.reset();
+}
+
+// #1049: both frame-group fetch orders deliver a due Zoom frame to the tick's
+// consume point; the before-lock order takes no engine mutex inside the tick
+// at all (no sanctioned exception is needed), and its frames come from the
+// pre-read.
+namespace {
+struct FrameFetchHarness {
+  std::unique_ptr<corevideo::core::MediaCore> core;
+  corevideo::modules::ZoomEngineRuntime* runtime = nullptr;
+  std::shared_ptr<const std::vector<std::uint8_t>> i420 =
+      std::make_shared<const std::vector<std::uint8_t>>(16 * 16 * 3 / 2, 128);
+  FrameFetchHarness() {
+    setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+    core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+    setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+    runtime = core->zoomEngineRuntimeForTest();
+    runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+        R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})"));
+  }
+  // Observed well past the frame-sync reserve, so it is due now in either order.
+  void publishDue(std::int64_t frameId) {
+    runtime->publishDecodedVideoFrameForTest("1", frameId, i420, 16, 16,
+        std::chrono::steady_clock::now() - std::chrono::milliseconds(200));
+  }
+  void tick(corevideo::core::MediaCore::RenderEngineInputs inputs) {
+    std::mutex coreMutex;
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  }
+};
+}  // namespace
+
+TEST(MediaCoreRenderGather, BothFetchOrdersDeliverADueZoomFrameToTheTick) {
+  for (const bool beforeLock : {false, true}) {
+    FrameFetchHarness h;
+    ASSERT_TRUE(h.runtime && h.runtime->configured());
+    h.core->setRenderFrameFetchBeforeLockForTest(beforeLock);
+    h.publishDue(7);
+    auto inputs = h.core->prepareRenderEngineInputsUnlocked();
+    EXPECT_EQ(inputs.framesPrefetched, beforeLock);
+    if (beforeLock) {
+      ASSERT_EQ(inputs.decodedFrames.size(), 1u) << "the pre-read must carry the due frame";
+      EXPECT_EQ(inputs.decodedFrames[0].frameId, 7);
+    }
+    const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+    h.tick(std::move(inputs));
+    EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore);
+    const auto ages = h.core->takeZoomFrameAgeSamplesNsForTest();
+    ASSERT_EQ(ages.size(), 1u) << "the frame must reach the consume point (beforeLock=" << beforeLock << ")";
+    EXPECT_GE(ages[0], 200'000'000) << "age is measured from the ingest observation";
+    // The same frame re-served on the next tick is not a new sample.
+    h.tick(h.core->prepareRenderEngineInputsUnlocked());
+    EXPECT_TRUE(h.core->takeZoomFrameAgeSamplesNsForTest().empty());
+    h.core.reset();
+  }
+}
+
+TEST(MediaCoreRenderGather, BeforeLockOrderNeedsNoEngineMutexInsideTheTick) {
+  FrameFetchHarness h;
+  ASSERT_TRUE(h.runtime && h.runtime->configured());
+  h.core->setRenderFrameFetchBeforeLockForTest(true);
+  h.publishDue(3);
+  auto inputs = h.core->prepareRenderEngineInputsUnlocked();
+  // Every engine mutex acquisition this thread makes counts here, including
+  // the sanctioned ones an AllowEngineMutexScope hides from the guardrail.
+  auto& acquisitions = corevideo::modules::EngineMutexGuardrail::threadAcquisitions();
+  const auto before = acquisitions;
+  h.tick(std::move(inputs));
+  EXPECT_EQ(acquisitions, before) << "the before-lock tick took the Zoom engine mutex "
+                                  << (acquisitions - before) << " time(s)";
+  EXPECT_EQ(h.core->takeZoomFrameAgeSamplesNsForTest().size(), 1u);
+  // Control: the under-lock order does take it inside the tick (R1/R2/R5).
+  h.core->setRenderFrameFetchBeforeLockForTest(false);
+  auto underLock = h.core->prepareRenderEngineInputsUnlocked();
+  const auto beforeUnderLock = acquisitions;
+  h.tick(std::move(underLock));
+  EXPECT_GE(acquisitions - beforeUnderLock, 3u) << "the control must see the frame group";
+  h.core.reset();
+}
+
+TEST(MediaCoreRenderGather, PrefetchedFramesFromAnEndedSessionAreDropped) {
+  FrameFetchHarness h;
+  ASSERT_TRUE(h.runtime && h.runtime->configured());
+  h.core->setRenderFrameFetchBeforeLockForTest(true);
+  h.publishDue(5);
+  auto inputs = h.core->prepareRenderEngineInputsUnlocked();
+  ASSERT_EQ(inputs.decodedFrames.size(), 1u);
+  // The operator leaves while the render thread waits for coreMutex.
+  (void)h.core->leaveZoom();
+  h.tick(std::move(inputs));
+  EXPECT_TRUE(h.core->takeZoomFrameAgeSamplesNsForTest().empty())
+      << "a frame fetched before a leave must not reach the tick after it";
+  h.core.reset();
 }
 
 // #1037 R3: the ISO video demand the render tick computes reaches the engine

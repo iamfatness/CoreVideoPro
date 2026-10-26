@@ -1008,6 +1008,28 @@ std::vector<std::string> ZoomEngineRuntime::isoArrivalDemandIdsForTest() {
   return ids;
 }
 
+void ZoomEngineRuntime::publishDecodedVideoFrameForTest(const std::string& participantId, std::int64_t frameId,
+    std::shared_ptr<const std::vector<std::uint8_t>> i420, int width, int height,
+    std::chrono::steady_clock::time_point observedAt) {
+  std::lock_guard<EngineMutex> lock(mutex_);
+  DecodedFrame& decoded = latestDecodedFrames_[participantId];
+  ++slotPublished_;
+  DecodedFrame incoming;
+  incoming.i420 = std::move(i420);
+  incoming.observedAt = observedAt;
+  incoming.width = width;
+  incoming.height = height;
+  incoming.frameId = frameId;
+  incoming.sourceEpoch = 1;
+  incoming.sourceGeneration = 1;
+  if (frameSyncEnabled_) {
+    slotOverwritten_ += pushZoomVideo(frameSync_[participantId].frames, std::move(incoming));
+  } else {
+    if (decoded.i420 && !decoded.fetched) ++slotOverwritten_;
+    decoded = std::move(incoming);
+  }
+}
+
 void ZoomEngineRuntime::stopReader() {
   std::shared_ptr<ZoomEngineProcessClient> process;
   {

@@ -438,6 +438,14 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 
 MediaCore::MediaCore(modules::ModuleSet modules)
     : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>(modules_.cpuSourcePreparation)) {
+  // #1049: the render frame-group fetch order. The default (before-lock) was
+  // decided by the A/B recorded in the #1037 design doc's #1049 addendum
+  // (docs/superpowers/specs/2026-10-23-render-gather-engine-mutex-design.md).
+  if (const char* order = std::getenv("COREVIDEO_RENDER_FRAME_FETCH")) {
+    const std::string value(order);
+    if (value == "before-lock") renderFrameFetchBeforeLock_.store(true);
+    else if (value == "under-lock") renderFrameFetchBeforeLock_.store(false);
+  }
   std::random_device random;
   audioMonitorControlEpoch_ = "monitor-" + std::to_string(monotonicMs()) + "-" +
                               std::to_string(random());
@@ -5082,6 +5090,38 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   return renderPlan;
 }
 
+void MediaCore::observeZoomFrameAgeAtConsume(const std::vector<modules::VideoFrame>& frames) {
+  // #1049: the age of each NEW Zoom frame when the tick consumes it under
+  // coreMutex. This point is the same in both fetch orders, so the A/B
+  // compares like with like (the engine's own [zoom-latency] line samples at
+  // selection, which in the before-lock order precedes the coreMutex wait).
+  const auto now = std::chrono::steady_clock::now();
+  const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+  constexpr std::size_t kMaxSamples = 20000;
+  for (const auto& frame : frames) {
+    if (frame.captureTimestamp100ns <= 0 || frame.participantId.empty()) continue;
+    auto& last = zoomFrameAgeLastFrameId_[frame.participantId];
+    if (last == frame.frameId) continue;
+    last = frame.frameId;
+    if (zoomFrameAgeSamplesNs_.size() < kMaxSamples)
+      zoomFrameAgeSamplesNs_.push_back(nowNs - frame.captureTimestamp100ns * 100);
+  }
+  if (zoomFrameAgeWindowStart_ == std::chrono::steady_clock::time_point{}) zoomFrameAgeWindowStart_ = now;
+  if (now - zoomFrameAgeWindowStart_ < std::chrono::seconds(2)) return;
+  if (::corevideo::core::nativeVerboseLoggingEnabled() && !zoomFrameAgeSamplesNs_.empty()) {
+    auto sorted = zoomFrameAgeSamplesNs_;
+    std::sort(sorted.begin(), sorted.end());
+    ::corevideo::core::nativeVerboseLogf(
+        "[zoom-frame-age] at-consume p50=%.1fms p99=%.1fms max=%.1fms n=%zu order=%s\n",
+        sorted[sorted.size() / 2] / 1e6, sorted[sorted.size() * 99 / 100] / 1e6, sorted.back() / 1e6,
+        sorted.size(), renderFrameFetchBeforeLock() ? "before-lock" : "under-lock");
+    zoomFrameAgeSamplesNs_.clear();
+  } else if (zoomFrameAgeSamplesNs_.size() >= kMaxSamples) {
+    zoomFrameAgeSamplesNs_.clear();
+  }
+  zoomFrameAgeWindowStart_ = now;
+}
+
 MediaCore::RenderEngineInputs MediaCore::prepareRenderEngineInputsUnlocked() {
   // #1037: the render tick's only roster/speaker read, made with coreMutex
   // FREE. zoomEngineRuntime_ is created once in the constructor and never
@@ -5107,7 +5147,24 @@ MediaCore::RenderEngineInputs MediaCore::prepareRenderEngineInputsUnlocked() {
     inputs.floorRoster = std::move(view->floorParticipants);
     inputs.directedSpeakerId = std::move(view->directedSpeakerId);
   }
+  if (renderFrameFetchBeforeLock()) {
+    // #1049: the frame group, LAST, so the frames are as young as a pre-read
+    // allows. Timestamps are restamped inside the tick (frameTimestampMs is
+    // coreMutex state). The epoch is read before the fetch: a session change
+    // after it invalidates these frames (renderSyntheticTick drops them).
+    inputs.framesSpeakerEpoch = zoomEngineRuntime_->speakerEpoch();
+    inputs.compositorFrames = zoomEngineRuntime_->pollCompositorVideoFrames(0);
+    inputs.decodedFrames = zoomEngineRuntime_->latestDecodedVideoFrames(0);
+    zoomEngineRuntime_->appendCpuVideoFrames(inputs.cpuArrivalFrames);
+    inputs.framesPrefetched = true;
+  }
   return inputs;
+}
+
+std::vector<std::int64_t> MediaCore::takeZoomFrameAgeSamplesNsForTest() {
+  auto samples = std::move(zoomFrameAgeSamplesNs_);
+  zoomFrameAgeSamplesNs_.clear();
+  return samples;
 }
 
 void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnchorNs) {
@@ -5207,19 +5264,35 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // frame across a subscription gap, see ZoomBusRoster.h) and is the same
   // roster the merge below starts from.
   std::vector<modules::VideoFrame> engineFrames;
+  // #1049: frames fetched by the pre-read (before coreMutex) are used only
+  // while the engine session they came from is still current.
+  const bool framesPrefetched = renderEngineInputs_.framesPrefetched && zoomEngineRuntime_ &&
+      zoomEngineRuntime_->speakerEpoch() == renderEngineInputs_.framesSpeakerEpoch;
+  const auto restamp = [frameTimestampMs](std::vector<modules::VideoFrame>& frames) {
+    for (auto& frame : frames) frame.timestampMs = frameTimestampMs;
+    return std::move(frames);
+  };
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    // #1037 R1: frame-selection group, sanctioned until its fetch-before-lock A/B.
-    modules::AllowEngineMutexScope frameGroup("render.frame-group #1037-followup");
-    FrameGroupCallTiming timing(TickPhase::R1Poll);
-    engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
+    if (framesPrefetched) {
+      engineFrames = restamp(renderEngineInputs_.compositorFrames);
+    } else if (!renderEngineInputs_.framesPrefetched) {
+      // #1037 R1, under-lock order (COREVIDEO_RENDER_FRAME_FETCH=under-lock).
+      modules::AllowEngineMutexScope frameGroup("render.frame-group under-lock order #1049");
+      FrameGroupCallTiming timing(TickPhase::R1Poll);
+      engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
+    }
   }
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    const auto decoded = [&] {
-      // #1037 R2: frame-selection group (frame sync runs against now()).
-      modules::AllowEngineMutexScope frameGroup("render.frame-group #1037-followup");
+    auto decoded = [&]() -> std::vector<modules::VideoFrame> {
+      if (framesPrefetched) return restamp(renderEngineInputs_.decodedFrames);
+      // A prefetch from a session that has since ended carries no frames.
+      if (renderEngineInputs_.framesPrefetched) return {};
+      // #1037 R2, under-lock order (frame sync runs against now()).
+      modules::AllowEngineMutexScope frameGroup("render.frame-group under-lock order #1049");
       FrameGroupCallTiming timing(TickPhase::R2Decoded);
       return zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
     }();
+    observeZoomFrameAgeAtConsume(decoded);
     markStage(s_subFetchUs, 0);
     std::vector<modules::VideoFrame> zoomFrames;
     zoomFrames.reserve(decoded.size());
@@ -5432,9 +5505,14 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // no readback or conversion may run on this gather/Program thread.
   auto captureCpuFrames = modules_.captureDevice->takeCpuVideoFrames();
   markTickPhase(TickPhase::StillsFloor);
-  if (engineLive) {
-    // #1037 R5: frame-selection group (ISO CPU arrival transfer).
-    modules::AllowEngineMutexScope frameGroup("render.frame-group #1037-followup");
+  if (engineLive && framesPrefetched) {
+    captureCpuFrames.insert(captureCpuFrames.end(),
+        std::make_move_iterator(renderEngineInputs_.cpuArrivalFrames.begin()),
+        std::make_move_iterator(renderEngineInputs_.cpuArrivalFrames.end()));
+    renderEngineInputs_.cpuArrivalFrames.clear();
+  } else if (engineLive && !renderEngineInputs_.framesPrefetched) {
+    // #1037 R5, under-lock order (ISO CPU arrival transfer).
+    modules::AllowEngineMutexScope frameGroup("render.frame-group under-lock order #1049");
     FrameGroupCallTiming timing(TickPhase::R5CpuArrival);
     zoomEngineRuntime_->appendCpuVideoFrames(captureCpuFrames);
   }

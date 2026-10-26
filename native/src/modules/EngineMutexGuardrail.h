@@ -35,7 +35,16 @@ class EngineMutexGuardrail {
     thread_local std::int64_t waited = 0;
     return waited;
   }
+  // #1049: every engine mutex acquisition THIS thread made, sanctioned or not
+  // (monotonic; difference it around a call). Lets a test prove a path takes
+  // the engine mutex zero times, which a forbidden scope cannot (an
+  // AllowEngineMutexScope inside it suspends the count).
+  static std::uint64_t& threadAcquisitions() {
+    thread_local std::uint64_t acquisitions = 0;
+    return acquisitions;
+  }
   static void noteAcquire() {
+    ++threadAcquisitions();
     if (forbiddenDepth() <= 0) return;
     if (forbiddenAcquisitions().fetch_add(1, std::memory_order_relaxed) == 0) {
       ::corevideo::core::nativeLogf("[lock-guardrail] engine mutex taken inside forbidden scope '%s' (#1030)\n",
