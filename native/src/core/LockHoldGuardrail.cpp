@@ -133,6 +133,38 @@ bool LockHoldGuardrail::recordHold(const char* site, long long heldUs, long long
   return overBudget;
 }
 
+bool LockHoldGuardrail::recordLateTick(const char* site, const char* reason, long long tickUs, long long heldUs,
+                                       long long framePeriodUs, const LockHoldDetail& detail) {
+  bool due = false;
+  std::uint64_t suppressed = 0;
+  {
+    std::lock_guard<std::mutex> lock(registryMutex());
+    SiteRecord& record = registry()[site];
+    ++record.stats.holds;
+    ++record.stats.overBudget;
+    if (tickUs > record.stats.worstHeldUs) record.stats.worstHeldUs = tickUs;
+    const auto now = std::chrono::steady_clock::now();
+    due = record.stats.attributionsLogged == 0 || now - record.lastAttributionAt >= kAttributionInterval;
+    if (due) {
+      ++record.stats.attributionsLogged;
+      record.lastAttributionAt = now;
+      suppressed = record.suppressedSinceLastAttribution;
+      record.suppressedSinceLastAttribution = 0;
+    } else {
+      ++record.suppressedSinceLastAttribution;
+    }
+  }
+  if (!due) return false;
+  const std::string attribution = "site=" + std::string(site) + " reason=" + reason +
+      " tick_us=" + std::to_string(tickUs) + " frame_period_us=" + std::to_string(framePeriodUs) +
+      " held_us=" + std::to_string(heldUs) + " " + detail.describe(heldUs);
+  ::corevideo::core::nativeLogf("[lock-hold-attribution] %s unattributed_since_last=%llu\n",
+                               attribution.c_str(), static_cast<unsigned long long>(suppressed));
+  std::lock_guard<std::mutex> lock(registryMutex());
+  registry()[site].stats.lastAttribution = attribution;
+  return true;
+}
+
 LockHoldGuardrail::SiteStats LockHoldGuardrail::statsForSite(const char* site) {
   std::lock_guard<std::mutex> lock(registryMutex());
   const auto found = registry().find(site);

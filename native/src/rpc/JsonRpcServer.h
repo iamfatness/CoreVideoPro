@@ -32,7 +32,7 @@ class JsonRpcServer {
   // deferred while the live loop held coreMutex; finished after the release.
   struct DeferredEngineSpine {
     Json id;
-    Json payload;
+    const Json* payload = nullptr;  // into the request; the loop keeps it alive
     double elapsedMs = 0;
   };
   // #1048 C2: answers zoom-snapshot without coreMutex when an engine is

@@ -101,7 +101,7 @@ Json JsonRpcServer::finishDeferredEngineSpine(const DeferredEngineSpine& deferre
   // Runs on the command thread with coreMutex RELEASED, before the next
   // command is dequeued, so command order is unchanged. A render tick may run
   // between the two halves, exactly as one may run between two commands.
-  auto snapshot = mediaCore_.syncZoomEngineSpineUnlocked(deferred.payload, deferred.elapsedMs);
+  auto snapshot = mediaCore_.syncZoomEngineSpineUnlocked(*deferred.payload, deferred.elapsedMs);
   // The engine is configured once at startup; nullopt would mean it was
   // unconfigured between the halves. Answer with no snapshot (the engine
   // itself answers null when unconfigured) rather than touch the stub spine
@@ -153,7 +153,9 @@ Json JsonRpcServer::handle(const Json& request) {
       // #1048 C1 (live loop only): apply the core half now, under coreMutex;
       // the engine half runs after the release (finishDeferredEngineSpine).
       mediaCore_.applyZoomSpineCoreState(*payload);
-      *engineSpineDeferral_ = DeferredEngineSpine{id, *payload, elapsedMs};
+      // Points into the request, which outlives finishDeferredEngineSpine (the
+      // loop owns it); no copy of the spine payload under coreMutex.
+      *engineSpineDeferral_ = DeferredEngineSpine{id, payload, elapsedMs};
       return Json(nullptr);
     }
     return spineSyncResponse(id, mediaCore_.syncZoomMediaSpine(*payload, elapsedMs));
@@ -735,18 +737,24 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       // read HERE, with coreMutex free. Taking ZoomEngineRuntime::mutex_ under
       // coreMutex stalls every command and the audio gather behind it. Only the
       // frame-selection group still takes it inside the tick (sanctioned).
+      // #1056: the pre-read's own engine-mutex wait (the frame group runs here
+      // since #1049), reported apart from the hold.
+      const auto preReadWaitBefore = modules::EngineMutexGuardrail::threadWaitNs();
       auto engineInputs = mediaCore_.prepareRenderEngineInputsUnlocked();
       const auto tPreRead = std::chrono::steady_clock::now();
+      const auto preReadEngineWaitNs = modules::EngineMutexGuardrail::threadWaitNs() - preReadWaitBefore;
+      // #1056: per-phase attribution of this tick. Outlives the hold timer
+      // (whose destructor formats it for an over-budget hold) and the lock
+      // scope (a late tick with an in-budget hold is attributed below).
+      core::RenderTickPhases tickPhases;
+      std::int64_t tickHoldNs = 0;
+      std::chrono::steady_clock::time_point tickEnd{};
       {
         std::unique_lock<std::mutex> lock(coreMutex);
         coreHandoff.wait(lock, [&] {
           return !commandWaitingForCore.load(std::memory_order_acquire) || stopping.load();
         });
         if (stopping.load()) break;
-        // #1056: per-phase attribution of this hold. Declared BEFORE the hold
-        // timer so it outlives it: the timer's destructor formats it when the
-        // hold is over budget.
-        core::RenderTickPhases tickPhases;
         // Increment 6 guardrail: sanctioned long-hold site — the video-only GPU
         // tick typically holds ~1-2ms; warn (rate-capped) past half a frame.
         core::ScopedLockHoldTimer holdGuard("render.display-tick",
@@ -755,7 +763,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         tickPhases.begin(holdGuard.startedAt());
         tickPhases.setSlot(cadence.slotIndex());
         tickPhases.setOutsideHold(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(tPreRead - t0).count(),
+            std::chrono::duration_cast<std::chrono::nanoseconds>(tPreRead - t0).count(), preReadEngineWaitNs,
             std::chrono::duration_cast<std::chrono::nanoseconds>(holdGuard.startedAt() - tPreRead).count());
         core::RenderTickPhases::Scope tickPhaseScope(tickPhases);
         mediaCore_.renderDisplayTick(cadence.slotIndex(),
@@ -765,6 +773,8 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         // never formats JSON or enters the stdout mailbox.
         const auto tDrain = std::chrono::steady_clock::now();
         const auto t2 = std::chrono::steady_clock::now();
+        tickEnd = t2;
+        tickHoldNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - holdGuard.startedAt()).count();
         tickLockWaitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
         tickWorkNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
         tickDrainNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - tDrain).count();
@@ -790,7 +800,21 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       mediaCore_.notifyIsoVideoPublished();
       const auto previousMisses = cadence.deadlineMisses();
       cadence.recordCompletion(elapsedNs());
-      mediaCore_.reportRenderDeadlineMisses(cadence.deadlineMisses() - previousMisses);
+      const auto newMisses = cadence.deadlineMisses() - previousMisses;
+      mediaCore_.reportRenderDeadlineMisses(newMisses);
+      // #1056 review: a tick that was late while its HOLD stayed in budget
+      // (pre-read blocked on the engine mutex, or a long coreMutex wait) gets
+      // the same attribution line; the hold guardrail alone would miss it.
+      {
+        constexpr std::int64_t kFramePeriodNs = 16'666'667;
+        const auto tickNs = std::chrono::duration_cast<std::chrono::nanoseconds>(tickEnd - t0).count();
+        if (const char* reason = core::RenderTickPhases::frameAttributionReason(
+                tickNs, tickHoldNs, core::LockHoldGuardrail::kRenderTickBudgetUs * 1000, kFramePeriodNs,
+                newMisses > 0)) {
+          (void)core::LockHoldGuardrail::recordLateTick("render.late-tick", reason, tickNs / 1000,
+                                                       tickHoldNs / 1000, kFramePeriodNs / 1000, tickPhases);
+        }
+      }
       // Command fairness is handled by coreHandoff above. The pacer uses only
       // remaining deadline slack; never add six milliseconds to a costly frame.
       if (++frames >= 120) {
@@ -1215,6 +1239,8 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           // #1048 C2: with an engine configured, zoom-snapshot is a pure engine
           // read (a full roster JSON under the engine mutex): answered here,
           // with no coreMutex. Without one it falls through to the locked path.
+          // It bypasses assembly.waitForCapacity() on purpose: it carries no
+          // CoreStateCapture, so it never occupies a response-assembly slot.
           h0 = std::chrono::steady_clock::now();
           lockFreeResponse = handleWithoutCore(*request);
           h1 = std::chrono::steady_clock::now();
@@ -1273,12 +1299,25 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           h1 = std::chrono::steady_clock::now();
         }
         // #1048 C1: coreMutex is released here; the spine's engine half runs now.
-        if (deferredSpine) response = finishDeferredEngineSpine(*deferredSpine);
+        // It is timed separately: it no longer counts as a lock hold, but a
+        // slow syncSpine still stalls the command thread and must be visible.
+        long long engineHalfUs = 0;
+        if (deferredSpine) {
+          const auto e0 = std::chrono::steady_clock::now();
+          response = finishDeferredEngineSpine(*deferredSpine);
+          engineHalfUs = std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - e0).count();
+          if (engineHalfUs >= 30'000) {
+            ::corevideo::core::nativeLogf("[cmd] '%s' engine half lock-free %lldms (render unaffected)\n",
+                reqType.c_str(), engineHalfUs / 1000);
+          }
+        }
+        const auto engineHalfMs = engineHalfUs / 1000;
         const auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(h1 - h0).count();
         const auto heldUs = std::chrono::duration_cast<std::chrono::microseconds>(h1 - h0).count();
         if (heldUs > core::LockHoldGuardrail::kCommandHandleBudgetUs) {
-          ::corevideo::core::nativeVerboseLogf("[command-lock] type=%.80s held_us=%lld capture_deferred=%u\n",
-              reqType.c_str(), static_cast<long long>(heldUs), capture ? 1u : 0u);
+          ::corevideo::core::nativeVerboseLogf("[command-lock] type=%.80s held_us=%lld engine_half_us=%lld capture_deferred=%u\n",
+              reqType.c_str(), static_cast<long long>(heldUs), engineHalfUs, capture ? 1u : 0u);
         }
         const auto lockWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(h0 - dequeuedAt).count();
         if (heldMs >= 30) {
@@ -1290,11 +1329,12 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         // The whole in-core latency for this request: time spent waiting in inQ +
         // waiting for coreMutex + handling. If this is small but the host still
         // times out, the delay is downstream in the writer/pipe (see [writer]).
-        if (queueWaitMs + lockWaitMs + heldMs >= 500) {
-          ::corevideo::core::nativeLogf("[req] '%s' queueWait=%lldms lockWait=%lldms handle=%lldms (total in-core=%lldms)\n",
+        if (queueWaitMs + lockWaitMs + heldMs + engineHalfMs >= 500) {
+          ::corevideo::core::nativeLogf("[req] '%s' queueWait=%lldms lockWait=%lldms handle=%lldms engineHalf=%lldms (total in-core=%lldms)\n",
                        reqType.c_str(), static_cast<long long>(queueWaitMs),
                        static_cast<long long>(lockWaitMs), static_cast<long long>(heldMs),
-                       static_cast<long long>(queueWaitMs + lockWaitMs + heldMs));
+                       static_cast<long long>(engineHalfMs),
+                       static_cast<long long>(queueWaitMs + lockWaitMs + heldMs + engineHalfMs));
         }
         // handle() returns an owning snapshot. Serialization can be expensive
         // for a full production sync, and does not need to block the renderer.

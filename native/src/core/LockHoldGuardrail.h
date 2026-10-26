@@ -71,6 +71,14 @@ class LockHoldGuardrail {
   static bool recordHold(const char* site, long long heldUs, long long budgetUs,
                          const LockHoldDetail* detail = nullptr);
 
+  // #1056 review: attributes a late render tick whose HOLD was in budget (its
+  // time went to the pre-read or the coreMutex wait). Logs
+  // `[lock-hold-attribution] site=<site> reason=<reason> tick_us=N held_us=N ...`
+  // at most once per second per site; counts in statsForSite(site).
+  // Returns true when a line was logged.
+  static bool recordLateTick(const char* site, const char* reason, long long tickUs, long long heldUs,
+                             long long framePeriodUs, const LockHoldDetail& detail);
+
   [[nodiscard]] static SiteStats statsForSite(const char* site);
   static void resetForTest();
 };

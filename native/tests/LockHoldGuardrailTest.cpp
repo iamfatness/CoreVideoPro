@@ -133,7 +133,7 @@ TEST(RenderTickPhases, DescribesEveryPhaseItsEngineWaitAndTheUnattributedRest) {
   const auto t0 = std::chrono::steady_clock::time_point{} + std::chrono::seconds(10);
   phases.begin(t0);
   phases.setSlot(172717);
-  phases.setOutsideHold(/*preReadNs=*/400'000, /*lockWaitNs=*/2'000'000);
+  phases.setOutsideHold(/*preReadNs=*/400'000, /*preReadEngineWaitNs=*/300'000, /*lockWaitNs=*/2'000'000);
   phases.mark(Phase::R1Poll, t0 + std::chrono::microseconds(100));
   phases.mark(Phase::R2Decoded, t0 + std::chrono::microseconds(3'100));
   phases.addEngineWait(Phase::R2Decoded, 2'500'000);
@@ -150,7 +150,7 @@ TEST(RenderTickPhases, DescribesEveryPhaseItsEngineWaitAndTheUnattributedRest) {
   EXPECT_NE(text.find("program=9000"), std::string::npos) << text;
   EXPECT_NE(text.find("other_us=3027"), std::string::npos) << text;
   EXPECT_NE(text.find("frame_group_engine_wait_us=2500"), std::string::npos) << text;
-  EXPECT_NE(text.find("pre-read=400 lock-wait=2000"), std::string::npos) << text;
+  EXPECT_NE(text.find("pre-read=400 pre-read-engine-wait=300 lock-wait=2000"), std::string::npos) << text;
   EXPECT_EQ(text.find("setup="), std::string::npos) << "an empty phase is omitted: " << text;
 
   // begin() starts a fresh tick.
@@ -197,4 +197,37 @@ TEST(EngineMutexGuardrail, ContendedLockAccumulatesThisThreadsWait) {
   { std::lock_guard<corevideo::modules::EngineMutex> lock(mutex); }
   EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::threadWaitNs(), uncontended)
       << "an uncontended acquisition waits for nothing";
+}
+
+// #1056 review: a late tick whose HOLD stayed in budget (the pre-read blocked
+// on the engine mutex, or a long coreMutex wait) is attributed too.
+TEST(RenderTickPhases, LateTickWithAnInBudgetHoldStillNeedsAttribution) {
+  using corevideo::core::RenderTickPhases;
+  constexpr std::int64_t kBudget = 8'000'000, kPeriod = 16'666'667;
+  const auto reason = [&](std::int64_t tick, std::int64_t hold, bool missed) {
+    const char* r = RenderTickPhases::frameAttributionReason(tick, hold, kBudget, kPeriod, missed);
+    return std::string(r ? r : "none");
+  };
+  // 10 ms pre-read engine wait + 3 ms hold + 5 ms lock wait: over the period.
+  EXPECT_EQ(reason(18'000'000, 3'000'000, false), "over-frame-period");
+  EXPECT_EQ(reason(9'000'000, 3'000'000, true), "deadline-miss");
+  EXPECT_EQ(reason(9'000'000, 3'000'000, false), "none") << "an on-time tick is not attributed";
+  EXPECT_EQ(reason(20'000'000, 9'000'000, true), "none")
+      << "an over-budget hold is already attributed by the hold guardrail";
+}
+
+TEST(LockHoldGuardrail, LateTickAttributionNamesItsReasonAndIsRateCapped) {
+  LockHoldGuardrail::resetForTest();
+  corevideo::core::RenderTickPhases phases;
+  phases.begin();
+  phases.setOutsideHold(11'000'000, 10'000'000, 1'000'000);
+  EXPECT_TRUE(LockHoldGuardrail::recordLateTick("test.late", "over-frame-period", 18'000, 3'000, 16'666, phases));
+  for (int i = 0; i < 50; ++i)
+    (void)LockHoldGuardrail::recordLateTick("test.late", "over-frame-period", 18'000, 3'000, 16'666, phases);
+  const auto stats = LockHoldGuardrail::statsForSite("test.late");
+  EXPECT_EQ(stats.overBudget, 51u);
+  EXPECT_LE(stats.attributionsLogged, 2u);
+  EXPECT_NE(stats.lastAttribution.find("reason=over-frame-period"), std::string::npos) << stats.lastAttribution;
+  EXPECT_NE(stats.lastAttribution.find("tick_us=18000"), std::string::npos) << stats.lastAttribution;
+  EXPECT_NE(stats.lastAttribution.find("pre-read-engine-wait=10000"), std::string::npos) << stats.lastAttribution;
 }

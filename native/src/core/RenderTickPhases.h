@@ -74,8 +74,12 @@ class RenderTickPhases final : public LockHoldDetail {
   }
   // Work the render thread did BEFORE the hold (not part of it): the engine
   // pre-read and the coreMutex wait. Reported beside the hold, never in it.
-  void setOutsideHold(std::int64_t preReadNs, std::int64_t lockWaitNs) {
+  // `preReadEngineWaitNs` is the part of the pre-read spent blocked on
+  // ZoomEngineRuntime::mutex_ (since #1049 the frame group runs there, so its
+  // contention shows up here, not in frame_group_engine_wait_us).
+  void setOutsideHold(std::int64_t preReadNs, std::int64_t preReadEngineWaitNs, std::int64_t lockWaitNs) {
     preReadNs_ = preReadNs;
+    preReadEngineWaitNs_ = preReadEngineWaitNs;
     lockWaitNs_ = lockWaitNs;
   }
   void setSlot(std::int64_t slot) { slot_ = slot; }
@@ -96,7 +100,8 @@ class RenderTickPhases final : public LockHoldDetail {
   }
 
   // "slot=N phases_us=[setup=12 r1-poll=3/wait=0 ...] other_us=N frame_group_engine_wait_us=N
-  //  outside_hold_us=[pre-read=N lock-wait=N]". Phases under 1 us are omitted.
+  //  outside_hold_us=[pre-read=N pre-read-engine-wait=N lock-wait=N]". Phases
+  //  under 1 us are omitted.
   [[nodiscard]] std::string describe(long long heldUs) const override {
     std::string text = "slot=" + std::to_string(slot_) + " phases_us=[";
     bool first = true;
@@ -119,8 +124,21 @@ class RenderTickPhases final : public LockHoldDetail {
     text += "] other_us=" + std::to_string(otherUs > 0 ? otherUs : 0) +
             " frame_group_engine_wait_us=" + std::to_string(frameGroupEngineWaitNs() / 1000) +
             " outside_hold_us=[pre-read=" + std::to_string(preReadNs_ / 1000) +
+            " pre-read-engine-wait=" + std::to_string(preReadEngineWaitNs_ / 1000) +
             " lock-wait=" + std::to_string(lockWaitNs_ / 1000) + "]";
     return text;
+  }
+
+  // #1056 review: a tick can miss its slot while its HOLD is in budget (the
+  // pre-read blocked on the engine mutex, or the coreMutex wait was long).
+  // Why the render loop must attribute this tick beyond the hold guardrail,
+  // or nullptr when the hold guardrail already covers it / nothing was late.
+  [[nodiscard]] static const char* frameAttributionReason(std::int64_t tickNs, std::int64_t holdNs,
+      std::int64_t holdBudgetNs, std::int64_t framePeriodNs, bool deadlineMissed) {
+    if (holdNs > holdBudgetNs) return nullptr;  // the hold guardrail attributes it
+    if (deadlineMissed) return "deadline-miss";
+    if (tickNs > framePeriodNs) return "over-frame-period";
+    return nullptr;
   }
 
   // The instance installed on this thread, or nullptr.
@@ -148,6 +166,7 @@ class RenderTickPhases final : public LockHoldDetail {
   std::array<std::int64_t, kPhaseCount> engineWaitNs_{};
   std::chrono::steady_clock::time_point last_{};
   std::int64_t preReadNs_ = 0;
+  std::int64_t preReadEngineWaitNs_ = 0;
   std::int64_t lockWaitNs_ = 0;
   std::int64_t slot_ = -1;
   std::uint32_t visited_ = 0;
