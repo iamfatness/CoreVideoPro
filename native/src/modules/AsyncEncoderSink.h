@@ -118,6 +118,9 @@ class AsyncEncoderSink final : public IEncoderSink {
   // landed in droppedVideo and made a fail-closed judge report a false red.
   // Reported, never hidden.
   [[nodiscard]] uint64_t startupDroppedVideoFrames() const;
+  // Audio shed while a Start is outstanding (not yet applied), e.g. behind the
+  // synchronous open or the capacity-probe wait. Kept out of droppedAudioPackets().
+  [[nodiscard]] uint64_t startupDroppedAudioPackets() const;
   // Freshness budget behind `producing` (see core/OutputLifecyclePolicy.h). The
   // default is the qualification policy's declared encoder staleness; tests
   // shorten it so a wedged writer can be proven to decay without a real sleep.
@@ -268,9 +271,11 @@ class AsyncEncoderSink final : public IEncoderSink {
     std::atomic<uint64_t> droppedVideo{0};
     std::atomic<uint64_t> droppedAudio{0};
     std::atomic<uint64_t> startupDroppedVideo{0};
-    // Audio shed during the same head-of-show window (e.g. while the writer waits
-    // for the encoder-capacity probe at Start). Kept OUT of droppedAudio, exactly
-    // like startupDroppedVideo, so it never raises mediaLost.
+    // Audio shed while a Start is OUTSTANDING (!startApplied: enqueued, inner->start
+    // not yet returned), e.g. while the writer waits for the encoder-capacity probe.
+    // Kept OUT of droppedAudio so it never raises mediaLost. Unlike video it is NOT
+    // keyed on videoStartupPhase: once the writers are open, an audio queue that
+    // overflows behind a stuck first WriteSample is real loss (#1030 class).
     std::atomic<uint64_t> startupDroppedAudio{0};
 
     std::mutex snapshotMutex;

@@ -176,7 +176,7 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
           if (std::find(identities.begin(), identities.end(), id) == identities.end()) identities.push_back(id);
         }
         if (std::find(identities.begin(), identities.end(), source) == identities.end() && identities.size() >= 8) {
-          if (kind == Kind::IsoAudio) (state_->videoStartupPhase ? state_->startupDroppedAudio : state_->droppedAudio).fetch_add(1);
+          if (kind == Kind::IsoAudio) (state_->startApplied.load(std::memory_order_acquire) ? state_->droppedAudio : state_->startupDroppedAudio).fetch_add(1);
           else if (state_->videoStartupPhase) state_->startupDroppedVideo.fetch_add(1);
           else state_->droppedVideo.fetch_add(1);
           return 0;  // bounded admission; never remove another file's picture
@@ -228,7 +228,7 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
         if (kind == Kind::Audio || kind == Kind::IsoAudio) {
           // #1042: audio queued behind a Start whose apply is slow (synchronous open,
           // capacity-probe wait) is head-of-show shedding, not a blocked writer.
-          if (state_->videoStartupPhase) state_->startupDroppedAudio.fetch_add(1);
+          if (!state_->startApplied.load(std::memory_order_acquire)) state_->startupDroppedAudio.fetch_add(1);
           else state_->droppedAudio.fetch_add(1);
         } else if (state_->videoStartupPhase) {
           // Head-of-show shedding behind the writer's synchronous open. Visible
@@ -474,6 +474,7 @@ OutputSession AsyncEncoderSink::session() const {
 
 uint64_t AsyncEncoderSink::droppedVideoFrames() const { return state_->droppedVideo.load(); }
 uint64_t AsyncEncoderSink::droppedAudioPackets() const { return state_->droppedAudio.load(); }
+uint64_t AsyncEncoderSink::startupDroppedAudioPackets() const { return state_->startupDroppedAudio.load(); }
 uint64_t AsyncEncoderSink::startupDroppedVideoFrames() const {
   return state_->startupDroppedVideo.load();
 }
@@ -679,7 +680,14 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
           // #1042: the preparation clock measures the take's own preparation. It
           // starts when the writer begins APPLYING Start, not when Start was
           // enqueued behind a backlog.
-          state->preparationRequestedAtMs.store(evidenceNowMs(), std::memory_order_release);
+          // Never reset a clock that has ALREADY expired: a reader may have seen
+          // the take as failed (> timeout behind a backlog); it must stay failed.
+          {
+            const auto appliedAt = evidenceNowMs();
+            if (appliedAt - state->preparationRequestedAtMs.load(std::memory_order_acquire) <
+                state->preparationTimeoutMs)
+              state->preparationRequestedAtMs.store(appliedAt, std::memory_order_release);
+          }
           state->inner->start(item.destinations, item.isoParticipantIds);
           break;
         case Kind::Video:

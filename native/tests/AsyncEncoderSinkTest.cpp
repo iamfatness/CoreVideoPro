@@ -437,8 +437,11 @@ TEST(AsyncEncoderSink, RepeatedGenerationsShareMediaBudgetAndPreserveStoppedTail
   // behaviour under test is unchanged, so assert the total.
   // ISO budgets are now per source: two slots for each of two sources,
   // across all generations; Program still has two slots total.
+  // Audio is split the same way (#1042): an eviction while a Start is outstanding
+  // (!startApplied) is startup loss, otherwise steady-state loss. Which bucket a
+  // given eviction lands in depends on that timing; the BUDGET is the total.
   EXPECT_EQ(sink.droppedVideoFrames() + sink.startupDroppedVideoFrames(), 394u);
-  EXPECT_EQ(sink.droppedAudioPackets(), 394u);
+  EXPECT_EQ(sink.droppedAudioPackets() + sink.startupDroppedAudioPackets(), 394u);
   raw->blockSubmit->store(false);
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(5)));
   EXPECT_EQ(raw->submitCount.load(), 3);
@@ -1451,4 +1454,65 @@ TEST(AsyncEncoderSink, AudioShedBehindASlowStartIsStartupLossNotABlockedWriter) 
   EXPECT_EQ(session.encoderQueueDroppedAudioPackets, 0);
   EXPECT_EQ(sink.droppedAudioPackets(), 0u);
   EXPECT_EQ(session.recordingWarning.find("queue was full"), std::string::npos) << session.recordingWarning;
+}
+
+TEST(AsyncEncoderSink, AudioShedAfterStartAppliedBehindAStuckFirstWriteIsRealLoss) {
+  // #1042 S5: the audio startup bucket is the Start-outstanding window only. Once
+  // the writers are open (Start applied), a first WriteSample that wedges and
+  // overflows the audio budget is a blocked writer (#1030 class): droppedAudio.
+  AsyncEncoderSink::Options options;
+  options.maxAudioQueue = 2;
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockSubmit->store(true);
+  AsyncEncoderSink sink(std::move(inner), options);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->submitEntered.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  ASSERT_TRUE(raw->submitEntered.load());
+
+  const float pcm[2] = {0.1f, -0.1f};
+  for (int packet = 0; packet < 20; ++packet) sink.submitAudio(pcm, 1, 2, 48000);
+  EXPECT_GT(sink.droppedAudioPackets(), 0u) << "stuck first write after open is real loss";
+  EXPECT_EQ(sink.startupDroppedAudioPackets(), 0u);
+  raw->blockSubmit->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(5)));
+}
+
+TEST(AsyncEncoderSink, ExpiredPreparationClockIsNotResetByALateStartApply) {
+  // #1042 S6: a take already read as failed (> preparationTimeout behind a backlog)
+  // must not flip back to requested when the writer finally applies Start.
+  AsyncEncoderSink::Options options;
+  options.preparationTimeout = std::chrono::milliseconds(150);
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockSubmit->store(true);
+  AsyncEncoderSink sink(std::move(inner), options);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->submitEntered.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  ASSERT_TRUE(raw->submitEntered.load());
+
+  raw->startEntered.store(false);
+  raw->blockStart->store(true);
+  sink.start({"recording"}, {});  // queued behind the wedged submit
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  ASSERT_TRUE(sink.session().lifecycle);
+  EXPECT_EQ(sink.session().lifecycle->state, "failed") << "the reader saw the expired clock";
+
+  raw->blockSubmit->store(false);  // the writer now reaches and applies the second Start
+  const auto applying = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!raw->startEntered.load() && std::chrono::steady_clock::now() < applying) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_TRUE(raw->startEntered.load());
+  EXPECT_EQ(sink.session().lifecycle->state, "failed") << "applying Start must not revive an expired take";
+  raw->blockStart->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(5)));
 }

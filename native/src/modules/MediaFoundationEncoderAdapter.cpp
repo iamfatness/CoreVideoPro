@@ -2305,7 +2305,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         case EncoderCapacityCache::ArmWaitOutcome::TimedOut:
           isoCapacitySummary_ += waited + " and the probe had still not finished"; break;
         case EncoderCapacityCache::ArmWaitOutcome::Discarded:
-          isoCapacitySummary_ += waited + "; the probe finished but its result was discarded because live encoding overlapped it"; break;
+          isoCapacitySummary_ += waited + "; the probe finished but its result was discarded (live encoding overlapped it, or the cache was invalidated)"; break;
         case EncoderCapacityCache::ArmWaitOutcome::NotStarted: break;
       }
     }

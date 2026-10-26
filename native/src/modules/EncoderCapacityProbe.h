@@ -221,6 +221,8 @@ class EncoderCapacityCache {
   ArmWait awaitProbe(const EncoderProbeKey& key);
   // True while any thread is blocked inside awaitProbe (published so an operator
   // sees "waiting for encoder capacity probe" instead of a silent pause).
+  // PROCESS-GLOBAL: it is not tied to one sink, which is correct while there is
+  // exactly one encoder sink per core. Revisit if a second sink can arm.
   bool armWaitInProgress() const { return armWaiters_.load(std::memory_order_acquire) > 0; }
   void setArmWaitForTesting(std::chrono::milliseconds wait);
 
