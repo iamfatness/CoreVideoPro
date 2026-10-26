@@ -11,6 +11,7 @@
 #include "MonitorTestMode.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
+#include "modules/BitstreamQueueTestAccess.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
 #include "modules/ZoomMeetingSdkAdapter.h"
@@ -5775,7 +5776,9 @@ TEST(RtmpOutputSenderBackpressure, DestinationPressureNeverThrottlesSharedCompos
   // --- Half one: the SENDER observes its own bitstream queue and publishes. ---
 #if COREVIDEO_WITH_RTMP_OUTPUT
   if (senderAdmissionFfmpegPresent("TheSendersDivisorReachesTheCompositor")) {
-    auto sender = corevideo::modules::createRtmpOutputSender();
+    auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+    auto& sender = rig.sender;
+    auto* const queue = rig.queue;
     ASSERT_NE(sender, nullptr);
     auto frame = startableProgramFrame("rtmp-backpressure");
     // H.265 without the enhanced-RTMP checkbox is refused BEFORE FFmpeg is
@@ -5794,7 +5797,7 @@ TEST(RtmpOutputSenderBackpressure, DestinationPressureNeverThrottlesSharedCompos
     }
 
     // A healthy queue never throttles, however long the stream runs.
-    sender->setBackpressureObservationForTest(0, false);
+    queue->setBackpressureObservationForTest(0, false);
     for (int i = 0; i < 120; ++i) {
       (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
     }
@@ -5807,7 +5810,7 @@ TEST(RtmpOutputSenderBackpressure, DestinationPressureNeverThrottlesSharedCompos
     }
 
     // Now hold it above the throttle threshold for longer than the enter streak.
-    sender->setBackpressureObservationForTest(
+    queue->setBackpressureObservationForTest(
         corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10, false);
     const int ticks =
         static_cast<int>(corevideo::core::StreamBackpressurePolicy::kEnterAfterOverWaterTicks) + 2;
@@ -5826,7 +5829,7 @@ TEST(RtmpOutputSenderBackpressure, DestinationPressureNeverThrottlesSharedCompos
     // Without this the stopped record keeps publishing divisor 4 forever, the
     // compositor stays throttled with nothing streaming, and the NEXT stream
     // opens at 15 fps on an empty queue.
-    sender->setBackpressureObservationForTest(-1, false);  // stop injecting
+    queue->setBackpressureObservationForTest(-1, false);  // stop injecting
     (void)sender->sync({}, &frame, 9000.0, {settings});
     {
       const auto session = sender->session();
@@ -5837,7 +5840,7 @@ TEST(RtmpOutputSenderBackpressure, DestinationPressureNeverThrottlesSharedCompos
     }
     // ...and the policy itself is reset, so the next run starts at 1 rather
     // than resuming the ladder it left off at.
-    sender->setBackpressureObservationForTest(0, false);
+    queue->setBackpressureObservationForTest(0, false);
     for (int i = 0; i < 3; ++i) {
       (void)sender->sync({"rtmp"}, &frame, 10000.0 + 33.0 * i, {settings});
     }
@@ -5997,7 +6000,9 @@ TEST(RtmpOutputSenderBackpressure, AShedFrameNeverRestartsTheSendersEncodePath) 
   if (!senderAdmissionFfmpegPresent("AShedFrameNeverRestartsTheSendersEncodePath")) return;
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_NE(compositor, nullptr);
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
 
   corevideo::modules::CompositorRenderPlan plan;
@@ -6018,7 +6023,7 @@ TEST(RtmpOutputSenderBackpressure, AShedFrameNeverRestartsTheSendersEncodePath) 
   // the ordinary one-time start rather than an artefact of the initial state.
   compositor->setEncoderExportDivisor(1);
   auto warm = compositor->render(plan, {});
-  const bool warmIsGpuDirect = sender->wouldRestartForEncodePathForTest(warm);
+  const bool warmIsGpuDirect = queue->wouldRestartForEncodePathForTest(warm);
   if (!warmIsGpuDirect) {
     // Already on the GPU path, or this machine has no hardware encoder at all.
     // The latter would make the whole test vacuous, so say so and stop.
@@ -6036,7 +6041,7 @@ TEST(RtmpOutputSenderBackpressure, AShedFrameNeverRestartsTheSendersEncodePath) 
   for (int i = 0; i < 40; ++i) {
     auto frame = compositor->render(plan, {});
     if (frame.encoderSharedTexture.frameNumber != frame.frameNumber) ++shed;
-    if (sender->wouldRestartForEncodePathForTest(frame)) ++restarts;
+    if (queue->wouldRestartForEncodePathForTest(frame)) ++restarts;
   }
 
   EXPECT_GT(shed, 0) << "the compositor shed nothing, so this proves nothing";
@@ -6069,7 +6074,9 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
 #if COREVIDEO_WITH_RTMP_OUTPUT
   if (senderAdmissionFfmpegPresent(
           "DiscardBacklogReachesTheQueueThroughSyncAndObserveStreamBackpressure")) {
-    auto sender = corevideo::modules::createRtmpOutputSender();
+    auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+    auto& sender = rig.sender;
+    auto* const queue = rig.queue;
     ASSERT_NE(sender, nullptr);
     auto frame = startableProgramFrame("rtmp-backpressure-discard");
     // H.265 without the enhanced-RTMP checkbox is refused BEFORE FFmpeg is
@@ -6079,7 +6086,7 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
 
     // Lever B only ever fires once the divisor is already above 1 - get there
     // first, the same way TheSendersDivisorReachesTheCompositor does.
-    sender->setBackpressureObservationForTest(
+    queue->setBackpressureObservationForTest(
         corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
         /*keyframeInQueue=*/true);
     const int enterTicks =
@@ -6102,23 +6109,23 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
     // fires: bufferedMs must fall once the stale head is discarded, or
     // bitstreamBufferedMs() would keep reporting the age of a chunk that no
     // longer exists (the risk named in the original brief).
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
-    sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-    const auto before = sender->bitstreamQueueSnapshotForTest();
+    queue->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    const auto before = queue->bitstreamQueueSnapshotForTest();
     ASSERT_EQ(before.depth, 4u);
     EXPECT_GE(before.bufferedMs, 50) << "the head is the STALE chunk before the discard";
 
     // Push the injected OBSERVATION (not the queue) above the discard
     // threshold and tick once more.
-    sender->setBackpressureObservationForTest(
+    queue->setBackpressureObservationForTest(
         corevideo::core::StreamBackpressurePolicy::kDiscardAboveBufferedMs + 10,
         /*keyframeInQueue=*/true);
     (void)sender->sync({"rtmp"}, &frame, 5000.0, {settings});
 
-    const auto after = sender->bitstreamQueueSnapshotForTest();
+    const auto after = queue->bitstreamQueueSnapshotForTest();
     EXPECT_EQ(after.depth, 2u)
         << "decision.discardBacklog must have reached discardBacklogToNextKeyframe() "
            "through observeStreamBackpressure()/sync() and dropped the two stale chunks "
@@ -6154,7 +6161,9 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
 // see this at all.
 TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailInsteadOfFailingTheSender) {
 #if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
 
   // Fill the real queue to its hard cap with a keyframe 30 chunks in - the
@@ -6162,17 +6171,17 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailI
   constexpr std::size_t kCap = 60;
   constexpr std::size_t kKeyframeIndex = 30;
   for (std::size_t i = 0; i < kCap; ++i) {
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == kKeyframeIndex);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == kKeyframeIndex);
   }
-  const auto before = sender->bitstreamQueueSnapshotForTest();
+  const auto before = queue->bitstreamQueueSnapshotForTest();
   ASSERT_EQ(before.depth, kCap) << "the queue must actually be AT the cap, or this proves nothing";
   ASSERT_TRUE(before.hasKeyframe);
   ASSERT_FALSE(before.overflowFailed);
 
   // One more chunk arrives from the encoder with the queue already full.
-  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+  queue->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
 
-  const auto after = sender->bitstreamQueueSnapshotForTest();
+  const auto after = queue->bitstreamQueueSnapshotForTest();
   EXPECT_FALSE(after.overflowFailed)
       << "the overflow path failed the sender while a keyframe was queued: its supervisor "
          "will restart it and rebuild the encoder, which is #597 itself";
@@ -6200,7 +6209,9 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailI
 // room freed, and nothing about which preceding chunks are headers.
 TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesRoomInsteadOfFailing) {
 #if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
 
   // The cap, with a keyframe at the HEAD and one more mid-queue - the ordinary
@@ -6208,15 +6219,15 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesR
   constexpr std::size_t kCap = 60;
   constexpr std::size_t kSecondKeyframeIndex = 45;
   for (std::size_t i = 0; i < kCap; ++i) {
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == 0 || i == kSecondKeyframeIndex);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == 0 || i == kSecondKeyframeIndex);
   }
-  const auto before = sender->bitstreamQueueSnapshotForTest();
+  const auto before = queue->bitstreamQueueSnapshotForTest();
   ASSERT_EQ(before.depth, kCap);
   ASSERT_TRUE(before.hasKeyframe);
 
-  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+  queue->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
 
-  const auto after = sender->bitstreamQueueSnapshotForTest();
+  const auto after = queue->bitstreamQueueSnapshotForTest();
   EXPECT_FALSE(after.overflowFailed)
       << "cutting to the FIRST keyframe frees 0 here and fails the sender - which restarts it "
          "and rebuilds the encoder, #597 itself";
@@ -6240,20 +6251,22 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesR
 // fails; the decoder can resume at the ARRIVING IDR, so the whole backlog goes.
 TEST(RtmpOutputSenderBackpressure, AKeyframeArrivingAtAFullAllReferenceQueueReplacesTheWholeBacklog) {
 #if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
 
   constexpr std::size_t kCap = 60;
   for (std::size_t i = 0; i < kCap; ++i) {
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
   }
-  const auto before = sender->bitstreamQueueSnapshotForTest();
+  const auto before = queue->bitstreamQueueSnapshotForTest();
   ASSERT_EQ(before.depth, kCap);
   ASSERT_FALSE(before.hasKeyframe) << "the measured shape: 60 queued chunks, no keyframe among them";
 
-  sender->offerBitstreamChunkForTest(2000, /*keyframe=*/true);
+  queue->offerBitstreamChunkForTest(2000, /*keyframe=*/true);
 
-  const auto after = sender->bitstreamQueueSnapshotForTest();
+  const auto after = queue->bitstreamQueueSnapshotForTest();
   EXPECT_FALSE(after.overflowFailed)
       << "the sender failed with a usable cut point at the door - that restarts it and rebuilds "
          "the encoder, which is #597 itself";
@@ -6272,27 +6285,29 @@ TEST(RtmpOutputSenderBackpressure, AKeyframeArrivingAtAFullAllReferenceQueueRepl
 // recover from one blocked network socket.
 TEST(RtmpOutputSenderBackpressure, AFullQueueWithoutKeyframeWaitsForFreshIdr) {
 #if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
 
   constexpr std::size_t kCap = 60;
   for (std::size_t i = 0; i < kCap; ++i) {
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
   }
-  const auto before = sender->bitstreamQueueSnapshotForTest();
+  const auto before = queue->bitstreamQueueSnapshotForTest();
   ASSERT_EQ(before.depth, kCap);
   ASSERT_FALSE(before.hasKeyframe) << "this case is defined by there being nothing safe to drop";
 
-  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+  queue->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
 
-  const auto after = sender->bitstreamQueueSnapshotForTest();
+  const auto after = queue->bitstreamQueueSnapshotForTest();
   EXPECT_FALSE(after.overflowFailed) << "destination congestion rebuilt the shared encoder";
   EXPECT_EQ(after.depth, 0u) << "the undecodable GOP must leave the bounded queue";
-  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
-  EXPECT_EQ(sender->bitstreamQueueSnapshotForTest().depth, 0u)
+  queue->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+  EXPECT_EQ(queue->bitstreamQueueSnapshotForTest().depth, 0u)
       << "P-frames before a new IDR would corrupt the receiver";
-  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/true);
-  const auto recovered = sender->bitstreamQueueSnapshotForTest();
+  queue->offerBitstreamChunkForTest(1000, /*keyframe=*/true);
+  const auto recovered = queue->bitstreamQueueSnapshotForTest();
   EXPECT_FALSE(recovered.overflowFailed);
   EXPECT_EQ(recovered.depth, 1u);
   EXPECT_TRUE(recovered.hasKeyframe);
@@ -6315,7 +6330,9 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWithoutKeyframeWaitsForFreshIdr) {
 TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRun) {
 #if COREVIDEO_WITH_RTMP_OUTPUT
   if (!senderAdmissionFfmpegPresent("ADiscardedChunkCounterResetsOnTheNextStreamRun")) return;
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
   auto frame = startableProgramFrame("rtmp-backpressure-discard-reset");
   // H.265 without the enhanced-RTMP checkbox is refused before FFmpeg is
@@ -6324,7 +6341,7 @@ TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRu
   const auto settings = rtmpAdmissionSettings("h265", false);
 
   // --- Run 1: drive the divisor above 1, then force a real discard. ---
-  sender->setBackpressureObservationForTest(
+  queue->setBackpressureObservationForTest(
       corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
       /*keyframeInQueue=*/true);
   const int enterTicks =
@@ -6332,10 +6349,10 @@ TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRu
   for (int i = 0; i < enterTicks; ++i) {
     (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
   }
-  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-  sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
-  sender->setBackpressureObservationForTest(
+  queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  queue->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+  queue->setBackpressureObservationForTest(
       corevideo::core::StreamBackpressurePolicy::kDiscardAboveBufferedMs + 10,
       /*keyframeInQueue=*/true);
   (void)sender->sync({"rtmp"}, &frame, 5000.0, {settings});
@@ -6359,7 +6376,7 @@ TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRu
 
   // --- Stop the destination: the same `!wantsRtmp` path that resets
   // backpressure_ and backpressureDiscardedChunks_ together. ---
-  sender->setBackpressureObservationForTest(-1, false);  // stop injecting
+  queue->setBackpressureObservationForTest(-1, false);  // stop injecting
   (void)sender->sync({}, &frame, 9000.0, {settings});
   {
     const auto session = sender->session();
@@ -6370,7 +6387,7 @@ TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRu
   }
 
   // --- Run 2: a fresh stream, never throttled, no discard fired. ---
-  sender->setBackpressureObservationForTest(0, false);
+  queue->setBackpressureObservationForTest(0, false);
   for (int i = 0; i < 3; ++i) {
     (void)sender->sync({"rtmp"}, &frame, 10000.0 + 33.0 * i, {settings});
   }
@@ -6433,12 +6450,14 @@ TEST(RtmpOutputSenderBackpressure, AReopenedTransportStartsUnthrottledNotAtItsPr
   // drives the other.
   for (int door = 0; door < 2; ++door) {
     const bool viaSupervisor = door == 0;
-    auto sender = corevideo::modules::createRtmpOutputSender();
+    auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+    auto& sender = rig.sender;
+    auto* const queue = rig.queue;
     ASSERT_NE(sender, nullptr);
     auto frame = startableProgramFrame("rtmp-backpressure-reopen");
 
     // --- Climb to the floor of the ladder on a congested link. ---
-    sender->setBackpressureObservationForTest(
+    queue->setBackpressureObservationForTest(
         corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
         /*keyframeInQueue=*/true);
     double t = 0.0;
@@ -6469,7 +6488,7 @@ TEST(RtmpOutputSenderBackpressure, AReopenedTransportStartsUnthrottledNotAtItsPr
     }
 
     // --- The first observation after the reopen sees a healthy, empty queue. ---
-    sender->setBackpressureObservationForTest(0, /*keyframeInQueue=*/false);
+    queue->setBackpressureObservationForTest(0, /*keyframeInQueue=*/false);
     t += 33.0;
     (void)sender->sync({"rtmp"}, &frame, t, {settings});
 
