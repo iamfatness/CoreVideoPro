@@ -110,6 +110,42 @@ public sealed class IsoEncoderPlacementReadoutTests
         => Assert.Contains($"({expected})", Assert.Single(IsoEncoderPlacementReadout.Describe(
             Rec(Iso(3, "software", work: 1, frames: 1, fps: 60, reason: reason)), true).Lines));
 
+    [Fact]
+    public void WaitingForProbe_ShowsWhyRecordHasNotOpened_EvenBeforeTheTakeIsActive()
+    {
+        var recording = new NativeMediaCoreRecordingSession
+        {
+            SessionId = "s", Active = false, Status = "recording", WriterStatus = "preparing",
+            TargetFolder = @"C:\r", FilenamePrefix = "show", Format = "mp4", Quality = "high", ProgramPath = @"C:\r\show.mp4",
+            Detail = "waiting for encoder capacity probe",
+        };
+        var r = IsoEncoderPlacementReadout.Describe(recording, true);
+        Assert.Equal(PlacementSeverity.Informational, r.Severity);
+        Assert.Equal("Record has not opened yet: waiting for encoder capacity probe", Assert.Single(r.Lines));
+    }
+
+    [Fact]
+    public void ProbeTimedOut_SaysPlacementUsedAssumedCapacity()
+    {
+        var recording = RecP(Program(null), Iso(8, "software", work: 1, frames: 1, fps: 60)) with
+        {
+            IsoAdmission = new NativeMediaCoreIsoAdmission { ArmWaitOutcome = "timed-out", ArmWaitMs = 5000 },
+        };
+        var r = IsoEncoderPlacementReadout.Describe(recording, true);
+        Assert.StartsWith("Encoder capacity probe had not finished after 5000 ms", r.Lines[0]);
+        Assert.Contains(r.Lines, l => l.StartsWith("ISO-8", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ProbeCachedOrNotStarted_AddsNoLine()
+    {
+        var recording = Rec() with
+        {
+            IsoAdmission = new NativeMediaCoreIsoAdmission { ArmWaitOutcome = "cached", ArmWaitMs = 700 },
+        };
+        Assert.Empty(IsoEncoderPlacementReadout.Describe(recording, true).Lines);
+    }
+
     private static NativeMediaCoreRecordingStream Program(string? path, long? work = null, long? frames = null, double? fps = null)
         => new()
         {

@@ -2092,7 +2092,12 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
         {"probeStatus", adm.probeStatus},
         {"capacity", adm.capacity},
         {"workload", adm.workload},
+        {"armWaitMs", static_cast<double>(adm.armWaitMs)},
+        {"armWaitOutcome", adm.armWaitOutcome},
     });
+  }
+  if (session.isoArmWaitingForProbe) {
+    recording.emplace("detail", std::string("waiting for encoder capacity probe"));
   }
   if (!session.recordingArtifactPath.empty()) {
     recording.emplace("artifactPath", session.recordingArtifactPath);

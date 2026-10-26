@@ -1681,6 +1681,18 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingStatus = "encoding";
     if (std::find(destinations.begin(), destinations.end(), "recording") != destinations.end()) {
       session_.recordingStatus = "recording";
+      // #1042: ISO placement reads the probe for THIS workload. Let an in-flight
+      // probe finish (bounded) BEFORE the take goes live; after setRecordingActive
+      // the probe thread would discard its own result as overlapping the show.
+      isoArmWait_ = {};
+      if (!request_.isoSources.empty() || !request_.isoParticipantIds.empty() ||
+          !session_.isoParticipantIds.empty()) {
+        isoArmWait_ = EncoderCapacityCache::instance().awaitProbe(EncoderProbeKey{
+            canonicalVideoCodecName(request_.videoCodec.empty() ? "h264" : request_.videoCodec),
+            request_.width > 0 ? request_.width : kDefaultWidth,
+            request_.height > 0 ? request_.height : kDefaultHeight,
+            request_.fps > 0 ? request_.fps : kDefaultFps});
+      }
       // A capacity probe transiently occupies hardware encoder sessions; it must
       // never compete with a live show for them.
       EncoderCapacityCache::instance().setRecordingActive(true);
@@ -2274,6 +2286,29 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     const auto probe = EncoderCapacityCache::instance().lookup(probeKey);
     const auto capacity = toIsoEncoderCapacity(probe, /*reservedForProgram=*/1);
     isoCapacitySummary_ = probe.describe();
+    // #1042: consume the wait ONCE (a re-run placement must not re-report it) and
+    // word the snapshot from the OUTCOME, not from whether the probe is ready.
+    const auto armWait = isoArmWait_;
+    isoArmWait_ = {};
+    std::string armWaitOutcome = "not-started";
+    switch (armWait.outcome) {
+      case EncoderCapacityCache::ArmWaitOutcome::Cached: armWaitOutcome = "cached"; break;
+      case EncoderCapacityCache::ArmWaitOutcome::TimedOut: armWaitOutcome = "timed-out"; break;
+      case EncoderCapacityCache::ArmWaitOutcome::Discarded: armWaitOutcome = "discarded"; break;
+      case EncoderCapacityCache::ArmWaitOutcome::NotStarted: break;
+    }
+    if (armWait.waitedMs > 0) {
+      const std::string waited = " arm-waited=" + std::to_string(armWait.waitedMs) + "ms";
+      switch (armWait.outcome) {
+        case EncoderCapacityCache::ArmWaitOutcome::Cached:
+          isoCapacitySummary_ += waited + " for the probe"; break;
+        case EncoderCapacityCache::ArmWaitOutcome::TimedOut:
+          isoCapacitySummary_ += waited + " and the probe had still not finished"; break;
+        case EncoderCapacityCache::ArmWaitOutcome::Discarded:
+          isoCapacitySummary_ += waited + "; the probe finished but its result was discarded (live encoding overlapped it, or the cache was invalidated)"; break;
+        case EncoderCapacityCache::ArmWaitOutcome::NotStarted: break;
+      }
+    }
 
     const auto isoPlacement = planIsoEncoders(isoSourceIds, IsoEncoderMode::Auto, capacity);
 
@@ -2307,6 +2342,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       published.probeStatus = capacitySource.status;
       published.capacity = isoCapacitySummary_;
       published.workload = capacitySource.workload;
+      published.armWaitMs = armWait.waitedMs;
+      published.armWaitOutcome = armWaitOutcome;
       session_.isoAdmission = std::move(published);
     }
     if (!admission.message.empty()) {
@@ -2919,6 +2956,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // placement — including "the probe never ran".
   std::string isoCapacitySummary_;
   std::string isoAdmissionCode_;
+  EncoderCapacityCache::ArmWait isoArmWait_{};  // #1042: set by start(), consumed by the placement
 };
 
 }  // namespace

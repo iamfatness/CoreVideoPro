@@ -63,6 +63,21 @@ function Get-DrillWebcamFromPreferences {
   return @($ids | Where-Object { $_ -match '^capture:[0-9a-f]{16}$' } | Select-Object -Unique)
 }
 
+function Test-DrillWebcamPresent {
+  # The webcam named in the profile must be in the app's capture-device list,
+  # or the shell never tries to connect it and the readiness loop waits its
+  # full 300 s for a device that is not there (2026-10-25 shakeout: the
+  # profile's webcam was unplugged). Returns the reasons; empty = present.
+  param([Parameter(Mandatory)][string]$WebcamSourceId, [object[]]$Devices = @())
+  $id = $WebcamSourceId -replace '^capture:', ''
+  $match = @($Devices | Where-Object { $_.id -eq $id })
+  if (-not $match.Count) {
+    $cams = @($Devices | Where-Object { $_.vendor -eq 'uvc' } | ForEach-Object { "capture:$($_.id) ($($_.name))" })
+    return @("Webcam $WebcamSourceId is not in the app's capture-device list (unplugged or renamed); UVC devices present: " + $(if ($cams.Count) { $cams -join ', ' } else { 'none' }) + '. Pass -WebcamSourceId or plug the camera in.')
+  }
+  return @()
+}
+
 function Get-DrillWorkloadPlan {
   param([string[]]$RemoteIds = @(), [Parameter(Mandatory)][string]$WebcamSourceId, [bool]$Stream = $true, [bool]$Camera = $true, [string]$RecordingFolder)
   $ids = @($RemoteIds | Where-Object { $_ })
@@ -72,7 +87,10 @@ function Get-DrillWorkloadPlan {
   $assignments += [pscustomobject]@{ slot = $script:DrillWebcamSlot; source = $WebcamSourceId }
   # ISO identity is stamped only by Zoom and UVC sources (QaIsoIdentity.h call
   # sites); screen capture has no QA ISO identity, so it is not ISO-recorded.
-  $iso = if ($ids.Count) { @($ids | ForEach-Object { 'zoom:' + $_ }) } else { @($WebcamSourceId) }
+  # [string[]] keeps a one-ISO plan an array: assigning the output of an if
+  # statement unrolls a single-element array, drill.json then carries a bare
+  # string and the judge iterates its characters (seen 2026-10-25 shakeout).
+  [string[]]$iso = if ($ids.Count) { @($ids | ForEach-Object { 'zoom:' + $_ }) } else { @($WebcamSourceId) }
   $local = $ids.Count -eq 0
   [pscustomobject]@{
     RemoteIds        = $ids
@@ -83,6 +101,10 @@ function Get-DrillWorkloadPlan {
     ProgramSourceIds = @(@($WebcamSourceId, $script:DrillScreenSourceId) | Sort-Object)
     CaptureSourceIds = @($WebcamSourceId, $script:DrillScreenSourceId)
     IsoSourceIds     = $iso
+    # The capture engine is the Zoom media engine: transport.engine.set is
+    # refused (HTTP 422) outside a meeting, and local sources route to Program
+    # without it (#1009). Only a remote-feed plan turns it on.
+    EngineRequired   = ($ids.Count -gt 0)
     Stream           = $Stream
     Camera           = $Camera
     RecordingFolder  = $RecordingFolder

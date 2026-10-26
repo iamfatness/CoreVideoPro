@@ -124,6 +124,12 @@ class ZoomEngineRuntime {
   // TEST SEAM (#1037): the participant ids holding an ISO CPU arrival queue,
   // i.e. the Zoom ISO video demand the engine has applied. Takes mutex_.
   [[nodiscard]] std::vector<std::string> isoArrivalDemandIdsForTest();
+  // TEST SEAM (#1049): publishes one decoded camera frame exactly as the video
+  // ingest thread's publish phase does (frame sync queue when enabled, else the
+  // latest-wins slot), stamped as observed at `observedAt`. Takes mutex_.
+  void publishDecodedVideoFrameForTest(const std::string& participantId, std::int64_t frameId,
+      std::shared_ptr<const std::vector<std::uint8_t>> i420, int width, int height,
+      std::chrono::steady_clock::time_point observedAt);
 
  private:
   std::atomic<bool> thumbnailDemand_{true}; // legacy clients retain CPU previews

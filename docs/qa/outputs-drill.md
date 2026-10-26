@@ -29,6 +29,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\qa\outputs-drill.ps1
 | `-SkipStream`, `-SkipVirtualCamera` | off | see below: skipping the camera means the run cannot PASS |
 | `-ProbeMaxSessions` | unset | 1..16; sets `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS` for the launch (discovery depth only) to force a software-ISO spill; recorded in `drill.json` and the workload line |
 
+Local-only runs never call `transport.engine.set`: the capture engine is the
+Zoom media engine and the control is refused (HTTP 422) outside a meeting, while
+webcam and screen capture route to Program without it. The drill also refuses,
+before any output starts, when the profile's webcam id is not in the app's
+capture-device list (unplugged or renamed), naming the UVC devices it did see.
+A refused `/invoke` is reported with the action, its arguments and the router's
+reason text.
+
 Without `-RemoteIds` the drill uses local sources only: webcam and screen
 capture in Program (scene `speaker-slides`), the webcam as the only ISO, and
 the verdict says so. Screen capture carries no QA ISO identity stamp (only Zoom

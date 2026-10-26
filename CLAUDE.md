@@ -142,8 +142,8 @@ the output, check which binary you ran before suspecting CMake.
 Logs: `%LOCALAPPDATA%\CoreVideoPro\launch.log` (WinUI) and `media-core.log` (core).
 Support bundle (Diagnostics → "Export support bundle"): writes redacted JSON **and a
 zip** to `%LOCALAPPDATA%\CoreVideoPro\support-bundles\` — the zip packs ~2MB
-secret-filtered tails of launch/media-core/perf/vcam-serve logs + a CrashDumps
-listing + manifest (`SupportBundleArchiveBuilder`/`SupportBundleLogRedactor`,
+secret-filtered tails of launch/media-core/perf/vcam-serve logs + a crash-dump
+listing + manifest (the listing covers `%LOCALAPPDATA%\CrashDumps` AND the installer's WER LocalDumps folder, `%LOCALAPPDATA%\CoreVideoPro\crashes`, read from the 64-bit HKLM view via `CrashDumpScanner.ResolveDumpDirectories`, #1039; the shell crash offer scans the same set) (`SupportBundleArchiveBuilder`/`SupportBundleLogRedactor`,
 beta spec S2); missing logs become manifest skip notes, never a failed export.
 
 MSIX signing (beta D2, 2026-07-18): `scripts/sign-native-msix.ps1 -Mode dev|production`.
@@ -227,7 +227,7 @@ phrase they quote.
 | [`docs/reference/shared-texture-export-cost.md`](docs/reference/shared-texture-export-cost.md) | creating D3D exports / anything new on the render thread |
 | [`docs/reference/source-bus.md`](docs/reference/source-bus.md) | the source bus, ingests, bus health, slates, hold/black |
 | [`docs/reference/status-snapshot-isolation-spec.md`](docs/reference/status-snapshot-isolation-spec.md) | proposed #870 status ownership, off-lock assembly, freshness and delivery acceptance; [implementation sequence](docs/reference/status-snapshot-isolation-plan.md) |
-| [`docs/reference/realtime-isolation-audit.md`](docs/reference/realtime-isolation-audit.md) | cross-subsystem evidence, owner/command/observer isolation contract, lock budgets and integrated fault qualification under #517/#870 |
+| [`docs/reference/realtime-isolation-audit.md`](docs/reference/realtime-isolation-audit.md) | cross-subsystem evidence, owner/command/observer isolation contract, lock budgets, the engine mutex under coreMutex (#1037/#1048/#1049), reading `[lock-hold-attribution]` phase lines (#1056) and integrated fault qualification under #517/#870 |
 | [`docs/reference/source-thumbnail-isolation.md`](docs/reference/source-thumbnail-isolation.md) | Sources input thumbnails, per-source GPU export identity and source-epoch publication |
 | [`docs/reference/source-grading-spec.md`](docs/reference/source-grading-spec.md) | per-source grade compatibility, expanded editor, native preview and scopes |
 | [`docs/reference/volt-graphics-spec.md`](docs/reference/volt-graphics-spec.md) | approved first graphics milestone; [reconciliation](docs/reference/volt-graphics-reconciliation.md), [implementation dependencies](docs/reference/volt-graphics-implementation-plan.md) and [native compatibility instance API](docs/reference/volt-native-instances.md) |

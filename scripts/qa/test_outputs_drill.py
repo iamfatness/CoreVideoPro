@@ -283,7 +283,7 @@ def write_samples(path, admissions_ok=True):
 class EndToEndOffline(unittest.TestCase):
     """run() over synthetic evidence through the real judges."""
 
-    def evidence(self, root, identities, camera=True, flags=None, admissions_ok=True, camera_drop=None, extra_measurement=None):
+    def evidence(self, root, identities, camera=True, flags=None, admissions_ok=True, camera_drop=None, extra_measurement=None, iso_as_string=False):
         recordings = root / 'recordings'
         recordings.mkdir()
         encode(recordings / 'Program.mp4', identities)
@@ -296,7 +296,7 @@ class EndToEndOffline(unittest.TestCase):
             (root / 'camera-serving-identity.json').write_text('{}', encoding='utf-8')
         (root / 'drill.json').write_text(json.dumps({
             'seconds': 1, 'workload': 'synthetic', 'programSourceIds': PROGRAM_SOURCES,
-            'outputs': {'program': True, 'iso': [WEBCAM], 'stream': True, 'camera': camera},
+            'outputs': {'program': True, 'iso': WEBCAM if iso_as_string else [WEBCAM], 'stream': True, 'camera': camera},
             'tools': {'ffmpeg': 'ffmpeg', 'ffprobe': 'ffprobe', 'node': shutil.which('node')}, 'notes': []}), encoding='utf-8')
         (root / 'measurement.json').write_text(json.dumps({
             'start': {'qpc': str(START)}, 'end': {'qpc': str(END)}, 'qpcFrequency': FREQUENCY, 'minimumSeconds': 1,
@@ -312,6 +312,13 @@ class EndToEndOffline(unittest.TestCase):
             self.evidence(root, identities, **kwargs)
             verdict = judge.run(root)
             return verdict, {row['output']: row for row in verdict['outputs']}
+
+    def test_one_iso_written_as_a_bare_string_is_one_row_not_one_per_character(self):
+        # 2026-10-25 shakeout: PowerShell unrolled the one-element ISO list, drill.json
+        # carried a string, and the judge printed 'ISO c', 'ISO a', ... per character.
+        verdict, rows = self.run_drill(iso_as_string=True)
+        self.assertEqual([r['output'] for r in verdict['outputs'] if r['kind'] == 'iso'], ['ISO ' + WEBCAM], verdict)
+        self.assertEqual(rows['ISO ' + WEBCAM]['status'], 'PASS')
 
     def test_clean_bounded_run_passes_every_output(self):
         verdict, rows = self.run_drill()
