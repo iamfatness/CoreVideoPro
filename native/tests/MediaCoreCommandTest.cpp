@@ -4,6 +4,7 @@
 #include "core/CoreStateCapture.h"
 #include "core/StreamBackpressurePolicy.h"
 #include "core/MediaCore.h"
+#include "core/RenderTickPhases.h"
 #include "core/ZoomParticipantSource.h"
 
 #include "EncoderCapacityProbeTestSupport.h"
@@ -9786,6 +9787,44 @@ TEST(MediaCoreRenderGather, RosterChurnReachesTheRenderGatherWithoutTheEngineMut
     (void)core->zoomEngineRuntimeForTest()->floorParticipants();
   }
   EXPECT_GT(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before);
+}
+
+// #1056: the production display tick attributes its hold phase by phase,
+// including the three frame-group engine calls, to the recorder the render
+// loop installs; a tick with no recorder installed records nothing.
+TEST(MediaCoreRenderGather, DisplayTickAttributesItsHoldToPhasesAndTheFrameGroup) {
+  using corevideo::core::RenderTickPhases;
+  using Phase = RenderTickPhases::Phase;
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_TRUE(runtime && runtime->configured());
+  runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})"));
+
+  RenderTickPhases phases;
+  {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();
+    std::lock_guard<std::mutex> lock(coreMutex);
+    phases.begin();
+    RenderTickPhases::Scope scope(phases);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  }
+  for (const auto phase : {Phase::Setup, Phase::BusTap, Phase::CapturePoll, Phase::Gather, Phase::StillsFloor,
+                           Phase::IsoIngress, Phase::Plan, Phase::Program, Phase::Monitors, Phase::Emit})
+    EXPECT_TRUE(phases.visited(phase)) << RenderTickPhases::name(phase);
+  for (const auto phase : {Phase::R1Poll, Phase::R2Decoded, Phase::R5CpuArrival})
+    EXPECT_TRUE(phases.visited(phase)) << RenderTickPhases::name(phase);
+  EXPECT_GT(phases.attributedNs(), 0);
+
+  // Without a recorder installed (command-lane/test ticks), nothing is marked.
+  RenderTickPhases untouched;
+  untouched.begin();
+  core->renderDisplayTick(-1, 0);
+  EXPECT_FALSE(untouched.visited(Phase::Program));
+  core.reset();
 }
 
 // #1037 R3: the ISO video demand the render tick computes reaches the engine

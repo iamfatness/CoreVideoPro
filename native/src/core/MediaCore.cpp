@@ -21,6 +21,7 @@
 #include "core/AvSyncClapProbe.h"
 #include "core/ZoomBusRoster.h"
 #include "core/LockHoldGuardrail.h"
+#include "core/RenderTickPhases.h"
 #include "core/Protocol.h"
 #include "core/RouteSourcePolicy.h"
 #include "core/SpeakerFloor.h"
@@ -60,6 +61,35 @@
 #endif
 
 namespace corevideo::core {
+
+namespace {
+// #1056: per-phase attribution of the production display tick (see
+// RenderTickPhases.h). No-ops unless the render loop installed a recorder on
+// this thread, so command-lane and test ticks record nothing.
+using TickPhase = ::corevideo::core::RenderTickPhases::Phase;
+inline void markTickPhase(TickPhase phase) { ::corevideo::core::RenderTickPhases::markCurrent(phase); }
+// One frame-group engine call: on exit, charges the time since the previous
+// mark to `phase` and records how much of it was spent waiting for the
+// engine mutex on this thread.
+class FrameGroupCallTiming {
+ public:
+  explicit FrameGroupCallTiming(TickPhase phase)
+      : phase_(phase), waitBefore_(::corevideo::modules::EngineMutexGuardrail::threadWaitNs()) {}
+  ~FrameGroupCallTiming() {
+    if (auto* phases = ::corevideo::core::RenderTickPhases::current()) {
+      phases->addEngineWait(phase_, ::corevideo::modules::EngineMutexGuardrail::threadWaitNs() - waitBefore_);
+      phases->mark(phase_);
+    }
+  }
+  FrameGroupCallTiming(const FrameGroupCallTiming&) = delete;
+  FrameGroupCallTiming& operator=(const FrameGroupCallTiming&) = delete;
+
+ private:
+  TickPhase phase_;
+  std::int64_t waitBefore_;
+};
+}  // namespace
+
 namespace {
 rpc::Json recordingWriteQueueJson(const modules::RecordingWriteQueueEvidence& q) {
   if (!q.observed) return nullptr;
@@ -5096,6 +5126,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // #1037: one home for this tick's engine inputs. The command-lane/test
   // callers (no pre-read) prepare inline, outside any guardrail scope.
   renderEngineInputs_ = inputs ? std::move(*inputs) : prepareRenderEngineInputsUnlocked();
+  markTickPhase(TickPhase::Setup);
   // T1.4: the monitor load-shedding policy needs this tick's total render cost
   // on EVERY tick, not just when verbose stage diagnostics are on. One clock
   // read here and a few around the monitor passes below; nothing else.
@@ -5156,12 +5187,14 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     // #1037 R1: frame-selection group, sanctioned until its fetch-before-lock A/B.
     modules::AllowEngineMutexScope frameGroup("render.frame-group #1037-followup");
+    FrameGroupCallTiming timing(TickPhase::R1Poll);
     engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
   }
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto decoded = [&] {
       // #1037 R2: frame-selection group (frame sync runs against now()).
       modules::AllowEngineMutexScope frameGroup("render.frame-group #1037-followup");
+      FrameGroupCallTiming timing(TickPhase::R2Decoded);
       return zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
     }();
     markStage(s_subFetchUs, 0);
@@ -5198,6 +5231,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       core::syncZoomParticipantSources(*sourceBus_, zoomFrames, engineRoster);
     }
   }
+  markTickPhase(TickPhase::BusTap);
 
   // With a REAL Zoom engine configured, suppress only the SYNTHETIC FALLBACK
   // tiles (RealZoomCaptureSource falls back to the wrapped synthetic source
@@ -5240,6 +5274,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     browserFrames = browserSources_->pollVideoFrames(frameTimestampMs);
   }
   markStage(s_subPollUs, 0);
+  markTickPhase(TickPhase::CapturePoll);
   // Adapter polling stays here; the source-bus roster, ingest, partition and
   // draw-order merge are owned by the focused ingress unit.
   const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -5251,6 +5286,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   observeZoomGuestAvEpoch();
   zoomGuestAvVideo_.apply(videoFrames, zoomGuestAvOffsets_, nowNs / 1'000'000);
   markStage(s_subMergeUs, 0);
+  markTickPhase(TickPhase::Gather);
   // Still-image media routes (logos/bugs): inject the persistent decoded frames
   // (keyed "media:<assetId>") so program, preview bus and multiview all match
   // them like any other source frame. Cheap by construction — shared_ptr copies
@@ -5365,9 +5401,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // Conversion has its own bounded arrival stream. Metadata/ref transfers only:
   // no readback or conversion may run on this gather/Program thread.
   auto captureCpuFrames = modules_.captureDevice->takeCpuVideoFrames();
+  markTickPhase(TickPhase::StillsFloor);
   if (engineLive) {
     // #1037 R5: frame-selection group (ISO CPU arrival transfer).
     modules::AllowEngineMutexScope frameGroup("render.frame-group #1037-followup");
+    FrameGroupCallTiming timing(TickPhase::R5CpuArrival);
     zoomEngineRuntime_->appendCpuVideoFrames(captureCpuFrames);
   }
   if ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
@@ -5376,6 +5414,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
         engineLive && modules::ZoomEngineRuntime::independentIsoVideoSupported());
   } else { isoVideoIngress_.clear(); }
   markStage(s_stageIngestUs, 0);
+  markTickPhase(TickPhase::IsoIngress);
 
   // Audio frames are polled in gatherAudioOutputWork() (the audio/output half), not
   // here: the audio mix / routing / monitor / loudness / encoder / output / recording
@@ -5778,6 +5817,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (modules_.compositor->hasIsolatedMonitors())
     submitIsolatedMonitorTick(renderPlan, videoFrames, lastProducedFrameNumber_ + 1);
   markStage(s_stagePlanUs, 1);
+  markTickPhase(TickPhase::Plan);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
   graphicsInstances_.observe(producedFrame);
   producedFrame.releaseGraphicsPreparationLeases();
@@ -5868,6 +5908,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
   }
   markStage(s_stageProgramUs, 2);
+  markTickPhase(TickPhase::Program);
   const auto monitorStartTp = std::chrono::steady_clock::now();
   if (modules_.compositor->hasIsolatedMonitors()) {
     if (const auto result = modules_.compositor->latestMonitors()) {
@@ -6050,6 +6091,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
   const auto monitorEndTp = std::chrono::steady_clock::now();
   markStage(s_stagePreviewUs, 4);
+  markTickPhase(TickPhase::Monitors);
   if (collectStageDiagnostics && ++s_stageTicks >= 120) {
     const auto buffer = modules_.compositor->programBufferDiagnostics();
     if (buffer.activeFrames > 0 || buffer.status == "failed") {
@@ -6171,6 +6213,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     const auto results = runAudioOutputWork(work);
     publishAudioOutputResults(results);
   }
+  markTickPhase(TickPhase::Emit);
 }
 
 void MediaCore::captureAudioObservation(AudioOutputObservation& observation, const AudioOutputResults* results) const {

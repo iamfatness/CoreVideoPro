@@ -1,6 +1,7 @@
 #pragma once
 #include "core/BoundedAsyncLog.h"
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 
@@ -25,6 +26,14 @@ class EngineMutexGuardrail {
   static const char*& forbiddenSite() {
     thread_local const char* site = nullptr;
     return site;
+  }
+  // #1056: nanoseconds THIS thread has spent blocked acquiring any engine
+  // mutex (monotonic; callers difference it around a call). An uncontended
+  // acquisition adds nothing, so the render tick can split a frame-group
+  // call's time into contention and body without a clock read on the fast path.
+  static std::int64_t& threadWaitNs() {
+    thread_local std::int64_t waited = 0;
+    return waited;
   }
   static void noteAcquire() {
     if (forbiddenDepth() <= 0) return;
@@ -79,7 +88,14 @@ class AllowEngineMutexScope {
 // std::mutex plus the guardrail check. Satisfies Lockable.
 class EngineMutex {
  public:
-  void lock() { EngineMutexGuardrail::noteAcquire(); mutex_.lock(); }
+  void lock() {
+    EngineMutexGuardrail::noteAcquire();
+    if (mutex_.try_lock()) return;
+    const auto waitStarted = std::chrono::steady_clock::now();
+    mutex_.lock();
+    EngineMutexGuardrail::threadWaitNs() += std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - waitStarted).count();
+  }
   bool try_lock() { EngineMutexGuardrail::noteAcquire(); return mutex_.try_lock(); }
   void unlock() { mutex_.unlock(); }
 

@@ -7,6 +7,7 @@
 #include "rpc/JsonRpcServer.h"
 
 #include "core/LockHoldGuardrail.h"
+#include "core/RenderTickPhases.h"
 #include "core/ScopedVideoScheduling.h"
 #include "core/AnchoredFrameDeadlineTracker.h"
 #include "rpc/CommandMailbox.h"
@@ -689,17 +690,28 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       // coreMutex stalls every command and the audio gather behind it. Only the
       // frame-selection group still takes it inside the tick (sanctioned).
       auto engineInputs = mediaCore_.prepareRenderEngineInputsUnlocked();
+      const auto tPreRead = std::chrono::steady_clock::now();
       {
         std::unique_lock<std::mutex> lock(coreMutex);
         coreHandoff.wait(lock, [&] {
           return !commandWaitingForCore.load(std::memory_order_acquire) || stopping.load();
         });
         if (stopping.load()) break;
+        // #1056: per-phase attribution of this hold. Declared BEFORE the hold
+        // timer so it outlives it: the timer's destructor formats it when the
+        // hold is over budget.
+        core::RenderTickPhases tickPhases;
         // Increment 6 guardrail: sanctioned long-hold site — the video-only GPU
         // tick typically holds ~1-2ms; warn (rate-capped) past half a frame.
         core::ScopedLockHoldTimer holdGuard("render.display-tick",
-                                            core::LockHoldGuardrail::kRenderTickBudgetUs);
+                                            core::LockHoldGuardrail::kRenderTickBudgetUs, &tickPhases);
         const auto t1 = std::chrono::steady_clock::now();
+        tickPhases.begin(holdGuard.startedAt());
+        tickPhases.setSlot(cadence.slotIndex());
+        tickPhases.setOutsideHold(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(tPreRead - t0).count(),
+            std::chrono::duration_cast<std::chrono::nanoseconds>(holdGuard.startedAt() - tPreRead).count());
+        core::RenderTickPhases::Scope tickPhaseScope(tickPhases);
         mediaCore_.renderDisplayTick(cadence.slotIndex(),
             std::chrono::duration_cast<std::chrono::nanoseconds>(cadenceAnchor.time_since_epoch()).count(),
             std::move(engineInputs));
