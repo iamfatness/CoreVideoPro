@@ -142,8 +142,8 @@ the output, check which binary you ran before suspecting CMake.
 Logs: `%LOCALAPPDATA%\CoreVideoPro\launch.log` (WinUI) and `media-core.log` (core).
 Support bundle (Diagnostics → "Export support bundle"): writes redacted JSON **and a
 zip** to `%LOCALAPPDATA%\CoreVideoPro\support-bundles\` — the zip packs ~2MB
-secret-filtered tails of launch/media-core/perf/vcam-serve logs + a crash-dump
-listing + manifest (the listing covers `%LOCALAPPDATA%\CrashDumps` AND the installer's WER LocalDumps folder, `%LOCALAPPDATA%\CoreVideoPro\crashes`, read from the 64-bit HKLM view via `CrashDumpScanner.ResolveDumpDirectories`, #1039; the shell crash offer scans the same set) (`SupportBundleArchiveBuilder`/`SupportBundleLogRedactor`,
+secret-filtered tails of launch/media-core/perf/vcam-serve logs + a CrashDumps
+listing + manifest (`SupportBundleArchiveBuilder`/`SupportBundleLogRedactor`,
 beta spec S2); missing logs become manifest skip notes, never a failed export.
 
 MSIX signing (beta D2, 2026-07-18): `scripts/sign-native-msix.ps1 -Mode dev|production`.
