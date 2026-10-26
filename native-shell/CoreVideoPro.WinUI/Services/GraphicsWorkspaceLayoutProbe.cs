@@ -142,11 +142,17 @@ internal static class GraphicsWorkspaceLayoutProbe
             checks.Add("Tab/drawer navigation preserves selection and draft and never assigns a Studio look");
             var cueList=Descendants(workspace).OfType<ListView>().Single(l=>Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(l)=="Graphics show cues");
             var search=Descendants(workspace).OfType<TextBox>().Single(t=>t.PlaceholderText=="Find a cue");
-            search.Text="Show cue 2"; await Task.Delay(50);
-            Require(cueList.Items.Count==1 && studio.GraphicsWorkspace.SelectedId=="fixture-1","Cue filtering changed selection or returned the wrong cue");
-            search.Text=""; var scope=Descendants(workspace).OfType<ComboBox>().Single(c=>c.Header?.ToString()=="Scope"); scope.SelectedIndex=1; await Task.Delay(50);
-            Require(cueList.Items.Count==7,"Current Program scope did not retain global cues and hide the other scene"); scope.SelectedIndex=0;
-            Require(cueList.Items.Count==8 && studio.GraphicsWorkspace.SelectedId=="fixture-1","Clearing cue filters lost the selected cue");
+            // TextChanged / SelectionChanged filtering is asynchronous (#970): wait on the real
+            // control state, bounded, and report the actual field, count and selection on failure.
+            string CueState()=>$"search='{search.Text}', items={cueList.Items.Count}, selectedId='{studio.GraphicsWorkspace.SelectedId}'";
+            search.Text="Show cue 2";
+            await Eventually(()=>cueList.Items.Count==1,"Cue filtering did not narrow to the matching cue ("+CueState()+")");
+            Require(cueList.Items.Count==1 && studio.GraphicsWorkspace.SelectedId=="fixture-1","Cue filtering changed selection or returned the wrong cue ("+CueState()+")");
+            search.Text=""; var scope=Descendants(workspace).OfType<ComboBox>().Single(c=>c.Header?.ToString()=="Scope"); scope.SelectedIndex=1;
+            await Eventually(()=>cueList.Items.Count==7,"Current Program scope did not retain global cues and hide the other scene ("+CueState()+")");
+            Require(cueList.Items.Count==7,"Current Program scope did not retain global cues and hide the other scene ("+CueState()+")"); scope.SelectedIndex=0;
+            await Eventually(()=>cueList.Items.Count==8,"Clearing cue filters did not restore every cue ("+CueState()+")");
+            Require(cueList.Items.Count==8 && studio.GraphicsWorkspace.SelectedId=="fixture-1","Clearing cue filters lost the selected cue ("+CueState()+")");
             checks.Add("Cue search and Program-scene filtering retain the selected private draft and restore all cue rows");
             using var control = new StudioControlSurface(studio, window.DispatcherQueue);
             var hidden = await control.InvokeAsync("graphics.lowerThird.set", new object?[] { false });
