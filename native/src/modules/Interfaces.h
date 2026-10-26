@@ -906,21 +906,6 @@ struct OutputBackpressureState {
   double observedAtMs = 0;
 };
 
-// TEST-ONLY (see IOutputSender::bitstreamQueueSnapshotForTest). A single
-// struct so a test needs ONE call to read the queue back, not three.
-struct BitstreamQueueSnapshotForTest {
-  std::size_t depth = 0;
-  bool hasKeyframe = false;
-  std::int64_t bufferedMs = 0;
-  // #597 Task 8b. True once the queue's overflow path has FAILED the sender
-  // (BitstreamFailure::QueueOverflow). The sender-level symptom - status
-  // "failed", lastResultCode "bitstream-queue-overflow" - only appears on a
-  // sync() tick that actually reaches submitFrameToGpuEncoder(), i.e. with a
-  // real hardware encoder and a launched FFmpeg, so a test that drives the
-  // queue alone needs to read the failure where it is RECORDED.
-  bool overflowFailed = false;
-};
-
 struct OutputSender {
   std::string senderId;
   std::string destination;
@@ -1775,90 +1760,9 @@ class IOutputSender {
   // release a sender stuck in pipe/network I/O. Implementations should only
   // interrupt the transport here; normal state cleanup remains in sync().
   virtual void interrupt(const std::string&) {}
-  // THE WRAPPER LAW APPLIES TO EVERY TEST-ONLY VIRTUAL BELOW, and none of them
-  // is forwarded by AsyncOutputSender / SupervisedOutputSender /
-  // CompositeOutputSender / the NDI sender. A test must therefore hold the
-  // CONCRETE sender, never a wrapped one. That is survivable only because each
-  // read seam's default is a ZERO/false value that makes a test's precondition
-  // ASSERT fail loudly (e.g. ASSERT_EQ(before.depth, 4u)) rather than pass with
-  // nothing under test - the silent-swallow shape that cost this codebase the
-  // 1-arg connect() pink tiles and SRT's dropped pollAudioFrames.
-  //
-  // FINAL-REVIEW FINDING 10. This block used to end "If a THIRD seam is ever
-  // wanted here, do not add it: move these behind a narrow
-  // IBitstreamQueueTestAccess in its own header, reached by a
-  // createRtmpOutputSenderForTest()." THERE ARE NOW FIVE. Tasks 5, 6 and 8b
-  // each added one past that line without amending it, which is the same
-  // failure mode as a disarmed assertion: an unamended rule nobody obeys stops
-  // being a rule and becomes noise a reader learns to skip.
-  //
-  // THE RULE IS CORRECTED RATHER THAN OBEYED, and that choice is stated here
-  // so the next reader can disagree with it knowingly. The extraction is the
-  // right end state and is deliberately NOT done here: it moves five virtuals,
-  // every call site in MediaCoreCommandTest.cpp and
-  // OutputDestinationSupervisorTest.cpp, and the wrapper-law reasoning above -
-  // a pure-refactor risk taken at merge time, on a branch whose whole subject
-  // is an on-air regression, for no behavioural gain. Filed as
-  // https://github.com/iamfatness/CoreVideoPro/issues/611.
-  //
-  // WHAT HOLDS UNTIL THEN: the guarantee above is PER-SEAM, not per-count.
-  // Every one of the five defaults to a ZERO/false value that makes a test's
-  // precondition ASSERT fail loudly rather than pass with nothing under test,
-  // so five is no less safe than two. DO NOT ADD A SIXTH to this interface:
-  // the next seam that is wanted is the trigger to do the extraction, and the
-  // extraction is IBitstreamQueueTestAccess in its own header, reached by a
-  // createRtmpOutputSenderForTest() that returns the concrete type.
-  //
-  // TEST-ONLY seam, structural guard only - the same guarantee
-  // MediaCore::setStillImageDecoderForTest relies on: no env var, no command,
-  // no config key and no wire field reaches it, and nothing outside
-  // native/tests calls it. (A compile-time gate is impossible here:
-  // corevideo-native-tests links the same corevideo_native library the product
-  // does, so gating the seam out would delete it from the tests too.)
-  //
-  // Overrides the bitstream-queue measurement #597's Lever A observes, so the
-  // backpressure decision can be driven without a hardware encoder and a real
-  // congested network. A NEGATIVE bufferedMs clears the override and restores
-  // the real measurement.
-  virtual void setBackpressureObservationForTest(std::int64_t /*bufferedMs*/,
-                                                 bool /*keyframeInQueue*/) {}
-  // TEST-ONLY (same structural guard). Answers "would THIS program frame make
-  // the sender flip its encode path?" - i.e. tear down FFmpeg AND the hardware
-  // encoder and relaunch both. It evaluates the exact comparison
-  // ensureFfmpegProcess makes (`resolveGpuEncodePath(frame) != activeUseGpuDirect_`)
-  // and then ADOPTS the result the way a restart would, so a test can walk a
-  // frame sequence the way the live sender walks it and count the restarts.
-  //
-  // This exists because #597's whole subject is encoder restarts, and the one
-  // combination no test covered was a real sender looking at a frame the
-  // compositor's Lever A had shed.
-  virtual bool wouldRestartForEncodePathForTest(const ProgramFrame& /*frame*/) { return false; }
-
-  // TEST-ONLY (same structural guard). #597 Lever B fix round 1 (review
-  // finding 2): this is the ONLY seam the discard needed after the decision
-  // logic moved out to the pure core::discardableGopTailLength() (see
-  // StreamBackpressurePolicy.h) - boundary-condition coverage lives there,
-  // with NO sender and NO seam at all. What is left to prove is that
-  // observeStreamBackpressure()/sync() actually REACH the discard on a real
-  // sender, which needs some way to put a real chunk in the real queue.
-  // Pushes a chunk directly onto the bitstream queue, bypassing the real GPU
-  // encoder, so that one call-site test can run without a hardware encoder
-  // and a real congested network.
-  virtual void enqueueBitstreamChunkForTest(std::size_t /*bytes*/, bool /*keyframe*/) {}
-  // TEST-ONLY (same structural guard). #597 Task 8b. The seam above pushes
-  // STRAIGHT onto the queue so a discard test can build a backlog; this one
-  // offers a chunk through the REAL enqueueBitstream(), which is where the
-  // 60-chunk / 2 MiB bound - and, since Task 8b, the last-resort GOP-tail
-  // discard that replaced failing the sender - actually lives. Nothing else
-  // can drive that path without a hardware encoder and a congested network.
-  virtual void offerBitstreamChunkForTest(std::size_t /*bytes*/, bool /*keyframe*/) {}
-  // TEST-ONLY (same structural guard). One read of the queue's true state -
-  // depth, whether a keyframe is queued, and the real bitstreamBufferedMs()
-  // measurement - unaffected by setBackpressureObservationForTest()'s
-  // override, so a call-site test can confirm the queue actually shrank.
-  virtual BitstreamQueueSnapshotForTest bitstreamQueueSnapshotForTest() const {
-    return BitstreamQueueSnapshotForTest{};
-  }
+  // Test-only queue/encode-path seams are NOT on this interface: they live on
+  // IBitstreamQueueTestAccess (BitstreamQueueTestAccess.h), reached through
+  // createRtmpOutputSenderForTest() (#611).
 };
 
 // Session control for a capture adapter (#535 lifecycle slice). ISource stays
