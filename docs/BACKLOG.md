@@ -643,7 +643,7 @@ Owner closes each issue. Outcome per issue: fixed, no-repro (with hardening), ma
 | [#867](https://github.com/iamfatness/CoreVideoPro/issues/867) | no-repro, diagnostics added | 25/25 before; failing line was the process-global decoder-created count. Failure message now names restarts and frame ids. |
 | [#877](https://github.com/iamfatness/CoreVideoPro/issues/877) | fixed | utf-8 pinned in monitor_evidence.Core; new test fails before, passes after. |
 | [#878](https://github.com/iamfatness/CoreVideoPro/issues/878) | no-repro (fixed on main by #875) | WgcScreenCapture UTF-8 title test passes. |
-| [#881](https://github.com/iamfatness/CoreVideoPro/issues/881) | fixed | Reproduced with a held reader and spinning readers; store now serialises, retries, replaces atomically and never persists a fabricated Enabled=false. |
+| [#881](https://github.com/iamfatness/CoreVideoPro/issues/881) | fixed | Reproduced with a held reader (the concurrent-reader test is a stress guard); store now serialises, retries, replaces atomically and never persists a fabricated Enabled=false. |
 | [#906](https://github.com/iamfatness/CoreVideoPro/issues/906) | no-repro, hardened | 88/88 local runs; wait widened to 30 s. |
 | [#907](https://github.com/iamfatness/CoreVideoPro/issues/907) | no-repro, hardened | Per-test RUN markers and 900 s timeout already on main; latch waits bounded. |
 | [#933](https://github.com/iamfatness/CoreVideoPro/issues/933) | mac-unverified, diagnostics added | 40/40 later runs of native-metal-macos pass the AVFoundation step; CI now retains DiagnosticReports on failure. |

@@ -258,6 +258,7 @@ jobs:
       - name: Retain macOS crash reports
         if: failure()
         run: |
+          sleep 5  # ReportCrash writes the report asynchronously
           mkdir -p native/build-metal/crash-reports
           for dir in ~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports; do
             ls -la "$dir" 2>/dev/null || true
