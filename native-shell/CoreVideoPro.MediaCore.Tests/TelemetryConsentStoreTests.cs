@@ -18,6 +18,38 @@ public sealed class TelemetryConsentStoreTests : IDisposable
         try { Directory.Delete(_dir, recursive: true); } catch { /* best effort */ }
     }
 
+    /// <summary>
+    /// Releases <paramref name="held"/> once the store's write phase has begun, on its own
+    /// thread. Event-driven, not wall-clock: WriteState stages a sibling
+    /// "<file>.<pid>.<tid>.tmp" before its first replace attempt, so its appearance proves
+    /// any read retries are spent; <paramref name="settleMs"/> then keeps the hold through
+    /// the first replace attempts (the write retry budget is ~0.5 s). A dedicated thread,
+    /// not Task.Run: under xUnit's parallel load the pool delayed a queued 150-700 ms
+    /// releaser past the write retries, which is how these tests failed on the Windows
+    /// CI runner (runs 40265083263 and 40321414154).
+    /// </summary>
+    private Thread ReleaseWhenWriteBegins(FileStream held, int settleMs)
+    {
+        var pattern = Path.GetFileName(Path_) + ".*.tmp";
+        var releaser = new Thread(() =>
+        {
+            var deadline = Environment.TickCount64 + 5_000;
+            while (Environment.TickCount64 < deadline && Directory.GetFiles(_dir, pattern).Length == 0)
+            {
+                Thread.Sleep(5);
+            }
+
+            if (settleMs > 0)
+            {
+                Thread.Sleep(settleMs);
+            }
+
+            held.Dispose();
+        }) { IsBackground = true };
+        releaser.Start();
+        return releaser;
+    }
+
     [Fact]
     public void FreshProfile_IsDisabled_SendsNothing()
     {
@@ -51,10 +83,11 @@ public sealed class TelemetryConsentStoreTests : IDisposable
         var when = DateTimeOffset.UtcNow;
 
         using var held = new FileStream(Path_, FileMode.Open, FileAccess.Read, FileShare.Read);
-        var release = Task.Run(async () => { await Task.Delay(150); held.Dispose(); });
+        // Hold through at least the first replace attempt, then let the retries win.
+        var releaser = ReleaseWhenWriteBegins(held, settleMs: 60);
 
         store.MarkSent(when);
-        release.Wait();
+        releaser.Join();
 
         var state = new TelemetryConsentStore(Path_).Load();
         Assert.True(state.Enabled);
@@ -134,22 +167,7 @@ public sealed class TelemetryConsentStoreTests : IDisposable
         store.SetEnabled(true);
 
         var held = new FileStream(Path_, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-        // The release is event-driven, not wall-clock: WriteState stages a sibling
-        // "<file>.<pid>.<tid>.tmp" before its first replace attempt, so its appearance
-        // proves the read retries are spent. A dedicated thread, not Task.Run: under
-        // xUnit's parallel load the pool can delay a queued task past the write retries
-        // (that is how this test failed on the Windows CI runner).
-        var releaser = new Thread(() =>
-        {
-            var deadline = Environment.TickCount64 + 5_000;
-            while (Environment.TickCount64 < deadline
-                   && Directory.GetFiles(_dir, Path.GetFileName(Path_) + ".*.tmp").Length == 0)
-            {
-                Thread.Sleep(5);
-            }
-            held.Dispose();
-        }) { IsBackground = true };
-        releaser.Start();
+        var releaser = ReleaseWhenWriteBegins(held, settleMs: 0);
         store.SetEnabled(false);
         releaser.Join();
 
