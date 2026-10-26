@@ -33,6 +33,107 @@ public static class CrashDumpScanner
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "CrashDumps");
 
+    /// <summary>The folder the installer's WER LocalDumps keys point at when nothing else
+    /// is configured: <c>%LOCALAPPDATA%\CoreVideoPro\crashes</c> (#433 / #1039).</summary>
+    public static string InstallerCrashDumpDirectory() =>
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CoreVideoPro",
+            "crashes");
+
+    private const string LocalDumpsKeyPath = @"SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps";
+
+    /// <summary>
+    /// Reads the raw (unexpanded) <c>DumpFolder</c> value WER LocalDumps has for
+    /// <paramref name="exeName"/> from the 64-bit HKLM view, falling back to the
+    /// global LocalDumps key. Null when unset or unreadable.
+    /// </summary>
+    public static string? ReadConfiguredDumpFolderFromRegistry(string exeName)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        try
+        {
+            using var hklm = Microsoft.Win32.RegistryKey.OpenBaseKey(
+                Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64);
+            foreach (var path in new[] { LocalDumpsKeyPath + @"\" + exeName, LocalDumpsKeyPath })
+            {
+                using var key = hklm.OpenSubKey(path);
+                if (key?.GetValue("DumpFolder", null,
+                        Microsoft.Win32.RegistryValueOptions.DoNotExpandEnvironmentNames) is string value
+                    && !string.IsNullOrWhiteSpace(value))
+                {
+                    return value;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException)
+        {
+            // Unreadable registry means "not configured"; the default folders still apply.
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Every folder to scan for dumps: the per-user WER default, the configured
+    /// LocalDumps <c>DumpFolder</c> of each monitored exe (environment strings
+    /// expanded), and the installer default folder when no value is configured.
+    /// De-duplicated case-insensitively. <paramref name="readConfiguredFolder"/>
+    /// returns the raw registry value for an exe name (tests inject it).
+    /// </summary>
+    public static IReadOnlyList<string> ResolveDumpDirectories(
+        Func<string, string?>? readConfiguredFolder = null)
+    {
+        readConfiguredFolder ??= ReadConfiguredDumpFolderFromRegistry;
+        var folders = new List<string> { DefaultCrashDumpDirectory() };
+        var anyConfigured = false;
+        foreach (var exe in MonitoredExecutables)
+        {
+            var raw = readConfiguredFolder(exe);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            var expanded = Environment.ExpandEnvironmentVariables(raw.Trim());
+            if (expanded.Contains('%', StringComparison.Ordinal))
+            {
+                continue; // unresolved variable: not a usable path
+            }
+
+            anyConfigured = true;
+            folders.Add(expanded);
+        }
+
+        if (!anyConfigured)
+        {
+            folders.Add(InstallerCrashDumpDirectory());
+        }
+
+        return folders.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>Scans every directory; a dump reachable through two spellings of one folder is listed once.</summary>
+    public static IReadOnlyList<CrashDumpFile> Scan(IEnumerable<string> directories, DateTimeOffset newerThanUtc)
+    {
+        var byPath = new Dictionary<string, CrashDumpFile>(StringComparer.OrdinalIgnoreCase);
+        foreach (var directory in directories)
+        {
+            foreach (var dump in Scan(directory, newerThanUtc))
+            {
+                byPath.TryAdd(Path.GetFullPath(dump.Path), dump);
+            }
+        }
+
+        var results = byPath.Values.ToList();
+        results.Sort(static (a, b) => a.LastWriteUtc.CompareTo(b.LastWriteUtc));
+        return results;
+    }
+
     /// <summary>
     /// True when <paramref name="fileName"/> is a WER dump for one of our
     /// processes: <c>&lt;monitored exe&gt;.…&#8203;.dmp</c> (case-insensitive; the middle
