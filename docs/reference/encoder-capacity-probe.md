@@ -101,6 +101,10 @@ to remove.
   `corevideo::testing::ForcedEncoderCapacity` (`tests/EncoderCapacityProbeTestSupport.h`)
   — otherwise they race an asynchronous, GPU-dependent probe.
 
-## Arm waits for the in-flight probe (#1042)
+## Arm waits for an in-flight probe (#1042)
 
-`configureRecording` prewarms the probe for the take workload, and Record can follow within about 2 s, before it finishes. `start` therefore calls `EncoderCapacityCache::awaitProbe(key)` (bounded, 5 s) for the exact workload BEFORE `setRecordingActive(true)`; after that call the probe thread would discard its own result as overlapping the take. Only ISO takes wait (Program-only arm never reads the probe). A timeout keeps the loud `iso-encoder-software-spill-unprobed` verdict and `recording.isoAdmission.capacity` ends with `arm-waited=Nms and the probe had still not finished`; a success ends with `arm-waited=Nms for the probe`. The wait blocks the command path for at most the bound, and only when a probe is in flight.
+`configureRecording` prewarms the probe for the take workload, and Record can follow within about 2 s, before it finishes. `start` therefore calls `EncoderCapacityCache::awaitProbe(key)` for the exact workload BEFORE `setRecordingActive(true)`; after that call the probe thread would discard its own result as overlapping the take. It waits ONLY for a probe `configureRecording` already launched: it never starts one, so a cold arm keeps the non-blocking contract and the honest `pending` verdict. Only ISO takes wait. The bound is 5 s (OWNER DECISION: 5 s vs 2 s vs refuse-and-say-why).
+
+In production `start` runs on the `AsyncEncoderSink` writer thread, so the wait blocks that thread, NOT the command path (the command returns at once); in an unwrapped core (tests) it blocks the caller. Audio that arrives behind the Start barrier meanwhile is counted as startup loss (`recordingStartupDroppedAudioPackets`), never as a blocked writer, and the 15 s preparation clock starts when the writer begins applying Start. While blocked, `recording.detail` reads `waiting for encoder capacity probe`.
+
+Published structurally on `recording.isoAdmission`: `armWaitMs` and `armWaitOutcome` (`not-started` | `cached` | `timed-out` | `discarded`). The `capacity` text also carries `arm-waited=Nms` wording derived from the outcome, but readers must use the fields.

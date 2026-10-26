@@ -1,5 +1,6 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/AsyncEncoderSink.h"
+#include "modules/EncoderCapacityProbe.h"
 
 #include "modules/EncoderSessionReadPolicy.h"
 
@@ -175,7 +176,7 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
           if (std::find(identities.begin(), identities.end(), id) == identities.end()) identities.push_back(id);
         }
         if (std::find(identities.begin(), identities.end(), source) == identities.end() && identities.size() >= 8) {
-          if (kind == Kind::IsoAudio) state_->droppedAudio.fetch_add(1);
+          if (kind == Kind::IsoAudio) (state_->videoStartupPhase ? state_->startupDroppedAudio : state_->droppedAudio).fetch_add(1);
           else if (state_->videoStartupPhase) state_->startupDroppedVideo.fetch_add(1);
           else state_->droppedVideo.fetch_add(1);
           return 0;  // bounded admission; never remove another file's picture
@@ -225,7 +226,10 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
           }
         }
         if (kind == Kind::Audio || kind == Kind::IsoAudio) {
-          state_->droppedAudio.fetch_add(1);
+          // #1042: audio queued behind a Start whose apply is slow (synchronous open,
+          // capacity-probe wait) is head-of-show shedding, not a blocked writer.
+          if (state_->videoStartupPhase) state_->startupDroppedAudio.fetch_add(1);
+          else state_->droppedAudio.fetch_add(1);
         } else if (state_->videoStartupPhase) {
           // Head-of-show shedding behind the writer's synchronous open. Visible
           // and attributable, but NOT folded into the steady-state counter the
@@ -461,6 +465,10 @@ OutputSession AsyncEncoderSink::session() const {
       static_cast<int64_t>(state_->droppedAudio.load(std::memory_order_relaxed));
   snapshot.recordingStartupDroppedVideoFrames =
       static_cast<int64_t>(state_->startupDroppedVideo.load(std::memory_order_relaxed));
+  snapshot.recordingStartupDroppedAudioPackets +=
+      static_cast<int64_t>(state_->startupDroppedAudio.load(std::memory_order_relaxed));
+  snapshot.isoArmWaitingForProbe =
+      snapshot.isoArmWaitingForProbe || ::corevideo::modules::EncoderCapacityCache::instance().armWaitInProgress();
   return snapshot;
 }
 
@@ -668,6 +676,10 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
           state->inner->configureRecording(item.request);
           break;
         case Kind::Start:
+          // #1042: the preparation clock measures the take's own preparation. It
+          // starts when the writer begins APPLYING Start, not when Start was
+          // enqueued behind a backlog.
+          state->preparationRequestedAtMs.store(evidenceNowMs(), std::memory_order_release);
           state->inner->start(item.destinations, item.isoParticipantIds);
           break;
         case Kind::Video:

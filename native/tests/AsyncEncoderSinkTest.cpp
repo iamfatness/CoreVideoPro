@@ -1424,3 +1424,31 @@ TEST(AsyncEncoderSink, StopDuringPreparingNeverReportsProducing) {
   EXPECT_FALSE(sink.session().active);
   EXPECT_NE(sink.session().lifecycle->state, "producing");
 }
+
+TEST(AsyncEncoderSink, AudioShedBehindASlowStartIsStartupLossNotABlockedWriter) {
+  // #1042 B1: Start applies slowly (synchronous open, capacity-probe wait) while
+  // 20 ms audio packets keep arriving. Overflowing the 96-packet budget there is
+  // head-of-show shedding: it must not reach the steady-state counter, mediaLost
+  // or the "a file writer's queue was full" warning the zero-tolerance gate reads.
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockStart->store(true);
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->startEntered.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  ASSERT_TRUE(raw->startEntered.load());
+
+  const float pcm[4] = {0.1f, 0.1f, 0.1f, 0.1f};
+  for (int packet = 0; packet < 150; ++packet) sink.submitAudio(pcm, 2, 2, 48000);
+  raw->blockStart->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(5)));
+
+  const auto session = sink.session();
+  EXPECT_GT(session.recordingStartupDroppedAudioPackets, 0) << "the shedding stays visible";
+  EXPECT_EQ(session.encoderQueueDroppedAudioPackets, 0);
+  EXPECT_EQ(sink.droppedAudioPackets(), 0u);
+  EXPECT_EQ(session.recordingWarning.find("queue was full"), std::string::npos) << session.recordingWarning;
+}

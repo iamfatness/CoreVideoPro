@@ -268,6 +268,10 @@ class AsyncEncoderSink final : public IEncoderSink {
     std::atomic<uint64_t> droppedVideo{0};
     std::atomic<uint64_t> droppedAudio{0};
     std::atomic<uint64_t> startupDroppedVideo{0};
+    // Audio shed during the same head-of-show window (e.g. while the writer waits
+    // for the encoder-capacity probe at Start). Kept OUT of droppedAudio, exactly
+    // like startupDroppedVideo, so it never raises mediaLost.
+    std::atomic<uint64_t> startupDroppedAudio{0};
 
     std::mutex snapshotMutex;
     OutputSession snapshot;

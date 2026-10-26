@@ -640,6 +640,11 @@ struct IsoAdmissionStatus {
   std::string probeStatus;       // IsoCapacitySource::status
   std::string capacity;          // probe.describe()
   std::string workload;          // probeKey.describe()
+  // #1042: how long arm blocked for an in-flight probe and why it stopped:
+  // "not-started" | "cached" | "timed-out" | "discarded". Readers use these,
+  // never the capacity text.
+  int64_t armWaitMs = 0;
+  std::string armWaitOutcome = "not-started";
 };
 
 struct OutputSession {
@@ -647,6 +652,8 @@ struct OutputSession {
   bool active = false;
   // Present only when the sink reports observed writer lifecycle.
   std::optional<contracts::OutputLifecycle> lifecycle;
+  // #1042: true only WHILE arm is blocked waiting for the encoder-capacity probe.
+  bool isoArmWaitingForProbe = false;
   std::vector<std::string> destinations;
   std::vector<std::string> isoParticipantIds;
   // Per-session subfolder + manifest (ISO-1 folder scheme, spec §5). Empty for

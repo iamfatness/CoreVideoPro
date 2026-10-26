@@ -67,6 +67,7 @@
 
 #include <cctype>
 #include <chrono>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -199,17 +200,28 @@ class EncoderCapacityCache {
   // next arm is warm.
   ProbedEncoderCapacity lookup(const EncoderProbeKey& key);
 
-  // #1042: BOUNDED WAIT for the probe of `key`, for the recording-arm call site
-  // only. `configureRecording` kicks the probe for the real workload; an operator
-  // who hits Record about two seconds later used to find it still running, so
-  // placement decided on the unprobed fallback and the late result was then
-  // discarded as overlapping the live take. Call this BEFORE setRecordingActive:
-  // it waits (up to armWait) for the in-flight probe of exactly this workload
-  // and returns how long it blocked, in ms; 0 when the answer was already
-  // cached, pinned, or no probe could run (live encoding, disabled). A timeout
-  // returns the elapsed time and leaves the cache unchanged, so the following
-  // lookup() still reports the truth (pending).
-  std::int64_t awaitProbe(const EncoderProbeKey& key);
+  // #1042: BOUNDED WAIT for a probe that is ALREADY IN FLIGHT for `key`, for the
+  // recording-arm call site only. `configureRecording` kicks the probe for the
+  // real workload; an operator who hits Record about two seconds later used to
+  // find it still running, so placement decided on the unprobed fallback and the
+  // late result was then discarded as overlapping the live take. Call this
+  // BEFORE setRecordingActive. It NEVER starts a probe (a cold cache with no
+  // configure returns NotStarted at once). The result says how long it blocked
+  // and why it stopped, so the caller words the snapshot from the outcome.
+  enum class ArmWaitOutcome {
+    NotStarted,  // no probe in flight for this workload: nothing was waited for
+    Cached,      // the answer was already cached/pinned, or the probe finished while waiting
+    TimedOut,    // the bound elapsed with the probe still running
+    Discarded,   // the probe finished but its result was thrown away (live encoding overlapped)
+  };
+  struct ArmWait {
+    std::int64_t waitedMs = 0;
+    ArmWaitOutcome outcome = ArmWaitOutcome::NotStarted;
+  };
+  ArmWait awaitProbe(const EncoderProbeKey& key);
+  // True while any thread is blocked inside awaitProbe (published so an operator
+  // sees "waiting for encoder capacity probe" instead of a silent pause).
+  bool armWaitInProgress() const { return armWaiters_.load(std::memory_order_acquire) > 0; }
   void setArmWaitForTesting(std::chrono::milliseconds wait);
 
   // Start (or refresh) the background probe for `key`. Returns immediately.
@@ -251,6 +263,7 @@ class EncoderCapacityCache {
 
   std::mutex mutex_;
   std::condition_variable probeSettled_;
+  std::atomic<int> armWaiters_{0};
   std::chrono::milliseconds armWait_{5000};
   std::map<EncoderProbeKey, ProbedEncoderCapacity> cache_;
   std::map<EncoderProbeKey, bool> inFlight_;

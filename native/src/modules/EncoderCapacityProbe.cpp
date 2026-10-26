@@ -518,28 +518,38 @@ void EncoderCapacityCache::setArmWaitForTesting(std::chrono::milliseconds wait) 
   armWait_ = wait;
 }
 
-std::int64_t EncoderCapacityCache::awaitProbe(const EncoderProbeKey& key) {
+EncoderCapacityCache::ArmWait EncoderCapacityCache::awaitProbe(const EncoderProbeKey& key) {
   std::unique_lock<std::mutex> lock(mutex_);
   if (forcedCapacityActive_ || cache_.find(key) != cache_.end()) {
-    return 0;
+    return {0, ArmWaitOutcome::Cached};
   }
-  // Cold cache and nothing in flight (configure never ran, or the rate limit
-  // skipped it): start it now so the wait below has something to wait for.
-  startProbeLocked(key);
   const auto flight = inFlight_.find(key);
   if (flight == inFlight_.end() || !flight->second) {
-    return 0;  // probing not allowed right now (live encoding): nothing to wait for
+    // Deliberately does NOT start a probe: arm only waits for one that
+    // configureRecording already launched. A cold arm keeps the old
+    // non-blocking contract and the honest "pending" verdict.
+    return {0, ArmWaitOutcome::NotStarted};
   }
   const auto epoch = cacheEpoch_;
   const auto began = std::chrono::steady_clock::now();
-  probeSettled_.wait_for(lock, armWait_, [&] {
+  armWaiters_.fetch_add(1, std::memory_order_acq_rel);
+  const bool settled = probeSettled_.wait_for(lock, armWait_, [&] {
     if (epoch != cacheEpoch_ || cache_.find(key) != cache_.end()) return true;
     const auto it = inFlight_.find(key);
     return it == inFlight_.end() || !it->second;
   });
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now() - began)
-      .count();
+  armWaiters_.fetch_sub(1, std::memory_order_acq_rel);
+  ArmWait result;
+  result.waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - began).count();
+  if (!settled) {
+    result.outcome = ArmWaitOutcome::TimedOut;
+  } else if (cache_.find(key) != cache_.end()) {
+    result.outcome = ArmWaitOutcome::Cached;
+  } else {
+    result.outcome = ArmWaitOutcome::Discarded;
+  }
+  return result;
 }
 
 void EncoderCapacityCache::setRecordingActive(bool active) {

@@ -1161,6 +1161,8 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWritersProduceIndependentPlayabl
 // ISO files to %TEMP% — it raises recording.warning and refuses ISO, while the
 // program keeps recording (priority-1).
 TEST(EncoderRecordingSession, MediaFoundationIsoRefusesBadFolderLoudly) {
+  // #1042: arm now waits for an in-flight probe; pin the answer so this test never does.
+  const corevideo::testing::ForcedEncoderCapacity capacity;
   auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
   if (!encoder) {
     return;
@@ -1679,6 +1681,8 @@ TEST(EncoderRecordingSession, MediaFoundationIsoArmWaitsForInFlightProbeInsteadO
   EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
   EXPECT_NE(session.isoAdmission->capacity.find("arm-waited="), std::string::npos)
       << "the snapshot must say that arm waited: " << session.isoAdmission->capacity;
+  EXPECT_EQ(session.isoAdmission->armWaitOutcome, "cached");
+  EXPECT_GT(session.isoAdmission->armWaitMs, 100) << "arm really blocked for the 700 ms probe";
 
   encoder->stopRecording();
   encoder.reset();
@@ -1699,11 +1703,7 @@ TEST(EncoderRecordingSession, MediaFoundationIsoArmWaitIsBoundedAndTheUnprobedDe
   fs::remove_all(request.targetFolder, ec);
 
   encoder->configureRecording(request);
-  const auto began = std::chrono::steady_clock::now();
   encoder->start({"recording"}, {});
-  const auto armedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now() - began).count();
-  EXPECT_LT(armedMs, 1400) << "arm must not wait for the whole slow probe";
 
   const auto session = encoder->session();
   ASSERT_TRUE(session.isoAdmission.has_value());
@@ -1712,9 +1712,88 @@ TEST(EncoderRecordingSession, MediaFoundationIsoArmWaitIsBoundedAndTheUnprobedDe
   EXPECT_EQ(session.isoAdmission->code, "iso-encoder-software-spill-unprobed");
   EXPECT_NE(session.isoAdmission->capacity.find("had still not finished"), std::string::npos)
       << session.isoAdmission->capacity;
+  // The bound is asserted on the structured wait, not on wall time around nine MF opens.
+  EXPECT_EQ(session.isoAdmission->armWaitOutcome, "timed-out");
+  EXPECT_GE(session.isoAdmission->armWaitMs, 100);
+  EXPECT_LT(session.isoAdmission->armWaitMs, 1400) << "arm must not wait for the whole slow probe";
 
   encoder->stopRecording();
   encoder.reset();
+  fs::remove_all(request.targetFolder, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationIsoArmNeverStartsAProbeOnAColdCache) {
+  // #1042: arm only waits for a probe configureRecording already launched. A cold
+  // cache with nothing in flight returns at once with the honest unprobed verdict.
+  SlowProbeScope slowProbe(std::chrono::milliseconds(3000), std::chrono::milliseconds(5000));
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;
+  }
+  namespace fs = std::filesystem;
+  const auto request = makeRaceRequest("iso-arm-cold-cache");
+  std::error_code ec;
+  fs::remove_all(request.targetFolder, ec);
+
+  encoder->configureRecording(request);
+  corevideo::modules::EncoderCapacityCache::instance().invalidate();  // nothing in flight now
+  encoder->start({"recording"}, {});
+
+  const auto session = encoder->session();
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->armWaitOutcome, "not-started");
+  EXPECT_EQ(session.isoAdmission->armWaitMs, 0);
+  EXPECT_EQ(session.isoAdmission->probeStatus, "pending");
+  EXPECT_EQ(session.isoAdmission->code, "iso-encoder-software-spill-unprobed");
+  EXPECT_EQ(session.isoAdmission->capacity.find("arm-waited="), std::string::npos);
+
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(request.targetFolder, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationSlowProbeWaitDoesNotMakeTheAsyncSinkAccuseTheWriter) {
+  // #1042 B1: in production the wait blocks the AsyncEncoderSink WRITER thread
+  // while Program audio keeps arriving behind the Start barrier. A 96-packet
+  // audio budget overflows in under 2 s; that head-of-show shedding must be
+  // counted as STARTUP loss, never as a blocked writer / mediaLost / degraded.
+  SlowProbeScope slowProbe(std::chrono::milliseconds(2500), std::chrono::milliseconds(5000));
+  auto inner = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!inner) {
+    return;
+  }
+  corevideo::modules::AsyncEncoderSink sink(std::move(inner));
+  namespace fs = std::filesystem;
+  const auto request = makeRaceRequest("iso-arm-async-audio");
+  std::error_code ec;
+  fs::remove_all(request.targetFolder, ec);
+
+  sink.configureRecording(request);
+  sink.start({"recording"}, {});
+  std::vector<float> programPcm(static_cast<size_t>(960) * 2, 0.2f);
+  for (int packet = 0; packet < 150; ++packet) {
+    sink.submitAudio(programPcm.data(), 960, 2, 48000);  // 20 ms packets, faster than real time
+  }
+  // The writer is still inside awaitProbe: the wait must be visible while it happens.
+  const auto waitSeen = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  bool sawWaiting = false;
+  while (std::chrono::steady_clock::now() < waitSeen) {
+    if (sink.session().isoArmWaitingForProbe) { sawWaiting = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(sawWaiting) << "the probe wait must be published while it happens";
+
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(20)));
+  const auto session = sink.session();
+  EXPECT_FALSE(session.isoArmWaitingForProbe);
+  EXPECT_EQ(session.encoderQueueDroppedAudioPackets, 0)
+      << "audio shed behind a slow Start is startup loss, not a blocked writer";
+  EXPECT_GT(session.recordingStartupDroppedAudioPackets, 0);
+  EXPECT_EQ(session.recordingWarning.find("queue was full"), std::string::npos) << session.recordingWarning;
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->armWaitOutcome, "cached");
+
+  sink.stopRecording();
   fs::remove_all(request.targetFolder, ec);
 }
 
