@@ -27,6 +27,15 @@ public static class IsoEncoderPlacementReadout
 {
     public static PlacementReadout Describe(NativeMediaCoreRecordingSession? recording, bool programHardwareAccelerated)
     {
+        // #1042: while Record is blocked on the encoder-capacity probe the take is not
+        // Active yet; say why Record has not opened (honest-reporting), verbatim from the core.
+        if (recording is not null && !string.IsNullOrWhiteSpace(recording.Detail))
+        {
+            return new PlacementReadout(
+                PlacementSeverity.Informational,
+                [$"Record has not opened yet: {recording.Detail}"]);
+        }
+
         // The core decides placement at arm; before a take there is nothing measured to show.
         if (recording is not { Active: true })
         {
@@ -67,6 +76,12 @@ public static class IsoEncoderPlacementReadout
             var head = $"{label} is on the CPU software encoder" + (reason is null ? string.Empty : $" ({reason})");
             lines.Add(BuildLine(head, stream, out var w));
             warn |= w;
+        }
+
+        // #1042: a probe that did not finish in time means placement used the ASSUMED capacity.
+        if (recording.IsoAdmission is { ArmWaitOutcome: "timed-out" } timedOut)
+        {
+            lines.Insert(0, $"Encoder capacity probe had not finished after {timedOut.ArmWaitMs} ms; ISO placement used the assumed capacity");
         }
 
         if (lines.Count == 0)

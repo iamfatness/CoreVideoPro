@@ -438,6 +438,8 @@ public sealed record NativeMediaCoreRecordingSession
     public string? Error { get; init; }
     /// <summary>Structured ISO encoder-placement verdict (#935); absent when no ISO was selected.</summary>
     public NativeMediaCoreIsoAdmission? IsoAdmission { get; init; }
+    /// <summary>Why Record has not opened yet (#1042), e.g. "waiting for encoder capacity probe"; absent otherwise.</summary>
+    public string? Detail { get; init; }
 }
 
 public sealed record NativeMediaCoreIsoAdmission
@@ -453,6 +455,10 @@ public sealed record NativeMediaCoreIsoAdmission
     public string? ProbeStatus { get; init; }
     public string? Capacity { get; init; }
     public string? Workload { get; init; }
+    /// <summary>#1042: ms arm blocked for an in-flight capacity probe.</summary>
+    public long ArmWaitMs { get; init; }
+    /// <summary>#1042: not-started | cached | timed-out | discarded.</summary>
+    public string? ArmWaitOutcome { get; init; }
 }
 
 public sealed class NativeMediaCoreRecordingProof
