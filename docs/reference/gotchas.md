@@ -15,11 +15,15 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   under coreMutex; the audio gather enforces it with `ForbidEngineMutexScope`.
   So does the render tick (#1037): the production loop reads the roster and
   directed speaker with `MediaCore::prepareRenderEngineInputsUnlocked()` BEFORE
-  taking coreMutex, and `renderDisplayTick` forbids the engine mutex. The only
-  sanctioned exceptions are the frame-selection calls in
-  `AllowEngineMutexScope("render.frame-group #1037-followup")`;
-  `grep AllowEngineMutexScope native/src` lists them. A new roster/speaker
-  consumer on the render tick reads `renderEngineInputs_`, never the runtime.
+  taking coreMutex, and `renderDisplayTick` forbids the engine mutex. Since
+  #1049 the frame group (R1/R2/R5) is fetched LAST in that pre-read too; the
+  only remaining `AllowEngineMutexScope` is the `COREVIDEO_RENDER_FRAME_FETCH=
+  under-lock` rollback (`grep AllowEngineMutexScope native/src`). A new
+  roster/speaker/frame consumer on the render tick reads `renderEngineInputs_`,
+  never the runtime; prefetched frames are only valid while `speakerEpoch` is
+  unchanged. The command lane's `zoom-media-spine-sync` engine half and
+  `zoom-snapshot` run with coreMutex released (#1048); do not move them back
+  under `cmd.handle` (a `ForbidEngineMutexScope("cmd.handle")` counts it).
   See `docs/reference/iso-recording.md` and
   `docs/superpowers/specs/2026-10-23-render-gather-engine-mutex-design.md`.
 

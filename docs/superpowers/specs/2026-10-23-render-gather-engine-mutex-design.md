@@ -1,7 +1,7 @@
 # Render gather: stop taking the Zoom engine mutex under coreMutex — design
 
 **Date:** 2026-10-23
-**Status:** implemented on `codex/rc-1037` (Outcome below); owner ruling D17 recorded under Risks
+**Status:** implemented on `codex/rc-1037` (Outcome below); owner ruling D17 recorded under Risks. Follow-ups #1048/#1049 implemented on `codex/rc-1049` (addendum at the end)
 **Issue:** [#1037](https://github.com/iamfatness/CoreVideoPro/issues/1037)
 **Related:** #1030 / PR #1035 (the audio-gather fix and the `EngineMutexGuardrail` this design reuses), #517 / #870 (realtime isolation), `docs/reference/realtime-isolation-audit.md`
 **Line numbers:** `main` at `1879ccb7` (the #1035 merge). Re-grep before editing; they move.
@@ -445,3 +445,193 @@ Full native suite on the Release core at `c7b36bdd` (+ the harness change), `COR
   was not measured against main.
 - The guest A/V prune race (D17) remains, accepted.
 
+## Follow-up outcome: #1048, #1049 and #1056 evidence (2026-10-25)
+
+Branch `codex/rc-1049` from `main` `ede5d493`. Machine: the dev box (Intel Core
+i7-14700K, Windows 11 Home 10.0.26200). Release build from
+`npm run build:native-dev` (`corevideo-native.exe` 4,092,928 bytes before the
+A/B commit; tests binary about 12.4 MB). Stub compositor
+(`createStubModules`), so absolute hold numbers are lower than a GPU core's.
+Only the difference between the two orders is the result. Nothing touched the
+owner's installed app.
+
+### Attribution first (#1056)
+
+The October 25 soak lost one Program frame in a 15,127 us `render.display-tick`
+hold, and nothing in the log said where that time went. Every production
+display tick now records a per-phase breakdown (`core/RenderTickPhases.h`).
+The phases are: setup, the frame-group calls R1, R2 and R5 (each with its
+engine-mutex wait), bus tap, capture poll, gather, stills and floor, ISO
+ingress, plan, program, monitors and emit. The breakdown also records the
+pre-read, the pre-read's own engine-mutex wait, and the coreMutex wait, all
+of which fall outside the hold. An over-budget hold logs one line:
+
+```
+[lock-hold-attribution] site=render.display-tick held_us=N budget_us=8000 slot=S
+  phases_us=[setup=.. program=.. monitors=.. ...] other_us=N
+  frame_group_engine_wait_us=N
+  outside_hold_us=[pre-read=N pre-read-engine-wait=N lock-wait=N]
+  unattributed_since_last=N
+```
+
+Since #1049 the frame group runs in the pre-read, so in the default order
+`frame_group_engine_wait_us` is 0 by construction. Its contention appears as
+`pre-read-engine-wait`.
+
+A tick can also be late while its hold stays in budget, for example when the
+pre-read blocks on the engine mutex or the coreMutex wait is long. Such a tick
+logs the same breakdown under a separate site:
+
+```
+[lock-hold-attribution] site=render.late-tick reason=over-frame-period|deadline-miss
+  tick_us=N frame_period_us=16666 held_us=N slot=S phases_us=[...] ...
+```
+
+`over-frame-period` means pre-read plus coreMutex wait plus hold exceeded
+16.7 ms. `deadline-miss` means the anchored CPU deadline tracker recorded a
+miss for this tick. Each site is capped at one line per second. The `[lock-guardrail]` warning
+is capped at one per minute, and that cap hid most of the soak's overruns,
+which came about once a minute. The warning line carries the same text.
+`cmd.handle` holds name their command (`command=<type>`). `slot` matches
+`[program-buffer-miss] target=`. The next soak can therefore say which phase
+consumed a long tick. No stack is needed.
+
+### #1048 command lane (C1, C2, D17)
+
+- **C1 `zoom-media-spine-sync`.** The live loop applies the core half
+  (multiview layout and preview scene) under coreMutex. It runs
+  `ZoomEngineRuntime::syncSpine` after it releases the lock. That call happens
+  on the same command thread, before the next command is dequeued, so command
+  order does not change. A render tick may run between the two halves, just as
+  one may run between two commands. `handle()` called directly still runs both
+  halves inline.
+- **C2 `zoom-snapshot`.** With an engine configured, the loop answers it before
+  taking coreMutex, through `MediaCore::zoomEngineSnapshotUnlocked()`. Without
+  an engine it takes the locked stub path.
+- **Gate.** The loop opens `ForbidEngineMutexScope("cmd.handle")` for both
+  commands.
+  `JsonRpcServer.SpineSyncAndZoomSnapshotRunTheirEngineWorkWithoutCoreMutex`
+  counts engine-mutex acquisitions over a real `server.run`. On the old code it
+  fails only once the gate exists: with the gate and without the move it was
+  RED. It also checks that the core half still applies, and that a
+  snapshot sent after the spine sync sees the spine sync's director exclusion
+  (ordering).
+- **D17.** Each guest A/V trim is stamped when it is applied. The pre-read
+  records when its roster read started, and a trim is pruned only if it was
+  applied before that time.
+  `MediaCoreRenderGather.GuestAvTrimSetAfterThePreReadSurvivesThatTick` was
+  RED before the change.
+
+### #1049 frame group: fetch-before-lock A/B
+
+`COREVIDEO_RENDER_FRAME_FETCH=before-lock|under-lock` selects where R1, R2 and
+R5 run. In `before-lock` they run last in `prepareRenderEngineInputsUnlocked`
+and their frames are restamped inside the tick. A session change between the
+fetch and the tick (leave, Engine off or a new engine process, any of which
+moves `speakerEpoch`) drops those frames. In `under-lock`, the #1037 order,
+they run inside the tick under `AllowEngineMutexScope("render.frame-group
+under-lock order #1049")`.
+
+Frame age is measured at the tick's consume point, which is the same point in
+both orders: consume time minus ingest `observedAt`, once per new frame per
+participant (`MediaCore::observeZoomFrameAgeAtConsume`). The engine's own
+`[zoom-latency]` line samples at selection. In the before-lock order that
+point precedes the coreMutex wait, so the line under-reports by that wait.
+
+`RenderFrameFetchAbQa.FrameAgeAndHoldForEachFetchOrder`
+(`COREVIDEO_QA_FRAME_FETCH_AB=1`) uses the production loop shape: pre-read,
+then coreMutex, then the 3-argument tick, at 60 Hz. It runs this load:
+
+- an ingest thread publishing every camera into the frame-sync queue;
+- roster events;
+- the audio worker's pre-lock engine poll at 50 Hz, plus a 100 us coreMutex
+  hold;
+- `drainFrameEvents` at 100 Hz;
+- a command lane that takes coreMutex every 5 ms. Hold times: 90 % between
+  50 and 300 us, 9 % between 0.3 and 1 ms, and 1 % between 1 and 8 ms.
+
+The orders alternate in 6 blocks of 300 ticks each (15 warm-up ticks are
+dropped per block). Frame-age percentiles are in ms. "Delta" is before-lock
+minus under-lock at the median.
+
+| workload | run | frame age p50 under / before | p99 under / before | delta p50 | hold p99 under / before | hold worst under / before |
+|---|---|---|---|---|---|---|
+| 10 participants @30 fps, roster 10 Hz | 1 | 66.687 / 66.562 | 68.396 / 68.945 | -0.125 | 2.844 / 2.556 | 5.960 / 5.788 |
+| same | 2 | 66.664 / 66.700 | 68.381 / 68.951 | +0.036 | 2.949 / 3.034 | 10.895 / 12.919 |
+| same | 3 | 66.621 / 66.642 | 68.741 / 69.436 | +0.022 | 2.361 / 2.345 | 4.034 / 3.734 |
+| 10 participants @60 fps, roster max rate | 1 | 66.972 / 66.834 | 71.845 / 70.721 | -0.137 | 6.668 / 1.596 | 13.448 / 2.346 |
+| same | 2 | 66.946 / 66.853 | 71.487 / 73.800 | -0.093 | 5.948 / 2.239 | 11.072 / 2.752 |
+| 50 participants @60 fps, roster max rate | 1 | 66.925 / 66.877 | 72.088 / 72.105 | -0.048 | 7.723 / 3.535 | 12.340 / 6.498 |
+| same | 2 | 66.853 / 66.885 | 72.396 / 71.288 | +0.032 | 7.726 / 3.662 | 41.128 / 5.599 |
+
+How to read the table:
+
+- The roughly 66.7 ms median is the 60 ms frame-sync reserve plus selection
+  quantization, and it is the same in both orders. The median delta is within
+  ±0.14 ms in every run. That is about 1 % of the 16.7 ms rule, so
+  **before-lock is the default**. The p99 frame age moved by -1.1 to +2.3 ms,
+  depending on the run, with no consistent sign.
+- When the engine mutex is contended, the hold drops: p99 fell from 6-8 ms to
+  1.6-3.7 ms, and the worst from 11-41 ms to 2.3-6.5 ms. Under the realistic
+  10 Hz roster load the hold is unchanged within noise, because there is
+  little engine contention to remove.
+- The render thread still pays the engine wait, now in its pre-read with
+  coreMutex free. The pre-read p99 rose from about 0.05 ms to 0.1 ms
+  (realistic load) and stayed at 4-9 ms either way under stress.
+- The #1037 churn harness (`RenderEngineMutexChurnQa`, 50 participants, max
+  rate) ran two times per order. under-lock: hold p99 2,856 / 2,983 us, worst
+  3,917 / 5,288 us. before-lock: p99 1,751 / 1,583 us, worst 1,931 / 2,416 us.
+
+### Guardrail (CI)
+
+`MediaCoreRenderGather.BeforeLockOrderNeedsNoEngineMutexInsideTheTick` counts
+every engine-mutex acquisition on the render thread during a before-lock tick,
+including sanctioned ones (`EngineMutexGuardrail::threadAcquisitions`). The
+count is 0. The under-lock control takes at least 3.
+`BothFetchOrdersDeliverADueZoomFrameToTheTick` and
+`PrefetchedFramesFromAnEndedSessionAreDropped` cover delivery and the
+session-change drop. `grep AllowEngineMutexScope native/src` now lists only
+the under-lock rollback path. Deleting it, once a live soak confirms the
+default, is a one-line follow-up.
+
+### Not established
+
+- **No live soak.** The owner's app was in a live meeting. Whether the
+  October 25 overruns (8-16 ms) came from the engine mutex at all is unknown.
+  The stub-core A/B shows that the frame group can cost up to about 6 ms of
+  hold under contention. It does not show that the frame group caused that
+  soak's ticks. The new attribution line answers that question.
+- The GPU compositor was not used. The phases `program` and `monitors`
+  (D3D11 submission, keyed-mutex exports) are the other candidates for the
+  15 ms tick, and the stub cannot measure them.
+
+### Acceptance procedure (owner, live)
+
+1. Install the build from this branch and run the October 25 workload for 30
+   minutes: 10 participants; Program plus 8 Zoom ISOs on hardware H.264; the
+   SRT loopback stream; the virtual camera. Use the default order.
+2. `grep -E "lock-hold-attribution|program-buffer-miss|lock-guardrail|\[cmd\]" media-core.log`.
+   Pass when there are zero `program-buffer-miss` lines and the Program file
+   holds exactly the scheduled packet count.
+3. If a miss does occur, match its `target=` to the `slot=` of the
+   `render.display-tick` or `render.late-tick` attribution line for that tick.
+   That line says where the tick's time went:
+   - `pre-read-engine-wait` dominates: the engine mutex, now outside coreMutex,
+     still costs the render deadline. The next step is the published-roster
+     alternative (Rejected above).
+   - `lock-wait` dominates: a coreMutex holder that is not the render thread.
+     Check the `cmd.handle` attribution lines for the command.
+   - `program` or `monitors` dominates: GPU submission or export work. This is
+     outside the scope of this lock change.
+
+   The tick's line is guaranteed only when the tick was late on the CPU side
+   (over budget, over the frame period, or a deadline miss), and each site
+   logs at most one line per second. A buffer miss with no attribution line
+   for its slot means the frame was late in GPU completion or delivery, not on
+   the render thread. That is itself a result.
+4. `[cmd] 'zoom-media-spine-sync' engine half lock-free Nms` lines, logged at
+   30 ms or more, show a slow `syncSpine`. It no longer holds coreMutex, but
+   it still delays the next command.
+5. Optional A/B on the same rig: repeat with `COREVIDEO_RENDER_FRAME_FETCH=under-lock`
+   set in the core's environment, and compare the over-budget counts in the
+   final `[lock-guardrail]` line.

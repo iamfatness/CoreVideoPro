@@ -1,6 +1,7 @@
 #pragma once
 #include "core/BoundedAsyncLog.h"
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 
@@ -26,7 +27,24 @@ class EngineMutexGuardrail {
     thread_local const char* site = nullptr;
     return site;
   }
+  // #1056: nanoseconds THIS thread has spent blocked acquiring any engine
+  // mutex (monotonic; callers difference it around a call). An uncontended
+  // acquisition adds nothing, so the render tick can split a frame-group
+  // call's time into contention and body without a clock read on the fast path.
+  static std::int64_t& threadWaitNs() {
+    thread_local std::int64_t waited = 0;
+    return waited;
+  }
+  // #1049: every engine mutex acquisition THIS thread made, sanctioned or not
+  // (monotonic; difference it around a call). Lets a test prove a path takes
+  // the engine mutex zero times, which a forbidden scope cannot (an
+  // AllowEngineMutexScope inside it suspends the count).
+  static std::uint64_t& threadAcquisitions() {
+    thread_local std::uint64_t acquisitions = 0;
+    return acquisitions;
+  }
   static void noteAcquire() {
+    ++threadAcquisitions();
     if (forbiddenDepth() <= 0) return;
     if (forbiddenAcquisitions().fetch_add(1, std::memory_order_relaxed) == 0) {
       ::corevideo::core::nativeLogf("[lock-guardrail] engine mutex taken inside forbidden scope '%s' (#1030)\n",
@@ -79,7 +97,14 @@ class AllowEngineMutexScope {
 // std::mutex plus the guardrail check. Satisfies Lockable.
 class EngineMutex {
  public:
-  void lock() { EngineMutexGuardrail::noteAcquire(); mutex_.lock(); }
+  void lock() {
+    EngineMutexGuardrail::noteAcquire();
+    if (mutex_.try_lock()) return;
+    const auto waitStarted = std::chrono::steady_clock::now();
+    mutex_.lock();
+    EngineMutexGuardrail::threadWaitNs() += std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - waitStarted).count();
+  }
   bool try_lock() { EngineMutexGuardrail::noteAcquire(); return mutex_.try_lock(); }
   void unlock() { mutex_.unlock(); }
 

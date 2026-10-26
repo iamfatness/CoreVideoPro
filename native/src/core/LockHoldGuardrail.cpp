@@ -14,7 +14,9 @@ struct SiteRecord {
   LockHoldGuardrail::SiteStats stats;
   std::chrono::steady_clock::time_point lastWarnAt{};
   std::chrono::steady_clock::time_point lastDetailAt{};
+  std::chrono::steady_clock::time_point lastAttributionAt{};
   std::uint64_t suppressedSinceLastWarn = 0;
+  std::uint64_t suppressedSinceLastAttribution = 0;
 };
 
 // Function-local statics so the registry is safely initialized on first use
@@ -39,14 +41,18 @@ bool strictModeEnabled() {
 
 constexpr auto kProductionWarnInterval = std::chrono::minutes(1);
 constexpr auto kVerboseWarnInterval = std::chrono::seconds(1);
+constexpr auto kAttributionInterval = std::chrono::seconds(1);
 
 }  // namespace
 
-bool LockHoldGuardrail::recordHold(const char* site, long long heldUs, long long budgetUs) {
+bool LockHoldGuardrail::recordHold(const char* site, long long heldUs, long long budgetUs,
+                                   const LockHoldDetail* detail) {
   const bool overBudget = heldUs > budgetUs;
   bool warn = false;
   bool productionWarning = false;
+  bool attributionDue = false;
   std::uint64_t suppressed = 0;
+  std::uint64_t attributionSuppressed = 0;
   SiteStats snapshot;
   {
     std::lock_guard<std::mutex> lock(registryMutex());
@@ -75,24 +81,49 @@ bool LockHoldGuardrail::recordHold(const char* site, long long heldUs, long long
       } else {
         ++record.suppressedSinceLastWarn;
       }
+      if (detail) {
+        attributionDue = record.stats.attributionsLogged == 0 ||
+                         now - record.lastAttributionAt >= kAttributionInterval;
+        if (attributionDue) {
+          ++record.stats.attributionsLogged;
+          record.lastAttributionAt = now;
+          attributionSuppressed = record.suppressedSinceLastAttribution;
+          record.suppressedSinceLastAttribution = 0;
+        } else {
+          ++record.suppressedSinceLastAttribution;
+        }
+      }
     }
     snapshot = record.stats;
   }
+  // Formatting runs outside the registry lock, and only for a logged hold.
+  std::string attribution;
+  if (detail && (attributionDue || warn)) {
+    attribution = "site=" + std::string(site) + " held_us=" + std::to_string(heldUs) +
+                  " budget_us=" + std::to_string(budgetUs) + " " + detail->describe(heldUs);
+    if (attributionDue) {
+      ::corevideo::core::nativeLogf("[lock-hold-attribution] %s unattributed_since_last=%llu\n",
+                                   attribution.c_str(), static_cast<unsigned long long>(attributionSuppressed));
+    }
+    std::lock_guard<std::mutex> lock(registryMutex());
+    registry()[site].stats.lastAttribution = attribution;
+  }
   if (warn) {
+    const std::string tail = attribution.empty() ? std::string() : " [" + attribution + "]";
     if (productionWarning) {
       ::corevideo::core::nativeLogf("[lock-guardrail] coreMutex hold %lldus at '%s' exceeds budget %lldus "
-                                   "(over-budget %llu of %llu holds, worst %lldus, %llu suppressed)\n",
+                                   "(over-budget %llu of %llu holds, worst %lldus, %llu suppressed)%s\n",
                                    heldUs, site, budgetUs,
                                    static_cast<unsigned long long>(snapshot.overBudget),
                                    static_cast<unsigned long long>(snapshot.holds), snapshot.worstHeldUs,
-                                   static_cast<unsigned long long>(suppressed));
+                                   static_cast<unsigned long long>(suppressed), tail.c_str());
     } else {
       ::corevideo::core::nativeVerboseLogf("[lock-guardrail] coreMutex hold %lldus at '%s' exceeds budget %lldus "
-                                          "(over-budget %llu of %llu holds, worst %lldus, %llu suppressed)\n",
+                                          "(over-budget %llu of %llu holds, worst %lldus, %llu suppressed)%s\n",
                                           heldUs, site, budgetUs,
                                           static_cast<unsigned long long>(snapshot.overBudget),
                                           static_cast<unsigned long long>(snapshot.holds), snapshot.worstHeldUs,
-                                          static_cast<unsigned long long>(suppressed));
+                                          static_cast<unsigned long long>(suppressed), tail.c_str());
     }
     if (strictModeEnabled()) {
       ::corevideo::core::nativeLogf("[lock-guardrail] STRICT mode enabled — aborting on over-budget hold.\n");
@@ -100,6 +131,38 @@ bool LockHoldGuardrail::recordHold(const char* site, long long heldUs, long long
     }
   }
   return overBudget;
+}
+
+bool LockHoldGuardrail::recordLateTick(const char* site, const char* reason, long long tickUs, long long heldUs,
+                                       long long framePeriodUs, const LockHoldDetail& detail) {
+  bool due = false;
+  std::uint64_t suppressed = 0;
+  {
+    std::lock_guard<std::mutex> lock(registryMutex());
+    SiteRecord& record = registry()[site];
+    ++record.stats.holds;
+    ++record.stats.overBudget;
+    if (tickUs > record.stats.worstHeldUs) record.stats.worstHeldUs = tickUs;
+    const auto now = std::chrono::steady_clock::now();
+    due = record.stats.attributionsLogged == 0 || now - record.lastAttributionAt >= kAttributionInterval;
+    if (due) {
+      ++record.stats.attributionsLogged;
+      record.lastAttributionAt = now;
+      suppressed = record.suppressedSinceLastAttribution;
+      record.suppressedSinceLastAttribution = 0;
+    } else {
+      ++record.suppressedSinceLastAttribution;
+    }
+  }
+  if (!due) return false;
+  const std::string attribution = "site=" + std::string(site) + " reason=" + reason +
+      " tick_us=" + std::to_string(tickUs) + " frame_period_us=" + std::to_string(framePeriodUs) +
+      " held_us=" + std::to_string(heldUs) + " " + detail.describe(heldUs);
+  ::corevideo::core::nativeLogf("[lock-hold-attribution] %s unattributed_since_last=%llu\n",
+                               attribution.c_str(), static_cast<unsigned long long>(suppressed));
+  std::lock_guard<std::mutex> lock(registryMutex());
+  registry()[site].stats.lastAttribution = attribution;
+  return true;
 }
 
 LockHoldGuardrail::SiteStats LockHoldGuardrail::statsForSite(const char* site) {
