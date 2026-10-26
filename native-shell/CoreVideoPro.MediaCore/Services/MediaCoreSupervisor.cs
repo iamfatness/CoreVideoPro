@@ -1839,6 +1839,19 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
     /// last lines (finalize / teardown warnings) reach media-core.log before the reader is closed.</summary>
     public const int StderrDrainMilliseconds = 250;
 
+    /// <summary>
+    /// #782: a Process that never started (Process.Start threw for a missing executable after the
+    /// supervisor had already stored it) or was already disposed has no process to wait for or kill.
+    /// <c>HasExited</c> throws InvalidOperationException for both, which used to escape Stop and
+    /// DisposeAsync. Treat "no associated process" as "nothing running".
+    /// </summary>
+    private static bool IsStillRunning(Process process)
+    {
+        try { return !process.HasExited; }
+        catch (InvalidOperationException) { return false; }
+        catch (System.ComponentModel.Win32Exception) { return false; }
+    }
+
     private static MediaCoreExitOutcome DisposeChild(
         Process? process,
         StreamWriter? stdin,
@@ -1863,7 +1876,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
         }
 
         var outcome = process is null ? MediaCoreExitOutcome.NotRunning : MediaCoreExitOutcome.ExitedOnItsOwn;
-        if (process is { HasExited: false })
+        if (process is not null && IsStillRunning(process))
         {
             var exitedInGrace = false;
             if (exitGrace > TimeSpan.Zero)
