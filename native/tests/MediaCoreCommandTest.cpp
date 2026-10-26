@@ -9544,7 +9544,12 @@ TEST(MediaCoreCommand, ATransportOnABackgroundOnlyAssetIsRefusedAndNamesTheLoop)
   EXPECT_TRUE(std::any_of(warnings.begin(), warnings.end(), [](const std::string& warning) {
     return warning.find("no-such-asset") != std::string::npos;
   })) << "a transport command for an unknown asset must say so";
-  EXPECT_EQ(CountingDecoder::created.load(), 1);
+  // #867: this counter is process-global. If it ever reads 2 again, say WHICH source
+  // restarted (loop restart vs a decoder opened outside this core) instead of a bare 2 vs 1.
+  EXPECT_EQ(CountingDecoder::created.load(), 1)
+      << "background:bg decoder restarts=" << CountingDecoder::restartsFor("background:bg")
+      << " first-frame-id-after-restart=" << CountingDecoder::firstFrameIdAfterRestartFor("background:bg")
+      << " last-frame-id=" << CountingDecoder::lastFrameIdFor("background:bg");
 }
 
 // #1030 (review blockers 1 + nit 3). A roster drop reaches the ISO audio
