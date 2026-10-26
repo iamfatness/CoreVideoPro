@@ -210,6 +210,7 @@ TEST(RenderFrameFetchAbQa, FrameAgeAndHoldForEachFetchOrder) {
   auto* runtime = core->zoomEngineRuntimeForTest();
   ASSERT_TRUE(runtime && runtime->configured());
   runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(abRosterJson(1, participants)));
+  core->setZoomFrameAgeSamplingForTest(true);
   corevideo::rpc::Json::Array sources;
   for (int i = 0; i < std::min(8, participants); ++i)
     sources.emplace_back(corevideo::rpc::Json::Object{{"sourceId", "zoom:" + std::to_string(i + 1)},

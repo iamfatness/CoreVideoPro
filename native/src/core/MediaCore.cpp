@@ -5095,6 +5095,17 @@ void MediaCore::observeZoomFrameAgeAtConsume(const std::vector<modules::VideoFra
   // coreMutex. This point is the same in both fetch orders, so the A/B
   // compares like with like (the engine's own [zoom-latency] line samples at
   // selection, which in the before-lock order precedes the coreMutex wait).
+  // Default path: off. No clock read, no allocation, no map lookup.
+  const bool forTest = zoomFrameAgeSampling_.load(std::memory_order_relaxed);
+  if (!forTest && !::corevideo::core::nativeVerboseLoggingEnabled()) return;
+  // The last-id map belongs to one engine session; a new session (or an
+  // unexpectedly large roster) starts it over, so it can never grow forever.
+  constexpr std::size_t kMaxTrackedParticipants = 256;
+  if (renderEngineInputs_.speakerEpoch != zoomFrameAgeEpoch_ ||
+      zoomFrameAgeLastFrameId_.size() > kMaxTrackedParticipants) {
+    zoomFrameAgeLastFrameId_.clear();
+    zoomFrameAgeEpoch_ = renderEngineInputs_.speakerEpoch;
+  }
   const auto now = std::chrono::steady_clock::now();
   const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
   constexpr std::size_t kMaxSamples = 20000;
@@ -5108,7 +5119,9 @@ void MediaCore::observeZoomFrameAgeAtConsume(const std::vector<modules::VideoFra
   }
   if (zoomFrameAgeWindowStart_ == std::chrono::steady_clock::time_point{}) zoomFrameAgeWindowStart_ = now;
   if (now - zoomFrameAgeWindowStart_ < std::chrono::seconds(2)) return;
-  if (::corevideo::core::nativeVerboseLoggingEnabled() && !zoomFrameAgeSamplesNs_.empty()) {
+  // A QA/test reader drains the samples itself; only the verbose-only
+  // production path logs and clears them per window.
+  if (!forTest && !zoomFrameAgeSamplesNs_.empty()) {
     auto sorted = zoomFrameAgeSamplesNs_;
     std::sort(sorted.begin(), sorted.end());
     ::corevideo::core::nativeVerboseLogf(

@@ -9895,6 +9895,7 @@ struct FrameFetchHarness {
     runtime = core->zoomEngineRuntimeForTest();
     runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
         R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})"));
+    core->setZoomFrameAgeSamplingForTest(true);
   }
   // Observed well past the frame-sync reserve, so it is due now in either order.
   void publishDue(std::int64_t frameId) {
@@ -9908,6 +9909,35 @@ struct FrameFetchHarness {
   }
 };
 }  // namespace
+
+// #1049 review: the frame-age sampler costs the production tick nothing when
+// neither verbose diagnostics nor the QA switch is on, and its per-participant
+// map is scoped to one engine session.
+TEST(MediaCoreRenderGather, FrameAgeSamplingIsOffByDefaultAndScopedToTheSession) {
+  FrameFetchHarness h;
+  ASSERT_TRUE(h.runtime && h.runtime->configured());
+  // Production default: verbose off (an earlier test in the process may have
+  // turned it on), QA switch off.
+  const bool verboseWas = corevideo::core::nativeVerboseLoggingEnabled();
+  corevideo::core::setNativeVerboseLoggingEnabled(false);
+  h.core->setZoomFrameAgeSamplingForTest(false);
+  h.publishDue(1);
+  h.tick(h.core->prepareRenderEngineInputsUnlocked());
+  EXPECT_TRUE(h.core->takeZoomFrameAgeSamplesNsForTest().empty()) << "default path sampled";
+  EXPECT_EQ(h.core->zoomFrameAgeTrackedParticipantsForTest(), 0u) << "default path touched the map";
+
+  h.core->setZoomFrameAgeSamplingForTest(true);
+  h.publishDue(2);
+  h.tick(h.core->prepareRenderEngineInputsUnlocked());
+  EXPECT_EQ(h.core->takeZoomFrameAgeSamplesNsForTest().size(), 1u);
+  EXPECT_EQ(h.core->zoomFrameAgeTrackedParticipantsForTest(), 1u);
+  // A new session (leave moves speakerEpoch) starts the map over.
+  (void)h.core->leaveZoom();
+  h.tick(h.core->prepareRenderEngineInputsUnlocked());
+  EXPECT_EQ(h.core->zoomFrameAgeTrackedParticipantsForTest(), 0u) << "the last-id map outlived its session";
+  corevideo::core::setNativeVerboseLoggingEnabled(verboseWas);
+  h.core.reset();
+}
 
 TEST(MediaCoreRenderGather, BothFetchOrdersDeliverADueZoomFrameToTheTick) {
   for (const bool beforeLock : {false, true}) {

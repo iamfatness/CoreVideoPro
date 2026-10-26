@@ -249,7 +249,16 @@ class MediaCore {
   // #1049: Zoom frame age at the moment the render tick consumes a NEW frame
   // under coreMutex (consume time - ingest observedAt, ns), the same point in
   // both fetch orders. Sampled once per frame per participant; bounded.
+  // OFF by default: the production tick pays one relaxed atomic load and one
+  // acquire load (verbose flag) and returns, with no clock read and no
+  // allocation. Verbose diagnostics or this QA/test switch turn it on.
+  void setZoomFrameAgeSamplingForTest(bool enabled) {
+    zoomFrameAgeSampling_.store(enabled, std::memory_order_relaxed);
+  }
   [[nodiscard]] std::vector<std::int64_t> takeZoomFrameAgeSamplesNsForTest();
+  [[nodiscard]] std::size_t zoomFrameAgeTrackedParticipantsForTest() const {
+    return zoomFrameAgeLastFrameId_.size();
+  }
   void observeZoomFrameAgeAtConsume(const std::vector<modules::VideoFrame>& frames);
 
   // Phase 2 audio/output decouple. The audio mix, routed-bus matrix, monitor
@@ -1133,8 +1142,10 @@ class MediaCore {
   // under engine-mutex contention. under-lock is the rollback lever.
   std::atomic<bool> renderFrameFetchBeforeLock_{true};
   // #1049 frame age at consume (render thread, under coreMutex).
+  std::atomic<bool> zoomFrameAgeSampling_{false};
   std::vector<std::int64_t> zoomFrameAgeSamplesNs_;
   std::unordered_map<std::string, std::int64_t> zoomFrameAgeLastFrameId_;
+  std::uint64_t zoomFrameAgeEpoch_ = 0;  // the session the last-id map belongs to
   std::chrono::steady_clock::time_point zoomFrameAgeWindowStart_{};
   // #1037 R3: the Zoom half of the video consumer demand the render tick
   // computed, applied to the engine by the NEXT tick's pre-read (coreMutex
