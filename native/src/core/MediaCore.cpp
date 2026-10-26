@@ -771,6 +771,22 @@ rpc::Json MediaCore::sessionState() const {
 }
 
 rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) {
+  applyZoomSpineCoreState(payload);
+  if (auto engine = syncZoomEngineSpineUnlocked(payload, elapsedMs)) return std::move(*engine);
+  return syncStubZoomSpine(payload, elapsedMs);
+}
+
+std::optional<rpc::Json> MediaCore::syncZoomEngineSpineUnlocked(const rpc::Json& payload, double elapsedMs) {
+  if (!zoomEngineRuntime_ || !zoomEngineRuntime_->configured()) return std::nullopt;
+  return zoomEngineRuntime_->syncSpine(payload, elapsedMs);
+}
+
+std::optional<rpc::Json> MediaCore::zoomEngineSnapshotUnlocked() const {
+  if (!zoomEngineRuntime_ || !zoomEngineRuntime_->configured()) return std::nullopt;
+  return zoomEngineRuntime_->snapshot();
+}
+
+void MediaCore::applyZoomSpineCoreState(const rpc::Json& payload) {
   // Deliver the GPU multiview layout on this frequent, reliable channel. The production sync's
   // set-multiview-layout fires only on user actions (and sends an EMPTY layout at startup), so
   // the multiview never gets the live Show Input roster from it. applyMultiviewLayout dedups by
@@ -794,11 +810,9 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
       ::corevideo::core::nativeVerboseLogf("[preview] set-preview-scene received: %d routes (spine)\n", previewRouteCount_);
     }
   }
+}
 
-  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    return zoomEngineRuntime_->syncSpine(payload, elapsedMs);
-  }
-
+rpc::Json MediaCore::syncStubZoomSpine(const rpc::Json& payload, double elapsedMs) {
   const rpc::Json* participantsNode = payload.get("participants");
   const rpc::Json* subscriptionsNode = payload.get("subscriptions");
   const auto& participants = participantsNode && participantsNode->isArray() ? participantsNode->asArray() : rpc::Json::Array{};

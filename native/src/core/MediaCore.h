@@ -157,6 +157,22 @@ class MediaCore {
   // frame-validated, "" for nobody. See the .cpp and core/FollowSpeakerHold.h.
   [[nodiscard]] std::string followSpeakerForRoutes(const std::vector<modules::VideoFrame>& videoFrames) const;
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
+  // #1048 C1: the two halves of syncZoomMediaSpine, for the live command lane.
+  // The core half (multiview layout + preview scene) runs under coreMutex; the
+  // engine half (ZoomEngineRuntime::syncSpine: subscription diff + spine
+  // snapshot JSON, all under the engine mutex) runs after coreMutex is
+  // released. syncZoomMediaSpine() still runs both inline for direct callers.
+  void applyZoomSpineCoreState(const rpc::Json& payload);
+  // Engine half. Touches only zoomEngineRuntime_ (created once, never reset),
+  // so it is safe without coreMutex. nullopt when no engine is configured
+  // (the stub spine needs coreMutex: use syncZoomMediaSpine).
+  [[nodiscard]] std::optional<rpc::Json> syncZoomEngineSpineUnlocked(const rpc::Json& payload, double elapsedMs);
+  // #1048 C2: zoom-snapshot's answer when an engine is configured, a pure
+  // engine read made without coreMutex. nullopt = no engine (stub snapshot
+  // reads coreMutex state: use zoomSnapshot()).
+  [[nodiscard]] std::optional<rpc::Json> zoomEngineSnapshotUnlocked() const;
+  // The stub (no engine) spine half; coreMutex state.
+  [[nodiscard]] rpc::Json syncStubZoomSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
   [[nodiscard]] std::unique_ptr<modules::ProgramFrame> drainProgramPreviewJob();

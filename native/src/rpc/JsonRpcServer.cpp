@@ -8,6 +8,7 @@
 
 #include "core/LockHoldGuardrail.h"
 #include "core/RenderTickPhases.h"
+#include "modules/EngineMutexGuardrail.h"
 #include "core/ScopedVideoScheduling.h"
 #include "core/AnchoredFrameDeadlineTracker.h"
 #include "rpc/CommandMailbox.h"
@@ -59,6 +60,16 @@ Json::Array commandBatch(const Json& request) {
   return Json::Array{request};
 }
 
+// #1048: names the command behind an over-budget cmd.handle hold.
+class CommandHoldDetail final : public core::LockHoldDetail {
+ public:
+  explicit CommandHoldDetail(const std::string& type) : type_(type) {}
+  [[nodiscard]] std::string describe(long long) const override { return "command=" + type_.substr(0, 80); }
+
+ private:
+  const std::string& type_;
+};
+
 }  // namespace
 
 JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler, SnapshotAssembler assembler, ResourceFormatter formatter, WriterWaitTestHooks writerWaitHooks)
@@ -76,6 +87,38 @@ Json JsonRpcServer::handshake() const {
       {"protocolVersion", contracts::toJson(contracts::ProtocolVersion{1, 0})},
       {"processEpoch", processEpoch_},
   };
+}
+
+Json JsonRpcServer::spineSyncResponse(const Json& id, const Json& snapshot) const {
+  return success(id, Json::Object{
+                         {"type", "zoom-media-spine-sync"},
+                         {"spineSnapshot", snapshot},
+                         {"zoom", snapshot},
+                     });
+}
+
+Json JsonRpcServer::finishDeferredEngineSpine(const DeferredEngineSpine& deferred) {
+  // Runs on the command thread with coreMutex RELEASED, before the next
+  // command is dequeued, so command order is unchanged. A render tick may run
+  // between the two halves, exactly as one may run between two commands.
+  auto snapshot = mediaCore_.syncZoomEngineSpineUnlocked(deferred.payload, deferred.elapsedMs);
+  // The engine is configured once at startup; nullopt would mean it was
+  // unconfigured between the halves. Answer with no snapshot (the engine
+  // itself answers null when unconfigured) rather than touch the stub spine
+  // without coreMutex.
+  return spineSyncResponse(deferred.id, snapshot ? *snapshot : Json(nullptr));
+}
+
+std::optional<Json> JsonRpcServer::handleWithoutCore(const Json& request) {
+  if (!hasType(request, "zoom-snapshot")) return std::nullopt;
+  if (const auto* version = request.get("protocolVersion"); version && !contracts::validateProtocolVersion(*version))
+    return std::nullopt;  // the locked path answers incompatible-protocol
+  auto snapshot = mediaCore_.zoomEngineSnapshotUnlocked();
+  if (!snapshot) return std::nullopt;  // stub snapshot: coreMutex state
+  return success(requestId(request), Json::Object{
+                                         {"type", "zoom-snapshot"},
+                                         {"snapshot", std::move(*snapshot)},
+                                     });
 }
 
 Json JsonRpcServer::handle(const Json& request) {
@@ -105,12 +148,15 @@ Json JsonRpcServer::handle(const Json& request) {
     if (!payload || !payload->isObject()) {
       return failure(id, "protocol-error", "Zoom media spine sync request must include payload.");
     }
-    const auto snapshot = mediaCore_.syncZoomMediaSpine(*payload, request.get("elapsedMs") ? request.get("elapsedMs")->asNumber() : 0);
-    return success(id, Json::Object{
-                           {"type", "zoom-media-spine-sync"},
-                           {"spineSnapshot", snapshot},
-                           {"zoom", snapshot},
-                       });
+    const double elapsedMs = request.get("elapsedMs") ? request.get("elapsedMs")->asNumber() : 0;
+    if (engineSpineDeferral_ && mediaCore_.zoomEngineConfigured()) {
+      // #1048 C1 (live loop only): apply the core half now, under coreMutex;
+      // the engine half runs after the release (finishDeferredEngineSpine).
+      mediaCore_.applyZoomSpineCoreState(*payload);
+      *engineSpineDeferral_ = DeferredEngineSpine{id, *payload, elapsedMs};
+      return Json(nullptr);
+    }
+    return spineSyncResponse(id, mediaCore_.syncZoomMediaSpine(*payload, elapsedMs));
   }
 
   if (hasType(request, "zoom-join")) {
@@ -1157,10 +1203,21 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         std::unique_ptr<core::CoreStateCapture> capture;
         core::SnapshotProjection projection = core::SnapshotProjection::Session;
         std::chrono::steady_clock::time_point h0, h1;
+        std::optional<Json> lockFreeResponse;
+        std::optional<DeferredEngineSpine> deferredSpine;
+        bool handledWithoutCore = false;
         if ((reqType == "zoom-leave" || reqType == "zoom-cancel") &&
             (!request->get("protocolVersion") || contracts::validateProtocolVersion(*request->get("protocolVersion")))) {
           std::lock_guard<std::mutex> lock(joinMx);
           ++joinGeneration; // invalidate auth/spawn waits before applying Leave
+        }
+        if (reqType == "zoom-snapshot") {
+          // #1048 C2: with an engine configured, zoom-snapshot is a pure engine
+          // read (a full roster JSON under the engine mutex): answered here,
+          // with no coreMutex. Without one it falls through to the locked path.
+          h0 = std::chrono::steady_clock::now();
+          lockFreeResponse = handleWithoutCore(*request);
+          h1 = std::chrono::steady_clock::now();
         }
         if (reqType == "zoom-join" && (joinHandler_ || mediaCore_.zoomEngineConfigured()) &&
             request->get("payload") && request->get("payload")->isObject() &&
@@ -1184,24 +1241,39 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         } else if (reqType == "register-grade-document") {
           // Content parsing owns only the registry mutex; production does not wait.
           h0 = std::chrono::steady_clock::now(); response = handle(*request); h1 = std::chrono::steady_clock::now();
+        } else if (lockFreeResponse) {
+          handledWithoutCore = true;
+          response = std::move(*lockFreeResponse);
         } else {
           // Backpressure is admitted before acquiring the render lock.
           assembly.waitForCapacity();
           auto lock = lockCommandCore();
+          // #1048: an over-budget command hold names its command type in the
+          // [lock-hold-attribution] line (production; [command-lock] is verbose only).
+          const CommandHoldDetail commandDetail(reqType);
           // Commands apply state and copy a snapshot under the lock; live render
           // cadence belongs to the display worker. Keep the existing budget as
           // a regression backstop above the 30ms [cmd] warning below.
           core::ScopedLockHoldTimer holdGuard("cmd.handle",
-                                              core::LockHoldGuardrail::kCommandHandleBudgetUs);
+                                              core::LockHoldGuardrail::kCommandHandleBudgetUs, &commandDetail);
+          // #1048 gate: these two commands must not take the Zoom engine
+          // mutex while coreMutex is held (their engine work runs after the
+          // release, below). Any acquisition here is counted and logged once.
+          std::optional<modules::ForbidEngineMutexScope> engineGate;
+          if (reqType == "zoom-media-spine-sync" || reqType == "zoom-snapshot") engineGate.emplace("cmd.handle");
           h0 = std::chrono::steady_clock::now();
           mediaCore_.setSnapshotDeferrer([&](std::unique_ptr<core::CoreStateCapture> value, core::SnapshotProjection kind) {
             capture = std::move(value); projection = kind; return Json(nullptr);
           });
+          engineSpineDeferral_ = &deferredSpine;
           try { response = handle(*request); }
-          catch (...) { mediaCore_.setSnapshotDeferrer({}); throw; }
+          catch (...) { engineSpineDeferral_ = nullptr; mediaCore_.setSnapshotDeferrer({}); throw; }
+          engineSpineDeferral_ = nullptr;
           mediaCore_.setSnapshotDeferrer({});
           h1 = std::chrono::steady_clock::now();
         }
+        // #1048 C1: coreMutex is released here; the spine's engine half runs now.
+        if (deferredSpine) response = finishDeferredEngineSpine(*deferredSpine);
         const auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(h1 - h0).count();
         const auto heldUs = std::chrono::duration_cast<std::chrono::microseconds>(h1 - h0).count();
         if (heldUs > core::LockHoldGuardrail::kCommandHandleBudgetUs) {
@@ -1210,7 +1282,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         }
         const auto lockWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(h0 - dequeuedAt).count();
         if (heldMs >= 30) {
-          const bool lockFree = reqType == "zoom-join" && mediaCore_.zoomEngineConfigured();
+          const bool lockFree = handledWithoutCore || (reqType == "zoom-join" && mediaCore_.zoomEngineConfigured());
           ::corevideo::core::nativeLogf("[cmd] '%s' %s %lldms%s\n", reqType.c_str(),
                        lockFree ? "handled lock-free in" : "held core lock",
                        static_cast<long long>(heldMs), lockFree ? " (render unaffected)" : " (starves render)");
