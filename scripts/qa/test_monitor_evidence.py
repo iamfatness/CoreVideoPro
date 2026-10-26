@@ -235,5 +235,37 @@ for line in sys.stdin:
             self.assertFalse(core.reader.is_alive())
 
 
+    def test_non_ascii_utf8_response_decodes_regardless_of_windows_locale(self):
+        # #877: the pipe carries UTF-8 protocol bytes. U+0141 is C5 81 and 0x81 is
+        # undefined in cp1252, so a locale-decoded reader would die mid-line.
+        with tempfile.TemporaryDirectory() as directory:
+            peer = pathlib.Path(directory) / "peer.py"
+            peer.write_text(r"""import json,sys
+out=sys.stdout.buffer
+for line in sys.stdin.buffer:
+    m=json.loads(line.decode('utf-8'))
+    body=json.dumps({'id':m['id'],'ok':True,'name':'Caf\u00e9 \u0141ukasz \u2019 \U0001F600'},ensure_ascii=False)
+    out.write(body.encode('utf-8')+b'\n')
+    out.flush()
+""")
+            import subprocess
+            import unittest.mock
+
+            original = subprocess.Popen
+            with unittest.mock.patch(
+                "monitor_evidence.subprocess.Popen",
+                side_effect=lambda args, **kw: original(
+                    [sys.executable, str(peer)], **kw
+                ),
+            ):
+                core = Core(sys.executable, {}, pathlib.Path(directory) / "stderr.log")
+            try:
+                response = core.request({"type": "echo"})
+                self.assertEqual(response["name"], "Caf\u00e9 \u0141ukasz \u2019 \U0001F600")
+            finally:
+                core.close()
+            self.assertFalse(core.reader.is_alive())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -59,6 +59,11 @@ class Core:
                 stdout=subprocess.PIPE,
                 stderr=stderr_file,
                 text=True,
+                # The JSON-line protocol is UTF-8 on the wire. Never inherit the
+                # Windows ANSI code page (cp1252 cannot decode bytes such as 0x81).
+                # errors=replace keeps one bad byte from killing the reader thread.
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 env={
                     **{

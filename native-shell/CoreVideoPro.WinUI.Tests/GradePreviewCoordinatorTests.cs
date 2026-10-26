@@ -24,9 +24,12 @@ public sealed class GradePreviewCoordinatorTests
     }
     private static async Task Until(Func<bool> condition)
     {
-        var end = DateTime.UtcNow.AddSeconds(3);
+        // #906: the coordinator's first command rides a thread-pool timer, so a shared CI
+        // runner whose pool is saturated can take well over 3 s to deliver it. This waits
+        // for an event (no assertion is relaxed); a genuine hang still fails, just later.
+        var end = DateTime.UtcNow.AddSeconds(30);
         while (!condition() && DateTime.UtcNow < end) await Task.Delay(10);
-        Assert.True(condition());
+        Assert.True(condition(), "condition not reached within 30 s");
     }
     [Fact] public async Task CoalescesEditsAndSerializesCloseBehindPendingCommand()
     {

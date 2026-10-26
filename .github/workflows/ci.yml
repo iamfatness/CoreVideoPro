@@ -252,6 +252,29 @@ jobs:
         run: ./native/build-metal/corevideo-native-tests --gtest_filter='MacCapture*'
       - name: Full native tests (Metal configuration)
         run: ctest --test-dir native/build-metal --output-on-failure
+      # #933: a segfault on the paravirtual runner left no stack. Keep the macOS
+      # crash reports for the test binary so the next occurrence is attributable
+      # (test code vs AVFoundation/VideoToolbox vs runner) instead of a bare exit 139.
+      - name: Retain macOS crash reports
+        if: failure()
+        run: |
+          sleep 5  # ReportCrash writes the report asynchronously
+          mkdir -p native/build-metal/crash-reports
+          for dir in ~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports; do
+            ls -la "$dir" 2>/dev/null || true
+            find "$dir" -maxdepth 1 -name 'corevideo-native-tests*' -exec cp {} native/build-metal/crash-reports/ \; 2>/dev/null || true
+          done
+          for report in native/build-metal/crash-reports/*; do
+            [ -f "$report" ] && { echo "=== $report"; head -c 40000 "$report"; }
+          done
+          true
+      - name: Upload macOS crash reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-metal-macos-crash-reports
+          path: native/build-metal/crash-reports
+          if-no-files-found: ignore
 
   # ThreadSanitizer over the stub build: the Phase 2 audio/output worker decouple
   # relies on a strict coreMutex/audioOutputMutex_ two-lock discipline, and a single
