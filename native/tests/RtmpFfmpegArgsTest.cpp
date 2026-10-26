@@ -3,7 +3,6 @@
 
 #include <gtest/gtest.h>
 
-#include <string_view>
 #include <utility>
 
 namespace {
@@ -307,10 +306,10 @@ TEST(RtmpFfmpegArgs, SharedAacIsCopiedWithoutPcmResampleClock) {
 // the enhanced-RTMP fourcc itself (no -tag:v).
 TEST(RtmpFfmpegArgs, BitstreamInputModeNamesTheRawDemuxerPerCodec) {
   using corevideo::modules::rawDemuxerForBitstreamCodec;
-  EXPECT_EQ(std::string_view(rawDemuxerForBitstreamCodec("h264")), std::string_view("h264"));
-  EXPECT_EQ(std::string_view(rawDemuxerForBitstreamCodec("hevc")), std::string_view("hevc"));
-  EXPECT_EQ(std::string_view(rawDemuxerForBitstreamCodec("av1")), std::string_view("obu"));
-  EXPECT_EQ(std::string_view(rawDemuxerForBitstreamCodec("bogus")), std::string_view("h264"));
+  EXPECT_STREQ(rawDemuxerForBitstreamCodec("h264"), "h264");
+  EXPECT_STREQ(rawDemuxerForBitstreamCodec("hevc"), "hevc");
+  EXPECT_STREQ(rawDemuxerForBitstreamCodec("av1"), "obu");
+  EXPECT_STREQ(rawDemuxerForBitstreamCodec("bogus"), "h264");
 
   for (const auto& [codec, demuxer] : {std::pair{"hevc", "hevc"}, std::pair{"av1", "obu"}}) {
     corevideo::modules::RtmpFfmpegArgsConfig config;

@@ -82,6 +82,13 @@ public sealed class MediaCoreAppExitStopTests
     /// (the child's open is exclusive for an instant) is not a verdict: the caller retries until its
     /// own deadline. Returns null when the file is absent or momentarily locked.
     /// </summary>
+    private static bool IsSharingViolation(IOException ex)
+    {
+        // ERROR_SHARING_VIOLATION (32) and ERROR_LOCK_VIOLATION (33) in the low word of the HRESULT.
+        var code = ex.HResult & 0xFFFF;
+        return code is 32 or 33;
+    }
+
     internal static async Task<string?> TryReadTraceAsync(string trace)
     {
         try
@@ -94,7 +101,9 @@ public sealed class MediaCoreAppExitStopTests
         }
         catch (FileNotFoundException) { return null; }
         catch (DirectoryNotFoundException) { return null; }
-        catch (IOException) { return null; }
+        // Only a sharing/lock violation is a retryable "not now". Anything else is a real read
+        // failure and must surface, or a negative assertion on the trace passes vacuously.
+        catch (IOException ex) when (IsSharingViolation(ex)) { return null; }
     }
 
     internal static async Task<string> WaitForTraceAsync(string trace, string marker, TimeSpan? limit = null)
@@ -145,6 +154,20 @@ public sealed class MediaCoreAppExitStopTests
             Assert.Contains("eof-ignored", await wait);
         }
         finally { try { File.Delete(path); } catch { } }
+    }
+
+    [Fact]
+    public async Task ATraceReadFailureThatIsNotASharingConflictSurfaces()
+    {
+        // A directory where the trace file should be: a real I/O error (access denied), not a
+        // sharing conflict. It must throw, not read as an empty trace.
+        var path = Path.Combine(Path.GetTempPath(), "corevideo-trace-" + Guid.NewGuid().ToString("N") + ".txt");
+        Directory.CreateDirectory(path);
+        try
+        {
+            await Assert.ThrowsAnyAsync<Exception>(() => TryReadTraceAsync(path));
+        }
+        finally { try { Directory.Delete(path); } catch { } }
     }
 
     [Fact]

@@ -30,6 +30,11 @@ public sealed class SupportBundleLogRedactorTests
         { "token run with spaces", string.Concat(Enumerable.Repeat("tokenx ", 30_000)) },
         { "long url path", "rtmp://h/" + new string('p', 200_000) },
         { "bearer run", "Bearer " + new string('b', 200_000) },
+        { "jwt prefix run", string.Concat(Enumerable.Repeat("eyJ-", 50_000)) },
+        { "jwt starts, two segments, dash tail", string.Concat(Enumerable.Repeat("eyJ-", 25_000)) + ".aaaaaaaa." + new string('-', 100_000) },
+        { "jwt prefix run then dot", string.Concat(Enumerable.Repeat("eyJ-", 50_000)) + "." },
+        { "jwt prefix run, dot, short tail", string.Concat(Enumerable.Repeat("eyJ-", 50_000)) + ".abc" },
+        { "jwt prefix run with dots", string.Concat(Enumerable.Repeat("eyJaaaaaaaa.", 20_000)) },
     };
 
     [Theory]
@@ -64,6 +69,8 @@ public sealed class SupportBundleLogRedactorTests
     [InlineData("x_key_y=1", "x_key_y=1")]
     [InlineData("{\"streamKey\":\"abc\"}", "{\"streamKey\":\"[redacted]\"}")]
     [InlineData("rtmp://live.example/app/SECRET", "rtmp://live.example/[redacted]")]
+    [InlineData("tok eyJhbGciOiJI.eyJzdWIiOiIx.abcd end", "tok [redacted] end")]
+    [InlineData("eyJaaaaaaaa.bbbbbbbb.cccc-", "[redacted]-")]
     [InlineData("Authorization: Bearer abc.def", "Authorization: Bearer [redacted]")]
     public void RedactsWhatItAlwaysRedacted(string input, string expected)
     {

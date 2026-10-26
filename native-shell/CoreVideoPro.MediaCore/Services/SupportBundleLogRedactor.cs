@@ -58,9 +58,14 @@ public static class SupportBundleLogRedactor
         RegexOptions.Compiled);
 
     // Bare JWTs (three dot-joined base64url segments starting with eyJ).
+    //
+    // #998 follow-on: many "eyJ" starts inside one long run of class characters each rescan the
+    // run, and the trailing {4,}\b backtracks over it (measured 4x per doubling). Atomic groups
+    // cannot fix that: the rescans happen at DIFFERENT start positions. NonBacktracking runs in
+    // time linear in the input, with the same matches for this alternation-free pattern.
     private static readonly Regex JwtShaped = new(
         @"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{4,}\b",
-        RegexOptions.Compiled);
+        RegexOptions.NonBacktracking);
 
     /// <summary>Redacts secret-shaped content in a chunk of log text.</summary>
     public static string Redact(string text)

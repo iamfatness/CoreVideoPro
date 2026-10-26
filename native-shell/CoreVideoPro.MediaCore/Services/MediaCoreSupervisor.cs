@@ -1849,6 +1849,9 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
     {
         try { return !process.HasExited; }
         catch (InvalidOperationException) { return false; }
+        // Process.HasExited can also raise Win32Exception when the OS refuses the handle query
+        // (access denied on a process we no longer own). Same meaning here: nothing to wait for
+        // or kill, and Stop/Dispose must not throw for it.
         catch (System.ComponentModel.Win32Exception) { return false; }
     }
 
