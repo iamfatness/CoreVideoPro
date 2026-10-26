@@ -77,8 +77,11 @@ product tier. The reference run below is the 30-minute outputs soak of October 2
 on `beta-2026-10-22-f96a136` (ruling and summary in [`docs/BACKLOG.md`](docs/BACKLOG.md), "Owner gate
 ruling, October 22"; raw evidence in the local `artifacts/qualification-1008-25`, not in git): eight 1080p Zoom feeds, webcam, moving screen capture,
 Program + eight ISO recordings on hardware encoders, the registered OS camera at 1080p60 and
-an SRT stream, with zero missing frame identities on every output. The later
-`beta-2026-10-23-1072a50` has not been soaked.
+an SRT stream, with zero missing frame identities on every output. `beta-2026-10-23-1072a50`
+was not soaked. `beta-2026-10-25-1f697ca` had a 30-minute clean-picture soak on October 25 (no identity
+stamps, so no identity verdict; write-up in [`docs/qa/rc-beta-acceptance-2026-10-25.md`](docs/qa/rc-beta-acceptance-2026-10-25.md)):
+the stream, every ISO writer and the camera publisher ran clean, and Program recording missed one frame on a
+15 ms render-tick lock hold ([#1056](https://github.com/iamfatness/CoreVideoPro/issues/1056)).
 
 | Area | Capability | Status |
 |---|---|---|
