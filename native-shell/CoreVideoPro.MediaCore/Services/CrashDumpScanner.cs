@@ -123,7 +123,19 @@ public static class CrashDumpScanner
         var byPath = new Dictionary<string, CrashDumpFile>(StringComparer.OrdinalIgnoreCase);
         foreach (var directory in directories)
         {
-            foreach (var dump in Scan(directory, newerThanUtc))
+            IReadOnlyList<CrashDumpFile> found;
+            try
+            {
+                found = Scan(directory, newerThanUtc);
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+            {
+                // One unreadable folder (a configured DumpFolder we cannot list) must not
+                // hide dumps in the others; the next launch re-offers anything still there.
+                continue;
+            }
+
+            foreach (var dump in found)
             {
                 byPath.TryAdd(Path.GetFullPath(dump.Path), dump);
             }

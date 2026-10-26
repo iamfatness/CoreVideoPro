@@ -208,4 +208,77 @@ public sealed class CrashDumpScannerTests : IDisposable
         Assert.Equal("corevideo-zoom-engine.exe", dumps[1].ProcessName);
         Assert.Equal(16, dumps[1].Length);
     }
+
+    [Fact]
+    public void Scan_UnreadableDirectoryDoesNotHideDumpsInTheOthers()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var watermark = new DateTimeOffset(2026, 7, 10, 0, 0, 0, TimeSpan.Zero);
+        var good = Directory.CreateDirectory(Path.Combine(_dir, "CrashDumps")).FullName;
+        var denied = Directory.CreateDirectory(Path.Combine(_dir, "denied")).FullName;
+        var dump = Path.Combine(good, "corevideo-native.exe.1.dmp");
+        File.WriteAllBytes(dump, new byte[8]);
+        File.SetLastWriteTimeUtc(dump, (watermark + TimeSpan.FromHours(1)).UtcDateTime);
+
+        using var denial = DenyListing(denied);
+        Assert.True(Directory.Exists(denied));
+        Assert.Throws<UnauthorizedAccessException>(() => CrashDumpScanner.Scan(denied, watermark));
+
+        // The unreadable folder comes FIRST: it used to abort the whole scan.
+        var dumps = CrashDumpScanner.Scan([denied, good], watermark);
+        Assert.Single(dumps);
+        Assert.Equal(dump, dumps[0].Path);
+    }
+
+    [Fact]
+    public void ReadConfiguredDumpFolderFromRegistry_AgainstTheLiveKey_IsNullOrAnExpandablePath()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        foreach (var exe in CrashDumpScanner.MonitoredExecutables)
+        {
+            var raw = CrashDumpScanner.ReadConfiguredDumpFolderFromRegistry(exe);
+            if (raw is null)
+            {
+                continue; // not installed / not configured on this machine
+            }
+
+            var expanded = Environment.ExpandEnvironmentVariables(raw);
+            Assert.False(string.IsNullOrWhiteSpace(expanded), exe);
+            Assert.DoesNotContain('%', expanded);
+        }
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static IDisposable DenyListing(string directory)
+    {
+        var info = new DirectoryInfo(directory);
+        var security = info.GetAccessControl();
+        var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        var rule = new System.Security.AccessControl.FileSystemAccessRule(
+            user,
+            System.Security.AccessControl.FileSystemRights.ListDirectory,
+            System.Security.AccessControl.AccessControlType.Deny);
+        security.AddAccessRule(rule);
+        info.SetAccessControl(security);
+        return new Restore(info, rule);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private sealed class Restore(DirectoryInfo info, System.Security.AccessControl.FileSystemAccessRule rule) : IDisposable
+    {
+        public void Dispose()
+        {
+            var security = info.GetAccessControl();
+            security.RemoveAccessRule(rule);
+            info.SetAccessControl(security);
+        }
+    }
 }

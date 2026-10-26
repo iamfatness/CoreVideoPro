@@ -48,9 +48,8 @@ public sealed class SupportBundleArchiveOptions
                 new SupportBundleArchiveSource { EntryName = "vcam-serve.log", Path = System.IO.Path.Combine(programData, "CoreVideoPro", "vcam-serve.log") }
             ],
             CrashDumpsDirectory = System.IO.Path.Combine(localAppData, "CrashDumps"),
+            // The whole list; BuildDumpListing de-duplicates against CrashDumpsDirectory.
             ExtraCrashDumpsDirectories = CrashDumpScanner.ResolveDumpDirectories()
-                .Skip(1) // the first entry is the CrashDumps default above
-                .ToList()
         };
     }
 }
@@ -275,11 +274,20 @@ public static class SupportBundleArchiveBuilder
             return;
         }
 
-        var files = new DirectoryInfo(crashDumpsDirectory)
-            .EnumerateFiles()
-            .OrderByDescending(file => file.LastWriteTimeUtc)
-            .Take(100)
-            .ToList();
+        List<FileInfo> files;
+        try
+        {
+            files = new DirectoryInfo(crashDumpsDirectory)
+                .EnumerateFiles()
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Take(100)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            builder.AppendLine($"Directory could not be listed ({ex.GetType().Name}: {ex.Message}).");
+            return;
+        }
 
         if (files.Count == 0)
         {
