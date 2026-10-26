@@ -146,12 +146,12 @@ internal static class GraphicsWorkspaceLayoutProbe
             // control state, bounded, and report the actual field, count and selection on failure.
             string CueState()=>$"search='{search.Text}', items={cueList.Items.Count}, selectedId='{studio.GraphicsWorkspace.SelectedId}'";
             search.Text="Show cue 2";
-            await Eventually(()=>cueList.Items.Count==1,"Cue filtering did not narrow to the matching cue ("+CueState()+")");
+            await Eventually(()=>cueList.Items.Count==1,()=>"Cue filtering did not narrow to the matching cue ("+CueState()+")");
             Require(cueList.Items.Count==1 && studio.GraphicsWorkspace.SelectedId=="fixture-1","Cue filtering changed selection or returned the wrong cue ("+CueState()+")");
             search.Text=""; var scope=Descendants(workspace).OfType<ComboBox>().Single(c=>c.Header?.ToString()=="Scope"); scope.SelectedIndex=1;
-            await Eventually(()=>cueList.Items.Count==7,"Current Program scope did not retain global cues and hide the other scene ("+CueState()+")");
+            await Eventually(()=>cueList.Items.Count==7,()=>"Current Program scope did not retain global cues and hide the other scene ("+CueState()+")");
             Require(cueList.Items.Count==7,"Current Program scope did not retain global cues and hide the other scene ("+CueState()+")"); scope.SelectedIndex=0;
-            await Eventually(()=>cueList.Items.Count==8,"Clearing cue filters did not restore every cue ("+CueState()+")");
+            await Eventually(()=>cueList.Items.Count==8,()=>"Clearing cue filters did not restore every cue ("+CueState()+")");
             Require(cueList.Items.Count==8 && studio.GraphicsWorkspace.SelectedId=="fixture-1","Clearing cue filters lost the selected cue ("+CueState()+")");
             checks.Add("Cue search and Program-scene filtering retain the selected private draft and restore all cue rows");
             using var control = new StudioControlSurface(studio, window.DispatcherQueue);
@@ -235,5 +235,7 @@ internal static class GraphicsWorkspaceLayoutProbe
     private static void Invoke(Button button)=>((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke();
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root) { for(var i=0;i<VisualTreeHelper.GetChildrenCount(root);i++) {var child=VisualTreeHelper.GetChild(root,i);yield return child;foreach(var descendant in Descendants(child))yield return descendant;} }
     private static void Require(bool value,string reason) {if(!value)throw new InvalidOperationException(reason);}
+    // Reason is evaluated after the wait, so a timeout reports the state it timed out in (#970).
+    private static async Task Eventually(Func<bool> predicate, Func<string> reason) {var watch=Stopwatch.StartNew();while(!predicate()&&watch.Elapsed<TimeSpan.FromSeconds(10))await Task.Delay(30);Require(predicate(),predicate()?"":reason());}
     private static async Task Eventually(Func<bool> predicate, string reason="Compiled Graphics controls did not load") {var watch=Stopwatch.StartNew();while(!predicate()&&watch.Elapsed<TimeSpan.FromSeconds(10))await Task.Delay(30);Require(predicate(),reason);}
 }
