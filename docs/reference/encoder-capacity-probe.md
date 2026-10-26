@@ -100,3 +100,7 @@ to remove.
 - **Tests that arm a real recording must pin the capacity** with
   `corevideo::testing::ForcedEncoderCapacity` (`tests/EncoderCapacityProbeTestSupport.h`)
   — otherwise they race an asynchronous, GPU-dependent probe.
+
+## Arm waits for the in-flight probe (#1042)
+
+`configureRecording` prewarms the probe for the take workload, and Record can follow within about 2 s, before it finishes. `start` therefore calls `EncoderCapacityCache::awaitProbe(key)` (bounded, 5 s) for the exact workload BEFORE `setRecordingActive(true)`; after that call the probe thread would discard its own result as overlapping the take. Only ISO takes wait (Program-only arm never reads the probe). A timeout keeps the loud `iso-encoder-software-spill-unprobed` verdict and `recording.isoAdmission.capacity` ends with `arm-waited=Nms and the probe had still not finished`; a success ends with `arm-waited=Nms for the probe`. The wait blocks the command path for at most the bound, and only when a probe is in flight.

@@ -510,6 +510,36 @@ void EncoderCapacityCache::invalidate() {
   cache_.clear();
   inFlight_.clear();
   lastProbeAt().clear();
+  probeSettled_.notify_all();
+}
+
+void EncoderCapacityCache::setArmWaitForTesting(std::chrono::milliseconds wait) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  armWait_ = wait;
+}
+
+std::int64_t EncoderCapacityCache::awaitProbe(const EncoderProbeKey& key) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (forcedCapacityActive_ || cache_.find(key) != cache_.end()) {
+    return 0;
+  }
+  // Cold cache and nothing in flight (configure never ran, or the rate limit
+  // skipped it): start it now so the wait below has something to wait for.
+  startProbeLocked(key);
+  const auto flight = inFlight_.find(key);
+  if (flight == inFlight_.end() || !flight->second) {
+    return 0;  // probing not allowed right now (live encoding): nothing to wait for
+  }
+  const auto epoch = cacheEpoch_;
+  const auto began = std::chrono::steady_clock::now();
+  probeSettled_.wait_for(lock, armWait_, [&] {
+    if (epoch != cacheEpoch_ || cache_.find(key) != cache_.end()) return true;
+    const auto it = inFlight_.find(key);
+    return it == inFlight_.end() || !it->second;
+  });
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now() - began)
+      .count();
 }
 
 void EncoderCapacityCache::setRecordingActive(bool active) {
@@ -614,6 +644,7 @@ void EncoderCapacityCache::startProbeLocked(const EncoderProbeKey& key) {
         // show has since stopped, that measurement overlapped occupied slots.
         inFlight_[key] = false;
         lastProbeAt().erase(key);
+        probeSettled_.notify_all();
         ::corevideo::core::nativeLogf("[encoder-probe] discarded result overlapping live encoding\n");
         return;
       }
@@ -629,6 +660,7 @@ void EncoderCapacityCache::startProbeLocked(const EncoderProbeKey& key) {
       }
       cache_[key] = result;
       inFlight_[key] = false;
+      probeSettled_.notify_all();
     }
     ::corevideo::core::nativeLogf("[encoder-probe] %s\n", result.describe().c_str());
   }).detach();

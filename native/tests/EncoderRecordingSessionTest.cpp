@@ -1594,6 +1594,130 @@ TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCa
   fs::remove_all(targetDir, ec);
 }
 
+namespace {
+
+// #1042: a slow fake probe, installed BEFORE the sink exists so the construction
+// prewarm and the configureRecording prewarm both use it. Restores the platform
+// probe and the default arm wait on scope exit.
+class SlowProbeScope {
+ public:
+  SlowProbeScope(std::chrono::milliseconds probeDuration, std::chrono::milliseconds armWait) {
+    auto& cache = corevideo::modules::EncoderCapacityCache::instance();
+    cache.setArmWaitForTesting(armWait);
+    cache.setProbeFunctionForTesting(
+        [probeDuration](const corevideo::modules::EncoderProbeKey& key) {
+          std::this_thread::sleep_for(probeDuration);
+          corevideo::modules::ProbedEncoderCapacity capacity;
+          capacity.key = key;
+          capacity.status = corevideo::modules::EncoderProbeStatus::Ready;
+          capacity.adapterDescription = "Slow Test GPU";
+          capacity.hardwareAvailable = true;
+          capacity.hardwareSessionCeiling = 9;
+          capacity.probeSessionCap = 32;
+          capacity.softwareAvailable = true;
+          capacity.logicalProcessors = 28;
+          return capacity;
+        });
+  }
+  ~SlowProbeScope() {
+    auto& cache = corevideo::modules::EncoderCapacityCache::instance();
+    cache.setArmWaitForTesting(std::chrono::milliseconds(5000));
+    cache.setProbeFunctionForTesting(nullptr);
+    cache.invalidate();
+  }
+  SlowProbeScope(const SlowProbeScope&) = delete;
+  SlowProbeScope& operator=(const SlowProbeScope&) = delete;
+};
+
+corevideo::modules::RecordingSessionRequest makeRaceRequest(const char* id) {
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = id;
+  request.targetFolder = (std::filesystem::temp_directory_path() / id).string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 60;  // a workload the construction prewarm (1080p30) does not cover
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 8;
+  for (int source = 0; source < 8; ++source) {
+    request.isoSources.push_back(
+        {"zoom:" + std::to_string(source + 1), "Guest " + std::to_string(source + 1), true});
+  }
+  return request;
+}
+
+}  // namespace
+
+TEST(EncoderRecordingSession, MediaFoundationIsoArmWaitsForInFlightProbeInsteadOfDecidingUnprobed) {
+  // #1042: configure kicks the probe for the take's workload, Record follows
+  // immediately, the probe finishes 700 ms later. Arm must wait for it, so the
+  // 9-session GPU admits all eight ISOs on hardware with NO spill warning.
+  SlowProbeScope slowProbe(std::chrono::milliseconds(700), std::chrono::milliseconds(5000));
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable.
+  }
+  namespace fs = std::filesystem;
+  const auto request = makeRaceRequest("iso-arm-probe-race");
+  std::error_code ec;
+  fs::remove_all(request.targetFolder, ec);
+
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});  // immediately: the probe is still running
+
+  const auto session = encoder->session();
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->probeStatus, "ready") << session.isoAdmission->capacity;
+  EXPECT_TRUE(session.isoAdmission->probed);
+  EXPECT_EQ(session.isoAdmission->decision, "admit") << session.isoAdmission->message;
+  EXPECT_EQ(session.isoAdmission->hardwareCount, 8);
+  EXPECT_EQ(session.isoAdmission->softwareCount, 0);
+  EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
+  EXPECT_NE(session.isoAdmission->capacity.find("arm-waited="), std::string::npos)
+      << "the snapshot must say that arm waited: " << session.isoAdmission->capacity;
+
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(request.targetFolder, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationIsoArmWaitIsBoundedAndTheUnprobedDecisionStaysHonest) {
+  // #1042: the wait is bounded. A probe slower than the bound must not hang
+  // Record; the verdict is the old loud unprobed one, and says arm waited.
+  SlowProbeScope slowProbe(std::chrono::milliseconds(1500), std::chrono::milliseconds(150));
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;
+  }
+  namespace fs = std::filesystem;
+  const auto request = makeRaceRequest("iso-arm-probe-timeout");
+  std::error_code ec;
+  fs::remove_all(request.targetFolder, ec);
+
+  encoder->configureRecording(request);
+  const auto began = std::chrono::steady_clock::now();
+  encoder->start({"recording"}, {});
+  const auto armedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - began).count();
+  EXPECT_LT(armedMs, 1400) << "arm must not wait for the whole slow probe";
+
+  const auto session = encoder->session();
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->probeStatus, "pending");
+  EXPECT_FALSE(session.isoAdmission->probed);
+  EXPECT_EQ(session.isoAdmission->code, "iso-encoder-software-spill-unprobed");
+  EXPECT_NE(session.isoAdmission->capacity.find("had still not finished"), std::string::npos)
+      << session.isoAdmission->capacity;
+
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(request.targetFolder, ec);
+}
+
 TEST(EncoderRecordingSession, MediaFoundationProgramOnlyTakeAfterSpillClearsIsoAdmission) {
   // #935 review focus: a Program-only take must not show the previous take's spill.
   const corevideo::testing::ForcedEncoderCapacity eightSessionMachine(8);

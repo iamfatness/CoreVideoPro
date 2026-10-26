@@ -1681,6 +1681,18 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingStatus = "encoding";
     if (std::find(destinations.begin(), destinations.end(), "recording") != destinations.end()) {
       session_.recordingStatus = "recording";
+      // #1042: ISO placement reads the probe for THIS workload. Let an in-flight
+      // probe finish (bounded) BEFORE the take goes live; after setRecordingActive
+      // the probe thread would discard its own result as overlapping the show.
+      isoArmProbeWaitMs_ = -1;
+      if (!request_.isoSources.empty() || !request_.isoParticipantIds.empty() ||
+          !session_.isoParticipantIds.empty()) {
+        isoArmProbeWaitMs_ = EncoderCapacityCache::instance().awaitProbe(EncoderProbeKey{
+            canonicalVideoCodecName(request_.videoCodec.empty() ? "h264" : request_.videoCodec),
+            request_.width > 0 ? request_.width : kDefaultWidth,
+            request_.height > 0 ? request_.height : kDefaultHeight,
+            request_.fps > 0 ? request_.fps : kDefaultFps});
+      }
       // A capacity probe transiently occupies hardware encoder sessions; it must
       // never compete with a live show for them.
       EncoderCapacityCache::instance().setRecordingActive(true);
@@ -2274,6 +2286,14 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     const auto probe = EncoderCapacityCache::instance().lookup(probeKey);
     const auto capacity = toIsoEncoderCapacity(probe, /*reservedForProgram=*/1);
     isoCapacitySummary_ = probe.describe();
+    if (isoArmProbeWaitMs_ > 0) {
+      // #1042: say how long arm waited, and whether it was enough, in the same
+      // string the snapshot publishes (recording.isoAdmission.capacity).
+      isoCapacitySummary_ += probe.probed
+                                 ? " arm-waited=" + std::to_string(isoArmProbeWaitMs_) + "ms for the probe"
+                                 : " arm-waited=" + std::to_string(isoArmProbeWaitMs_) +
+                                       "ms and the probe had still not finished";
+    }
 
     const auto isoPlacement = planIsoEncoders(isoSourceIds, IsoEncoderMode::Auto, capacity);
 
@@ -2919,6 +2939,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // placement — including "the probe never ran".
   std::string isoCapacitySummary_;
   std::string isoAdmissionCode_;
+  std::int64_t isoArmProbeWaitMs_ = -1;  // #1042: -1 = no ISO / not waited
 };
 
 }  // namespace
