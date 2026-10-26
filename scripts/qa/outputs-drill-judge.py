@@ -303,7 +303,9 @@ def run(evidence):
     judges.mkdir(exist_ok=True)
     seconds = int(drill['seconds'])
     tools = drill['tools']
-    enabled = drill['outputs']
+    enabled = dict(drill['outputs'])
+    if isinstance(enabled.get('iso'), str):  # a one-ISO drill.json written before the array fix
+        enabled['iso'] = [enabled['iso']]
     notes = list(drill.get('notes', []))
     skipped = [name for name, on in (('Stream', enabled.get('stream')), ('OS virtual camera', enabled.get('camera'))) if not on]
     context = {'seconds': seconds, 'workload': drill.get('workload'), 'skipped': skipped, 'notes': notes, 'supplementary': {}}

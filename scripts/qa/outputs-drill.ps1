@@ -56,7 +56,18 @@ $api = 'http://127.0.0.1:8011'
 
 function Invoke-DrillAction([string]$Action, [object[]]$Arguments = @()) {
   $body = @{ action = $Action; args = $Arguments } | ConvertTo-Json -Depth 8 -Compress
-  Invoke-RestMethod "$api/invoke" -Method Post -ContentType application/json -Body $body -TimeoutSec 30 | Out-Null
+  try {
+    Invoke-RestMethod "$api/invoke" -Method Post -ContentType application/json -Body $body -TimeoutSec 30 | Out-Null
+  } catch {
+    # The router answers 400 (bind) or 422 (the surface refused) with the reason
+    # in the body; Invoke-RestMethod's own message drops it. Keep action + reason.
+    $detail = $_.Exception.Message
+    $response = $_.Exception.Response
+    if ($response) {
+      try { $reader = New-Object IO.StreamReader($response.GetResponseStream()); $text = $reader.ReadToEnd(); if ($text) { $detail = "HTTP $([int]$response.StatusCode): $text" } } catch { }
+    }
+    throw "$Action $($body) failed: $detail"
+  }
 }
 function Get-DrillEnvelope { Invoke-RestMethod "$api/snapshot" -TimeoutSec 5 }
 function Get-DrillState { Invoke-RestMethod "$api/state" -TimeoutSec 5 }
@@ -131,7 +142,7 @@ $drill = [ordered]@{
   schema = 'outputs-drill-v2'; seconds = $Seconds; installRoot = $InstallRoot; workload = $workload
   probeMaxSessions = $(if ($ProbeMaxSessions -gt 0) { $ProbeMaxSessions } else { $null })
   remoteIds = $plan.RemoteIds; webcamSourceId = $WebcamSourceId; programSourceIds = $plan.ProgramSourceIds
-  outputs = [ordered]@{ program = $true; iso = $plan.IsoSourceIds; stream = $plan.Stream; camera = $plan.Camera }
+  outputs = [ordered]@{ program = $true; iso = @($plan.IsoSourceIds); stream = $plan.Stream; camera = $plan.Camera }
   tools = [ordered]@{ python = $python; node = $node; ffmpeg = $decodeFfmpeg; ffprobe = $ffprobe; sinkFfmpeg = $sinkFfmpeg; cameraReceiver = $CameraReceiver }
   preferencesBackupFolder = $backupDir   # path only; the copies stay outside the evidence folder
   notes = $notes; startedUtc = [DateTime]::UtcNow.ToString('o')
@@ -215,12 +226,15 @@ try {
   $notApplied = @(Test-DrillPreferencesApplied -Path $prefsPath -Expected $patch.Expected)
   Write-DrillJson ([ordered]@{ utc = [DateTime]::UtcNow.ToString('o'); applied = ($notApplied.Count -eq 0); problems = $notApplied }) 'preferences-applied.json'
   if ($notApplied.Count) { throw ('The app is not running on the patched preferences; no output started: ' + ($notApplied -join '; ')) }
+  $webcamMissing = @(Test-DrillWebcamPresent -WebcamSourceId $WebcamSourceId -Devices @($e.snapshot.captureDevices))
+  if ($webcamMissing.Count) { throw ($webcamMissing -join '; ') }
 
   # Workload (Prepare-LiveWorkload.ps1).
   if ($plan.RemoteIds.Count -and $e.snapshot.meetingState -ne 'in_meeting') { Invoke-DrillAction 'zoom.join' @($MeetingUrl); Write-DrillLog 'Joining the meeting' }
   Invoke-DrillAction 'automation.autoTake.set' @($false)
   Invoke-DrillAction 'automation.autoAssignInputs.set' @($false)
-  Invoke-DrillAction 'transport.engine.set' @($true)
+  if ($plan.EngineRequired) { Invoke-DrillAction 'transport.engine.set' @($true) }
+  else { Write-DrillLog 'Local sources only: the Zoom capture engine stays off (transport.engine.set is refused outside a meeting)' }
   foreach ($a in $plan.Assignments) { Invoke-DrillAction 'input.assign' @($a.slot, $a.source) }
   Invoke-DrillAction 'scene.cueWithRoutes' @($plan.Scene, $plan.Routes)
   $deadline = [DateTime]::UtcNow.AddSeconds(45)
@@ -393,7 +407,7 @@ try {
         $stopEvent = [Threading.EventWaitHandle]::OpenExisting($evidence.stopEvent); $null = $stopEvent.Set(); $stopEvent.Dispose()
       }
     } catch { $stopProblems += "trace stop failed: $($_.Exception.Message)" }
-    foreach ($action in 'transport.virtualcam.set', 'transport.engine.set') { try { Invoke-DrillAction $action @($false) } catch { $stopProblems += "$action failed: $($_.Exception.Message)" } }
+    foreach ($action in @(@('transport.virtualcam.set') + $(if ($plan.EngineRequired) { @('transport.engine.set') } else { @() }))) { try { Invoke-DrillAction $action @($false) } catch { $stopProblems += "$action failed: $($_.Exception.Message)" } }
     if (-not (Wait-DrillUntil 30 { $d = (Get-DrillEnvelope).snapshot.deliveryEvidence; -not $d.enabled -or $d.captureComplete })) { $stopProblems += 'trace did not finalize within 30 s' }
     try { if ((Get-DrillEnvelope).snapshot.meetingState -eq 'in_meeting') { Invoke-DrillAction 'zoom.leave' @() } } catch { }
     $script:closeReasons = @('not evaluated')

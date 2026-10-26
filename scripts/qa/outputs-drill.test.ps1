@@ -1,4 +1,4 @@
-﻿# Pester-free tests for scripts/qa/outputs-drill.ps1 (#443), pure parts only.
+# Pester-free tests for scripts/qa/outputs-drill.ps1 (#443), pure parts only.
 # Never launches the app and never touches the real preferences files: the
 # patch/restore round trip runs on temp copies with fake secrets. Also runs:
 #  - the app's OWN serializer (outputs-drill-prefs-probe, loaded from the
@@ -438,6 +438,26 @@ Check 'safe to close only when nothing is recording, streaming or finalizing and
   Assert (@(Test-DrillSafeToClose $null $idle).Count -eq 1) 'missing state treated as safe'
   $never = [pscustomobject]@{ recording = [pscustomobject]@{ lifecycle = $null }; outputSenderSession = [pscustomobject]@{ activeSenderCount = 0; senders = @() } }
   Assert (@(Test-DrillSafeToClose $off $never).Count -eq 0) 'never-started outputs blocked'
+}
+
+# ---------------------------------------------------------------- 2026-10-25 shakeout defects
+Check 'a one-ISO local plan keeps IsoSourceIds an array through JSON and needs no Zoom engine' {
+  $p = Get-DrillWorkloadPlan -WebcamSourceId 'capture:f4978a7f6d614c0d'
+  Assert ($p.IsoSourceIds -is [array]) 'IsoSourceIds unrolled to a scalar'
+  Assert ($p.IsoSourceIds.Count -eq 1 -and $p.IsoSourceIds[0] -eq 'capture:f4978a7f6d614c0d') 'wrong ISO list'
+  $json = [ordered]@{ program = $true; iso = @($p.IsoSourceIds) } | ConvertTo-Json -Compress
+  Assert ($json.Contains('"iso":["capture:f4978a7f6d614c0d"]')) "drill.json would carry a string: $json"
+  Assert (-not $p.EngineRequired) 'local-only plan must not call transport.engine.set (refused with 422 outside a meeting)'
+  $remote = Get-DrillWorkloadPlan -RemoteIds @('77') -WebcamSourceId 'capture:f4978a7f6d614c0d'
+  Assert ($remote.EngineRequired) 'remote plan must turn the engine on'
+}
+
+Check 'a webcam missing from the capture-device list is refused before any output starts' {
+  $devices = @([pscustomobject]@{ id = 'ddc344995cb38b42'; name = 'NDI Webcam Video 1'; vendor = 'uvc' }, [pscustomobject]@{ id = 'screen:0'; name = 'DISPLAY1'; vendor = 'Windows Graphics Capture' })
+  $r = @(Test-DrillWebcamPresent -WebcamSourceId 'capture:f4978a7f6d614c0d' -Devices $devices)
+  Assert ($r.Count -eq 1 -and $r[0] -match 'not in the app' -and $r[0] -match 'NDI Webcam Video 1') "unexpected: $r"
+  Assert (@(Test-DrillWebcamPresent -WebcamSourceId 'capture:ddc344995cb38b42' -Devices $devices).Count -eq 0) 'present webcam refused'
+  Assert (@(Test-DrillWebcamPresent -WebcamSourceId 'capture:x' -Devices @()).Count -eq 1) 'empty device list accepted'
 }
 
 # ---------------------------------------------------------------- verdict aggregation (Python)
