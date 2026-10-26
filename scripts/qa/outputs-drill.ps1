@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   The release-gate outputs drill (#443): record + ISO + stream + registered OS
   virtual camera against an already-installed CoreVideo Pro, judged per frame.
@@ -226,7 +226,10 @@ try {
   $notApplied = @(Test-DrillPreferencesApplied -Path $prefsPath -Expected $patch.Expected)
   Write-DrillJson ([ordered]@{ utc = [DateTime]::UtcNow.ToString('o'); applied = ($notApplied.Count -eq 0); problems = $notApplied }) 'preferences-applied.json'
   if ($notApplied.Count) { throw ('The app is not running on the patched preferences; no output started: ' + ($notApplied -join '; ')) }
-  $webcamMissing = @(Test-DrillWebcamPresent -WebcamSourceId $WebcamSourceId -Devices @($e.snapshot.captureDevices))
+  # UVC discovery can return nothing at startup until the adapter's 2 s refresh,
+  # so settle for up to 10 s before refusing (a false refusal of a gate run).
+  $webcamMissing = @()
+  $null = Wait-DrillUntil 10 { $script:webcamMissing = @(Test-DrillWebcamPresent -WebcamSourceId $WebcamSourceId -Devices @((Get-DrillEnvelope).snapshot.captureDevices)); $script:webcamMissing.Count -eq 0 }
   if ($webcamMissing.Count) { throw ($webcamMissing -join '; ') }
 
   # Workload (Prepare-LiveWorkload.ps1).
@@ -407,7 +410,8 @@ try {
         $stopEvent = [Threading.EventWaitHandle]::OpenExisting($evidence.stopEvent); $null = $stopEvent.Set(); $stopEvent.Dispose()
       }
     } catch { $stopProblems += "trace stop failed: $($_.Exception.Message)" }
-    foreach ($action in @(@('transport.virtualcam.set') + $(if ($plan.EngineRequired) { @('transport.engine.set') } else { @() }))) { try { Invoke-DrillAction $action @($false) } catch { $stopProblems += "$action failed: $($_.Exception.Message)" } }
+    # transport.engine.set false on an engine that is already off answers ok (RunTransportSet short-circuits on current == target).
+    foreach ($action in 'transport.virtualcam.set', 'transport.engine.set') { try { Invoke-DrillAction $action @($false) } catch { $stopProblems += "$action failed: $($_.Exception.Message)" } }
     if (-not (Wait-DrillUntil 30 { $d = (Get-DrillEnvelope).snapshot.deliveryEvidence; -not $d.enabled -or $d.captureComplete })) { $stopProblems += 'trace did not finalize within 30 s' }
     try { if ((Get-DrillEnvelope).snapshot.meetingState -eq 'in_meeting') { Invoke-DrillAction 'zoom.leave' @() } } catch { }
     $script:closeReasons = @('not evaluated')

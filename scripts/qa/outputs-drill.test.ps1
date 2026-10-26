@@ -1,4 +1,4 @@
-# Pester-free tests for scripts/qa/outputs-drill.ps1 (#443), pure parts only.
+﻿# Pester-free tests for scripts/qa/outputs-drill.ps1 (#443), pure parts only.
 # Never launches the app and never touches the real preferences files: the
 # patch/restore round trip runs on temp copies with fake secrets. Also runs:
 #  - the app's OWN serializer (outputs-drill-prefs-probe, loaded from the

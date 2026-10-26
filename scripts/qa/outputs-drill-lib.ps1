@@ -1,4 +1,4 @@
-# Pure helpers for scripts/qa/outputs-drill.ps1 (#443). Dot-source only.
+﻿# Pure helpers for scripts/qa/outputs-drill.ps1 (#443). Dot-source only.
 #
 # Everything here is side-effect free except the preference backup/patch/
 # restore functions, which touch only the file path they are given (the tests
