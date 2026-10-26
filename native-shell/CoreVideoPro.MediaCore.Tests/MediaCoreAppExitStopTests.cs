@@ -66,7 +66,7 @@ public sealed class MediaCoreAppExitStopTests
             stopwatch.Stop();
             await child.WaitForExitAsync().WaitAsync(HangGuard);
             Assert.False(supervisor.Running);
-            var traceText = File.Exists(trace) ? await File.ReadAllTextAsync(trace) : string.Empty;
+            var traceText = await TryReadTraceAsync(trace) ?? string.Empty;
             return new Run(outcome, stopwatch.Elapsed, traceText);
         }
         finally
@@ -75,21 +75,88 @@ public sealed class MediaCoreAppExitStopTests
         }
     }
 
-    private static async Task<string> WaitForTraceAsync(string trace, string marker)
+    /// <summary>
+    /// #834: read the trace while the child may be appending to it. <c>File.ReadAllTextAsync</c> opens
+    /// with <c>FileShare.Read</c>, which Windows refuses (a sharing violation) whenever the child holds
+    /// the file open for writing, so the read must share read/write/delete. A residual conflict
+    /// (the child's open is exclusive for an instant) is not a verdict: the caller retries until its
+    /// own deadline. Returns null when the file is absent or momentarily locked.
+    /// </summary>
+    internal static async Task<string?> TryReadTraceAsync(string trace)
     {
-        var deadline = Stopwatch.StartNew();
-        while (deadline.Elapsed < HangGuard)
+        try
         {
-            if (File.Exists(trace))
-            {
-                var text = await File.ReadAllTextAsync(trace);
-                if (text.Contains(marker, StringComparison.Ordinal)) return text;
-            }
+            await using var stream = new FileStream(
+                trace, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 4096, useAsync: true);
+            using var reader = new StreamReader(stream);
+            return await reader.ReadToEndAsync();
+        }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+        catch (IOException) { return null; }
+    }
+
+    internal static async Task<string> WaitForTraceAsync(string trace, string marker, TimeSpan? limit = null)
+    {
+        var bound = limit ?? HangGuard;
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < bound)
+        {
+            var text = await TryReadTraceAsync(trace);
+            if (text is not null && text.Contains(marker, StringComparison.Ordinal)) return text;
 
             await Task.Delay(50);
         }
 
         throw new TimeoutException($"'{marker}' never appeared in the trace");
+    }
+
+    [Fact]
+    public async Task TraceWaitSurvivesAChildHoldingTheFileOpenForWriting()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "corevideo-trace-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            // The child's appendFileSync keeps a write handle open; the old FileShare.Read reader threw here.
+            await using var writer = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+            await writer.WriteAsync("grandchild:42\n"u8.ToArray());
+            await writer.FlushAsync();
+
+            var text = await WaitForTraceAsync(path, "grandchild:", TimeSpan.FromSeconds(10));
+            Assert.Contains("grandchild:42", text);
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    [Fact]
+    public async Task TraceWaitRetriesThroughAnExclusiveLockInsteadOfThrowing()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "corevideo-trace-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            var exclusive = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+            await exclusive.WriteAsync("eof-ignored\n"u8.ToArray());
+            await exclusive.FlushAsync();
+            var wait = WaitForTraceAsync(path, "eof-ignored", TimeSpan.FromSeconds(20));
+            await Task.Delay(300); // several retries land on the locked file
+            Assert.False(wait.IsCompleted);
+            await exclusive.DisposeAsync();
+            Assert.Contains("eof-ignored", await wait);
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    [Fact]
+    public async Task TraceWaitStillTimesOutWhenTheMarkerNeverAppears()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "corevideo-trace-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            await File.WriteAllTextAsync(path, "something-else\n");
+            await Assert.ThrowsAsync<TimeoutException>(() => WaitForTraceAsync(path, "grandchild:", TimeSpan.FromMilliseconds(400)));
+        }
+        finally { try { File.Delete(path); } catch { } }
     }
 
     [Fact]
@@ -249,7 +316,7 @@ public sealed class MediaCoreAppExitStopTests
             await child.WaitForExitAsync().WaitAsync(HangGuard);
             // Fix round 2 (N4): the grace thread reports the kill, never "exited on its own".
             Assert.Equal(MediaCoreExitOutcome.Killed, await appExit.WaitAsync(HangGuard));
-            Assert.DoesNotContain("exit:", await File.ReadAllTextAsync(trace));
+            Assert.DoesNotContain("exit:", (await TryReadTraceAsync(trace)) ?? string.Empty);
         }
         finally
         {
