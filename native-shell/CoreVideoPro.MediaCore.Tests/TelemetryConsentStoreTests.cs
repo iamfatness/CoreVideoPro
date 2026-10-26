@@ -1,4 +1,4 @@
-using CoreVideoPro.MediaCore.Services;
+﻿using CoreVideoPro.MediaCore.Services;
 using Xunit;
 
 namespace CoreVideoPro.MediaCore.Tests;
@@ -127,16 +127,31 @@ public sealed class TelemetryConsentStoreTests : IDisposable
     [Fact]
     public void SetEnabledFalse_LandsEvenWhenTheFileCannotBeRead()
     {
-        // Revoking consent must never be lost. An exclusive holder outlasts the read
-        // retries (~0.5 s) but releases inside the write retries: the read fails, the
-        // opt-out still lands as the disabled default instead of throwing.
+        // Revoking consent must never be lost. An exclusive holder outlasts the whole
+        // read phase and releases only once the write phase has begun: the read fails,
+        // the opt-out still lands as the disabled default instead of throwing.
         var store = new TelemetryConsentStore(Path_);
         store.SetEnabled(true);
 
         var held = new FileStream(Path_, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-        var release = Task.Run(async () => { await Task.Delay(700); held.Dispose(); });
+        // The release is event-driven, not wall-clock: WriteState stages a sibling
+        // "<file>.<pid>.<tid>.tmp" before its first replace attempt, so its appearance
+        // proves the read retries are spent. A dedicated thread, not Task.Run: under
+        // xUnit's parallel load the pool can delay a queued task past the write retries
+        // (that is how this test failed on the Windows CI runner).
+        var releaser = new Thread(() =>
+        {
+            var deadline = Environment.TickCount64 + 5_000;
+            while (Environment.TickCount64 < deadline
+                   && Directory.GetFiles(_dir, Path.GetFileName(Path_) + ".*.tmp").Length == 0)
+            {
+                Thread.Sleep(5);
+            }
+            held.Dispose();
+        }) { IsBackground = true };
+        releaser.Start();
         store.SetEnabled(false);
-        release.Wait();
+        releaser.Join();
 
         Assert.False(new TelemetryConsentStore(Path_).Load().Enabled);
     }
