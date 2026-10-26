@@ -38,13 +38,19 @@ public static class SupportBundleLogRedactor
 
     // streamKey=..., access_token=..., pwd=..., srtPassphrase=... in query strings,
     // key=value logs, or command lines. The value stops at common delimiters.
+    //
+    // #998: no leading \w*. It bought nothing (the prefix is not part of the replacement) and made
+    // the scan quadratic: on a long run of word characters every start position ran to the end of
+    // the run and backed up looking for a keyword.
     private static readonly Regex SecretAssignment = new(
-        @"(\w*(?:key|token|passphrase|password|secret|pwd|zak|jwt))=([^&\s""',}\]]+)",
+        @"((?:key|token|passphrase|password|secret|pwd|zak|jwt))=([^&\s""',}\]]+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // "streamKey":"...", "sdkJwt": "...", "userZak":"..." JSON fields echoed raw.
     private static readonly Regex SecretJsonField = new(
-        @"""(\w*(?:key|token|passphrase|password|secret|pwd|zak|jwt)\w*)""\s*:\s*""([^""]*)""",
+        // #998: the keyword test is a lookahead and the name is an atomic run, so each opening quote
+        // costs one pass over its own word run instead of nested backtracking.
+        @"""(?=\w*(?:key|token|passphrase|password|secret|pwd|zak|jwt))((?>\w+))""\s*:\s*""([^""]*)""",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex BearerToken = new(
