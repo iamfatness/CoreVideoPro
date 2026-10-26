@@ -214,6 +214,9 @@ class MediaCore {
     std::uint64_t rosterSpeakerEpoch = 0;    // speakerEpoch if unchanged across the view, else 0
     std::vector<modules::ZoomEngineParticipant> floorRoster;
     std::string directedSpeakerId;
+    // #1048 D17: steady-clock ns taken just BEFORE the roster view was read.
+    // Guest A/V trims applied at or after it are never pruned against it.
+    std::int64_t rosterReadStartedNs = 0;
   };
   // #1037: read BEFORE coreMutex, for the same reason as pollZoomAudioUnlocked
   // (ZoomEngineRuntime::mutex_ is held across roster events and the ingest
@@ -1107,6 +1110,8 @@ class MediaCore {
   // Command/render/gather state under coreMutex. A changed speaker epoch drops
   // every manual setting so a recycled Zoom user id cannot inherit it.
   std::map<std::string, int> zoomGuestAvOffsets_;
+  // #1048 D17: steady-clock ns each trim in zoomGuestAvOffsets_ was applied.
+  std::map<std::string, std::int64_t> zoomGuestAvAppliedAtNs_;
   std::uint64_t zoomGuestAvEpoch_ = 0;
   std::uint64_t zoomGuestAvRevision_ = 0;
   GuestAvSyncVideo zoomGuestAvVideo_;

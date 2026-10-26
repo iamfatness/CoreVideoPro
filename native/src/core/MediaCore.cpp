@@ -526,6 +526,7 @@ void MediaCore::observeZoomGuestAvEpoch() {
       ? zoomEngineRuntime_->speakerEpoch() : zoomStubEpoch_;
   if (epoch == zoomGuestAvEpoch_) return;
   zoomGuestAvOffsets_.clear();
+  zoomGuestAvAppliedAtNs_.clear();
   zoomGuestAvVideo_.observeEpoch(epoch);
   zoomGuestAvEpoch_ = epoch;
   ++zoomGuestAvRevision_;
@@ -534,8 +535,14 @@ void MediaCore::observeZoomGuestAvEpoch() {
 rpc::Json MediaCore::setZoomGuestAvSyncOffset(const std::string& participantId, int offsetMs) {
   observeZoomGuestAvEpoch();
   const int applied = clampGuestAvOffsetMs(offsetMs);
-  if (applied == 0) zoomGuestAvOffsets_.erase(participantId);
-  else zoomGuestAvOffsets_[participantId] = applied;
+  if (applied == 0) {
+    zoomGuestAvOffsets_.erase(participantId);
+    zoomGuestAvAppliedAtNs_.erase(participantId);
+  } else {
+    zoomGuestAvOffsets_[participantId] = applied;
+    zoomGuestAvAppliedAtNs_[participantId] = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
   ++zoomGuestAvRevision_;
   return rpc::Json::Object{{"participantId", participantId}, {"offsetMs", applied},
                            {"speakerEpoch", static_cast<double>(zoomGuestAvEpoch_)},
@@ -5090,6 +5097,8 @@ MediaCore::RenderEngineInputs MediaCore::prepareRenderEngineInputsUnlocked() {
   // L3: the EPOCH first, then the view, then the epoch again. The graphics
   // binding only trusts a roster read entirely inside one speaker epoch.
   const auto before = zoomEngineRuntime_->speakerEpoch();
+  inputs.rosterReadStartedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
   auto view = zoomEngineRuntime_->renderViewIfConfigured();
   const auto after = zoomEngineRuntime_->speakerEpoch();
   inputs.speakerEpoch = before;
@@ -5367,7 +5376,14 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
           if (participant.id != 0) presentIds.insert(std::to_string(participant.id));
         }
         for (auto it = zoomGuestAvOffsets_.begin(); it != zoomGuestAvOffsets_.end();) {
-          if (!presentIds.count(it->first)) {
+          // #1048 D17: the roster was read before this tick's coreMutex wait.
+          // A trim applied after that read may be for a participant who
+          // joined during the wait; only a later roster can retire it.
+          const auto appliedAt = zoomGuestAvAppliedAtNs_.find(it->first);
+          const bool appliedBeforeRead = appliedAt == zoomGuestAvAppliedAtNs_.end() ||
+                                         appliedAt->second < renderEngineInputs_.rosterReadStartedNs;
+          if (!presentIds.count(it->first) && appliedBeforeRead) {
+            if (appliedAt != zoomGuestAvAppliedAtNs_.end()) zoomGuestAvAppliedAtNs_.erase(appliedAt);
             it = zoomGuestAvOffsets_.erase(it);
             ++zoomGuestAvRevision_;
           }

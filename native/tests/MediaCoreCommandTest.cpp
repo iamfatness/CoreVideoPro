@@ -9827,6 +9827,52 @@ TEST(MediaCoreRenderGather, DisplayTickAttributesItsHoldToPhasesAndTheFrameGroup
   core.reset();
 }
 
+// #1048 D17 (owner ruling 2026-10-23: the fix rides with the command lane):
+// the render tick prunes guest A/V trims against a roster read BEFORE its
+// coreMutex wait. A trim set during that wait (the shell saw the participant
+// join after the pre-read) must survive this tick; it is pruned only against
+// a roster read after the trim was applied.
+TEST(MediaCoreRenderGather, GuestAvTrimSetAfterThePreReadSurvivesThatTick) {
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_TRUE(runtime && runtime->configured());
+  runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Host"}]})"));
+  const auto trimmed = [&](const std::string& id) {
+    const auto state = core->sessionState();
+    const auto* sync = state.get("zoomGuestAvSync");
+    if (!sync || !sync->isArray()) return false;
+    return std::any_of(sync->asArray().begin(), sync->asArray().end(),
+        [&](const auto& row) { return row.getString("participantId") == id; });
+  };
+  {
+    std::mutex coreMutex;
+    auto staleInputs = core->prepareRenderEngineInputsUnlocked();  // participant 2 not in it
+    // The render thread now waits for coreMutex; meanwhile participant 2
+    // joins and the operator's trim command lands first.
+    runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+        R"({"cmd":"participants","meeting_generation":1,"roster_revision":2,"participants":[{"id":1,"name":"Host"},{"id":2,"name":"Guest"}]})"));
+    (void)core->setZoomGuestAvSyncOffset("2", 120);
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(staleInputs));
+  }
+  EXPECT_TRUE(trimmed("2")) << "a trim set after the pre-read was pruned against the stale roster";
+
+  // A roster read AFTER the trim, without participant 2 (they left), prunes it.
+  runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":3,"participants":[{"id":1,"name":"Host"}]})"));
+  {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  }
+  EXPECT_FALSE(trimmed("2")) << "a departed participant's trim must still be pruned";
+  core.reset();
+}
+
 // #1037 R3: the ISO video demand the render tick computes reaches the engine
 // through the NEXT tick's pre-read (coreMutex free), re-arms after a leave, and
 // the render tick itself never takes the engine mutex for it.
