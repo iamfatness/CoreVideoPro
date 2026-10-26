@@ -48,42 +48,114 @@ public sealed class TelemetryConsentStore
             "CoreVideoPro",
             "telemetry-consent.json");
 
-    /// <summary>Loads state; a missing/corrupt file is a fresh, disabled default (sends nothing).</summary>
+    // In-process serialisation of the read-modify-write cycle, plus bounded
+    // retries below for another process/thread that holds the file briefly
+    // (#881: a reader's FileShare.Read made the accepted-send watermark write fail).
+    private static readonly object Gate = new();
+    private const int IoAttempts = 20;
+    private static readonly TimeSpan IoBackoff = TimeSpan.FromMilliseconds(25);
+
+    /// <summary>Loads state; a missing/corrupt/unreadable file is a fresh, disabled default (sends nothing).</summary>
     public TelemetryConsentState Load()
     {
         try
         {
-            if (File.Exists(_filePath))
+            lock (Gate)
             {
-                var parsed = JsonSerializer.Deserialize<TelemetryConsentState>(
-                    File.ReadAllText(_filePath), SerializerOptions);
-                if (parsed is not null)
-                {
-                    return parsed;
-                }
+                return ReadState() ?? new TelemetryConsentState();
             }
         }
         catch
         {
             // Corrupt/locked file: default to OFF. Consent is never inferred from a bad read.
+            return new TelemetryConsentState();
         }
+    }
 
-        return new TelemetryConsentState();
+    /// <summary>
+    /// Read for a read-modify-write. Unlike <see cref="Load"/> an I/O failure
+    /// propagates, so a transient lock can never be turned into a persisted
+    /// "disabled" default that silently revokes consent.
+    /// </summary>
+    private TelemetryConsentState LoadForUpdate()
+    {
+        try
+        {
+            return ReadState() ?? new TelemetryConsentState();
+        }
+        catch (JsonException)
+        {
+            return new TelemetryConsentState(); // corrupt file: rewrite as disabled default
+        }
+    }
+
+    private TelemetryConsentState? ReadState()
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                if (!File.Exists(_filePath))
+                {
+                    return null;
+                }
+
+                using var stream = new FileStream(
+                    _filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                return JsonSerializer.Deserialize<TelemetryConsentState>(reader.ReadToEnd(), SerializerOptions);
+            }
+            catch (FileNotFoundException)
+            {
+                return null;
+            }
+            catch (IOException) when (attempt < IoAttempts)
+            {
+                Thread.Sleep(IoBackoff);
+            }
+        }
     }
 
     public void Save(TelemetryConsentState state)
     {
         ArgumentNullException.ThrowIfNull(state);
+        lock (Gate)
+        {
+            WriteState(state);
+        }
+    }
+
+    private void WriteState(TelemetryConsentState state)
+    {
         var directory = Path.GetDirectoryName(_filePath);
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        File.WriteAllText(
-            _filePath,
-            JsonSerializer.Serialize(state, SerializerOptions),
-            new UTF8Encoding(false));
+        // Write a sibling temp file, then replace atomically, so a reader never
+        // sees a truncated file (which Load() would treat as consent OFF).
+        var temp = _filePath + "." + Environment.ProcessId + "." + Environment.CurrentManagedThreadId + ".tmp";
+        File.WriteAllText(temp, JsonSerializer.Serialize(state, SerializerOptions), new UTF8Encoding(false));
+        try
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    File.Move(temp, _filePath, overwrite: true);
+                    return;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < IoAttempts)
+                {
+                    Thread.Sleep(IoBackoff);
+                }
+            }
+        }
+        finally
+        {
+            try { File.Delete(temp); } catch { /* best effort */ }
+        }
     }
 
     /// <summary>Convenience: is telemetry opted in right now?</summary>
@@ -92,17 +164,23 @@ public sealed class TelemetryConsentStore
     /// <summary>Flip the opt-in, preserving the last-sent watermark.</summary>
     public void SetEnabled(bool enabled)
     {
-        var state = Load();
-        state.Enabled = enabled;
-        Save(state);
+        lock (Gate)
+        {
+            var state = LoadForUpdate();
+            state.Enabled = enabled;
+            WriteState(state);
+        }
     }
 
     /// <summary>Record a successful send instant (updates the crash-count delta baseline).</summary>
     public void MarkSent(DateTimeOffset sentUtc)
     {
-        var state = Load();
-        state.LastSentUtc = sentUtc;
-        Save(state);
+        lock (Gate)
+        {
+            var state = LoadForUpdate();
+            state.LastSentUtc = sentUtc;
+            WriteState(state);
+        }
     }
 }
 

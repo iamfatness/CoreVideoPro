@@ -41,6 +41,76 @@ public sealed class TelemetryConsentStoreTests : IDisposable
     }
 
     [Fact]
+    public void MarkSent_WaitsOutATransientReaderAndPreservesConsent()
+    {
+        // #881: a concurrent reader (File.ReadAllText shares FileShare.Read) makes
+        // the watermark write fail with a sharing violation; the write used to be
+        // lost and, worse, a failed read inside MarkSent would rewrite Enabled=false.
+        var store = new TelemetryConsentStore(Path_);
+        store.SetEnabled(true);
+        var when = DateTimeOffset.UtcNow;
+
+        using var held = new FileStream(Path_, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var release = Task.Run(async () => { await Task.Delay(150); held.Dispose(); });
+
+        store.MarkSent(when);
+        release.Wait();
+
+        var state = new TelemetryConsentStore(Path_).Load();
+        Assert.True(state.Enabled);
+        Assert.Equal(when, state.LastSentUtc);
+    }
+
+    [Fact]
+    public void MarkSent_NeverRewritesConsentOffWhenTheFileCannotBeRead()
+    {
+        // An exclusive holder makes Load() fail; Load() reports disabled (fail
+        // closed) but MarkSent must not persist that fabricated default.
+        var store = new TelemetryConsentStore(Path_);
+        store.SetEnabled(true);
+
+        using (var held = new FileStream(Path_, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.False(store.Load().Enabled); // fail closed while unreadable
+            Assert.ThrowsAny<IOException>(() => store.MarkSent(DateTimeOffset.UtcNow));
+        }
+
+        Assert.True(store.Load().Enabled);
+    }
+
+    [Fact]
+    public void ConcurrentReadersNeverLoseTheWatermark()
+    {
+        var store = new TelemetryConsentStore(Path_);
+        store.SetEnabled(true);
+        using var stop = new CancellationTokenSource();
+        var readers = Enumerable.Range(0, 4).Select(n => Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                _ = new TelemetryConsentStore(Path_).Load();
+            }
+        })).ToArray();
+
+        try
+        {
+            for (var i = 0; i < 200; i++)
+            {
+                var when = DateTimeOffset.UtcNow;
+                store.MarkSent(when);
+                var state = new TelemetryConsentStore(Path_).Load();
+                Assert.True(state.Enabled, $"iteration {i}: consent lost");
+                Assert.True(state.LastSentUtc >= when, $"iteration {i}: watermark lost");
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            Task.WaitAll(readers);
+        }
+    }
+
+    [Fact]
     public void MarkSent_PreservesConsentAndRecordsWatermark()
     {
         var store = new TelemetryConsentStore(Path_);
