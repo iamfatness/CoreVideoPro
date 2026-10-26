@@ -26,16 +26,16 @@ internal sealed class CrashReportCoordinator
 {
     private readonly CrashReportingConfig _config;
     private readonly CrashReportWatermarkStore _watermarkStore;
-    private readonly string _dumpDirectory;
+    private readonly IReadOnlyList<string> _dumpDirectories;
 
     private CrashReportCoordinator(
         CrashReportingConfig config,
         CrashReportWatermarkStore watermarkStore,
-        string dumpDirectory)
+        IReadOnlyList<string> dumpDirectories)
     {
         _config = config;
         _watermarkStore = watermarkStore;
-        _dumpDirectory = dumpDirectory;
+        _dumpDirectories = dumpDirectories;
     }
 
     /// <summary>Null when crash reporting is not configured (no endpoint/key).</summary>
@@ -51,7 +51,7 @@ internal sealed class CrashReportCoordinator
         return new CrashReportCoordinator(
             config,
             new CrashReportWatermarkStore(CrashReportWatermarkStore.DefaultPath()),
-            CrashDumpScanner.DefaultCrashDumpDirectory());
+            CrashDumpScanner.ResolveDumpDirectories());
     }
 
     /// <summary>
@@ -62,7 +62,7 @@ internal sealed class CrashReportCoordinator
     internal IReadOnlyList<CrashDumpFile> ScanAndAdvanceWatermark()
     {
         var watermark = _watermarkStore.Load();
-        var dumps = CrashDumpScanner.Scan(_dumpDirectory, watermark.LastSeenUtc);
+        var dumps = CrashDumpScanner.Scan(_dumpDirectories, watermark.LastSeenUtc);
         if (dumps.Count > 0)
         {
             watermark.LastSeenUtc = dumps.Max(static d => d.LastWriteUtc);

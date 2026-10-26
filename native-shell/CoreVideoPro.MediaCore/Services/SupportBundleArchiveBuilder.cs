@@ -25,6 +25,10 @@ public sealed class SupportBundleArchiveOptions
     /// The dumps themselves are never copied (multi-GB with DumpType=2).</summary>
     public string? CrashDumpsDirectory { get; init; }
 
+    /// <summary>Further directories listed in dumps.txt (the installer WER LocalDumps
+    /// folder, #1039). Listed after <see cref="CrashDumpsDirectory"/>, de-duplicated.</summary>
+    public IReadOnlyList<string> ExtraCrashDumpsDirectories { get; init; } = [];
+
     /// <summary>The standard shell log set: launch.log / media-core.log /
     /// perf.log (%LOCALAPPDATA%\CoreVideoPro), vcam-serve.log
     /// (%ProgramData%\CoreVideoPro), and %LOCALAPPDATA%\CrashDumps.</summary>
@@ -43,7 +47,9 @@ public sealed class SupportBundleArchiveOptions
                 new SupportBundleArchiveSource { EntryName = "perf.log", Path = System.IO.Path.Combine(appDataDir, "perf.log") },
                 new SupportBundleArchiveSource { EntryName = "vcam-serve.log", Path = System.IO.Path.Combine(programData, "CoreVideoPro", "vcam-serve.log") }
             ],
-            CrashDumpsDirectory = System.IO.Path.Combine(localAppData, "CrashDumps")
+            CrashDumpsDirectory = System.IO.Path.Combine(localAppData, "CrashDumps"),
+            // The whole list; BuildDumpListing de-duplicates against CrashDumpsDirectory.
+            ExtraCrashDumpsDirectories = CrashDumpScanner.ResolveDumpDirectories()
         };
     }
 }
@@ -151,7 +157,7 @@ public static class SupportBundleArchiveBuilder
         // 3. Crash-dump listing (names/sizes/dates only — never the dumps).
         try
         {
-            var dumpsText = BuildDumpListing(options.CrashDumpsDirectory);
+            var dumpsText = BuildDumpListing(options);
             await WriteEntryAsync(archive, "dumps.txt", Encoding.UTF8.GetBytes(dumpsText), cancellationToken)
                 .ConfigureAwait(false);
             notes.Add(new SupportBundleArchiveEntryNote
@@ -235,33 +241,58 @@ public static class SupportBundleArchiveBuilder
         return (text, totalLength, start > 0);
     }
 
-    private static string BuildDumpListing(string? crashDumpsDirectory)
+    private static string BuildDumpListing(SupportBundleArchiveOptions options)
     {
         var builder = new StringBuilder();
         builder.AppendLine("Recent crash dumps (listing only — dump files are NOT included in this archive).");
-        if (string.IsNullOrWhiteSpace(crashDumpsDirectory))
+        var directories = new[] { options.CrashDumpsDirectory }
+            .Concat(options.ExtraCrashDumpsDirectories)
+            .Where(directory => !string.IsNullOrWhiteSpace(directory))
+            .Select(directory => directory!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (directories.Count == 0)
         {
             builder.AppendLine("Crash dump directory: not configured.");
             return builder.ToString();
         }
 
+        foreach (var directory in directories)
+        {
+            AppendDirectoryListing(builder, directory);
+        }
+
+        return builder.ToString();
+    }
+
+    private static void AppendDirectoryListing(StringBuilder builder, string crashDumpsDirectory)
+    {
         builder.AppendLine($"Directory: {crashDumpsDirectory}");
         if (!Directory.Exists(crashDumpsDirectory))
         {
             builder.AppendLine("Directory does not exist (no dumps recorded, or WER LocalDumps not set up).");
-            return builder.ToString();
+            return;
         }
 
-        var files = new DirectoryInfo(crashDumpsDirectory)
-            .EnumerateFiles()
-            .OrderByDescending(file => file.LastWriteTimeUtc)
-            .Take(100)
-            .ToList();
+        List<FileInfo> files;
+        try
+        {
+            files = new DirectoryInfo(crashDumpsDirectory)
+                .EnumerateFiles()
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Take(100)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            builder.AppendLine($"Directory could not be listed ({ex.GetType().Name}: {ex.Message}).");
+            return;
+        }
 
         if (files.Count == 0)
         {
             builder.AppendLine("No dump files present.");
-            return builder.ToString();
+            return;
         }
 
         foreach (var file in files)
@@ -270,8 +301,6 @@ public static class SupportBundleArchiveBuilder
                 CultureInfo.InvariantCulture,
                 $"{file.LastWriteTimeUtc:yyyy-MM-dd HH:mm:ss}Z  {file.Length,14:N0} bytes  {file.Name}"));
         }
-
-        return builder.ToString();
     }
 
     private static string BuildManifest(IReadOnlyList<SupportBundleArchiveEntryNote> notes, SupportBundleArchiveOptions options)
