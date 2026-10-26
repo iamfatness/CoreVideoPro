@@ -813,7 +813,9 @@ TEST(GraphicsInstances, ClockControlIsQualifiedAndDoesNotRevealOrDriftLogicalRev
   };
   ASSERT_TRUE(wait("paused")); EXPECT_EQ("00:00:03",row(state).get("fields")->getString("time"));
   EXPECT_EQ(2,row(state).getNumber("clockConfigurationRevision"));
-  EXPECT_FALSE(state.apply(request("graphics-clock-control",{{"action","configure"},{"configuration",config.json()},{"expectedClockRevision",1}})));
+  // #969: a stale revision must be rejected for ITS reason; control() rides out the
+  // controller's deliberate try_lock backpressure so "busy" cannot masquerade as it.
+  EXPECT_FALSE(control({{"action","configure"},{"configuration",config.json()},{"expectedClockRevision",1}}));
   EXPECT_EQ("clock-configuration-conflict",state.snapshot().get("lastResult")->getString("reason"));
   ASSERT_TRUE(control({{"action","start"}})); ASSERT_TRUE(wait("running"));
   EXPECT_EQ(1,row(state).getNumber("revision")); EXPECT_EQ(0,row(state).getNumber("programRevision"));
