@@ -463,17 +463,33 @@ display tick now records a per-phase breakdown (`core/RenderTickPhases.h`).
 The phases are: setup, the frame-group calls R1, R2 and R5 (each with its
 engine-mutex wait), bus tap, capture poll, gather, stills and floor, ISO
 ingress, plan, program, monitors and emit. The breakdown also records the
-pre-read and the coreMutex wait, which fall outside the hold. An over-budget
-hold logs one line:
+pre-read, the pre-read's own engine-mutex wait, and the coreMutex wait, all
+of which fall outside the hold. An over-budget hold logs one line:
 
 ```
 [lock-hold-attribution] site=render.display-tick held_us=N budget_us=8000 slot=S
   phases_us=[setup=.. program=.. monitors=.. ...] other_us=N
-  frame_group_engine_wait_us=N outside_hold_us=[pre-read=N lock-wait=N]
+  frame_group_engine_wait_us=N
+  outside_hold_us=[pre-read=N pre-read-engine-wait=N lock-wait=N]
   unattributed_since_last=N
 ```
 
-The line is capped at one per second per site. The `[lock-guardrail]` warning
+Since #1049 the frame group runs in the pre-read, so in the default order
+`frame_group_engine_wait_us` is 0 by construction. Its contention appears as
+`pre-read-engine-wait`.
+
+A tick can also be late while its hold stays in budget, for example when the
+pre-read blocks on the engine mutex or the coreMutex wait is long. Such a tick
+logs the same breakdown under a separate site:
+
+```
+[lock-hold-attribution] site=render.late-tick reason=over-frame-period|deadline-miss
+  tick_us=N frame_period_us=16666 held_us=N slot=S phases_us=[...] ...
+```
+
+`over-frame-period` means pre-read plus coreMutex wait plus hold exceeded
+16.7 ms. `deadline-miss` means the anchored CPU deadline tracker recorded a
+miss for this tick. Each site is capped at one line per second. The `[lock-guardrail]` warning
 is capped at one per minute, and that cap hid most of the soak's overruns,
 which came about once a minute. The warning line carries the same text.
 `cmd.handle` holds name their command (`command=<type>`). `slot` matches
@@ -495,8 +511,9 @@ consumed a long tick. No stack is needed.
 - **Gate.** The loop opens `ForbidEngineMutexScope("cmd.handle")` for both
   commands.
   `JsonRpcServer.SpineSyncAndZoomSnapshotRunTheirEngineWorkWithoutCoreMutex`
-  counts engine-mutex acquisitions over a real `server.run`. The test was RED
-  before the move. It also checks that the core half still applies, and that a
+  counts engine-mutex acquisitions over a real `server.run`. On the old code it
+  fails only once the gate exists: with the gate and without the move it was
+  RED. It also checks that the core half still applies, and that a
   snapshot sent after the spine sync sees the spine sync's director exclusion
   (ordering).
 - **D17.** Each guest A/V trim is stamped when it is applied. The pre-read
@@ -593,12 +610,28 @@ default, is a one-line follow-up.
 1. Install the build from this branch and run the October 25 workload for 30
    minutes: 10 participants; Program plus 8 Zoom ISOs on hardware H.264; the
    SRT loopback stream; the virtual camera. Use the default order.
-2. `grep -E "lock-hold-attribution|program-buffer-miss|lock-guardrail" media-core.log`.
+2. `grep -E "lock-hold-attribution|program-buffer-miss|lock-guardrail|\[cmd\]" media-core.log`.
    Pass when there are zero `program-buffer-miss` lines and the Program file
-   holds exactly the scheduled packet count. For every `render.display-tick`
-   attribution line, record which phase dominates. If `frame_group_engine_wait_us`
-   is zero and `program` or `monitors` dominates, the remaining overruns are GPU
-   work, which is outside the scope of this lock change.
-3. Optional A/B on the same rig: repeat with `COREVIDEO_RENDER_FRAME_FETCH=under-lock`
+   holds exactly the scheduled packet count.
+3. If a miss does occur, match its `target=` to the `slot=` of the
+   `render.display-tick` or `render.late-tick` attribution line for that tick.
+   That line says where the tick's time went:
+   - `pre-read-engine-wait` dominates: the engine mutex, now outside coreMutex,
+     still costs the render deadline. The next step is the published-roster
+     alternative (Rejected above).
+   - `lock-wait` dominates: a coreMutex holder that is not the render thread.
+     Check the `cmd.handle` attribution lines for the command.
+   - `program` or `monitors` dominates: GPU submission or export work. This is
+     outside the scope of this lock change.
+
+   The tick's line is guaranteed only when the tick was late on the CPU side
+   (over budget, over the frame period, or a deadline miss), and each site
+   logs at most one line per second. A buffer miss with no attribution line
+   for its slot means the frame was late in GPU completion or delivery, not on
+   the render thread. That is itself a result.
+4. `[cmd] 'zoom-media-spine-sync' engine half lock-free Nms` lines, logged at
+   30 ms or more, show a slow `syncSpine`. It no longer holds coreMutex, but
+   it still delays the next command.
+5. Optional A/B on the same rig: repeat with `COREVIDEO_RENDER_FRAME_FETCH=under-lock`
    set in the core's environment, and compare the over-budget counts in the
    final `[lock-guardrail]` line.

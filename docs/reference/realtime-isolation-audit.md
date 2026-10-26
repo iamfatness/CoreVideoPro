@@ -215,8 +215,13 @@ between the fetch and the tick. The A/B (`RenderFrameFetchAbQa`,
 capped at one per second per site, break a `render.display-tick` hold into
 phases. Each frame-group phase carries its engine-mutex wait. The line also
 gives the unattributed remainder, the pre-read and the coreMutex wait outside
-the hold, and the production `slot`, which matches `[program-buffer-miss]
-target=`. A `cmd.handle` line names its command. The design doc's #1049
+the hold (split into pre-read, pre-read engine-mutex wait and lock wait), and
+the production `slot`, which matches `[program-buffer-miss] target=`. A tick
+that is late while its hold stays in budget logs under
+`site=render.late-tick`, with `reason=over-frame-period` or
+`reason=deadline-miss`. A `cmd.handle` line names its command. The spine
+sync's lock-free engine half logs `[cmd] ... engine half lock-free Nms` at
+30 ms or more. The design doc's #1049
 addendum gives the format and the live acceptance procedure.
 
 ## Integrated verification and delivery
