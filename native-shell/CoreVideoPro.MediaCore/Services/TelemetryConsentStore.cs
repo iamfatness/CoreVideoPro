@@ -48,6 +48,9 @@ public sealed class TelemetryConsentStore
             "CoreVideoPro",
             "telemetry-consent.json");
 
+    // NOTE: Load/SetEnabled/MarkSent can block up to IoAttempts x IoBackoff (~0.5 s each
+    // for read and write) while another holder has the file; a crash between the temp
+    // write and the move can orphan a *.tmp sibling, which is harmless.
     // In-process serialisation of the read-modify-write cycle, plus bounded
     // retries below for another process/thread that holds the file briefly
     // (#881: a reader's FileShare.Read made the accepted-send watermark write fail).
@@ -166,7 +169,19 @@ public sealed class TelemetryConsentStore
     {
         lock (Gate)
         {
-            var state = LoadForUpdate();
+            TelemetryConsentState state;
+            try
+            {
+                state = LoadForUpdate();
+            }
+            catch (IOException) when (!enabled)
+            {
+                // Revoking consent must always land: if the file stays unreadable, write the
+                // disabled default (losing only the send watermark) rather than leave a stale
+                // Enabled=true on disk.
+                state = new TelemetryConsentState();
+            }
+
             state.Enabled = enabled;
             WriteState(state);
         }

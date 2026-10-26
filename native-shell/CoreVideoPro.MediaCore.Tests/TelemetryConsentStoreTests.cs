@@ -84,11 +84,25 @@ public sealed class TelemetryConsentStoreTests : IDisposable
         var store = new TelemetryConsentStore(Path_);
         store.SetEnabled(true);
         using var stop = new CancellationTokenSource();
-        var readers = Enumerable.Range(0, 4).Select(n => Task.Run(() =>
+        var readers = Enumerable.Range(0, 2).Select(n => Task.Run(() =>
         {
             while (!stop.IsCancellationRequested)
             {
-                _ = new TelemetryConsentStore(Path_).Load();
+                // Raw reader that really holds the file (FileShare.Read blocks a
+                // replace); the store's own Load() would serialise on its gate.
+                try
+                {
+                    using (var held = new FileStream(Path_, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        Thread.Sleep(1);
+                    }
+
+                    Thread.Sleep(4);
+                }
+                catch (IOException)
+                {
+                    // Momentarily replaced; try again.
+                }
             }
         })).ToArray();
 
@@ -108,6 +122,23 @@ public sealed class TelemetryConsentStoreTests : IDisposable
             stop.Cancel();
             Task.WaitAll(readers);
         }
+    }
+
+    [Fact]
+    public void SetEnabledFalse_LandsEvenWhenTheFileCannotBeRead()
+    {
+        // Revoking consent must never be lost. An exclusive holder outlasts the read
+        // retries (~0.5 s) but releases inside the write retries: the read fails, the
+        // opt-out still lands as the disabled default instead of throwing.
+        var store = new TelemetryConsentStore(Path_);
+        store.SetEnabled(true);
+
+        var held = new FileStream(Path_, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        var release = Task.Run(async () => { await Task.Delay(700); held.Dispose(); });
+        store.SetEnabled(false);
+        release.Wait();
+
+        Assert.False(new TelemetryConsentStore(Path_).Load().Enabled);
     }
 
     [Fact]
