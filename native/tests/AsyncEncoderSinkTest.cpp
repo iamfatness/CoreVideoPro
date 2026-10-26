@@ -841,11 +841,15 @@ TEST(AsyncEncoderSink, ProducingDecaysWhenTheWriterWedgesAndRecoversWhenItResume
 
   // Real progress resumes: the destination is producing again, not stuck in a
   // sticky failure it can never leave.
-  sink.setProducingStaleMsForTest(kHealthyWindowMs);
+  // The 60 ms window stays in force: "producing" must come from frame 2's fresh
+  // progress, not from a window wide enough to accept the pre-wedge timestamp.
+  // One snapshot, so two separate reads cannot straddle the window (#850).
   raw->blockSubmit->store(false);
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
-  EXPECT_EQ(sink.session().lifecycle->state, "producing");
-  EXPECT_TRUE(sink.session().active);
+  const auto recovered = sink.session();
+  ASSERT_TRUE(recovered.lifecycle);
+  EXPECT_EQ(recovered.lifecycle->state, "producing");
+  EXPECT_TRUE(recovered.active);
 }
 
 // Stop reports that stopping has BEGUN. Between the request and the writer's
