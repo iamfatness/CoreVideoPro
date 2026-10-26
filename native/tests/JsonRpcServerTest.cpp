@@ -7,6 +7,7 @@
 #include "core/CoreStateCapture.h"
 #include <future>
 #include <latch>
+#include <chrono>
 
 #include <gtest/gtest.h>
 
@@ -17,6 +18,20 @@
 #include <sstream>
 #include <string>
 #include <utility>
+
+namespace {
+// #907: a latch the server never reaches must FAIL the test within a bound, not
+// hang the whole CTest job until its timeout (which names no test).
+template <class Latch>
+bool waitForLatch(Latch& latch, std::chrono::seconds bound = std::chrono::seconds(30)) {
+  const auto deadline = std::chrono::steady_clock::now() + bound;
+  while (!latch.try_wait()) {
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return true;
+}
+}  // namespace
 
 TEST(JsonRpcServer, StalledResponseAssemblyDoesNotHoldRenderLockAndCapturesRemainOrdered) {
   // This injects response contention, not GPU cold-start latency. Use the same
@@ -32,7 +47,7 @@ TEST(JsonRpcServer, StalledResponseAssemblyDoesNotHoldRenderLockAndCapturesRemai
   std::istringstream input("{\"id\":1,\"type\":\"snapshot\"}\n{\"id\":2,\"type\":\"snapshot\"}\n{\"id\":3,\"type\":\"snapshot\"}\n{\"id\":4,\"type\":\"get-output-session\"}\n");
   std::ostringstream output;
   auto run = std::async(std::launch::async, [&] { server.run(input, output); });
-  entered.wait();
+  if (!waitForLatch(entered)) { release.count_down(); run.get(); ASSERT_TRUE(false) << "response assembly was never reached"; }
   // Three commands saturate the executing/pending capture slots. Command three
   // waits for capacity without owning coreMutex; render must continue here.
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -68,7 +83,7 @@ TEST(JsonRpcServer, SlowWriterPreservesAcceptedResponsesWithoutHoldingRenderLock
   for (int i = 1; i <= 64; ++i) commands << "{\"id\":" << i << ",\"type\":\"snapshot\"}\n";
   std::istringstream input(commands.str()); std::ostream output(&buffer);
   auto run = std::async(std::launch::async, [&] { server.run(input, output); });
-  buffer.entered.wait();
+  if (!waitForLatch(buffer.entered)) { buffer.release.count_down(); run.get(); ASSERT_TRUE(false) << "writer was never reached"; }
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   buffer.release.count_down(); run.get();
   std::map<int, double> frames;
@@ -99,7 +114,7 @@ TEST(JsonRpcServer, SoftwarePreviewKeepsPublishingDuringStalledResponseAssembly)
   });
   std::istringstream input("{\"id\":1,\"type\":\"snapshot\"}\n"); std::ostream output(&observer);
   auto run = std::async(std::launch::async, [&] { server.run(input, output); });
-  entered.wait();
+  if (!waitForLatch(entered)) { release.count_down(); run.get(); ASSERT_TRUE(false) << "response assembly was never reached"; }
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (!observer.received && std::chrono::steady_clock::now() < deadline)
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
