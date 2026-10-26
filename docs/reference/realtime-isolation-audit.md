@@ -177,7 +177,7 @@ capture budget. Deterministic CI tests establish forbidden dependencies and
 ordering; reference-machine performance tests measure timing. Do not turn noisy
 wall-clock CI thresholds into the only protection, or merely raise warning limits.
 
-## Engine mutex under coreMutex (#1030, #1037)
+## Engine mutex under coreMutex (#1030, #1037, #1048, #1049)
 
 `ZoomEngineRuntime::mutex_` is held across roster events and the video ingest
 poll, so any acquisition under coreMutex makes every coreMutex waiter wait on
@@ -188,20 +188,36 @@ table: [the #1037 design](../superpowers/specs/2026-10-23-render-gather-engine-m
 
 | # | Lane | Site | Decision |
 |---|---|---|---|
-| R1 | render | `pollCompositorVideoFrames` | Sanctioned (frame group); follow-up A/B |
-| R2 | render | `latestDecodedVideoFrames` | Sanctioned (frame group); follow-up A/B |
+| R1 | render | `pollCompositorVideoFrames` | Moved (#1049): fetched last in the pre-read; A/B below |
+| R2 | render | `latestDecodedVideoFrames` | Moved (#1049): fetched last in the pre-read; A/B below |
 | R3 | render | `setVideoConsumerDemand` | Moved: published, applied by the next pre-read |
 | R4 | render | `floorParticipants` | Moved: pre-read before coreMutex |
-| R5 | render | `appendCpuVideoFrames` | Sanctioned (frame group); follow-up A/B |
+| R5 | render | `appendCpuVideoFrames` | Moved (#1049): fetched last in the pre-read |
 | R6 | render, Take | `directedSpeakerId` (follow-speaker) | Moved: pre-read |
 | R7 | render | `zoomSnapshot()` in `buildMultiviewRenderPlan` | Moved: pre-read speaker |
 | R8 | render | `zoomSnapshot()` for multiview tiles | Moved: pre-read speaker |
 | R9 | render | `zoomSnapshot()` for isolated-monitor tiles | Moved: pre-read speaker |
-| C1 | command | `syncSpine` (`zoom-media-spine-sync`) | Follow-up slice (command lane) |
-| C2 | command | `snapshot()` (`zoom-snapshot`) | Follow-up slice (command lane) |
+| C1 | command | `syncSpine` (`zoom-media-spine-sync`) | Moved (#1048): engine half runs after coreMutex is released, same command thread, before the next command |
+| C2 | command | `snapshot()` (`zoom-snapshot`) | Moved (#1048): answered without coreMutex when an engine is configured |
 | C3 | command | `zoomSnapshot()` per ISO name at record start | Moved: tick roster cache |
 | C4 | command | `leave()` | Justified: operator rate, roster barrier |
 | C5 | command | `stopCapture()` | Justified: operator rate |
+
+**#1049 fetch order.** `COREVIDEO_RENDER_FRAME_FETCH=before-lock` is the
+default. `under-lock` restores the #1037 order and is the only remaining
+`AllowEngineMutexScope`. Prefetched frames are dropped if `speakerEpoch` moved
+between the fetch and the tick. The A/B (`RenderFrameFetchAbQa`,
+`COREVIDEO_QA_FRAME_FETCH_AB=1`) measured a median frame-age delta within
+±0.14 ms. Under engine-mutex contention the hold p99 fell from 6-8 ms to
+1.6-3.7 ms. The numbers are in the design doc's #1049 addendum.
+
+**Reading an over-budget hold (#1056).** `[lock-hold-attribution]` lines,
+capped at one per second per site, break a `render.display-tick` hold into
+phases. Each frame-group phase carries its engine-mutex wait. The line also
+gives the unattributed remainder, the pre-read and the coreMutex wait outside
+the hold, and the production `slot`, which matches `[program-buffer-miss]
+target=`. A `cmd.handle` line names its command. The design doc's #1049
+addendum gives the format and the live acceptance procedure.
 
 ## Integrated verification and delivery
 
