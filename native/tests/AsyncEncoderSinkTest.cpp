@@ -801,7 +801,13 @@ TEST(AsyncEncoderSink, ProducingDecaysWhenTheWriterWedgesAndRecoversWhenItResume
   auto inner = std::make_unique<ControllableEncoder>();
   auto* raw = inner.get();
   AsyncEncoderSink sink(std::move(inner));
-  sink.setProducingStaleMsForTest(60);
+  // #850: the "producing" assertions below make several session() reads after a
+  // drain; with the 60 ms decay window a scheduler delay between two reads can
+  // legitimately flip the second one to "interrupted". Judge the healthy phases
+  // against a window no CI stall can cross, and shorten it only for the decay
+  // phase, so the wedge detection itself is unchanged.
+  constexpr int64_t kHealthyWindowMs = 60'000;
+  sink.setProducingStaleMsForTest(kHealthyWindowMs);
   sink.start({"recording"}, {});
   sink.submit(videoFrame(1));
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
@@ -818,6 +824,7 @@ TEST(AsyncEncoderSink, ProducingDecaysWhenTheWriterWedgesAndRecoversWhenItResume
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   ASSERT_TRUE(raw->submitEntered.load());
 
+  sink.setProducingStaleMsForTest(60);
   const auto decayed = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (sink.session().lifecycle->state == "producing" &&
          std::chrono::steady_clock::now() < decayed)
@@ -834,6 +841,7 @@ TEST(AsyncEncoderSink, ProducingDecaysWhenTheWriterWedgesAndRecoversWhenItResume
 
   // Real progress resumes: the destination is producing again, not stuck in a
   // sticky failure it can never leave.
+  sink.setProducingStaleMsForTest(kHealthyWindowMs);
   raw->blockSubmit->store(false);
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
   EXPECT_EQ(sink.session().lifecycle->state, "producing");
