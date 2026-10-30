@@ -196,6 +196,13 @@ class RowsAndAggregation(unittest.TestCase):
         self.assertRegex(text, r'Stream\s+SKIPPED')
         self.assertIn('supplementary; not part of the overall verdict', text)
 
+    def test_webcam_not_exercised_is_reported_and_never_changes_the_verdict(self):
+        verdict = judge.aggregate(self.all_pass_rows()[:1], {'seconds': 60, 'workload': 'w', 'notExercised': ['Webcam source']})
+        self.assertEqual(verdict['overall'], 'PASS')
+        self.assertEqual(verdict['notExercised'], ['Webcam source'])
+        self.assertRegex(judge.summary_text(verdict), r'Webcam source\s+NOT EXERCISED')
+        self.assertEqual(judge.aggregate(self.all_pass_rows()[:1], {})['notExercised'], [])
+
     def test_bounded_camera_identities(self):
         rows = [{'sample': i + 1, 'arrivalHostUs': 1000 + i * 10, 'identity': 50 + i} for i in range(10)]
         self.assertEqual(judge.bounded_camera_identities(rows, 1020, 1060), (52, 56, 5))
