@@ -122,7 +122,7 @@ class RowsAndAggregation(unittest.TestCase):
 
     def test_throughout_flags(self):
         self.assertEqual(judge.throughout_failures(FLAGS_TRUE), [])
-        self.assertEqual(judge.throughout_failures(dict(FLAGS_TRUE, captureProgressThroughout=False)), ['captureProgressThroughout'])
+        self.assertEqual(judge.throughout_failures(dict(FLAGS_TRUE, sourceProgressThroughout=False)), ['sourceProgressThroughout'])
         verdict = judge.aggregate(self.all_pass_rows(), {'throughoutFailures': ['remotes1080Throughout']})
         self.assertEqual(verdict['overall'], 'FAIL')
         self.assertIn('remotes1080Throughout', verdict['notes'][0])
@@ -137,7 +137,7 @@ class RowsAndAggregation(unittest.TestCase):
 
     def test_required_flags_are_named_explicitly(self):
         self.assertEqual(judge.REQUIRED_FLAGS, ('programEncoderHardwareThroughout', 'remotes1080Throughout',
-                                                'captureProgressThroughout', 'programSourcesAdmittedThroughout'))
+                                                'sourceProgressThroughout', 'programSourcesAdmittedThroughout'))
 
     def test_software_iso_notes_carry_the_measured_cost_or_say_not_measured(self):
         measurement = {'encoderPlacement': {'zoom:8': {'paths': ['software'], 'changed': False},
@@ -361,9 +361,9 @@ class EndToEndOffline(unittest.TestCase):
         self.assertEqual(verdict['overall'], 'NOT JUDGED')
 
     def test_false_throughout_flag_fails_a_clean_run(self):
-        verdict, _ = self.run_drill(flags=dict(FLAGS_TRUE, captureProgressThroughout=False))
+        verdict, _ = self.run_drill(flags=dict(FLAGS_TRUE, sourceProgressThroughout=False))
         self.assertEqual(verdict['overall'], 'FAIL')
-        self.assertEqual(verdict['throughoutFailures'], ['captureProgressThroughout'])
+        self.assertEqual(verdict['throughoutFailures'], ['sourceProgressThroughout'])
 
     def test_missing_throughout_flags_fail(self):
         verdict, _ = self.run_drill(flags={})

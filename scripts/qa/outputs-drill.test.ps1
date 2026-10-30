@@ -250,18 +250,29 @@ Check 'free UDP port is in the dynamic range and bindable' {
 function New-Envelope([switch]$Stale, [string]$Recording = 'producing', [int]$IsoFrames = 10, [int]$Sent = 5, [int]$Retry = 0,
                       [string]$Webcam = 'capture:f4978a7f6d614c0d', [long]$WebcamFrames = 100, [int]$WebcamWidth = 1920, [long]$ScreenFrames = -1,
                       $Fps = 60, [string[]]$Warnings = @(), [string]$Destination = 'srt', [string]$EncoderPath = 'hardware',
-                      [bool]$ProgramHardware = $true, [string]$TargetFolder = 'D:\CoreVideo-QA\drills\t\recordings') {
+                      [bool]$ProgramHardware = $true, [string]$TargetFolder = 'D:\CoreVideo-QA\drills\t\recordings',
+                      [string]$Media = '', [long]$MediaFrames = 100, [string]$MediaState = 'live', [bool]$MediaOnProgram = $true) {
   $adm = { param($id) [pscustomobject]@{ sourceId = $id; state = 'ready'; actualFrameId = 9; requestedFrameId = 9; actualEpoch = 1; requestedEpoch = 1; actualCapture100ns = 5; requestedCapture100ns = 5 } }
+  $sources = @([pscustomobject]@{ sourceId = $Webcam; hasVideo = $true; framesIngested = $WebcamFrames; width = $WebcamWidth; height = 1080 },
+               [pscustomobject]@{ sourceId = 'capture:screen:0'; hasVideo = $true; framesIngested = $(if ($ScreenFrames -ge 0) { $ScreenFrames } else { $WebcamFrames }); width = 2560; height = 1440 })
+  $admissions = @((& $adm 'capture:screen:0'), (& $adm $Webcam))
+  $mediaRows = @()
+  if ($Media) {
+    # A -NoWebcam envelope: the staged clip alone in Program (sources[] kind media, mediaSources[] transport row).
+    $sources = @([pscustomobject]@{ sourceId = $Media; kind = 'media'; hasVideo = $true; framesIngested = $MediaFrames; width = 1920; height = 1080 })
+    $admissions = @((& $adm $Media))
+    $mediaRows = @([pscustomobject]@{ sourceId = $Media; mediaAssetId = $Media.Substring(6); state = $MediaState; loop = $false; onProgram = $MediaOnProgram; onPreview = $false; positionMs = 1000; durationMs = 2400000 })
+  }
   [pscustomobject]@{ available = $true; ageMs = $(if ($Stale) { 2000 } else { 40 }); snapshot = [pscustomobject]@{
       graphics = [pscustomobject]@{ coreEpoch = 3 }
       recording = [pscustomobject]@{ targetFolder = $TargetFolder; lifecycle = [pscustomobject]@{ state = $Recording }
         encoder = [pscustomobject]@{ hardwareAccelerated = $ProgramHardware; hardwareRequested = $true; encoderPath = $(if ($ProgramHardware) { 'hardware' } else { 'software' }) }; streams = @(
           [pscustomobject]@{ kind = 'program'; framesWritten = 10 },
           [pscustomobject]@{ kind = 'iso'; sourceId = 'capture:f4978a7f6d614c0d'; readiness = 'ready'; framesWritten = $IsoFrames; encoderPath = $EncoderPath }) }
-      sources = @([pscustomobject]@{ sourceId = $Webcam; hasVideo = $true; framesIngested = $WebcamFrames; width = $WebcamWidth; height = 1080 },
-                  [pscustomobject]@{ sourceId = 'capture:screen:0'; hasVideo = $true; framesIngested = $(if ($ScreenFrames -ge 0) { $ScreenFrames } else { $WebcamFrames }); width = 2560; height = 1440 })
+      sources = $sources
+      mediaSources = $mediaRows
       programFrame = [pscustomobject]@{ health = 'live'; videoSources = @() }
-      programSourceAdmission = [pscustomobject]@{ version = 1; sources = @((& $adm 'capture:screen:0'), (& $adm 'capture:f4978a7f6d614c0d')) }
+      programSourceAdmission = [pscustomobject]@{ version = 1; sources = $admissions }
       outputSenderSession = [pscustomobject]@{ activeSenderCount = 1; warnings = $Warnings
         senders = @([pscustomobject]@{ destination = $Destination; framesSent = $Sent; retryCount = $Retry; fps = $Fps }) }
       zoomSubscriptionChurn = [pscustomobject]@{ sources = @() } } }
@@ -308,19 +319,19 @@ Check 'throughout: a healthy interval keeps every flag true' {
   $t = New-DrillThroughout -Plan $plan; $progress = @{}
   for ($i = 0; $i -lt 5; $i++) { $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -WebcamFrames (100 + $i * 60)) -Plan $plan -Progress $progress -ElapsedMs ($i * 1000) }
   Assert ($t.samples -eq 5) "$($t.samples)"
-  foreach ($k in 'hardwareEncodersThroughout', 'programEncoderHardwareThroughout', 'remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout') { Assert $t[$k] "$k went false" }
+  foreach ($k in 'hardwareEncodersThroughout', 'programEncoderHardwareThroughout', 'remotes1080Throughout', 'sourceProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout') { Assert $t[$k] "$k went false" }
 }
 Check 'throughout: a frozen webcam fails capture progress after 2 s' {
   $t = New-DrillThroughout -Plan $plan; $progress = @{}
   foreach ($ms in 0, 1000, 1900) { $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -WebcamFrames 100) -Plan $plan -Progress $progress -ElapsedMs $ms }
-  Assert $t.captureProgressThroughout 'failed before 2 s'
+  Assert $t.sourceProgressThroughout 'failed before 2 s'
   $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -WebcamFrames 100) -Plan $plan -Progress $progress -ElapsedMs 2100
-  Assert (-not $t.captureProgressThroughout) 'frozen webcam passed'
-  Assert ($t.firstFailures[0].flag -eq 'captureProgressThroughout') 'first failure not recorded'
+  Assert (-not $t.sourceProgressThroughout) 'frozen webcam passed'
+  Assert ($t.firstFailures[0].flag -eq 'sourceProgressThroughout') 'first failure not recorded'
 }
 Check 'throughout: sub-1080 capture, 720p remote, software encoder, slow stream each fail their flag' {
   $t = New-DrillThroughout -Plan $plan; $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -WebcamWidth 1280) -Plan $plan -Progress @{} -ElapsedMs 0
-  Assert (-not $t.captureProgressThroughout) '1280 webcam passed'
+  Assert (-not $t.sourceProgressThroughout) '1280 webcam passed'
   $remote = Get-DrillWorkloadPlan -RemoteIds @('77') -WebcamSourceId 'capture:f4978a7f6d614c0d'
   $e = New-Envelope; $e.snapshot.zoomSubscriptionChurn.sources = @([pscustomobject]@{ kind = 'participant-video'; participantId = '77'; receivedWidth = 1280; receivedHeight = 720; coreFramesIngested = 9; lastCoreFrameAgeMs = 10 })
   $t = New-DrillThroughout -Plan $remote; $null = Update-DrillThroughout -Throughout $t -Envelope $e -Plan $remote -Progress @{} -ElapsedMs 0
@@ -337,7 +348,7 @@ Check 'throughout: a software ISO is a recorded fact, never a gating failure (#9
   Assert (-not $t.hardwareEncodersThroughout) 'software ISO not recorded as a fact'
   Assert ((@($t.encoderPlacement['capture:f4978a7f6d614c0d'].paths) -join ',') -eq 'software') 'placement not recorded'
   Assert (-not $t.encoderPlacement['capture:f4978a7f6d614c0d'].changed) 'one sample reported as a change'
-  foreach ($k in 'programEncoderHardwareThroughout', 'remotes1080Throughout', 'captureProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout') { Assert $t[$k] "$k failed on a placement-only difference" }
+  foreach ($k in 'programEncoderHardwareThroughout', 'remotes1080Throughout', 'sourceProgressThroughout', 'programSourcesAdmittedThroughout', 'streamHealthyThroughout') { Assert $t[$k] "$k failed on a placement-only difference" }
   Assert (@($t.firstFailures).Count -eq 0) ('placement became a first failure: ' + (@($t.firstFailures | ForEach-Object { $_.flag }) -join ','))
 }
 Check 'throughout: Program hardware is judged on the MEASURED encoderPath, never the request flag (#935 B1)' {
@@ -412,15 +423,15 @@ Check 'parameters: -ProbeMaxSessions is optional and limited to 1..16' {
 Check 'throughout: samples outside the interval only refresh progress' {
   $t = New-DrillThroughout -Plan $plan
   $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -WebcamWidth 1280) -Plan $plan -Progress @{} -ElapsedMs 0 -Measuring $false
-  Assert ($t.samples -eq 0 -and $t.captureProgressThroughout) 'settle sample counted'
+  Assert ($t.samples -eq 0 -and $t.sourceProgressThroughout) 'settle sample counted'
 }
 Check 'sample row is compact, carries the QPC and the admission evidence the judge needs' {
   $s = Update-DrillThroughout -Throughout (New-DrillThroughout -Plan $plan) -Envelope (New-Envelope) -Plan $plan -Progress @{} -ElapsedMs 0
-  $row = Get-DrillSampleRow -Envelope (New-Envelope) -ElapsedMs 1.5 -Checks $s.Checks -Captures $s.Captures
+  $row = Get-DrillSampleRow -Envelope (New-Envelope) -ElapsedMs 1.5 -Checks $s.Checks -Sources $s.Sources
   Assert ($row.qpc -match '^[0-9]+$' -and $row.coreEpoch -eq 3 -and @($row.iso).Count -eq 2) 'row'
   $json = $row | ConvertTo-Json -Depth 12 -Compress | ConvertFrom-Json
   Assert ($json.snapshot.programSourceAdmission.version -eq 1 -and @($json.snapshot.programSourceAdmission.sources).Count -eq 2) 'admissions missing from row'
-  Assert ($json.checks.captureProgressThroughout -eq $true -and @($json.captures).Count -eq 2) 'checks/captures missing'
+  Assert ($json.checks.sourceProgressThroughout -eq $true -and @($json.sources).Count -eq 2) 'checks/sources missing'
 }
 
 # ---------------------------------------------------------------- close guard
@@ -461,48 +472,108 @@ Check 'a webcam missing from the capture-device list is refused before any outpu
 }
 
 # ---------------------------------------------------------------- 2026-10-26: webcam optional (camera rig off the bench)
-Check '-NoWebcam local plan: single-route intro scene with the screen, no ISO, reported not exercised' {
-  $p = Get-DrillWorkloadPlan -WebcamSourceId ''
+# 2026-10-30 owner ruling: the -NoWebcam Program source is a staged motion clip, never a screen capture.
+$clipId = 'media:' + (Get-DrillMediaAssetId $script:DrillMediaRelativePath)
+Check 'media asset id matches MediaBinClassifier (sha256 of the forward-slash relative path, 12 hex)' {
+  Assert ((Get-DrillMediaAssetId 'qa/outputs-drill-motion.mp4') -eq 'media-63a585ec7312') (Get-DrillMediaAssetId 'qa/outputs-drill-motion.mp4')
+  Assert ((Get-DrillMediaAssetId 'qa\outputs-drill-motion.mp4') -eq 'media-63a585ec7312') 'backslash path hashed differently'
+  Assert ($clipId -eq 'media:media-63a585ec7312') $clipId
+}
+Check 'a plan without a webcam and without a clip is refused; -NoWebcam needs -MediaClip' {
+  $threw = $false; try { $null = Get-DrillWorkloadPlan -WebcamSourceId '' } catch { $threw = $true }
+  Assert $threw 'screen-only plan still allowed'
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -NoWebcam $true).Count -eq 1) '-NoWebcam without a clip accepted'
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -NoWebcam $true -MediaClip 'D:\nope\missing.mp4').Count -eq 1) 'missing clip accepted'
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -MediaClip $PSCommandPath).Count -eq 1) '-MediaClip without -NoWebcam accepted'
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -NoWebcam $true -MediaClip $PSCommandPath).Count -eq 0) 'valid -NoWebcam -MediaClip refused'
+}
+Check 'clip probe: 1920x1080 h264 at 60/1 and long enough; anything else is named' {
+  $probe = { param($w, $h, $r, $d, $c = 'h264') [pscustomobject]@{ streams = @([pscustomobject]@{ codec_type = 'video'; codec_name = $c; width = $w; height = $h; r_frame_rate = $r }); format = [pscustomobject]@{ duration = "$d" } } }
+  Assert (@(Test-DrillMediaClipProbe -Probe (& $probe 1920 1080 '60/1' 2400.5) -MinimumSeconds 2260).Count -eq 0) 'good clip refused'
+  Assert ((@(Test-DrillMediaClipProbe -Probe (& $probe 1920 1080 '60/1' 60.0) -MinimumSeconds 2260) -join ';') -match 'duration 60 s') 'short clip accepted'
+  Assert ((@(Test-DrillMediaClipProbe -Probe (& $probe 1280 720 '60/1' 2400) -MinimumSeconds 2260) -join ';') -match '1280x720') '720p accepted'
+  Assert ((@(Test-DrillMediaClipProbe -Probe (& $probe 1920 1080 '30/1' 2400) -MinimumSeconds 2260) -join ';') -match 'frame rate 30/1') '30 fps accepted'
+  Assert ((@(Test-DrillMediaClipProbe -Probe (& $probe 1920 1080 '60/1' 2400 'prores') -MinimumSeconds 2260) -join ';') -match 'codec prores') 'prores accepted'
+  Assert (((Test-DrillMediaClipProbe -Probe ([pscustomobject]@{ streams = @(); format = $null }) -MinimumSeconds 1) -join ';') -eq 'no video stream') 'no stream'
+}
+Check 'staging copies the clip under <root>\qa, refuses to overwrite, and removal leaves the root as found' {
+  $root = Join-Path $temp 'media-root'; $null = New-Item -ItemType Directory -Path $root -Force
+  $clip = Join-Path $temp 'clip.mp4'; [IO.File]::WriteAllBytes($clip, [byte[]](1..64))
+  $staged = Install-DrillMediaClip -ClipPath $clip -Root $root
+  Assert ($staged -eq (Join-Path $root 'qa\outputs-drill-motion.mp4') -and (Test-Path $staged)) "staged at $staged"
+  $threw = $false; try { $null = Install-DrillMediaClip -ClipPath $clip -Root $root } catch { $threw = $true }
+  Assert $threw 'overwrote a staged clip'
+  Remove-DrillMediaClip -Path $staged
+  Assert (-not (Test-Path (Join-Path $root 'qa'))) 'qa folder left behind'
+  Assert (Test-Path $root) 'media root removed'
+}
+Check 'backup -AlsoPaths carries the show-input roster, restores it byte for byte, and removes one that did not exist' {
+  $prefs = Join-Path $temp 'also\production-output-preferences.json'; $null = New-Item -ItemType Directory -Path (Split-Path $prefs) -Force
+  [IO.File]::WriteAllText($prefs, $v14, [Text.UTF8Encoding]::new($false))
+  $roster = Join-Path $temp 'also\show-input-roster.json'; [IO.File]::WriteAllText($roster, '{"Version":2,"Slots":[]}', [Text.UTF8Encoding]::new($false))
+  $absent = Join-Path $temp 'also\never-existed.json'
+  $m = Backup-DrillPreferenceFiles -Path $prefs -AlsoPaths @($roster, $absent) -BackupDirectory (Join-Path $temp 'also-backup')
+  Assert (@($m).Count -eq 4) "manifest entries $(@($m).Count)"
+  [IO.File]::WriteAllText($roster, '{"Version":2,"Slots":[{"SlotNumber":6}]}'); [IO.File]::WriteAllText($absent, '{}')
+  Restore-DrillPreferenceFiles -Manifest $m
+  Assert ([IO.File]::ReadAllText($roster) -eq '{"Version":2,"Slots":[]}') 'roster not restored'
+  Assert (-not (Test-Path $absent)) 'file that did not exist before was kept'
+}
+Check '-NoWebcam local plan: single-route intro scene with the motion clip, no screen, no ISO, reported not exercised' {
+  $p = Get-DrillWorkloadPlan -WebcamSourceId '' -MediaSourceId $clipId
   Assert ($p.LocalOnly -and -not $p.WebcamExercised) 'plan still thinks the webcam is exercised'
-  Assert ((($p.Assignments | ForEach-Object { "$($_.slot)=$($_.source)" }) -join ',') -eq '6=capture:screen:0') 'webcam slot assigned'
+  Assert ((($p.Assignments | ForEach-Object { "$($_.slot)=$($_.source)" }) -join ',') -eq "6=$clipId") 'assignments'
   # Not speaker-slides with a null route: the shell sends mode "none", the core
   # degrades Program and readiness never passes (2026-10-28 live run 2).
   Assert ($p.Scene -eq 'intro') "scene $($p.Scene)"
   Assert ($p.Routes -eq '{"intro-1":6}') $p.Routes
-  Assert (($p.ProgramSourceIds -join '|') -eq 'capture:screen:0') ($p.ProgramSourceIds -join '|')
-  Assert (($p.CaptureSourceIds -join '|') -eq 'capture:screen:0') ($p.CaptureSourceIds -join '|')
+  Assert (($p.ProgramSourceIds -join '|') -eq $clipId) ($p.ProgramSourceIds -join '|')
+  Assert (@($p.CaptureSourceIds).Count -eq 0) 'a screen is still captured'
+  Assert (($p.ProgressSourceIds -join '|') -eq $clipId -and $p.MediaSourceId -eq $clipId) 'progress/media source'
+  Assert ($p.Workload -match 'motion clip' -and $p.Workload -match 'no screen capture') $p.Workload
   Assert ($p.IsoSourceIds -is [array] -and $p.IsoSourceIds.Count -eq 0) 'a -NoWebcam local plan must have no ISO'
   Assert ($p.Workload -match 'webcam not exercised' -and $p.Workload -match 'no ISO') $p.Workload
   Assert (-not $p.EngineRequired) 'engine'
+  $webcamPlan = Get-DrillWorkloadPlan -WebcamSourceId 'capture:f4978a7f6d614c0d'
+  Assert ($null -eq $webcamPlan.MediaSourceId -and (($webcamPlan.ProgressSourceIds | Sort-Object) -join '|') -eq 'capture:f4978a7f6d614c0d|capture:screen:0') 'webcam plan progress sources changed'
   $json = [ordered]@{ program = $true; iso = @($p.IsoSourceIds) } | ConvertTo-Json -Compress
   Assert ($json.Contains('"iso":[]')) "drill.json would not carry an empty ISO array: $json"
 }
 Check '-NoWebcam remote plan keeps the Zoom ISOs and drops only the webcam' {
-  $p = Get-DrillWorkloadPlan -RemoteIds @('11', '22') -WebcamSourceId ''
-  Assert ((($p.Assignments | ForEach-Object { "$($_.slot)=$($_.source)" }) -join ',') -eq '1=zoom:11,2=zoom:22,6=capture:screen:0') 'slots'
+  $p = Get-DrillWorkloadPlan -RemoteIds @('11', '22') -WebcamSourceId '' -MediaSourceId $clipId
+  Assert ((($p.Assignments | ForEach-Object { "$($_.slot)=$($_.source)" }) -join ',') -eq "1=zoom:11,2=zoom:22,6=$clipId") 'slots'
   Assert (($p.IsoSourceIds -join '|') -eq 'zoom:11|zoom:22') 'iso'
   Assert ($p.EngineRequired -and -not $p.WebcamExercised) 'engine / exercised'
   Assert ($p.Scene -eq 'intro' -and $p.Routes -eq '{"intro-1":6}') "remote -NoWebcam scene/routes: $($p.Scene) $($p.Routes)"
   Assert ($p.Workload -match '2 remote Zoom feed\(s\)' -and $p.Workload -match 'webcam not exercised') $p.Workload
 }
 Check '-NoWebcam and -WebcamSourceId exclude each other; the plan with a webcam is unchanged' {
-  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -NoWebcam $true).Count -eq 0) 'NoWebcam alone refused'
-  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -NoWebcam $true -WebcamSourceId 'capture:f4978a7f6d614c0d').Count -eq 1) 'both accepted'
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -NoWebcam $true -MediaClip $PSCommandPath).Count -eq 0) 'NoWebcam with a clip refused'
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -NoWebcam $true -MediaClip $PSCommandPath -WebcamSourceId 'capture:f4978a7f6d614c0d').Count -eq 1) 'both accepted'
   $p = Get-DrillWorkloadPlan -WebcamSourceId 'capture:f4978a7f6d614c0d'
   Assert ($p.WebcamExercised -and $p.Scene -eq 'speaker-slides' -and $p.Routes -eq '{"speaker-slides-1":10,"speaker-slides-2":6}') 'webcam plan changed'
 }
-Check '-NoWebcam readiness and throughout judge the screen alone; a missing webcam no longer blocks' {
-  $noCam = Get-DrillWorkloadPlan -WebcamSourceId '' -RecordingFolder 'D:\CoreVideo-QA\drills\t\recordings'
-  $envelope = New-Envelope -Webcam 'capture:0000000000000000'
-  # The envelope's Program admissions still name the webcam, so fix them to the screen-only inventory.
-  $envelope.snapshot.programSourceAdmission.sources = @($envelope.snapshot.programSourceAdmission.sources | Where-Object { $_.sourceId -eq 'capture:screen:0' })
+Check '-NoWebcam readiness and throughout judge the clip alone: live on Program and advancing; cued, ended or absent transports are not ready' {
+  $noCam = Get-DrillWorkloadPlan -WebcamSourceId '' -MediaSourceId $clipId -RecordingFolder 'D:\CoreVideo-QA\drills\t\recordings'
+  $envelope = New-Envelope -Media $clipId
   $envelope.snapshot.recording.streams = @($envelope.snapshot.recording.streams | Where-Object { $_.kind -ne 'iso' })
   $r = Test-DrillReadiness -Envelope $envelope -Plan $noCam
   Assert $r.Ready ("not ready: " + ($r.Reasons -join '; '))
+  foreach ($case in @(@{ MediaState = 'cued' }, @{ MediaState = 'ended' }, @{ MediaOnProgram = $false }, @{ MediaFrames = 0 })) {
+    $e = New-Envelope -Media $clipId @case
+    $e.snapshot.recording.streams = @($e.snapshot.recording.streams | Where-Object { $_.kind -ne 'iso' })
+    Assert (-not (Test-DrillReadiness -Envelope $e -Plan $noCam).Ready) ("ready with " + ($case.Keys -join ','))
+  }
+  $e = New-Envelope -Media $clipId; $e.snapshot.mediaSources = @()
+  Assert (((Test-DrillReadiness -Envelope $e -Plan $noCam).Reasons -join ';') -match 'no transport row') 'missing transport row not named'
+  Assert ((Test-DrillInvariant -Envelope (New-Envelope -Media $clipId -MediaState 'ended') -Plan $noCam -ExpectedEpoch 3) -match 'clip ended') 'ended clip did not break the run'
+  Assert ($null -eq (Test-DrillInvariant -Envelope (New-Envelope -Media $clipId) -Plan $noCam -ExpectedEpoch 3)) 'live clip broke the run'
   $t = New-DrillThroughout -Plan $noCam; $progress = @{}
-  for ($i = 0; $i -lt 5; $i++) { $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -Webcam 'capture:0000000000000000' -ScreenFrames (100 + $i * 60)) -Plan $noCam -Progress $progress -ElapsedMs ($i * 1000) }
-  Assert $t.captureProgressThroughout 'screen progress failed without a webcam'
+  for ($i = 0; $i -lt 5; $i++) { $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -Media $clipId -MediaFrames (100 + $i * 60)) -Plan $noCam -Progress $progress -ElapsedMs ($i * 1000) }
+  Assert $t.sourceProgressThroughout 'clip progress failed'
   Assert $t.hardwareEncodersThroughout 'no ISO must not fail the hardware fact'
+  foreach ($ms in 0, 1000, 2100) { $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -Media $clipId -MediaFrames 500) -Plan $noCam -Progress $progress -ElapsedMs (5000 + $ms) }
+  Assert (-not $t.sourceProgressThroughout) 'a held clip (same frameId for 2 s) passed'
 }
 Check 'patch with no ISO source turns ISO recording off instead of arming an empty list' {
   $noIso = Join-Path $temp 'no-iso\production-output-preferences.json'
