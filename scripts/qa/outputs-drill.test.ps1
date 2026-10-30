@@ -461,11 +461,14 @@ Check 'a webcam missing from the capture-device list is refused before any outpu
 }
 
 # ---------------------------------------------------------------- 2026-10-26: webcam optional (camera rig off the bench)
-Check '-NoWebcam local plan: screen only in Program, empty webcam route, no ISO, reported not exercised' {
+Check '-NoWebcam local plan: single-route intro scene with the screen, no ISO, reported not exercised' {
   $p = Get-DrillWorkloadPlan -WebcamSourceId ''
   Assert ($p.LocalOnly -and -not $p.WebcamExercised) 'plan still thinks the webcam is exercised'
   Assert ((($p.Assignments | ForEach-Object { "$($_.slot)=$($_.source)" }) -join ',') -eq '6=capture:screen:0') 'webcam slot assigned'
-  Assert ($p.Routes -eq '{"speaker-slides-1":null,"speaker-slides-2":6}') $p.Routes
+  # Not speaker-slides with a null route: the shell sends mode "none", the core
+  # degrades Program and readiness never passes (2026-10-28 live run 2).
+  Assert ($p.Scene -eq 'intro') "scene $($p.Scene)"
+  Assert ($p.Routes -eq '{"intro-1":6}') $p.Routes
   Assert (($p.ProgramSourceIds -join '|') -eq 'capture:screen:0') ($p.ProgramSourceIds -join '|')
   Assert (($p.CaptureSourceIds -join '|') -eq 'capture:screen:0') ($p.CaptureSourceIds -join '|')
   Assert ($p.IsoSourceIds -is [array] -and $p.IsoSourceIds.Count -eq 0) 'a -NoWebcam local plan must have no ISO'
@@ -479,13 +482,14 @@ Check '-NoWebcam remote plan keeps the Zoom ISOs and drops only the webcam' {
   Assert ((($p.Assignments | ForEach-Object { "$($_.slot)=$($_.source)" }) -join ',') -eq '1=zoom:11,2=zoom:22,6=capture:screen:0') 'slots'
   Assert (($p.IsoSourceIds -join '|') -eq 'zoom:11|zoom:22') 'iso'
   Assert ($p.EngineRequired -and -not $p.WebcamExercised) 'engine / exercised'
+  Assert ($p.Scene -eq 'intro' -and $p.Routes -eq '{"intro-1":6}') "remote -NoWebcam scene/routes: $($p.Scene) $($p.Routes)"
   Assert ($p.Workload -match '2 remote Zoom feed\(s\)' -and $p.Workload -match 'webcam not exercised') $p.Workload
 }
 Check '-NoWebcam and -WebcamSourceId exclude each other; the plan with a webcam is unchanged' {
   Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -NoWebcam $true).Count -eq 0) 'NoWebcam alone refused'
   Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -NoWebcam $true -WebcamSourceId 'capture:f4978a7f6d614c0d').Count -eq 1) 'both accepted'
   $p = Get-DrillWorkloadPlan -WebcamSourceId 'capture:f4978a7f6d614c0d'
-  Assert ($p.WebcamExercised -and $p.Routes -eq '{"speaker-slides-1":10,"speaker-slides-2":6}') 'webcam plan changed'
+  Assert ($p.WebcamExercised -and $p.Scene -eq 'speaker-slides' -and $p.Routes -eq '{"speaker-slides-1":10,"speaker-slides-2":6}') 'webcam plan changed'
 }
 Check '-NoWebcam readiness and throughout judge the screen alone; a missing webcam no longer blocks' {
   $noCam = Get-DrillWorkloadPlan -WebcamSourceId '' -RecordingFolder 'D:\CoreVideo-QA\drills\t\recordings'

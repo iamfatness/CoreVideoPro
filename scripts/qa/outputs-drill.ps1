@@ -76,9 +76,17 @@ function Write-DrillJson($Value, [string]$Name, [int]$Depth = 8) {
   $Value | ConvertTo-Json -Depth $Depth | Set-Content -LiteralPath (Join-Path $Out $Name) -Encoding UTF8
 }
 function Write-DrillLog([string]$Message) {
+  # The log is evidence, never a dependency: a reader holding drill.log open
+  # (2026-10-28: a `tail -F` on it) made Add-Content throw a sharing violation
+  # at "Outputs ready", and the throw inside `finally` left the app running on
+  # patched preferences. Retry briefly, then keep going with the console line.
   $line = '[' + [DateTime]::UtcNow.ToString('o') + '] ' + $Message
   Write-Host $line
-  Add-Content -LiteralPath (Join-Path $Out 'drill.log') -Value $line -Encoding UTF8
+  for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    try { Add-Content -LiteralPath (Join-Path $Out 'drill.log') -Value $line -Encoding UTF8 -ErrorAction Stop; return }
+    catch [System.IO.IOException] { Start-Sleep -Milliseconds 100 }
+  }
+  Write-Host "WARNING: drill.log could not be written (held open by another process?): $Message"
 }
 function Wait-DrillUntil([int]$Seconds, [scriptblock]$Condition) {
   $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
@@ -133,7 +141,7 @@ elseif (-not $WebcamSourceId) {
 $plan = Get-DrillWorkloadPlan -RemoteIds $RemoteIds -WebcamSourceId $WebcamSourceId -Stream (-not $SkipStream) -Camera (-not $SkipVirtualCamera) -RecordingFolder (Join-Path $Out 'recordings')
 $notes = @()
 if ($plan.LocalOnly) { $notes += 'Local sources only: no remote Zoom feeds were requested (-RemoteIds), so no Zoom ISO was judged.' }
-if (-not $plan.WebcamExercised) { $notes += 'Webcam NOT EXERCISED (-NoWebcam): its Program route was cued empty and no webcam ISO was recorded; this run proves nothing about UVC capture.' }
+if (-not $plan.WebcamExercised) { $notes += "Webcam NOT EXERCISED (-NoWebcam): Program is the single-route scene '$($plan.Scene)' with the screen alone and no webcam ISO was recorded; this run proves nothing about UVC capture." }
 if ($plan.LocalOnly -and -not $plan.WebcamExercised) { $notes += 'No ISO in this run: the only local source is screen capture, which has no QA ISO identity.' }
 $notes += 'Screen capture is in Program but has no QA ISO identity stamp, so it is not ISO-recorded.'
 $workload = $plan.Workload
@@ -235,7 +243,7 @@ try {
   # so settle for up to 10 s before refusing (a false refusal of a gate run).
   $webcamMissing = @()
   if ($plan.WebcamExercised) { $null = Wait-DrillUntil 10 { $script:webcamMissing = @(Test-DrillWebcamPresent -WebcamSourceId $WebcamSourceId -Devices @((Get-DrillEnvelope).snapshot.captureDevices)); $script:webcamMissing.Count -eq 0 } }
-  else { Write-DrillLog 'Webcam not exercised (-NoWebcam): no device check, empty webcam route' }
+  else { Write-DrillLog "Webcam not exercised (-NoWebcam): no device check; Program scene '$($plan.Scene)' with the screen alone" }
   if ($webcamMissing.Count) { throw ($webcamMissing -join '; ') }
 
   # Workload (Prepare-LiveWorkload.ps1).

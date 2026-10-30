@@ -25,7 +25,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\qa\outputs-drill.ps1
 | `-Out` | `D:\CoreVideo-QA\drills\<timestamp>` | must be on D: and empty |
 | `-RemoteIds` | none | Zoom participant ids (up to 8, slots 1-5,7-9), recorded as ISOs; needs `-MeetingUrl` |
 | `-WebcamSourceId` | the one `capture:<id>` in the profile | refuses if the profile names zero or several |
-| `-NoWebcam` | off | run without the webcam (camera rig off the bench): its Program route is cued empty, a local-only run has no ISO, and the summary carries `Webcam source  NOT EXERCISED`; excludes `-WebcamSourceId` |
+| `-NoWebcam` | off | run without the webcam (camera rig off the bench): Program is the single-route `intro` scene with the screen, a local-only run has no ISO, and the summary carries `Webcam source  NOT EXERCISED`; excludes `-WebcamSourceId` |
 | `-CameraReceiver` | `native\build-dev\corevideo-shared-camera-receiver.exe` | build target `corevideo-shared-camera-receiver`; it is not in the installer |
 | `-SkipStream`, `-SkipVirtualCamera` | off | see below: skipping the camera means the run cannot PASS |
 | `-ProbeMaxSessions` | unset | 1..16; sets `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS` for the launch (discovery depth only) to force a software-ISO spill; recorded in `drill.json` and the workload line |
@@ -42,11 +42,15 @@ Without `-RemoteIds` the drill uses local sources only: webcam and screen
 capture in Program (scene `speaker-slides`), the webcam as the only ISO, and
 the verdict says so. With `-NoWebcam` (added 2026-10-26, when the owner's
 camera rig was off the bench and the profile's HD60 S+ had no device) the
-screen is the only capture in Program, the webcam route is cued empty
-(`scene.cueWithRoutes` accepts a null route), the device check is skipped, and a
-local-only run records no ISO at all, since screen capture carries no QA ISO
-identity; the preferences patch then turns ISO recording off rather than arming
-an empty list. `drill.json` carries `webcamExercised: false` and a null
+screen is the only capture in Program, cued through the catalog's single-route
+`intro` scene (layout host-focus, route `intro-1`), the device check is skipped,
+and a local-only run records no ISO at all, since screen capture carries no QA
+ISO identity; the preferences patch then turns ISO recording off rather than
+arming an empty list. Cueing `speaker-slides` with its webcam route null is
+accepted, but the shell sends that route with mode `none`, the core logs
+"unsupported mode none" and marks Program health degraded, and readiness
+("Program source admissions not ready") never passes; the 2026-10-28 live run
+spent its 300 s on that, so the empty-route form is not used. `drill.json` carries `webcamExercised: false` and a null
 `webcamSourceId`, the verdict gets `notExercised: ["Webcam source"]`, and the
 summary prints `Webcam source  NOT EXERCISED` under the output rows. The
 outputs are still judged with zero tolerance; the line says only that UVC

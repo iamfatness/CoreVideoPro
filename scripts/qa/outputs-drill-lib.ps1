@@ -14,6 +14,9 @@
 $script:DrillRemoteSlots = @(1, 2, 3, 4, 5, 7, 8, 9)
 $script:DrillScreenSlot = 6
 $script:DrillWebcamSlot = 10
+# -NoWebcam Program scene: the catalog's single-route `intro` (layout host-focus);
+# its one route is `<sceneId>-1` (SceneRoutingService.GetStarterRoutes).
+$script:DrillNoWebcamScene = 'intro'
 $script:DrillScreenSourceId = 'capture:screen:0'
 
 function ConvertTo-DrillIdList {
@@ -81,11 +84,14 @@ function Test-DrillWebcamPresent {
 
 function Get-DrillWorkloadPlan {
   # An empty -WebcamSourceId is the -NoWebcam plan (2026-10-26: the owner's camera
-  # rig is off the bench, so the profile's webcam has no device). The webcam
-  # route is cued empty (route -> null is accepted by scene.cueWithRoutes), the
-  # screen is the only capture in Program, and a local-only plan has no ISO at
-  # all (screen capture carries no QA ISO identity). The webcam is then
-  # reported as NOT EXERCISED, never silently dropped.
+  # rig is off the bench, so the profile's webcam has no device). Program then
+  # uses the single-route catalog scene `intro` (layout host-focus, route
+  # `intro-1`) with the screen in it: cueing `speaker-slides` with its webcam
+  # route null is accepted by scene.cueWithRoutes but the shell sends that route
+  # with mode "none", the core logs "unsupported mode none" and marks Program
+  # health degraded, and readiness never passes (2026-10-28 run 2, 300 s). A
+  # local-only plan has no ISO at all (screen capture carries no QA ISO
+  # identity). The webcam is reported as NOT EXERCISED, never silently dropped.
   param([string[]]$RemoteIds = @(), [string]$WebcamSourceId, [bool]$Stream = $true, [bool]$Camera = $true, [string]$RecordingFolder)
   $ids = @($RemoteIds | Where-Object { $_ })
   $webcam = [bool]$WebcamSourceId
@@ -104,13 +110,15 @@ function Get-DrillWorkloadPlan {
   if ($ids.Count) { $iso = [string[]]@($ids | ForEach-Object { 'zoom:' + $_ }) } elseif ($webcam) { $iso = [string[]]@($WebcamSourceId) }
   $local = $ids.Count -eq 0
   [string[]]$captures = if ($webcam) { @($WebcamSourceId, $script:DrillScreenSourceId) } else { @($script:DrillScreenSourceId) }
-  $webcamRoute = if ($webcam) { [string]$script:DrillWebcamSlot } else { 'null' }
+  $scene = if ($webcam) { 'speaker-slides' } else { $script:DrillNoWebcamScene }
+  $routes = if ($webcam) { '{"speaker-slides-1":' + $script:DrillWebcamSlot + ',"speaker-slides-2":' + $script:DrillScreenSlot + '}' }
+            else { '{"' + $script:DrillNoWebcamScene + '-1":' + $script:DrillScreenSlot + '}' }
   [pscustomobject]@{
     RemoteIds        = $ids
     LocalOnly        = $local
     Assignments      = $assignments
-    Scene            = 'speaker-slides'
-    Routes           = ('{"speaker-slides-1":' + $webcamRoute + ',"speaker-slides-2":' + $script:DrillScreenSlot + '}')
+    Scene            = $scene
+    Routes           = $routes
     ProgramSourceIds = @($captures | Sort-Object)
     CaptureSourceIds = $captures
     WebcamExercised  = $webcam
