@@ -50,7 +50,20 @@ arming an empty list. Cueing `speaker-slides` with its webcam route null is
 accepted, but the shell sends that route with mode `none`, the core logs
 "unsupported mode none" and marks Program health degraded, and readiness
 ("Program source admissions not ready") never passes; the 2026-10-28 live run
-spent its 300 s on that, so the empty-route form is not used. `drill.json` carries `webcamExercised: false` and a null
+spent its 300 s on that, so the empty-route form is not used.
+
+The camera serving proof (`camera-serving-identity.json`: the installed DLL's
+"Serving module path" line and a later `[vcam-delivery-v2]` line of that pid
+with `historyReads > 0`) is built by `Get-DrillCameraServingProof` from plain
+strings. The 2026-10-29 and 2026-10-30 live runs wedged right after "Outputs
+ready" with outputs left live and one core at 100 %: the proof record held the
+lines as `Get-Content` returned them, with their provider note properties
+(`PSDrive`, `PSProvider`, ...), and `ConvertTo-Json -Depth 8` walked that object
+graph without returning. The script now casts the tail to `[string[]]` and the
+function returns strings; a unit check serializes a proof built from
+`Get-Content` lines in under 5 s. Found with `Set-PSDebug -Trace 1` scoped to
+the loop in a diagnostic copy of the script; a non-invasive `cdb -pv` stack of
+the host had not reached the pipeline thread. `drill.json` carries `webcamExercised: false` and a null
 `webcamSourceId`, the verdict gets `notExercised: ["Webcam source"]`, and the
 summary prints `Webcam source  NOT EXERCISED` under the output rows. The
 outputs are still judged with zero tolerance; the line says only that UVC

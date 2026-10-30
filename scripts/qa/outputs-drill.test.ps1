@@ -515,6 +515,32 @@ Check 'patch with no ISO source turns ISO recording off instead of arming an emp
   Assert ([IO.File]::ReadAllText($noIso) -match '"IsoRecordingSourceIds":\s*\[\s*\]') 'ISO list must stay a JSON array'
 }
 
+# ---------------------------------------------------------------- 2026-10-30: camera serving proof must serialize (live wedge)
+Check 'camera serving proof from Get-Content lines serializes at depth 8 and names the serving pid' {
+  $dll = 'C:\Program Files\Common Files\CoreVideoProCamera\abc\corevideo-virtualcam.dll'
+  $serveLog = Join-Path $temp 'vcam-serve.log'
+  @(
+    '[07:27:11.244 pid=52512] Serving module path=' + $dll
+    '[07:27:11.326 pid=37984] Serving module path=' + $dll
+    '[07:27:49.617 pid=37984] [vcam-delivery-v2] stream=1 run=1 emitted=1 fresh=1 historyReads=0 contended=0'
+    '[07:27:50.618 pid=52512] [vcam-delivery-v2] stream=2 run=1 emitted=61 fresh=61 historyReads=9 contended=0'
+    '[07:27:50.618 pid=37984] [vcam-delivery-v2] stream=1 run=1 emitted=61 fresh=61 historyReads=12 contended=0'
+    '[07:27:51.618 pid=37984] [vcam-delivery-v2] stream=1 run=1 emitted=121 fresh=121 historyReads=30 contended=0'
+  ) | Set-Content -LiteralPath $serveLog -Encoding UTF8
+  $lines = @(Get-Content -LiteralPath $serveLog -Tail 3000)   # carries PSDrive/PSProvider note properties, as in the drill
+  $proof = Get-DrillCameraServingProof -ServeLines $lines -ExpectedDll $dll
+  Assert ($null -ne $proof) 'proof not found'
+  Assert ($proof.servingPid -eq 37984) "serving pid $($proof.servingPid)"
+  Assert ($proof.historyLine -like '*historyReads=30*') "took the wrong history line: $($proof.historyLine)"
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $json = $proof | ConvertTo-Json -Depth 8
+  Assert ($sw.Elapsed.TotalSeconds -lt 5) "serialization took $($sw.Elapsed.TotalSeconds) s"
+  Assert ($json -notmatch 'PSDrive|PSProvider|PSPath') 'provider note properties leaked into the JSON'
+  Assert ((($json | ConvertFrom-Json).moduleLine) -eq ('[07:27:11.326 pid=37984] Serving module path=' + $dll)) 'module line'
+  Assert ($null -eq (Get-DrillCameraServingProof -ServeLines $lines[0..3] -ExpectedDll $dll)) 'proof claimed before the serving pid showed retained reads'
+  Assert ($null -eq (Get-DrillCameraServingProof -ServeLines @() -ExpectedDll $dll)) 'proof from no lines'
+}
+
 # ---------------------------------------------------------------- verdict aggregation (Python)
 if (-not $SkipPython) {
   Check 'verdict aggregation + offline judge orchestration (test_outputs_drill.py)' {

@@ -323,12 +323,10 @@ try {
         $firstFrame = $true
       }
       if ($firstFrame -and $expectedDll) {
-        $serve = @(Get-Content 'C:\ProgramData\CoreVideoPro\vcam-serve.log' -Tail 3000 -ErrorAction SilentlyContinue)
-        $module = @($serve | Where-Object { $_ -like ('*Serving module path=' + $expectedDll) }) | Select-Object -Last 1
-        if ($module -and $module -match 'pid=(\d+)') {
-          $history = @($serve | Where-Object { $_ -match ('pid=' + $Matches[1] + '\] .*\[vcam-delivery-v2\]') -and $_ -match 'historyReads=[1-9][0-9]*' }) | Select-Object -Last 1
-          if ($history) { Write-DrillJson ([ordered]@{ expectedDll = $expectedDll; moduleLine = $module; historyLine = $history; observedUtc = [DateTime]::UtcNow.ToString('o') }) 'camera-serving-identity.json'; break }
-        }
+        # Plain strings only: see Get-DrillCameraServingProof for the wedge this avoids.
+        $serve = [string[]]@(Get-Content 'C:\ProgramData\CoreVideoPro\vcam-serve.log' -Tail 3000 -ErrorAction SilentlyContinue)
+        $proof = Get-DrillCameraServingProof -ServeLines $serve -ExpectedDll $expectedDll
+        if ($proof) { Write-DrillJson $proof 'camera-serving-identity.json'; break }
       }
       if ([DateTime]::UtcNow -gt $deadline) {
         if (-not $firstFrame) { throw 'OS camera receiver produced no first frame within 35 s' }

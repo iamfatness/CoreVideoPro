@@ -222,6 +222,29 @@ function Restore-DrillPreferenceFiles {
   }
 }
 
+function Get-DrillCameraServingProof {
+  # Proves, from the serve log's recent lines, that the registered OS camera
+  # source is served by the installed DLL and is doing retained reads: the
+  # last "Serving module path=<expected DLL>" line names the serving pid, and a
+  # later [vcam-delivery-v2] line of that pid shows historyReads > 0. Returns
+  # the record for camera-serving-identity.json, or $null when not yet proven.
+  #
+  # The record holds PLAIN strings. Lines from Get-Content carry provider note
+  # properties (PSDrive, PSProvider, ...); ConvertTo-Json -Depth 8 walks that
+  # object graph and never returns, which wedged the 2026-10-29 and 2026-10-30
+  # live drills right after "Outputs ready" at 100 % of one core, outputs left
+  # live. The serving pid is captured once, outside Where-Object, because
+  # -match inside the filter block overwrites $Matches for the next line.
+  param([AllowEmptyCollection()][string[]]$ServeLines = @(), [Parameter(Mandatory)][string]$ExpectedDll)
+  $module = [string](@($ServeLines | Where-Object { $_ -like ('*Serving module path=' + $ExpectedDll) }) | Select-Object -Last 1)
+  if (-not $module -or $module -notmatch 'pid=(\d+)\]') { return $null }
+  $servingPid = $Matches[1]
+  $pattern = 'pid=' + $servingPid + '\] .*\[vcam-delivery-v2\]'
+  $history = [string](@($ServeLines | Where-Object { $_ -match $pattern -and $_ -match 'historyReads=[1-9][0-9]*' }) | Select-Object -Last 1)
+  if (-not $history) { return $null }
+  [ordered]@{ expectedDll = [string]$ExpectedDll; servingPid = [int]$servingPid; moduleLine = $module; historyLine = $history; observedUtc = [DateTime]::UtcNow.ToString('o') }
+}
+
 function Set-DrillPreferences {
   # Points recording at the evidence folder and SRT at a loopback caller and
   # forces RTMP off. The stored RTMP key and URL are never changed; the key is
