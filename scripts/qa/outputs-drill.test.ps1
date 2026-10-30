@@ -460,6 +460,57 @@ Check 'a webcam missing from the capture-device list is refused before any outpu
   Assert (@(Test-DrillWebcamPresent -WebcamSourceId 'capture:x' -Devices @()).Count -eq 1) 'empty device list accepted'
 }
 
+# ---------------------------------------------------------------- 2026-10-26: webcam optional (camera rig off the bench)
+Check '-NoWebcam local plan: screen only in Program, empty webcam route, no ISO, reported not exercised' {
+  $p = Get-DrillWorkloadPlan -WebcamSourceId ''
+  Assert ($p.LocalOnly -and -not $p.WebcamExercised) 'plan still thinks the webcam is exercised'
+  Assert ((($p.Assignments | ForEach-Object { "$($_.slot)=$($_.source)" }) -join ',') -eq '6=capture:screen:0') 'webcam slot assigned'
+  Assert ($p.Routes -eq '{"speaker-slides-1":null,"speaker-slides-2":6}') $p.Routes
+  Assert (($p.ProgramSourceIds -join '|') -eq 'capture:screen:0') ($p.ProgramSourceIds -join '|')
+  Assert (($p.CaptureSourceIds -join '|') -eq 'capture:screen:0') ($p.CaptureSourceIds -join '|')
+  Assert ($p.IsoSourceIds -is [array] -and $p.IsoSourceIds.Count -eq 0) 'a -NoWebcam local plan must have no ISO'
+  Assert ($p.Workload -match 'webcam not exercised' -and $p.Workload -match 'no ISO') $p.Workload
+  Assert (-not $p.EngineRequired) 'engine'
+  $json = [ordered]@{ program = $true; iso = @($p.IsoSourceIds) } | ConvertTo-Json -Compress
+  Assert ($json.Contains('"iso":[]')) "drill.json would not carry an empty ISO array: $json"
+}
+Check '-NoWebcam remote plan keeps the Zoom ISOs and drops only the webcam' {
+  $p = Get-DrillWorkloadPlan -RemoteIds @('11', '22') -WebcamSourceId ''
+  Assert ((($p.Assignments | ForEach-Object { "$($_.slot)=$($_.source)" }) -join ',') -eq '1=zoom:11,2=zoom:22,6=capture:screen:0') 'slots'
+  Assert (($p.IsoSourceIds -join '|') -eq 'zoom:11|zoom:22') 'iso'
+  Assert ($p.EngineRequired -and -not $p.WebcamExercised) 'engine / exercised'
+  Assert ($p.Workload -match '2 remote Zoom feed\(s\)' -and $p.Workload -match 'webcam not exercised') $p.Workload
+}
+Check '-NoWebcam and -WebcamSourceId exclude each other; the plan with a webcam is unchanged' {
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -NoWebcam $true).Count -eq 0) 'NoWebcam alone refused'
+  Assert ((Test-DrillParameters -Seconds 60 -Out 'D:\x' -NoWebcam $true -WebcamSourceId 'capture:f4978a7f6d614c0d').Count -eq 1) 'both accepted'
+  $p = Get-DrillWorkloadPlan -WebcamSourceId 'capture:f4978a7f6d614c0d'
+  Assert ($p.WebcamExercised -and $p.Routes -eq '{"speaker-slides-1":10,"speaker-slides-2":6}') 'webcam plan changed'
+}
+Check '-NoWebcam readiness and throughout judge the screen alone; a missing webcam no longer blocks' {
+  $noCam = Get-DrillWorkloadPlan -WebcamSourceId '' -RecordingFolder 'D:\CoreVideo-QA\drills\t\recordings'
+  $envelope = New-Envelope -Webcam 'capture:0000000000000000'
+  # The envelope's Program admissions still name the webcam, so fix them to the screen-only inventory.
+  $envelope.snapshot.programSourceAdmission.sources = @($envelope.snapshot.programSourceAdmission.sources | Where-Object { $_.sourceId -eq 'capture:screen:0' })
+  $envelope.snapshot.recording.streams = @($envelope.snapshot.recording.streams | Where-Object { $_.kind -ne 'iso' })
+  $r = Test-DrillReadiness -Envelope $envelope -Plan $noCam
+  Assert $r.Ready ("not ready: " + ($r.Reasons -join '; '))
+  $t = New-DrillThroughout -Plan $noCam; $progress = @{}
+  for ($i = 0; $i -lt 5; $i++) { $null = Update-DrillThroughout -Throughout $t -Envelope (New-Envelope -Webcam 'capture:0000000000000000' -ScreenFrames (100 + $i * 60)) -Plan $noCam -Progress $progress -ElapsedMs ($i * 1000) }
+  Assert $t.captureProgressThroughout 'screen progress failed without a webcam'
+  Assert $t.hardwareEncodersThroughout 'no ISO must not fail the hardware fact'
+}
+Check 'patch with no ISO source turns ISO recording off instead of arming an empty list' {
+  $noIso = Join-Path $temp 'no-iso\production-output-preferences.json'
+  $null = New-Item -ItemType Directory -Path (Split-Path $noIso) -Force
+  [IO.File]::WriteAllText($noIso, $v14, [Text.UTF8Encoding]::new($false))
+  $null = Set-DrillPreferences -Path $noIso -RecordingFolder 'D:\r' -IsoSourceIds @() -SrtPort 40000 -Stream
+  $p = Get-Content $noIso -Raw -Encoding UTF8 | ConvertFrom-Json
+  Assert ($p.IsoRecordingEnabled -eq $false) 'ISO armed with no sources'
+  Assert (@($p.IsoRecordingSourceIds).Count -eq 0) 'ISO list not emptied'
+  Assert ([IO.File]::ReadAllText($noIso) -match '"IsoRecordingSourceIds":\s*\[\s*\]') 'ISO list must stay a JSON array'
+}
+
 # ---------------------------------------------------------------- verdict aggregation (Python)
 if (-not $SkipPython) {
   Check 'verdict aggregation + offline judge orchestration (test_outputs_drill.py)' {

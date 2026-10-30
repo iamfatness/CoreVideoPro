@@ -25,6 +25,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\qa\outputs-drill.ps1
 | `-Out` | `D:\CoreVideo-QA\drills\<timestamp>` | must be on D: and empty |
 | `-RemoteIds` | none | Zoom participant ids (up to 8, slots 1-5,7-9), recorded as ISOs; needs `-MeetingUrl` |
 | `-WebcamSourceId` | the one `capture:<id>` in the profile | refuses if the profile names zero or several |
+| `-NoWebcam` | off | run without the webcam (camera rig off the bench): its Program route is cued empty, a local-only run has no ISO, and the summary carries `Webcam source  NOT EXERCISED`; excludes `-WebcamSourceId` |
 | `-CameraReceiver` | `native\build-dev\corevideo-shared-camera-receiver.exe` | build target `corevideo-shared-camera-receiver`; it is not in the installer |
 | `-SkipStream`, `-SkipVirtualCamera` | off | see below: skipping the camera means the run cannot PASS |
 | `-ProbeMaxSessions` | unset | 1..16; sets `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS` for the launch (discovery depth only) to force a software-ISO spill; recorded in `drill.json` and the workload line |
@@ -39,7 +40,17 @@ reason text.
 
 Without `-RemoteIds` the drill uses local sources only: webcam and screen
 capture in Program (scene `speaker-slides`), the webcam as the only ISO, and
-the verdict says so. Screen capture carries no QA ISO identity stamp (only Zoom
+the verdict says so. With `-NoWebcam` (added 2026-10-26, when the owner's
+camera rig was off the bench and the profile's HD60 S+ had no device) the
+screen is the only capture in Program, the webcam route is cued empty
+(`scene.cueWithRoutes` accepts a null route), the device check is skipped, and a
+local-only run records no ISO at all, since screen capture carries no QA ISO
+identity; the preferences patch then turns ISO recording off rather than arming
+an empty list. `drill.json` carries `webcamExercised: false` and a null
+`webcamSourceId`, the verdict gets `notExercised: ["Webcam source"]`, and the
+summary prints `Webcam source  NOT EXERCISED` under the output rows. The
+outputs are still judged with zero tolerance; the line says only that UVC
+capture was not on the bench, so such a run is not evidence about the webcam. Screen capture carries no QA ISO identity stamp (only Zoom
 and UVC sources call `traceQaIsoArrival`), so it is never ISO-recorded here.
 Media sources are not part of the workload yet.
 

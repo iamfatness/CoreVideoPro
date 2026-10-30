@@ -22,7 +22,7 @@ function ConvertTo-DrillIdList {
 }
 
 function Test-DrillParameters {
-  param([int]$Seconds, [string]$Out, [string[]]$RemoteIds = @(), [string]$MeetingUrl, [string]$WebcamSourceId, [int]$ProbeMaxSessions = 0)
+  param([int]$Seconds, [string]$Out, [string[]]$RemoteIds = @(), [string]$MeetingUrl, [string]$WebcamSourceId, [int]$ProbeMaxSessions = 0, [bool]$NoWebcam = $false)
   $errors = [System.Collections.Generic.List[string]]::new()
   # 0 = not set. Otherwise the COREVIDEO_ENCODER_PROBE_MAX_SESSIONS QA override (discovery depth only).
   if ($ProbeMaxSessions -ne 0 -and ($ProbeMaxSessions -lt 1 -or $ProbeMaxSessions -gt 16)) { $errors.Add("ProbeMaxSessions must be between 1 and 16; got $ProbeMaxSessions.") }
@@ -37,6 +37,7 @@ function Test-DrillParameters {
   if (@($ids | Select-Object -Unique).Count -ne $ids.Count) { $errors.Add('Remote ids must be unique.') }
   if ($ids.Count -gt 0 -and [string]::IsNullOrWhiteSpace($MeetingUrl)) { $errors.Add('MeetingUrl (the full link with pwd) is required with RemoteIds.') }
   if ($WebcamSourceId -and $WebcamSourceId -notmatch '^capture:[0-9a-f]{16}$') { $errors.Add("WebcamSourceId must look like capture:<16 hex>; got '$WebcamSourceId'.") }
+  if ($NoWebcam -and $WebcamSourceId) { $errors.Add('-NoWebcam and -WebcamSourceId exclude each other.') }
   return , $errors.ToArray()
 }
 
@@ -79,27 +80,40 @@ function Test-DrillWebcamPresent {
 }
 
 function Get-DrillWorkloadPlan {
-  param([string[]]$RemoteIds = @(), [Parameter(Mandatory)][string]$WebcamSourceId, [bool]$Stream = $true, [bool]$Camera = $true, [string]$RecordingFolder)
+  # An empty -WebcamSourceId is the -NoWebcam plan (2026-10-26: the owner's camera
+  # rig is off the bench, so the profile's webcam has no device). The webcam
+  # route is cued empty (route -> null is accepted by scene.cueWithRoutes), the
+  # screen is the only capture in Program, and a local-only plan has no ISO at
+  # all (screen capture carries no QA ISO identity). The webcam is then
+  # reported as NOT EXERCISED, never silently dropped.
+  param([string[]]$RemoteIds = @(), [string]$WebcamSourceId, [bool]$Stream = $true, [bool]$Camera = $true, [string]$RecordingFolder)
   $ids = @($RemoteIds | Where-Object { $_ })
+  $webcam = [bool]$WebcamSourceId
   $assignments = @()
   for ($i = 0; $i -lt $ids.Count; $i++) { $assignments += [pscustomobject]@{ slot = $script:DrillRemoteSlots[$i]; source = 'zoom:' + $ids[$i] } }
   $assignments += [pscustomobject]@{ slot = $script:DrillScreenSlot; source = $script:DrillScreenSourceId }
-  $assignments += [pscustomobject]@{ slot = $script:DrillWebcamSlot; source = $WebcamSourceId }
+  if ($webcam) { $assignments += [pscustomobject]@{ slot = $script:DrillWebcamSlot; source = $WebcamSourceId } }
   # ISO identity is stamped only by Zoom and UVC sources (QaIsoIdentity.h call
   # sites); screen capture has no QA ISO identity, so it is not ISO-recorded.
   # [string[]] keeps a one-ISO plan an array: assigning the output of an if
   # statement unrolls a single-element array, drill.json then carries a bare
   # string and the judge iterates its characters (seen 2026-10-25 shakeout).
-  [string[]]$iso = if ($ids.Count) { @($ids | ForEach-Object { 'zoom:' + $_ }) } else { @($WebcamSourceId) }
+  # Assigned explicitly: `$x = if (...) { @() }` yields $null in PS 5.1 (an empty
+  # pipeline), and a one-element if-result unrolls to a scalar (2026-10-25).
+  [string[]]$iso = @()
+  if ($ids.Count) { $iso = [string[]]@($ids | ForEach-Object { 'zoom:' + $_ }) } elseif ($webcam) { $iso = [string[]]@($WebcamSourceId) }
   $local = $ids.Count -eq 0
+  [string[]]$captures = if ($webcam) { @($WebcamSourceId, $script:DrillScreenSourceId) } else { @($script:DrillScreenSourceId) }
+  $webcamRoute = if ($webcam) { [string]$script:DrillWebcamSlot } else { 'null' }
   [pscustomobject]@{
     RemoteIds        = $ids
     LocalOnly        = $local
     Assignments      = $assignments
     Scene            = 'speaker-slides'
-    Routes           = ('{"speaker-slides-1":' + $script:DrillWebcamSlot + ',"speaker-slides-2":' + $script:DrillScreenSlot + '}')
-    ProgramSourceIds = @(@($WebcamSourceId, $script:DrillScreenSourceId) | Sort-Object)
-    CaptureSourceIds = @($WebcamSourceId, $script:DrillScreenSourceId)
+    Routes           = ('{"speaker-slides-1":' + $webcamRoute + ',"speaker-slides-2":' + $script:DrillScreenSlot + '}')
+    ProgramSourceIds = @($captures | Sort-Object)
+    CaptureSourceIds = $captures
+    WebcamExercised  = $webcam
     IsoSourceIds     = $iso
     # The capture engine is the Zoom media engine: transport.engine.set is
     # refused (HTTP 422) outside a meeting, and local sources route to Program
@@ -108,8 +122,10 @@ function Get-DrillWorkloadPlan {
     Stream           = $Stream
     Camera           = $Camera
     RecordingFolder  = $RecordingFolder
-    Workload         = if ($local) { 'local sources only: webcam + screen capture in Program, webcam ISO; no remote Zoom feeds; media not included' }
-                       else { "$($ids.Count) remote Zoom feed(s) as ISOs + webcam and screen capture in Program; media not included" }
+    Workload         = if ($local -and $webcam) { 'local sources only: webcam + screen capture in Program, webcam ISO; no remote Zoom feeds; media not included' }
+                       elseif ($local) { 'local sources only: screen capture in Program, webcam not exercised, no ISO; no remote Zoom feeds; media not included' }
+                       elseif ($webcam) { "$($ids.Count) remote Zoom feed(s) as ISOs + webcam and screen capture in Program; media not included" }
+                       else { "$($ids.Count) remote Zoom feed(s) as ISOs + screen capture in Program, webcam not exercised; media not included" }
   }
 }
 
@@ -203,13 +219,14 @@ function Set-DrillPreferences {
   # forces RTMP off. The stored RTMP key and URL are never changed; the key is
   # read only to prove the rewritten file still carries it unchanged.
   param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$RecordingFolder,
-        [Parameter(Mandatory)][string[]]$IsoSourceIds, [int]$SrtPort, [switch]$Stream)
+        [AllowEmptyCollection()][string[]]$IsoSourceIds = @(), [int]$SrtPort, [switch]$Stream)
   $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
   $prefs = $raw | ConvertFrom-Json
   $original = $raw | ConvertFrom-Json
   $values = [ordered]@{
     RecordingTargetFolder = [string]$RecordingFolder; RecordingFilenamePrefix = 'outputs-drill'
-    IsoRecordingEnabled = $true; IsoRecordingSourceIds = [object[]]@($IsoSourceIds | ForEach-Object { [string]$_ })
+    # No ISO source (a -NoWebcam local-only plan) turns ISO off rather than arming an empty list.
+    IsoRecordingEnabled = (@($IsoSourceIds).Count -gt 0); IsoRecordingSourceIds = [object[]]@($IsoSourceIds | ForEach-Object { [string]$_ })
     StreamRtmpEnabled = $false
   }
   if ($Stream) {

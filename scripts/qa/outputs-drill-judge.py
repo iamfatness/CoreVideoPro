@@ -256,7 +256,7 @@ def aggregate(rows, context):
                     'Program on the software encoder fails (programEncoderHardwareThroughout).',
             'throughoutFailures': broken,
             'seconds': context.get('seconds'), 'workload': context.get('workload'),
-            'outputs': rows, 'skipped': context.get('skipped', []),
+            'outputs': rows, 'skipped': context.get('skipped', []), 'notExercised': context.get('notExercised', []),
             'supplementary': context.get('supplementary', {}), 'notes': notes,
             'scope': 'Output pixel identity only. On-screen Studio cells, audio and physical display are not judged here.'}
 
@@ -276,6 +276,8 @@ def summary_text(verdict):
         lines.append(line)
     for skipped in verdict.get('skipped', []):
         lines.append(f"{skipped:<{width}}  SKIPPED")
+    for name in verdict.get('notExercised', []):
+        lines.append(f"{name:<{width}}  NOT EXERCISED")
     deadlines = verdict.get('supplementary', {}).get('programGpuDeadlines')
     if deadlines:
         lines.append(f"{'Program GPU deadlines':<{width}}  {deadlines}  (supplementary; not part of the overall verdict)")
@@ -308,7 +310,12 @@ def run(evidence):
         enabled['iso'] = [enabled['iso']]
     notes = list(drill.get('notes', []))
     skipped = [name for name, on in (('Stream', enabled.get('stream')), ('OS virtual camera', enabled.get('camera'))) if not on]
-    context = {'seconds': seconds, 'workload': drill.get('workload'), 'skipped': skipped, 'notes': notes, 'supplementary': {}}
+    # A -NoWebcam run (drill.json webcamExercised false) is reported as NOT
+    # EXERCISED: a source that was never on the bench, not an output that was
+    # skipped. It never changes the outputs' verdict.
+    not_exercised = ['Webcam source'] if drill.get('webcamExercised') is False else []
+    context = {'seconds': seconds, 'workload': drill.get('workload'), 'skipped': skipped, 'notExercised': not_exercised,
+               'notes': notes, 'supplementary': {}}
 
     def save(name, value):
         (judges / name).write_text(json.dumps(value, indent=2), encoding='utf-8')

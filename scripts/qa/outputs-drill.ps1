@@ -44,6 +44,7 @@ param(
   [string[]]$RemoteIds = @(),
   [string]$MeetingUrl,
   [string]$WebcamSourceId,
+  [switch]$NoWebcam,
   [string]$CameraReceiver,
   [switch]$SkipStream,
   [switch]$SkipVirtualCamera,
@@ -86,7 +87,7 @@ function Wait-DrillUntil([int]$Seconds, [scriptblock]$Condition) {
 
 # ---------------------------------------------------------------- preflight
 $RemoteIds = ConvertTo-DrillIdList $RemoteIds   # -File passes '1,2,3' as one string
-$problems = Test-DrillParameters -Seconds $Seconds -Out $Out -RemoteIds $RemoteIds -MeetingUrl $MeetingUrl -WebcamSourceId $WebcamSourceId -ProbeMaxSessions $ProbeMaxSessions
+$problems = Test-DrillParameters -Seconds $Seconds -Out $Out -RemoteIds $RemoteIds -MeetingUrl $MeetingUrl -WebcamSourceId $WebcamSourceId -ProbeMaxSessions $ProbeMaxSessions -NoWebcam ([bool]$NoWebcam)
 if ($problems.Count) { throw ('Invalid parameters: ' + ($problems -join ' ')) }
 $running = @(Get-Process CoreVideoPro.WinUI, corevideo-native, corevideo-zoom-engine -ErrorAction SilentlyContinue)
 if ($running.Count) { throw ('CoreVideo Pro is already running (' + (($running | ForEach-Object { "$($_.ProcessName) $($_.Id)" }) -join ', ') + '); close it first (the drill must own the launch).') }
@@ -123,7 +124,8 @@ if (-not $SkipVirtualCamera) {
 if ((Test-Path -LiteralPath $Out) -and @(Get-ChildItem -LiteralPath $Out -Force).Count) { throw "Evidence folder is not empty: $Out" }
 $null = New-Item -ItemType Directory -Path $Out -Force
 $Out = (Resolve-Path -LiteralPath $Out).Path
-if (-not $WebcamSourceId) {
+if ($NoWebcam) { $WebcamSourceId = '' }
+elseif (-not $WebcamSourceId) {
   $known = @(Get-DrillWebcamFromPreferences $originalPrefs)
   if ($known.Count -ne 1) { throw ("Cannot pick the webcam from the profile (found: " + ($known -join ', ') + '). Pass -WebcamSourceId capture:<id>.') }
   $WebcamSourceId = $known[0]
@@ -131,6 +133,8 @@ if (-not $WebcamSourceId) {
 $plan = Get-DrillWorkloadPlan -RemoteIds $RemoteIds -WebcamSourceId $WebcamSourceId -Stream (-not $SkipStream) -Camera (-not $SkipVirtualCamera) -RecordingFolder (Join-Path $Out 'recordings')
 $notes = @()
 if ($plan.LocalOnly) { $notes += 'Local sources only: no remote Zoom feeds were requested (-RemoteIds), so no Zoom ISO was judged.' }
+if (-not $plan.WebcamExercised) { $notes += 'Webcam NOT EXERCISED (-NoWebcam): its Program route was cued empty and no webcam ISO was recorded; this run proves nothing about UVC capture.' }
+if ($plan.LocalOnly -and -not $plan.WebcamExercised) { $notes += 'No ISO in this run: the only local source is screen capture, which has no QA ISO identity.' }
 $notes += 'Screen capture is in Program but has no QA ISO identity stamp, so it is not ISO-recorded.'
 $workload = $plan.Workload
 if ($ProbeMaxSessions -gt 0) {
@@ -141,7 +145,8 @@ $backupDir = Join-Path $env:LOCALAPPDATA ('CoreVideoPro\outputs-drill-backups\' 
 $drill = [ordered]@{
   schema = 'outputs-drill-v2'; seconds = $Seconds; installRoot = $InstallRoot; workload = $workload
   probeMaxSessions = $(if ($ProbeMaxSessions -gt 0) { $ProbeMaxSessions } else { $null })
-  remoteIds = $plan.RemoteIds; webcamSourceId = $WebcamSourceId; programSourceIds = $plan.ProgramSourceIds
+  remoteIds = $plan.RemoteIds; webcamSourceId = $(if ($plan.WebcamExercised) { $WebcamSourceId } else { $null }); webcamExercised = $plan.WebcamExercised
+  programSourceIds = $plan.ProgramSourceIds
   outputs = [ordered]@{ program = $true; iso = @($plan.IsoSourceIds); stream = $plan.Stream; camera = $plan.Camera }
   tools = [ordered]@{ python = $python; node = $node; ffmpeg = $decodeFfmpeg; ffprobe = $ffprobe; sinkFfmpeg = $sinkFfmpeg; cameraReceiver = $CameraReceiver }
   preferencesBackupFolder = $backupDir   # path only; the copies stay outside the evidence folder
@@ -229,7 +234,8 @@ try {
   # UVC discovery can return nothing at startup until the adapter's 2 s refresh,
   # so settle for up to 10 s before refusing (a false refusal of a gate run).
   $webcamMissing = @()
-  $null = Wait-DrillUntil 10 { $script:webcamMissing = @(Test-DrillWebcamPresent -WebcamSourceId $WebcamSourceId -Devices @((Get-DrillEnvelope).snapshot.captureDevices)); $script:webcamMissing.Count -eq 0 }
+  if ($plan.WebcamExercised) { $null = Wait-DrillUntil 10 { $script:webcamMissing = @(Test-DrillWebcamPresent -WebcamSourceId $WebcamSourceId -Devices @((Get-DrillEnvelope).snapshot.captureDevices)); $script:webcamMissing.Count -eq 0 } }
+  else { Write-DrillLog 'Webcam not exercised (-NoWebcam): no device check, empty webcam route' }
   if ($webcamMissing.Count) { throw ($webcamMissing -join '; ') }
 
   # Workload (Prepare-LiveWorkload.ps1).
