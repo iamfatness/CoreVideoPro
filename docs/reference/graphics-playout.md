@@ -40,10 +40,42 @@ First open: the Graphics tab shows the dashed "Your graphics will live here" car
 "Add your first graphic" installs the default playlist for the first show starter:
 Guest name (F1, plays out after 8 s), Show title (F2), Logo (F3), LIVE bug (F4)
 and Sponsor card (F5, 15 s, no image until you pick one), plus the four preset
-shot layouts below. With a playlist in place, "+ Add graphic" opens Design, where
-a new template or image becomes a row through `graphics.playlist.row.set`. Rows
-are edited in the inspector: name, title line, From Sources, plays-out-after and
-hotkey. Nothing is created in the core until a row is played in or cued.
+shot layouts below. With a playlist in place, new graphics are built in Design
+(below) and land as rows. Rows are edited in the inspector: name, title line,
+From Sources, hides-after and hotkey; "Open in Design" reopens that row in the
+builder. Nothing is created in the core until a row is shown or cued.
+
+## Build a graphic (Design)
+
+Design opens on the **builder** (slice 3; the spec's "basic designer"), five
+numbered steps left to right:
+
+1. **What are you making**: Lower third, Title, Logo or bug, Clock or countdown,
+   Sponsor card. The choice narrows the looks to one template family and decides
+   the row kind it saves as (a lower third saves as a Guest row when "Names from
+   Sources" is on, otherwise as a fixed-text Title-kind row; a clock template turns
+   the row clock on).
+2. **Pick a look**: every installed template of that family, newest version of
+   each, with the core's native thumbnail. A sponsor card is an image you choose
+   instead (PNG/JPG, full frame), pinned through `AssignPlaylistImageAsync`.
+3. **Preview**: the workspace session's private draft on the native authoring
+   canvas. It is never on air.
+4. **Fill it in**: the template's own fields (text, choices, numbers, colors,
+   bundled images), a logo slot with "Use the brand kit logo", and four color
+   swatches (accent, background, name, second line) with "Use brand kit colors".
+   Text commits 350 ms after you stop typing, or on focus loss.
+5. **Save to playlist**: name, hotkey (defaults to the lowest free F-key; taken
+   keys say who owns them), hides after (stays / 8 s / 15 s), then **Add to
+   playlist** or, for a row opened from Operate or the "Your graphics" chips,
+   **Save changes** (the id is kept so shot layouts still find it). "Open in
+   Operate →" appears after a save.
+
+**Advanced editor** (top right) is the previous workspace unchanged: looks
+library, private cues, layer editor, templates, styles and automation. Exactly
+one Design surface holds the private preview lease at a time. The pure decisions
+(`GraphicsBuilder`: kinds, template filter, slug ids, free hotkey, row shape,
+upsert order) are unit-tested; the control is `GraphicsBuilderControl`, hosted by
+`OverlaysPage` beside the workspace and the playlist.
 
 ## Show vs Cue
 
@@ -205,6 +237,8 @@ while it is on Program.
 
 ## Later (the spec's phases)
 
-Per-tile names in Tiles (#1073, native placement per tile rect), Zoom participant
-metadata, clocks and sheets as data sources, the visual designer, crawls, NDI
-fill+key. Shot layouts landed in slice 2 (above).
+Per-tile names in Tiles (#1073, native placement per tile rect), clocks and
+sheets as data sources, in/out transition choices in the builder, the full visual
+designer (layers, canvas handles, keyframes) behind the builder, crawls, NDI
+fill+key. Shot layouts landed in slice 2, the template-first builder in slice 3
+(above).

@@ -38,6 +38,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(studio.IsGraphicsDesignMode && Descendants(page).OfType<GraphicsBuilderControl>().Single().Visibility == Visibility.Visible, "Design toggle did not reveal the builder");
             Require(Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed, "Advanced workspace is visible before Advanced editor is chosen");
             Require(Descendants(page).OfType<Microsoft.UI.Xaml.Controls.Button>().Count(b => b.Tag is GraphicsBuilderKind) == GraphicsBuilder.Kinds.Count, "Builder does not offer every kind of graphic");
+            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-builder.png"));
             Invoke(Button(page, "Advanced editor")); await Task.Delay(80); page.UpdateLayout();
             Require(studio.GraphicsDesignAdvanced && Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Visible, "Advanced editor did not reveal the workspace");
             checks.Add("Graphics opens in Playout (strip + playlist); Design reveals the builder with every kind; Advanced editor reveals the single existing workspace control");
