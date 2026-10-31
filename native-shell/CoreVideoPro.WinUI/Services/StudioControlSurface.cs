@@ -145,6 +145,17 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
     /// touch the UI thread — they go straight to the bridge, which talks to another process.
     /// The DOT is part of the prefix on purpose: "ohgx.y" is somebody else's namespace and must
     /// keep falling through to the ViewModel switch (where it fails honestly).</summary>
+    /// <summary><c>graphics.playOut</c> takes the instance id either as the registry's third
+    /// parameter or, the way the playlist/strip chips and OSC send it, as the only argument.
+    /// Returns "" when the call names a playlist row instead (rowId [+ sourceId]).</summary>
+    public static string PlayOutInstanceId(IReadOnlyList<object?> args)
+    {
+        var third = Str(args, 2);
+        if (third.Length > 0) return third;
+        var first = Str(args, 0);
+        return first.StartsWith(GraphicsPlayoutService.InstancePrefix, StringComparison.Ordinal) ? first : string.Empty;
+    }
+
     public static bool IsBridgeAction(string? id) => id is not null && id.StartsWith("ohg.", StringComparison.Ordinal);
 
     public Task<ControlInvokeResult> InvokeAsync(string actionId, IReadOnlyList<object?> args, CancellationToken cancellationToken = default)
@@ -499,7 +510,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             }
             case "graphics.playOut":
             {
-                var instanceId = Str(args, 2);
+                // The playlist/strip chips (and OSC) pass the instance id as the only argument; the
+                // registry's named form puts it third. Either spelling hides that one instance.
+                var instanceId = PlayOutInstanceId(args);
                 if (instanceId.Length > 0) return Graphics(await _vm.GraphicsPlayout.PlayOutAsync(instanceId).ConfigureAwait(true));
                 var rowId = Str(args, 0); var sourceId = Str(args, 1);
                 if (rowId.Length == 0) return ControlInvokeResult.Fail("graphics.playOut needs rowId (plus sourceId for a guest entry) or instanceId.");
