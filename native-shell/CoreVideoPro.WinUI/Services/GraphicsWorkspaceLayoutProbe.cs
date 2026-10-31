@@ -28,6 +28,14 @@ internal static class GraphicsWorkspaceLayoutProbe
             window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, 1920, 1080));
             window.AppWindow.Show(false);
             await Eventually(() => page.IsLoaded);
+            // #1076: Playout is the default mode; the strip and playlist mount above/instead of the
+            // workspace, which stays in the tree (exactly one) with Visibility toggled.
+            Require(studio.IsGraphicsPlayoutMode && Descendants(page).OfType<GraphicsPlayoutControl>().Single().Visibility == Visibility.Visible, "Graphics did not open in Playout mode");
+            Require(Descendants(page).OfType<GraphicsOnAirStripControl>().Any(), "On Air strip is missing from the Graphics tab");
+            Require(Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed, "Design workspace is visible in Playout mode");
+            Invoke(Button(page, "Design")); await Task.Delay(80); page.UpdateLayout();
+            Require(studio.IsGraphicsDesignMode && Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Visible, "Design toggle did not reveal the workspace");
+            checks.Add("Graphics opens in Playout (strip + playlist); Design toggle reveals the single existing workspace control");
             // Reserve the existing navigation/header/production footer rather
             // than pretending Graphics can consume the entire display.
             page.Width = 1840; page.Height = 820; page.HorizontalAlignment = HorizontalAlignment.Left; page.VerticalAlignment = VerticalAlignment.Top;

@@ -18,6 +18,9 @@ public static class RenderedLowerThirdSourceResolver
         var eligible = frame.VideoSources.Where(source =>
         {
             if (incomingTake && source.LayerId?.StartsWith("take-in:", StringComparison.Ordinal) != true) return false;
+            // A media clip routed into a scene is a lower-third subject too (owner, 2026-10-31:
+            // the F1 / "LT in" subject must resolve on a media-only test show). Backgrounds are not.
+            if (source.Kind == "media-video" && source.SourceId.StartsWith("media:", StringComparison.Ordinal)) return true;
             if (source.Kind is not ("participant-video" or "screen-share")) return false;
             if (source.SourceId.StartsWith("capture:", StringComparison.Ordinal))
                 return captureDevices.Any(device => "capture:" + device.Id == source.SourceId);
@@ -26,6 +29,7 @@ public static class RenderedLowerThirdSourceResolver
         }).ToList();
         return eligible.FirstOrDefault(source => source.SourceId == stickySourceId)
             ?? eligible.FirstOrDefault(source => source.Kind == "participant-video")
+            ?? eligible.FirstOrDefault(source => source.Kind == "media-video")
             ?? eligible.FirstOrDefault();
     }
 }

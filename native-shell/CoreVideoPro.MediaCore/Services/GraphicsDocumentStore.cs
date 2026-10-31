@@ -39,6 +39,10 @@ public sealed record GraphicsShowDocument
     // Configuration only. Native source generations, mode, holds, and arming
     // never survive a restart or an imported document.
     public IReadOnlyList<GraphicsAutomationRule> AutomationRules {get;init;}=[];
+    /// <summary>Playout rows (#1076). Additive in schema 2; older documents load it empty.</summary>
+    public IReadOnlyList<GraphicsPlaylistRow> Playlist { get; init; } = [];
+    /// <summary>Shot layouts (#1076 slice 2). Additive in schema 2; older documents load it empty.</summary>
+    public IReadOnlyList<ShotLayout> ShotLayouts { get; init; } = [];
     [JsonExtensionData] public Dictionary<string, JsonElement>? Metadata { get; init; }
 }
 
@@ -141,7 +145,7 @@ public sealed class GraphicsDocumentStore
         if (document.StudioLowerThird is { } assigned) {
             if (assigned.Cue is null || assigned.Cue.Draft?.Binding is not null)
                 throw new InvalidDataException("Studio look must not persist a live source generation.");
-            Validate(document with { StudioLowerThird = null, Cues = [assigned.Cue], AutomationRules = [] });
+            Validate(document with { StudioLowerThird = null, Cues = [assigned.Cue], AutomationRules = [], Playlist = [], ShotLayouts = [] });
         }
         if (document.SchemaVersion != CurrentSchemaVersion || string.IsNullOrWhiteSpace(document.ShowId) || document.ShowId.Length > 64 ||
             document.Authority is not ("legacy" or "volt") || document.Cues is null || document.Cues.Count > 64 ||
@@ -170,6 +174,8 @@ public sealed class GraphicsDocumentStore
         foreach (var preset in document.StylePresets)
             if (string.IsNullOrWhiteSpace(preset.Key) || preset.Key.Length > 80 || preset.Value?.IsValid != true) throw new InvalidDataException("Invalid saved graphics style.");
         if(document.TemplateStyles is null || document.TemplateStyles.Count>64) throw new InvalidDataException("Too many saved template styles.");
+        if(document.Playlist is null || document.Playlist.Count>64 || document.Playlist.Any(r=>r is null || !r.IsValid) || document.Playlist.Select(r=>r.Id).Distinct(StringComparer.Ordinal).Count()!=document.Playlist.Count) throw new InvalidDataException("Invalid saved graphics playlist.");
+        if(document.ShotLayouts is null || document.ShotLayouts.Count>32 || document.ShotLayouts.Any(l=>l is null || !l.IsValid) || document.ShotLayouts.Select(l=>l.Id).Distinct(StringComparer.Ordinal).Count()!=document.ShotLayouts.Count) throw new InvalidDataException("Invalid saved shot layouts.");
         if(document.AutomationRules is null || document.AutomationRules.Count>8 || document.AutomationRules.Any(r=>r is null||!r.IsValid) || document.AutomationRules.Select(r=>r.Id).Distinct(StringComparer.Ordinal).Count()!=document.AutomationRules.Count || document.AutomationRules.Select(r=>r.InstanceId).Distinct(StringComparer.Ordinal).Count()!=document.AutomationRules.Count) throw new InvalidDataException("Invalid saved automation rule configuration.");
         foreach(var preset in document.TemplateStyles)
             if(string.IsNullOrWhiteSpace(preset.Key) || preset.Key.Length>80 || preset.Value is not {Appearance.IsValid:true} style ||

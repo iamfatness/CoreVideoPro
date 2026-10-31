@@ -9,6 +9,7 @@ public sealed partial class StudioViewModel
     private void ObserveGraphicsState(NativeGraphicsState? state)
     {
         _graphicsWorkspace?.Observe(state);
+        ObserveGraphicsPlayout(state);
         var authority=state?.FamilyAuthorities.GetValueOrDefault("lower-third")=="instances";
         var visible=authority && ManagedLowerThirdVisible;
         var authorityChanged=authority!=_lastManagedGraphicsAuthority;

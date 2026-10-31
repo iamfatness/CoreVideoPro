@@ -228,6 +228,12 @@ public sealed class HttpControlRouter
             return HttpControlResponse.Json(200, JsonSerializer.Serialize(new { ok = true, previewSceneId = preview }, JsonOptions));
         }
 
+        if (result.Data is { Length: > 0 } data)
+        {
+            // Read actions answer with their own JSON; it is embedded as-is, not re-encoded.
+            return HttpControlResponse.Json(200, "{\"ok\":true,\"data\":" + data + "}");
+        }
+
         return HttpControlResponse.Json(200, "{\"ok\":true}");
     }
 

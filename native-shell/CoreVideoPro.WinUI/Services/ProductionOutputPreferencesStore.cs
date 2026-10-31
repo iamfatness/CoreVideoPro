@@ -145,6 +145,8 @@ public sealed class ProductionOutputPreferences
     public bool MultiviewShowTally { get; set; } = true;
     public bool MultiviewShowMeters { get; set; } = true;
     public bool MultiviewShowClock { get; set; }
+    // #1076: Graphics tab mode, "playout" (default) or "design". UI preference only.
+    public string? GraphicsMode { get; set; }
     public Dictionary<string, string> SceneBackgroundAssetIds { get; set; } = new(StringComparer.Ordinal);
 
     // Operator-overridden display names, keyed by canonical source id

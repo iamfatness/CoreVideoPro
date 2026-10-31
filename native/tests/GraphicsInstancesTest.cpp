@@ -1074,3 +1074,142 @@ TEST(GraphicsSourceCatalog, LocalMetadataChangePublishesWithoutChangingSourceIde
   EXPECT_EQ("Camera B",catalog.rows().asArray().front().getString("displayName"));
   EXPECT_FALSE(catalog.observeSources({},0,frames,name));
 }
+
+// --- Graphics playout (#1076): cued graphics ride the Take ---
+Json requestFor(const std::string& instanceId, const std::string& type, Json::Object fields = {}) {
+  fields["schemaVersion"] = 1;
+  static int sequence = 0;
+  fields["requestId"] = "playout-request-" + std::to_string(++sequence);
+  fields["clientId"] = "test-client";
+  fields["coreEpoch"] = "test-core";
+  fields["instanceId"] = instanceId;
+  if (!fields.count("expectedRevision")) fields["expectedRevision"] = 1;
+  return Json::Object{{"type", type}, {"graphics", std::move(fields)}};
+}
+bool createFor(GraphicsInstances& state, const std::string& instanceId, const std::string& name) {
+  return state.apply(requestFor(instanceId, "graphics-instance-create", {
+      {"templateId", "compact-solid"}, {"templateVersion", 1}, {"scope", "global"},
+      {"fields", Json::Object{{"name", name}, {"title", "Engineer"}}}}));
+}
+void readyFor(GraphicsInstances& state, const std::string& instanceId, uint64_t revision) {
+  ProgramFrame frame;
+  auto resource = std::make_shared<corevideo::graphics::GraphicsPreparedResource>();
+  resource->native = std::make_shared<int>(1);
+  frame.graphicsFacts.push_back({instanceId, revision, "ready", "", resource});
+  state.observe(frame);
+}
+const Json& rowFor(const GraphicsInstances& state, const std::string& instanceId) {
+  for (const auto& item : state.snapshot().get("instances")->asArray())
+    if (item.getString("instanceId") == instanceId) return item;
+  static const Json none;
+  return none;
+}
+double rev(const GraphicsInstances& state, const std::string& instanceId) {
+  return rowFor(state, instanceId).getNumber("revision");
+}
+size_t previewLayers(const GraphicsInstances& state) {
+  CompositorRenderPlan preview; preview.width = 1920; preview.height = 1080;
+  state.append(preview, true);
+  return preview.layers.size();
+}
+
+TEST(GraphicsInstances, TakePromotesEveryReadyRideTakeCueToProgramAndEmptiesPreview) {
+  GraphicsInstances state{"test-core"};
+  ASSERT_TRUE(createFor(state, "featured", "Ada")); ASSERT_TRUE(createFor(state, "second", "Grace")); ASSERT_TRUE(createFor(state, "third", "Linus"));
+  const double featuredRev = rev(state, "featured"), secondRev = rev(state, "second"), thirdRev = rev(state, "third");
+  EXPECT_NE(featuredRev, secondRev);  // the revision clock is global
+  readyFor(state, "featured", uint64_t(featuredRev)); readyFor(state, "second", uint64_t(secondRev));
+  ASSERT_TRUE(state.apply(requestFor("featured", "graphics-instance-cue", {{"expectedRevision", featuredRev}})));
+  ASSERT_TRUE(state.apply(requestFor("second", "graphics-instance-cue", {{"expectedRevision", secondRev}, {"rideTake", true}})));
+  ASSERT_TRUE(state.apply(requestFor("third", "graphics-instance-cue", {{"expectedRevision", thirdRev}})));  // never prepared: stays cued
+  EXPECT_TRUE(rowFor(state, "featured").get("rideTake")->asBool());
+  EXPECT_EQ(2u, previewLayers(state));
+  EXPECT_EQ(0., rowFor(state, "featured").getNumber("programRevision"));
+  state.promoteCuedForTake();
+  EXPECT_EQ(featuredRev, rowFor(state, "featured").getNumber("programRevision"));
+  EXPECT_EQ(secondRev, rowFor(state, "second").getNumber("programRevision"));
+  EXPECT_EQ(0., rowFor(state, "third").getNumber("programRevision"));
+  EXPECT_EQ(0., rowFor(state, "featured").getNumber("cueRevision"));
+  EXPECT_EQ(0., rowFor(state, "second").getNumber("cueRevision"));
+  EXPECT_FALSE(rowFor(state, "featured").get("cued")->asBool());
+  EXPECT_FALSE(rowFor(state, "second").get("cued")->asBool());
+  EXPECT_EQ("unprepared", rowFor(state, "featured").getString("cuePreparation"));
+  EXPECT_TRUE(rowFor(state, "third").get("cued")->asBool());
+  EXPECT_TRUE(rowFor(state, "third").get("cuePending")->asBool());
+  EXPECT_EQ(0u, previewLayers(state));
+  CompositorRenderPlan program; program.width = 1920; program.height = 1080; state.append(program, false);
+  EXPECT_EQ(2u, program.layers.size());
+  EXPECT_EQ("Ada", rowFor(state, "featured").get("programFields")->getString("name"));
+  EXPECT_EQ("Grace", rowFor(state, "second").get("programFields")->getString("name"));
+}
+
+TEST(GraphicsInstances, CueShowClearsCueSoItDoesNotRideTheNextTake) {
+  GraphicsInstances state{"test-core"}; ASSERT_TRUE(create(state)); ready(state, 1);
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue")));
+  EXPECT_TRUE(state.hasCue()); EXPECT_EQ(1u, previewLayers(state));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"target", "cue"}, {"action", "show"}})));
+  EXPECT_EQ(1., row(state).getNumber("programRevision"));
+  EXPECT_EQ(0., row(state).getNumber("cueRevision"));
+  EXPECT_FALSE(row(state).get("cued")->asBool());
+  EXPECT_FALSE(state.hasCue()); EXPECT_EQ(0u, previewLayers(state));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "clear"}})));
+  EXPECT_EQ(0., row(state).getNumber("programRevision"));
+  state.promoteCuedForTake();
+  EXPECT_EQ(0., row(state).getNumber("programRevision"));
+  EXPECT_FALSE(state.apply(request("graphics-instance-trigger", {{"target", "cue"}, {"action", "show"}})));
+  EXPECT_EQ("cue-not-ready", state.snapshot().get("lastResult")->getString("reason"));
+}
+
+TEST(GraphicsInstances, UncueRemovesExactlyOneInstanceFromPreview) {
+  GraphicsInstances state{"test-core"};
+  ASSERT_TRUE(createFor(state, "featured", "Ada")); ASSERT_TRUE(createFor(state, "second", "Grace"));
+  const double featuredRev = rev(state, "featured"), secondRev = rev(state, "second");
+  readyFor(state, "featured", uint64_t(featuredRev)); readyFor(state, "second", uint64_t(secondRev));
+  ASSERT_TRUE(state.apply(requestFor("featured", "graphics-instance-cue", {{"expectedRevision", featuredRev}})));
+  ASSERT_TRUE(state.apply(requestFor("second", "graphics-instance-cue", {{"expectedRevision", secondRev}})));
+  ASSERT_TRUE(state.apply(requestFor("featured", "graphics-instance-trigger", {{"action", "show"}, {"expectedRevision", featuredRev}})));
+  EXPECT_EQ(featuredRev, rowFor(state, "featured").getNumber("programRevision"));
+  EXPECT_EQ(2u, previewLayers(state));
+  EXPECT_FALSE(state.apply(requestFor("featured", "graphics-instance-trigger", {{"action", "uncue"}, {"target", "cue"}, {"expectedRevision", featuredRev}})));
+  ASSERT_TRUE(state.apply(requestFor("featured", "graphics-instance-trigger", {{"action", "uncue"}, {"expectedRevision", featuredRev}})));
+  EXPECT_EQ("uncued", state.snapshot().get("lastResult")->getString("reason"));
+  EXPECT_EQ(0., rowFor(state, "featured").getNumber("cueRevision"));
+  EXPECT_FALSE(rowFor(state, "featured").get("cued")->asBool());
+  EXPECT_EQ("unprepared", rowFor(state, "featured").getString("cuePreparation"));
+  EXPECT_EQ(featuredRev, rowFor(state, "featured").getNumber("programRevision"));
+  EXPECT_EQ(secondRev, rowFor(state, "second").getNumber("cueRevision"));
+  EXPECT_TRUE(rowFor(state, "second").get("cued")->asBool());
+  EXPECT_EQ(1u, previewLayers(state)); EXPECT_TRUE(state.hasCue());
+  ASSERT_TRUE(state.apply(requestFor("featured", "graphics-instance-trigger", {{"action", "uncue"}, {"expectedRevision", featuredRev}})));
+  EXPECT_EQ("not-cued", state.snapshot().get("lastResult")->getString("reason"));
+  state.promoteCuedForTake();
+  EXPECT_EQ(secondRev, rowFor(state, "second").getNumber("programRevision"));
+  EXPECT_EQ(featuredRev, rowFor(state, "featured").getNumber("programRevision"));
+}
+
+TEST(GraphicsInstances, RehearsalCueDoesNotRideTheTake) {
+  double now = 0; GraphicsInstances state{"test-core", [&] { return now; }}; ASSERT_TRUE(create(state));
+  state.observeSources({guest()}, 7, sourceFrames());
+  Json config = Json::Object{{"rules", Json::Array{Json::Object{{"id", "intro"}, {"instanceId", "featured"}, {"dwellMs", 0}}}}};
+  ASSERT_TRUE(state.apply(request("graphics-automation-configure", {{"configuration", config}, {"expectedAutomationRevision", 1}})));
+  ASSERT_TRUE(state.apply(request("graphics-automation-control", {{"action", "set-mode"}, {"mode", "rehearsal"}})));
+  ASSERT_TRUE(state.apply(armRequest(state)));
+  CompositorRenderPlan plan = sourcePlan(); state.append(plan, false, sourceFrames());
+  ProgramFrame frame; frame.frameNumber = 1; frame.gpuComposed = true;
+  frame.graphicsFacts.push_back({"source:44", 1, "source-draw-submitted", ""}); state.observe(frame);
+  EXPECT_TRUE(row(state).get("cued")->asBool());
+  EXPECT_FALSE(row(state).get("rideTake")->asBool());
+  EXPECT_EQ(2., row(state).getNumber("revision"));
+  ready(state, 2);
+  EXPECT_EQ(2., row(state).getNumber("cueRevision"));
+  state.promoteCuedForTake();
+  EXPECT_EQ(0., row(state).getNumber("programRevision"));
+  EXPECT_EQ(2., row(state).getNumber("cueRevision"));
+  EXPECT_TRUE(row(state).get("cued")->asBool());
+  // An operator re-cue of the same revision opts it back in.
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue", {{"expectedRevision", 2}})));
+  EXPECT_TRUE(row(state).get("rideTake")->asBool());
+  state.promoteCuedForTake();
+  EXPECT_EQ(2., row(state).getNumber("programRevision"));
+  EXPECT_EQ(0., row(state).getNumber("cueRevision"));
+}
