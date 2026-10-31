@@ -36,6 +36,11 @@ public sealed partial class StudioViewModel
     private GraphicsWorkspaceSession CreateGraphicsWorkspace()
     {
         var workspace = new GraphicsWorkspaceSession(InvokeGraphicsActionAsync, () => _bridge.LastSnapshot?.Graphics);
+        // Seed the session from the latest snapshot: ObserveGraphicsState only feeds a
+        // workspace that already exists, so a first access from Playout (no Design tab
+        // opened yet) otherwise reads State == null for up to one snapshot tick and the
+        // playlist install answers "Native graphics is unavailable" (owner, 2026-10-31).
+        workspace.Observe(_bridge.LastSnapshot?.Graphics);
         workspace.Observe(_bridge.LastSnapshot?.Graphics);
         return workspace;
     }
