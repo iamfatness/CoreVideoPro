@@ -133,6 +133,22 @@ public sealed class GraphicsCommandGatewayTests
     }
 
     [Theory]
+    [InlineData("graphics.instance.cue", "\"rideTake\":true", true)]
+    [InlineData("graphics.instance.cue", "\"rideTake\":false", true)]
+    [InlineData("graphics.instance.cue", "\"rideTake\":\"yes\"", false)]
+    [InlineData("graphics.instance.trigger", "\"action\":\"uncue\"", true)]
+    [InlineData("graphics.instance.trigger", "\"action\":\"uncue\",\"target\":\"cue\"", false)]
+    [InlineData("graphics.instance.trigger", "\"action\":\"hide\",\"rideTake\":true", false)]
+    public void PlayoutCueRideTakeAndUncueReachTheCoreUnchanged(string action, string extra, bool accepted)
+    {
+        Assert.Equal(accepted, GraphicsCommandRequest.TryBuild(action, Request(extra), Observed, out var command, out _, out _));
+        if (!accepted) return;
+        var sent = command!.ExtensionData!["graphics"];
+        if (action == "graphics.instance.cue") Assert.Equal(extra.EndsWith("true"), sent.GetProperty("rideTake").GetBoolean());
+        else Assert.Equal("uncue", sent.GetProperty("action").GetString());
+    }
+
+    [Theory]
     [InlineData("graphics.instance.trigger", "\"action\":\"show\",\"target\":\"preview\"")]
     [InlineData("graphics.instance.trigger", "\"action\":\"hide\",\"target\":\"cue\"")]
     [InlineData("graphics.instance.trigger", "\"action\":\"clear\",\"target\":\"cue\"")]
