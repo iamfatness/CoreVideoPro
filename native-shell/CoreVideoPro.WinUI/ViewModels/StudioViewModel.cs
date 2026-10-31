@@ -13633,11 +13633,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (source is null) return null;
         if (source.SourceId.StartsWith("capture:", StringComparison.Ordinal))
         {
-            var device = CaptureDevices.First(item => "capture:" + item.Id == source.SourceId);
+            var device = CaptureDevices.FirstOrDefault(item => "capture:" + item.Id == source.SourceId);
+            if (device is null) return null;
             return SourceWithOperatorText(source.SourceId,
                 device.Name, string.Empty, string.Empty, false, false);
         }
-        var participant = RoomVideoParticipants.First(item => item.Id == source.ParticipantId);
+        if (source.SourceId.StartsWith("media:", StringComparison.Ordinal))
+        {
+            // A media clip on Program (media-only test shows, stingers): its operator text is the
+            // per-source name/title from Sources, like any other guest entry (owner, 2026-10-31).
+            var (mediaName, mediaTitle) = GraphicsSourceText(source.SourceId, "Media");
+            return SourceWithOperatorText(source.SourceId, mediaName, mediaTitle, string.Empty, false, false);
+        }
+        var participant = RoomVideoParticipants.FirstOrDefault(item => item.Id == source.ParticipantId);
+        if (participant is null) return null;
         var isScreenShare = source.Kind == "screen-share";
         return SourceWithOperatorText(source.SourceId,
             participant.Name,
