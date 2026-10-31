@@ -32,14 +32,28 @@ public sealed partial class GraphicsWorkspaceLibrary
         ];
     }
 
+    /// <summary>The four preset shot layouts that ship with the default playlist (#1076 slice 2).
+    /// Scene ids are the production catalog's (intro, interview, panel); a layout whose scene is
+    /// missing from the show is refused at cue time, never skipped. Clean changes no scene and
+    /// plays everything out; Shift+F12 is already Play Out all, so Clean sits on Shift+F11.</summary>
+    public static IReadOnlyList<ShotLayout> DefaultShotLayouts() => [
+        new() { Id = "open", Name = "Open", SceneId = "intro", RowIds = ["title", "logo"], Hotkey = "Shift+F1" },
+        new() { Id = "two-up", Name = "Two-up", SceneId = "interview", RowIds = ["guest"], Hotkey = "Shift+F2" },
+        new() { Id = "panel", Name = "Panel", SceneId = "panel", RowIds = ["guest", "logo"], Hotkey = "Shift+F3" },
+        new() { Id = "clean", Name = "Clean", SceneId = "", RowIds = [], Hotkey = "Shift+F11", PlayOutOthers = true },
+    ];
+
     /// <summary>Persist the playlist rows. Pins the exact installed definition of each
     /// referenced template when the native catalog advertises it; curated templates
-    /// ship with the core, so a missing catalog entry does not block the save.</summary>
-    public async Task<bool> SavePlaylistAsync(IReadOnlyList<GraphicsPlaylistRow> rows)
+    /// ship with the core, so a missing catalog entry does not block the save. When
+    /// <paramref name="layouts"/> is given it is saved in the same write (the default
+    /// playlist installs its preset layouts this way).</summary>
+    public async Task<bool> SavePlaylistAsync(IReadOnlyList<GraphicsPlaylistRow> rows, IReadOnlyList<ShotLayout>? layouts = null)
     {
         await LoadAsync();
         if (rows is null || rows.Count > 64 || rows.Any(r => r is null || !r.IsValid) || rows.Select(r => r.Id).Distinct(StringComparer.Ordinal).Count() != rows.Count)
             return Fail("The playlist has an invalid or duplicate row. Previous playlist retained.");
+        if (layouts is not null && !ValidLayouts(layouts)) return Fail("A shot layout is invalid or duplicated. Previous playlist retained.");
         var templates = Document.Templates.ToList();
         foreach (var key in rows.Where(r => r.TemplateId.Length > 0).Select(r => (Id: r.TemplateId, Version: r.TemplateVersion))
                      .Concat(rows.Where(r => r.Image is not null).Select(r => (Id: r.Image!.TemplateId, Version: r.Image.TemplateVersion))).Distinct()) {
@@ -50,8 +64,24 @@ public sealed partial class GraphicsWorkspaceLibrary
             var pin = new GraphicsSavedTemplate(key.Id, key.Version, installed.ManifestHash, definition.Clone(), installed.PackageRoot);
             if (index < 0) templates.Add(pin); else templates[index] = pin;
         }
-        return await Save(Document with { Playlist = rows.ToArray(), Templates = templates }, "Playlist saved. Program and Preview are unchanged.");
+        return await Save(Document with { Playlist = rows.ToArray(), Templates = templates, ShotLayouts = layouts?.ToArray() ?? Document.ShotLayouts }, "Playlist saved. Program and Preview are unchanged.");
     }
+
+    /// <summary>Persist the shot layouts. Row ids must exist in the saved playlist; one hotkey
+    /// belongs to one layout (the caller moves a key before saving).</summary>
+    public async Task<bool> SaveShotLayoutsAsync(IReadOnlyList<ShotLayout> layouts)
+    {
+        await LoadAsync();
+        if (!ValidLayouts(layouts)) return Fail("A shot layout is invalid or duplicated. Previous layouts retained.");
+        var missing = layouts.SelectMany(l => l.RowIds).Distinct(StringComparer.Ordinal).Where(id => Document.Playlist.All(r => r.Id != id)).ToArray();
+        if (missing.Length > 0) return Fail($"Shot layouts reference playlist rows that do not exist: {string.Join(", ", missing)}. Previous layouts retained.");
+        var keys = layouts.Where(l => l.Hotkey.Length > 0).Select(l => l.Hotkey).ToArray();
+        if (keys.Distinct(StringComparer.Ordinal).Count() != keys.Length) return Fail("Two shot layouts share a hotkey. Previous layouts retained.");
+        return await Save(Document with { ShotLayouts = layouts.ToArray() }, "Shot layouts saved. Program and Preview are unchanged.");
+    }
+
+    private static bool ValidLayouts(IReadOnlyList<ShotLayout> layouts) =>
+        layouts is not null && layouts.Count <= 32 && layouts.All(l => l is { IsValid: true }) && layouts.Select(l => l.Id).Distinct(StringComparer.Ordinal).Count() == layouts.Count;
 
     /// <summary>Import a local image as a verified full-canvas package and pin it to the row.</summary>
     public async Task<bool> AssignPlaylistImageAsync(string rowId, string path, CancellationToken cancellation = default)

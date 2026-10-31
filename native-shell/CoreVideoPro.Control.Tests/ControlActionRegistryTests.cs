@@ -184,6 +184,14 @@ public sealed class ControlActionRegistryTests
         Params("graphics.playOutAll");
         Params("graphics.preview.clear");
         Params("graphics.strip");
+        // Shot layouts (slice 2).
+        Params("graphics.layout.list");
+        Params("graphics.layout.set", ("layoutJson", s, true));
+        Params("graphics.layout.remove", ("layoutId", s, true));
+        Params("graphics.layout.cue", ("layoutId", s, true));
+        Params("graphics.layout.take", ("layoutId", s, true));
+        Assert.False(ControlActionRegistry.TryBind("graphics.layout.cue", System.Array.Empty<object?>(), out _, out var layoutError));
+        Assert.Contains("layoutId", layoutError);
 
         Assert.True(ControlActionRegistry.TryBind("graphics.playIn", new object?[] { "guest" }, out var playIn, out _));
         Assert.Equal("guest", playIn[0]); Assert.Null(playIn[1]);
@@ -208,7 +216,8 @@ public sealed class ControlActionRegistryTests
                 Auto = [new ControlGraphicsStripItem("graphic-auto", "", "", "Auto LT", "auto", "visible")],
                 AutomationMode = "automatic", AutomationArmed = true
             },
-            GraphicsPlaylist = [new ControlGraphicsPlaylistRow("guest", "guest", "Guest name", "F1", 8000)]
+            GraphicsPlaylist = [new ControlGraphicsPlaylistRow("guest", "guest", "Guest name", "F1", 8000)],
+            GraphicsLayouts = [new ControlGraphicsLayout("open", "Open", "intro", "Shift+F1")]
         };
         var json = System.Text.Json.JsonSerializer.Serialize(state);
         using var document = System.Text.Json.JsonDocument.Parse(json);
@@ -232,5 +241,8 @@ public sealed class ControlActionRegistryTests
         Assert.Equal(0, empty.GetProperty("GraphicsStrip").GetProperty("OnProgram").GetArrayLength());
         Assert.Equal("manual", empty.GetProperty("GraphicsStrip").GetProperty("AutomationMode").GetString());
         Assert.Equal(0, empty.GetProperty("GraphicsPlaylist").GetArrayLength());
+        var layout = document.RootElement.GetProperty("GraphicsLayouts")[0];
+        Assert.Equal(("open", "Open", "intro", "Shift+F1"), (layout.GetProperty("Id").GetString(), layout.GetProperty("Name").GetString(), layout.GetProperty("SceneId").GetString(), layout.GetProperty("Hotkey").GetString()));
+        Assert.Equal(0, empty.GetProperty("GraphicsLayouts").GetArrayLength());
     }
 }

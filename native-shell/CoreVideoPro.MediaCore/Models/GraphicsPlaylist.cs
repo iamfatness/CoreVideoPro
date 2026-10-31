@@ -67,3 +67,29 @@ public sealed record GraphicsPlaylistEntry
         Bindings.Count == other.Bindings.Count && Bindings.All(p => other.Bindings.TryGetValue(p.Key, out var v) && v == p.Value);
     public override int GetHashCode() => HashCode.Combine(RowId, SourceId, Bindings.Count);
 }
+
+/// <summary>A shot layout (issue #1076 slice 2): one button that cues a scene to Preview and
+/// stages playlist rows with it, so a single Take carries the picture and the graphics.
+/// Configuration only; nothing about air state is persisted. <see cref="SceneId"/> "" = no
+/// scene change; <see cref="RowIds"/> may be empty; <see cref="PlayOutOthers"/> plays out
+/// every Program graphic the layout does not carry.</summary>
+public sealed record ShotLayout
+{
+    public const string HotkeyPrefix = "Shift+F";
+    private static readonly Regex HotkeyPattern = new(@"^Shift\+F([1-9]|1[01])$", RegexOptions.CultureInvariant);
+
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string SceneId { get; init; } = "";
+    public IReadOnlyList<string> RowIds { get; init; } = [];
+    /// <summary>"" or Shift+F1..Shift+F11 (Shift+F12 is Play Out all).</summary>
+    public string Hotkey { get; init; } = "";
+    public bool PlayOutOthers { get; init; }
+
+    public static bool ValidHotkey(string value) => value.Length == 0 || HotkeyPattern.IsMatch(value);
+
+    [JsonIgnore] public bool IsValid => GraphicsPlaylistRow.ValidId(Id) && Name is { Length: > 0 and <= 128 } &&
+        SceneId is not null && SceneId.Length <= 64 && Hotkey is not null && ValidHotkey(Hotkey) &&
+        RowIds is not null && RowIds.Count <= 16 && RowIds.All(GraphicsPlaylistRow.ValidId) &&
+        RowIds.Distinct(StringComparer.Ordinal).Count() == RowIds.Count;
+}

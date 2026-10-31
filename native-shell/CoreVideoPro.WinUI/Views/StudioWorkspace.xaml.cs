@@ -64,7 +64,7 @@ public sealed partial class StudioWorkspace : UserControl
 
         var focused = XamlRoot is null ? null : FocusManager.GetFocusedElement(XamlRoot);
         var typing = focused is TextBox or RichEditBox or AutoSuggestBox or NumberBox or PasswordBox;
-        var route = GraphicsHotkeyRouter.TryRoute(sender.Key, sender.Modifiers, typing, vm.GraphicsPlayout.Playlist);
+        var route = GraphicsHotkeyRouter.TryRoute(sender.Key, sender.Modifiers, typing, vm.GraphicsPlayout.Playlist, vm.GraphicsPlayout.Layouts);
         if (route is null)
         {
             return;

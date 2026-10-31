@@ -32,6 +32,78 @@ Vocabulary mapping to the spec: Play In = take the graphic to Program, Play Out
 = hide. The control-API ids use playIn/playOut so a Companion button reads like
 the screen.
 
+## Add a graphic
+
+First open: the Graphics tab shows the dashed "Your graphics will live here" card.
+"Add your first graphic" installs the default playlist for the first show starter:
+Guest name (F1, plays out after 8 s), Show title (F2), Logo (F3), LIVE bug (F4)
+and Sponsor card (F5, 15 s, no image until you pick one), plus the four preset
+shot layouts below. With a playlist in place, "+ Add graphic" opens Design, where
+a new template or image becomes a row through `graphics.playlist.row.set`. Rows
+are edited in the inspector: name, title line, From Sources, plays-out-after and
+hotkey. Nothing is created in the core until a row is played in or cued.
+
+## Play In vs To Preview
+
+**Play In** puts the graphic on Program now: the row's native instance is created
+or refreshed, cued, and shown from that cue in one step. **To Preview** stops
+after the cue: the graphic appears in the Preview composite and rides the next
+Take, so the operator can stage a lower third with the next scene and have both
+land together. A graphic on Preview offers Play In (now) or Remove; a graphic on
+Program offers Play Out. The strip shows which is which from core truth.
+
+## Shot Layouts
+
+A shot layout is one button that cues a scene and the graphics that belong with
+it, so a single Take changes the picture and the graphics together (that is what
+the core-side "cued graphics ride the Take" work exists for). The SHOT LAYOUTS
+row sits under the On Air strip in the Graphics tab (full form only). Click a
+layout to cue it; the selected layout offers "Cue and Take"; "Edit layouts" opens
+the flyout to name it, pick the scene, tick the playlist rows, set its Shift+F
+key and choose whether it plays out other graphics.
+
+`ShotLayout { Id, Name, SceneId, RowIds[], Hotkey ("Shift+F1".."Shift+F11" or
+blank), PlayOutOthers }` persists on the graphics document as `ShotLayouts`
+(schema stays 2; older documents load it empty). The default playlist installs
+four presets:
+
+| Layout | Scene | Rows | Hotkey | Notes |
+|---|---|---|---|---|
+| Open | `intro` | Show title, Logo | Shift+F1 | |
+| Two-up | `interview` | Guest name | Shift+F2 | |
+| Panel | `panel` | Guest name, Logo | Shift+F3 | |
+| Clean | none | none | Shift+F11 | `PlayOutOthers`: plays every Program graphic out; Shift+F12 is already Play Out all |
+
+Cue (`graphics.layout.cue`) selects the scene to Preview through the same
+`SelectScene` path as the Scenes page and `scene.select`, then does To Preview for
+each row. A Guest row cues the entries bound to the slots that scene routes (Show
+Input slot routes and fixed Zoom participant routes); when none resolve it cues
+the current Program subject. `PlayOutOthers` plays out Program graphics the layout
+does not carry. Everything is resolved before the first side effect: a layout
+whose scene is no longer in the show, or that names a playlist row that no longer
+exists, is refused whole with the reason, never silently skipped. Cue and Take
+(`graphics.layout.take`) runs the ordinary Take afterwards (a layout with no scene
+and no rows only plays out).
+
+Control API: `graphics.layout.list` (read; layouts, the show's scenes, preview
+and active scene ids), `graphics.layout.set` (`layoutJson`, upsert by id; refused
+when the scene or a row does not exist; a hotkey held by another layout moves),
+`graphics.layout.remove` (`layoutId`), `graphics.layout.cue` (`layoutId`),
+`graphics.layout.take` (`layoutId`). `ControlState.GraphicsLayouts` carries id,
+name, sceneId and hotkey; OSC feedback adds
+`graphics/layout/<id>/name|scene|hotkey|onPreview`.
+
+## Guest names from Sources
+
+The Guest row is one row with one entry per Show Input slot bound to a source
+(Zoom participant, capture device, media). With "From Sources" on (the default)
+each entry's name and title line come from the Sources page text for that source
+(`SourceLowerThirdText`), so renaming a person in Sources renames their lower
+third; the inspector shows the title read-only and offers "Edit names in
+Sources". A bare F1 or "LT in" plays in the entry for the source currently on
+Program. Entries are re-projected whenever the roster or the Sources text
+changes; nothing is pre-created in the core.
+
 ## One truth for Preview and Program (#1072)
 
 Before this change a lower third could show in Preview and vanish on Take:
@@ -63,11 +135,11 @@ makes the Take carry them:
 
 | Thing | Code |
 |---|---|
-| Rows, entries, strip model, Play In/Out sequence, auto-out timer | `native-shell/CoreVideoPro.MediaCore/Services/GraphicsPlayoutService.cs`, `Models/GraphicsPlaylist.cs` |
-| Persistence (additive `Playlist` on the show document, schema 2) | `Services/GraphicsDocumentStore.cs`, `%LOCALAPPDATA%\CoreVideoPro\graphics\default.json` |
-| Default playlist from the curated templates | `Services/GraphicsWorkspaceLibrary.Playlist.cs` |
-| ViewModel seam (strangler partial) | `ViewModels/StudioViewModel.GraphicsPlayout.cs`, routing in `StudioViewModel.StudioLowerThird.cs` |
-| Control API and state | `CoreVideoPro.Control/ControlActionRegistry.cs`, `ControlState.cs` (`GraphicsStrip`, `GraphicsPlaylist`, `LowerThirdOnAir`), `WinUI/Services/StudioControlSurface.cs` |
+| Rows, entries, strip model, Play In/Out sequence, auto-out timer, shot layout cue | `native-shell/CoreVideoPro.MediaCore/Services/GraphicsPlayoutService.cs`, `Models/GraphicsPlaylist.cs` (`GraphicsPlaylistRow`, `ShotLayout`) |
+| Persistence (additive `Playlist` and `ShotLayouts` on the show document, schema 2) | `Services/GraphicsDocumentStore.cs`, `%LOCALAPPDATA%\CoreVideoPro\graphics\default.json` |
+| Default playlist and preset layouts from the curated templates | `Services/GraphicsWorkspaceLibrary.Playlist.cs` (`DefaultPlaylistFor`, `DefaultShotLayouts`, `SaveShotLayoutsAsync`) |
+| ViewModel seam (strangler partial; scene select + routed guests for layouts) | `ViewModels/StudioViewModel.GraphicsPlayout.cs`, routing in `StudioViewModel.StudioLowerThird.cs` |
+| Control API and state | `CoreVideoPro.Control/ControlActionRegistry.cs`, `ControlState.cs` (`GraphicsStrip`, `GraphicsPlaylist`, `GraphicsLayouts`, `LowerThirdOnAir`), `WinUI/Services/StudioControlSurface.cs` |
 | UI | `Controls/GraphicsOnAirStripControl.cs`, `Controls/GraphicsPlayoutControl.cs` (full and `Compact`), `Views/OverlaysPage.xaml` (toggle), `Views/StudioWorkspace.xaml` (strip + compact playlist), `Services/GraphicsHotkeyRouter.cs` |
 | Core | `native/src/graphics/GraphicsInstances.*` (`rideTake`, `promoteCuedForTake`, `uncue`), `native/src/core/MediaCore.cpp` (`beginTakeTransition`) |
 
@@ -90,6 +162,11 @@ guest entry is `Bindings` of those variables to a source (today `name` and
 | `graphics.preview.remove` | `instanceId` |
 | `graphics.playOutAll`, `graphics.preview.clear` | none |
 | `graphics.strip` | read; `data` = the strip |
+| `graphics.layout.list` | read; `data` = layouts (with `sceneExists`), scenes, `previewSceneId`, `activeSceneId` |
+| `graphics.layout.set` | `layoutJson` (one layout, upsert by id) |
+| `graphics.layout.remove` | `layoutId` |
+| `graphics.layout.cue` | `layoutId` (scene to Preview + rows to Preview; refused whole when a scene or row is missing) |
+| `graphics.layout.take` | `layoutId` (cue, then Take) |
 
 Read actions return `{"ok":true,"data":...}` over HTTP. OSC feedback adds
 `graphics/onProgramCount`, `graphics/onPreviewCount`, `graphics/automationMode`,
@@ -98,10 +175,12 @@ Read actions return `{"ok":true,"data":...}` over HTTP. OSC feedback adds
 ## Hotkeys
 
 F1..F12 unmodified: Play In of the row with that hotkey (a Guest row plays in
-the entry for the current Program subject). Shift+F12: Play Out all. Shift+F1..F11
-are reserved for shot layouts. Keys are ignored while a text field has focus and
-are active only on the Studio and Graphics tabs (`GraphicsHotkeyRouter`, pure
-and unit-tested).
+the entry for the current Program subject). Shift+F1..F11: cue the shot layout
+with that hotkey (`graphics.layout.cue`). Shift+F12: Play Out all. Keys are
+ignored while a text field has focus and are active only on the Studio and
+Graphics tabs (`GraphicsHotkeyRouter`, pure and unit-tested). Assign keys from
+the inspector (rows) or the Edit layouts flyout (layouts); one key belongs to one
+row or layout and moves when reassigned.
 
 ## Rules to keep
 
@@ -122,9 +201,8 @@ edit a lower third's text, add a logo or title, see what is live versus staged
 and clear it. For every Show on the tab, find and use its Play Out within 5 s
 while it is on Program.
 
-## Later (slice 2 and the spec's phases)
+## Later (the spec's phases)
 
-Shot Layouts (`graphics.layout.cue`: scene select plus To Preview per row, so
-one Take carries both; presets Open, Two-up, Panel, Clean on Shift+F), per-tile
-names in Tiles (#1073), Zoom participant metadata, clocks and sheets as data
-sources, the visual designer, crawls, NDI fill+key.
+Per-tile names in Tiles (#1073, native placement per tile rect), Zoom participant
+metadata, clocks and sheets as data sources, the visual designer, crawls, NDI
+fill+key. Shot layouts landed in slice 2 (above).

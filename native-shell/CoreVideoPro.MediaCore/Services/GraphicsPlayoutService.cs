@@ -74,6 +74,8 @@ public sealed class GraphicsPlayoutService
     private static GraphicsPlaylistRow? RowOf(string instanceId, IReadOnlyList<GraphicsPlaylistRow> rows) =>
         rows.FirstOrDefault(r => instanceId == InstancePrefix + r.Id || instanceId.StartsWith(InstancePrefix + r.Id + "-", StringComparison.Ordinal));
     public bool HasGuestRow => Playlist.Any(r => r.Kind == GraphicsPlaylistRow.Guest);
+    public IReadOnlyList<ShotLayout> Layouts => _library.Document.ShotLayouts;
+    public ShotLayout? Layout(string layoutId) => Layouts.FirstOrDefault(l => l.Id == layoutId);
     /// <summary>True when a lower-third chip is on Program: a Guest-row instance, or any other
     /// instance whose template family is lower-third. Strip truth, never local intent.</summary>
     public bool LowerThirdOnAir => IsLowerThirdOnAir(Strip, Playlist, _observe());
@@ -144,6 +146,67 @@ public sealed class GraphicsPlayoutService
         if (!played.Accepted || authorityIsInstances) return played;
         var adopted = await adoptInstancesAuthority(cancellation);
         return played with { Reason = adopted ? "Played in; lower thirds now follow the Graphics playlist." : played.Reason + " Lower-third authority is still legacy; retry to adopt it." };
+    }
+
+    // ---- shot layouts (slice 2) -----------------------------------------------------------
+    /// <summary>Cue a shot layout: select its scene to Preview through <paramref name="sceneSelect"/>
+    /// (the ViewModel's scene cue path; false = the scene is not in this show and the layout is
+    /// refused before anything is sent), then To Preview every row, so one Take carries the picture
+    /// and the graphics. A Guest row cues <paramref name="sceneGuests"/> (entries bound to slots
+    /// routed in that scene) when any were resolved, otherwise <paramref name="programSubject"/>.
+    /// <see cref="ShotLayout.PlayOutOthers"/> plays out every Program graphic the layout does not
+    /// carry. Rows that no longer exist refuse the whole layout; nothing is half-applied.</summary>
+    public Task<NativeGraphicsOperationResult> CueLayoutAsync(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
+        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests = null, CancellationToken cancellation = default) =>
+        Run(() => CueLayout(layoutId, sceneSelect, programSubject, sceneGuests, cancellation));
+
+    /// <summary>CueLayoutAsync, then the ordinary Take through <paramref name="take"/> (null = taken,
+    /// otherwise the refusal). A layout with no scene and no rows (Clean) has nothing to Take.</summary>
+    public async Task<NativeGraphicsOperationResult> CueAndTakeLayoutAsync(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
+        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests, Func<CancellationToken, Task<string?>> take, CancellationToken cancellation = default)
+    {
+        var cued = await CueLayoutAsync(layoutId, sceneSelect, programSubject, sceneGuests, cancellation);
+        if (!cued.Accepted) return cued;
+        var layout = Layout(layoutId);
+        if (layout is null || (layout.SceneId.Length == 0 && layout.RowIds.Count == 0)) return cued with { Reason = cued.Reason + " Nothing to Take." };
+        var error = await take(cancellation);
+        return error is null ? cued with { Reason = $"{layout.Name} taken." } : Refuse($"{layout.Name} is cued on Preview but the Take was refused: {error}");
+    }
+
+    private async Task<NativeGraphicsOperationResult> CueLayout(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
+        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests, CancellationToken cancellation)
+    {
+        await _library.LoadAsync();
+        if (Layout(layoutId) is not { } layout) return Refuse(layoutId.Length == 0 ? "Choose a shot layout." : "That shot layout no longer exists.");
+        // Resolve everything before the first side effect so a broken layout is refused whole.
+        var entries = new List<GraphicsPlaylistEntry>();
+        foreach (var rowId in layout.RowIds) {
+            if (Row(rowId) is not { } row) return Refuse($"{layout.Name}: playlist row '{rowId}' no longer exists. Edit the layout.");
+            if (row.Kind != GraphicsPlaylistRow.Guest) { entries.Add(EntryFor(row)); continue; }
+            var guests = (sceneGuests ?? []).Where(e => e.RowId == row.Id).ToArray();
+            if (guests.Length > 0) entries.AddRange(guests);
+            else if (programSubject is not null) entries.Add(programSubject with { RowId = row.Id });
+            else return Refuse($"{layout.Name}: {row.Name} needs a Program subject bound to a Show Input. Route a guest first.");
+        }
+        if (layout.SceneId.Length > 0 && !await sceneSelect(layout.SceneId, cancellation))
+            return Refuse($"{layout.Name}: scene '{layout.SceneId}' is not in this show, so the layout was not cued. Edit the layout to pick a scene.");
+        var carried = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in entries) {
+            var cued = await Cue(entry, cancellation);
+            if (!cued.Accepted) return cued with { Reason = $"{layout.Name}: {cued.Reason}" };
+            carried.Add(cued.InstanceId);
+        }
+        if (layout.PlayOutOthers) {
+            var state = Available();
+            foreach (var instance in state.Instances.Where(i => (IsOnProgram(i) || i.ShowPending) && !carried.Contains(i.InstanceId)).ToArray()) {
+                var hidden = await Hide(instance.InstanceId, cancellation);
+                if (!hidden.Accepted) return hidden with { Reason = $"{layout.Name}: {hidden.Reason}" };
+            }
+        }
+        var what = layout.SceneId.Length > 0 && entries.Count > 0 ? $"scene {layout.SceneId} and {Plural(entries.Count)} on Preview; Take carries both."
+            : layout.SceneId.Length > 0 ? $"scene {layout.SceneId} on Preview." : entries.Count > 0 ? $"{Plural(entries.Count)} on Preview; they ride the next Take." : "Program graphics played out.";
+        return new() { Accepted = true, Reason = $"{layout.Name} cued: {what}" };
+        static string Plural(int count) => count == 1 ? "1 graphic" : count + " graphics";
     }
 
     // ---- strip ------------------------------------------------------------------------

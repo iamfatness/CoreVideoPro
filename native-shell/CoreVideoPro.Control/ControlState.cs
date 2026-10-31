@@ -38,6 +38,11 @@ public sealed record ControlGraphicsStrip
 /// hotkey ("" or F1..F12) and the auto Play Out delay (0 = stays on).</summary>
 public sealed record ControlGraphicsPlaylistRow(string Id, string Kind, string Name, string Hotkey, int PlayOutAfterMs);
 
+/// <summary>One shot layout (#1076 slice 2), enough for a surface to render a button: id (the
+/// graphics.layout.cue/take layoutId), name, the scene it cues ("" = no scene change) and its
+/// hotkey ("" or Shift+F1..Shift+F11).</summary>
+public sealed record ControlGraphicsLayout(string Id, string Name, string SceneId, string Hotkey);
+
 /// <summary>Flat, serializable feedback snapshot for control-surface button state (Companion
 /// feedbacks, WS clients). Built by the WinUI adapter from ViewModel state + the core snapshot,
 /// and emitted (coalesced) on change. Field names are the stable feedback contract — keep them
@@ -132,6 +137,7 @@ public sealed record ControlState
     /// hotkey surfaces can light buttons. Always present; empty when no core or no playlist.</summary>
     public ControlGraphicsStrip GraphicsStrip { get; init; } = ControlGraphicsStrip.Empty;
     public IReadOnlyList<ControlGraphicsPlaylistRow> GraphicsPlaylist { get; init; } = [];
+    public IReadOnlyList<ControlGraphicsLayout> GraphicsLayouts { get; init; } = [];
     public IReadOnlyList<ControlAudioSourceState> AudioSources { get; init; } = System.Array.Empty<ControlAudioSourceState>();
 
     /// <summary>The OHG show engine's own snapshot, passed through verbatim (spec §7). Serializes

@@ -37,9 +37,32 @@ public sealed class GraphicsHotkeyRouterTests
         Assert.Null(GraphicsHotkeyRouter.TryRoute(VirtualKey.F7, VirtualKeyModifiers.None, false, Rows));
         Assert.Null(GraphicsHotkeyRouter.TryRoute(VirtualKey.A, VirtualKeyModifiers.None, false, Rows));
         Assert.Null(GraphicsHotkeyRouter.TryRoute(VirtualKey.F1, VirtualKeyModifiers.Control, false, Rows));
-        // Shift+F1..F11 are reserved for shot layouts: not handled yet, so the key falls through.
+        // Shift+F1..F11 belong to shot layouts: with none, the key falls through.
         Assert.Null(GraphicsHotkeyRouter.TryRoute(VirtualKey.F1, VirtualKeyModifiers.Shift, false, Rows));
         Assert.Null(GraphicsHotkeyRouter.TryRoute(VirtualKey.F1, VirtualKeyModifiers.None, false, []));
+    }
+
+    private static readonly ShotLayout[] Layouts = [
+        new() { Id = "open", Name = "Open", SceneId = "intro", RowIds = ["title", "logo"], Hotkey = "Shift+F1" },
+        new() { Id = "two-up", Name = "Two-up", SceneId = "interview", RowIds = ["guest"], Hotkey = "Shift+F2" },
+        new() { Id = "clean", Name = "Clean", Hotkey = "Shift+F11", PlayOutOthers = true },
+        new() { Id = "unkeyed", Name = "No key", SceneId = "panel" },
+    ];
+
+    [Fact] public void ShiftF2CuesTheLayoutWithThatHotkey()
+    {
+        var route = GraphicsHotkeyRouter.TryRoute(VirtualKey.F2, VirtualKeyModifiers.Shift, focusedIsTextInput: false, Rows, Layouts);
+        Assert.NotNull(route);
+        Assert.Equal("graphics.layout.cue", route!.ActionId);
+        Assert.Equal(["two-up"], route.Args);
+        Assert.Equal(["clean"], GraphicsHotkeyRouter.TryRoute(VirtualKey.F11, VirtualKeyModifiers.Shift, false, Rows, Layouts)!.Args);
+        // Shift+F12 stays Play Out all even with layouts; unassigned Shift keys fall through;
+        // plain F2 is still the playlist row; nothing while typing.
+        Assert.Equal("graphics.playOutAll", GraphicsHotkeyRouter.TryRoute(VirtualKey.F12, VirtualKeyModifiers.Shift, false, Rows, Layouts)!.ActionId);
+        Assert.Null(GraphicsHotkeyRouter.TryRoute(VirtualKey.F3, VirtualKeyModifiers.Shift, false, Rows, Layouts));
+        Assert.Equal("graphics.playIn", GraphicsHotkeyRouter.TryRoute(VirtualKey.F2, VirtualKeyModifiers.None, false, Rows, Layouts)!.ActionId);
+        Assert.Null(GraphicsHotkeyRouter.TryRoute(VirtualKey.F2, VirtualKeyModifiers.Shift, true, Rows, Layouts));
+        Assert.Null(GraphicsHotkeyRouter.TryRoute(VirtualKey.F2, VirtualKeyModifiers.Shift, false, Rows, []));
     }
 
     [Fact] public void ShiftF12PlaysOutAll()

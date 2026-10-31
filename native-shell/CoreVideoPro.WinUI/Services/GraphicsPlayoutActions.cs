@@ -15,7 +15,8 @@ public static class GraphicsPlayoutActions
 {
     public const string PlayIn = "graphics.playIn", ToPreview = "graphics.toPreview", PlayOut = "graphics.playOut",
         PreviewRemove = "graphics.preview.remove", PlayOutAll = "graphics.playOutAll", PreviewClear = "graphics.preview.clear",
-        PlaylistDefault = "graphics.playlist.default", HotkeySet = "graphics.playlist.hotkey.set";
+        PlaylistDefault = "graphics.playlist.default", HotkeySet = "graphics.playlist.hotkey.set",
+        LayoutCue = "graphics.layout.cue", LayoutTake = "graphics.layout.take", LayoutSet = "graphics.layout.set", LayoutRemove = "graphics.layout.remove";
 
     /// <summary>The in-process control surface, registered by MainWindow once it exists.</summary>
     public static Func<string, IReadOnlyList<object?>, CancellationToken, Task<ControlInvokeResult>>? Surface { get; set; }
@@ -28,10 +29,8 @@ public static class GraphicsPlayoutActions
             catch (Exception ex) when (ex is not OutOfMemoryException) { result = ControlInvokeResult.Fail(ex.Message); }
             if (result.Ok || !IsUnimplemented(result)) return result;
         }
-        // TODO(#1076 Stage D): once StudioControlSurface implements graphics.playIn / graphics.toPreview /
-        // graphics.playOut / graphics.preview.remove / graphics.playOutAll / graphics.preview.clear /
-        // graphics.playlist.default / graphics.playlist.hotkey.set this direct path only serves
-        // hosts without a registered surface (layout probes).
+        // StudioControlSurface implements every id below (Stage D, slice 2); this direct path
+        // serves hosts without a registered surface (layout probes).
         try { return await DirectAsync(studio, actionId, args); }
         catch (Exception ex) when (ex is not OutOfMemoryException) { return ControlInvokeResult.Fail(ex.Message); }
     }
@@ -79,7 +78,26 @@ public static class GraphicsPlayoutActions
                 IReadOnlyList<GraphicsPlaylistRow> rows;
                 try { rows = GraphicsWorkspaceLibrary.DefaultPlaylistFor(starter, state); }
                 catch (InvalidOperationException ex) { return ControlInvokeResult.Fail(ex.Message); }
-                return await studio.GraphicsLibrary.SavePlaylistAsync(rows) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(studio.GraphicsLibrary.Status);
+                var layouts = playout.Layouts.Count == 0 ? GraphicsWorkspaceLibrary.DefaultShotLayouts() : null;
+                return await studio.GraphicsLibrary.SavePlaylistAsync(rows, layouts) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(studio.GraphicsLibrary.Status);
+            }
+            case LayoutCue: return Map(await studio.CueLayoutAsync(Str(args, 0)));
+            case LayoutTake: return Map(await studio.CueAndTakeLayoutAsync(Str(args, 0)));
+            case LayoutSet: {
+                ShotLayout? layout;
+                try { layout = System.Text.Json.JsonSerializer.Deserialize<ShotLayout>(Str(args, 0), new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)); }
+                catch (System.Text.Json.JsonException ex) { return ControlInvokeResult.Fail(ex.Message); }
+                if (layout is null || !layout.IsValid) return ControlInvokeResult.Fail("That shot layout is not valid.");
+                if (layout.SceneId.Length > 0 && studio.Scenes.All(scene => scene.Id != layout.SceneId)) return ControlInvokeResult.Fail($"Scene '{layout.SceneId}' is not in this show.");
+                var layouts = playout.Layouts.Select(l => l.Id != layout.Id && layout.Hotkey.Length > 0 && l.Hotkey == layout.Hotkey ? l with { Hotkey = "" } : l).ToList();
+                var index = layouts.FindIndex(l => l.Id == layout.Id);
+                if (index < 0) layouts.Add(layout); else layouts[index] = layout;
+                return await studio.GraphicsLibrary.SaveShotLayoutsAsync(layouts) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(studio.GraphicsLibrary.Status);
+            }
+            case LayoutRemove: {
+                var layouts = playout.Layouts.Where(l => l.Id != Str(args, 0)).ToArray();
+                if (layouts.Length == playout.Layouts.Count) return ControlInvokeResult.Fail("That shot layout does not exist.");
+                return await studio.GraphicsLibrary.SaveShotLayoutsAsync(layouts) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(studio.GraphicsLibrary.Status);
             }
             case HotkeySet: {
                 var rowId = Str(args, 0); var key = Str(args, 1);

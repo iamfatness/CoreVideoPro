@@ -58,6 +58,13 @@ public static class OscFeedback
             messages.Add(Str($"graphics/row/{row.Id}/hotkey", row.Hotkey));
             messages.Add(Str($"graphics/row/{row.Id}/name", row.Name));
         }
+        foreach (var layout in state.GraphicsLayouts ?? [])
+        {
+            messages.Add(Str($"graphics/layout/{layout.Id}/name", layout.Name));
+            messages.Add(Str($"graphics/layout/{layout.Id}/scene", layout.SceneId));
+            messages.Add(Str($"graphics/layout/{layout.Id}/hotkey", layout.Hotkey));
+            messages.Add(Flag($"graphics/layout/{layout.Id}/onPreview", layout.SceneId.Length > 0 && string.Equals(layout.SceneId, state.PreviewSceneId, StringComparison.Ordinal)));
+        }
 
         messages.Add(Str("ohg/health/engine", state.OhgEngineHealth));
         messages.Add(Str("ohg/shadow/lastCommand", state.OhgShadowLastCommand));

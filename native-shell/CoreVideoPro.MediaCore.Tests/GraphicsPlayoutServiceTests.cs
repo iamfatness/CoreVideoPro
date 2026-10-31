@@ -48,9 +48,11 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
     private async Task<(GraphicsWorkspaceLibrary Library, GraphicsPlayoutService Service)> BuildWithDefaultPlaylist()
     {
         var built = Build();
-        Assert.True(await built.Library.SavePlaylistAsync(GraphicsWorkspaceLibrary.DefaultPlaylistFor(GraphicsShowStarters.All[0], _state)), built.Library.Status);
+        Assert.True(await built.Library.SavePlaylistAsync(GraphicsWorkspaceLibrary.DefaultPlaylistFor(GraphicsShowStarters.All[0], _state), GraphicsWorkspaceLibrary.DefaultShotLayouts()), built.Library.Status);
         return built;
     }
+    private readonly List<string> _sceneSelects = [];
+    private Task<bool> SelectScene(string sceneId, CancellationToken _) { _sceneSelects.Add(sceneId); return Task.FromResult(sceneId is "intro" or "interview" or "panel"); }
     private Task<NativeGraphicsOperationResult> Invoke(string action, string body, CancellationToken cancellation)
     {
         var input = JsonDocument.Parse(body).RootElement.Clone(); _commands.Add((action, input));
@@ -320,6 +322,107 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         service.Observe(_state = _state with { Instances = [Program("graphic-design", "compact-solid") with { Visibility = "building-out" }] });
         Assert.False(service.LowerThirdOnAir);
         Assert.False(GraphicsPlayoutService.IsLowerThirdOnAir(GraphicsStripState.Empty, library.Document.Playlist, _state));
+    }
+
+    // ---- Shot layouts (#1076 slice 2) --------------------------------------------------------
+    [Fact] public async Task DefaultShotLayoutsShipWithTheDefaultPlaylist()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        Assert.Equal(new[] { "open", "two-up", "panel", "clean" }, service.Layouts.Select(l => l.Id));
+        Assert.Equal(new[] { "Shift+F1", "Shift+F2", "Shift+F3", "Shift+F11" }, service.Layouts.Select(l => l.Hotkey));
+        Assert.Equal(new[] { "intro", "interview", "panel", "" }, service.Layouts.Select(l => l.SceneId));
+        Assert.Equal(new[] { "title", "logo" }, service.Layout("open")!.RowIds); Assert.Equal(new[] { "guest" }, service.Layout("two-up")!.RowIds); Assert.Equal(new[] { "guest", "logo" }, service.Layout("panel")!.RowIds);
+        Assert.True(service.Layout("clean")!.PlayOutOthers); Assert.Empty(service.Layout("clean")!.RowIds);
+        Assert.All(service.Layouts.SelectMany(l => l.RowIds), id => Assert.NotNull(service.Row(id)));
+        var loaded = await new GraphicsDocumentStore(Path.Combine(_directory, "show.json")).LoadAsync();
+        Assert.Equal(4, loaded.Document.ShotLayouts.Count);
+        // Layouts save validates row ids and unique hotkeys; a bad set leaves the previous one.
+        Assert.False(await library.SaveShotLayoutsAsync([new() { Id = "x", Name = "X", RowIds = ["missing-row"] }])); Assert.Contains("missing-row", library.Status);
+        Assert.False(await library.SaveShotLayoutsAsync([new() { Id = "a", Name = "A", Hotkey = "Shift+F4" }, new() { Id = "b", Name = "B", Hotkey = "Shift+F4" }]));
+        Assert.Equal(4, service.Layouts.Count);
+        Assert.True(await library.SaveShotLayoutsAsync([.. service.Layouts, new() { Id = "wide", Name = "Wide", SceneId = "speaker-slides", RowIds = ["title"], Hotkey = "Shift+F4" }]), library.Status);
+        Assert.Equal(5, service.Layouts.Count); Assert.Empty(_commands);
+    }
+
+    [Fact] public async Task CueLayoutSelectsSceneThenCuesEveryRowToPreview()
+    {
+        var (_, service) = await BuildWithDefaultPlaylist();
+        var result = await service.CueLayoutAsync("open", SelectScene, programSubject: null);
+        Assert.True(result.Accepted, result.Reason);
+        Assert.Equal(new[] { "intro" }, _sceneSelects);
+        // Scene first, then create+cue per row; nothing is shown (the Take carries it).
+        Assert.Equal(new[] { "graphics.instance.create", "graphics.instance.cue", "graphics.instance.create", "graphics.instance.cue" }, Actions);
+        Assert.Equal(new[] { "playlist-title", "playlist-logo" }, Bodies("graphics.instance.cue").Select(b => b.GetProperty("instanceId").GetString()));
+        Assert.All(Bodies("graphics.instance.cue"), b => Assert.True(b.GetProperty("rideTake").GetBoolean()));
+        Assert.Equal(new[] { "playlist-title", "playlist-logo" }, service.Strip.OnPreview.Select(i => i.InstanceId)); Assert.Empty(service.Strip.OnProgram);
+        Assert.Contains("Open cued", result.Reason);
+        // A Guest-row layout cues the entries routed in that scene when given, else the Program subject.
+        _commands.Clear(); _sceneSelects.Clear();
+        var ada = service.GuestEntryFor("zoom:7", [new(1, "zoom:7", "Ada"), new(2, "capture:camera", "HD60")], (_, n) => (n, "Guest"))!;
+        var hd60 = service.GuestEntryFor("capture:camera", [new(1, "zoom:7", "Ada"), new(2, "capture:camera", "HD60")], (_, n) => (n, "Guest"))!;
+        var panel = await service.CueLayoutAsync("panel", SelectScene, programSubject: ada, sceneGuests: [ada, hd60]);
+        Assert.True(panel.Accepted, panel.Reason); Assert.Equal(new[] { "panel" }, _sceneSelects);
+        Assert.Equal(new[] { GraphicsPlayoutService.InstanceIdFor(ada), GraphicsPlayoutService.InstanceIdFor(hd60), "playlist-logo" }, Bodies("graphics.instance.cue").Select(b => b.GetProperty("instanceId").GetString()));
+        _commands.Clear();
+        var twoUp = await service.CueLayoutAsync("two-up", SelectScene, programSubject: ada, sceneGuests: []);
+        Assert.True(twoUp.Accepted, twoUp.Reason);
+        Assert.Equal(new[] { GraphicsPlayoutService.InstanceIdFor(ada) }, Bodies("graphics.instance.cue").Select(b => b.GetProperty("instanceId").GetString()));
+        // No subject at all: refused before the scene changes.
+        _commands.Clear(); _sceneSelects.Clear();
+        var refused = await service.CueLayoutAsync("two-up", SelectScene, programSubject: null);
+        Assert.False(refused.Accepted); Assert.Contains("Program subject", refused.Reason); Assert.Empty(_sceneSelects); Assert.Empty(_commands);
+        // Cue and Take: the Take runs after the cue; a refused Take is reported, not hidden.
+        _sceneSelects.Clear(); var takes = 0;
+        var taken = await service.CueAndTakeLayoutAsync("open", SelectScene, null, null, _ => { takes++; return Task.FromResult<string?>(null); });
+        Assert.True(taken.Accepted, taken.Reason); Assert.Equal(1, takes); Assert.Equal(new[] { "intro" }, _sceneSelects);
+        var notTaken = await service.CueAndTakeLayoutAsync("open", SelectScene, null, null, _ => Task.FromResult<string?>("Take is unavailable."));
+        Assert.False(notTaken.Accepted); Assert.Contains("Take is unavailable.", notTaken.Reason);
+    }
+
+    [Fact] public async Task LayoutWithMissingSceneIsRefused()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        Assert.True(await library.SaveShotLayoutsAsync([.. service.Layouts, new() { Id = "gone", Name = "Gone", SceneId = "deleted-scene", RowIds = ["title"], Hotkey = "Shift+F4" }]), library.Status);
+        var result = await service.CueLayoutAsync("gone", SelectScene, programSubject: null);
+        Assert.False(result.Accepted);
+        Assert.Contains("deleted-scene", result.Reason); Assert.Contains("Gone", result.Reason);
+        Assert.Equal(new[] { "deleted-scene" }, _sceneSelects);
+        Assert.Empty(_commands); Assert.Empty(service.Strip.OnPreview);
+        // A layout naming a playlist row that no longer exists is refused before the scene is touched.
+        _sceneSelects.Clear();
+        Assert.True(await library.SavePlaylistAsync(library.Document.Playlist.Where(r => r.Id != "logo").ToArray()), library.Status);
+        var broken = await service.CueLayoutAsync("open", SelectScene, programSubject: null);
+        Assert.False(broken.Accepted); Assert.Contains("'logo'", broken.Reason); Assert.Empty(_sceneSelects); Assert.Empty(_commands);
+        Assert.False((await service.CueLayoutAsync("no-such-layout", SelectScene, null)).Accepted);
+    }
+
+    [Fact] public async Task CleanLayoutPlaysOutEverythingAndChangesNoScene()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(library.Document.Playlist[1]))).Accepted);
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(library.Document.Playlist[2]))).Accepted);
+        _state = _state with { Instances = [.. _state.Instances, new() { InstanceId = "graphic-design", Revision = 1, ProgramRevision = 1, Visibility = "visible", TemplateId = "compact-solid" }] };
+        service.Observe(_state); Assert.Equal(3, service.Strip.OnProgram.Count); _commands.Clear();
+        var result = await service.CueLayoutAsync("clean", SelectScene, programSubject: null);
+        Assert.True(result.Accepted, result.Reason);
+        Assert.Empty(_sceneSelects);
+        Assert.All(_commands, c => { Assert.Equal("graphics.instance.trigger", c.Action); Assert.Equal("hide", c.Body.GetProperty("action").GetString()); });
+        Assert.Equal(new[] { "graphic-design", "playlist-logo", "playlist-title" }, _commands.Select(c => c.Body.GetProperty("instanceId").GetString()).OrderBy(x => x));
+        Assert.Empty(service.Strip.OnProgram); Assert.Empty(service.Strip.OnPreview);
+        // Clean has nothing to Take; Cue and Take does not call the Take.
+        var takes = 0;
+        var cleaned = await service.CueAndTakeLayoutAsync("clean", SelectScene, null, null, _ => { takes++; return Task.FromResult<string?>(null); });
+        Assert.True(cleaned.Accepted); Assert.Equal(0, takes); Assert.Empty(_sceneSelects);
+        // PlayOutOthers on a layout with rows keeps the rows it carries: a cued row is not hidden,
+        // but a Program graphic outside the layout is.
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(library.Document.Playlist[1]))).Accepted);
+        Assert.True(await library.SaveShotLayoutsAsync([.. service.Layouts, new() { Id = "logo-only", Name = "Logo only", SceneId = "intro", RowIds = ["logo"], Hotkey = "Shift+F5", PlayOutOthers = true }]), library.Status);
+        _commands.Clear();
+        var partial = await service.CueLayoutAsync("logo-only", SelectScene, null);
+        Assert.True(partial.Accepted, partial.Reason);
+        var hides = _commands.Where(c => c.Action == "graphics.instance.trigger" && c.Body.GetProperty("action").GetString() == "hide").ToArray();
+        Assert.Equal(new[] { "playlist-title" }, hides.Select(h => h.Body.GetProperty("instanceId").GetString()));
+        Assert.Equal(new[] { "playlist-logo" }, service.Strip.OnPreview.Select(i => i.InstanceId));
     }
 
     public void Dispose() { if (Directory.Exists(_directory)) Directory.Delete(_directory, true); }

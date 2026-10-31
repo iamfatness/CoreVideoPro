@@ -10,6 +10,7 @@ using System.Text.Json;
 using GraphicsPlaylistEntry = CoreVideoPro.MediaCore.Models.GraphicsPlaylistEntry;
 using GraphicsPlaylistRow = CoreVideoPro.MediaCore.Models.GraphicsPlaylistRow;
 using NativeGraphicsOperationResult = CoreVideoPro.MediaCore.Models.NativeGraphicsOperationResult;
+using ShotLayout = CoreVideoPro.MediaCore.Models.ShotLayout;
 
 namespace CoreVideoPro.WinUI.Services;
 
@@ -72,6 +73,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         // Graphics playout (#1076): the ids the Graphics tab, the F-key router and Companion share.
         "graphics.playlist.list", "graphics.playlist.row.set", "graphics.playlist.row.remove", "graphics.playlist.hotkey.set", "graphics.playlist.default",
         "graphics.playIn", "graphics.toPreview", "graphics.playOut", "graphics.preview.remove", "graphics.playOutAll", "graphics.preview.clear", "graphics.strip",
+        "graphics.layout.list", "graphics.layout.set", "graphics.layout.remove", "graphics.layout.cue", "graphics.layout.take",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "multiview.layout.set", "multiview.tileCount.set",
@@ -466,7 +468,14 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 var starter = starterId.Length == 0 ? GraphicsShowStarters.All[0] : GraphicsShowStarters.All.FirstOrDefault(s => s.Id == starterId);
                 if (starter is null) return ControlInvokeResult.Fail($"Unknown show starter '{starterId}'. Use one of: {string.Join(", ", GraphicsShowStarters.All.Select(s => s.Id))}.");
                 if (_vm.GraphicsWorkspace.State is not { CoreEpoch.Length: > 0 } graphicsState) return ControlInvokeResult.Fail("Native Graphics is unavailable.");
-                try { return await SavePlaylist(GraphicsWorkspaceLibrary.DefaultPlaylistFor(starter, graphicsState)).ConfigureAwait(true); }
+                // The preset shot layouts (Open, Two-up, Panel, Clean) install with the default rows;
+                // layouts the operator already saved are kept.
+                var presetLayouts = _vm.GraphicsPlayout.Layouts.Count == 0 ? GraphicsWorkspaceLibrary.DefaultShotLayouts() : null;
+                try
+                {
+                    var rows = GraphicsWorkspaceLibrary.DefaultPlaylistFor(starter, graphicsState);
+                    return await _vm.GraphicsLibrary.SavePlaylistAsync(rows, presetLayouts).ConfigureAwait(true) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.GraphicsLibrary.Status);
+                }
                 catch (InvalidOperationException ex) { return ControlInvokeResult.Fail(ex.Message); }
             }
             case "graphics.playIn":
@@ -502,6 +511,40 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 return Graphics(await _vm.GraphicsPlayout.ClearPreviewAsync().ConfigureAwait(true));
             case "graphics.strip":
                 return ControlInvokeResult.WithData(JsonSerializer.Serialize(ControlStrip(), PlayoutJson));
+
+            // ---- Shot layouts (#1076 slice 2) ---------------------------------------
+            case "graphics.layout.list":
+                await _vm.GraphicsLibrary.LoadAsync().ConfigureAwait(true);
+                return ControlInvokeResult.WithData(LayoutsJson());
+            case "graphics.layout.set":
+            {
+                ShotLayout? layout;
+                try { layout = JsonSerializer.Deserialize<ShotLayout>(Str(args, 0), PlayoutJson); }
+                catch (JsonException ex) { return ControlInvokeResult.Fail($"layoutJson is not a shot layout: {ex.Message}"); }
+                if (layout is null || !layout.IsValid) return ControlInvokeResult.Fail("layoutJson is not a valid shot layout (id a-z0-9-, name, sceneId or blank, rowIds, hotkey Shift+F1..Shift+F11 or blank, playOutOthers).");
+                await _vm.GraphicsLibrary.LoadAsync().ConfigureAwait(true);
+                if (layout.SceneId.Length > 0 && _vm.Scenes.All(scene => scene.Id != layout.SceneId))
+                    return ControlInvokeResult.Fail($"Scene '{layout.SceneId}' is not in this show. Use one of: {string.Join(", ", _vm.Scenes.Select(scene => scene.Id))}.");
+                var missing = layout.RowIds.Where(id => _vm.GraphicsPlayout.Row(id) is null).ToArray();
+                if (missing.Length > 0) return ControlInvokeResult.Fail($"Playlist rows do not exist: {string.Join(", ", missing)}.");
+                var layouts = _vm.GraphicsPlayout.Layouts.ToList();
+                // One key, one layout: a key already assigned elsewhere moves here.
+                if (layout.Hotkey.Length > 0) layouts = layouts.Select(l => l.Id != layout.Id && l.Hotkey == layout.Hotkey ? l with { Hotkey = "" } : l).ToList();
+                var index = layouts.FindIndex(l => l.Id == layout.Id);
+                if (index < 0) layouts.Add(layout); else layouts[index] = layout;
+                return await SaveLayouts(layouts).ConfigureAwait(true);
+            }
+            case "graphics.layout.remove":
+            {
+                await _vm.GraphicsLibrary.LoadAsync().ConfigureAwait(true);
+                var layouts = _vm.GraphicsPlayout.Layouts.ToList();
+                if (layouts.RemoveAll(l => l.Id == Str(args, 0)) == 0) return ControlInvokeResult.Fail("That shot layout does not exist.");
+                return await SaveLayouts(layouts).ConfigureAwait(true);
+            }
+            case "graphics.layout.cue":
+                return Graphics(await _vm.CueLayoutAsync(Str(args, 0)).ConfigureAwait(true));
+            case "graphics.layout.take":
+                return Graphics(await _vm.CueAndTakeLayoutAsync(Str(args, 0)).ConfigureAwait(true));
             case "graphics.caption.set":
                 _vm.CaptionText = Str(args, 0);
                 if (args.Count > 1 && args[1] is string speaker)
@@ -650,6 +693,22 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
 
     private async Task<ControlInvokeResult> SavePlaylist(IReadOnlyList<GraphicsPlaylistRow> rows) =>
         await _vm.GraphicsLibrary.SavePlaylistAsync(rows).ConfigureAwait(true) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.GraphicsLibrary.Status);
+    private async Task<ControlInvokeResult> SaveLayouts(IReadOnlyList<ShotLayout> layouts) =>
+        await _vm.GraphicsLibrary.SaveShotLayoutsAsync(layouts).ConfigureAwait(true) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.GraphicsLibrary.Status);
+
+    private IReadOnlyList<ControlGraphicsLayout> ControlLayouts() =>
+        _vm.GraphicsPlayout.Layouts.Select(l => new ControlGraphicsLayout(l.Id, l.Name, l.SceneId, l.Hotkey)).ToArray();
+
+    private string LayoutsJson() => JsonSerializer.Serialize(new
+    {
+        layouts = _vm.GraphicsPlayout.Layouts.Select(l => new
+        {
+            id = l.Id, name = l.Name, sceneId = l.SceneId, rowIds = l.RowIds, hotkey = l.Hotkey, playOutOthers = l.PlayOutOthers,
+            sceneExists = l.SceneId.Length == 0 || _vm.Scenes.Any(scene => scene.Id == l.SceneId),
+        }),
+        scenes = _vm.Scenes.Select(scene => new { id = scene.Id, name = scene.Name }),
+        previewSceneId = _vm.PreviewSceneId, activeSceneId = _vm.ActiveSceneId,
+    }, PlayoutJson);
 
     /// <summary>rowId (+ optional sourceId) -> playable entry. Guest rows need a bound source: the
     /// given one, else the current Program subject. Other rows ignore sourceId.</summary>
@@ -892,6 +951,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             AudioSources = audioSources,
             GraphicsStrip = ControlStrip(),
             GraphicsPlaylist = ControlPlaylist(),
+            GraphicsLayouts = ControlLayouts(),
         }, _vm.NativeControlSnapshot);
 
         return WithOhg(state, _bridge?.Latest, _bridge?.Health ?? StoppedHealth, _ohgAdapterSlot.Current?.ShadowLastCommand);

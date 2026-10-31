@@ -28,6 +28,8 @@ public sealed class GraphicsPlayoutControl : UserControl
 
     private const string DocsBase = "https://github.com/iamfatness/CoreVideoPro/blob/main/docs/reference/graphics-playout.md";
     private static readonly string[] HotkeyChoices = ["None", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
+    private static readonly string[] LayoutHotkeyChoices = ["None", .. Enumerable.Range(1, 11).Select(n => ShotLayout.HotkeyPrefix + n)];
+    private static readonly JsonSerializerOptions LayoutJson = new(JsonSerializerDefaults.Web);
     private static readonly (string Label, int Ms)[] PlayOutChoices = [("Manual", 0), ("8 s", 8000), ("15 s", 15000)];
 
     private StudioViewModel? _attached;
@@ -35,6 +37,8 @@ public sealed class GraphicsPlayoutControl : UserControl
     private readonly Grid _root = new() { ColumnSpacing = 12 };
     private readonly ColumnDefinition _inspectorColumn = new() { Width = new GridLength(300) };
     private readonly StackPanel _list = new() { Spacing = 8 };
+    private readonly StackPanel _layouts = new() { Spacing = 6 };
+    private string _layoutsSignature = "", _selectedLayoutId = "";
     private readonly StackPanel _inspector = new() { Spacing = 10 };
     private readonly Border _inspectorPanel;
     private readonly TextBlock _status = new() { FontSize = 11, TextWrapping = TextWrapping.Wrap };
@@ -47,16 +51,19 @@ public sealed class GraphicsPlayoutControl : UserControl
         _root.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         _root.ColumnDefinitions.Add(_inspectorColumn);
         var left = new Grid { RowSpacing = 8 };
-        left.RowDefinitions.Add(new() { Height = GridLength.Auto }); left.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); left.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        left.RowDefinitions.Add(new() { Height = GridLength.Auto }); left.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        left.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); left.RowDefinitions.Add(new() { Height = GridLength.Auto });
         var header = new Grid { ColumnSpacing = 8 };
         header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         header.Children.Add(new TextBlock { Text = "PLAYLIST", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center });
         _add = StudioBrushes.GhostButton("＋ Add graphic"); _add.Click += async (_, _) => await AddGraphicAsync(); Grid.SetColumn(_add, 1); header.Children.Add(_add);
         ToolTipService.SetToolTip(_add, "Add a graphic. An empty playlist installs the default five rows; otherwise this opens Design.");
         left.Children.Add(header);
+        // Shot layouts sit under the Preview/Program strip, above the playlist (full form only).
+        Grid.SetRow(_layouts, 1); left.Children.Add(_layouts);
         var scroll = new ScrollViewer { Content = _list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        Grid.SetRow(scroll, 1); left.Children.Add(scroll);
-        _status.Foreground = StudioBrushes.Muted; Grid.SetRow(_status, 2); left.Children.Add(_status);
+        Grid.SetRow(scroll, 2); left.Children.Add(scroll);
+        _status.Foreground = StudioBrushes.Muted; Grid.SetRow(_status, 3); left.Children.Add(_status);
         _root.Children.Add(left);
         _inspectorPanel = new Border { Background = StudioBrushes.Panel, BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(12),
             Child = new ScrollViewer { Content = _inspector, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled } };
@@ -70,7 +77,8 @@ public sealed class GraphicsPlayoutControl : UserControl
     {
         _inspectorColumn.Width = Compact ? new GridLength(0) : new GridLength(300);
         _inspectorPanel.Visibility = Compact ? Visibility.Collapsed : Visibility.Visible;
-        _listSignature = ""; Refresh();
+        _layouts.Visibility = Compact ? Visibility.Collapsed : Visibility.Visible;
+        _listSignature = ""; _layoutsSignature = ""; Refresh();
     }
 
     // ---- lifecycle -----------------------------------------------------------------------
@@ -79,7 +87,7 @@ public sealed class GraphicsPlayoutControl : UserControl
         if (Studio is null || !IsLoaded || ReferenceEquals(_attached, Studio)) return;
         Detach(); _attached = Studio; _attached.PropertyChanged += OnStudioProperty;
         _library = Studio.GraphicsLibrary; _library.Changed += OnLibraryChanged; _ = _library.LoadAsync();
-        _listSignature = ""; _inspectorSignature = ""; Refresh();
+        _listSignature = ""; _inspectorSignature = ""; _layoutsSignature = ""; Refresh();
     }
     private void Detach()
     {
@@ -91,7 +99,7 @@ public sealed class GraphicsPlayoutControl : UserControl
     private void OnStudioProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(StudioViewModel.GraphicsStrip) or nameof(StudioViewModel.GuestEntries) or nameof(StudioViewModel.GraphicsPlayoutStatus)
-            or nameof(StudioViewModel.GraphicsPlayoutBusy) or nameof(StudioViewModel.GraphicsProgramSubjectSourceId)) Refresh();
+            or nameof(StudioViewModel.GraphicsPlayoutBusy) or nameof(StudioViewModel.GraphicsProgramSubjectSourceId) or nameof(StudioViewModel.PreviewSceneId)) Refresh();
     }
 
     // ---- actions -------------------------------------------------------------------------
@@ -156,7 +164,145 @@ public sealed class GraphicsPlayoutControl : UserControl
             if (rows.Count == 0) _list.Children.Add(EmptyState(busy));
             foreach (var row in rows) _list.Children.Add(RowCard(row, entries.Where(e => e.RowId == row.Id).ToArray(), subject, busy));
         }
-        if (!Compact) RefreshInspector(rows, entries);
+        if (!Compact) { RefreshLayouts(studio, rows, busy); RefreshInspector(rows, entries); }
+    }
+
+    // ---- shot layouts (#1076 slice 2) ---------------------------------------------------
+    private static string SceneName(StudioViewModel studio, string sceneId) =>
+        sceneId.Length == 0 ? "" : studio.Scenes.FirstOrDefault(s => s.Id == sceneId)?.Name ?? sceneId + " (missing)";
+    private static string LayoutSummary(StudioViewModel studio, ShotLayout layout, IReadOnlyList<GraphicsPlaylistRow> rows)
+    {
+        var scene = layout.SceneId.Length == 0 ? "No scene change" : SceneName(studio, layout.SceneId);
+        var names = layout.RowIds.Select(id => rows.FirstOrDefault(r => r.Id == id)?.Name ?? id + " (missing)").ToArray();
+        var graphics = names.Length == 0 ? (layout.PlayOutOthers ? "plays everything out" : "no graphics") : string.Join(", ", names) + (layout.PlayOutOthers ? " · plays out the rest" : "");
+        return scene + " · " + graphics;
+    }
+
+    private void RefreshLayouts(StudioViewModel studio, IReadOnlyList<GraphicsPlaylistRow> rows, bool busy)
+    {
+        var layouts = studio.GraphicsPlayout.Layouts; var preview = studio.PreviewSceneId ?? "";
+        var signature = $"{busy}|{_selectedLayoutId}|{preview}|{rows.Count}|" + string.Join('|', layouts.Select(l => $"{l.Id}:{l.Name}:{l.SceneId}:{string.Join(',', l.RowIds)}:{l.Hotkey}:{l.PlayOutOthers}:{LayoutSummary(studio, l, rows)}"));
+        if (signature == _layoutsSignature) return;
+        _layoutsSignature = signature; _layouts.Children.Clear();
+        var header = new Grid { ColumnSpacing = 8 };
+        header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); header.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock { Text = "SHOT LAYOUTS", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center });
+        if (rows.Count == 0) {
+            // First open: the layouts appear once the default playlist exists (its presets install with it).
+            var note = new TextBlock { Text = "Appear once you have graphics.", FontSize = 11, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center };
+            Grid.SetColumn(note, 1); header.Children.Add(note); _layouts.Children.Add(header); return;
+        }
+        var selected = layouts.FirstOrDefault(l => l.Id == _selectedLayoutId);
+        if (selected is not null) {
+            var take = StudioBrushes.ChipButton("Cue and Take"); take.IsEnabled = !busy;
+            ToolTipService.SetToolTip(take, $"Cue {selected.Name} to Preview, then Take: the picture and its graphics change together.");
+            take.Click += async (_, _) => await Invoke(GraphicsPlayoutActions.LayoutTake, selected.Id);
+            Grid.SetColumn(take, 1); header.Children.Add(take);
+        }
+        var edit = StudioBrushes.ChipButton("Edit layouts"); edit.IsEnabled = !busy;
+        ToolTipService.SetToolTip(edit, "Pick a scene, tick the graphics and set a Shift+F key for each layout. Program and Preview are unchanged.");
+        edit.Click += (_, _) => OpenLayoutEditor(edit, studio, rows);
+        Grid.SetColumn(edit, 2); header.Children.Add(edit);
+        _layouts.Children.Add(header);
+        if (layouts.Count == 0) {
+            _layouts.Children.Add(new TextBlock { Text = "No shot layouts yet. Edit layouts to make one: a scene plus the graphics that ride the Take with it.", FontSize = 11, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap });
+            return;
+        }
+        var strip = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        foreach (var layout in layouts) strip.Children.Add(LayoutButton(studio, layout, rows, layout.Id == _selectedLayoutId, layout.SceneId.Length > 0 && layout.SceneId == preview, busy));
+        _layouts.Children.Add(new ScrollViewer { Content = strip, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Auto });
+    }
+
+    /// <summary>One layout button: name + hotkey badge, one-line "scene · rows" summary. Click = cue
+    /// (graphics.layout.cue) and select, so the header offers Cue and Take for it.</summary>
+    private Button LayoutButton(StudioViewModel studio, ShotLayout layout, IReadOnlyList<GraphicsPlaylistRow> rows, bool selected, bool onPreview, bool busy)
+    {
+        var body = new StackPanel { Spacing = 2, MinWidth = 150, MaxWidth = 240 };
+        var title = new Grid { ColumnSpacing = 8 };
+        title.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); title.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var name = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        name.Children.Add(new TextBlock { Text = layout.Name, FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = StudioBrushes.Text, TextTrimming = TextTrimming.CharacterEllipsis });
+        if (onPreview) name.Children.Add(StudioBrushes.Badge("on preview"));
+        title.Children.Add(name);
+        if (layout.Hotkey.Length > 0) { var badge = StudioBrushes.Badge(layout.Hotkey); Grid.SetColumn(badge, 1); title.Children.Add(badge); }
+        body.Children.Add(title);
+        body.Children.Add(new TextBlock { Text = LayoutSummary(studio, layout, rows), FontSize = 10, Foreground = StudioBrushes.Muted, TextTrimming = TextTrimming.CharacterEllipsis });
+        var button = new Button { Content = body, Padding = new Thickness(10, 7, 10, 7), HorizontalContentAlignment = HorizontalAlignment.Stretch, Background = StudioBrushes.Panel,
+            BorderBrush = selected ? StudioBrushes.Accent : StudioBrushes.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), IsEnabled = !busy };
+        ToolTipService.SetToolTip(button, $"Cue {layout.Name}: {LayoutSummary(studio, layout, rows)}. The next Take carries the picture and the graphics together.");
+        button.Click += async (_, _) => { _selectedLayoutId = layout.Id; await Invoke(GraphicsPlayoutActions.LayoutCue, layout.Id); };
+        return button;
+    }
+
+    /// <summary>Edit layouts flyout: choose a layout (or New), name it, pick the scene, tick the
+    /// rows, set the Shift+F key and whether it plays out other graphics. Save goes through
+    /// graphics.layout.set, Remove through graphics.layout.remove.</summary>
+    private void OpenLayoutEditor(FrameworkElement anchor, StudioViewModel studio, IReadOnlyList<GraphicsPlaylistRow> rows)
+    {
+        var flyout = new Flyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Bottom };
+        var panel = new StackPanel { Spacing = 10, MinWidth = 320, MaxWidth = 380 };
+        flyout.Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = 560 };
+        var layouts = studio.GraphicsPlayout.Layouts;
+        var picker = new ComboBox { Header = "Layout", ItemsSource = layouts.Select(l => l.Name).Append("New layout").ToArray(), HorizontalAlignment = HorizontalAlignment.Stretch,
+            SelectedIndex = Math.Max(0, layouts.ToList().FindIndex(l => l.Id == _selectedLayoutId)) };
+        if (layouts.Count == 0) picker.SelectedIndex = 0;
+        var form = new StackPanel { Spacing = 10 };
+        void Build()
+        {
+            form.Children.Clear();
+            var existing = picker.SelectedIndex >= 0 && picker.SelectedIndex < layouts.Count ? layouts[picker.SelectedIndex] : null;
+            var scenes = studio.Scenes.ToArray();
+            var name = new TextBox { Header = "Name", Text = existing?.Name ?? "", MaxLength = 128, PlaceholderText = "Open, Two-up, Panel..." };
+            var scene = new ComboBox { Header = "Scene to Preview", ItemsSource = scenes.Select(s => s.Name).Prepend("No scene change").ToArray(), HorizontalAlignment = HorizontalAlignment.Stretch,
+                SelectedIndex = existing is null ? 0 : Math.Max(0, Array.FindIndex(scenes, s => s.Id == existing.SceneId) + 1) };
+            if (existing is { SceneId.Length: > 0 } && scenes.All(s => s.Id != existing.SceneId))
+                form.Children.Add(new TextBlock { Text = $"Scene '{existing.SceneId}' is no longer in this show; this layout is refused until you pick another.", FontSize = 11, Foreground = StudioBrushes.Program, TextWrapping = TextWrapping.Wrap });
+            form.Children.Add(name); form.Children.Add(scene);
+            form.Children.Add(new TextBlock { Text = "Graphics that ride the Take", FontSize = 12, Foreground = StudioBrushes.Text });
+            var ticks = rows.Select(r => new CheckBox { Content = r.Name, Tag = r.Id, IsChecked = existing?.RowIds.Contains(r.Id) == true }).ToArray();
+            foreach (var tick in ticks) form.Children.Add(tick);
+            var hotkey = new ComboBox { Header = "Hotkey", ItemsSource = LayoutHotkeyChoices, SelectedIndex = Math.Max(0, Array.IndexOf(LayoutHotkeyChoices, existing?.Hotkey ?? "")), HorizontalAlignment = HorizontalAlignment.Stretch };
+            form.Children.Add(hotkey);
+            var others = new ToggleSwitch { Header = "Other graphics", IsOn = existing?.PlayOutOthers == true, OnContent = "Play out Program graphics not in this layout", OffContent = "Leave other Program graphics alone" };
+            form.Children.Add(others);
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            var save = StudioBrushes.AccentButton(existing is null ? "Add layout" : "Save layout");
+            save.Click += async (_, _) => {
+                var trimmed = name.Text.Trim();
+                if (trimmed.Length == 0) { _status.Text = "Give the layout a name."; return; }
+                var id = existing?.Id ?? Slug(trimmed, layouts.Select(l => l.Id));
+                var layout = new ShotLayout { Id = id, Name = trimmed, SceneId = scene.SelectedIndex > 0 ? scenes[scene.SelectedIndex - 1].Id : "",
+                    RowIds = ticks.Where(t => t.IsChecked == true).Select(t => (string)t.Tag).ToArray(),
+                    Hotkey = hotkey.SelectedIndex > 0 ? LayoutHotkeyChoices[hotkey.SelectedIndex] : "", PlayOutOthers = others.IsOn };
+                _selectedLayoutId = id;
+                await Invoke(GraphicsPlayoutActions.LayoutSet, JsonSerializer.Serialize(layout, LayoutJson));
+                flyout.Hide();
+            };
+            buttons.Children.Add(save);
+            if (existing is not null) {
+                var remove = StudioBrushes.GhostButton("Remove");
+                remove.Click += async (_, _) => { if (_selectedLayoutId == existing.Id) _selectedLayoutId = ""; await Invoke(GraphicsPlayoutActions.LayoutRemove, existing.Id); flyout.Hide(); };
+                buttons.Children.Add(remove);
+            }
+            form.Children.Add(buttons);
+            form.Children.Add(new TextBlock { Text = "Shift+F1..F11 cue a layout; Shift+F12 plays everything out. Cue selects the scene to Preview and stages the graphics; Take carries both.", FontSize = 10, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap });
+        }
+        picker.SelectionChanged += (_, _) => Build();
+        panel.Children.Add(new TextBlock { Text = "EDIT LAYOUTS", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted });
+        panel.Children.Add(picker); panel.Children.Add(form);
+        Build();
+        flyout.ShowAt(anchor);
+    }
+
+    private static string Slug(string name, IEnumerable<string> taken)
+    {
+        var chars = name.ToLowerInvariant().Select(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' ? c : '-').ToArray();
+        var slug = string.Join('-', new string(chars).Split('-', StringSplitOptions.RemoveEmptyEntries));
+        if (slug.Length == 0 || slug[0] is < 'a' or > 'z') slug = "layout" + (slug.Length == 0 ? "" : "-" + slug);
+        if (slug.Length > 40) slug = slug[..40].TrimEnd('-');
+        var set = taken.ToHashSet(StringComparer.Ordinal); var candidate = slug; var n = 2;
+        while (set.Contains(candidate)) candidate = slug + "-" + n++;
+        return candidate;
     }
 
     private FrameworkElement RowCard(GraphicsPlaylistRow row, IReadOnlyList<GraphicsPlaylistEntry> guests, string subject, bool busy)

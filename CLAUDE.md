@@ -203,7 +203,7 @@ phrase they quote.
 | [`docs/reference/destination-lifecycle.md`](docs/reference/destination-lifecycle.md) | destination start/stop state and what the UI may claim |
 | [`docs/reference/encoder-capacity-probe.md`](docs/reference/encoder-capacity-probe.md) | encoder session limits, software spill |
 | [`docs/reference/engine-teardown-order.md`](docs/reference/engine-teardown-order.md) | stop/teardown/shutdown paths (the ZoomISO deadlock class) |
-| [`docs/reference/graphics-playout.md`](docs/reference/graphics-playout.md) | the Graphics tab's playout top level: playlist, Play In / To Preview / Play Out, the On Air strip (one truth with the buses, #1072), Playout vs Design, control-API ids, hotkeys (#1076) |
+| [`docs/reference/graphics-playout.md`](docs/reference/graphics-playout.md) | the Graphics tab's playout top level: playlist, Play In / To Preview / Play Out, the On Air strip (one truth with the buses, #1072), Playout vs Design, Shot Layouts (scene + graphics on one Take, Shift+F1..F11, `graphics.layout.*`), control-API ids, hotkeys (#1076) |
 | [`docs/reference/fault-injection-seams.md`](docs/reference/fault-injection-seams.md) | proving stability work; writing a drill or soak |
 | [`docs/reference/frame-alloc-failure.md`](docs/reference/frame-alloc-failure.md) | frame allocation, out-of-memory handling |
 | [`docs/reference/gotchas.md`](docs/reference/gotchas.md) | **before any non-trivial change** — the long list of traps, grep it for your area |

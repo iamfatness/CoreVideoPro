@@ -223,6 +223,16 @@ public static class ControlActionRegistry
             new("graphics.playOutAll", "Play Out all graphics", "Hide every native graphic instance on Program (playlist, design and automatic alike)."),
             new("graphics.preview.clear", "Clear graphics Preview", "Drop every cued graphic from Preview; Program is unchanged."),
             new("graphics.strip", "Read graphics strip", "Read the on-air strip (onProgram, onPreview, auto, automationMode, automationArmed) from native instance truth. Changes nothing; reply carries data."),
+            // Shot layouts (#1076 slice 2): one button = a scene on Preview plus its graphics, so one Take carries both.
+            new("graphics.layout.list", "List shot layouts", "Read the shot layouts (id, name, sceneId, rowIds, hotkey, playOutOthers) and the scenes they may use. Changes nothing; reply carries data."),
+            new("graphics.layout.set", "Save shot layout", "Add or replace one shot layout from its JSON (id, name, sceneId or blank, rowIds, hotkey Shift+F1..Shift+F11 or blank, playOutOthers). Refused when its scene or a row does not exist. A hotkey held by another layout moves here. Program and Preview are unchanged.",
+                new[] { new ControlParam("layoutJson", s, true, "JSON object of one shot layout") }),
+            new("graphics.layout.remove", "Remove shot layout", "Remove one shot layout by id. Program and Preview are unchanged.",
+                new[] { new ControlParam("layoutId", s, true) }),
+            new("graphics.layout.cue", "Cue shot layout", "Select the layout's scene to Preview and cue its playlist rows to Preview, so the next Take carries the picture and the graphics. PlayOutOthers layouts also play out Program graphics the layout does not carry. Refused whole when the scene or a row is missing.",
+                new[] { new ControlParam("layoutId", s, true) }),
+            new("graphics.layout.take", "Cue and Take shot layout", "graphics.layout.cue followed by the ordinary Take. A layout with no scene and no rows (Clean) only plays out.",
+                new[] { new ControlParam("layoutId", s, true) }),
 
             // ---- Audio ------------------------------------------------------------------
             new("audio.zoomMode.set", "Zoom audio mode", "Choose independently routed ISO stems or Zoom's combined fallback mix.",
