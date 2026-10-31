@@ -41,7 +41,6 @@ public sealed partial class StudioViewModel
         // opened yet) otherwise reads State == null for up to one snapshot tick and the
         // playlist install answers "Native graphics is unavailable" (owner, 2026-10-31).
         workspace.Observe(_bridge.LastSnapshot?.Graphics);
-        workspace.Observe(_bridge.LastSnapshot?.Graphics);
         return workspace;
     }
 
