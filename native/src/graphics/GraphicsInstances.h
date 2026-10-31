@@ -33,6 +33,9 @@ class GraphicsInstances {
                           const std::function<std::string_view(const std::string&)>& captureLabel = {});
   const rpc::Json& snapshot() const { return snapshot_; }
   bool hasCue() const;
+  // Take: every cued instance whose cue is ready and opted in (rideTake) goes
+  // to Program from its cue and leaves Preview. Rehearsal cues stay put.
+  void promoteCuedForTake();
   // Private monitor input, not an instance mutation, cue or Program revision.
   std::optional<modules::CompositorOverlayContent> authoringPreview(const rpc::Json& draft);
 
@@ -62,6 +65,7 @@ class GraphicsInstances {
     std::shared_ptr<const GraphicsPreparedResource> draftResource, cueResource, programResource;
     std::string cuePreparation = "unprepared", cueWarning;
     bool cued = false, showPending = false, updatePending = false;
+    bool rideTake = true;
     bool awaitingEntrance = false, currentlyComposed = false;
     uint64_t readyRevision = 0;
     uint64_t cueRequestedRevision = 0;
@@ -80,6 +84,7 @@ class GraphicsInstances {
   bool finish(const std::string& requestId, bool accepted, const std::string& reason);
   void publish();
   void show(Instance& instance, bool fromCue = false);
+  static void clearCue(Instance& instance);
   bool updateTemplates();
   bool advanceAnimations();
   bool updateClocks();

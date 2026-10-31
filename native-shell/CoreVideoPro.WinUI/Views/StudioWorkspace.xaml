@@ -312,6 +312,8 @@
                 <ColumnDefinition Width="*" MinWidth="360" />
                 <!-- Auto so the room panel collapses to zero width when hidden. -->
                 <ColumnDefinition Width="Auto" />
+                <!-- #1076: graphics playlist column (spec: right panel of the console); Auto so it collapses. -->
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <Border Style="{StaticResource StudioPanelBorder}" Padding="10">
@@ -487,6 +489,8 @@
             <Grid Grid.Column="1" x:Name="DirectorLayout" RowSpacing="4">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
+                    <!-- #1076: graphics On Air strip above the program/preview area -->
+                    <RowDefinition Height="Auto" />
                     <RowDefinition x:Name="MultiviewRow" Height="*" MinHeight="200" />
                 </Grid.RowDefinitions>
 
@@ -496,6 +500,7 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
@@ -582,10 +587,10 @@
                                                   ContentTemplate="{StaticResource LowerThirdIconTemplate}"
                                                   VerticalAlignment="Center"
                                                   IsHitTestVisible="False" />
-                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
+                                <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdLabel, Mode=OneWay}"
                                            FontSize="11"
                                            FontWeight="Bold" />
-                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactStatus, Mode=OneWay}"
+                                <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdStatus, Mode=OneWay}"
                                            FontSize="10"
                                            Foreground="{StaticResource StudioMutedBrush}" />
                             </StackPanel>
@@ -600,10 +605,22 @@
                                 <TextBlock Text="Room" />
                             </StackPanel>
                         </ToggleButton>
+                        <!-- #1076: show/hide the graphics playlist column. -->
+                        <ToggleButton Grid.Column="8"
+                                      Padding="10,4" FontSize="10" VerticalAlignment="Center"
+                                      IsChecked="{x:Bind ViewModel.ShowGraphicsPanel, Mode=TwoWay}"
+                                      ToolTipService.ToolTip="Show or hide the graphics playlist (Show / Hide, F1–F12)">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE8A1;" FontSize="11" />
+                                <TextBlock Text="Graphics" />
+                            </StackPanel>
+                        </ToggleButton>
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="1" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
+                <cvcontrols:GraphicsOnAirStripControl Grid.Row="1" Studio="{x:Bind ViewModel, Mode=OneWay}" />
+
+                <Border Grid.Row="2" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
                     <Grid>
                         <!-- Surface is null while popped out (single-consumer keyed-mutex texture),
                              so only the pop-out window presents it. -->
@@ -774,6 +791,32 @@
                             HorizontalAlignment="Stretch" />
                 </Grid>
             </Border>
+
+            <!-- #1076: compact graphics playlist (spec: the console's right panel). Rows + Play In /
+                 Play Out only; the inspector lives in the Graphics tab. Collapsible, default expanded. -->
+            <Border Grid.Column="3" Style="{StaticResource StudioPanelBorder}" Padding="10" Width="320"
+                    Visibility="{x:Bind ViewModel.ShowGraphicsPanel, Mode=OneWay}">
+                <Grid RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Graphics" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center"
+                                   Foreground="{StaticResource StudioTextBrush}" />
+                        <Button Grid.Column="1" Content="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                Padding="6,2" Background="Transparent" BorderThickness="0"
+                                Foreground="{StaticResource StudioMutedBrush}"
+                                ToolTipService.ToolTip="Hide the graphics playlist (the Graphics button above brings it back)"
+                                Click="OnHideGraphicsPanelClicked" />
+                    </Grid>
+                    <cvcontrols:GraphicsPlayoutControl Grid.Row="1" Compact="True" Studio="{x:Bind ViewModel, Mode=OneWay}" />
+                </Grid>
+            </Border>
         </Grid>
 
         <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
@@ -878,9 +921,9 @@
                                                   VerticalAlignment="Center"
                                                   IsHitTestVisible="False" />
                                 <StackPanel Spacing="1">
-                                    <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
+                                    <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdLabel, Mode=OneWay}"
                                                FontWeight="Bold" FontSize="12" />
-                                    <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactStatus, Mode=OneWay}"
+                                    <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdStatus, Mode=OneWay}"
                                                FontSize="10" FontWeight="Bold"
                                                Foreground="{StaticResource StudioMutedBrush}"
                                                TextTrimming="CharacterEllipsis"

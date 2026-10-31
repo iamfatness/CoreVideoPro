@@ -159,4 +159,90 @@ public sealed class ControlActionRegistryTests
     {
         Assert.False(ViewModeContract.TryNormalize(requested, out _));
     }
+
+    // Graphics playout (issue #1076): the ids are the contract the UI, hotkeys and Companion
+    // share. Names and arg order are pinned here so a rename cannot slip through.
+    [Fact]
+    public void GraphicsPlayoutActions_ArePresentWithTheirParams()
+    {
+        static ControlAction Get(string id) { Assert.True(ControlActionRegistry.TryGet(id, out var action), $"missing action {id}"); return action; }
+        static void Params(string id, params (string Name, ControlParamType Type, bool Required)[] expected)
+        {
+            var action = Get(id);
+            Assert.Equal(expected, action.Params.Select(p => (p.Name, p.Type, p.Required)).ToArray());
+        }
+        var s = ControlParamType.String;
+        Params("graphics.playlist.list");
+        Params("graphics.playlist.row.set", ("rowJson", s, true));
+        Params("graphics.playlist.row.remove", ("rowId", s, true));
+        Params("graphics.playlist.hotkey.set", ("rowId", s, true), ("key", s, false));
+        Params("graphics.playlist.default", ("starterId", s, false));
+        Params("graphics.playIn", ("rowId", s, true), ("sourceId", s, false));
+        Params("graphics.toPreview", ("rowId", s, true), ("sourceId", s, false));
+        Params("graphics.playOut", ("rowId", s, false), ("sourceId", s, false), ("instanceId", s, false));
+        Params("graphics.preview.remove", ("instanceId", s, true));
+        Params("graphics.playOutAll");
+        Params("graphics.preview.clear");
+        Params("graphics.strip");
+        // Shot layouts (slice 2).
+        Params("graphics.layout.list");
+        Params("graphics.layout.set", ("layoutJson", s, true));
+        Params("graphics.layout.remove", ("layoutId", s, true));
+        Params("graphics.layout.cue", ("layoutId", s, true));
+        Params("graphics.layout.take", ("layoutId", s, true));
+        Assert.False(ControlActionRegistry.TryBind("graphics.layout.cue", System.Array.Empty<object?>(), out _, out var layoutError));
+        Assert.Contains("layoutId", layoutError);
+
+        Assert.True(ControlActionRegistry.TryBind("graphics.playIn", new object?[] { "guest" }, out var playIn, out _));
+        Assert.Equal("guest", playIn[0]); Assert.Null(playIn[1]);
+        Assert.True(ControlActionRegistry.TryBind("graphics.playOut", System.Array.Empty<object?>(), out var playOut, out _));
+        Assert.Equal(3, playOut.Count); Assert.All(playOut, Assert.Null);
+        Assert.False(ControlActionRegistry.TryBind("graphics.preview.remove", System.Array.Empty<object?>(), out _, out var error));
+        Assert.Contains("instanceId", error);
+        // Existing graphics ids are untouched.
+        foreach (var id in new[] { "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.instance.cue", "graphics.cue.action" })
+            Assert.True(ControlActionRegistry.Contains(id), id);
+    }
+
+    [Fact]
+    public void GraphicsStripAndPlaylistSerializeForFeedback()
+    {
+        var state = new ControlState
+        {
+            GraphicsStrip = new ControlGraphicsStrip
+            {
+                OnProgram = [new ControlGraphicsStripItem("playlist-guest-abc", "guest", "zoom:7", "Guest name · Ada", "playlist", "visible")],
+                OnPreview = [new ControlGraphicsStripItem("playlist-title", "title", "", "Show title", "playlist", "hidden")],
+                Auto = [new ControlGraphicsStripItem("graphic-auto", "", "", "Auto LT", "auto", "visible")],
+                AutomationMode = "automatic", AutomationArmed = true
+            },
+            GraphicsPlaylist = [new ControlGraphicsPlaylistRow("guest", "guest", "Guest name", "F1", 8000)],
+            GraphicsLayouts = [new ControlGraphicsLayout("open", "Open", "intro", "Shift+F1")]
+        };
+        var json = System.Text.Json.JsonSerializer.Serialize(state);
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        var strip = document.RootElement.GetProperty("GraphicsStrip");
+        var chip = strip.GetProperty("OnProgram")[0];
+        Assert.Equal("playlist-guest-abc", chip.GetProperty("InstanceId").GetString());
+        Assert.Equal("guest", chip.GetProperty("RowId").GetString());
+        Assert.Equal("zoom:7", chip.GetProperty("SourceId").GetString());
+        Assert.Equal("Guest name · Ada", chip.GetProperty("Label").GetString());
+        Assert.Equal("playlist", chip.GetProperty("Owner").GetString());
+        Assert.Equal("visible", chip.GetProperty("Visibility").GetString());
+        Assert.Equal("playlist-title", strip.GetProperty("OnPreview")[0].GetProperty("InstanceId").GetString());
+        Assert.Equal("auto", strip.GetProperty("Auto")[0].GetProperty("Owner").GetString());
+        Assert.Equal("automatic", strip.GetProperty("AutomationMode").GetString());
+        Assert.True(strip.GetProperty("AutomationArmed").GetBoolean());
+        var row = document.RootElement.GetProperty("GraphicsPlaylist")[0];
+        Assert.Equal(("guest", "guest", "Guest name", "F1", 8000), (row.GetProperty("Id").GetString(), row.GetProperty("Kind").GetString(),
+            row.GetProperty("Name").GetString(), row.GetProperty("Hotkey").GetString(), row.GetProperty("PlayOutAfterMs").GetInt32()));
+        // Empty by default: a client can always read the arrays.
+        var empty = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(ControlState.Empty)).RootElement;
+        Assert.Equal(0, empty.GetProperty("GraphicsStrip").GetProperty("OnProgram").GetArrayLength());
+        Assert.Equal("manual", empty.GetProperty("GraphicsStrip").GetProperty("AutomationMode").GetString());
+        Assert.Equal(0, empty.GetProperty("GraphicsPlaylist").GetArrayLength());
+        var layout = document.RootElement.GetProperty("GraphicsLayouts")[0];
+        Assert.Equal(("open", "Open", "intro", "Shift+F1"), (layout.GetProperty("Id").GetString(), layout.GetProperty("Name").GetString(), layout.GetProperty("SceneId").GetString(), layout.GetProperty("Hotkey").GetString()));
+        Assert.Equal(0, empty.GetProperty("GraphicsLayouts").GetArrayLength());
+    }
 }
