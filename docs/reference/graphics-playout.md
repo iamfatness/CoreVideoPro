@@ -211,6 +211,24 @@ Read actions return `{"ok":true,"data":...}` over HTTP. OSC feedback adds
 `graphics/onProgramCount`, `graphics/onPreviewCount`, `graphics/automationMode`,
 `graphics/automationArmed` and per row `graphics/row/<id>/onProgram|onPreview|hotkey|name`.
 
+### OSC and Stream Deck
+
+Every action above is reachable over OSC with no extra wiring: the OSC router
+maps `/cvp/<action with dots as slashes>` to the registry id, so a Stream Deck
+running Bitfocus Companion (or any OSC sender) gets:
+
+| Button | OSC address | Arguments |
+|---|---|---|
+| Show the guest lower third for whoever is on Program | `/cvp/graphics/playIn` | `guest` |
+| Show a specific guest | `/cvp/graphics/playIn` | `guest` `zoom:<id>` (or `media:` / `capture:`) |
+| Cue the title to ride the next Take | `/cvp/graphics/toPreview` | `title` |
+| Hide one row | `/cvp/graphics/playOut` | `title` (or an instance id) |
+| Hide everything | `/cvp/graphics/playOutAll` | |
+| Fire a shot layout | `/cvp/graphics/layout/cue` | `<layoutId>` |
+
+Feedback arrives under `/cvp/state/graphics/onProgramCount`, `/cvp/state/graphics/onPreviewCount`, `/cvp/state/graphics/automationMode` and `/cvp/state/graphics/automationArmed`. Actions are
+loopback-only by default unless the OSC exposure policy opens them to the LAN.
+
 ## Hotkeys
 
 F1..F12 unmodified: Show of the row with that hotkey (a Guest row plays in
