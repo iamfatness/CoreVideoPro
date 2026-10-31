@@ -6,6 +6,7 @@
 // under a small mutex). Dev-gated behind COREVIDEO_WITH_WGC, same pattern as
 // the UVC adapter; returns nullptr when the flag is off.
 
+#include "modules/LogHeartbeatPolicy.h"
 #include "core/FrameAllocation.h"
 #include "core/DeliveryTrace.h"
 #include "modules/Interfaces.h"
@@ -610,7 +611,16 @@ class WgcSession {
       latestCapture100ns_ = capture100ns;
       latestSourceEpoch_ = sourceEpoch_;
       latestPrepared_ = std::move(prepared);
-      if (gpuEnabled_ && latestFrameId_ % 120 == 0)
+      // #1064: a refusal, fallback or not-ready count moving is logged at once;
+      // otherwise one line per LogHeartbeatPolicy::kKeepalive (was every 120 frames).
+      const auto ingressNow = std::chrono::steady_clock::now();
+      const bool ingressChanged = gpuFallbackFrames_ != loggedGpuFallbackFrames_ ||
+          gpuCapacityRefused_ != loggedGpuCapacityRefused_ || gpuNotReady_ != loggedGpuNotReady_ ||
+          monitorRefusedFrames_ != loggedMonitorRefusedFrames_;
+      if (gpuEnabled_ && LogHeartbeatPolicy::due(ingressEverLogged_, ingressNow - lastIngressLog_, ingressChanged)) {
+        lastIngressLog_ = ingressNow; ingressEverLogged_ = true;
+        loggedGpuFallbackFrames_ = gpuFallbackFrames_; loggedGpuCapacityRefused_ = gpuCapacityRefused_;
+        loggedGpuNotReady_ = gpuNotReady_; loggedMonitorRefusedFrames_ = monitorRefusedFrames_;
         core::nativeLogf("[wgc-gpu-ingress] ready=%llu cpuFallback=%llu cpuMirror=%d cpuReadbacks=%llu residentBytes=%llu generation=%llu monitorCopied=%llu monitorRefused=%llu monitorResidentBytes=%llu gpuCapacityRefused=%llu gpuNotReady=%llu gpuDeferredPublished=%llu gpuPending=%d\n",
             static_cast<unsigned long long>(gpuFrames_), static_cast<unsigned long long>(gpuFallbackFrames_),
             cpuMirror ? 1 : 0, static_cast<unsigned long long>(cpuReadbacks_),
@@ -619,6 +629,7 @@ class WgcSession {
             static_cast<unsigned long long>(D3DVideoImage::monitorResidentBytes.load()),
             static_cast<unsigned long long>(gpuCapacityRefused_), static_cast<unsigned long long>(gpuNotReady_),
             static_cast<unsigned long long>(gpuDeferredPublished_), deferredGpuCopy_.pending() ? 1 : 0);
+      }
     }
   }
 
@@ -646,6 +657,10 @@ class WgcSession {
   uint64_t cpuReadbacks_ = 0;
   uint64_t gpuCapacityRefused_ = 0, gpuNotReady_ = 0;
   uint64_t gpuDeferredPublished_ = 0;
+  // [wgc-gpu-ingress] heartbeat state (#1064); guarded by latestMutex_.
+  std::chrono::steady_clock::time_point lastIngressLog_{};
+  bool ingressEverLogged_ = false;
+  uint64_t loggedGpuFallbackFrames_ = 0, loggedGpuCapacityRefused_ = 0, loggedGpuNotReady_ = 0, loggedMonitorRefusedFrames_ = 0;
   DeferredCaptureGpuCopy deferredGpuCopy_;
   std::unique_ptr<CaptureFrameWorker<CapturedFrame>> worker_;
   mutable std::mutex cpuBranchMutex_;
