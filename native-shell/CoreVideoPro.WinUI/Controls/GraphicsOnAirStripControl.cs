@@ -9,7 +9,7 @@ using Microsoft.UI.Xaml.Shapes;
 namespace CoreVideoPro.WinUI.Controls;
 
 /// <summary>The graphics On Air strip (issue #1076): ON PROGRAM chips (Play Out), ON PREVIEW
-/// chips (Remove), the armed-automation chip (Disarm), Play Out all and Clear Preview. Bound
+/// chips (Remove), the armed-automation chip (Disarm), Clear all and Clear Preview. Bound
 /// ONLY to <see cref="StudioViewModel.GraphicsStrip"/>, which is native instance truth; a
 /// button press never changes a chip here, only the next native snapshot does.</summary>
 public sealed class GraphicsOnAirStripControl : UserControl
@@ -32,14 +32,14 @@ public sealed class GraphicsOnAirStripControl : UserControl
         root.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         root.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         root.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        root.Children.Add(Section("ON PROGRAM", StudioBrushes.Air, _program, _programEmpty));
-        var preview = Section("ON PREVIEW", StudioBrushes.Program, _preview, _previewEmpty); Grid.SetColumn(preview, 1); root.Children.Add(preview);
+        root.Children.Add(Section("ON AIR", StudioBrushes.Air, _program, _programEmpty));
+        var preview = Section("CUED", StudioBrushes.Program, _preview, _previewEmpty); Grid.SetColumn(preview, 1); root.Children.Add(preview);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
         actions.Children.Add(_auto);
-        _playOutAll = StudioBrushes.GhostButton("Play Out all"); _playOutAll.Click += async (_, _) => await Invoke(GraphicsPlayoutActions.PlayOutAll);
-        _clearPreview = StudioBrushes.GhostButton("Clear Preview"); _clearPreview.Click += async (_, _) => await Invoke(GraphicsPlayoutActions.PreviewClear);
+        _playOutAll = StudioBrushes.GhostButton("Clear all"); _playOutAll.Click += async (_, _) => await Invoke(GraphicsPlayoutActions.PlayOutAll);
+        _clearPreview = StudioBrushes.GhostButton("Clear cued"); _clearPreview.Click += async (_, _) => await Invoke(GraphicsPlayoutActions.PreviewClear);
         ToolTipService.SetToolTip(_playOutAll, "Hide every graphic on Program (F12 with Shift)");
-        ToolTipService.SetToolTip(_clearPreview, "Remove every staged graphic from Preview; nothing rides the next Take");
+        ToolTipService.SetToolTip(_clearPreview, "Clear every cued graphic; nothing rides the next Take");
         actions.Children.Add(_playOutAll); actions.Children.Add(_clearPreview);
         _status.MaxWidth = 220; _status.TextTrimming = TextTrimming.CharacterEllipsis; _status.VerticalAlignment = VerticalAlignment.Center; actions.Children.Add(_status);
         Grid.SetColumn(actions, 2); root.Children.Add(actions);
@@ -90,8 +90,8 @@ public sealed class GraphicsOnAirStripControl : UserControl
         if (signature == _signature) return;
         _signature = signature;
         _program.Children.Clear(); _preview.Children.Clear(); _auto.Children.Clear();
-        foreach (var item in strip.OnProgram) _program.Children.Add(Chip(item, StudioBrushes.Air, "Play Out", () => Invoke(GraphicsPlayoutActions.PlayOut, item.InstanceId), busy));
-        foreach (var item in strip.OnPreview) _preview.Children.Add(Chip(item, StudioBrushes.Program, "Remove", () => Invoke(GraphicsPlayoutActions.PreviewRemove, item.InstanceId), busy));
+        foreach (var item in strip.OnProgram) _program.Children.Add(Chip(item, StudioBrushes.Air, "Hide", () => Invoke(GraphicsPlayoutActions.PlayOut, item.InstanceId), busy));
+        foreach (var item in strip.OnPreview) _preview.Children.Add(Chip(item, StudioBrushes.Program, "Clear cue", () => Invoke(GraphicsPlayoutActions.PreviewRemove, item.InstanceId), busy));
         _programEmpty.Visibility = strip.OnProgram.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         _previewEmpty.Visibility = strip.OnPreview.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         if (strip.AutomationArmed) {
@@ -120,7 +120,7 @@ public sealed class GraphicsOnAirStripControl : UserControl
         if (item.CuePending) body.Children.Add(StudioBrushes.Badge("preparing"));
         var button = StudioBrushes.ChipButton(action); button.IsEnabled = !busy; button.Click += async (_, _) => await invoke();
         body.Children.Add(button);
-        ToolTipService.SetToolTip(chip, $"{item.Label} · {item.InstanceId} · r{item.Revision} · {item.Visibility}" + (item.AutoOutArmed ? " · plays out automatically" : ""));
+        ToolTipService.SetToolTip(chip, $"{item.Label} · {item.InstanceId} · r{item.Revision} · {item.Visibility}" + (item.AutoOutArmed ? " · hides automatically" : ""));
         return chip;
     }
 

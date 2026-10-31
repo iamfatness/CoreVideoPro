@@ -32,7 +32,7 @@ public sealed record GraphicsStripState
 }
 
 /// <summary>Playlist playout over native Graphics instances (issue #1076). Pure and
-/// constructible: an invoke delegate, an observe delegate and the library. Play In =
+/// constructible: an invoke delegate, an observe delegate and the library. Show =
 /// create/update -> cue(rideTake) -> wait for the cue revision -> trigger show from cue.
 /// Preview truth and Program truth come back from native state only.</summary>
 public sealed class GraphicsPlayoutService
@@ -120,10 +120,10 @@ public sealed class GraphicsPlayoutService
     // ---- legacy lower-third intent (Stage C1) --------------------------------------------
     /// <summary>The legacy "LT in/out" intent (footer button, graphics.lowerThird.toggle/set)
     /// mapped onto the Guest row: <paramref name="subject"/> is the guest entry of the current
-    /// Program subject (null when none is bound). In = Play In unless already on air; Out = Play
+    /// Program subject (null when none is bound). In = Show unless already on air; Out = Play
     /// Out every Guest-row instance on Program (the subject may have changed since). Lower-third
     /// authority is adopted through <paramref name="adoptInstancesAuthority"/> only after the
-    /// first ACCEPTED Play In: flipping earlier would erase the legacy overlay layers with
+    /// first ACCEPTED Show: flipping earlier would erase the legacy overlay layers with
     /// nothing to replace them.</summary>
     public async Task<NativeGraphicsOperationResult> ApplyLowerThirdIntentAsync(bool visible, GraphicsPlaylistEntry? subject, bool authorityIsInstances,
         Func<CancellationToken, Task<bool>> adoptInstancesAuthority, CancellationToken cancellation = default)
@@ -136,7 +136,7 @@ public sealed class GraphicsPlayoutService
                 result = await PlayOutAsync(instanceId, cancellation);
                 if (!result.Accepted) return result;
             }
-            return result with { Reason = "Lower third played out." };
+            return result with { Reason = "Lower third hidden." };
         }
         if (subject is null) return Refuse("Lower third needs a Program subject bound to a Show Input. Choose a guest in the playlist instead.");
         var id = InstanceIdFor(subject);
@@ -145,13 +145,13 @@ public sealed class GraphicsPlayoutService
         var played = await PlayInAsync(subject, cancellation);
         if (!played.Accepted || authorityIsInstances) return played;
         var adopted = await adoptInstancesAuthority(cancellation);
-        return played with { Reason = adopted ? "Played in; lower thirds now follow the Graphics playlist." : played.Reason + " Lower-third authority is still legacy; retry to adopt it." };
+        return played with { Reason = adopted ? "Shown; lower thirds now follow the Graphics playlist." : played.Reason + " Lower-third authority is still legacy; retry to adopt it." };
     }
 
     // ---- shot layouts (slice 2) -----------------------------------------------------------
     /// <summary>Cue a shot layout: select its scene to Preview through <paramref name="sceneSelect"/>
     /// (the ViewModel's scene cue path; false = the scene is not in this show and the layout is
-    /// refused before anything is sent), then To Preview every row, so one Take carries the picture
+    /// refused before anything is sent), then Cue every row, so one Take carries the picture
     /// and the graphics. A Guest row cues <paramref name="sceneGuests"/> (entries bound to slots
     /// routed in that scene) when any were resolved, otherwise <paramref name="programSubject"/>.
     /// <see cref="ShotLayout.PlayOutOthers"/> plays out every Program graphic the layout does not
@@ -204,7 +204,7 @@ public sealed class GraphicsPlayoutService
             }
         }
         var what = layout.SceneId.Length > 0 && entries.Count > 0 ? $"scene {layout.SceneId} and {Plural(entries.Count)} on Preview; Take carries both."
-            : layout.SceneId.Length > 0 ? $"scene {layout.SceneId} on Preview." : entries.Count > 0 ? $"{Plural(entries.Count)} on Preview; they ride the next Take." : "Program graphics played out.";
+            : layout.SceneId.Length > 0 ? $"scene {layout.SceneId} on Preview." : entries.Count > 0 ? $"{Plural(entries.Count)} on Preview; they ride the next Take." : "Program graphics hidden.";
         return new() { Accepted = true, Reason = $"{layout.Name} cued: {what}" };
         static string Plural(int count) => count == 1 ? "1 graphic" : count + " graphics";
     }
@@ -248,7 +248,7 @@ public sealed class GraphicsPlayoutService
         if (!cued.Accepted) return cued;
         var shown = await Send("graphics.instance.trigger", new() { ["instanceId"] = cued.InstanceId, ["expectedRevision"] = cued.CurrentRevision, ["target"] = "cue", ["action"] = "show" }, cancellation);
         if (shown.Accepted && Row(entry.RowId) is { } row) ArmAutoOut(row, cued.InstanceId, _epoch);
-        return shown.Accepted ? shown with { InstanceId = cued.InstanceId, Reason = "Played in from Preview." } : shown;
+        return shown.Accepted ? shown with { InstanceId = cued.InstanceId, Reason = "Shown from Preview." } : shown;
     });
     public Task<NativeGraphicsOperationResult> PlayOutAsync(GraphicsPlaylistEntry entry, CancellationToken cancellation = default) => PlayOutAsync(InstanceIdFor(entry), cancellation);
     public Task<NativeGraphicsOperationResult> PlayOutAsync(string instanceId, CancellationToken cancellation = default) => Run(() => Hide(instanceId, cancellation));
@@ -259,7 +259,7 @@ public sealed class GraphicsPlayoutService
             result = await Hide(instance.InstanceId, cancellation);
             if (!result.Accepted) return result;
         }
-        return result.Accepted ? result with { Reason = "All graphics played out." } : result;
+        return result.Accepted ? result with { Reason = "All graphics hidden." } : result;
     });
     public Task<NativeGraphicsOperationResult> ClearPreviewAsync(CancellationToken cancellation = default) => Run(async () => {
         var state = Available(); NativeGraphicsOperationResult result = new() { Accepted = true, Reason = "Preview is already clear." };
@@ -317,7 +317,7 @@ public sealed class GraphicsPlayoutService
             if (created.CurrentRevision < 1 || created.InstanceId != id) return Refuse("The native create result has no matching revision identity.");
             return created with { Reason = "Ready." };
         }
-        // Only the cue copy is refreshed; a Program copy changes on the next Play In, never here.
+        // Only the cue copy is refreshed; a Program copy changes on the next Show, never here.
         if (SameFields(existing.Fields, values) && (identity is null || existing.Binding == identity))
             return new() { Accepted = true, InstanceId = id, CurrentRevision = existing.Revision, Reason = "Ready." };
         var update = new Dictionary<string, object?> { ["instanceId"] = id, ["expectedRevision"] = existing.Revision, ["target"] = "cue", ["fields"] = fields };

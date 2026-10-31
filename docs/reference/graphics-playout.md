@@ -13,24 +13,26 @@ Three verbs, one list, nothing hidden:
   entry per show-input slot bound to a person or local source), Show title, Logo,
   LIVE bug, Sponsor card. Each row has a hotkey (F1..F12 by default, in row
   order) and a "plays out after" of manual, 8 s or 15 s.
-- **Play In** puts the graphic on Program now. **To Preview** stages it so it
-  rides the next Take. **Play Out** takes it off Program. **Remove** takes it off
-  Preview. Play Out always sits beside the thing it removes, in the row and in
+- **Show** puts the graphic on Program now. **Cue** stages it so it
+  rides the next Take. **Hide** takes it off Program. **Clear cue** takes it off
+  Preview. Hide always sits beside the thing it removes, in the row and in
   the strip.
 - **The On Air strip** at the top of the Graphics tab and above the Studio
-  console: ON PROGRAM chips (each with Play Out), ON PREVIEW chips (each with
+  console: ON PROGRAM chips (each with Hide), ON PREVIEW chips (each with
   Remove), an "auto" badge on graphics the native automation put up, an armed
-  rule chip with Disarm, plus Play Out all and Clear Preview. The strip is built
+  rule chip with Disarm, plus Clear all and Clear cued. The strip is built
   only from what the core is compositing (`NativeGraphicsState.Instances`:
   Program = `ProgramRevision > 0` and visibility not hidden or building-out,
   Preview = `CueRevision > 0`), never from button state.
-- **Playout | Design.** The tab header toggle. Design is the existing graphics
+- **Operate | Design.** The tab header toggle. Design is the existing graphics
   workspace (template library, starters, automation drawer, style designer),
   unchanged. Nothing is on air that the strip does not show.
 
-Vocabulary mapping to the spec: Play In = take the graphic to Program, Play Out
-= hide. The control-API ids use playIn/playOut so a Companion button reads like
-the screen.
+Vocabulary (owner, 2026-10-31): Cue, Show, Hide, the verbs the graphics workspace
+and automation already use; "Play In / Play Out" was dropped because playout has
+its own meaning in production. The control-API ids keep their shape
+(`graphics.playIn` = Show, `graphics.toPreview` = Cue, `graphics.playOut` = Hide,
+`graphics.preview.remove` = Clear cue) so Companion manifests stay stable.
 
 ## Add a graphic
 
@@ -43,14 +45,14 @@ a new template or image becomes a row through `graphics.playlist.row.set`. Rows
 are edited in the inspector: name, title line, From Sources, plays-out-after and
 hotkey. Nothing is created in the core until a row is played in or cued.
 
-## Play In vs To Preview
+## Show vs Cue
 
-**Play In** puts the graphic on Program now: the row's native instance is created
-or refreshed, cued, and shown from that cue in one step. **To Preview** stops
+**Show** puts the graphic on Program now: the row's native instance is created
+or refreshed, cued, and shown from that cue in one step. **Cue** stops
 after the cue: the graphic appears in the Preview composite and rides the next
 Take, so the operator can stage a lower third with the next scene and have both
-land together. A graphic on Preview offers Play In (now) or Remove; a graphic on
-Program offers Play Out. The strip shows which is which from core truth.
+land together. A graphic on Preview offers Show (now) or Remove; a graphic on
+Program offers Hide. The strip shows which is which from core truth.
 
 ## Shot Layouts
 
@@ -72,10 +74,10 @@ four presets:
 | Open | `intro` | Show title, Logo | Shift+F1 | |
 | Two-up | `interview` | Guest name | Shift+F2 | |
 | Panel | `panel` | Guest name, Logo | Shift+F3 | |
-| Clean | none | none | Shift+F11 | `PlayOutOthers`: plays every Program graphic out; Shift+F12 is already Play Out all |
+| Clean | none | none | Shift+F11 | `PlayOutOthers`: plays every Program graphic out; Shift+F12 is already Clear all |
 
 Cue (`graphics.layout.cue`) selects the scene to Preview through the same
-`SelectScene` path as the Scenes page and `scene.select`, then does To Preview for
+`SelectScene` path as the Scenes page and `scene.select`, then does Cue for
 each row. A Guest row cues the entries bound to the slots that scene routes (Show
 Input slot routes and fixed Zoom participant routes); when none resolve it cues
 the current Program subject. `PlayOutOthers` plays out Program graphics the layout
@@ -111,7 +113,7 @@ Preview rendered the cued scene's graphics while Program keyed a separate legacy
 overlay (`key:lower-third`) under its own enabled/suppressed flags, and the Take
 copied routes, overlays and captions but never graphics.
 
-Now Play In / To Preview / Play Out drive native **graphics instances** only
+Now Cue / Show / Hide drive native **graphics instances** only
 (`native/src/graphics/GraphicsInstances.cpp`), one instance per playlist entry
 (`playlist-<rowId>` or `playlist-<rowId>-<sha256(sourceId)[:12]>`), and the core
 makes the Take carry them:
@@ -121,11 +123,11 @@ makes the Take carry them:
 - `MediaCore::beginTakeTransition` calls `GraphicsInstances::promoteCuedForTake()`:
   every cued, ready, `rideTake` instance is shown from its cue and its cue is
   cleared, so it leaves Preview and does not ride the next Take.
-- `graphics-instance-trigger action=show target=cue` (Play In from Preview) also
+- `graphics-instance-trigger action=show target=cue` (Show from Preview) also
   clears the cue. `action=uncue` (Remove) clears exactly that instance's cue and
   touches nothing on Program.
 - The lower-third family authority flips to `instances` only after the first
-  Play In is accepted, so the legacy key keeps working until a playlist graphic
+  Show is accepted, so the legacy key keeps working until a playlist graphic
   has actually rendered. The Studio "LT in / LT out" button and
   `graphics.lowerThird.toggle/set` route into the Guest row for the current
   Program subject; `automation.lowerThirds.set` keeps driving the native
@@ -135,7 +137,7 @@ makes the Take carry them:
 
 | Thing | Code |
 |---|---|
-| Rows, entries, strip model, Play In/Out sequence, auto-out timer, shot layout cue | `native-shell/CoreVideoPro.MediaCore/Services/GraphicsPlayoutService.cs`, `Models/GraphicsPlaylist.cs` (`GraphicsPlaylistRow`, `ShotLayout`) |
+| Rows, entries, strip model, Show/Out sequence, auto-out timer, shot layout cue | `native-shell/CoreVideoPro.MediaCore/Services/GraphicsPlayoutService.cs`, `Models/GraphicsPlaylist.cs` (`GraphicsPlaylistRow`, `ShotLayout`) |
 | Persistence (additive `Playlist` and `ShotLayouts` on the show document, schema 2) | `Services/GraphicsDocumentStore.cs`, `%LOCALAPPDATA%\CoreVideoPro\graphics\default.json` |
 | Default playlist and preset layouts from the curated templates | `Services/GraphicsWorkspaceLibrary.Playlist.cs` (`DefaultPlaylistFor`, `DefaultShotLayouts`, `SaveShotLayoutsAsync`) |
 | ViewModel seam (strangler partial; scene select + routed guests for layouts) | `ViewModels/StudioViewModel.GraphicsPlayout.cs`, routing in `StudioViewModel.StudioLowerThird.cs` |
@@ -174,9 +176,9 @@ Read actions return `{"ok":true,"data":...}` over HTTP. OSC feedback adds
 
 ## Hotkeys
 
-F1..F12 unmodified: Play In of the row with that hotkey (a Guest row plays in
+F1..F12 unmodified: Show of the row with that hotkey (a Guest row plays in
 the entry for the current Program subject). Shift+F1..F11: cue the shot layout
-with that hotkey (`graphics.layout.cue`). Shift+F12: Play Out all. Keys are
+with that hotkey (`graphics.layout.cue`). Shift+F12: Clear all. Keys are
 ignored while a text field has focus and are active only on the Studio and
 Graphics tabs (`GraphicsHotkeyRouter`, pure and unit-tested). Assign keys from
 the inspector (rows) or the Edit layouts flyout (layouts); one key belongs to one
@@ -184,13 +186,13 @@ row or layout and moves when reassigned.
 
 ## Rules to keep
 
-- Never add a Show or toggle on the Graphics tab without its Play Out / Remove in
+- Never add a Show or toggle on the Graphics tab without its Hide / Remove in
   the same place while the graphic is live (owner, 2026-10-31).
 - The strip derives from the core's instance state only. A chip that is not
   there is a bug in the mapping, not a reason to add local state.
-- Do not flip lower-third authority to instances before an accepted Play In.
-- Instance capacity is eight per bus: entries are created lazily on Play In /
-  To Preview and hidden ones are removed; a 10-guest roster never pre-creates.
+- Do not flip lower-third authority to instances before an accepted Show.
+- Instance capacity is eight per bus: entries are created lazily on Show /
+  Cue and hidden ones are removed; a 10-guest roster never pre-creates.
 - Outputs drill: unaffected (it reads `graphics.coreEpoch` only); never rename
   an action id, the Companion manifest is generated from the registry.
 
@@ -198,7 +200,7 @@ row or layout and moves when reassigned.
 
 Each from a cold open in under 3 clicks and 15 s: name a person on Program,
 edit a lower third's text, add a logo or title, see what is live versus staged
-and clear it. For every Show on the tab, find and use its Play Out within 5 s
+and clear it. For every Show on the tab, find and use its Hide within 5 s
 while it is on Program.
 
 ## Later (the spec's phases)

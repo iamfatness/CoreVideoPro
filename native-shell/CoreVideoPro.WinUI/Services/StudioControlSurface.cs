@@ -506,7 +506,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 if (_vm.GraphicsPlayout.Row(rowId) is not { } row) return ControlInvokeResult.Fail("That playlist row does not exist.");
                 if (row.Kind == GraphicsPlaylistRow.Guest && sourceId.Length == 0)
                 {
-                    // "Play Out guest" with no source: every entry of that row on Program goes out.
+                    // "Hide guest" with no source: every entry of that row on Program goes out.
                     var onAir = _vm.GraphicsStrip.OnProgram.Where(i => i.RowId == rowId).Select(i => i.InstanceId).ToArray();
                     if (onAir.Length == 0) return ControlInvokeResult.Fail($"{row.Name} is not on Program.");
                     NativeGraphicsOperationResult last = new() { Accepted = true };

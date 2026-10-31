@@ -13,9 +13,9 @@ using Microsoft.UI.Xaml.Shapes;
 namespace CoreVideoPro.WinUI.Controls;
 
 /// <summary>The graphics playlist (issue #1076): one row per <see cref="GraphicsPlaylistRow"/>,
-/// the Guest row expanded into its roster entries, with Play In / To Preview / Play Out /
+/// the Guest row expanded into its roster entries, with Show / Cue / Hide /
 /// Remove per item. Full form adds the inspector; <see cref="Compact"/> (Studio right panel)
-/// shows rows and entries with Play In / Play Out only. Row state comes from the native strip,
+/// shows rows and entries with Show / Hide only. Row state comes from the native strip,
 /// never from the button that was pressed.</summary>
 public sealed class GraphicsPlayoutControl : UserControl
 {
@@ -174,7 +174,7 @@ public sealed class GraphicsPlayoutControl : UserControl
     {
         var scene = layout.SceneId.Length == 0 ? "No scene change" : SceneName(studio, layout.SceneId);
         var names = layout.RowIds.Select(id => rows.FirstOrDefault(r => r.Id == id)?.Name ?? id + " (missing)").ToArray();
-        var graphics = names.Length == 0 ? (layout.PlayOutOthers ? "plays everything out" : "no graphics") : string.Join(", ", names) + (layout.PlayOutOthers ? " · plays out the rest" : "");
+        var graphics = names.Length == 0 ? (layout.PlayOutOthers ? "plays everything out" : "no graphics") : string.Join(", ", names) + (layout.PlayOutOthers ? " · hides the rest" : "");
         return scene + " · " + graphics;
     }
 
@@ -235,7 +235,7 @@ public sealed class GraphicsPlayoutControl : UserControl
     }
 
     /// <summary>Edit layouts flyout: choose a layout (or New), name it, pick the scene, tick the
-    /// rows, set the Shift+F key and whether it plays out other graphics. Save goes through
+    /// rows, set the Shift+F key and whether it hides other graphics. Save goes through
     /// graphics.layout.set, Remove through graphics.layout.remove.</summary>
     private void OpenLayoutEditor(FrameworkElement anchor, StudioViewModel studio, IReadOnlyList<GraphicsPlaylistRow> rows)
     {
@@ -280,7 +280,7 @@ public sealed class GraphicsPlayoutControl : UserControl
             };
             buttons.Children.Add(save);
             if (existing is not null) {
-                var remove = StudioBrushes.GhostButton("Remove");
+                var remove = StudioBrushes.GhostButton("Clear cue");
                 remove.Click += async (_, _) => { if (_selectedLayoutId == existing.Id) _selectedLayoutId = ""; await Invoke(GraphicsPlayoutActions.LayoutRemove, existing.Id); flyout.Hide(); };
                 buttons.Children.Add(remove);
             }
@@ -354,8 +354,8 @@ public sealed class GraphicsPlayoutControl : UserControl
         return line;
     }
 
-    /// <summary>Full: To Preview + Play In, or Play Out when on Program, or Remove when on Preview.
-    /// Compact: Play In / Play Out only.</summary>
+    /// <summary>Full: Cue + Show, or Hide when on Program, or Remove when on Preview.
+    /// Compact: Show / Hide only.</summary>
     private StackPanel ActionButtons(string rowId, string sourceId, AirState state, bool busy, bool compact)
     {
         var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
@@ -363,18 +363,18 @@ public sealed class GraphicsPlayoutControl : UserControl
         object?[] target = sourceId.Length == 0 ? [rowId] : [rowId, sourceId];
         Button Add(Button button, string actionId, params object?[] args) { button.IsEnabled = !busy; button.Click += async (_, e) => await Invoke(actionId, args); panel.Children.Add(button); return button; }
         if (compact) {
-            if (state == AirState.Program) Add(StudioBrushes.ChipButton("Play Out"), GraphicsPlayoutActions.PlayOut, instanceId);
-            else Add(StudioBrushes.ChipButton("Play In"), GraphicsPlayoutActions.PlayIn, target);
+            if (state == AirState.Program) Add(StudioBrushes.ChipButton("Hide"), GraphicsPlayoutActions.PlayOut, instanceId);
+            else Add(StudioBrushes.ChipButton("Show"), GraphicsPlayoutActions.PlayIn, target);
             return panel;
         }
         switch (state) {
-            case AirState.Program: Add(StudioBrushes.ChipButton("Play Out"), GraphicsPlayoutActions.PlayOut, instanceId); break;
+            case AirState.Program: Add(StudioBrushes.ChipButton("Hide"), GraphicsPlayoutActions.PlayOut, instanceId); break;
             case AirState.Preview:
-                Add(StudioBrushes.ChipButton("Play In"), GraphicsPlayoutActions.PlayIn, target);
-                Add(StudioBrushes.ChipButton("Remove"), GraphicsPlayoutActions.PreviewRemove, instanceId); break;
+                Add(StudioBrushes.ChipButton("Show"), GraphicsPlayoutActions.PlayIn, target);
+                Add(StudioBrushes.ChipButton("Clear cue"), GraphicsPlayoutActions.PreviewRemove, instanceId); break;
             default:
-                Add(StudioBrushes.ChipButton("To Preview"), GraphicsPlayoutActions.ToPreview, target);
-                var playIn = Add(StudioBrushes.ChipButton("Play In"), GraphicsPlayoutActions.PlayIn, target);
+                Add(StudioBrushes.ChipButton("Cue"), GraphicsPlayoutActions.ToPreview, target);
+                var playIn = Add(StudioBrushes.ChipButton("Show"), GraphicsPlayoutActions.PlayIn, target);
                 playIn.Background = StudioBrushes.Accent; playIn.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 0x06, 0x17, 0x0D)); playIn.BorderThickness = new Thickness(0);
                 break;
         }
@@ -394,7 +394,7 @@ public sealed class GraphicsPlayoutControl : UserControl
         var add = StudioBrushes.AccentButton("＋ Add your first graphic"); add.HorizontalAlignment = HorizontalAlignment.Center; add.IsEnabled = !busy;
         add.Click += async (_, _) => await Invoke(GraphicsPlayoutActions.PlaylistDefault, GraphicsShowStarters.All[0].Id); body.Children.Add(add);
         var verbs = new Grid { ColumnSpacing = 12, Margin = new Thickness(0, 6, 0, 0) };
-        var steps = new[] { ("1", "Add", "Pick a graphic; it joins the playlist with a hotkey."), ("2", "Play In / To Preview", "Play In goes to Program now; To Preview stages it to ride the next Take."), ("3", "Play Out", "Hide it, or let it play out after 8 or 15 seconds.") };
+        var steps = new[] { ("1", "Add", "Pick a graphic; it joins the playlist with a hotkey."), ("2", "Show / Cue", "Show puts it on air now; Cue stages it to ride the next Take."), ("3", "Hide", "Hide takes it off, or let it hide itself after 8 or 15 seconds.") };
         if (Compact) { verbs.RowSpacing = 8; for (var i = 0; i < steps.Length; i++) verbs.RowDefinitions.Add(new() { Height = GridLength.Auto }); }
         else for (var i = 0; i < steps.Length; i++) verbs.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         for (var i = 0; i < steps.Length; i++) {
@@ -410,7 +410,7 @@ public sealed class GraphicsPlayoutControl : UserControl
         }
         body.Children.Add(verbs);
         var links = new StackPanel { Orientation = Compact ? Orientation.Vertical : Orientation.Horizontal, Spacing = Compact ? 0 : 14, HorizontalAlignment = HorizontalAlignment.Center };
-        foreach (var (label, anchor) in new[] { ("Add a graphic", "add-a-graphic"), ("Play In vs To Preview", "play-in-vs-to-preview"), ("Hotkeys F1–F12", "hotkeys"), ("Guest names from Sources", "guest-names-from-sources") })
+        foreach (var (label, anchor) in new[] { ("Add a graphic", "add-a-graphic"), ("Show vs Cue", "play-in-vs-to-preview"), ("Hotkeys F1–F12", "hotkeys"), ("Guest names from Sources", "guest-names-from-sources") })
             links.Children.Add(new HyperlinkButton { Content = label, NavigateUri = new Uri(DocsBase + "#" + anchor), FontSize = 11, Padding = new Thickness(4, 2, 4, 2), Foreground = StudioBrushes.Accent });
         body.Children.Add(links);
         host.Children.Add(body);
@@ -456,7 +456,7 @@ public sealed class GraphicsPlayoutControl : UserControl
                 _inspector.Children.Add(follow);
             }
 
-            var playOut = new ComboBox { Header = "Plays out after", ItemsSource = PlayOutChoices.Select(c => c.Label).ToArray(), SelectedIndex = Math.Max(0, Array.FindIndex(PlayOutChoices, c => c.Ms == row.PlayOutAfterMs)), HorizontalAlignment = HorizontalAlignment.Stretch };
+            var playOut = new ComboBox { Header = "Hides after", ItemsSource = PlayOutChoices.Select(c => c.Label).ToArray(), SelectedIndex = Math.Max(0, Array.FindIndex(PlayOutChoices, c => c.Ms == row.PlayOutAfterMs)), HorizontalAlignment = HorizontalAlignment.Stretch };
             playOut.SelectionChanged += (_, _) => { if (!_loading && playOut.SelectedIndex >= 0 && PlayOutChoices[playOut.SelectedIndex].Ms != row.PlayOutAfterMs) _ = SaveRowAsync(id, r => r with { PlayOutAfterMs = PlayOutChoices[playOut.SelectedIndex].Ms }); };
             _inspector.Children.Add(playOut);
 
