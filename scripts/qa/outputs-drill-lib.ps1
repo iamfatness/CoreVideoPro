@@ -14,7 +14,20 @@
 $script:DrillRemoteSlots = @(1, 2, 3, 4, 5, 7, 8, 9)
 $script:DrillScreenSlot = 6
 $script:DrillWebcamSlot = 10
+# -NoWebcam Program scene: the catalog's single-route `intro` (layout host-focus);
+# its one route is `<sceneId>-1` (SceneRoutingService.GetStarterRoutes).
+$script:DrillNoWebcamScene = 'intro'
 $script:DrillScreenSourceId = 'capture:screen:0'
+# -NoWebcam Program source (owner ruling 2026-10-30): a synthetic 1080p60 motion
+# clip staged into the media bin (%LOCALAPPDATA%\CoreVideoPro\media, a folder
+# the shell scans at startup; MediaBinClassifier.cs) instead of a screen capture.
+# Screen capture is event-driven: on 2026-10-30 a static display delivered one
+# frame in 32 min (source health `stalled`, Program a held black frame, the
+# drill's progress rule failed from the first sample), and a live display put
+# the owner's own desktop into the evidence. A bin clip plays ONCE from Take
+# (only a scene background loops), so the clip must outlast the run.
+$script:DrillMediaSlot = 6
+$script:DrillMediaRelativePath = 'qa/outputs-drill-motion.mp4'
 
 function ConvertTo-DrillIdList {
   param([string[]]$Ids = @())
@@ -22,8 +35,11 @@ function ConvertTo-DrillIdList {
 }
 
 function Test-DrillParameters {
-  param([int]$Seconds, [string]$Out, [string[]]$RemoteIds = @(), [string]$MeetingUrl, [string]$WebcamSourceId, [int]$ProbeMaxSessions = 0, [bool]$NoWebcam = $false)
+  param([int]$Seconds, [string]$Out, [string[]]$RemoteIds = @(), [string]$MeetingUrl, [string]$WebcamSourceId, [int]$ProbeMaxSessions = 0, [bool]$NoWebcam = $false, [string]$MediaClip)
   $errors = [System.Collections.Generic.List[string]]::new()
+  if ($NoWebcam -and -not $MediaClip) { $errors.Add('-NoWebcam needs -MediaClip <1080p60 motion clip> (scripts\qa\outputs-drill-clip.ps1 makes one); screen capture is not a drill source.') }
+  if ($MediaClip -and -not $NoWebcam) { $errors.Add('-MediaClip is only used with -NoWebcam.') }
+  if ($MediaClip -and -not (Test-Path -LiteralPath $MediaClip -PathType Leaf)) { $errors.Add("MediaClip not found: $MediaClip") }
   # 0 = not set. Otherwise the COREVIDEO_ENCODER_PROBE_MAX_SESSIONS QA override (discovery depth only).
   if ($ProbeMaxSessions -ne 0 -and ($ProbeMaxSessions -lt 1 -or $ProbeMaxSessions -gt 16)) { $errors.Add("ProbeMaxSessions must be between 1 and 16; got $ProbeMaxSessions.") }
   if ($Seconds -lt 60 -or $Seconds -gt 7200) { $errors.Add('Seconds must be between 60 and 7200 (the OS camera receiver caps at 7500 s including warmup).') }
@@ -79,20 +95,85 @@ function Test-DrillWebcamPresent {
   return @()
 }
 
+function Get-DrillMediaBinRoot { Join-Path $env:LOCALAPPDATA 'CoreVideoPro\media' }
+
+function Get-DrillMediaAssetId {
+  # MediaBinClassifier.cs: "media-" + first 12 lowercase hex chars of SHA-256
+  # over the UTF-8 path relative to the media root with forward slashes.
+  param([Parameter(Mandatory)][string]$RelativePath)
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($RelativePath.Replace('\', '/'))) } finally { $sha.Dispose() }
+  return 'media-' + (($hash | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 12)
+}
+
+function Install-DrillMediaClip {
+  # Copies the clip to <root>\qa\outputs-drill-motion.mp4 BEFORE the app starts
+  # (the bin is scanned at startup only). Refuses to overwrite: the file is the
+  # owner's media bin. Returns the staged path; Remove-DrillMediaClip undoes it.
+  param([Parameter(Mandatory)][string]$ClipPath, [Parameter(Mandatory)][string]$Root)
+  $target = Join-Path $Root ($script:DrillMediaRelativePath.Replace('/', '\'))
+  if (Test-Path -LiteralPath $target) { throw "A file is already staged at $target; remove it first (left by an aborted drill?)." }
+  $null = New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force
+  Copy-Item -LiteralPath $ClipPath -Destination $target
+  return $target
+}
+
+function Remove-DrillMediaClip {
+  param([Parameter(Mandatory)][string]$Path)
+  if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Force }
+  $dir = Split-Path -Parent $Path
+  if ((Test-Path -LiteralPath $dir) -and -not @(Get-ChildItem -LiteralPath $dir -Force).Count) { Remove-Item -LiteralPath $dir -Force }
+}
+
+function Test-DrillMediaClipProbe {
+  # Problems with a clip as ffprobe describes it (streams[0] + format): the drill
+  # wants 1920x1080 at exactly 60 fps, H.264 (the Media Foundation decode path),
+  # and a duration that outlasts settle + interval + receiver drain + the 300 s
+  # readiness ceiling, because a bin clip plays once and then holds its last frame.
+  param([Parameter(Mandatory)]$Probe, [Parameter(Mandatory)][int]$MinimumSeconds)
+  $problems = @()
+  $v = @($Probe.streams | Where-Object { $_.codec_type -eq 'video' }) | Select-Object -First 1
+  if (-not $v) { return @('no video stream') }
+  if ($v.codec_name -ne 'h264') { $problems += "codec $($v.codec_name) (want h264)" }
+  if ([int]$v.width -ne 1920 -or [int]$v.height -ne 1080) { $problems += "$($v.width)x$($v.height) (want 1920x1080)" }
+  if ([string]$v.r_frame_rate -notin @('60/1', '60')) { $problems += "frame rate $($v.r_frame_rate) (want 60/1)" }
+  $duration = 0.0; [void][double]::TryParse([string]$Probe.format.duration, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$duration)
+  if ($duration -lt $MinimumSeconds) { $problems += ('duration {0:F0} s (want at least {1} s: the clip plays once and must outlast the run)' -f $duration, $MinimumSeconds) }
+  # Callers wrap in @(): `return , $problems` would hand back a one-element array holding the (empty) array.
+  return $problems
+}
+
+function Test-DrillMediaClip {
+  param([Parameter(Mandatory)][string]$ClipPath, [Parameter(Mandatory)][string]$Ffprobe, [Parameter(Mandatory)][int]$MinimumSeconds)
+  $json = & $Ffprobe -v error -show_streams -show_format -of json $ClipPath 2>$null | Out-String
+  if (-not $json.Trim()) { return @("ffprobe could not read $ClipPath") }
+  return @(Test-DrillMediaClipProbe -Probe ($json | ConvertFrom-Json) -MinimumSeconds $MinimumSeconds)
+}
+
 function Get-DrillWorkloadPlan {
   # An empty -WebcamSourceId is the -NoWebcam plan (2026-10-26: the owner's camera
-  # rig is off the bench, so the profile's webcam has no device). The webcam
-  # route is cued empty (route -> null is accepted by scene.cueWithRoutes), the
-  # screen is the only capture in Program, and a local-only plan has no ISO at
-  # all (screen capture carries no QA ISO identity). The webcam is then
-  # reported as NOT EXERCISED, never silently dropped.
-  param([string[]]$RemoteIds = @(), [string]$WebcamSourceId, [bool]$Stream = $true, [bool]$Camera = $true, [string]$RecordingFolder)
+  # rig is off the bench, so the profile's webcam has no device). Program then
+  # uses the single-route catalog scene `intro` (layout host-focus, route
+  # `intro-1`) with the screen in it: cueing `speaker-slides` with its webcam
+  # route null is accepted by scene.cueWithRoutes but the shell sends that route
+  # with mode "none", the core logs "unsupported mode none" and marks Program
+  # health degraded, and readiness never passes (2026-10-28 run 2, 300 s). A
+  # local-only plan has no ISO at all (screen capture carries no QA ISO
+  # identity). The webcam is reported as NOT EXERCISED, never silently dropped.
+  # Without a webcam the plan needs the staged motion clip (MediaSourceId,
+  # `media:<asset id>`): the clip alone is in Program, no screen is captured.
+  param([string[]]$RemoteIds = @(), [string]$WebcamSourceId, [string]$MediaSourceId, [bool]$Stream = $true, [bool]$Camera = $true, [string]$RecordingFolder)
   $ids = @($RemoteIds | Where-Object { $_ })
   $webcam = [bool]$WebcamSourceId
+  if (-not $webcam -and -not $MediaSourceId) { throw 'A plan without a webcam needs MediaSourceId (the staged motion clip); screen capture is not a drill source.' }
   $assignments = @()
   for ($i = 0; $i -lt $ids.Count; $i++) { $assignments += [pscustomobject]@{ slot = $script:DrillRemoteSlots[$i]; source = 'zoom:' + $ids[$i] } }
-  $assignments += [pscustomobject]@{ slot = $script:DrillScreenSlot; source = $script:DrillScreenSourceId }
-  if ($webcam) { $assignments += [pscustomobject]@{ slot = $script:DrillWebcamSlot; source = $WebcamSourceId } }
+  if ($webcam) {
+    $assignments += [pscustomobject]@{ slot = $script:DrillScreenSlot; source = $script:DrillScreenSourceId }
+    $assignments += [pscustomobject]@{ slot = $script:DrillWebcamSlot; source = $WebcamSourceId }
+  } else {
+    $assignments += [pscustomobject]@{ slot = $script:DrillMediaSlot; source = $MediaSourceId }
+  }
   # ISO identity is stamped only by Zoom and UVC sources (QaIsoIdentity.h call
   # sites); screen capture has no QA ISO identity, so it is not ISO-recorded.
   # [string[]] keeps a one-ISO plan an array: assigning the output of an if
@@ -103,16 +184,23 @@ function Get-DrillWorkloadPlan {
   [string[]]$iso = @()
   if ($ids.Count) { $iso = [string[]]@($ids | ForEach-Object { 'zoom:' + $_ }) } elseif ($webcam) { $iso = [string[]]@($WebcamSourceId) }
   $local = $ids.Count -eq 0
-  [string[]]$captures = if ($webcam) { @($WebcamSourceId, $script:DrillScreenSourceId) } else { @($script:DrillScreenSourceId) }
-  $webcamRoute = if ($webcam) { [string]$script:DrillWebcamSlot } else { 'null' }
+  [string[]]$captures = @()
+  if ($webcam) { $captures = [string[]]@($WebcamSourceId, $script:DrillScreenSourceId) }
+  # Sources whose frame counter must keep advancing (sourceProgressThroughout).
+  [string[]]$progress = if ($webcam) { $captures } else { [string[]]@($MediaSourceId) }
+  $scene = if ($webcam) { 'speaker-slides' } else { $script:DrillNoWebcamScene }
+  $routes = if ($webcam) { '{"speaker-slides-1":' + $script:DrillWebcamSlot + ',"speaker-slides-2":' + $script:DrillScreenSlot + '}' }
+            else { '{"' + $script:DrillNoWebcamScene + '-1":' + $script:DrillMediaSlot + '}' }
   [pscustomobject]@{
     RemoteIds        = $ids
     LocalOnly        = $local
     Assignments      = $assignments
-    Scene            = 'speaker-slides'
-    Routes           = ('{"speaker-slides-1":' + $webcamRoute + ',"speaker-slides-2":' + $script:DrillScreenSlot + '}')
-    ProgramSourceIds = @($captures | Sort-Object)
+    Scene            = $scene
+    Routes           = $routes
+    ProgramSourceIds = @($progress | Sort-Object)
     CaptureSourceIds = $captures
+    ProgressSourceIds = $progress
+    MediaSourceId    = $(if ($webcam) { $null } else { $MediaSourceId })
     WebcamExercised  = $webcam
     IsoSourceIds     = $iso
     # The capture engine is the Zoom media engine: transport.engine.set is
@@ -123,9 +211,9 @@ function Get-DrillWorkloadPlan {
     Camera           = $Camera
     RecordingFolder  = $RecordingFolder
     Workload         = if ($local -and $webcam) { 'local sources only: webcam + screen capture in Program, webcam ISO; no remote Zoom feeds; media not included' }
-                       elseif ($local) { 'local sources only: screen capture in Program, webcam not exercised, no ISO; no remote Zoom feeds; media not included' }
+                       elseif ($local) { 'local sources only: synthetic 1080p60 motion clip in Program (media bus), webcam not exercised, no screen capture, no ISO; no remote Zoom feeds' }
                        elseif ($webcam) { "$($ids.Count) remote Zoom feed(s) as ISOs + webcam and screen capture in Program; media not included" }
-                       else { "$($ids.Count) remote Zoom feed(s) as ISOs + screen capture in Program, webcam not exercised; media not included" }
+                       else { "$($ids.Count) remote Zoom feed(s) as ISOs + synthetic 1080p60 motion clip in Program, webcam not exercised, no screen capture" }
   }
 }
 
@@ -182,12 +270,15 @@ function Get-DrillPreferenceFiles {
 
 function Backup-DrillPreferenceFiles {
   # Byte copies OUTSIDE the evidence folder (the files carry the DPAPI RTMP key).
-  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$BackupDirectory)
+  # -AlsoPaths: further files the run rewrites and must put back, such as the
+  # show-input roster (the drill's input.assign calls persist into it; a file
+  # that did not exist is removed on restore).
+  param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$BackupDirectory, [string[]]$AlsoPaths = @())
   if (-not (Test-Path -LiteralPath $Path)) { throw "Preferences file not found: $Path" }
   if ((Test-Path -LiteralPath $BackupDirectory) -and @(Get-ChildItem -LiteralPath $BackupDirectory -Force).Count) { throw "Refusing to reuse a non-empty backup folder: $BackupDirectory" }
   $null = New-Item -ItemType Directory -Path $BackupDirectory -Force
   $manifest = @()
-  foreach ($file in Get-DrillPreferenceFiles $Path) {
+  foreach ($file in @(Get-DrillPreferenceFiles $Path) + @($AlsoPaths | Where-Object { $_ })) {
     $entry = [ordered]@{ path = $file; existed = [bool](Test-Path -LiteralPath $file); backup = $null; sha256 = $null }
     if ($entry.existed) {
       $entry.backup = Join-Path $BackupDirectory ([IO.Path]::GetFileName($file))
@@ -212,6 +303,29 @@ function Restore-DrillPreferenceFiles {
       Remove-Item -LiteralPath $entry.path -Force
     }
   }
+}
+
+function Get-DrillCameraServingProof {
+  # Proves, from the serve log's recent lines, that the registered OS camera
+  # source is served by the installed DLL and is doing retained reads: the
+  # last "Serving module path=<expected DLL>" line names the serving pid, and a
+  # later [vcam-delivery-v2] line of that pid shows historyReads > 0. Returns
+  # the record for camera-serving-identity.json, or $null when not yet proven.
+  #
+  # The record holds PLAIN strings. Lines from Get-Content carry provider note
+  # properties (PSDrive, PSProvider, ...); ConvertTo-Json -Depth 8 walks that
+  # object graph and never returns, which wedged the 2026-10-29 and 2026-10-30
+  # live drills right after "Outputs ready" at 100 % of one core, outputs left
+  # live. The serving pid is captured once, outside Where-Object, because
+  # -match inside the filter block overwrites $Matches for the next line.
+  param([AllowEmptyCollection()][string[]]$ServeLines = @(), [Parameter(Mandatory)][string]$ExpectedDll)
+  $module = [string](@($ServeLines | Where-Object { $_ -like ('*Serving module path=' + $ExpectedDll) }) | Select-Object -Last 1)
+  if (-not $module -or $module -notmatch 'pid=(\d+)\]') { return $null }
+  $servingPid = $Matches[1]
+  $pattern = 'pid=' + $servingPid + '\] .*\[vcam-delivery-v2\]'
+  $history = [string](@($ServeLines | Where-Object { $_ -match $pattern -and $_ -match 'historyReads=[1-9][0-9]*' }) | Select-Object -Last 1)
+  if (-not $history) { return $null }
+  [ordered]@{ expectedDll = [string]$ExpectedDll; servingPid = [int]$servingPid; moduleLine = $module; historyLine = $history; observedUtc = [DateTime]::UtcNow.ToString('o') }
 }
 
 function Set-DrillPreferences {
@@ -349,9 +463,17 @@ function Test-DrillReadiness {
   if (-not $Envelope.available -or $Envelope.ageMs -ge 1000) { $reasons.Add('snapshot unavailable or stale') }
   if ($null -eq $s) { return [pscustomobject]@{ Ready = $false; Fatal = $null; Reasons = @('no snapshot') } }
   foreach ($id in $Plan.RemoteIds) { if (-not (Test-DrillRemoteLive1080 $s $id)) { $reasons.Add("remote $id not live at 1920x1080") } }
-  foreach ($id in $Plan.CaptureSourceIds) {
+  foreach ($id in $Plan.ProgressSourceIds) {
     $src = @($s.sources | Where-Object { $_.sourceId -eq $id })
-    if ($src.Count -ne 1 -or -not $src[0].hasVideo -or [long]$src[0].framesIngested -le 0) { $reasons.Add("capture $id not ingesting") }
+    if ($src.Count -ne 1 -or -not $src[0].hasVideo -or [long]$src[0].framesIngested -le 0) { $reasons.Add("source $id not ingesting") }
+  }
+  if ($Plan.MediaSourceId) {
+    # CoreStateCapture.cpp mediaSources[]: the clip's transport must be live on
+    # Program (a cued, paused or ended clip holds one frame and reads `stalled`).
+    $m = @($s.mediaSources | Where-Object { $_.sourceId -eq $Plan.MediaSourceId })
+    if ($m.Count -ne 1 -or $m[0].state -ne 'live' -or -not $m[0].onProgram) {
+      $reasons.Add('media clip not live on Program (' + $(if ($m.Count) { "state $($m[0].state), onProgram $($m[0].onProgram)" } else { 'no transport row; is the clip in the media bin?' }) + ')')
+    }
   }
   $fatal = $null
   if ($s.recording.lifecycle.state -eq 'failed') { $fatal = 'Recording failed' }
@@ -383,6 +505,10 @@ function Test-DrillInvariant {
   if (-not $Envelope.available -or $Envelope.ageMs -gt 1000 -or $null -eq $s) { return 'Snapshot stale/unavailable' }
   if ($null -ne $ExpectedEpoch -and $s.graphics.coreEpoch -ne $ExpectedEpoch) { return 'Native core restarted' }
   if ($s.recording.lifecycle.state -ne 'producing') { return 'Recording stopped producing' }
+  if ($Plan.MediaSourceId) {
+    $m = @($s.mediaSources | Where-Object { $_.sourceId -eq $Plan.MediaSourceId })
+    if ($m.Count -eq 1 -and $m[0].state -eq 'ended') { return 'Media clip ended before the run completed (the clip plays once; stage a longer one)' }
+  }
   $actual = (@($s.programSourceAdmission.sources | ForEach-Object { $_.sourceId }) | Sort-Object) -join '|'
   if ($actual -ne ($Plan.ProgramSourceIds -join '|')) { return "Program source inventory changed to '$actual'" }
   $tracks = @($s.recording.streams | Where-Object { $_.kind -eq 'iso' -and $_.framesWritten -gt 0 })
@@ -401,7 +527,7 @@ function New-DrillThroughout {
   # lists every encoderPath each ISO reported, and whether it ever changed.
   param([Parameter(Mandatory)]$Plan)
   $flags = [ordered]@{ samples = 0; hardwareEncodersThroughout = $true; programEncoderHardwareThroughout = $true
-    remotes1080Throughout = $true; captureProgressThroughout = $true; programSourcesAdmittedThroughout = $true
+    remotes1080Throughout = $true; sourceProgressThroughout = $true; programSourcesAdmittedThroughout = $true
     encoderPlacement = @{}; firstFailures = @() }
   if ($Plan.Stream) { $flags.streamHealthyThroughout = $true }
   return $flags
@@ -411,7 +537,7 @@ function New-DrillThroughout {
 $script:DrillThroughoutFacts = @('hardwareEncodersThroughout')
 
 function Update-DrillThroughout {
-  # $Progress (hashtable) carries per-capture last-advance times between calls.
+  # $Progress (hashtable) carries per-source last-advance times between calls.
   # $Measuring = $false only refreshes progress (settle period before the interval).
   param([Parameter(Mandatory)]$Throughout, [Parameter(Mandatory)]$Envelope, [Parameter(Mandatory)]$Plan,
         [Parameter(Mandatory)][hashtable]$Progress, [double]$ElapsedMs, [bool]$Measuring = $true)
@@ -427,17 +553,19 @@ function Update-DrillThroughout {
     @($Plan.IsoSourceIds | Where-Object { $id = $_; -not @($iso | Where-Object { $_.sourceId -eq $id -and $_.encoderPath -eq 'hardware' -and $_.framesWritten -gt 0 }).Count }).Count -eq 0
   $checks.programEncoderHardwareThroughout = $programHardware
   $checks.remotes1080Throughout = @($Plan.RemoteIds | Where-Object { -not (Test-DrillRemoteLive1080 $s $_) }).Count -eq 0
-  $captureOk = $true
-  $captures = foreach ($id in $Plan.CaptureSourceIds) {
+  # Every Program source the plan expects to move (webcam + screen, or the
+  # staged media clip) must present a new frame within 2 s at >= 1920x1080.
+  $sourceOk = $true
+  $progressRows = foreach ($id in $Plan.ProgressSourceIds) {
     $src = @($s.sources | Where-Object { $_.sourceId -eq $id })
     $count = if ($src.Count -eq 1) { [long]$src[0].framesIngested } else { 0 }
     if (-not $Progress.ContainsKey($id) -or $count -gt $Progress[$id].count) { $Progress[$id] = @{ count = $count; at = $ElapsedMs } }
     $age = $ElapsedMs - $Progress[$id].at
     $ready = $src.Count -eq 1 -and $count -gt 0 -and $src[0].width -ge 1920 -and $src[0].height -ge 1080 -and [bool]$src[0].hasVideo -and $age -lt 2000
-    if (-not $ready) { $captureOk = $false }
+    if (-not $ready) { $sourceOk = $false }
     [ordered]@{ id = $id; frames = $count; progressAgeMs = $age; ready = $ready }
   }
-  $checks.captureProgressThroughout = $captureOk
+  $checks.sourceProgressThroughout = $sourceOk
   $checks.programSourcesAdmittedThroughout = Test-DrillAdmissionsReady $s
   if ($Plan.Stream) { $checks.streamHealthyThroughout = @(Get-DrillStreamProblems $s).Count -eq 0 }
   if ($Measuring) {
@@ -465,7 +593,7 @@ function Update-DrillThroughout {
       }
     }
   }
-  return [pscustomobject]@{ Checks = $checks; Captures = @($captures) }
+  return [pscustomobject]@{ Checks = $checks; Sources = @($progressRows) }
 }
 
 function Get-DrillStreamNumber($Stream, [string]$Name) {
@@ -552,7 +680,7 @@ function Get-DrillSampleRow {
   # A trimmed per-second row (the reference stored the whole snapshot each
   # second). `snapshot` keeps exactly what program-source-admission-capture.mjs
   # reads (programFrame + programSourceAdmission).
-  param($Envelope, [double]$ElapsedMs, $Checks, $Captures)
+  param($Envelope, [double]$ElapsedMs, $Checks, $Sources)
   $s = $Envelope.snapshot
   [ordered]@{
     utc = [DateTime]::UtcNow.ToString('o'); qpc = [Diagnostics.Stopwatch]::GetTimestamp().ToString(); elapsedMs = $ElapsedMs
@@ -564,7 +692,7 @@ function Get-DrillSampleRow {
     senders = @($s.outputSenderSession.senders | ForEach-Object { [ordered]@{ destination = $_.destination; framesSent = $_.framesSent; fps = $_.fps; retryCount = $_.retryCount; status = $_.status } })
     senderWarnings = @($s.outputSenderSession.warnings)
     virtualCamera = $(if ($s.PSObject.Properties['virtualCamera']) { [ordered]@{ status = $s.virtualCamera.status; framesPublished = $s.virtualCamera.framesPublished } } else { $null })
-    captures = $Captures; checks = $Checks
+    sources = $Sources; checks = $Checks
     snapshot = [ordered]@{ programFrame = $s.programFrame; programSourceAdmission = $s.programSourceAdmission }
   }
 }

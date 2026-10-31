@@ -25,7 +25,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\qa\outputs-drill.ps1
 | `-Out` | `D:\CoreVideo-QA\drills\<timestamp>` | must be on D: and empty |
 | `-RemoteIds` | none | Zoom participant ids (up to 8, slots 1-5,7-9), recorded as ISOs; needs `-MeetingUrl` |
 | `-WebcamSourceId` | the one `capture:<id>` in the profile | refuses if the profile names zero or several |
-| `-NoWebcam` | off | run without the webcam (camera rig off the bench): its Program route is cued empty, a local-only run has no ISO, and the summary carries `Webcam source  NOT EXERCISED`; excludes `-WebcamSourceId` |
+| `-NoWebcam` | off | run without the webcam (camera rig off the bench): Program is the single-route `intro` scene with the staged motion clip (`-MediaClip`), no screen is captured, a local-only run has no ISO, and the summary carries `Webcam source  NOT EXERCISED`; excludes `-WebcamSourceId` |
+| `-MediaClip` | none (required with `-NoWebcam`) | a 1920x1080 H.264 clip at exactly 60 fps that outlasts `45 + Seconds + 55 + 360` s; `scripts\qa\outputs-drill-clip.ps1` makes one. Staged as `%LOCALAPPDATA%\CoreVideoPro\media\qa\outputs-drill-motion.mp4` before launch and removed after |
 | `-CameraReceiver` | `native\build-dev\corevideo-shared-camera-receiver.exe` | build target `corevideo-shared-camera-receiver`; it is not in the installer |
 | `-SkipStream`, `-SkipVirtualCamera` | off | see below: skipping the camera means the run cannot PASS |
 | `-ProbeMaxSessions` | unset | 1..16; sets `COREVIDEO_ENCODER_PROBE_MAX_SESSIONS` for the launch (discovery depth only) to force a software-ISO spill; recorded in `drill.json` and the workload line |
@@ -41,18 +42,56 @@ reason text.
 Without `-RemoteIds` the drill uses local sources only: webcam and screen
 capture in Program (scene `speaker-slides`), the webcam as the only ISO, and
 the verdict says so. With `-NoWebcam` (added 2026-10-26, when the owner's
-camera rig was off the bench and the profile's HD60 S+ had no device) the
-screen is the only capture in Program, the webcam route is cued empty
-(`scene.cueWithRoutes` accepts a null route), the device check is skipped, and a
-local-only run records no ISO at all, since screen capture carries no QA ISO
-identity; the preferences patch then turns ISO recording off rather than arming
-an empty list. `drill.json` carries `webcamExercised: false` and a null
+camera rig was off the bench and the profile's HD60 S+ had no device) Program
+is a synthetic 1080p60 motion clip alone, cued through the catalog's
+single-route `intro` scene (layout host-focus, route `intro-1`), the device
+check is skipped, no screen is captured, and a local-only run records no ISO at
+all, since a media clip carries no QA ISO identity; the preferences patch then
+turns ISO recording off rather than arming an empty list.
+
+**Why a clip and not the screen (owner ruling 2026-10-30).** The first
+complete stamps-on run (2026-10-30, 30 min) routed `capture:screen:0`, which
+is the owner's portrait secondary monitor. Screen capture is event-driven: the
+display was dark and static, the core marked the source `stalled` after one
+frame, Program carried that held black frame for 32 minutes (the three output
+rows still passed, 108034/108034 each, as counted holds), and the drill's
+progress rule failed from the first sample. Earlier runs had captured the live
+desktop into the evidence. The media bin (`MediaBinClassifier.cs`) is a folder
+scan of `%LOCALAPPDATA%\CoreVideoPro\media` at app start, its asset id is
+`media-` + the first 12 hex of SHA-256 over the forward-slash relative path, and
+there is no control-API import; so the drill copies the clip to
+`media\qa\outputs-drill-motion.mp4` before launch (asset `media-63a585ec7312`),
+assigns `media:media-63a585ec7312` to slot 6, and deletes the copy after the app
+exits. A bin clip plays once from Take and then holds its last frame as
+`ended` (only a scene background loops), so the clip must outlast the run; the
+drill refuses a short, non-1080p60 or non-H.264 clip with ffprobe before it
+touches anything, readiness requires the clip's `mediaSources[]` transport to
+be `live` on Program, and an `ended` transport aborts the collection. The
+show-input roster (`show-input-roster.json`) is backed up and restored with the
+preferences, since `input.assign` persists into it. Cueing `speaker-slides` with its webcam route null is
+accepted, but the shell sends that route with mode `none`, the core logs
+"unsupported mode none" and marks Program health degraded, and readiness
+("Program source admissions not ready") never passes; the 2026-10-28 live run
+spent its 300 s on that, so the empty-route form is not used.
+
+The camera serving proof (`camera-serving-identity.json`: the installed DLL's
+"Serving module path" line and a later `[vcam-delivery-v2]` line of that pid
+with `historyReads > 0`) is built by `Get-DrillCameraServingProof` from plain
+strings. The 2026-10-29 and 2026-10-30 live runs wedged right after "Outputs
+ready" with outputs left live and one core at 100 %: the proof record held the
+lines as `Get-Content` returned them, with their provider note properties
+(`PSDrive`, `PSProvider`, ...), and `ConvertTo-Json -Depth 8` walked that object
+graph without returning. The script now casts the tail to `[string[]]` and the
+function returns strings; a unit check serializes a proof built from
+`Get-Content` lines in under 5 s. Found with `Set-PSDebug -Trace 1` scoped to
+the loop in a diagnostic copy of the script; a non-invasive `cdb -pv` stack of
+the host had not reached the pipeline thread. `drill.json` carries `webcamExercised: false` and a null
 `webcamSourceId`, the verdict gets `notExercised: ["Webcam source"]`, and the
 summary prints `Webcam source  NOT EXERCISED` under the output rows. The
 outputs are still judged with zero tolerance; the line says only that UVC
 capture was not on the bench, so such a run is not evidence about the webcam. Screen capture carries no QA ISO identity stamp (only Zoom
 and UVC sources call `traceQaIsoArrival`), so it is never ISO-recorded here.
-Media sources are not part of the workload yet.
+With a webcam, media sources are not part of the workload.
 
 ## What it does
 
@@ -105,7 +144,7 @@ Media sources are not part of the workload yet.
      is a note. `encoderPlacement` lists each ISO's MEASURED `encoderPath`
      values (`not reported` until its writer began) and whether it changed.
    - `remotes1080Throughout`: every remote live at 1920x1080.
-   - `captureProgressThroughout`: every capture at 1920x1080 or larger, with frames advancing within 2 s.
+   - `sourceProgressThroughout`: every capture at 1920x1080 or larger, with frames advancing within 2 s.
    - `programSourcesAdmittedThroughout`.
    - `streamHealthyThroughout`.
 
@@ -153,7 +192,7 @@ frames a -> b, core CPU mean m % / peak p %", with "not measured" for anything
 absent). Program on the software encoder fails through
 `programEncoderHardwareThroughout`. A required flag missing from
 `measurement.json` (`programEncoderHardwareThroughout`, `remotes1080Throughout`,
-`captureProgressThroughout`, `programSourcesAdmittedThroughout`) fails as
+`sourceProgressThroughout`, `programSourcesAdmittedThroughout`) fails as
 "(not recorded)". The verdict schema is `outputs-drill-verdict-v3`; evidence
 judged as v2 failed on `hardwareEncodersThroughout` and lacks the Program flag,
 so never compare the two. With `-SkipVirtualCamera`, Program and stream can only be

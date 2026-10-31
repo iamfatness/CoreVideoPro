@@ -45,6 +45,7 @@ param(
   [string]$MeetingUrl,
   [string]$WebcamSourceId,
   [switch]$NoWebcam,
+  [string]$MediaClip,
   [string]$CameraReceiver,
   [switch]$SkipStream,
   [switch]$SkipVirtualCamera,
@@ -76,9 +77,17 @@ function Write-DrillJson($Value, [string]$Name, [int]$Depth = 8) {
   $Value | ConvertTo-Json -Depth $Depth | Set-Content -LiteralPath (Join-Path $Out $Name) -Encoding UTF8
 }
 function Write-DrillLog([string]$Message) {
+  # The log is evidence, never a dependency: a reader holding drill.log open
+  # (2026-10-28: a `tail -F` on it) made Add-Content throw a sharing violation
+  # at "Outputs ready", and the throw inside `finally` left the app running on
+  # patched preferences. Retry briefly, then keep going with the console line.
   $line = '[' + [DateTime]::UtcNow.ToString('o') + '] ' + $Message
   Write-Host $line
-  Add-Content -LiteralPath (Join-Path $Out 'drill.log') -Value $line -Encoding UTF8
+  for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    try { Add-Content -LiteralPath (Join-Path $Out 'drill.log') -Value $line -Encoding UTF8 -ErrorAction Stop; return }
+    catch [System.IO.IOException] { Start-Sleep -Milliseconds 100 }
+  }
+  Write-Host "WARNING: drill.log could not be written (held open by another process?): $Message"
 }
 function Wait-DrillUntil([int]$Seconds, [scriptblock]$Condition) {
   $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
@@ -87,7 +96,7 @@ function Wait-DrillUntil([int]$Seconds, [scriptblock]$Condition) {
 
 # ---------------------------------------------------------------- preflight
 $RemoteIds = ConvertTo-DrillIdList $RemoteIds   # -File passes '1,2,3' as one string
-$problems = Test-DrillParameters -Seconds $Seconds -Out $Out -RemoteIds $RemoteIds -MeetingUrl $MeetingUrl -WebcamSourceId $WebcamSourceId -ProbeMaxSessions $ProbeMaxSessions -NoWebcam ([bool]$NoWebcam)
+$problems = Test-DrillParameters -Seconds $Seconds -Out $Out -RemoteIds $RemoteIds -MeetingUrl $MeetingUrl -WebcamSourceId $WebcamSourceId -ProbeMaxSessions $ProbeMaxSessions -NoWebcam ([bool]$NoWebcam) -MediaClip $MediaClip
 if ($problems.Count) { throw ('Invalid parameters: ' + ($problems -join ' ')) }
 $running = @(Get-Process CoreVideoPro.WinUI, corevideo-native, corevideo-zoom-engine -ErrorAction SilentlyContinue)
 if ($running.Count) { throw ('CoreVideo Pro is already running (' + (($running | ForEach-Object { "$($_.ProcessName) $($_.Id)" }) -join ', ') + '); close it first (the drill must own the launch).') }
@@ -124,18 +133,28 @@ if (-not $SkipVirtualCamera) {
 if ((Test-Path -LiteralPath $Out) -and @(Get-ChildItem -LiteralPath $Out -Force).Count) { throw "Evidence folder is not empty: $Out" }
 $null = New-Item -ItemType Directory -Path $Out -Force
 $Out = (Resolve-Path -LiteralPath $Out).Path
-if ($NoWebcam) { $WebcamSourceId = '' }
+$mediaSourceId = $null
+if ($NoWebcam) {
+  $WebcamSourceId = ''
+  # The clip plays once: it must outlast settle + interval + receiver drain and
+  # the 300 s readiness ceiling. Its bin id is a function of the staged path.
+  $MediaClip = (Resolve-Path -LiteralPath $MediaClip).Path
+  $clipProblems = @(Test-DrillMediaClip -ClipPath $MediaClip -Ffprobe $ffprobe -MinimumSeconds (45 + $Seconds + 55 + 300 + 60))
+  if ($clipProblems.Count) { throw ("MediaClip $MediaClip is not usable: " + ($clipProblems -join '; ') + '. Make one with scripts\qa\outputs-drill-clip.ps1.') }
+  $mediaSourceId = 'media:' + (Get-DrillMediaAssetId $script:DrillMediaRelativePath)
+}
 elseif (-not $WebcamSourceId) {
   $known = @(Get-DrillWebcamFromPreferences $originalPrefs)
   if ($known.Count -ne 1) { throw ("Cannot pick the webcam from the profile (found: " + ($known -join ', ') + '). Pass -WebcamSourceId capture:<id>.') }
   $WebcamSourceId = $known[0]
 }
-$plan = Get-DrillWorkloadPlan -RemoteIds $RemoteIds -WebcamSourceId $WebcamSourceId -Stream (-not $SkipStream) -Camera (-not $SkipVirtualCamera) -RecordingFolder (Join-Path $Out 'recordings')
+$plan = Get-DrillWorkloadPlan -RemoteIds $RemoteIds -WebcamSourceId $WebcamSourceId -MediaSourceId $mediaSourceId -Stream (-not $SkipStream) -Camera (-not $SkipVirtualCamera) -RecordingFolder (Join-Path $Out 'recordings')
 $notes = @()
 if ($plan.LocalOnly) { $notes += 'Local sources only: no remote Zoom feeds were requested (-RemoteIds), so no Zoom ISO was judged.' }
-if (-not $plan.WebcamExercised) { $notes += 'Webcam NOT EXERCISED (-NoWebcam): its Program route was cued empty and no webcam ISO was recorded; this run proves nothing about UVC capture.' }
-if ($plan.LocalOnly -and -not $plan.WebcamExercised) { $notes += 'No ISO in this run: the only local source is screen capture, which has no QA ISO identity.' }
-$notes += 'Screen capture is in Program but has no QA ISO identity stamp, so it is not ISO-recorded.'
+if (-not $plan.WebcamExercised) { $notes += "Webcam NOT EXERCISED (-NoWebcam): Program is the single-route scene '$($plan.Scene)' with the synthetic motion clip alone and no webcam ISO was recorded; this run proves nothing about UVC capture." }
+if ($plan.MediaSourceId) { $notes += "Program source is a synthetic 1080p60 motion clip staged into the media bin as $($plan.MediaSourceId) from $MediaClip; it plays once (bin clips do not loop) and is removed after the run. No screen was captured." }
+if ($plan.LocalOnly -and -not $plan.WebcamExercised) { $notes += 'No ISO in this run: a media clip carries no QA ISO identity.' }
+if ($plan.CaptureSourceIds -contains $script:DrillScreenSourceId) { $notes += 'Screen capture is in Program but has no QA ISO identity stamp, so it is not ISO-recorded.' }
 $workload = $plan.Workload
 if ($ProbeMaxSessions -gt 0) {
   $workload += "; encoder probe limited to $ProbeMaxSessions sessions (COREVIDEO_ENCODER_PROBE_MAX_SESSIONS)"
@@ -147,6 +166,7 @@ $drill = [ordered]@{
   probeMaxSessions = $(if ($ProbeMaxSessions -gt 0) { $ProbeMaxSessions } else { $null })
   remoteIds = $plan.RemoteIds; webcamSourceId = $(if ($plan.WebcamExercised) { $WebcamSourceId } else { $null }); webcamExercised = $plan.WebcamExercised
   programSourceIds = $plan.ProgramSourceIds
+  mediaClip = $(if ($plan.MediaSourceId) { $MediaClip } else { $null }); mediaSourceId = $plan.MediaSourceId
   outputs = [ordered]@{ program = $true; iso = @($plan.IsoSourceIds); stream = $plan.Stream; camera = $plan.Camera }
   tools = [ordered]@{ python = $python; node = $node; ffmpeg = $decodeFfmpeg; ffprobe = $ffprobe; sinkFfmpeg = $sinkFfmpeg; cameraReceiver = $CameraReceiver }
   preferencesBackupFolder = $backupDir   # path only; the copies stay outside the evidence folder
@@ -157,8 +177,11 @@ Write-DrillJson $drill 'drill.json'
 Write-DrillLog "Outputs drill: $Seconds s, $workload; evidence $Out"
 
 # ---------------------------------------------------------------- live run
-$manifest = Backup-DrillPreferenceFiles -Path $prefsPath -BackupDirectory $backupDir
-Write-DrillLog "Preferences and .bak sidecar backed up to $backupDir"
+# The show-input roster persists the drill's input.assign calls (2026-10-30: a
+# drill's screen slot was left in the owner's roster), so it is restored too.
+$rosterPath = Join-Path $env:LOCALAPPDATA 'CoreVideoPro\show-input-roster.json'
+$manifest = Backup-DrillPreferenceFiles -Path $prefsPath -AlsoPaths @($rosterPath) -BackupDirectory $backupDir
+Write-DrillLog "Preferences, .bak sidecar and show-input roster backed up to $backupDir"
 $savedEnv = @{}
 $envNames = 'COREVIDEO_QA_ISO_COUNTER', 'COREVIDEO_QA_PROGRAM_COUNTER', 'COREVIDEO_DELIVERY_TRACE', 'COREVIDEO_DELIVERY_TRACE_STAGES',
   'COREVIDEO_DELIVERY_TRACE_PATH', 'COREVIDEO_GPU_CAPTURE', 'COREVIDEO_PREPARE_PROGRAM_WITHIN_BUDGET', 'COREVIDEO_NATIVE_MONITOR_DLL_PATH',
@@ -166,7 +189,7 @@ $envNames = 'COREVIDEO_QA_ISO_COUNTER', 'COREVIDEO_QA_PROGRAM_COUNTER', 'COREVID
 foreach ($name in $envNames) { $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $self = [Diagnostics.Process]::GetCurrentProcess()
 $savedPriority = $self.PriorityClass
-$app = $null; $sink = $null; $receiver = $null
+$app = $null; $sink = $null; $receiver = $null; $stagedClip = $null
 $measured = $false; $failure = $null; $restorePending = $false; $safe = $false
 Add-Type 'using System;using System.Runtime.InteropServices; public static class DrillPowerRequest { [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint flags); }'
 try {
@@ -179,6 +202,10 @@ try {
   if ($plan.Stream) { $srtPort = Get-DrillFreeUdpPort }
   $patch = Set-DrillPreferences -Path $prefsPath -RecordingFolder $plan.RecordingFolder -IsoSourceIds $plan.IsoSourceIds -SrtPort $srtPort -Stream:$plan.Stream
   Write-DrillLog "Preferences patched (recording -> evidence folder, RTMP off$(if ($plan.Stream) { ", SRT caller -> 127.0.0.1:$srtPort" }))"
+  if ($plan.MediaSourceId) {
+    $stagedClip = Install-DrillMediaClip -ClipPath $MediaClip -Root (Get-DrillMediaBinRoot)
+    Write-DrillLog "Motion clip staged into the media bin as $($plan.MediaSourceId) ($stagedClip); the app scans the bin at startup"
+  }
 
   # Local SRT sink (Start-LocalSrtSink.ps1), bound right after the port is chosen.
   if ($plan.Stream) {
@@ -235,7 +262,7 @@ try {
   # so settle for up to 10 s before refusing (a false refusal of a gate run).
   $webcamMissing = @()
   if ($plan.WebcamExercised) { $null = Wait-DrillUntil 10 { $script:webcamMissing = @(Test-DrillWebcamPresent -WebcamSourceId $WebcamSourceId -Devices @((Get-DrillEnvelope).snapshot.captureDevices)); $script:webcamMissing.Count -eq 0 } }
-  else { Write-DrillLog 'Webcam not exercised (-NoWebcam): no device check, empty webcam route' }
+  else { Write-DrillLog "Webcam not exercised (-NoWebcam): no device check; Program scene '$($plan.Scene)' with the motion clip alone" }
   if ($webcamMissing.Count) { throw ($webcamMissing -join '; ') }
 
   # Workload (Prepare-LiveWorkload.ps1).
@@ -315,12 +342,10 @@ try {
         $firstFrame = $true
       }
       if ($firstFrame -and $expectedDll) {
-        $serve = @(Get-Content 'C:\ProgramData\CoreVideoPro\vcam-serve.log' -Tail 3000 -ErrorAction SilentlyContinue)
-        $module = @($serve | Where-Object { $_ -like ('*Serving module path=' + $expectedDll) }) | Select-Object -Last 1
-        if ($module -and $module -match 'pid=(\d+)') {
-          $history = @($serve | Where-Object { $_ -match ('pid=' + $Matches[1] + '\] .*\[vcam-delivery-v2\]') -and $_ -match 'historyReads=[1-9][0-9]*' }) | Select-Object -Last 1
-          if ($history) { Write-DrillJson ([ordered]@{ expectedDll = $expectedDll; moduleLine = $module; historyLine = $history; observedUtc = [DateTime]::UtcNow.ToString('o') }) 'camera-serving-identity.json'; break }
-        }
+        # Plain strings only: see Get-DrillCameraServingProof for the wedge this avoids.
+        $serve = [string[]]@(Get-Content 'C:\ProgramData\CoreVideoPro\vcam-serve.log' -Tail 3000 -ErrorAction SilentlyContinue)
+        $proof = Get-DrillCameraServingProof -ServeLines $serve -ExpectedDll $expectedDll
+        if ($proof) { Write-DrillJson $proof 'camera-serving-identity.json'; break }
       }
       if ([DateTime]::UtcNow -gt $deadline) {
         if (-not $firstFrame) { throw 'OS camera receiver produced no first frame within 35 s' }
@@ -363,7 +388,7 @@ try {
         Add-DrillEncoderCost -Record $costRecord -Interval $cost
       }
       $lastCpuMs = $cpuMs; $lastWallMs = $elapsedMs; $lastStreams = $streamsNow
-      $row = Get-DrillSampleRow -Envelope $e -ElapsedMs $elapsedMs -Checks $sample.Checks -Captures $sample.Captures
+      $row = Get-DrillSampleRow -Envelope $e -ElapsedMs $elapsedMs -Checks $sample.Checks -Sources $sample.Sources
       $samples.WriteLine(($row | ConvertTo-Json -Depth 12 -Compress)); $samples.Flush()
       if ($null -eq $start -and $clock.Elapsed.TotalSeconds -ge 45) { $start = @{ utc = $row.utc; qpc = $row.qpc }; $startElapsed = $clock.Elapsed.TotalSeconds; Write-DrillLog 'Measured interval started' }
       if ($null -eq $end -and $null -ne $startElapsed -and $clock.Elapsed.TotalSeconds -ge $startElapsed + $Seconds) {
@@ -447,10 +472,14 @@ try {
     Write-DrillLog 'Waiting up to 10 min for the app to exit before restoring preferences (close it yourself if it asked a question)'
     $null = $app.WaitForExit(600000)
   }
+  if ($stagedClip) {
+    try { Remove-DrillMediaClip -Path $stagedClip; Write-DrillLog 'Motion clip removed from the media bin' }
+    catch { Write-DrillLog "WARNING: staged clip NOT removed from the media bin ($stagedClip): $($_.Exception.Message)" }
+  }
   if (-not $app -or $app.HasExited) {
     try {
       Restore-DrillPreferenceFiles -Manifest $manifest
-      Write-DrillLog 'Preferences and .bak sidecar restored byte for byte'
+      Write-DrillLog 'Preferences, .bak sidecar and show-input roster restored byte for byte'
       Remove-Item -LiteralPath $backupDir -Recurse -Force -ErrorAction SilentlyContinue
     } catch {
       $restorePending = $true

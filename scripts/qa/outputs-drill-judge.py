@@ -13,7 +13,7 @@ is judged by the existing modules in scripts/qa/:
   Program GPU deadlines      -> delivery-trace.py           (supplementary only)
 
 The live collector's throughout-assertions (Program on the hardware encoder,
-remotes at 1080p, capture progress, Program admissions, stream health) arrive in
+remotes at 1080p, source progress, Program admissions, stream health) arrive in
 measurement.json; any false one fails the drill, as in Collect-Identity.ps1.
 
 #935, owner ruling D8: ENCODER PLACEMENT OF AN ISO IS REPORTED, NEVER GATED. An
@@ -45,12 +45,12 @@ PASS, FAIL, NOT_JUDGED = 'PASS', 'FAIL', 'NOT JUDGED'
 # reports the counts and can never make the overall verdict PASS.
 UNBOUNDED = 'UNBOUNDED'
 # Any of these false fails the run. hardwareEncodersThroughout is NOT here (#935, D8).
-GATING_FLAGS = ('programEncoderHardwareThroughout', 'remotes1080Throughout', 'captureProgressThroughout',
+GATING_FLAGS = ('programEncoderHardwareThroughout', 'remotes1080Throughout', 'sourceProgressThroughout',
                 'programSourcesAdmittedThroughout', 'streamHealthyThroughout')
 # Absent from measurement.json = not recorded = FAIL. Named explicitly so that
 # adding or removing a gating flag can never shift this list. The stream flag is
 # only written when a stream was enabled.
-REQUIRED_FLAGS = ('programEncoderHardwareThroughout', 'remotes1080Throughout', 'captureProgressThroughout',
+REQUIRED_FLAGS = ('programEncoderHardwareThroughout', 'remotes1080Throughout', 'sourceProgressThroughout',
                   'programSourcesAdmittedThroughout')
 SCHEMA = 'outputs-drill-verdict-v3'
 
