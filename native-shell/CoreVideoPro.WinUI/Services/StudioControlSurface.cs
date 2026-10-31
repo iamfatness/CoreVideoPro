@@ -114,14 +114,17 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         _dispatcher = dispatcher;
         _bridge = bridge;
         _ohgAdapterSlot.Replace(ohgAdapter);
-        _vm.PropertyChanged += OnViewModelPropertyChanged;
-        // Create the playout service here, on the UI thread, so GetState (which transports may
-        // call from their own threads) only ever reads an existing strip and never lazily builds it.
-        _ = _vm.GraphicsPlayout;
         _feedbackTimer = _dispatcher.CreateTimer();
         _feedbackTimer.IsRepeating = false;
         _feedbackTimer.Interval = FeedbackDebounce;
         _feedbackTimer.Tick += (_, _) => StateChanged?.Invoke(this, GetState());
+        // Create the playout service here, on the UI thread, so GetState (which transports may
+        // call from their own threads) only ever reads an existing strip and never lazily builds it.
+        // Build the playout service AFTER the feedback timer exists and BEFORE we
+        // subscribe: its first Observe raises property changes that the handler
+        // debounces through _feedbackTimer (2026-10-31 startup NullReference fail-fast).
+        _ = _vm.GraphicsPlayout;
+        _vm.PropertyChanged += OnViewModelPropertyChanged;
 
         if (_bridge is null)
         {
@@ -1103,7 +1106,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         => _ohgAdapterSlot.Replace(adapter, (long)(_bridge?.Health.Generation ?? 0) + 1);
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (_disposed || e.PropertyName is null || !FeedbackProps.Contains(e.PropertyName))
+        if (_disposed || _feedbackTimer is null || e.PropertyName is null || !FeedbackProps.Contains(e.PropertyName))
         {
             return;
         }
