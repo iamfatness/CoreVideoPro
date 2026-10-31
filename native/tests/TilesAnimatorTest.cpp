@@ -208,3 +208,68 @@ TEST(TilesAnimator, AnAllStaleBeatDoesNotWipeAWallThatIsAlreadyDrawn) {
   EXPECT_EQ(otherArriving.layers[0].opacity, 0.f);
 }
 }
+
+// #1073: a tile's name line (compositor/TilesNameLine.h) rides its tile.
+TEST(TilesAnimator, ANameLineMovesAndFadesWithItsTile) {
+  TilesPlanAnimation animation;
+  corevideo::modules::CompositorRenderPlan plan;
+  corevideo::modules::CompositorRenderPlanLayer video;
+  video.kind = "participant-video"; video.layerId = "tile:zoom:42";
+  video.rect = {.5f, .5f, .5f, .5f};
+  LowerThirdAppearance style; style.enabled = true;
+  const auto placed = placeTilesNameLine({.5f, .5f, .5f, .5f}, .004f, .007f, style);
+  ASSERT_TRUE(placed.shown);
+  corevideo::modules::CompositorRenderPlanLayer name;
+  name.kind = "overlay"; name.layerId = "tile-name:zoom:42"; name.hasOverlayContent = true;
+  name.overlay.appearance = placed.appearance;
+  name.rect = {placed.rect.x, placed.rect.y, placed.rect.width, placed.rect.height};
+  // Settle the tile at a full-canvas rect first, then move it to the 2x2 cell.
+  auto full = video; full.rect = {0, 0, 1, 1};
+  corevideo::modules::CompositorRenderPlan first; first.layers = {full};
+  animation.advance(first, "scene:wall", true, true, 350, 0);
+  plan.layers = {video, name};
+  animation.advance(plan, "scene:wall", true, true, 350, 16);
+  const auto& tile = plan.layers[0];
+  const auto& line = plan.layers[1];
+  // Mid-flight: the tile has not reached its target yet...
+  EXPECT_GT(tile.rect.width, .5f);
+  // ...and the name keeps the same offset from the tile's bottom-left corner
+  // it will have at rest, with the same size and the same alpha.
+  EXPECT_NEAR(line.rect.x - tile.rect.x, placed.rect.x - .5f, 1e-6f);
+  EXPECT_NEAR((tile.rect.y + tile.rect.height) - (line.rect.y + line.rect.height),
+              1.f - (placed.rect.y + placed.rect.height), 1e-6f);
+  EXPECT_EQ(line.rect.width, placed.rect.width);
+  EXPECT_EQ(line.rect.height, placed.rect.height);
+  EXPECT_EQ(line.opacity, tile.opacity);
+  // Once settled, the name is exactly where the placement put it.
+  plan.layers = {video, name};
+  animation.advance(plan, "scene:wall", true, true, 350, 5000);
+  EXPECT_NEAR(plan.layers[1].rect.x, placed.rect.x, 1e-6f);
+  EXPECT_NEAR(plan.layers[1].rect.y, placed.rect.y, 1e-6f);
+  EXPECT_EQ(plan.layers[1].opacity, 1.f);
+}
+
+TEST(TilesAnimator, AnEnteringTilesNameLineFadesInWithIt) {
+  TilesPlanAnimation animation;
+  corevideo::modules::CompositorRenderPlan empty;
+  animation.advance(empty, "scene:wall", true, true, 350, 0);
+  corevideo::modules::CompositorRenderPlanLayer video;
+  video.kind = "participant-video"; video.layerId = "tile:zoom:7"; video.rect = {0, 0, 1, 1};
+  corevideo::modules::CompositorRenderPlanLayer name;
+  name.kind = "overlay"; name.layerId = "tile-name:zoom:7"; name.hasOverlayContent = true;
+  name.rect = {.05f, .9f, .6f, .09f};
+  corevideo::modules::CompositorRenderPlan plan; plan.layers = {video, name};
+  animation.advance(plan, "scene:wall", true, true, 350, 16);
+  EXPECT_EQ(plan.layers[0].opacity, 0.f);
+  EXPECT_EQ(plan.layers[1].opacity, 0.f);
+  plan.layers = {video, name};
+  animation.advance(plan, "scene:wall", true, true, 350, 191);
+  EXPECT_NEAR(plan.layers[0].opacity, .5, 1e-6);
+  EXPECT_EQ(plan.layers[0].opacity, plan.layers[1].opacity);
+  // A name whose tile is not on the wall is left exactly as built.
+  corevideo::modules::CompositorRenderPlanLayer stray = name; stray.layerId = "tile-name:zoom:8";
+  plan.layers = {video, stray};
+  animation.applyLatest(plan, "scene:wall");
+  EXPECT_EQ(plan.layers[1].opacity, 1.f);
+  EXPECT_EQ(plan.layers[1].rect.x, .05f);
+}

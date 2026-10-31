@@ -71,6 +71,9 @@ struct TilesStyle {
   bool manualFill = false;
   bool animateLayout = false;
   int animationDurationMs = 350;
+  // #1073: one name line per member tile, in the scene lower-third style
+  // (compositor/TilesNameLine.h). Wire key "nameEachTile".
+  bool nameEachTile = false;
   modules::TilesDecoration decoration;
 };
 
@@ -508,6 +511,13 @@ class MediaCore {
   // roster displayName; `capture:<id>` → the capture device name, or a browser
   // source's URL host; ISO-3). Falls back to the bare id tail.
   [[nodiscard]] std::string resolveIsoDisplayName(const std::string& sourceId) const;
+  // #1073: the name a Tiles member's name line shows. The shell's
+  // set-source-policy displayName first (the Sources name, the same text the
+  // failed slate and the scene lower third carry), then the render tick's
+  // pre-read roster for a zoom: member. Empty means "no name known" and the
+  // tile stays unlabelled; nothing is invented. Render-path cheap: two map
+  // lookups, no snapshot, no engine round-trip.
+  [[nodiscard]] std::string tilesMemberDisplayName(const std::string& sourceId) const;
   // ISO-3 audio pairing: does this ISO source carry its own audio stem? A Zoom
   // participant always does; a `capture:<id>` source does ONLY when the operator
   // paired an audio input to that capture device (captureAudioSources_). A pure

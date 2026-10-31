@@ -1655,3 +1655,147 @@ TEST(TilesRenderPlan, ALiveWallKeepsTheSameRegistryIdentityAcrossManyTicks) {
       << "a live wall's registration must be the SAME entry across ticks, "
       << "never removed-and-re-added (which would mint a fresh instanceId)";
 }
+
+// #1073: "name each tile" puts one lower-third-styled name line inside each
+// member tile, from the same overlay raster path the scene key uses.
+namespace {
+
+void loadNamedWall(MediaCore& core, const std::vector<std::string>& members, bool nameEachTile,
+                   double gutterPercent = 0.741) {
+  corevideo::rpc::Json::Array memberJson;
+  for (const auto& member : members) memberJson.push_back(corevideo::rpc::Json{member});
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json{corevideo::rpc::Json::Object{
+          {"type", corevideo::rpc::Json{"load-scene-graph"}},
+          {"sceneId", corevideo::rpc::Json{"named"}},
+          {"routes", corevideo::rpc::Json{corevideo::rpc::Json::Array{}}},
+          {"tiles", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+              {"layerId", corevideo::rpc::Json{"tiles:named"}},
+              {"members", corevideo::rpc::Json{memberJson}},
+              {"style", corevideo::rpc::Json{corevideo::rpc::Json::Object{
+                  {"nameEachTile", corevideo::rpc::Json{nameEachTile}},
+                  {"gutterPercent", corevideo::rpc::Json{gutterPercent}},
+                  {"backgroundColor", corevideo::rpc::Json{"#101418"}}}}}}}}}},
+      corevideo::rpc::Json{corevideo::rpc::Json::Object{
+          {"type", corevideo::rpc::Json{"set-source-policy"}},
+          {"sourceId", corevideo::rpc::Json{"zoom:1"}},
+          {"displayName", corevideo::rpc::Json{"Ada Lovelace"}}}},
+      corevideo::rpc::Json{corevideo::rpc::Json::Object{
+          {"type", corevideo::rpc::Json{"set-source-policy"}},
+          {"sourceId", corevideo::rpc::Json{"capture:cam0"}},
+          {"displayName", corevideo::rpc::Json{"Wide camera"}}}}});
+}
+
+int countNameLines(const corevideo::modules::CompositorRenderPlan& plan) {
+  return static_cast<int>(std::count_if(plan.layers.begin(), plan.layers.end(),
+      [](const auto& layer) { return layer.layerId.rfind("tile-name:", 0) == 0; }));
+}
+
+}  // namespace
+
+TEST(TilesNameLines, EachNamedMemberGetsOneLowerThirdStyledLineInsideItsTile) {
+  MediaCore core;
+  loadNamedWall(core, {"zoom:1", "capture:cam0", "zoom:2"}, true);
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"capture:cam0", true, 0}, {"zoom:2", true, 0}});
+  const auto& plan = core.lastRenderPlanForTest();
+  EXPECT_TRUE(core.tilesLayerForTest().style.nameEachTile);
+  // zoom:2 has no known name: no line, nothing invented.
+  EXPECT_EQ(countNameLines(plan), 2);
+  EXPECT_EQ(findLayer(plan, "tile-name:zoom:2"), nullptr);
+  for (const auto& [member, expected] : std::vector<std::pair<std::string, std::string>>{
+           {"zoom:1", "Ada Lovelace"}, {"capture:cam0", "Wide camera"}}) {
+    const auto* tile = findLayer(plan, "tile:" + member);
+    const auto* line = findLayer(plan, "tile-name:" + member);
+    ASSERT_NE(tile, nullptr) << member;
+    ASSERT_NE(line, nullptr) << member;
+    EXPECT_EQ(line->kind, "overlay");
+    EXPECT_TRUE(line->hasOverlayContent);
+    EXPECT_EQ(line->sourceId, member);
+    EXPECT_TRUE(line->participantId.empty());  // a text layer, never a frame lookup
+    EXPECT_EQ(line->overlay.title, expected);
+    EXPECT_TRUE(line->overlay.org.empty());    // top line only
+    EXPECT_TRUE(line->overlay.text.empty());
+    EXPECT_TRUE(line->overlay.appearance.enabled);
+    EXPECT_EQ(line->overlay.appearance.titleSize, 0);
+    EXPECT_EQ(line->overlay.keyPhase, "on-air");
+    EXPECT_GT(line->order, tile->order);
+    // Inside the tile rect.
+    EXPECT_GE(line->rect.x, tile->rect.x - 1e-6f);
+    EXPECT_GE(line->rect.y, tile->rect.y - 1e-6f);
+    EXPECT_LE(line->rect.x + line->rect.width, tile->rect.x + tile->rect.width + 1e-6f);
+    EXPECT_LE(line->rect.y + line->rect.height, tile->rect.y + tile->rect.height + 1e-6f);
+    // Scaled with the tile: a 3-up tile is well under the full-size key.
+    EXPECT_LT(line->overlay.appearance.nameSize, 42.0);
+    EXPECT_GE(line->overlay.appearance.nameSize, 18.0);
+  }
+}
+
+TEST(TilesNameLines, TheOptionOffEmitsNoLineEvenWhenNamesAreKnown) {
+  MediaCore core;
+  loadNamedWall(core, {"zoom:1", "capture:cam0"}, false);
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"capture:cam0", true, 0}});
+  EXPECT_FALSE(core.tilesLayerForTest().style.nameEachTile);
+  EXPECT_EQ(countNameLines(core.lastRenderPlanForTest()), 0);
+}
+
+TEST(TilesNameLines, LinesFollowMembershipAndNeverOutnumberTheTiles) {
+  MediaCore core;
+  loadNamedWall(core, {"zoom:1", "capture:cam0"}, true);
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"capture:cam0", true, 0}});
+  EXPECT_EQ(countNameLines(core.lastRenderPlanForTest()), 2);
+  // A member whose frames went stale leaves the wall, and its name goes with it.
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"capture:cam0", true, 10000}});
+  const auto& plan = core.lastRenderPlanForTest();
+  EXPECT_EQ(findLayer(plan, "tile:capture:cam0"), nullptr);
+  EXPECT_EQ(findLayer(plan, "tile-name:capture:cam0"), nullptr);
+  EXPECT_NE(findLayer(plan, "tile-name:zoom:1"), nullptr);
+  EXPECT_EQ(countNameLines(plan), 1);
+  // A member that departs entirely takes its line.
+  loadNamedWall(core, {"capture:cam0"}, true);
+  core.setTilesMemberFrameAgesForTest({{"capture:cam0", true, 0}});
+  EXPECT_EQ(findLayer(core.lastRenderPlanForTest(), "tile-name:zoom:1"), nullptr);
+  EXPECT_EQ(countNameLines(core.lastRenderPlanForTest()), 1);
+}
+
+TEST(TilesNameLines, TilesTooSmallForAReadableLineStayUnlabelled) {
+  MediaCore core;
+  std::vector<std::string> members;
+  std::vector<corevideo::compositor::TilesMemberFrameAge> ages;
+  for (int i = 1; i <= 64; ++i) {
+    members.push_back("zoom:" + std::to_string(i));
+    ages.push_back({"zoom:" + std::to_string(i), true, 0});
+  }
+  loadNamedWall(core, members, true);
+  for (const auto& member : members) {
+    (void)core.applyCommand(corevideo::rpc::Json::Object{{"type", "set-source-policy"},
+        {"sourceId", member}, {"displayName", "Guest " + member}});
+  }
+  core.setTilesMemberFrameAgesForTest(ages);
+  const auto& plan = core.lastRenderPlanForTest();
+  // 64 tiles are drawn, every one named, and none is large enough for a line.
+  EXPECT_EQ(countLayersOfKind(plan, "participant-video"), 64);
+  EXPECT_EQ(countNameLines(plan), 0);
+}
+
+TEST(TilesNameLines, TheSceneLowerThirdAppearanceIsTheLook) {
+  MediaCore core;
+  (void)core.applyCommand(corevideo::rpc::Json::Object{{"type", "set-brand-kit"},
+      {"lowerThirdAppearance", corevideo::rpc::Json::Object{{"preset", "broadcast"}, {"anchor", "lower-right"},
+          {"nameSize", 60}, {"nameColor", "#FFEE00"}, {"fontFamily", "Georgia"}}}});
+  loadNamedWall(core, {"zoom:1"}, true);
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
+  const auto& plan = core.lastRenderPlanForTest();
+  const auto* tile = findLayer(plan, "tile:zoom:1");
+  const auto* line = findLayer(plan, "tile-name:zoom:1");
+  ASSERT_NE(tile, nullptr); ASSERT_NE(line, nullptr);
+  EXPECT_EQ(line->overlay.appearance.preset, "broadcast");
+  EXPECT_EQ(line->overlay.appearance.nameColor, "#FFEE00");
+  EXPECT_EQ(line->overlay.appearance.fontFamily, "Georgia");
+  EXPECT_EQ(line->overlay.fontFamily, "Georgia");
+  EXPECT_EQ(line->overlay.keyPosition, "lower-right");
+  // A 1-up tile fills the wall (minus margin): the line is the scene key's size.
+  EXPECT_NEAR(line->overlay.appearance.nameSize, 60.0 * tile->rect.height, 1e-6);
+  // Anchored at the tile's lower-right corner, inset by the gutter.
+  EXPECT_GT(line->rect.x, tile->rect.x + tile->rect.width * .3f);
+  EXPECT_NEAR(line->rect.x + line->rect.width, tile->rect.x + tile->rect.width - 0.00741f / (16.f / 9.f), 1e-4f);
+}

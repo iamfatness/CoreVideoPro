@@ -13,6 +13,7 @@
 #include "compositor/TilesLayout.h"
 #include "compositor/TilesPinnedLayout.h"
 #include "compositor/TilesMembership.h"
+#include "compositor/TilesNameLine.h"
 #include "core/AudioControlSourcePolicy.h"
 #include "core/ControlCommandPolicy.h"
 #include "contracts/Lifecycle.h"
@@ -1747,6 +1748,7 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
     tiles.style.manualFill = style->getString("fillMode", "auto") == "manual";
     tiles.style.backgroundSourceId = style->getString("backgroundSourceId");
     tiles.style.animateLayout = style->get("animateLayout") && style->get("animateLayout")->asBool();
+    tiles.style.nameEachTile = style->get("nameEachTile") && style->get("nameEachTile")->asBool();
     const double duration = style->getNumber("animationDurationMs", 350.0);
     tiles.style.animationDurationMs = static_cast<int>(std::isfinite(duration) ? std::clamp(duration, 100.0, 2000.0) : 350.0);
   }
@@ -2785,6 +2787,22 @@ std::string MediaCore::normalizeIsoSourceId(const std::string& rawId) {
   return "zoom:" + rawId;  // bare id = a Zoom participant (back-compat)
 }
 
+std::string MediaCore::tilesMemberDisplayName(const std::string& sourceId) const {
+  const bool isZoom = sourceId.rfind("zoom:", 0) == 0;
+  const std::string key = isZoom ? sourceId.substr(5) : sourceId;
+  if (const auto it = sourcePolicies_.find(key); it != sourcePolicies_.end() && !it->second.displayName.empty()) {
+    return it->second.displayName;
+  }
+  if (isZoom && renderEngineInputs_.engineConfigured && renderEngineInputs_.valid) {
+    for (const auto& participant : renderEngineInputs_.floorRoster) {
+      if (participant.id != 0 && std::to_string(participant.id) == key) {
+        return participant.displayName;
+      }
+    }
+  }
+  return {};
+}
+
 std::string MediaCore::resolveIsoDisplayName(const std::string& sourceId) const {
   // Strip the scheme to get the underlying id.
   const auto colon = sourceId.find(':');
@@ -3758,7 +3776,8 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
                "," + std::to_string(tiles.style.customAspectRatio) + ":" + tiles.style.backgroundColor + ":";
   const auto& decoration = tiles.style.decoration;
   signature += std::string(tiles.style.manualFill ? "manual:" : "auto:") +
-      (tiles.style.animateLayout ? "animate:" : "static:") + std::to_string(tiles.style.animationDurationMs) + ":";
+      (tiles.style.animateLayout ? "animate:" : "static:") + std::to_string(tiles.style.animationDurationMs) + ":" +
+      (tiles.style.nameEachTile ? "names:" : "nonames:");
   signature += tiles.style.backgroundSourceId + ":";
   for (const auto& [id, item] : tiles.overrides) {
     signature += id + ":" + std::to_string(item.hasRect) + ":" + std::to_string(item.rect.x) + ":" +
@@ -4969,7 +4988,54 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
           layer.participantId = slots[index];
         }
         annotateLayerSource(layer, videoFrames, nowNs);
+        const compositor::LayerRect canvasTileRect{layer.rect.x, layer.rect.y, layer.rect.width, layer.rect.height};
         renderPlan.layers.push_back(std::move(layer));
+
+        // #1073: the tile's name line. ONE ordinary overlay layer per named
+        // member, drawn by the same lower-third raster as the scene key
+        // (CompositorOverlayRaster via hasOverlayContent + appearance), placed
+        // inside this tile by compositor/TilesNameLine.h. Suppressed when the
+        // tile is too small for a readable line, and when no name is known
+        // (tilesMemberDisplayName returns empty: nothing is invented). The
+        // layer id shares the member id so TilesPlanAnimation::applyLatest
+        // can move and fade it with its tile. Bounded by the members list
+        // (<= 64, parseTilesLayer) like the tiles themselves.
+        if (wall.style.nameEachTile) {
+          const std::string name = tilesMemberDisplayName(slots[index]);
+          if (!name.empty()) {
+            const double gutterWall = wall.style.gutterPercent <= 0.0
+                ? 0.0 : std::clamp(1.0 / (100.0 / wall.style.gutterPercent), 0.0, 0.1);
+            const float gutterYCanvas = static_cast<float>(gutterWall * wall.rect.height);
+            const float gutterXCanvas = static_cast<float>(gutterWall / wallAspect * wall.rect.width);
+            const auto placed = compositor::placeTilesNameLine(
+                canvasTileRect, gutterXCanvas, gutterYCanvas, lowerThirdAppearance_, canvasAspect);
+            if (placed.shown) {
+              modules::CompositorRenderPlanLayer nameLayer;
+              nameLayer.layerId = "tile-name:" + slots[index];
+              nameLayer.kind = "overlay";
+              nameLayer.sourceId = slots[index];
+              // Above every tile and glow of this wall (tiles sit at +1/+65).
+              nameLayer.order = tilesBaseOrder + 129 + tileOrder;
+              nameLayer.rect = {placed.rect.x, placed.rect.y, placed.rect.width, placed.rect.height};
+              nameLayer.opacity = wall.opacity;
+              nameLayer.fitMode = "fill";
+              nameLayer.borderStyle = "none";
+              nameLayer.borderThickness = 0.f;
+              nameLayer.hasOverlayContent = true;
+              nameLayer.overlay.appearance = placed.appearance;
+              nameLayer.overlay.title = name;          // top line only
+              nameLayer.overlay.keyPosition = placed.appearance.anchor;
+              nameLayer.overlay.keyPhase = "on-air";   // the TILE's entrance animates it
+              nameLayer.overlay.keyProgress = 1.f;
+              nameLayer.overlay.keyer = "downstream";
+              nameLayer.overlay.brandColor = brandColor_;
+              nameLayer.overlay.brandAccentColor = brandAccentColor_;
+              nameLayer.overlay.brandBackgroundColor = brandBackgroundColor_;
+              nameLayer.overlay.fontFamily = placed.appearance.fontFamily;
+              renderPlan.layers.push_back(std::move(nameLayer));
+            }
+          }
+        }
       }
     }
   }
