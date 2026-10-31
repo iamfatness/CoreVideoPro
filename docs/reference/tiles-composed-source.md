@@ -85,3 +85,69 @@ staying live across many ticks keeps the SAME registry identity — pinned by
 `std::map` keyed by sourceId where a count assertion cannot distinguish "the
 guard works" from "every tick refuses `Conflict` while quietly taking the
 registry mutex 60x/s").
+
+# Per-tile name line, "Name each tile" (#1073, 2026-10-31)
+
+Owner request (live show, 2026-10-31): "a lower third for each person in a
+tiles scene, just the top line." The Tiles scene option **Name each tile**
+(Sources > Tiles > Members > NAMES; control action `scene.tiles.names.set`
+with `enabled`; control-state field `previewTilesNamesOn`; persisted on the
+scene as `DynamicGallerySettings.NameEachTile`; wire key `style.nameEachTile`
+on the `tiles` node of `load-scene-graph`) puts ONE line of text inside each
+member tile: the source's name, in the scene's lower-third style, top line
+only, never a secondary line.
+
+**It is the scene lower third's own raster, not a second text renderer.**
+`MediaCore::buildRenderPlanForScene` emits, for every drawn tile, one ordinary
+overlay layer `tile-name:<memberId>` (kind `overlay`, `hasOverlayContent`,
+`overlay.appearance` enabled, `overlay.title` = the name, `keyPhase` `on-air`)
+ordered above every tile and glow of its wall (`tilesBaseOrder + 129 + order`).
+The D3D11 compositor draws it through `CompositorOverlayRaster` exactly as it
+draws the scene key; the CPU preview through `OverlayTileRaster`. Nothing in
+the compositors knows the layer is a tile name.
+
+**Geometry is `compositor/TilesNameLine.h`, pure and tested on its own
+(`TilesNameLineTest.cpp`).** `placeTilesNameLine(tileRect, gutterX, gutterY,
+style, canvasAspect)`:
+
+- the look is `lowerThirdAppearance_` when the scene has one (#847), else the
+  struct's defaults switched on; the style's `anchor` picks the tile corner
+  (default lower-left), the band is inset from the tile edge by the grid's
+  own gutter, and it is `style.width` of the tile's width;
+- the text SCALES WITH THE TILE: font px = `nameSize * tileRect.height`,
+  floored at `kTilesNameMinimumFontPx` (18 px, 1080-line reference space,
+  the same space the scene key's `nameSize` is authored in) and capped at the
+  style's own size, so a 1-up tile reads exactly like the scene key;
+- SUPPRESSED (no layer at all) when the band would take more than 30% of the
+  tile's height or the tile is narrower than six font heights: with the
+  default style at 1080p a 7x7 wall still carries names, an 8x8 does not;
+- a member with no known name gets no line (`tilesMemberDisplayName`: the
+  shell's `set-source-policy` displayName, which `BuildSourcePolicyWires`
+  sends for every roster participant and capture device, else the render
+  tick's pre-read roster for a `zoom:` member). Nothing is invented.
+
+**It follows membership and the wall animation by construction.** The layer
+is built from the same `slots`/`admitted` loop as its tile, so a member that
+leaves, goes stale, or is excluded takes its line with it the same tick.
+`TilesPlanAnimation::applyLatest` treats `tile-name:<id>` like `tile:<id>`
+and `tiles-glow:<id>`: it multiplies the layer's opacity by the tile's alpha
+(so a joining member's name fades in with its tile) and moves the band with
+`followTilesNameLine`, which keeps the band's offset from the tile's anchored
+corner at the SETTLED rect (`AnimatedTile::target`, new) applied to the
+sampled rect. Size is not re-derived mid-flight; the text does not breathe
+while a tile springs into place. Bounded by the members list (64) like the
+tiles themselves.
+
+**Decisions the issue left open, taken here:** the name rides the TILE's own
+entrance (alpha + spring) rather than carrying a separate slide/hold key
+animation, so it can never lead or lag its tile; the style anchor is honoured
+inside the tile rather than forcing bottom-left; the readable threshold is a
+share of the tile (30%) plus a width floor, in reference space, so the rule
+reads the same at every output resolution. Tests:
+`TilesNameLine.*`, `TilesNameLines.*` (TilesRenderPlanTest.cpp),
+`TilesAnimator.ANameLineMovesAndFadesWithItsTile`,
+`TilesAnimator.AnEnteringTilesNameLineFadesInWithIt`, and on the shell side
+the command-builder key, the persistence round-trip, the payload builder and
+`ControlActionRegistryTests.TilesNamesSet_*`. **Not verified live** as of the
+PR: no screenshot of a real wall with names has been taken; the first live
+check is the owner's readable-threshold judgement on a 3x3 and a 4x4 wall.
