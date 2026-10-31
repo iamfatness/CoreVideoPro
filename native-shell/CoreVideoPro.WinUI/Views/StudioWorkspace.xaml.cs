@@ -34,6 +34,52 @@ public sealed partial class StudioWorkspace : UserControl
         InitializeComponent();
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
+        AttachGraphicsHotkeys();
+    }
+
+    // ==== #1076 graphics hotkeys ====
+    // F1..F12 play in the playlist row with that hotkey; Shift+F12 plays everything out;
+    // Shift+F1..F11 are reserved for shot layouts. The router is pure; the focus check lives
+    // here in Invoked so typing in any text box never fires a graphic (Handled stays false).
+    private void AttachGraphicsHotkeys()
+    {
+        for (var number = 1; number <= 12; number++)
+        {
+            foreach (var modifiers in new[] { Windows.System.VirtualKeyModifiers.None, Windows.System.VirtualKeyModifiers.Shift })
+            {
+                var accelerator = new KeyboardAccelerator { Key = (Windows.System.VirtualKey)((int)Windows.System.VirtualKey.F1 + number - 1), Modifiers = modifiers };
+                accelerator.Invoked += OnGraphicsHotkeyInvoked;
+                KeyboardAccelerators.Add(accelerator);
+            }
+        }
+    }
+
+    private void OnGraphicsHotkeyInvoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        var vm = _boundViewModel ?? ViewModel;
+        if (vm is null || vm.ActiveTab is not (CoreVideoPro.WinUI.Models.StudioTab.Studio or CoreVideoPro.WinUI.Models.StudioTab.Overlays))
+        {
+            return;
+        }
+
+        var focused = XamlRoot is null ? null : FocusManager.GetFocusedElement(XamlRoot);
+        var typing = focused is TextBox or RichEditBox or AutoSuggestBox or NumberBox or PasswordBox;
+        var route = GraphicsHotkeyRouter.TryRoute(sender.Key, sender.Modifiers, typing, vm.GraphicsPlayout.Playlist);
+        if (route is null)
+        {
+            return;
+        }
+
+        args.Handled = true;
+        _ = GraphicsPlayoutActions.InvokeAsync(vm, route.ActionId, route.Args.ToArray());
+    }
+
+    private void OnHideGraphicsPanelClicked(object sender, RoutedEventArgs args)
+    {
+        if (ViewModel is not null)
+        {
+            ViewModel.ShowGraphicsPanel = false;
+        }
     }
 
     public StudioViewModel? ViewModel

@@ -11873,6 +11873,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MultiviewShowTally = MultiviewShowTally,
             MultiviewShowMeters = MultiviewShowMeters,
             MultiviewShowClock = MultiviewShowClock,
+            GraphicsMode = GraphicsMode,
             SceneBackgroundAssetIds = CaptureWorkspaceSavedBackgrounds(),
             SourceDisplayNames = _sourceDisplayNames.ToDictionary(
                 pair => pair.Key,
@@ -12172,6 +12173,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MultiviewShowTally = preferences.MultiviewShowTally;
         MultiviewShowMeters = preferences.MultiviewShowMeters;
         MultiviewShowClock = preferences.MultiviewShowClock;
+        RestoreGraphicsMode(preferences.GraphicsMode);
 
         _sceneBackgroundAssetIds.Clear();
         foreach (var pair in preferences.SceneBackgroundAssetIds)
