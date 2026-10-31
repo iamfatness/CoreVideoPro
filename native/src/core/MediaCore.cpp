@@ -1482,6 +1482,9 @@ void MediaCore::beginTakeTransition(const rpc::Json& command) {
   }
   next.pendingSceneLoad = true;
   next.active = next.mode != "cut" && next.durationMs > 0.0;
+  // Cued graphics ride the Take: ready, opted-in cues go to Program now and
+  // leave Preview, so the operator's Preview is the truth of the next Take.
+  graphicsInstances_.promoteCuedForTake();
   takeTransition_ = std::move(next);
 }
 
