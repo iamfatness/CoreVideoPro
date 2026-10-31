@@ -108,6 +108,23 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Empty(_commands);
     }
 
+    [Fact] public async Task PlayInSendsTheRowsOwnMotionWhenItHasOne()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        var rows = library.Document.Playlist.ToList();
+        rows[1] = rows[1] with { Motion = GraphicsBuilder.MotionFor("slide-right", 150) };
+        Assert.True(await library.SavePlaylistAsync(rows), library.Status);
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(library.Document.Playlist[1]))).Accepted);
+        var animations = Bodies("graphics.instance.create").Single().GetProperty("animations");
+        Assert.Equal("slide", animations.GetProperty("in").GetProperty("type").GetString());
+        Assert.Equal("right", animations.GetProperty("in").GetProperty("direction").GetString());
+        Assert.Equal(150, animations.GetProperty("in").GetProperty("durationMs").GetDouble());
+        _commands.Clear();
+        // A row without its own motion still gets the playout default.
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(library.Document.Playlist[2]))).Accepted);
+        Assert.Equal("fade", Bodies("graphics.instance.create").Single().GetProperty("animations").GetProperty("in").GetProperty("type").GetString());
+    }
+
     [Fact] public async Task PlayInCreatesCuesWaitsThenShowsFromCue()
     {
         var (library, service) = await BuildWithDefaultPlaylist();

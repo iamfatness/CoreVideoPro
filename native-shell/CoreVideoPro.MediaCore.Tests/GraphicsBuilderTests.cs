@@ -111,3 +111,34 @@ public sealed class GraphicsBuilderTests
         Assert.Equal("sponsor", GraphicsBuilder.KindOf(new GraphicsPlaylistRow { Id = "s", Kind = GraphicsPlaylistRow.Sponsor, Name = "S" }, state).Id);
     }
 }
+
+public sealed class GraphicsBuilderMotionTests
+{
+    [Fact]
+    public void PresetsRoundTripAndStayInsideTheCoreWhitelist()
+    {
+        foreach (var (id, _) in GraphicsBuilder.MotionPresets)
+            foreach (var (_, ms) in GraphicsBuilder.MotionSpeeds) {
+                var motion = GraphicsBuilder.MotionFor(id, ms);
+                Assert.True(GraphicsPlaylistRow.ValidMotion(motion), id);
+                var (back, backMs) = GraphicsBuilder.MotionPresetOf(motion);
+                Assert.Equal(id, back);
+                if (id.StartsWith("slide")) Assert.Equal(ms, backMs);
+            }
+        Assert.Null(GraphicsBuilder.MotionFor("default", 300));
+        Assert.Equal("none", GraphicsBuilder.MotionFor("cut", 300)!.In.Type);
+        var slide = GraphicsBuilder.MotionFor("slide-up", 600)!;
+        Assert.Equal(("slide", "up", 600d), (slide.In.Type, slide.In.Direction, slide.In.DurationMs)); Assert.Equal(400d, slide.Out.DurationMs);
+    }
+
+    [Fact]
+    public void RowValidationRejectsMotionTheCoreWouldRefuse()
+    {
+        var row = new GraphicsPlaylistRow { Id = "t", Kind = GraphicsPlaylistRow.Title, Name = "T" };
+        Assert.True(row.IsValid);
+        Assert.True((row with { Motion = GraphicsBuilder.MotionFor("slide-left", 300) }).IsValid);
+        Assert.False((row with { Motion = new() { In = new() { Type = "wipe" } } }).IsValid);
+        Assert.False((row with { Motion = new() { In = new() { Type = "fade", DurationMs = 5000 } } }).IsValid);
+        Assert.False((row with { Motion = new() { Out = new() { Type = "slide", Direction = "diagonal" } } }).IsValid);
+    }
+}

@@ -37,6 +37,8 @@ public sealed class GraphicsBuilderControl : UserControl
     private readonly StackPanel _form = new() { Spacing = 10, MinWidth = 280 };
     private readonly StackPanel _fields = new() { Spacing = 8 };
     private readonly StackPanel _colors = new() { Spacing = 6 };
+    private readonly ComboBox _motion = new() { Header = "Motion", ItemsSource = GraphicsBuilder.MotionPresets.Select(m => m.Label).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox _speed = new() { Header = "Speed", ItemsSource = GraphicsBuilder.MotionSpeeds.Select(m => m.Label).ToArray(), SelectedIndex = 1, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox _name = new() { Header = "Name in the playlist", MaxLength = 128, PlaceholderText = "Guest name" };
     private readonly ComboBox _hotkey = new() { Header = "Hotkey", ItemsSource = HotkeyChoices, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox _playOut = new() { Header = "Hides after", ItemsSource = PlayOutChoices.Select(c => c.Label).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -88,6 +90,9 @@ public sealed class GraphicsBuilderControl : UserControl
         // 4 + 5: fill in and save
         _form.Children.Add(Step("4", "FILL IT IN"));
         _form.Children.Add(_fields); _form.Children.Add(_colors);
+        var motionRow = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 6, 0, 0) }; motionRow.ColumnDefinitions.Add(new() { Width = new GridLength(3, GridUnitType.Star) }); motionRow.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
+        motionRow.Children.Add(_motion); Grid.SetColumn(_speed, 1); motionRow.Children.Add(_speed); _form.Children.Add(motionRow);
+        ToolTipService.SetToolTip(_motion, "How the graphic comes in and goes out on air. Shown on Program when you Show it; the preview here is still.");
         _form.Children.Add(Step("5", "SAVE TO PLAYLIST"));
         _form.Children.Add(_name); _form.Children.Add(_follow);
         var timing = new Grid { ColumnSpacing = 8 }; timing.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); timing.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
@@ -102,6 +107,8 @@ public sealed class GraphicsBuilderControl : UserControl
         _discard.Click += (_, _) => StartNew();
         _operate.Click += (_, _) => { if (_attached is { } s) s.GraphicsMode = StudioViewModel.GraphicsModePlayout; };
         _follow.Toggled += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
+        _motion.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; _speed.IsEnabled = SelectedMotionPreset != "cut"; RefreshSaveButton(); } };
+        _speed.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
         _name.TextChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
         _sponsorPick.Click += async (_, _) => await PickSponsorAsync();
         _debounce.Tick += (_, _) => { _debounce.Stop(); var commit = _pendingCommit; _pendingCommit = null; commit?.Invoke(); };
@@ -171,7 +178,7 @@ public sealed class GraphicsBuilderControl : UserControl
         _editingRowId = ""; _sponsorPath = ""; _dirty = false; _operate.Visibility = Visibility.Collapsed; _status.Text = "";
         if (_attached is { } s && s.GraphicsDesignRowId.Length > 0) s.GraphicsDesignRowId = "";
         _loading = true;
-        try { _name.Text = ""; _follow.IsOn = Kind.Family == "lower-third"; _playOut.SelectedIndex = Kind.Family == "lower-third" ? 1 : 0; _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, GraphicsBuilder.NextFreeHotkey(Rows))); }
+        try { _name.Text = ""; _follow.IsOn = Kind.Family == "lower-third"; _playOut.SelectedIndex = Kind.Family == "lower-third" ? 1 : 0; _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, GraphicsBuilder.NextFreeHotkey(Rows))); SetMotion(null); }
         finally { _loading = false; }
         var templates = GraphicsBuilder.TemplatesFor(Kind, _session?.State);
         if (templates.Count > 0 && _session is { Busy: false }) _session.Browse(templates[0]);
@@ -188,6 +195,7 @@ public sealed class GraphicsBuilderControl : UserControl
             _name.Text = row.Name; _follow.IsOn = row.FollowSources;
             _playOut.SelectedIndex = Math.Max(0, Array.FindIndex(PlayOutChoices, c => c.Ms == row.PlayOutAfterMs));
             _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, row.Hotkey));
+            SetMotion(row.Motion);
         } finally { _loading = false; }
         if (kind.Id != GraphicsBuilder.SponsorKindId && _session.State?.Templates.FirstOrDefault(t => t.TemplateId == row.TemplateId && t.TemplateVersion == row.TemplateVersion) is { } template && !_session.Busy) {
             _session.Browse(template);
@@ -238,12 +246,12 @@ public sealed class GraphicsBuilderControl : UserControl
             if (Kind.Id == GraphicsBuilder.SponsorKindId) {
                 if (_sponsorPath.Length == 0 && existing?.Image is null) { _status.Text = "Choose an image first."; return; }
                 var name = _name.Text.Trim().Length > 0 ? _name.Text.Trim() : "Sponsor card";
-                row = (existing ?? new GraphicsPlaylistRow { Id = GraphicsBuilder.NewRowId(name, rows), Kind = GraphicsPlaylistRow.Sponsor }) with { Name = name, Hotkey = hotkey, PlayOutAfterMs = playOut };
+                row = (existing ?? new GraphicsPlaylistRow { Id = GraphicsBuilder.NewRowId(name, rows), Kind = GraphicsPlaylistRow.Sponsor }) with { Name = name, Hotkey = hotkey, PlayOutAfterMs = playOut, Motion = SelectedMotion };
                 ok = await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(rows, row));
                 if (ok && _sponsorPath.Length > 0 && _sponsorPath != existing?.ImagePath) ok = await _library.AssignPlaylistImageAsync(row.Id, _sponsorPath);
             } else {
                 if (_session?.Draft is not { } draft || _session.Template is not { } template) { _status.Text = "Pick a look first."; return; }
-                row = GraphicsBuilder.RowFrom(Kind, template, draft, _name.Text, hotkey, playOut, _follow.IsOn, rows, existing);
+                row = GraphicsBuilder.RowFrom(Kind, template, draft, _name.Text, hotkey, playOut, _follow.IsOn, rows, existing, SelectedMotion);
                 ok = await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(rows, row));
             }
             if (!ok) { _status.Text = _library.Status; return; }
@@ -462,6 +470,16 @@ public sealed class GraphicsBuilderControl : UserControl
             _root.ColumnDefinitions[0].Width = new GridLength(300); _root.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star); _root.ColumnDefinitions[2].Width = new GridLength(340);
             foreach (var child in _root.Children.OfType<FrameworkElement>()) { if (Grid.GetRow(child) == 0 && Grid.GetColumnSpan(child) == 3) continue; var row = Grid.GetRow(child); Grid.SetRow(child, 1); Grid.SetColumn(child, row - 1); }
         }
+    }
+
+    private string SelectedMotionPreset => GraphicsBuilder.MotionPresets[Math.Max(0, _motion.SelectedIndex)].Id;
+    private NativeGraphicsAnimations? SelectedMotion => GraphicsBuilder.MotionFor(SelectedMotionPreset, GraphicsBuilder.MotionSpeeds[Math.Max(0, _speed.SelectedIndex)].Ms);
+    private void SetMotion(NativeGraphicsAnimations? motion)
+    {
+        var (preset, ms) = GraphicsBuilder.MotionPresetOf(motion);
+        _motion.SelectedIndex = Math.Max(0, GraphicsBuilder.MotionPresets.ToList().FindIndex(m => m.Id == preset));
+        var speed = GraphicsBuilder.MotionSpeeds.ToList().FindIndex(m => m.Ms == ms); _speed.SelectedIndex = speed >= 0 ? speed : 1;
+        _speed.IsEnabled = preset != "cut";
     }
 
     // ---- bits ------------------------------------------------------------------------------

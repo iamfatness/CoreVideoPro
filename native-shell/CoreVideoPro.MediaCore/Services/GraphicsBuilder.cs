@@ -69,7 +69,8 @@ public static class GraphicsBuilder
     /// <summary>The row a finished draft saves as. <paramref name="existing"/> keeps its id (so
     /// shot layouts that name it survive) and its chosen image path.</summary>
     public static GraphicsPlaylistRow RowFrom(GraphicsBuilderKind kind, NativeGraphicsTemplate template, NativeGraphicsDraft draft,
-        string name, string hotkey, int playOutAfterMs, bool followSources, IReadOnlyList<GraphicsPlaylistRow> rows, GraphicsPlaylistRow? existing = null)
+        string name, string hotkey, int playOutAfterMs, bool followSources, IReadOnlyList<GraphicsPlaylistRow> rows, GraphicsPlaylistRow? existing = null,
+        NativeGraphicsAnimations? motion = null)
     {
         var fields = draft.Fields.ValueKind == JsonValueKind.Object
             ? draft.Fields.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal)
@@ -84,7 +85,7 @@ public static class GraphicsBuilder
             PlayOutAfterMs = GraphicsPlaylistRow.PlayOutAfterChoices.Contains(playOutAfterMs) ? playOutAfterMs : 0,
             TemplateId = template.TemplateId, TemplateVersion = template.TemplateVersion,
             Fields = fields, Style = draft.Style, Image = draft.Image, ImagePath = existing?.ImagePath,
-            FollowSources = rowKind == GraphicsPlaylistRow.Guest, ShowClock = hasClock,
+            FollowSources = rowKind == GraphicsPlaylistRow.Guest, ShowClock = hasClock, Motion = motion,
         };
     }
 
@@ -97,6 +98,36 @@ public static class GraphicsBuilder
         var sponsor = list.FindIndex(r => r.Kind == GraphicsPlaylistRow.Sponsor && r.TemplateId.Length == 0 && r.Image is null);
         if (sponsor >= 0) list.Insert(sponsor, row); else list.Add(row);
         return list;
+    }
+
+    /// <summary>Operator-facing motion presets. "Default" leaves the row's Motion null so the
+    /// playout default applies; slides come in from and leave toward the same edge.</summary>
+    public static IReadOnlyList<(string Id, string Label)> MotionPresets { get; } = [
+        ("default", "Fade (default)"), ("cut", "Cut"), ("slide-left", "Slide in from left"), ("slide-right", "Slide in from right"),
+        ("slide-up", "Slide up from below"), ("slide-down", "Slide down from above")];
+    public static IReadOnlyList<(string Label, int Ms)> MotionSpeeds { get; } = [("Quick", 150), ("Normal", 300), ("Slow", 600)];
+
+    public static NativeGraphicsAnimations? MotionFor(string presetId, int durationMs)
+    {
+        var ms = Math.Clamp(durationMs, 0, 3000);
+        switch (presetId) {
+            case "cut": return new() { In = new() { Type = "none" }, Out = new() { Type = "none" } };
+            case "slide-left": case "slide-right": case "slide-up": case "slide-down": {
+                var direction = presetId[6..];
+                return new() { In = new() { Type = "slide", Direction = direction, DurationMs = ms, Easing = "ease-out" },
+                    Out = new() { Type = "slide", Direction = direction, DurationMs = Math.Max(0, ms * 2 / 3), Easing = "ease-in" } };
+            }
+            default: return null;
+        }
+    }
+
+    /// <summary>The preset and speed a saved row's motion came from (round trip for editing).</summary>
+    public static (string PresetId, int Ms) MotionPresetOf(NativeGraphicsAnimations? motion)
+    {
+        if (motion is null) return ("default", 300);
+        if (motion.In.Type == "none") return ("cut", 300);
+        if (motion.In.Type == "slide") return ("slide-" + motion.In.Direction, (int)Math.Round(motion.In.DurationMs));
+        return ("default", (int)Math.Round(motion.In.DurationMs));
     }
 
     /// <summary>A row's saved fields as the object element the workspace draft expects.</summary>

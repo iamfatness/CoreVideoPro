@@ -33,6 +33,14 @@ public sealed record GraphicsPlaylistRow
     /// <summary>Guest rows: name/title come from the Sources page text of the entry's source.</summary>
     public bool FollowSources { get; init; }
     public bool ShowClock { get; init; }
+    /// <summary>In/out motion sent with the instance (titler spec Phase 1 "in/out transitions").
+    /// Null = the playout default (fade 250/200 ms). Values follow the core's whitelist.</summary>
+    public NativeGraphicsAnimations? Motion { get; init; }
+
+    public static bool ValidTransition(NativeGraphicsTransition t) =>
+        t.Type is "none" or "fade" or "slide" && t.Direction is "left" or "right" or "up" or "down" &&
+        t.Easing is "linear" or "ease-in" or "ease-out" or "ease-in-out" && double.IsFinite(t.DurationMs) && t.DurationMs is >= 0 and <= 3000;
+    public static bool ValidMotion(NativeGraphicsAnimations? motion) => motion is null || (ValidTransition(motion.In) && ValidTransition(motion.Out));
 
     public static bool ValidId(string value) => value.Length is > 0 and <= 48 && value[0] is >= 'a' and <= 'z' &&
         value.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
@@ -42,7 +50,7 @@ public sealed record GraphicsPlaylistRow
         Hotkey is not null && ValidHotkey(Hotkey) && PlayOutAfterChoices.Contains(PlayOutAfterMs) &&
         TemplateId is not null && TemplateId.Length <= 64 && TemplateVersion >= 0 && (TemplateId.Length == 0) == (TemplateVersion == 0) &&
         Fields is not null && Fields.Count <= 32 && Fields.Keys.All(k => k.Length is > 0 and <= 64) && Style is { IsValid: true } &&
-        (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) &&
+        (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) && ValidMotion(Motion) &&
         (Image is null || (Image.TemplateId.Length is > 0 and <= 64 && Image.TemplateVersion >= 1 && Image.AssetId.Length is > 0 and <= 64));
 }
 

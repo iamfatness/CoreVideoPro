@@ -63,7 +63,12 @@ numbered steps left to right:
 4. **Fill it in**: the template's own fields (text, choices, numbers, colors,
    bundled images), a logo slot with "Use the brand kit logo", and four color
    swatches (accent, background, name, second line) with "Use brand kit colors".
-   Text commits 350 ms after you stop typing, or on focus loss.
+   Text commits 350 ms after you stop typing, or on focus loss. **Motion** picks
+   how the graphic comes in and goes out on air (Fade default, Cut, Slide from
+   left/right/up/down) at Quick/Normal/Slow (150/300/600 ms); it is stored on the
+   row as `motion` (the core's `{in,out}` transition shape, whitelisted at save)
+   and sent with the instance on Show/Cue. Rows without one keep the playout
+   default fade.
 5. **Save to playlist**: name, hotkey (defaults to the lowest free F-key; taken
    keys say who owns them), hides after (stays / 8 s / 15 s), then **Add to
    playlist** or, for a row opened from Operate or the "Your graphics" chips,
