@@ -470,7 +470,16 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 var starterId = Str(args, 0);
                 var starter = starterId.Length == 0 ? GraphicsShowStarters.All[0] : GraphicsShowStarters.All.FirstOrDefault(s => s.Id == starterId);
                 if (starter is null) return ControlInvokeResult.Fail($"Unknown show starter '{starterId}'. Use one of: {string.Join(", ", GraphicsShowStarters.All.Select(s => s.Id))}.");
-                if (_vm.GraphicsWorkspace.State is not { CoreEpoch.Length: > 0 } graphicsState) return ControlInvokeResult.Fail("Native Graphics is unavailable.");
+                if (_vm.GraphicsWorkspace.State is not { CoreEpoch.Length: > 0 } graphicsState)
+                {
+                    // Say which link is missing: the core publishes graphics, so a refusal here is a shell-side gap.
+                    var last = _vm.LastCoreSnapshotForDiagnostics;
+                    var detail = last is null ? "no core snapshot observed yet"
+                        : last.Graphics is null ? "the typed snapshot carries no graphics section (raw has it: " + (last.RawJson?.Contains("\"coreEpoch\"", StringComparison.Ordinal) == true) + ")"
+                        : last.Graphics.CoreEpoch.Length == 0 ? "graphics section has an empty coreEpoch"
+                        : "graphics workspace session not yet observed (State " + (_vm.GraphicsWorkspace.State is null ? "null" : "present") + ")";
+                    return ControlInvokeResult.Fail("Native Graphics is unavailable: " + detail + ".");
+                }
                 // The preset shot layouts (Open, Two-up, Panel, Clean) install with the default rows;
                 // layouts the operator already saved are kept.
                 var presetLayouts = _vm.GraphicsPlayout.Layouts.Count == 0 ? GraphicsWorkspaceLibrary.DefaultShotLayouts() : null;

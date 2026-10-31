@@ -13,6 +13,9 @@ public sealed partial class StudioViewModel
     private GraphicsPlayoutService? _graphicsPlayout;
     private string _guestEntriesSignature = "";
 
+    /// <summary>The bridge's last typed core snapshot, for refusal detail only (never for decisions).</summary>
+    public CoreVideoPro.MediaCore.Models.NativeMediaCoreStateSnapshot? LastCoreSnapshotForDiagnostics => _bridge.LastSnapshot;
+
     public GraphicsPlayoutService GraphicsPlayout => _graphicsPlayout ??= CreateGraphicsPlayout();
     public GraphicsStripState GraphicsStrip => GraphicsPlayout.Strip;
     public string GraphicsPlayoutStatus => GraphicsPlayout.Status;
