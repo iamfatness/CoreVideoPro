@@ -134,6 +134,8 @@ internal static class StudioWorkspaceLayoutProbe
             {
                 page.Width=width;page.Height=height;
                 studio.ActiveTab=CoreVideoPro.WinUI.Models.StudioTab.Overlays;
+                // The show-look cards live in the advanced workspace (Design → Advanced editor, #1076).
+                studio.GraphicsMode=StudioViewModel.GraphicsModeDesign;studio.GraphicsDesignAdvanced=true;
                 await Task.Delay(150);page.UpdateLayout();
                 if(((FrameworkElement)page.FindName("ProductionFooter")).Visibility!=Visibility.Collapsed) failures.Add("Graphics still exposes the live production footer");
                 var cards=Descendants(page).OfType<Microsoft.UI.Xaml.Controls.Button>().Where(Visible).Where(b=>GraphicsShowStarters.All.Any(s=>s.Name==Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(b))).ToArray();
