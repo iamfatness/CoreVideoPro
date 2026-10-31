@@ -1681,6 +1681,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public double GalleryGlowSoftness { get => PreviewScene.DynamicGallery?.GlowSoftness ?? 0; set => UpdateGallery(s => s.GlowSoftness = Math.Clamp(value, 0, 100)); }
     public bool GalleryAnimateLayout { get => PreviewScene.DynamicGallery?.AnimateLayout ?? false; set => UpdateGallery(s => s.AnimateLayout = value); }
     public double GalleryAnimationDurationMs { get => PreviewScene.DynamicGallery?.AnimationDurationMs ?? 350; set => UpdateGallery(s => s.AnimationDurationMs = (int)Math.Clamp(Math.Round(value), 100, 2000)); }
+    // #1073: per-tile name line, the Tiles option "Name each tile". Same
+    // UpdateGallery path as every other wall option (persisted with the scene,
+    // re-sent to the core on the next sync as style.nameEachTile).
+    public bool GalleryNameEachTile { get => PreviewScene.DynamicGallery?.NameEachTile ?? false; set => UpdateGallery(s => s.NameEachTile = value); }
 
     public IReadOnlyList<Participant> RoomVideoParticipants { get; private set; }
 
@@ -13271,7 +13275,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 p.Value.Rect is { } r ? new MediaCoreTilesRectWire(r.X, r.Y, r.Width, r.Height) : null,
                 p.Value.CropLeftPercent, p.Value.CropRightPercent, p.Value.Z)),
             payload.Rect is { } wallRect ? new MediaCoreTilesRectWire(wallRect.X, wallRect.Y, wallRect.Width, wallRect.Height) : null,
-            payload.Opacity, payload.TransparentBackground);
+            payload.Opacity, payload.TransparentBackground,
+            NameEachTile: payload.Style.NameEachTile);
     }
 
     // RE-ENTRANCY GUARD — without it this recurses until the stack dies (crash
@@ -13355,6 +13360,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(GalleryGlowSoftness));
             OnPropertyChanged(nameof(GalleryAnimateLayout));
             OnPropertyChanged(nameof(GalleryAnimationDurationMs));
+            OnPropertyChanged(nameof(GalleryNameEachTile));
         });
     }
 

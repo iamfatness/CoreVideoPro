@@ -287,6 +287,7 @@ public sealed class PersistedDynamicGallerySettings
     public double GlowSoftness { get; set; }
     public bool AnimateLayout { get; set; }
     public int AnimationDurationMs { get; set; } = 350;
+    public bool NameEachTile { get; set; }
 }
 
 public sealed class PersistedSceneRoute

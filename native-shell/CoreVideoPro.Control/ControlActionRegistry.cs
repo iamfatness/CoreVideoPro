@@ -111,6 +111,8 @@ public static class ControlActionRegistry
                     new ControlParam("cropRight", d, true), new ControlParam("order", d, true) }),
             new("scene.tiles.override.clear", "Clear tile override", "Return a Preview tile to automatic grid positioning and crop.",
                 new[] { new ControlParam("sourceId", s, true) }),
+            new("scene.tiles.names.set", "Tiles name each tile", "Show one name line (the source's lower-third name, top line only) inside each Preview Tiles member tile, in the scene's lower-third style. Tiles too small for a readable line stay unlabelled.",
+                new[] { new ControlParam("enabled", b, true) }),
             new("view.setMode", "Set view mode", "Set the operator view (program/preview/program-preview/multiview); programPreview is accepted as a legacy alias.",
                 new[] { new ControlParam("mode", s, true, ViewModeContract.SupportedModes) }),
 

@@ -101,13 +101,16 @@ public class TilesLayerPayloadBuilderTests
             {
                 TileAspect = "1:1",
                 GutterPercent = 2.5,
-                MarginPercent = 3.0
+                MarginPercent = 3.0,
+                NameEachTile = true
             }),
             [Guest("1")]);
 
         Assert.Equal("1:1", payload!.Style.TileAspect);
         Assert.Equal(2.5, payload.Style.GutterPercent);
         Assert.Equal(3.0, payload.Style.MarginPercent);
+        Assert.True(payload.Style.NameEachTile);  // #1073
+        Assert.False(TilesLayerPayloadBuilder.Build(GalleryScene(new DynamicGallerySettings()), [Guest("1")])!.Style.NameEachTile);
     }
 
     // The shell must NOT pre-filter on its own idea of liveness beyond video-off.

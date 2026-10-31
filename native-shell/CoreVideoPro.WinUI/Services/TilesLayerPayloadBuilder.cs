@@ -66,7 +66,8 @@ public static class TilesLayerPayloadBuilder
                 GlowSoftness: FiniteClamp(settings.GlowSoftness, 0, 100),
                 AnimateLayout: settings.AnimateLayout,
                 AnimationDurationMs: Math.Clamp(settings.AnimationDurationMs, 100, 2000), FillMode: TilesMembershipPolicy.NormalizeMode(settings.MembershipMode),
-                BackgroundSourceId: settings.BackgroundSourceId),
+                BackgroundSourceId: settings.BackgroundSourceId,
+                NameEachTile: settings.NameEachTile),
             Overrides: settings.Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
             Rect: SceneWorkspacePolicy.NormalizeRect(settings.WallRect), Opacity: settings.WallVisible ? FiniteClamp(settings.WallOpacity,0,1,1) : 0,
             TransparentBackground: settings.TransparentBackground);
@@ -112,4 +113,5 @@ public sealed record TilesStylePayload(
     string BackgroundColor,
     string BorderShape = "square", string BorderColor = "#000000", double BorderThickness = 0,
     double CornerRadius = 16, string GlowColor = "#FFFFFF", double GlowSize = 0,
-    double GlowIntensity = 100, double GlowSoftness = 0, bool AnimateLayout = false, int AnimationDurationMs = 350, string FillMode = "auto", string BackgroundSourceId = "");
+    double GlowIntensity = 100, double GlowSoftness = 0, bool AnimateLayout = false, int AnimationDurationMs = 350, string FillMode = "auto", string BackgroundSourceId = "",
+    bool NameEachTile = false);
