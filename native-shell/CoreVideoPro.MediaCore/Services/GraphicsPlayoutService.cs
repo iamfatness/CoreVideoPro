@@ -69,6 +69,23 @@ public sealed class GraphicsPlayoutService
     public bool Busy => Volatile.Read(ref _pending) > 0;
     public IReadOnlyList<GraphicsPlaylistRow> Playlist => _library.Document.Playlist;
     public GraphicsPlaylistRow? Row(string rowId) => Playlist.FirstOrDefault(r => r.Id == rowId);
+    /// <summary>The playlist row that created an instance id (prefix match), or null for a Design/automation instance.</summary>
+    public GraphicsPlaylistRow? RowOf(string instanceId) => RowOf(instanceId, Playlist);
+    private static GraphicsPlaylistRow? RowOf(string instanceId, IReadOnlyList<GraphicsPlaylistRow> rows) =>
+        rows.FirstOrDefault(r => instanceId == InstancePrefix + r.Id || instanceId.StartsWith(InstancePrefix + r.Id + "-", StringComparison.Ordinal));
+    public bool HasGuestRow => Playlist.Any(r => r.Kind == GraphicsPlaylistRow.Guest);
+    /// <summary>True when a lower-third chip is on Program: a Guest-row instance, or any other
+    /// instance whose template family is lower-third. Strip truth, never local intent.</summary>
+    public bool LowerThirdOnAir => IsLowerThirdOnAir(Strip, Playlist, _observe());
+    public static bool IsLowerThirdOnAir(GraphicsStripState strip, IReadOnlyList<GraphicsPlaylistRow> rows, NativeGraphicsState? state) =>
+        strip.OnProgram.Any(item => IsLowerThird(item, rows, state));
+    private static bool IsLowerThird(GraphicsStripItem item, IReadOnlyList<GraphicsPlaylistRow> rows, NativeGraphicsState? state)
+    {
+        if (RowOf(item.InstanceId, rows) is { } row) return row.Kind == GraphicsPlaylistRow.Guest;
+        var instance = state?.Instances.FirstOrDefault(i => i.InstanceId == item.InstanceId);
+        return instance is not null && (instance.TemplateId is "compact-solid" or "minimal-accent" or "broadcast" ||
+            state!.Templates.Any(t => t.TemplateId == instance.TemplateId && t.TemplateVersion == instance.TemplateVersion && t.Family == "lower-third"));
+    }
 
     // ---- identity ---------------------------------------------------------------------
     public static string InstanceIdFor(string rowId, string sourceId) => sourceId.Length == 0 ? InstancePrefix + rowId
@@ -98,6 +115,37 @@ public sealed class GraphicsPlayoutService
     public GraphicsPlaylistEntry? GuestEntryFor(string sourceId, IEnumerable<GraphicsRosterSlot> slots, Func<string, string, (string Name, string Title)> text) =>
         GuestEntries(slots, text).FirstOrDefault(e => e.SourceId == sourceId);
 
+    // ---- legacy lower-third intent (Stage C1) --------------------------------------------
+    /// <summary>The legacy "LT in/out" intent (footer button, graphics.lowerThird.toggle/set)
+    /// mapped onto the Guest row: <paramref name="subject"/> is the guest entry of the current
+    /// Program subject (null when none is bound). In = Play In unless already on air; Out = Play
+    /// Out every Guest-row instance on Program (the subject may have changed since). Lower-third
+    /// authority is adopted through <paramref name="adoptInstancesAuthority"/> only after the
+    /// first ACCEPTED Play In: flipping earlier would erase the legacy overlay layers with
+    /// nothing to replace them.</summary>
+    public async Task<NativeGraphicsOperationResult> ApplyLowerThirdIntentAsync(bool visible, GraphicsPlaylistEntry? subject, bool authorityIsInstances,
+        Func<CancellationToken, Task<bool>> adoptInstancesAuthority, CancellationToken cancellation = default)
+    {
+        if (!visible) {
+            var targets = (_observe()?.Instances ?? []).Where(i => IsOnProgram(i) && RowOf(i.InstanceId)?.Kind == GraphicsPlaylistRow.Guest).Select(i => i.InstanceId).ToArray();
+            if (targets.Length == 0) { Observe(_observe()); return new() { Accepted = true, Reason = "No playlist lower third is on Program." }; }
+            NativeGraphicsOperationResult result = new() { Accepted = true };
+            foreach (var instanceId in targets) {
+                result = await PlayOutAsync(instanceId, cancellation);
+                if (!result.Accepted) return result;
+            }
+            return result with { Reason = "Lower third played out." };
+        }
+        if (subject is null) return Refuse("Lower third needs a Program subject bound to a Show Input. Choose a guest in the playlist instead.");
+        var id = InstanceIdFor(subject);
+        if (_observe()?.Instances.FirstOrDefault(i => i.InstanceId == id) is { } current && IsOnProgram(current))
+            return new() { Accepted = true, InstanceId = id, CurrentRevision = current.Revision, Reason = "The lower third is already on air." };
+        var played = await PlayInAsync(subject, cancellation);
+        if (!played.Accepted || authorityIsInstances) return played;
+        var adopted = await adoptInstancesAuthority(cancellation);
+        return played with { Reason = adopted ? "Played in; lower thirds now follow the Graphics playlist." : played.Reason + " Lower-third authority is still legacy; retry to adopt it." };
+    }
+
     // ---- strip ------------------------------------------------------------------------
     public void Observe(NativeGraphicsState? state)
     {
@@ -107,7 +155,7 @@ public sealed class GraphicsPlayoutService
         HashSet<string> armed; lock (_autoOut) armed = [.. _autoOut.Keys];
         GraphicsStripItem Item(NativeGraphicsInstance i)
         {
-            var row = rows.FirstOrDefault(r => i.InstanceId == InstancePrefix + r.Id || i.InstanceId.StartsWith(InstancePrefix + r.Id + "-", StringComparison.Ordinal));
+            var row = RowOf(i.InstanceId, rows);
             var rule = rules.FirstOrDefault(r => r.Enabled && r.InstanceId == i.InstanceId);
             var owner = row is not null ? "playlist" : rule is not null ? "auto" : "design";
             var source = i.Binding?.SourceId ?? i.SourceId;

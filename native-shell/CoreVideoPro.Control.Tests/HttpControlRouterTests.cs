@@ -104,6 +104,24 @@ public sealed class HttpControlRouterTests
     }
 
     [Fact]
+    public async Task Post_Invoke_ReturnsDataForReadActions()
+    {
+        var surface = new FakeControlSurface
+        {
+            Handler = (_, _) => ControlInvokeResult.WithData("""{"onProgram":[{"instanceId":"playlist-title"}]}""")
+        };
+        var router = new HttpControlRouter(surface);
+
+        var response = await router.HandleAsync("POST", "/invoke", """{"action":"graphics.strip"}""");
+
+        Assert.Equal(200, response.Status);
+        using var doc = JsonDocument.Parse(response.Body);
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Equal("playlist-title", doc.RootElement.GetProperty("data").GetProperty("onProgram")[0].GetProperty("instanceId").GetString());
+        Assert.Equal(("graphics.strip", 0), (surface.Invocations.Single().ActionId, surface.Invocations.Single().Args.Count));
+    }
+
+    [Fact]
     public async Task Post_Invoke_RejectsUnknownAndMalformed()
     {
         var surface = new FakeControlSurface();

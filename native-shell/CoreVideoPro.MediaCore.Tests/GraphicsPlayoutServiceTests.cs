@@ -255,5 +255,72 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Empty(GraphicsPlayoutService.GuestEntries(library.Document.Playlist[0], [new(1, null, "")], (_, n) => (n, "")));
     }
 
+    // Stage C1 (#1076): the legacy "LT in/out" intent (footer button, graphics.lowerThird.*)
+    // routes into the Guest row for the current Program subject; authority flips to instances
+    // only after the first ACCEPTED Play In.
+    [Fact] public async Task LegacyLowerThirdIntentMapsToGuestRowOfProgramSubject()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        Assert.True(service.HasGuestRow);
+        var adopted = 0; Task<bool> Adopt(CancellationToken _) { adopted++; return Task.FromResult(true); }
+        var subject = service.GuestEntryFor("zoom:7", [new(1, "zoom:7", "Ada"), new(2, "capture:camera", "HD60")], (_, name) => (name + " Lovelace", "Guest"))!;
+        var guestId = GraphicsPlayoutService.InstanceIdFor("guest", "zoom:7");
+        // The guest row auto-plays-out after 8 s; hold that timer so the strip stays readable.
+        _heldDelays[TimeSpan.FromMilliseconds(8000)] = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // No Program subject: refused, nothing sent, authority untouched.
+        var refused = await service.ApplyLowerThirdIntentAsync(true, null, authorityIsInstances: false, Adopt);
+        Assert.False(refused.Accepted); Assert.Empty(_commands); Assert.Equal(0, adopted);
+
+        // A title on Program must survive an LT in/out.
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(library.Document.Playlist[1]))).Accepted); _commands.Clear();
+
+        var played = await service.ApplyLowerThirdIntentAsync(true, subject, authorityIsInstances: false, Adopt);
+        Assert.True(played.Accepted, played.Reason);
+        Assert.Equal(new[] { "graphics.instance.create", "graphics.instance.cue", "graphics.instance.trigger" }, Actions);
+        var create = Bodies("graphics.instance.create").Single();
+        Assert.Equal(guestId, create.GetProperty("instanceId").GetString());
+        Assert.Equal("Ada Lovelace", create.GetProperty("fields").GetProperty("name").GetString());
+        Assert.Equal("zoom:7", create.GetProperty("binding").GetProperty("sourceId").GetString());
+        var show = Bodies("graphics.instance.trigger").Single();
+        Assert.Equal(("show", "cue", guestId), (show.GetProperty("action").GetString(), show.GetProperty("target").GetString(), show.GetProperty("instanceId").GetString()));
+        Assert.Equal(1, adopted);
+        Assert.True(service.LowerThirdOnAir);
+        Assert.Equal(new[] { "playlist-title", guestId }.OrderBy(x => x), service.Strip.OnProgram.Select(i => i.InstanceId).OrderBy(x => x));
+
+        // Already on air: idempotent, no replay, no second authority flip.
+        _commands.Clear();
+        Assert.True((await service.ApplyLowerThirdIntentAsync(true, subject, authorityIsInstances: true, Adopt)).Accepted);
+        Assert.Empty(_commands); Assert.Equal(1, adopted);
+
+        // LT out hides only the guest-row lower third; the title stays.
+        var hidden = await service.ApplyLowerThirdIntentAsync(false, subject, authorityIsInstances: true, Adopt);
+        Assert.True(hidden.Accepted, hidden.Reason);
+        var hide = Assert.Single(_commands);
+        Assert.Equal(("graphics.instance.trigger", "hide", guestId), (hide.Action, hide.Body.GetProperty("action").GetString(), hide.Body.GetProperty("instanceId").GetString()));
+        Assert.Equal(new[] { "playlist-title" }, service.Strip.OnProgram.Select(i => i.InstanceId));
+        Assert.False(service.LowerThirdOnAir);
+        // LT out with nothing on air is an accepted no-op.
+        _commands.Clear();
+        Assert.True((await service.ApplyLowerThirdIntentAsync(false, subject, authorityIsInstances: true, Adopt)).Accepted); Assert.Empty(_commands);
+    }
+
+    [Fact] public async Task LowerThirdOnAirFollowsTheStripLowerThirdChip()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        var guestId = GraphicsPlayoutService.InstanceIdFor("guest", "zoom:7");
+        NativeGraphicsInstance Program(string id, string templateId) => new() { InstanceId = id, Revision = 1, ProgramRevision = 1, Visibility = "visible", TemplateId = templateId, TemplateVersion = 1 };
+        service.Observe(_state = _state with { Instances = [Program("playlist-title", "centered-title"), Program("graphic-logo", "corner-logo")] });
+        Assert.False(service.LowerThirdOnAir);
+        service.Observe(_state = _state with { Instances = [Program("playlist-title", "centered-title"), Program(guestId, "minimal-accent")] });
+        Assert.True(service.LowerThirdOnAir);
+        // A Design-made lower third counts by template family, a hidden one does not.
+        service.Observe(_state = _state with { Instances = [Program("graphic-design", "compact-solid")] });
+        Assert.True(service.LowerThirdOnAir);
+        service.Observe(_state = _state with { Instances = [Program("graphic-design", "compact-solid") with { Visibility = "building-out" }] });
+        Assert.False(service.LowerThirdOnAir);
+        Assert.False(GraphicsPlayoutService.IsLowerThirdOnAir(GraphicsStripState.Empty, library.Document.Playlist, _state));
+    }
+
     public void Dispose() { if (Directory.Exists(_directory)) Directory.Delete(_directory, true); }
 }

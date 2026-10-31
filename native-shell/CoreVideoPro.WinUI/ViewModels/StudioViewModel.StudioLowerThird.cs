@@ -30,9 +30,34 @@ public sealed partial class StudioViewModel
         return result;
     }
 
+    // ---- Graphics playout routing (issue #1076, Stage C1) --------------------------------
+    /// <summary>True when the Graphics playlist has a Guest row: every legacy lower-third input
+    /// (footer LT button, graphics.lowerThird.*, automation.lowerThirds.set) then routes into it.</summary>
+    public bool HasPlaylistGuestRow => GraphicsPlayout.HasGuestRow;
+    /// <summary>Canonical source id of the current Program lower-third subject (same resolver as the legacy key), or null.</summary>
+    public string? ProgramLowerThirdSubjectSourceId => ResolveProgramLowerThirdSource(ProgramSceneRoutes)?.SourceId;
+    /// <summary>The Guest-row entry for the current Program subject; null when it is not bound to a Show Input.</summary>
+    public GraphicsPlaylistEntry? ProgramSubjectGuestEntry => GuestEntryFor(ProgramLowerThirdSubjectSourceId);
+    /// <summary>Strip evidence (Stage C2): a lower-third chip is on Program. Never local intent.</summary>
+    public bool GraphicsLowerThirdOnAir => GraphicsPlayout.LowerThirdOnAir;
+    /// <summary>What "LT is on" means for a toggle, by authority: the playlist strip when a Guest
+    /// row exists, managed instances under instances authority, else the legacy key.</summary>
+    public bool LowerThirdIntentVisible => HasPlaylistGuestRow ? GraphicsLowerThirdOnAir
+        : ManagedLowerThirdAuthority ? ManagedLowerThirdVisible : ProgramLowerThirdKey.IsVisible || ProgramLowerThirdEnabled;
+
     public async Task<NativeGraphicsOperationResult> ApplyStudioLowerThirdIntentAsync(bool visible)
     {
         await GraphicsLibrary.LoadAsync();
+        if (HasPlaylistGuestRow) {
+            // Playlist route: Guest row of the Program subject. Authority flips to instances only
+            // after the first accepted Play In (see the plan's Risks); the legacy path stays
+            // reachable for shows without a playlist.
+            var routed = await GraphicsPlayout.ApplyLowerThirdIntentAsync(visible, ProgramSubjectGuestEntry, ManagedLowerThirdAuthority,
+                _ => GraphicsWorkspace.SetAuthorityAsync("lower-third", "instances"));
+            CommandStatus = routed.Reason;
+            if (routed.Accepted) _programLowerThirdAutomationSuppressed = !visible;
+            return routed;
+        }
         var current = ManagedLowerThirdAuthority ? ManagedLowerThirdVisible : ProgramLowerThirdKey.IsVisible || ProgramLowerThirdEnabled;
         if (visible && StudioLowerThird.Assignment is not null) {
             if (current) return new() { Accepted = true, Reason = "The current lower third remains on air. The assigned look applies on the next Show." };

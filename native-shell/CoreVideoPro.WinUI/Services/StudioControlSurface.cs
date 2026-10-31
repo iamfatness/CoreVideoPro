@@ -6,6 +6,10 @@ using CoreVideoPro.WinUI.ViewModels;
 using CoreVideoPro.WinUI.ViewModels.Transport;
 using Microsoft.UI.Dispatching;
 using System.ComponentModel;
+using System.Text.Json;
+using GraphicsPlaylistEntry = CoreVideoPro.MediaCore.Models.GraphicsPlaylistEntry;
+using GraphicsPlaylistRow = CoreVideoPro.MediaCore.Models.GraphicsPlaylistRow;
+using NativeGraphicsOperationResult = CoreVideoPro.MediaCore.Models.NativeGraphicsOperationResult;
 
 namespace CoreVideoPro.WinUI.Services;
 
@@ -42,6 +46,8 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         nameof(StudioViewModel.ProgramLowerThirdEnabled), nameof(StudioViewModel.ShowInputSummary),
         nameof(StudioViewModel.ProductionMode),
         nameof(StudioViewModel.ProgramBufferFrames), nameof(StudioViewModel.ProgramBufferRestartRequired),
+        // Graphics playout (#1076): strip truth, guest entries and playlist edits light buttons.
+        nameof(StudioViewModel.GraphicsStrip), nameof(StudioViewModel.GuestEntries), nameof(StudioViewModel.GraphicsPlayoutStatus),
     };
 
     /// <summary>Every action id this adapter maps onto the ViewModel. A test asserts this covers
@@ -63,6 +69,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "graphics.clock.control", "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
         "graphics.template.select", "graphics.cue.create", "graphics.studio.assign", "graphics.image.import", "graphics.logo.import", "graphics.cue.select", "graphics.cue.action", "graphics.cue.save", "graphics.saved.restore",
         "graphics.template.install", "graphics.template.list", "graphics.authority.set", "graphics.automation.configure", "graphics.automation.control",
+        // Graphics playout (#1076): the ids the Graphics tab, the F-key router and Companion share.
+        "graphics.playlist.list", "graphics.playlist.row.set", "graphics.playlist.row.remove", "graphics.playlist.hotkey.set", "graphics.playlist.default",
+        "graphics.playIn", "graphics.toPreview", "graphics.playOut", "graphics.preview.remove", "graphics.playOutAll", "graphics.preview.clear", "graphics.strip",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "multiview.layout.set", "multiview.tileCount.set",
@@ -104,6 +113,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         _bridge = bridge;
         _ohgAdapterSlot.Replace(ohgAdapter);
         _vm.PropertyChanged += OnViewModelPropertyChanged;
+        // Create the playout service here, on the UI thread, so GetState (which transports may
+        // call from their own threads) only ever reads an existing strip and never lazily builds it.
+        _ = _vm.GraphicsPlayout;
         _feedbackTimer = _dispatcher.CreateTimer();
         _feedbackTimer.IsRepeating = false;
         _feedbackTimer.Interval = FeedbackDebounce;
@@ -406,10 +418,90 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             case "graphics.lowerThird.toggle":
             case "graphics.lowerThird.set":
             {
-                var visible = _vm.ManagedLowerThirdAuthority ? _vm.ManagedLowerThirdVisible : _vm.ProgramLowerThirdEnabled || _vm.ProgramLowerThirdKey.IsVisible;
+                // With a playlist Guest row the ViewModel routes this into graphics.playIn/playOut
+                // of the Program subject's entry (#1076 C1); otherwise the legacy/managed path.
+                var visible = _vm.LowerThirdIntentVisible;
                 var result = await _vm.ApplyStudioLowerThirdIntentAsync(actionId.EndsWith("toggle", StringComparison.Ordinal) ? !visible : Bool(args,0)).ConfigureAwait(true);
                 return result.Accepted ? ControlInvokeResult.Success : ControlInvokeResult.Fail(result.Reason);
             }
+
+            // ---- Graphics playout (#1076) ------------------------------------------
+            case "graphics.playlist.list":
+                await _vm.GraphicsLibrary.LoadAsync().ConfigureAwait(true);
+                return ControlInvokeResult.WithData(PlaylistJson());
+            case "graphics.playlist.row.set":
+            {
+                GraphicsPlaylistRow? row;
+                try { row = JsonSerializer.Deserialize<GraphicsPlaylistRow>(Str(args, 0), PlayoutJson); }
+                catch (JsonException ex) { return ControlInvokeResult.Fail($"rowJson is not a playlist row: {ex.Message}"); }
+                if (row is null || !row.IsValid) return ControlInvokeResult.Fail("rowJson is not a valid playlist row (id a-z0-9-, kind guest|title|logo|liveBug|sponsor, name, hotkey F1..F12 or blank, playOutAfterMs 0|8000|15000).");
+                await _vm.GraphicsLibrary.LoadAsync().ConfigureAwait(true);
+                var rows = _vm.GraphicsPlayout.Playlist.ToList();
+                var index = rows.FindIndex(r => r.Id == row.Id);
+                if (index < 0) rows.Add(row); else rows[index] = row;
+                return await SavePlaylist(rows).ConfigureAwait(true);
+            }
+            case "graphics.playlist.row.remove":
+            {
+                await _vm.GraphicsLibrary.LoadAsync().ConfigureAwait(true);
+                var rows = _vm.GraphicsPlayout.Playlist.ToList();
+                if (rows.RemoveAll(r => r.Id == Str(args, 0)) == 0) return ControlInvokeResult.Fail("That playlist row does not exist.");
+                return await SavePlaylist(rows).ConfigureAwait(true);
+            }
+            case "graphics.playlist.hotkey.set":
+            {
+                var rowId = Str(args, 0); var key = Str(args, 1).Trim().ToUpperInvariant();
+                if (!GraphicsPlaylistRow.ValidHotkey(key)) return ControlInvokeResult.Fail("key must be F1..F12 or blank.");
+                await _vm.GraphicsLibrary.LoadAsync().ConfigureAwait(true);
+                var rows = _vm.GraphicsPlayout.Playlist;
+                if (rows.All(r => r.Id != rowId)) return ControlInvokeResult.Fail("That playlist row does not exist.");
+                // One key, one row: a key already assigned elsewhere moves here.
+                return await SavePlaylist(rows.Select(r => r.Id == rowId ? r with { Hotkey = key } : key.Length > 0 && r.Hotkey == key ? r with { Hotkey = "" } : r).ToList()).ConfigureAwait(true);
+            }
+            case "graphics.playlist.default":
+            {
+                await _vm.GraphicsLibrary.LoadAsync().ConfigureAwait(true);
+                if (_vm.GraphicsPlayout.Playlist.Count > 0) return ControlInvokeResult.Fail("A graphics playlist already exists; edit its rows instead.");
+                var starterId = Str(args, 0);
+                var starter = starterId.Length == 0 ? GraphicsShowStarters.All[0] : GraphicsShowStarters.All.FirstOrDefault(s => s.Id == starterId);
+                if (starter is null) return ControlInvokeResult.Fail($"Unknown show starter '{starterId}'. Use one of: {string.Join(", ", GraphicsShowStarters.All.Select(s => s.Id))}.");
+                if (_vm.GraphicsWorkspace.State is not { CoreEpoch.Length: > 0 } graphicsState) return ControlInvokeResult.Fail("Native Graphics is unavailable.");
+                try { return await SavePlaylist(GraphicsWorkspaceLibrary.DefaultPlaylistFor(starter, graphicsState)).ConfigureAwait(true); }
+                catch (InvalidOperationException ex) { return ControlInvokeResult.Fail(ex.Message); }
+            }
+            case "graphics.playIn":
+            case "graphics.toPreview":
+            {
+                if (ResolvePlaylistEntry(Str(args, 0), Str(args, 1), out var entry) is { } refusal) return refusal;
+                var result = actionId == "graphics.playIn" ? await _vm.GraphicsPlayout.PlayInAsync(entry!).ConfigureAwait(true) : await _vm.GraphicsPlayout.ToPreviewAsync(entry!).ConfigureAwait(true);
+                return Graphics(result);
+            }
+            case "graphics.playOut":
+            {
+                var instanceId = Str(args, 2);
+                if (instanceId.Length > 0) return Graphics(await _vm.GraphicsPlayout.PlayOutAsync(instanceId).ConfigureAwait(true));
+                var rowId = Str(args, 0); var sourceId = Str(args, 1);
+                if (rowId.Length == 0) return ControlInvokeResult.Fail("graphics.playOut needs rowId (plus sourceId for a guest entry) or instanceId.");
+                if (_vm.GraphicsPlayout.Row(rowId) is not { } row) return ControlInvokeResult.Fail("That playlist row does not exist.");
+                if (row.Kind == GraphicsPlaylistRow.Guest && sourceId.Length == 0)
+                {
+                    // "Play Out guest" with no source: every entry of that row on Program goes out.
+                    var onAir = _vm.GraphicsStrip.OnProgram.Where(i => i.RowId == rowId).Select(i => i.InstanceId).ToArray();
+                    if (onAir.Length == 0) return ControlInvokeResult.Fail($"{row.Name} is not on Program.");
+                    NativeGraphicsOperationResult last = new() { Accepted = true };
+                    foreach (var id in onAir) { last = await _vm.GraphicsPlayout.PlayOutAsync(id).ConfigureAwait(true); if (!last.Accepted) break; }
+                    return Graphics(last);
+                }
+                return Graphics(await _vm.GraphicsPlayout.PlayOutAsync(GraphicsPlayoutService.InstanceIdFor(rowId, row.Kind == GraphicsPlaylistRow.Guest ? sourceId : "")).ConfigureAwait(true));
+            }
+            case "graphics.preview.remove":
+                return Graphics(await _vm.GraphicsPlayout.RemoveFromPreviewAsync(Str(args, 0)).ConfigureAwait(true));
+            case "graphics.playOutAll":
+                return Graphics(await _vm.GraphicsPlayout.PlayOutAllAsync().ConfigureAwait(true));
+            case "graphics.preview.clear":
+                return Graphics(await _vm.GraphicsPlayout.ClearPreviewAsync().ConfigureAwait(true));
+            case "graphics.strip":
+                return ControlInvokeResult.WithData(JsonSerializer.Serialize(ControlStrip(), PlayoutJson));
             case "graphics.caption.set":
                 _vm.CaptionText = Str(args, 0);
                 if (args.Count > 1 && args[1] is string speaker)
@@ -489,7 +581,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 _vm.AutomationAutoAssignInputsEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
             case "automation.lowerThirds.set":
-                if(_vm.ManagedLowerThirdAuthority) {
+                // A playlist Guest row means lower thirds are native instances: arm the native
+                // rules, never the legacy MagicScene key (#1076 C1).
+                if(_vm.ManagedLowerThirdAuthority || _vm.HasPlaylistGuestRow) {
                     var result=await _vm.ApplyManagedGraphicsAutomationAsync(Bool(args,0));
                     return result.Accepted?ControlInvokeResult.Success:ControlInvokeResult.Fail(result.Reason);
                 }
@@ -547,6 +641,60 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 return ControlInvokeResult.Fail($"Action '{actionId}' is not implemented by the WinUI surface.");
         }
     }
+
+    // ---- Graphics playout helpers (#1076) ---------------------------------------------------
+    private static readonly JsonSerializerOptions PlayoutJson = new(JsonSerializerDefaults.Web);
+
+    private static ControlInvokeResult Graphics(NativeGraphicsOperationResult result) =>
+        result.Accepted ? ControlInvokeResult.Success : ControlInvokeResult.Fail(result.Reason);
+
+    private async Task<ControlInvokeResult> SavePlaylist(IReadOnlyList<GraphicsPlaylistRow> rows) =>
+        await _vm.GraphicsLibrary.SavePlaylistAsync(rows).ConfigureAwait(true) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.GraphicsLibrary.Status);
+
+    /// <summary>rowId (+ optional sourceId) -> playable entry. Guest rows need a bound source: the
+    /// given one, else the current Program subject. Other rows ignore sourceId.</summary>
+    private ControlInvokeResult? ResolvePlaylistEntry(string rowId, string sourceId, out GraphicsPlaylistEntry? entry)
+    {
+        entry = null;
+        if (_vm.GraphicsPlayout.Row(rowId) is not { } row) return ControlInvokeResult.Fail(rowId.Length == 0 ? "rowId is required." : $"Playlist row '{rowId}' does not exist.");
+        if (row.Kind != GraphicsPlaylistRow.Guest) { entry = GraphicsPlayoutService.EntryFor(row); return null; }
+        if (sourceId.Length > 0)
+        {
+            entry = _vm.GuestEntryFor(sourceId);
+            return entry is null ? ControlInvokeResult.Fail($"'{sourceId}' is not bound to a Show Input, so it has no guest entry.") : null;
+        }
+        entry = _vm.ProgramSubjectGuestEntry;
+        return entry is null ? ControlInvokeResult.Fail("No Program subject is bound to a Show Input. Pass sourceId to choose a guest.") : null;
+    }
+
+    private ControlGraphicsStrip ControlStrip()
+    {
+        var strip = _vm.GraphicsStrip;
+        static ControlGraphicsStripItem Chip(GraphicsStripItem item) => new(item.InstanceId, item.RowId, item.SourceId, item.Label, item.Owner, item.Visibility);
+        return new ControlGraphicsStrip
+        {
+            OnProgram = strip.OnProgram.Select(Chip).ToArray(),
+            OnPreview = strip.OnPreview.Select(Chip).ToArray(),
+            Auto = strip.Auto.Select(Chip).ToArray(),
+            AutomationMode = strip.AutomationMode,
+            AutomationArmed = strip.AutomationArmed,
+        };
+    }
+
+    private IReadOnlyList<ControlGraphicsPlaylistRow> ControlPlaylist() =>
+        _vm.GraphicsPlayout.Playlist.Select(r => new ControlGraphicsPlaylistRow(r.Id, r.Kind, r.Name, r.Hotkey, r.PlayOutAfterMs)).ToArray();
+
+    private string PlaylistJson() => JsonSerializer.Serialize(new
+    {
+        rows = _vm.GraphicsPlayout.Playlist.Select(r => new
+        {
+            id = r.Id, kind = r.Kind, name = r.Name, hotkey = r.Hotkey, playOutAfterMs = r.PlayOutAfterMs,
+            templateId = r.TemplateId, templateVersion = r.TemplateVersion, followSources = r.FollowSources, showClock = r.ShowClock,
+            hasImage = r.Image is not null, instanceId = r.Kind == GraphicsPlaylistRow.Guest ? null : GraphicsPlayoutService.InstanceIdFor(r.Id, ""),
+        }),
+        guests = _vm.GuestEntries.Select(e => new { rowId = e.RowId, sourceId = e.SourceId, label = e.Label, title = e.Title, instanceId = GraphicsPlayoutService.InstanceIdFor(e) }),
+        programSubjectSourceId = _vm.ProgramLowerThirdSubjectSourceId,
+    }, PlayoutJson);
 
     private ControlInvokeResult CuePreviewWithRoutes(string sceneId, IReadOnlyDictionary<string, int?> routes)
     {
@@ -696,7 +844,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             Streaming = _vm.Streaming,
             EngineOn = _vm.ZoomCaptureSubscribed,
             CanTake = _vm.CanTake,
-            LowerThirdOnAir = _vm.ProgramLowerThirdKey.IsVisible,
+            // Under instances authority the strip's lower-third chip is the evidence (#1076 C2);
+            // NativeLowerThirdVisible below stays the legacy key's own observation.
+            LowerThirdOnAir = _vm.ManagedLowerThirdAuthority ? _vm.GraphicsLowerThirdOnAir : _vm.ProgramLowerThirdKey.IsVisible,
             ZoomStatus = _vm.ZoomStatus,
             EngineStatus = _vm.EngineStatus,
             CommandStatus = _vm.CommandStatus,
@@ -740,6 +890,8 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             VirtualCameraRawStatus = _vm.VirtualCameraRawStatus,
             Inputs = inputs,
             AudioSources = audioSources,
+            GraphicsStrip = ControlStrip(),
+            GraphicsPlaylist = ControlPlaylist(),
         }, _vm.NativeControlSnapshot);
 
         return WithOhg(state, _bridge?.Latest, _bridge?.Health ?? StoppedHealth, _ohgAdapterSlot.Current?.ShadowLastCommand);

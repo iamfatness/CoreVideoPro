@@ -15,6 +15,29 @@ public sealed record ControlAudioSourceState(
 
 public sealed record ControlAudioRouteState(string SourceId, string BusId, double GainDb);
 
+/// <summary>One chip on the graphics on-air strip (issue #1076). Owner is "playlist" (an
+/// instance the playlist created), "auto" (targeted by a native automation rule) or "design".
+/// RowId/SourceId are empty for non-playlist instances.</summary>
+public sealed record ControlGraphicsStripItem(string InstanceId, string RowId, string SourceId, string Label, string Owner, string Visibility);
+
+/// <summary>Graphics strip truth as the shell derives it from native instances only: Program =
+/// program revision > 0 and not hidden/building-out, Preview = a cue is held. Never a locally
+/// accepted command.</summary>
+public sealed record ControlGraphicsStrip
+{
+    public IReadOnlyList<ControlGraphicsStripItem> OnProgram { get; init; } = [];
+    public IReadOnlyList<ControlGraphicsStripItem> OnPreview { get; init; } = [];
+    public IReadOnlyList<ControlGraphicsStripItem> Auto { get; init; } = [];
+    public string AutomationMode { get; init; } = "manual";
+    public bool AutomationArmed { get; init; }
+    public static ControlGraphicsStrip Empty { get; } = new();
+}
+
+/// <summary>One graphics playlist row, enough for a surface to render a button: id (the
+/// graphics.playIn/toPreview/playOut rowId), kind (guest|title|logo|liveBug|sponsor), name,
+/// hotkey ("" or F1..F12) and the auto Play Out delay (0 = stays on).</summary>
+public sealed record ControlGraphicsPlaylistRow(string Id, string Kind, string Name, string Hotkey, int PlayOutAfterMs);
+
 /// <summary>Flat, serializable feedback snapshot for control-surface button state (Companion
 /// feedbacks, WS clients). Built by the WinUI adapter from ViewModel state + the core snapshot,
 /// and emitted (coalesced) on change. Field names are the stable feedback contract — keep them
@@ -105,6 +128,10 @@ public sealed record ControlState
     public string VirtualCameraRawStatus { get; init; } = string.Empty;
 
     public IReadOnlyList<ControlInputState> Inputs { get; init; } = System.Array.Empty<ControlInputState>();
+    /// <summary>Graphics playout (issue #1076): on-air strip and playlist rows, so Companion and
+    /// hotkey surfaces can light buttons. Always present; empty when no core or no playlist.</summary>
+    public ControlGraphicsStrip GraphicsStrip { get; init; } = ControlGraphicsStrip.Empty;
+    public IReadOnlyList<ControlGraphicsPlaylistRow> GraphicsPlaylist { get; init; } = [];
     public IReadOnlyList<ControlAudioSourceState> AudioSources { get; init; } = System.Array.Empty<ControlAudioSourceState>();
 
     /// <summary>The OHG show engine's own snapshot, passed through verbatim (spec §7). Serializes

@@ -200,6 +200,30 @@ public static class ControlActionRegistry
             new("graphics.saved.restore", "Restore saved graphics cue", "Restore an unbound saved cue hidden; Cue and Show remain explicit.",
                 new[] { new ControlParam("savedId", s, true) }),
 
+            // ---- Graphics playout (issue #1076). Ids are the contract shared by the Graphics tab
+            // buttons, the F-key router and Companion; never rename. Play In = take the graphic to
+            // Program, To Preview = cue it (rides the next Take), Play Out = hide. --------------
+            new("graphics.playlist.list", "List graphics playlist", "Read the playlist rows and the guest entries bound to Show Inputs. Changes nothing; reply carries data."),
+            new("graphics.playlist.row.set", "Save graphics playlist row", "Add or replace one playlist row from its JSON (id, kind, name, hotkey, playOutAfterMs, templateId, templateVersion, fields, style, followSources, showClock). Program and Preview are unchanged.",
+                new[] { new ControlParam("rowJson", s, true, "JSON object of one playlist row") }),
+            new("graphics.playlist.row.remove", "Remove graphics playlist row", "Remove one playlist row by id. An instance it already put on air stays until Play Out.",
+                new[] { new ControlParam("rowId", s, true) }),
+            new("graphics.playlist.hotkey.set", "Set graphics hotkey", "Assign F1..F12 to a playlist row (blank clears). A key already on another row moves to this one.",
+                new[] { new ControlParam("rowId", s, true), new ControlParam("key", s, false, "F1..F12 or blank") }),
+            new("graphics.playlist.default", "Install default graphics playlist", "Install the five starter rows (guest, title, logo, LIVE bug, sponsor) when no playlist exists. Refused when one exists.",
+                new[] { new ControlParam("starterId", s, false, "Show starter id; default is the first starter") }),
+            new("graphics.playIn", "Play In graphic", "Take a playlist row to Program: create or refresh its native instance, cue it, show from the cue. Guest rows take sourceId (zoom:/capture:/media:) or default to the current Program subject.",
+                new[] { new ControlParam("rowId", s, true), new ControlParam("sourceId", s, false, "Guest rows: bound source id; blank = current Program subject") }),
+            new("graphics.toPreview", "Graphic to Preview", "Cue a playlist row to Preview; it rides the next Take. Guest rows take sourceId or default to the current Program subject.",
+                new[] { new ControlParam("rowId", s, true), new ControlParam("sourceId", s, false, "Guest rows: bound source id; blank = current Program subject") }),
+            new("graphics.playOut", "Play Out graphic", "Hide one graphic on Program: by rowId (+sourceId for a guest entry) or by instanceId. Refused when it is not on Program.",
+                new[] { new ControlParam("rowId", s, false), new ControlParam("sourceId", s, false), new ControlParam("instanceId", s, false, "Takes precedence over rowId") }),
+            new("graphics.preview.remove", "Remove graphic from Preview", "Drop one cued graphic from Preview without touching Program.",
+                new[] { new ControlParam("instanceId", s, true) }),
+            new("graphics.playOutAll", "Play Out all graphics", "Hide every native graphic instance on Program (playlist, design and automatic alike)."),
+            new("graphics.preview.clear", "Clear graphics Preview", "Drop every cued graphic from Preview; Program is unchanged."),
+            new("graphics.strip", "Read graphics strip", "Read the on-air strip (onProgram, onPreview, auto, automationMode, automationArmed) from native instance truth. Changes nothing; reply carries data."),
+
             // ---- Audio ------------------------------------------------------------------
             new("audio.zoomMode.set", "Zoom audio mode", "Choose independently routed ISO stems or Zoom's combined fallback mix.",
                 new[] { new ControlParam("mode", s, true, "perGuestIso | programMix") }),
