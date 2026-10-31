@@ -467,7 +467,7 @@ public sealed class GraphicsPlayoutControl : UserControl
 
             var design = StudioBrushes.GhostButton("Open in Design"); design.HorizontalAlignment = HorizontalAlignment.Stretch;
             ToolTipService.SetToolTip(design, "Switch to Design to change the look. Program and Preview are unchanged.");
-            design.Click += (_, _) => { if (_attached is { } s) { s.GraphicsMode = StudioViewModel.GraphicsModeDesign; s.ActiveTab = StudioTab.Overlays; } };
+            design.Click += (_, _) => _attached?.OpenGraphicInDesign(id);
             _inspector.Children.Add(design);
             if (row.TemplateId.Length == 0 && row.Image is null)
                 _inspector.Children.Add(new TextBlock { Text = "This row has no graphic yet. Open it in Design and import a full-canvas image to give it one.", FontSize = 11, Foreground = StudioBrushes.Program, TextWrapping = TextWrapping.Wrap });

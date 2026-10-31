@@ -40,7 +40,7 @@ public sealed partial class OverlaysPage : UserControl
     }
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(StudioViewModel.GraphicsMode)) ApplyGraphicsMode();
+        if (e.PropertyName is nameof(StudioViewModel.GraphicsMode) or nameof(StudioViewModel.GraphicsDesignAdvanced)) ApplyGraphicsMode();
     }
     private void OnPlayoutModeClick(object sender, RoutedEventArgs e) { if (ViewModel is { } vm) vm.GraphicsMode = StudioViewModel.GraphicsModePlayout; }
     private void OnDesignModeClick(object sender, RoutedEventArgs e) { if (ViewModel is { } vm) vm.GraphicsMode = StudioViewModel.GraphicsModeDesign; }
@@ -56,18 +56,21 @@ public sealed partial class OverlaysPage : UserControl
         var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         PlayoutModeButton.Background = design ? clear : accent; PlayoutModeButton.Foreground = design ? text : onAccent;
         DesignModeButton.Background = design ? accent : clear; DesignModeButton.Foreground = design ? onAccent : text;
-        if (design) ResumeWorkspacePreviewIfDesign(); else GraphicsWorkspace.SuspendPreview();
+        if (design) ResumeWorkspacePreviewIfDesign(); else { GraphicsWorkspace.SuspendPreview(); GraphicsBuilder.SuspendPreview(); }
     }
+    /// <summary>Exactly one Design surface holds the private preview: the builder by default,
+    /// the advanced workspace behind "Advanced editor".</summary>
     private void ResumeWorkspacePreviewIfDesign()
     {
         if (ViewModel?.IsGraphicsDesignMode != true) return;
         if (LegacyDesignerExpander.IsExpanded && ExistingOverlayDrawer.IsPaneOpen) return;
-        GraphicsWorkspace.ResumePreview();
+        if (ViewModel.GraphicsDesignAdvanced) { GraphicsBuilder.SuspendPreview(); GraphicsWorkspace.ResumePreview(); }
+        else { GraphicsWorkspace.SuspendPreview(); GraphicsBuilder.ResumePreview(); }
     }
 
     private void OnExistingControlsRequested(object? sender, EventArgs e) {
         ExistingOverlayDrawer.IsPaneOpen = true;
-        if (LegacyDesignerExpander.IsExpanded) { GraphicsWorkspace.SuspendPreview(); LowerThirdDesigner.ActivatePreview(); }
+        if (LegacyDesignerExpander.IsExpanded) { GraphicsWorkspace.SuspendPreview(); GraphicsBuilder.SuspendPreview(); LowerThirdDesigner.ActivatePreview(); }
     }
     private void OnCloseExistingControls(object sender, RoutedEventArgs e) {
         ExistingOverlayDrawer.IsPaneOpen = false;

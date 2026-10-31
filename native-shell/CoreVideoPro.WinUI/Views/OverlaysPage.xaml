@@ -44,8 +44,10 @@
           <controls:GraphicsOnAirStripControl Grid.Row="1" Studio="{x:Bind ViewModel, Mode=OneWay}" />
           <controls:GraphicsPlayoutControl Grid.Row="2" x:Name="GraphicsPlayout" Studio="{x:Bind ViewModel, Mode=OneWay}"
                                            Visibility="{x:Bind ViewModel.IsGraphicsPlayoutMode, Mode=OneWay}" />
+          <controls:GraphicsBuilderControl Grid.Row="2" x:Name="GraphicsBuilder" Studio="{x:Bind ViewModel, Mode=OneWay}"
+                                           Visibility="{x:Bind ViewModel.IsGraphicsBuilderVisible, Mode=OneWay}" />
           <controls:GraphicsWorkspaceControl Grid.Row="2" x:Name="GraphicsWorkspace" Studio="{x:Bind ViewModel, Mode=OneWay}" ExistingControlsRequested="OnExistingControlsRequested"
-                                             Visibility="{x:Bind ViewModel.IsGraphicsDesignMode, Mode=OneWay}" />
+                                             Visibility="{x:Bind ViewModel.IsGraphicsAdvancedVisible, Mode=OneWay}" />
         </Grid>
       </SplitView.Content>
       <SplitView.Pane>

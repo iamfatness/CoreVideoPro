@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.WinUI.Models;
 
 namespace CoreVideoPro.WinUI.ViewModels;
 
@@ -30,11 +31,31 @@ public sealed partial class StudioViewModel
         var next = value == GraphicsModeDesign ? GraphicsModeDesign : GraphicsModePlayout;
         if (!SetProperty(ref _graphicsMode, next, nameof(GraphicsMode))) return false;
         OnPropertyChanged(nameof(IsGraphicsPlayoutMode)); OnPropertyChanged(nameof(IsGraphicsDesignMode));
+        OnPropertyChanged(nameof(IsGraphicsBuilderVisible)); OnPropertyChanged(nameof(IsGraphicsAdvancedVisible));
         return true;
     }
 
     /// <summary>The compact playlist column in the Studio tab (spec: right panel of the console).</summary>
     [ObservableProperty] private bool _showGraphicsPanel = true;
+
+    /// <summary>Design mode shows the template-first builder by default; the full workspace
+    /// (looks library, private cues, layer editor, automation) sits behind "Advanced editor".
+    /// Session-only: a new launch always opens on the builder.</summary>
+    [ObservableProperty] private bool _graphicsDesignAdvanced;
+    /// <summary>Playlist row the builder opens for editing ("" = start a new graphic). Set by
+    /// Operate's "Open in Design"; the builder clears it after loading the row.</summary>
+    [ObservableProperty] private string _graphicsDesignRowId = "";
+    public bool IsGraphicsBuilderVisible => IsGraphicsDesignMode && !GraphicsDesignAdvanced;
+    public bool IsGraphicsAdvancedVisible => IsGraphicsDesignMode && GraphicsDesignAdvanced;
+    partial void OnGraphicsDesignAdvancedChanged(bool value) { OnPropertyChanged(nameof(IsGraphicsBuilderVisible)); OnPropertyChanged(nameof(IsGraphicsAdvancedVisible)); }
+
+    /// <summary>Operate → Design for one row: the builder opens that row's look and fields.
+    /// Program and Preview are unchanged.</summary>
+    public void OpenGraphicInDesign(string rowId)
+    {
+        GraphicsDesignRowId = rowId; GraphicsDesignAdvanced = false;
+        GraphicsMode = GraphicsModeDesign; ActiveTab = StudioTab.Overlays;
+    }
 
     /// <summary>Canonical source id of the source currently occupying Program (the Guest-row
     /// subject a bare hotkey or "LT in" plays), or null when Program shows no eligible source.</summary>
