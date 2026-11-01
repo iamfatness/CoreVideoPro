@@ -71,7 +71,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "graphics.template.select", "graphics.cue.create", "graphics.studio.assign", "graphics.image.import", "graphics.logo.import", "graphics.cue.select", "graphics.cue.action", "graphics.cue.save", "graphics.saved.restore",
         "graphics.template.install", "graphics.template.list", "graphics.authority.set", "graphics.automation.configure", "graphics.automation.control",
         // Graphics playout (#1076): the ids the Graphics tab, the F-key router and Companion share.
-        "graphics.playlist.list", "graphics.playlist.row.set", "graphics.playlist.row.remove", "graphics.playlist.hotkey.set", "graphics.playlist.default",
+        "graphics.playlist.list", "graphics.playlist.clock", "graphics.playlist.row.set", "graphics.playlist.row.remove", "graphics.playlist.hotkey.set", "graphics.playlist.default",
         "graphics.playIn", "graphics.toPreview", "graphics.playOut", "graphics.preview.remove", "graphics.playOutAll", "graphics.preview.clear", "graphics.strip",
         "graphics.layout.list", "graphics.layout.set", "graphics.layout.remove", "graphics.layout.cue", "graphics.layout.take",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
@@ -445,6 +445,11 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             case "graphics.playlist.list":
                 await _vm.GraphicsLibrary.LoadAsync().ConfigureAwait(true);
                 return ControlInvokeResult.WithData(PlaylistJson());
+            case "graphics.playlist.clock":
+            {
+                if (_vm.GraphicsPlayout.Row(Str(args, 0)) is not { } clockRow) return ControlInvokeResult.Fail("That playlist row does not exist.");
+                return Graphics(await _vm.GraphicsPlayout.ClockAsync(GraphicsPlayoutService.EntryFor(clockRow), Str(args, 1)).ConfigureAwait(true));
+            }
             case "graphics.playlist.row.set":
             {
                 GraphicsPlaylistRow? row;
@@ -517,9 +522,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 var rowId = Str(args, 0); var sourceId = Str(args, 1);
                 if (rowId.Length == 0) return ControlInvokeResult.Fail("graphics.playOut needs rowId (plus sourceId for a guest entry) or instanceId.");
                 if (_vm.GraphicsPlayout.Row(rowId) is not { } row) return ControlInvokeResult.Fail("That playlist row does not exist.");
-                if (row.Kind == GraphicsPlaylistRow.Guest && sourceId.Length == 0)
+                if ((row.Kind == GraphicsPlaylistRow.Guest || row.HasVariants) && sourceId.Length == 0)
                 {
-                    // "Hide guest" with no source: every entry of that row on Program goes out.
+                    // "Hide guest" / "Hide names list" with no source: every entry of that row on Program goes out.
                     var onAir = _vm.GraphicsStrip.OnProgram.Where(i => i.RowId == rowId).Select(i => i.InstanceId).ToArray();
                     if (onAir.Length == 0) return ControlInvokeResult.Fail($"{row.Name} is not on Program.");
                     NativeGraphicsOperationResult last = new() { Accepted = true };
@@ -741,6 +746,12 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
     {
         entry = null;
         if (_vm.GraphicsPlayout.Row(rowId) is not { } row) return ControlInvokeResult.Fail(rowId.Length == 0 ? "rowId is required." : $"Playlist row '{rowId}' does not exist.");
+        if (row.HasVariants)
+        {
+            // Names list: a named variant, else the next one after whatever is on Program.
+            entry = sourceId.Length > 0 ? _vm.GuestEntryFor(sourceId) : GraphicsPlayoutService.NextVariant(row, _vm.GraphicsStrip.OnProgram.Where(i => i.RowId == rowId).Select(i => i.SourceId));
+            return entry is null ? ControlInvokeResult.Fail($"'{sourceId}' is not a line of {row.Name}'s names list.") : null;
+        }
         if (row.Kind != GraphicsPlaylistRow.Guest) { entry = GraphicsPlayoutService.EntryFor(row); return null; }
         if (sourceId.Length > 0)
         {

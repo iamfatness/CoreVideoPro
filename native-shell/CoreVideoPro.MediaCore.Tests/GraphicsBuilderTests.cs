@@ -142,3 +142,95 @@ public sealed class GraphicsBuilderMotionTests
         Assert.False((row with { Motion = new() { Out = new() { Type = "slide", Direction = "diagonal" } } }).IsValid);
     }
 }
+
+public sealed class GraphicsBuilderNamesListTests
+{
+    [Fact]
+    public void ParsesLinesCsvHeadersQuotesAndKeepsIdsUnique()
+    {
+        var text = "Name,Title\r\n\"Lovelace, Ada\", Analyst\nAlan Turing\tMathematician\n\nAlan Turing; Codebreaker\n   \n";
+        var list = GraphicsBuilder.ParseNamesList(text);
+        Assert.Equal(["Lovelace, Ada", "Alan Turing", "Alan Turing"], list.Select(v => v.Name));
+        Assert.Equal(["Analyst", "Mathematician", "Codebreaker"], list.Select(v => v.Title));
+        Assert.Equal(["lovelace-ada", "alan-turing", "alan-turing-2"], list.Select(v => v.Id));
+        Assert.True(GraphicsPlaylistRow.ValidVariants(list));
+        Assert.Empty(GraphicsBuilder.ParseNamesList("name, title"));
+        Assert.Empty(GraphicsBuilder.ParseNamesList(""));
+    }
+
+    [Fact]
+    public void ReSavingKeepsTheIdOfANameAlreadyInTheList()
+    {
+        var before = GraphicsBuilder.ParseNamesList("Ada, One\nAlan, Two");
+        var after = GraphicsBuilder.ParseNamesList("Grace, Zero\nAlan, Two (edited)\nAda, One", before);
+        Assert.Equal(before.Single(v => v.Name == "Alan").Id, after.Single(v => v.Name == "Alan").Id);
+        Assert.Equal(before.Single(v => v.Name == "Ada").Id, after.Single(v => v.Name == "Ada").Id);
+        Assert.Equal("Two (edited)", after.Single(v => v.Name == "Alan").Title);
+        Assert.Equal("Grace, Zero" + Environment.NewLine + "Alan, Two (edited)" + Environment.NewLine + "Ada, One", GraphicsBuilder.NamesListText(after));
+    }
+
+    [Fact]
+    public void ANamesListRowIsATitleKindRowWithVariantsAndNoSourceFollowing()
+    {
+        var t = new NativeGraphicsTemplate { TemplateId = "logo-accent", TemplateVersion = 1, Name = "Logo accent", Family = "lower-third", Runtime = "declarative" };
+        var draft = new NativeGraphicsDraft(t.TemplateId, 1, JsonSerializer.SerializeToElement(new { name = "x", title = "y" }), new LowerThirdAppearance(), new());
+        var variants = GraphicsBuilder.ParseNamesList("Ada, Analyst\nAlan, Mathematician");
+        var row = GraphicsBuilder.RowFrom(GraphicsBuilder.Kind("lower-third")!, t, draft, "Panelists", "F6", 8000, followSources: true, rows: [], variants: variants);
+        Assert.Equal(GraphicsPlaylistRow.Title, row.Kind); Assert.False(row.FollowSources); Assert.True(row.HasVariants); Assert.True(row.IsValid);
+        var entries = GraphicsPlayoutService.VariantEntries(row);
+        Assert.Equal(["variant:ada", "variant:alan"], entries.Select(e => e.SourceId));
+        Assert.Equal(("Ada", "Analyst"), (entries[0].Label, entries[0].Title));
+        Assert.True(entries[0].IsVariant);
+        // Bare hotkey steps through the list and wraps.
+        Assert.Equal("variant:ada", GraphicsPlayoutService.NextVariant(row, [])!.SourceId);
+        Assert.Equal("variant:alan", GraphicsPlayoutService.NextVariant(row, ["variant:ada"])!.SourceId);
+        Assert.Equal("variant:ada", GraphicsPlayoutService.NextVariant(row, ["variant:alan"])!.SourceId);
+        Assert.Null(GraphicsPlayoutService.NextVariant(row with { Variants = [] }, []));
+    }
+
+    [Fact]
+    public void VariantValidationBoundsTheList()
+    {
+        var row = new GraphicsPlaylistRow { Id = "p", Kind = GraphicsPlaylistRow.Title, Name = "P" };
+        Assert.False((row with { Variants = [new() { Id = "Bad Id", Name = "x" }] }).IsValid);
+        Assert.False((row with { Variants = [new() { Id = "a", Name = "x" }, new() { Id = "a", Name = "y" }] }).IsValid);
+        Assert.False((row with { Variants = [new() { Id = "a", Name = "" }] }).IsValid);
+        Assert.False((row with { Variants = Enumerable.Range(0, 65).Select(i => new GraphicsPlaylistVariant { Id = "v" + i, Name = "n" }).ToArray() }).IsValid);
+        Assert.True((row with { Variants = Enumerable.Range(0, 64).Select(i => new GraphicsPlaylistVariant { Id = "v" + i, Name = "n" }).ToArray() }).IsValid);
+    }
+}
+
+public sealed class GraphicsBuilderPlacementTests
+{
+    private static NativeGraphicsTemplate Template() => new() { TemplateId = "centered-title", TemplateVersion = 1, Name = "T", Family = "title", Runtime = "declarative",
+        DefaultPlacement = new() { Anchor = "upper-center", X = 0, Y = 120, Scale = 1 } };
+
+    [Fact]
+    public void ARowKeepsOnlyAPlacementThatDiffersFromTheTemplateDefault()
+    {
+        var t = Template(); var kind = GraphicsBuilder.Kind("title")!;
+        var same = new NativeGraphicsDraft(t.TemplateId, 1, JsonSerializer.SerializeToElement(new { heading = "x" }), new LowerThirdAppearance(), new(), t.DefaultPlacement);
+        Assert.Null(GraphicsBuilder.RowFrom(kind, t, same, "A", "", 0, false, []).Placement);
+        var moved = same with { Placement = t.DefaultPlacement! with { Anchor = "lower-right", Scale = .8 } };
+        var row = GraphicsBuilder.RowFrom(kind, t, moved, "B", "", 0, false, []);
+        Assert.Equal(("lower-right", .8), (row.Placement!.Anchor, row.Placement.Scale)); Assert.True(row.IsValid);
+        Assert.False((row with { Placement = row.Placement with { Anchor = "nowhere" } }).IsValid);
+        Assert.Null(GraphicsBuilder.RowFrom(kind, t, same with { Placement = null }, "C", "", 0, false, []).Placement);
+    }
+}
+
+public sealed class GraphicsBuilderClockTests
+{
+    [Fact]
+    public void AClockRowCarriesItsSettingsOnlyWhenTheTemplateHasAClock()
+    {
+        var clockTemplate = new NativeGraphicsTemplate { TemplateId = "clock-panel", TemplateVersion = 1, Name = "Clock", Family = "clock", Runtime = "declarative" };
+        var title = new NativeGraphicsTemplate { TemplateId = "centered-title", TemplateVersion = 1, Name = "T", Family = "title", Runtime = "declarative" };
+        var draft = new NativeGraphicsDraft("x", 1, JsonSerializer.SerializeToElement(new { label = "LIVE" }), new LowerThirdAppearance(), new());
+        var countdown = new NativeGraphicsClockConfiguration { Mode = "countdown", DurationSeconds = 90, Finish = "hide" };
+        var row = GraphicsBuilder.RowFrom(GraphicsBuilder.Kind("clock")!, clockTemplate, draft, "Break", "", 0, false, [], clock: countdown);
+        Assert.True(row.ShowClock); Assert.Equal(90, row.Clock!.DurationSeconds); Assert.Equal("hide", row.Clock.Finish); Assert.True(row.IsValid);
+        Assert.Null(GraphicsBuilder.RowFrom(GraphicsBuilder.Kind("title")!, title, draft, "T", "", 0, false, [], clock: countdown).Clock);
+        Assert.False((row with { Clock = countdown with { DurationSeconds = 0 } }).IsValid);
+    }
+}

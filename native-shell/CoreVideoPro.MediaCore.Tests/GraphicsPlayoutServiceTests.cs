@@ -125,6 +125,80 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Equal("fade", Bodies("graphics.instance.create").Single().GetProperty("animations").GetProperty("in").GetProperty("type").GetString());
     }
 
+    [Fact] public async Task PlayInOfANamesListVariantBindsThatLinesNameAndTitle()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        var rows = library.Document.Playlist.ToList();
+        var guest = rows[0]; // lower-third template row
+        rows[0] = guest with { Kind = GraphicsPlaylistRow.Title, FollowSources = false, Variants = GraphicsBuilder.ParseNamesList("Ada Lovelace, Analyst\nAlan Turing, Mathematician") };
+        Assert.True(await library.SavePlaylistAsync(rows), library.Status);
+        var saved = library.Document.Playlist[0];
+        var entries = service.GuestEntries([], (_, _) => ("", ""));
+        Assert.Equal(["variant:ada-lovelace", "variant:alan-turing"], entries.Where(e => e.RowId == saved.Id).Select(e => e.SourceId));
+        Assert.True((await service.PlayInAsync(entries[1])).Accepted);
+        var create = Bodies("graphics.instance.create").Single();
+        Assert.Equal(GraphicsPlayoutService.InstanceIdFor(saved.Id, "variant:alan-turing"), create.GetProperty("instanceId").GetString());
+        Assert.Equal("Alan Turing", create.GetProperty("fields").GetProperty("name").GetString());
+        Assert.Equal("Mathematician", create.GetProperty("fields").GetProperty("title").GetString());
+        Assert.False(create.TryGetProperty("binding", out _));
+    }
+
+    [Fact] public async Task PlayInSendsTheRowsOwnPlacementWhenItHasOne()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        var rows = library.Document.Playlist.ToList();
+        rows[1] = rows[1] with { Placement = new() { Anchor = "lower-right", X = -40, Y = -30, Scale = .75 } };
+        Assert.True(await library.SavePlaylistAsync(rows), library.Status);
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(library.Document.Playlist[1]))).Accepted);
+        var placement = Bodies("graphics.instance.create").Single().GetProperty("placement");
+        Assert.Equal("lower-right", placement.GetProperty("anchor").GetString());
+        Assert.Equal(.75, placement.GetProperty("scale").GetDouble());
+    }
+
+    [Fact] public async Task AClockRowConfiguresItsNativeClockAfterCreateAndOffersTransport()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        var rows = library.Document.Playlist.ToList();
+        rows[3] = rows[3] with { Clock = new() { Mode = "countdown", DurationSeconds = 120 } }; // LIVE bug row (clock template)
+        Assert.True(await library.SavePlaylistAsync(rows), library.Status);
+        var entry = GraphicsPlayoutService.EntryFor(library.Document.Playlist[3]);
+        Assert.True((await service.ClockAsync(entry, "start")).Accepted == false, "transport before an instance exists must be refused");
+        Assert.True((await service.ToPreviewAsync(entry)).Accepted);
+        var configure = Bodies("graphics.clock.control").Single();
+        Assert.Equal("configure", configure.GetProperty("action").GetString());
+        Assert.Equal(1, configure.GetProperty("expectedClockRevision").GetInt64()); // the core's initial clock revision
+        Assert.Equal(1, configure.GetProperty("expectedRevision").GetInt64());
+        Assert.Equal("countdown", configure.GetProperty("configuration").GetProperty("mode").GetString());
+        Assert.Equal(120, configure.GetProperty("configuration").GetProperty("durationSeconds").GetInt32());
+        _commands.Clear();
+        Assert.True((await service.ClockAsync(entry, "start")).Accepted);
+        var start = Bodies("graphics.clock.control").Single();
+        Assert.Equal("start", start.GetProperty("action").GetString()); Assert.True(start.GetProperty("expectedRevision").GetInt64() >= 1);
+        Assert.False((await service.ClockAsync(entry, "explode")).Accepted);
+    }
+
+    [Fact] public async Task StripChipsOfANamesListCarryTheLineSoTheNextShowSteps()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        var rows = library.Document.Playlist.ToList();
+        rows[0] = rows[0] with { Kind = GraphicsPlaylistRow.Title, FollowSources = false, PlayOutAfterMs = 0, Variants = GraphicsBuilder.ParseNamesList("Ada, One\nAlan, Two") };
+        Assert.True(await library.SavePlaylistAsync(rows), library.Status);
+        var row = library.Document.Playlist[0];
+        var entries = GraphicsPlayoutService.VariantEntries(row);
+        Assert.True((await service.PlayInAsync(entries[0])).Accepted);
+        var chip = Assert.Single(service.Strip.OnProgram);
+        Assert.Equal("variant:ada", chip.SourceId); Assert.Equal(row.Name + " \u00B7 Ada", chip.Label);
+        Assert.Equal("variant:alan", GraphicsPlayoutService.NextVariant(row, service.Strip.OnProgram.Select(i => i.SourceId))!.SourceId);
+        Assert.Equal("", GraphicsPlayoutService.VariantSourceIdOf(row, "playlist-title"));
+        // Showing the next line replaces the previous one; another row's graphic is untouched.
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(library.Document.Playlist[1]))).Accepted);
+        _commands.Clear();
+        Assert.True((await service.PlayInAsync(entries[1])).Accepted);
+        var hides = _commands.Where(c => c.Action == "graphics.instance.trigger" && c.Body.GetProperty("action").GetString() == "hide").Select(c => c.Body.GetProperty("instanceId").GetString()).ToArray();
+        Assert.Equal([GraphicsPlayoutService.InstanceIdFor(row.Id, "variant:ada")], hides);
+        Assert.Equal(["variant:alan", ""], service.Strip.OnProgram.Select(i => i.SourceId).OrderBy(s => s.Length == 0).ToArray());
+    }
+
     [Fact] public async Task PlayInCreatesCuesWaitsThenShowsFromCue()
     {
         var (library, service) = await BuildWithDefaultPlaylist();

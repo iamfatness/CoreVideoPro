@@ -13,6 +13,7 @@ namespace CoreVideoPro.WinUI.Services;
 /// same action is applied directly to <see cref="StudioViewModel.GraphicsPlayout"/>.</summary>
 public static class GraphicsPlayoutActions
 {
+    public const string PlaylistClock = "graphics.playlist.clock";
     public const string PlayIn = "graphics.playIn", ToPreview = "graphics.toPreview", PlayOut = "graphics.playOut",
         PreviewRemove = "graphics.preview.remove", PlayOutAll = "graphics.playOutAll", PreviewClear = "graphics.preview.clear",
         PlaylistDefault = "graphics.playlist.default", HotkeySet = "graphics.playlist.hotkey.set",

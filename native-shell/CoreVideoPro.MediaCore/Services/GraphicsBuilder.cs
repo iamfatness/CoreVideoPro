@@ -70,8 +70,10 @@ public static class GraphicsBuilder
     /// shot layouts that name it survive) and its chosen image path.</summary>
     public static GraphicsPlaylistRow RowFrom(GraphicsBuilderKind kind, NativeGraphicsTemplate template, NativeGraphicsDraft draft,
         string name, string hotkey, int playOutAfterMs, bool followSources, IReadOnlyList<GraphicsPlaylistRow> rows, GraphicsPlaylistRow? existing = null,
-        NativeGraphicsAnimations? motion = null)
+        NativeGraphicsAnimations? motion = null, IReadOnlyList<GraphicsPlaylistVariant>? variants = null, NativeGraphicsClockConfiguration? clock = null)
     {
+        var list = variants ?? [];
+        if (list.Count > 0) followSources = false; // a names list is the binding
         var fields = draft.Fields.ValueKind == JsonValueKind.Object
             ? draft.Fields.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal)
             : new Dictionary<string, JsonElement>(StringComparer.Ordinal);
@@ -85,7 +87,9 @@ public static class GraphicsBuilder
             PlayOutAfterMs = GraphicsPlaylistRow.PlayOutAfterChoices.Contains(playOutAfterMs) ? playOutAfterMs : 0,
             TemplateId = template.TemplateId, TemplateVersion = template.TemplateVersion,
             Fields = fields, Style = draft.Style, Image = draft.Image, ImagePath = existing?.ImagePath,
-            FollowSources = rowKind == GraphicsPlaylistRow.Guest, ShowClock = hasClock, Motion = motion,
+            FollowSources = rowKind == GraphicsPlaylistRow.Guest, ShowClock = hasClock, Motion = motion, Variants = list,
+            Placement = draft.Placement is { IsValid: true } p && !PlacementEquals(p, template.DefaultPlacement) ? p : null,
+            Clock = hasClock && clock is { IsValid: true } ? clock : null,
         };
     }
 
@@ -99,6 +103,16 @@ public static class GraphicsBuilder
         if (sponsor >= 0) list.Insert(sponsor, row); else list.Add(row);
         return list;
     }
+
+    public static bool PlacementEquals(NativeGraphicsPlacement? a, NativeGraphicsPlacement? b) =>
+        a is null ? b is null : b is not null && a.Anchor == b.Anchor && Math.Abs(a.X - b.X) < .5 && Math.Abs(a.Y - b.Y) < .5 && Math.Abs(a.Scale - b.Scale) < .005;
+    /// <summary>Typefaces every Windows 10/11 install has (the compositor rasterizes with
+    /// DirectWrite; a missing family would silently fall back, so only safe names are offered).</summary>
+    public static IReadOnlyList<string> TypefaceChoices { get; } = ["Segoe UI", "Segoe UI Semibold", "Bahnschrift", "Arial", "Verdana", "Trebuchet MS", "Georgia", "Cambria", "Consolas"];
+    public static IReadOnlyList<(string Id, string Label)> AnchorChoices { get; } = [
+        ("upper-left", "Top left"), ("upper-center", "Top center"), ("upper-right", "Top right"),
+        ("center-left", "Middle left"), ("center", "Center"), ("center-right", "Middle right"),
+        ("lower-left", "Bottom left"), ("lower-center", "Bottom center"), ("lower-right", "Bottom right")];
 
     /// <summary>Operator-facing motion presets. "Default" leaves the row's Motion null so the
     /// playout default applies; slides come in from and leave toward the same edge.</summary>
@@ -129,6 +143,54 @@ public static class GraphicsBuilder
         if (motion.In.Type == "slide") return ("slide-" + motion.In.Direction, (int)Math.Round(motion.In.DurationMs));
         return ("default", (int)Math.Round(motion.In.DurationMs));
     }
+
+    /// <summary>Names list text → variants. One line per name; the title follows the first
+    /// comma, tab or semicolon (so a two-column CSV pastes straight in). A first line reading
+    /// "name,title" (any case) is a header and skipped. Quotes around a cell are stripped.
+    /// Ids are slugs of the name, made unique; <paramref name="existing"/> keeps ids for names
+    /// already in the list so an on-air variant survives a re-save.</summary>
+    public static IReadOnlyList<GraphicsPlaylistVariant> ParseNamesList(string text, IReadOnlyList<GraphicsPlaylistVariant>? existing = null)
+    {
+        var result = new List<GraphicsPlaylistVariant>(); var used = new HashSet<string>(StringComparer.Ordinal);
+        var lines = (text ?? "").Replace("\r\n", "\n").Split('\n');
+        var first = true;
+        foreach (var raw in lines) {
+            var line = raw.Trim(); if (line.Length == 0) continue;
+            string name, title;
+            if (line[0] == '"' && ClosingQuote(line) is > 0 and var close) {
+                // A quoted first cell may itself contain the separator ("Lovelace, Ada", Analyst).
+                name = line[1..close].Replace("\"\"", "\"").Trim();
+                var rest = line[(close + 1)..].TrimStart();
+                title = Unquote(rest.Length > 0 && rest[0] is ',' or '\t' or ';' ? rest[1..] : rest);
+            } else {
+                var cut = line.IndexOfAny([',', '\t', ';']);
+                name = Unquote(cut < 0 ? line : line[..cut]); title = Unquote(cut < 0 ? "" : line[(cut + 1)..]);
+            }
+            if (first && name.Equals("name", StringComparison.OrdinalIgnoreCase) && title.Equals("title", StringComparison.OrdinalIgnoreCase)) { first = false; continue; }
+            first = false;
+            if (name.Length == 0) continue;
+            if (name.Length > 128) name = name[..128]; if (title.Length > 256) title = title[..256];
+            var id = existing?.FirstOrDefault(v => v.Name == name && !used.Contains(v.Id))?.Id ?? NewRowId(name, []);
+            var baseId = id; for (var n = 2; used.Contains(id); n++) id = $"{baseId}-{n}";
+            used.Add(id); result.Add(new() { Id = id, Name = name, Title = title });
+            if (result.Count == 64) break;
+        }
+        return result;
+    }
+    private static int ClosingQuote(string line)
+    {
+        for (var i = 1; i < line.Length; i++) {
+            if (line[i] != '"') continue;
+            if (i + 1 < line.Length && line[i + 1] == '"') { i++; continue; } // escaped quote
+            return i;
+        }
+        return -1;
+    }
+    private static string Unquote(string cell) { cell = cell.Trim(); return cell.Length >= 2 && cell[0] == '"' && cell[^1] == '"' ? cell[1..^1].Replace("\"\"", "\"").Trim() : cell; }
+
+    /// <summary>Variants → the text the builder shows (round trip of <see cref="ParseNamesList"/>).</summary>
+    public static string NamesListText(IReadOnlyList<GraphicsPlaylistVariant> variants) =>
+        string.Join(Environment.NewLine, variants.Select(v => v.Title.Length > 0 ? v.Name + ", " + v.Title : v.Name));
 
     /// <summary>A row's saved fields as the object element the workspace draft expects.</summary>
     public static JsonElement FieldsElement(GraphicsPlaylistRow row) => JsonSerializer.SerializeToElement(row.Fields);

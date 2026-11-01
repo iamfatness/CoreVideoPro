@@ -68,7 +68,12 @@ numbered steps left to right:
    left/right/up/down) at Quick/Normal/Slow (150/300/600 ms); it is stored on the
    row as `motion` (the core's `{in,out}` transition shape, whitelisted at save)
    and sent with the instance on Show/Cue. Rows without one keep the playout
-   default fade.
+   default fade. **Position / Size** (nine anchors, 50–150 %) and dragging the
+   preview set the row's `placement`; it is stored only when it differs from the
+   template default and is sent with the instance ("Template default" clears it).
+   **Text** offers a typeface (safe Windows families only; a package font shows
+   as unset and is left alone) and name / second-line sizes, written to the
+   row's style.
 5. **Save to playlist**: name, hotkey (defaults to the lowest free F-key; taken
    keys say who owns them), hides after (stays / 8 s / 15 s), then **Add to
    playlist** or, for a row opened from Operate or the "Your graphics" chips,
@@ -142,6 +147,34 @@ third; the inspector shows the title read-only and offers "Edit names in
 Sources". A bare F1 or "LT in" plays in the entry for the source currently on
 Program. Entries are re-projected whenever the roster or the Sources text
 changes; nothing is pre-created in the core.
+
+## Names list (one row, many people)
+
+A lower third built in Design can carry a **names list**: one line per person,
+`Name, Title` (a two-column CSV pastes or imports straight in; a `name,title`
+header is skipped; quotes are stripped). The row saves as a Title-kind row with
+`variants[] { id, name, title }`; Names from Sources is off for a list because
+the list is the binding. In Operate the row expands like a Guest row, one entry
+per line with its own Show / Cue / Hide, and the row's bare hotkey (or
+`graphics.playIn <rowId>` with no sourceId) shows the line **after** whichever
+line is on Program, wrapping to the first. `sourceId` for a line is
+`variant:<id>`; ids are slugs of the name and survive a re-save so a line on air
+keeps its instance. Hide on the row with no sourceId takes every line of that
+row off Program.
+
+## Clocks and countdowns
+
+A "Clock or countdown" graphic built in Design stores its settings on the row
+as `clock` (`mode` wall|countdown, `format` hms|hm, `finish` hold-zero|hide,
+`durationSeconds`; zone is the computer's local time). When the row is cued or
+shown the service sends `graphics.clock.control configure` to its instance
+(with the instance revision and its current clock revision, 1 on a fresh instance;
+the saved settings change; a template without a clock refuses harmlessly). A
+countdown never starts by itself: Operate shows the live readout and Start /
+Pause / Resume / Reset chips under the row, which call
+`graphics.playlist.clock <rowId> <action>` (refused until the row has an
+instance, i.e. after Cue or Show). Start never shows the graphic and Reset never
+hides it.
 
 ## One truth for Preview and Program (#1072)
 
@@ -223,6 +256,8 @@ running Bitfocus Companion (or any OSC sender) gets:
 | Show a specific guest | `/cvp/graphics/playIn` | `guest` `zoom:<id>` (or `media:` / `capture:`) |
 | Cue the title to ride the next Take | `/cvp/graphics/toPreview` | `title` |
 | Hide one row | `/cvp/graphics/playOut` | `title` (or an instance id) |
+| Next name in a names list | `/cvp/graphics/playIn` | `panelists` (the list row's id) |
+| Start the break countdown | `/cvp/graphics/playlist/clock` | `live-bug` `start` |
 | Hide everything | `/cvp/graphics/playOutAll` | |
 | Fire a shot layout | `/cvp/graphics/layout/cue` | `<layoutId>` |
 

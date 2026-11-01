@@ -36,6 +36,20 @@ public sealed record GraphicsPlaylistRow
     /// <summary>In/out motion sent with the instance (titler spec Phase 1 "in/out transitions").
     /// Null = the playout default (fade 250/200 ms). Values follow the core's whitelist.</summary>
     public NativeGraphicsAnimations? Motion { get; init; }
+    /// <summary>Names list (titler spec Phase 1 "multi-entry, spreadsheet-style variants"): fixed
+    /// name/title pairs typed or imported from CSV. A row with variants expands to one entry per
+    /// variant (like a Guest row expands per source); a bare hotkey steps to the next one.</summary>
+    public IReadOnlyList<GraphicsPlaylistVariant> Variants { get; init; } = [];
+    /// <summary>Where the graphic sits (anchor, offset, scale). Null = the template's default
+    /// placement. Set from the builder's Placement controls or by dragging the preview.</summary>
+    public NativeGraphicsPlacement? Placement { get; init; }
+    /// <summary>Clock rows (titler spec Phase 1 "clocks"): wall clock or countdown settings
+    /// applied to the native clock when the row's instance is created or its settings change.
+    /// Null = the template's own default.</summary>
+    public NativeGraphicsClockConfiguration? Clock { get; init; }
+    [JsonIgnore] public bool HasVariants => Variants.Count > 0;
+    public static bool ValidVariants(IReadOnlyList<GraphicsPlaylistVariant>? variants) => variants is not null && variants.Count <= 64 &&
+        variants.All(v => v is { IsValid: true }) && variants.Select(v => v.Id).Distinct(StringComparer.Ordinal).Count() == variants.Count;
 
     public static bool ValidTransition(NativeGraphicsTransition t) =>
         t.Type is "none" or "fade" or "slide" && t.Direction is "left" or "right" or "up" or "down" &&
@@ -50,17 +64,29 @@ public sealed record GraphicsPlaylistRow
         Hotkey is not null && ValidHotkey(Hotkey) && PlayOutAfterChoices.Contains(PlayOutAfterMs) &&
         TemplateId is not null && TemplateId.Length <= 64 && TemplateVersion >= 0 && (TemplateId.Length == 0) == (TemplateVersion == 0) &&
         Fields is not null && Fields.Count <= 32 && Fields.Keys.All(k => k.Length is > 0 and <= 64) && Style is { IsValid: true } &&
-        (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) && ValidMotion(Motion) &&
+        (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) && ValidMotion(Motion) && ValidVariants(Variants) && (Placement is null || Placement.IsValid) && (Clock is null || Clock.IsValid) &&
         (Image is null || (Image.TemplateId.Length is > 0 and <= 64 && Image.TemplateVersion >= 1 && Image.AssetId.Length is > 0 and <= 64));
 }
 
-/// <summary>A playable item: a single row (SourceId "") or one guest of a guest row.
+/// <summary>One line of a row's names list. <see cref="Id"/> is stable across edits so an
+/// instance already on air keeps its identity when the list is re-saved.</summary>
+public sealed record GraphicsPlaylistVariant
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string Title { get; init; } = "";
+    [JsonIgnore] public bool IsValid => GraphicsPlaylistRow.ValidId(Id) && Name is { Length: > 0 and <= 128 } && Title is { Length: <= 256 };
+}
+
+/// <summary>A playable item: a single row (SourceId ""), one guest of a guest row, or one
+/// variant of a names list (SourceId "variant:&lt;id&gt;").
 /// <see cref="Bindings"/> maps template variable name -> value resolved at projection
 /// time (today "name" and "title" from the Sources page; later Zoom participant
 /// metadata, clocks and sheets slot in under new variable names). Never persisted.</summary>
 public sealed record GraphicsPlaylistEntry
 {
-    public const string NameVariable = "name", TitleVariable = "title";
+    public const string NameVariable = "name", TitleVariable = "title", VariantPrefix = "variant:";
+    [JsonIgnore] public bool IsVariant => SourceId.StartsWith(VariantPrefix, StringComparison.Ordinal);
     private static readonly IReadOnlyDictionary<string, string> None = new Dictionary<string, string>(StringComparer.Ordinal);
     public GraphicsPlaylistEntry() { }
     public GraphicsPlaylistEntry(string rowId, string sourceId, IReadOnlyDictionary<string, string> bindings) => (RowId, SourceId, Bindings) = (rowId, sourceId, bindings);

@@ -109,10 +109,28 @@ public sealed class GraphicsPlayoutService
         }
         return entries;
     }
+    /// <summary>The <c>variant:&lt;id&gt;</c> source id behind one of a names-list row's
+    /// instances, or "" when the instance is not one of its lines.</summary>
+    public static string VariantSourceIdOf(GraphicsPlaylistRow row, string instanceId) =>
+        row.Variants.Select(v => GraphicsPlaylistEntry.VariantPrefix + v.Id).FirstOrDefault(s => InstanceIdFor(row.Id, s) == instanceId) ?? "";
+    /// <summary>One entry per names-list line, in list order.</summary>
+    public static IReadOnlyList<GraphicsPlaylistEntry> VariantEntries(GraphicsPlaylistRow row) =>
+        row.Variants.Select(v => new GraphicsPlaylistEntry(row.Id, GraphicsPlaylistEntry.VariantPrefix + v.Id, v.Name, v.Title)).ToArray();
+    /// <summary>The variant a bare hotkey / rowId-only Show plays: the one after whichever
+    /// variant of this row is on Program (wrapping), else the first. Null when the row has none.</summary>
+    public static GraphicsPlaylistEntry? NextVariant(GraphicsPlaylistRow row, IEnumerable<string> onProgramSourceIds)
+    {
+        var entries = VariantEntries(row); if (entries.Count == 0) return null;
+        var onAir = onProgramSourceIds.ToHashSet(StringComparer.Ordinal);
+        var current = -1; for (var i = 0; i < entries.Count; i++) if (onAir.Contains(entries[i].SourceId)) current = i;
+        return entries[(current + 1) % entries.Count];
+    }
+    /// <summary>Every multi-entry row expanded: Guest rows per bound roster slot, names-list rows
+    /// per variant. (Historical name; callers index it by SourceId either way.)</summary>
     public IReadOnlyList<GraphicsPlaylistEntry> GuestEntries(IEnumerable<GraphicsRosterSlot> slots, Func<string, string, (string Name, string Title)> text)
     {
         var list = slots.ToArray();
-        return Playlist.Where(r => r.Kind == GraphicsPlaylistRow.Guest).SelectMany(r => GuestEntries(r, list, text)).ToArray();
+        return Playlist.SelectMany(r => r.HasVariants ? VariantEntries(r) : r.Kind == GraphicsPlaylistRow.Guest ? GuestEntries(r, list, text) : []).ToArray();
     }
     public GraphicsPlaylistEntry? GuestEntryFor(string sourceId, IEnumerable<GraphicsRosterSlot> slots, Func<string, string, (string Name, string Title)> text) =>
         GuestEntries(slots, text).FirstOrDefault(e => e.SourceId == sourceId);
@@ -222,8 +240,10 @@ public sealed class GraphicsPlayoutService
             var rule = rules.FirstOrDefault(r => r.Enabled && r.InstanceId == i.InstanceId);
             var owner = row is not null ? "playlist" : rule is not null ? "auto" : "design";
             var source = i.Binding?.SourceId ?? i.SourceId;
+            // A names-list instance has no binding; its line is recoverable from the instance id.
+            if (source.Length == 0 && row is { HasVariants: true }) source = VariantSourceIdOf(row, i.InstanceId);
             var label = row is null ? (i.Label.Length > 0 ? i.Label : i.Fields.Name.Length > 0 ? i.Fields.Name : i.TemplateId)
-                : row.Kind == GraphicsPlaylistRow.Guest && i.Fields.Name.Length > 0 ? row.Name + " · " + i.Fields.Name : row.Name;
+                : (row.Kind == GraphicsPlaylistRow.Guest || row.HasVariants) && i.Fields.Name.Length > 0 ? row.Name + " · " + i.Fields.Name : row.Name;
             return new(i.InstanceId, label, owner, row?.Id ?? "", source, i.Revision, i.Visibility, i.CuePending, armed.Contains(i.InstanceId), rule?.Id ?? "");
         }
         var next = new GraphicsStripState {
@@ -246,6 +266,13 @@ public sealed class GraphicsPlayoutService
     public Task<NativeGraphicsOperationResult> PlayInAsync(GraphicsPlaylistEntry entry, CancellationToken cancellation = default) => Run(async () => {
         var cued = await Cue(entry, cancellation);
         if (!cued.Accepted) return cued;
+        // A names list is one lower third with many lines: showing a line replaces the row's
+        // other lines on Program (the operator asked for the next name, not a stack of them).
+        if (entry.IsVariant && Row(entry.RowId) is { HasVariants: true } list)
+            foreach (var sibling in Strip.OnProgram.Where(i => i.RowId == list.Id && i.InstanceId != cued.InstanceId).ToArray()) {
+                var hidden = await Hide(sibling.InstanceId, cancellation);
+                if (!hidden.Accepted) return hidden with { Reason = "Could not take the previous name off: " + hidden.Reason };
+            }
         var shown = await Send("graphics.instance.trigger", new() { ["instanceId"] = cued.InstanceId, ["expectedRevision"] = cued.CurrentRevision, ["target"] = "cue", ["action"] = "show" }, cancellation);
         if (shown.Accepted && Row(entry.RowId) is { } row) ArmAutoOut(row, cued.InstanceId, _epoch);
         return shown.Accepted ? shown with { InstanceId = cued.InstanceId, Reason = "Shown from Preview." } : shown;
@@ -297,7 +324,7 @@ public sealed class GraphicsPlayoutService
         var values = row.Fields.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal);
         // Bindings are template variables: apply each one the template declares (compat
         // lower thirds declare name/title implicitly); unknown variables are ignored.
-        if (row.FollowSources && entry.SourceId.Length > 0)
+        if (entry.IsVariant || (row.FollowSources && entry.SourceId.Length > 0))
             foreach (var binding in entry.Bindings)
                 if (declarative ? installed.Fields.Any(f => f.Id == binding.Key && f.Type == "string") : binding.Key is "name" or "title")
                     values[binding.Key] = JsonSerializer.SerializeToElement(binding.Value);
@@ -306,18 +333,20 @@ public sealed class GraphicsPlayoutService
         var identity = entry.SourceId.Length == 0 ? null : state.Sources.FirstOrDefault(s => s.VideoOn && s.Identity?.SourceId == entry.SourceId)?.Identity;
         var fields = JsonSerializer.SerializeToElement(values, Json);
         var id = InstanceIdFor(entry);
-        var motion = row.Motion ?? Motion;
-        var draft = new NativeGraphicsDraft(templateId, version, fields, row.Style, motion, installed.DefaultPlacement, Image: row.Image);
+        var motion = row.Motion ?? Motion; var placement = row.Placement ?? installed.DefaultPlacement;
+        var draft = new NativeGraphicsDraft(templateId, version, fields, row.Style, motion, placement, Image: row.Image);
         if (state.Instances.FirstOrDefault(i => i.InstanceId == id) is not { } existing) {
             var body = new Dictionary<string, object?> {
                 ["instanceId"] = id, ["templateId"] = templateId, ["templateVersion"] = version, ["scope"] = "global", ["sceneId"] = "",
-                ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = motion, ["placement"] = installed.DefaultPlacement, ["image"] = row.Image };
+                ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = motion, ["placement"] = placement, ["image"] = row.Image };
             if (identity is not null) body["binding"] = identity;
             var created = await Send("graphics.instance.create", body, cancellation);
             if (!created.Accepted) return created;
             if (created.CurrentRevision < 1 || created.InstanceId != id) return Refuse("The native create result has no matching revision identity.");
+            await ConfigureClock(row, Current(epoch).Instances.FirstOrDefault(i => i.InstanceId == id) ?? new() { InstanceId = id, Revision = created.CurrentRevision }, cancellation);
             return created with { Reason = "Ready." };
         }
+        await ConfigureClock(row, existing, cancellation);
         // Only the cue copy is refreshed; a Program copy changes on the next Show, never here.
         if (SameFields(existing.Fields, values) && (identity is null || existing.Binding == identity))
             return new() { Accepted = true, InstanceId = id, CurrentRevision = existing.Revision, Reason = "Ready." };
@@ -328,6 +357,30 @@ public sealed class GraphicsPlayoutService
         var revision = updated.CurrentRevision > 0 ? updated.CurrentRevision : Current(epoch).Instances.FirstOrDefault(i => i.InstanceId == id)?.Revision ?? 0;
         return revision < 1 ? Refuse("The native update result has no revision.") : updated with { InstanceId = id, CurrentRevision = revision, Reason = "Ready." };
     }
+
+    /// <summary>Apply the row's clock settings to its instance when they differ from what the
+    /// core already has. Non-fatal: a template without a clock answers instance-has-no-clock and
+    /// the graphic still plays.</summary>
+    private async Task ConfigureClock(GraphicsPlaylistRow row, NativeGraphicsInstance instance, CancellationToken cancellation)
+    {
+        if (row.Clock is not { IsValid: true } clock) return;
+        if (instance.ClockRequestedConfiguration is { } requested && SameClock(requested, clock)) return;
+        // The gateway needs the instance revision on every instance command and a clock revision >= 1 (the core starts at 1).
+        await Send("graphics.clock.control", new() { ["instanceId"] = instance.InstanceId, ["expectedRevision"] = Math.Max(1, instance.Revision), ["action"] = "configure",
+            ["configuration"] = clock, ["expectedClockRevision"] = Math.Max(1, instance.ClockConfigurationRevision) }, cancellation);
+    }
+    private static bool SameClock(NativeGraphicsClockConfiguration a, NativeGraphicsClockConfiguration b) =>
+        a.Mode == b.Mode && a.Zone == b.Zone && a.Format == b.Format && a.Finish == b.Finish && a.OffsetMinutes == b.OffsetMinutes && a.DurationSeconds == b.DurationSeconds;
+
+    /// <summary>Countdown transport for a playlist row's instance: start | pause | resume | reset.
+    /// Never shows or hides the graphic. Refused when the row has no instance yet.</summary>
+    public Task<NativeGraphicsOperationResult> ClockAsync(GraphicsPlaylistEntry entry, string action, CancellationToken cancellation = default) => Run(async () => {
+        if (action is not ("start" or "pause" or "resume" or "reset")) return Refuse("Clock action must be start, pause, resume or reset.");
+        var id = InstanceIdFor(entry);
+        if (_observe()?.Instances.FirstOrDefault(i => i.InstanceId == id) is not { } instance) return Refuse("That row is not on Preview or Program yet. Cue or Show it first.");
+        var result = await Send("graphics.clock.control", new() { ["instanceId"] = id, ["expectedRevision"] = Math.Max(1, instance.Revision), ["action"] = action }, cancellation);
+        return result.Accepted ? result with { InstanceId = id, Reason = "Clock " + action + "." } : result;
+    });
 
     private async Task<NativeGraphicsOperationResult> Cue(GraphicsPlaylistEntry entry, CancellationToken cancellation)
     {

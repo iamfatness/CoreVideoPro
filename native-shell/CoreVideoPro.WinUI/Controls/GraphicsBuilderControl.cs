@@ -37,12 +37,28 @@ public sealed class GraphicsBuilderControl : UserControl
     private readonly StackPanel _form = new() { Spacing = 10, MinWidth = 280 };
     private readonly StackPanel _fields = new() { Spacing = 8 };
     private readonly StackPanel _colors = new() { Spacing = 6 };
+    private readonly ComboBox _typeface = new() { Header = "Typeface", ItemsSource = GraphicsBuilder.TypefaceChoices.ToArray(), IsEditable = false, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly Slider _nameSize = new() { Header = "Name size", Minimum = 16, Maximum = 120, StepFrequency = 2, Value = 42 };
+    private readonly Slider _titleSize = new() { Header = "Second line size", Minimum = 12, Maximum = 80, StepFrequency = 2, Value = 28 };
+    private readonly StackPanel _typeBlock = new() { Spacing = 6 };
+    private readonly ComboBox _anchor = new() { Header = "Position", ItemsSource = GraphicsBuilder.AnchorChoices.Select(a => a.Label).ToArray(), HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly Slider _scale = new() { Header = "Size", Minimum = 50, Maximum = 150, StepFrequency = 5, TickFrequency = 25, Value = 100 };
+    private readonly Button _resetPlacement = StudioBrushes.ChipButton("Template default");
+    private readonly ComboBox _clockMode = new() { Header = "Clock", ItemsSource = new[] { "Time of day", "Countdown" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly NumberBox _clockMinutes = new() { Header = "Countdown (minutes)", Value = 5, Minimum = 0.25, Maximum = 1440, SmallChange = 0.5, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox _clockFormat = new() { Header = "Show", ItemsSource = new[] { "Hours : minutes : seconds", "Hours : minutes" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox _clockFinish = new() { Header = "At zero", ItemsSource = new[] { "Hold at 0:00", "Hide the graphic" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly StackPanel _clockBlock = new() { Spacing = 8 };
     private readonly ComboBox _motion = new() { Header = "Motion", ItemsSource = GraphicsBuilder.MotionPresets.Select(m => m.Label).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox _speed = new() { Header = "Speed", ItemsSource = GraphicsBuilder.MotionSpeeds.Select(m => m.Label).ToArray(), SelectedIndex = 1, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox _name = new() { Header = "Name in the playlist", MaxLength = 128, PlaceholderText = "Guest name" };
     private readonly ComboBox _hotkey = new() { Header = "Hotkey", ItemsSource = HotkeyChoices, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox _playOut = new() { Header = "Hides after", ItemsSource = PlayOutChoices.Select(c => c.Label).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ToggleSwitch _follow = new() { Header = "Names from Sources", OnContent = "Follows whoever is on Program", OffContent = "Uses the text you type here" };
+    private readonly TextBox _names = new() { Header = "Names list (optional)", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 72, MaxHeight = 180, PlaceholderText = "One per line: Name, Title\nAda Lovelace, Analyst\nAlan Turing, Mathematician" };
+    private readonly Button _importCsv = StudioBrushes.GhostButton("Import CSV…");
+    private readonly TextBlock _namesNote = Note("");
+    private readonly StackPanel _namesBlock = new() { Spacing = 6 };
     private readonly Button _save = StudioBrushes.AccentButton("Add to playlist");
     private readonly Button _discard = StudioBrushes.GhostButton("Start over");
     private readonly Button _operate = StudioBrushes.GhostButton("Open in Operate →");
@@ -90,11 +106,29 @@ public sealed class GraphicsBuilderControl : UserControl
         // 4 + 5: fill in and save
         _form.Children.Add(Step("4", "FILL IT IN"));
         _form.Children.Add(_fields); _form.Children.Add(_colors);
+        var clockRow = new Grid { ColumnSpacing = 8 }; clockRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); clockRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        clockRow.Children.Add(_clockMode); Grid.SetColumn(_clockMinutes, 1); clockRow.Children.Add(_clockMinutes);
+        var clockRow2 = new Grid { ColumnSpacing = 8 }; clockRow2.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); clockRow2.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        clockRow2.Children.Add(_clockFormat); Grid.SetColumn(_clockFinish, 1); clockRow2.Children.Add(_clockFinish);
+        _clockBlock.Children.Add(clockRow); _clockBlock.Children.Add(clockRow2); _clockBlock.Children.Add(Note("A countdown starts from Operate (Start / Pause / Reset on the row) once the graphic is cued or shown."));
+        _form.Children.Add(_clockBlock);
+        _typeBlock.Children.Add(new TextBlock { Text = "TEXT", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted, Margin = new Thickness(0, 6, 0, 0) });
+        _typeBlock.Children.Add(_typeface);
+        var sizes = new Grid { ColumnSpacing = 8 }; sizes.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); sizes.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        sizes.Children.Add(_nameSize); Grid.SetColumn(_titleSize, 1); sizes.Children.Add(_titleSize); _typeBlock.Children.Add(sizes);
+        _form.Children.Add(_typeBlock);
+        var placementRow = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 6, 0, 0) }; placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(3, GridUnitType.Star) }); placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
+        placementRow.Children.Add(_anchor); Grid.SetColumn(_scale, 1); placementRow.Children.Add(_scale); _form.Children.Add(placementRow);
+        var placementNote = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; placementNote.Children.Add(_resetPlacement); placementNote.Children.Add(Note("Drag the preview to nudge.")); _form.Children.Add(placementNote);
+        ToolTipService.SetToolTip(_anchor, "Which corner or edge the graphic hangs from. Drag the preview to fine-tune.");
         var motionRow = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 6, 0, 0) }; motionRow.ColumnDefinitions.Add(new() { Width = new GridLength(3, GridUnitType.Star) }); motionRow.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
         motionRow.Children.Add(_motion); Grid.SetColumn(_speed, 1); motionRow.Children.Add(_speed); _form.Children.Add(motionRow);
         ToolTipService.SetToolTip(_motion, "How the graphic comes in and goes out on air. Shown on Program when you Show it; the preview here is still.");
         _form.Children.Add(Step("5", "SAVE TO PLAYLIST"));
         _form.Children.Add(_name); _form.Children.Add(_follow);
+        _namesBlock.Children.Add(_names); var namesRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; namesRow.Children.Add(_importCsv); _namesBlock.Children.Add(namesRow); _namesBlock.Children.Add(_namesNote);
+        ToolTipService.SetToolTip(_names, "A names list makes this one row play several people in turn: each line is one lower third; the hotkey steps to the next line. Leave empty for a single graphic.");
+        _form.Children.Add(_namesBlock);
         var timing = new Grid { ColumnSpacing = 8 }; timing.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); timing.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         timing.Children.Add(_hotkey); Grid.SetColumn(_playOut, 1); timing.Children.Add(_playOut); _form.Children.Add(timing);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -107,10 +141,21 @@ public sealed class GraphicsBuilderControl : UserControl
         _discard.Click += (_, _) => StartNew();
         _operate.Click += (_, _) => { if (_attached is { } s) s.GraphicsMode = StudioViewModel.GraphicsModePlayout; };
         _follow.Toggled += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
+        _clockMode.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; _clockMinutes.IsEnabled = _clockFinish.IsEnabled = _clockMode.SelectedIndex == 1; RefreshSaveButton(); } };
+        foreach (var box in new ComboBox[] { _clockFormat, _clockFinish }) box.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
+        _clockMinutes.ValueChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
+        _typeface.SelectionChanged += (_, _) => { if (!_loading && _typeface.SelectedIndex >= 0 && _session?.Draft is { } d) { _session.SetStyle(d.Style with { FontFamily = GraphicsBuilder.TypefaceChoices[_typeface.SelectedIndex] }); _dirty = true; RefreshSaveButton(); } };
+        _nameSize.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is { } d && Math.Abs(d.Style.NameSize - _nameSize.Value) >= 1) { _session.SetStyle(d.Style with { NameSize = Math.Round(_nameSize.Value) }); _dirty = true; RefreshSaveButton(); } };
+        _titleSize.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is { } d && Math.Abs(d.Style.TitleSize - _titleSize.Value) >= 1) { _session.SetStyle(d.Style with { TitleSize = Math.Round(_titleSize.Value) }); _dirty = true; RefreshSaveButton(); } };
+        _anchor.SelectionChanged += (_, _) => { if (!_loading && _anchor.SelectedIndex >= 0 && _session?.Draft is not null && EffectivePlacement() is { } p) { _session.SetPlacement(p with { Anchor = GraphicsBuilder.AnchorChoices[_anchor.SelectedIndex].Id }); _dirty = true; RefreshSaveButton(); } };
+        _scale.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is not null && EffectivePlacement() is { } p) { _session.SetPlacement(p with { Scale = Math.Round(_scale.Value / 100, 2) }); _dirty = true; RefreshSaveButton(); } };
+        _resetPlacement.Click += (_, _) => { if (_session?.Draft is not null) { _session.SetPlacement(_session.Template?.DefaultPlacement); _dirty = true; RefreshPlacementControls(); RefreshSaveButton(); } };
         _motion.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; _speed.IsEnabled = SelectedMotionPreset != "cut"; RefreshSaveButton(); } };
         _speed.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
         _name.TextChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
         _sponsorPick.Click += async (_, _) => await PickSponsorAsync();
+        _names.TextChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshNamesNote(); RefreshSaveButton(); } };
+        _importCsv.Click += async (_, _) => await ImportCsvAsync();
         _debounce.Tick += (_, _) => { _debounce.Stop(); var commit = _pendingCommit; _pendingCommit = null; commit?.Invoke(); };
 
         Content = _root; Padding = new Thickness(0, 4, 0, 0);
@@ -147,9 +192,14 @@ public sealed class GraphicsBuilderControl : UserControl
     public void ResumePreview() { _suspended = false; UpdatePreviewLease(); RequestThumbnails(); }
     private void UpdatePreviewLease()
     {
-        if (!_suspended && _attached?.IsOverlaysTab == true && _session?.Preview is not null && _session.PreviewValidation.Length == 0 && _editor is not null)
+        if (_editor is null) return;
+        if (_session?.Preview is not { } draft) { _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable("Pick a look to preview."); return; }
+        if (_session.PreviewValidation is { Length: > 0 } invalid) { _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable(invalid); return; }
+        if (!_suspended && _attached?.IsOverlaysTab == true) {
+            // The core renders the private draft onto preview:lower-third; the lease pulls that surface into the canvas.
+            _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview()));
             _previewOwner ??= _attached.CreateAppearancePreview(_editor);
-        else { _previewOwner?.Dispose(); _previewOwner = null; }
+        } else { _previewOwner?.Dispose(); _previewOwner = null; }
     }
     private void OnEditorProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
@@ -178,7 +228,7 @@ public sealed class GraphicsBuilderControl : UserControl
         _editingRowId = ""; _sponsorPath = ""; _dirty = false; _operate.Visibility = Visibility.Collapsed; _status.Text = "";
         if (_attached is { } s && s.GraphicsDesignRowId.Length > 0) s.GraphicsDesignRowId = "";
         _loading = true;
-        try { _name.Text = ""; _follow.IsOn = Kind.Family == "lower-third"; _playOut.SelectedIndex = Kind.Family == "lower-third" ? 1 : 0; _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, GraphicsBuilder.NextFreeHotkey(Rows))); SetMotion(null); }
+        try { _name.Text = ""; _names.Text = ""; _follow.IsOn = Kind.Family == "lower-third"; _playOut.SelectedIndex = Kind.Family == "lower-third" ? 1 : 0; _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, GraphicsBuilder.NextFreeHotkey(Rows))); SetMotion(null); SetClock(null); }
         finally { _loading = false; }
         var templates = GraphicsBuilder.TemplatesFor(Kind, _session?.State);
         if (templates.Count > 0 && _session is { Busy: false }) _session.Browse(templates[0]);
@@ -192,14 +242,14 @@ public sealed class GraphicsBuilderControl : UserControl
         _kindId = kind.Id; _editingRowId = row.Id; _sponsorPath = row.ImagePath ?? ""; _dirty = false; _operate.Visibility = Visibility.Collapsed; _status.Text = "";
         _loading = true;
         try {
-            _name.Text = row.Name; _follow.IsOn = row.FollowSources;
+            _name.Text = row.Name; _follow.IsOn = row.FollowSources; _names.Text = GraphicsBuilder.NamesListText(row.Variants);
             _playOut.SelectedIndex = Math.Max(0, Array.FindIndex(PlayOutChoices, c => c.Ms == row.PlayOutAfterMs));
             _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, row.Hotkey));
-            SetMotion(row.Motion);
+            SetMotion(row.Motion); SetClock(row.Clock);
         } finally { _loading = false; }
         if (kind.Id != GraphicsBuilder.SponsorKindId && _session.State?.Templates.FirstOrDefault(t => t.TemplateId == row.TemplateId && t.TemplateVersion == row.TemplateVersion) is { } template && !_session.Busy) {
             _session.Browse(template);
-            if (_session.Draft is { } draft) _session.Edit(draft with { Fields = GraphicsBuilder.FieldsElement(row), Style = row.Style, Image = row.Image });
+            if (_session.Draft is { } draft) _session.Edit(draft with { Fields = GraphicsBuilder.FieldsElement(row), Style = row.Style, Image = row.Image, Placement = row.Placement ?? template.DefaultPlacement });
         }
         if (_attached is { } studio && studio.GraphicsDesignRowId == rowId) studio.GraphicsDesignRowId = "";
         _formSignature = ""; _looksSignature = ""; RefreshAll();
@@ -209,7 +259,7 @@ public sealed class GraphicsBuilderControl : UserControl
     {
         if (_kindId == kind.Id) return;
         _kindId = kind.Id; _editingRowId = ""; _dirty = false; _operate.Visibility = Visibility.Collapsed; _status.Text = "";
-        _loading = true; try { _follow.IsOn = kind.Family == "lower-third"; _playOut.SelectedIndex = kind.Family == "lower-third" ? 1 : 0; } finally { _loading = false; }
+        _loading = true; try { _follow.IsOn = kind.Family == "lower-third"; _names.Text = ""; _playOut.SelectedIndex = kind.Family == "lower-third" ? 1 : 0; } finally { _loading = false; }
         var templates = GraphicsBuilder.TemplatesFor(kind, _session?.State);
         if (templates.Count > 0 && _session is { Busy: false }) _session.Browse(templates[0]);
         _formSignature = ""; _looksSignature = ""; RefreshAll();
@@ -251,7 +301,8 @@ public sealed class GraphicsBuilderControl : UserControl
                 if (ok && _sponsorPath.Length > 0 && _sponsorPath != existing?.ImagePath) ok = await _library.AssignPlaylistImageAsync(row.Id, _sponsorPath);
             } else {
                 if (_session?.Draft is not { } draft || _session.Template is not { } template) { _status.Text = "Pick a look first."; return; }
-                row = GraphicsBuilder.RowFrom(Kind, template, draft, _name.Text, hotkey, playOut, _follow.IsOn, rows, existing, SelectedMotion);
+                var variants = Kind.Family == "lower-third" ? GraphicsBuilder.ParseNamesList(_names.Text, existing?.Variants) : [];
+                row = GraphicsBuilder.RowFrom(Kind, template, draft, _name.Text, hotkey, playOut, _follow.IsOn, rows, existing, SelectedMotion, variants, Kind.Family == "clock" ? SelectedClock : null);
                 ok = await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(rows, row));
             }
             if (!ok) { _status.Text = _library.Status; return; }
@@ -305,6 +356,10 @@ public sealed class GraphicsBuilderControl : UserControl
         var kind = Kind; var draft = _session?.Draft; var template = _session?.Template;
         var signature = kind.Id + "|" + _editingRowId + "|" + (template is null ? "" : template.TemplateId + ":" + template.TemplateVersion) + "|" + GraphicsWorkspaceSession.SupportsLogo(template) + "|" + (draft?.Image?.AssetId ?? "");
         _follow.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed;
+        _namesBlock.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed; RefreshNamesNote();
+        _clockBlock.Visibility = kind.Family == "clock" ? Visibility.Visible : Visibility.Collapsed;
+        RefreshPlacementControls(); RefreshTypographyControls();
+        _typeBlock.Visibility = kind.Id == GraphicsBuilder.SponsorKindId ? Visibility.Collapsed : Visibility.Visible;
         if (signature == _formSignature) { RefreshColorSwatches(); return; }
         _formSignature = signature; _fields.Children.Clear(); _colors.Children.Clear(); _loading = true;
         try {
@@ -328,11 +383,12 @@ public sealed class GraphicsBuilderControl : UserControl
                 }
             }
             _colors.Children.Add(new TextBlock { Text = "COLORS", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted, Margin = new Thickness(0, 6, 0, 0) });
-            var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            swatches.Children.Add(Swatch("Accent", s => s.AccentColor, (s, c) => s with { AccentColor = c }));
-            swatches.Children.Add(Swatch("Background", s => s.BackgroundColor, (s, c) => s with { BackgroundColor = c }));
-            swatches.Children.Add(Swatch("Name", s => s.NameColor, (s, c) => s with { NameColor = c }));
-            swatches.Children.Add(Swatch("Second line", s => s.TitleColor, (s, c) => s with { TitleColor = c }));
+            var swatches = new Grid { ColumnSpacing = 8, RowSpacing = 6 };
+            swatches.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); swatches.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+            swatches.RowDefinitions.Add(new() { Height = GridLength.Auto }); swatches.RowDefinitions.Add(new() { Height = GridLength.Auto });
+            var cells = new[] { Swatch("Accent", s => s.AccentColor, (s, c) => s with { AccentColor = c }), Swatch("Background", s => s.BackgroundColor, (s, c) => s with { BackgroundColor = c }),
+                Swatch("Name", s => s.NameColor, (s, c) => s with { NameColor = c }), Swatch("Second line", s => s.TitleColor, (s, c) => s with { TitleColor = c }) };
+            for (var i = 0; i < cells.Length; i++) { cells[i].HorizontalAlignment = HorizontalAlignment.Stretch; Grid.SetColumn(cells[i], i % 2); Grid.SetRow(cells[i], i / 2); swatches.Children.Add(cells[i]); }
             _colors.Children.Add(swatches);
             var brand = StudioBrushes.ChipButton("Use brand kit colors"); brand.Click += (_, _) => ApplyBrandKit(); _colors.Children.Add(brand);
         } finally { _loading = false; }
@@ -390,7 +446,7 @@ public sealed class GraphicsBuilderControl : UserControl
     }
     private void RefreshColorSwatches()
     {
-        foreach (var panel in _colors.Children.OfType<StackPanel>())
+        foreach (var panel in _colors.Children.OfType<Grid>())
             foreach (var swatch in panel.Children.OfType<Button>())
                 if (swatch.Tag is Func<string> read && swatch.Content is StackPanel body && body.Children.OfType<Border>().FirstOrDefault() is { } chip && HexColor.TryParse(read(), out var color))
                     chip.Background = new SolidColorBrush(color);
@@ -470,6 +526,77 @@ public sealed class GraphicsBuilderControl : UserControl
             _root.ColumnDefinitions[0].Width = new GridLength(300); _root.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star); _root.ColumnDefinitions[2].Width = new GridLength(340);
             foreach (var child in _root.Children.OfType<FrameworkElement>()) { if (Grid.GetRow(child) == 0 && Grid.GetColumnSpan(child) == 3) continue; var row = Grid.GetRow(child); Grid.SetRow(child, 1); Grid.SetColumn(child, row - 1); }
         }
+    }
+
+    private void RefreshNamesNote()
+    {
+        var parsed = GraphicsBuilder.ParseNamesList(_names.Text);
+        if (parsed.Count == 0) { _namesNote.Text = "Empty: this row is one graphic. Add lines to play several people from one hotkey."; _follow.IsEnabled = true; return; }
+        _namesNote.Text = $"{parsed.Count} name{(parsed.Count == 1 ? "" : "s")}. Each line is its own lower third under this row; {(_hotkey.SelectedIndex > 0 ? HotkeyChoices[_hotkey.SelectedIndex] : "the hotkey")} steps to the next one. Names from Sources is off for a list.";
+        _follow.IsOn = false; _follow.IsEnabled = false;
+    }
+    private async Task ImportCsvAsync()
+    {
+        try {
+            var picker = new Windows.Storage.Pickers.FileOpenPicker();
+            picker.FileTypeFilter.Add(".csv"); picker.FileTypeFilter.Add(".txt"); picker.FileTypeFilter.Add(".tsv");
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, App.MainWindowHandle);
+            var file = await picker.PickSingleFileAsync();
+            if (file is null) return;
+            var text = await System.IO.File.ReadAllTextAsync(file.Path);
+            var parsed = GraphicsBuilder.ParseNamesList(text);
+            if (parsed.Count == 0) { _status.Text = "No names found. Expected one per line: Name, Title."; return; }
+            _names.Text = GraphicsBuilder.NamesListText(parsed); _dirty = true; RefreshNamesNote(); RefreshSaveButton();
+            _status.Text = $"Imported {parsed.Count} name{(parsed.Count == 1 ? "" : "s")} from {System.IO.Path.GetFileName(file.Path)}.";
+        } catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = "Could not read that file: " + ex.Message; }
+    }
+
+    private NativeGraphicsClockConfiguration SelectedClock => new() {
+        Mode = _clockMode.SelectedIndex == 1 ? "countdown" : "wall", Zone = "local",
+        Format = _clockFormat.SelectedIndex == 1 ? "hm" : "hms", Finish = _clockFinish.SelectedIndex == 1 ? "hide" : "hold-zero",
+        DurationSeconds = (int)Math.Clamp(Math.Round((double.IsNaN(_clockMinutes.Value) ? 5 : _clockMinutes.Value) * 60), 1, 86400) };
+    private void SetClock(NativeGraphicsClockConfiguration? clock)
+    {
+        var c = clock ?? new NativeGraphicsClockConfiguration();
+        _clockMode.SelectedIndex = c.Mode == "countdown" ? 1 : 0; _clockFormat.SelectedIndex = c.Format == "hm" ? 1 : 0; _clockFinish.SelectedIndex = c.Finish == "hide" ? 1 : 0;
+        _clockMinutes.Value = Math.Round(c.DurationSeconds / 60.0, 2); _clockMinutes.IsEnabled = _clockFinish.IsEnabled = c.Mode == "countdown";
+    }
+
+    private void RefreshTypographyControls()
+    {
+        if (_session?.Draft?.Style is not { } style) return;
+        var wasLoading = _loading; _loading = true;
+        try {
+            var index = GraphicsBuilder.TypefaceChoices.ToList().IndexOf(style.FontFamily);
+            if (index >= 0 && _typeface.SelectedIndex != index) _typeface.SelectedIndex = index;
+            else if (index < 0 && _typeface.SelectedIndex != -1) _typeface.SelectedIndex = -1; // a package font: shown as unset, left untouched
+            if (Math.Abs(_nameSize.Value - style.NameSize) >= 1) _nameSize.Value = Math.Clamp(style.NameSize, _nameSize.Minimum, _nameSize.Maximum);
+            if (Math.Abs(_titleSize.Value - style.TitleSize) >= 1) _titleSize.Value = Math.Clamp(style.TitleSize, _titleSize.Minimum, _titleSize.Maximum);
+        } finally { _loading = wasLoading; }
+    }
+
+    /// <summary>Compatibility lower thirds carry no template placement; the canvas derives one from
+    /// the style's anchor and safe offsets, and the Position/Size controls start from the same place.</summary>
+    private NativeGraphicsPlacement? EffectivePlacement()
+    {
+        if (_session?.Draft is not { } draft) return null;
+        if (draft.Placement is not null) return draft.Placement;
+        if (_session.Template?.DefaultPlacement is { } templateDefault) return templateDefault;
+        var style = draft.Style;
+        return new() { Anchor = style.Anchor, X = style.SafeOffsetX * 1920 * (style.Anchor.Contains("right", StringComparison.Ordinal) ? -1 : 1),
+            Y = style.SafeOffsetY * 1080 * (style.Anchor.Contains("upper", StringComparison.Ordinal) ? 1 : -1), Scale = 1 };
+    }
+    private void RefreshPlacementControls()
+    {
+        var p = EffectivePlacement();
+        var sponsor = Kind.Id == GraphicsBuilder.SponsorKindId;
+        _anchor.IsEnabled = _scale.IsEnabled = _resetPlacement.IsEnabled = p is not null && !sponsor;
+        if (p is null) return;
+        var wasLoading = _loading; _loading = true;
+        try {
+            var index = GraphicsBuilder.AnchorChoices.ToList().FindIndex(a => a.Id == p.Anchor); if (_anchor.SelectedIndex != index) _anchor.SelectedIndex = index;
+            var pct = Math.Clamp(Math.Round(p.Scale * 100 / 5) * 5, 50, 150); if (Math.Abs(_scale.Value - pct) >= 1) _scale.Value = pct;
+        } finally { _loading = wasLoading; }
     }
 
     private string SelectedMotionPreset => GraphicsBuilder.MotionPresets[Math.Max(0, _motion.SelectedIndex)].Id;
