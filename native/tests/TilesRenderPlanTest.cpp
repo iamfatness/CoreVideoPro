@@ -1127,6 +1127,57 @@ void take(MediaCore& core, const corevideo::rpc::Json& program, const corevideo:
 
 }  // namespace
 
+// #1071: local sources as Tiles members. The shell now seats a bound webcam /
+// screen / media slot beside the Zoom participants; the core comment claimed
+// "Zoom + capture tiles work for free" and this pins it through the REAL
+// production tick (no age-injection seam): one Zoom guest from an ISource and
+// one capture device frame in the same gather, one wall naming both.
+//   * both become ordinary participant-video tiles; the Zoom tile binds the
+//     BARE pid, the capture tile keeps its FULL scheme-qualified id (the
+//     compositor matches frames by exact participantId);
+//   * dropout stays per-source: freezing the capture (frameId stops, timestamps
+//     keep advancing, exactly how a stalled UVC device presents) ages ONLY the
+//     capture tile out of the wall; the Zoom guest keeps its seat and the wall
+//     reflows. No Zoom-identity rule is consulted for a local member.
+TEST(TilesRenderPlan, AZoomGuestAndACaptureDeviceShareOneWallAndDropOutIndependently) {
+  auto modules = corevideo::modules::createStubModules();
+  auto* capture = new LiveWallCaptureDevice({"capture:cam-1"});
+  modules.captureDevice.reset(capture);
+  MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({std::make_shared<TwoGuestZoomSource>(std::vector<std::string>{"guest-1"})});
+  loadWall(core, {"zoom:guest-1", "capture:cam-1"});
+
+  const auto both = core.lastRenderPlanForTest();
+  const auto* zoomTile = findLayer(both, "tile:zoom:guest-1");
+  const auto* captureTile = findLayer(both, "tile:capture:cam-1");
+  ASSERT_NE(zoomTile, nullptr) << "the Zoom member must be admitted from its ISource frame";
+  ASSERT_NE(captureTile, nullptr) << "the capture member must be admitted from the capture gather";
+  EXPECT_EQ(countLayersOfKind(both, "participant-video"), 2);
+  EXPECT_EQ(zoomTile->kind, "participant-video");
+  EXPECT_EQ(captureTile->kind, "participant-video");
+  EXPECT_EQ(zoomTile->sourceId, "zoom:guest-1");
+  EXPECT_EQ(captureTile->sourceId, "capture:cam-1");
+  EXPECT_EQ(zoomTile->participantId, "guest-1") << "a Zoom tile binds the bare pid";
+  EXPECT_EQ(captureTile->participantId, "capture:cam-1") << "a capture tile keeps its full id";
+  // Two members: a 2-up grid, side by side, neither tile covering the whole wall.
+  EXPECT_LT(zoomTile->rect.width, 0.75f);
+  EXPECT_LT(captureTile->rect.width, 0.75f);
+  EXPECT_NE(zoomTile->rect.x, captureTile->rect.x);
+
+  capture->freeze();
+  bool captureLeft = false;
+  for (int tick = 0; tick < 400 && !captureLeft; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    captureLeft = findLayer(core.lastRenderPlanForTest(), "tile:capture:cam-1") == nullptr;
+  }
+  EXPECT_TRUE(captureLeft) << "a frozen capture member ages out like any other stale feed";
+  const auto solo = core.lastRenderPlanForTest();
+  const auto* remaining = findLayer(solo, "tile:zoom:guest-1");
+  ASSERT_NE(remaining, nullptr) << "the Zoom guest's seat is not the capture device's problem";
+  EXPECT_EQ(countLayersOfKind(solo, "participant-video"), 1);
+  EXPECT_GT(remaining->rect.width, zoomTile->rect.width) << "the wall reflows to 1-up";
+}
+
 // #448. `TilesPlanAnimation::adoptSettledFrom` refused a wall whose tiles were
 // still flying, because with two per-bus animators mid-flight state had no
 // correct owner ("mid-flight state belongs to the bus that is flying it").
