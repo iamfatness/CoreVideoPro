@@ -147,4 +147,48 @@ public class TilesLayerPayloadBuilderTests
 
         Assert.Equal(["capture:cam-1"], payload!.Members);
     }
+
+    // #1071: a show-input slot bound to a local source (webcam, screen, media) is eligible
+    // beside the video-on Zoom participants. The local ids come from
+    // TilesLocalSourcePolicy.LocalVideoSources, already canonical; the builder appends them
+    // after the roster so an operator's slot order decides local seating.
+    [Fact]
+    public void Build_SeatsABoundCaptureSlotAfterTheZoomParticipants()
+    {
+        var slots = new[]
+        {
+            new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.ZoomParticipant, ParticipantId = "1" },
+            new ShowInputSlot { SlotNumber = 2, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-1" },
+            new ShowInputSlot { SlotNumber = 3, Kind = ShowInputKind.Screen, CaptureDeviceId = "screen:1" },
+        };
+        var local = TilesLocalSourcePolicy.LocalVideoSources(slots, [], []).Select(s => s.Id).ToList();
+
+        var payload = TilesLayerPayloadBuilder.Build(
+            GalleryScene(), [Guest("1"), Guest("p-2", FeedHealth.VideoOff)], localVideoSourceIds: local);
+
+        Assert.Equal(["zoom:1", "capture:cam-1", "capture:screen:1"], payload!.Members);
+    }
+
+    [Fact]
+    public void Build_RoutedModeFiltersLocalMembersLikeZoomOnes()
+    {
+        var payload = TilesLayerPayloadBuilder.Build(
+            GalleryScene(new DynamicGallerySettings { MembershipMode = "routed" }),
+            [Guest("1"), Guest("2")],
+            routedSourceIds: ["zoom:2", "capture:cam-1"],
+            localVideoSourceIds: ["capture:cam-1", "media:clip-7"]);
+
+        Assert.Equal(["zoom:2", "capture:cam-1"], payload!.Members);
+    }
+
+    // A local id must arrive canonical. A bare device id would be qualified "zoom:<id>" and
+    // match no frame, so the builder refuses it rather than seating a tile that never draws.
+    [Fact]
+    public void Build_IgnoresANonCanonicalLocalIdAndDeduplicatesACanonicalOne()
+    {
+        var payload = TilesLayerPayloadBuilder.Build(
+            GalleryScene(), [Guest("1")], localVideoSourceIds: ["cam-1", "zoom:1", "capture:cam-1", "capture:cam-1"]);
+
+        Assert.Equal(["zoom:1", "capture:cam-1"], payload!.Members);
+    }
 }

@@ -68,6 +68,14 @@ public static class TilesIdentityPolicy
             return persisted;
         }
 
+        // #1071: a local source (capture:/media:) has no per-meeting identity — its
+        // canonical id IS its live id, in every meeting and outside one. Never resolved
+        // against the roster, never stale.
+        if (TilesLocalSourcePolicy.IsLocalSourceId(persisted))
+        {
+            return persisted;
+        }
+
         if (persisted.StartsWith(ZoomPidPrefix, StringComparison.Ordinal))
         {
             var pid = persisted[ZoomPidPrefix.Length..];
@@ -103,6 +111,14 @@ public static class TilesIdentityPolicy
         if (string.IsNullOrEmpty(persisted))
         {
             return "Unavailable source";
+        }
+
+        // A local source is named by the member picker (TilesLocalSourcePolicy) while it
+        // is bound to an input; once unbound, its canonical id is the honest label —
+        // not "Unavailable source", which reads as a Zoom guest who left.
+        if (TilesLocalSourcePolicy.IsLocalSourceId(persisted))
+        {
+            return persisted;
         }
 
         if (persisted.StartsWith(ZoomNamePrefix, StringComparison.Ordinal))

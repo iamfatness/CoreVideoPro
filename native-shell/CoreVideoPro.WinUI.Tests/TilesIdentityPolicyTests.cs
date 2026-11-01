@@ -9,6 +9,28 @@ public sealed class TilesIdentityPolicyTests
     private static TilesIdentityPolicy.Person Guest(string sessionId, string name, string? pid = null) =>
         new($"zoom:{sessionId}", name, pid);
 
+    // #1071: a local source id (capture:/media:) has no per-meeting identity. It persists
+    // as itself, resolves to itself in any meeting (or none), and is never reported stale.
+    [Theory]
+    [InlineData("capture:cam-1")]
+    [InlineData("capture:screen:1")]
+    [InlineData("media:clip-7")]
+    public void Local1071_ALocalIdPersistsAndResolvesUnchangedInAnyMeeting(string id)
+    {
+        var roster = new[] { Guest("16778240", "Someone", "pid-1") };
+
+        Assert.Equal(id, TilesIdentityPolicy.Persist(id, roster));
+        Assert.Equal(id, TilesIdentityPolicy.ResolveLiveSourceId(id, roster, "8916561023", "97682593786"));
+        Assert.Equal(id, TilesIdentityPolicy.ResolveLiveSourceId(id, [], null, null));
+        Assert.Equal(id, TilesIdentityPolicy.Label(id, roster));
+
+        var settings = new DynamicGallerySettings { ManualSlots = [id], ExcludedSourceIds = [id], BoundMeetingId = "97682593786" };
+        Assert.Empty(TilesIdentityPolicy.DescribeStale(settings, roster, "8916561023"));
+        TilesIdentityPolicy.ClearStale(settings, roster, "8916561023");
+        Assert.Equal(id, settings.ManualSlots[0]);
+        Assert.Equal(id, Assert.Single(settings.ExcludedSourceIds));
+    }
+
     [Fact]
     public void LiveCase479_LegacySessionIdIsNotAppliedToWhoeverInheritedItNextMeeting()
     {

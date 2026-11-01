@@ -95,8 +95,27 @@ public sealed partial class StudioViewModel
     [System.Diagnostics.CodeAnalysis.AllowNull]
     public string GallerySelectedMemberId { get => _gallerySelectedMemberId; set { if (SetProperty(ref _gallerySelectedMemberId, value ?? string.Empty)) LoadGalleryTileEditor(); } }
     public double GalleryManualSlot { get => _galleryManualSlot; set => SetProperty(ref _galleryManualSlot, double.IsFinite(value) ? Math.Clamp(Math.Round(value), 1, 64) : 1); }
-    public IReadOnlyList<GalleryMemberChoice> GalleryMemberChoices => RoomVideoParticipants
-        .Select(p => new GalleryMemberChoice(p.Id.Contains(':') ? p.Id : "zoom:" + p.Id, p.Name)).ToList();
+    // #1071: the Tiles member picker lists Zoom participants (roster order) and then every
+    // show-input slot bound to a local source with video, grouped the way the show-input
+    // picker groups them (Camera, Screen, Browser, Media, SRT, NDI — UnifiedSourceGroups
+    // order, slot order within a group). Same list the payload builder's eligible set is
+    // drawn from (TilesLocalVideoSources), so what the operator can pick is what auto
+    // fill can seat.
+    public IReadOnlyList<GalleryMemberChoice> GalleryMemberChoices
+    {
+        get
+        {
+            var zoom = RoomVideoParticipants
+                .Select(p => new GalleryMemberChoice(p.Id.Contains(':') ? p.Id : "zoom:" + p.Id, p.Name));
+            var groupOrder = ShowInputRosterService.UnifiedSourceGroups;
+            var local = TilesLocalVideoSources()
+                .OrderBy(s => { var index = groupOrder.ToList().IndexOf(s.Group); return index < 0 ? int.MaxValue : index; })
+                .Select(s => new GalleryMemberChoice(s.Id, s.Name, s.Group));
+            return zoom.Concat(local).DistinctBy(c => c.Id, StringComparer.Ordinal).ToList();
+        }
+    }
+    internal IReadOnlyList<TilesLocalSource> TilesLocalVideoSources() =>
+        TilesLocalSourcePolicy.LocalVideoSources(ShowInputs, CaptureDevices, VisualMediaAssets, ResolveSourceDisplayName);
     public IReadOnlyList<RouteSelectOption> GalleryMembershipModeOptions { get; } =
     [
         new() { Value = "routed", Label = "Routed show sources only" },
@@ -225,4 +244,11 @@ public sealed partial class StudioViewModel
     }
 }
 
-public sealed record GalleryMemberChoice(string Id, string Name);
+/// <summary>A Tiles member candidate. <paramref name="Group"/> is the source-picker group
+/// ("Zoom" for a participant; "Camera"/"Screen"/"Media"/... for a local source, #1071).
+/// <see cref="Label"/> is what the member list shows: the bare name for a Zoom guest, and
+/// "Group · Name" for a local source, mirroring the show-input picker button.</summary>
+public sealed record GalleryMemberChoice(string Id, string Name, string Group = "Zoom")
+{
+    public string Label => Group == "Zoom" ? Name : $"{Group} · {Name}";
+}
