@@ -7,7 +7,7 @@ namespace CoreVideoPro.MediaCore.Services;
 public static class StreamDegradationReadout
 {
     /// <summary>Producing destinations whose own backpressure is engaged (applied divisor above 1
-    /// or pressure level above 0). Shared with <see cref="NetworkCongestionReadout"/> so both
+    /// or pressure level above 0). Shared with <see cref="StalledFeedsReadout"/> so both
     /// lines agree on what "the stream is in backpressure" means.</summary>
     public static IEnumerable<NativeMediaCoreOutputSender> PressuredSenders(NativeMediaCoreStateSnapshot snapshot) =>
         snapshot.OutputSenderSession.Senders

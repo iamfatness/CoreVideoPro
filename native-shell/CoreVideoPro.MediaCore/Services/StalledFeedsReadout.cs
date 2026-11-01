@@ -5,15 +5,23 @@ namespace CoreVideoPro.MediaCore.Services;
 
 /// <summary>
 /// One operator-facing line for the condition the live show of 2026-10-31 produced (#1074): the
-/// stream is in backpressure AND two or more live feeds are stalled at the same instant. Together
-/// they point at the operator's network link, not at participants leaving. Every number comes from
-/// the core's snapshot (<c>outputSenderSession.senders[].backpressure</c> and the source bus's
-/// <c>sources[]</c> health); nothing is measured or guessed here.
+/// stream is in backpressure AND two or more Zoom feeds are stalled at the same moment. The line
+/// states those two facts ("stream 445 ms behind and 3 Zoom feeds stalled") and nothing more: it
+/// does not claim a cause. On that show the cause was the operator's uplink, but the snapshot can
+/// only see the two symptoms. Every number comes from the core's snapshot
+/// (<c>outputSenderSession.senders[].backpressure</c> and the source bus's <c>sources[]</c>);
+/// nothing is measured or guessed here.
 /// </summary>
-public static class NetworkCongestionReadout
+public static class StalledFeedsReadout
 {
-    /// <summary>Fewer stalled feeds than this is one source's problem, not the link's.</summary>
+    /// <summary>Fewer stalled feeds than this is one guest's problem, not a shared one.</summary>
     public const int MinStalledFeeds = 2;
+
+    /// <summary>The ON-AIR stall threshold, mirroring the core's <c>kOnAirStallNs</c> (1.5 s,
+    /// SourceBus.h): the same age at which a Zoom tile reads "stalled" on air. The bus's own
+    /// <c>health</c> turns "stalled" at 200 ms, a diagnostic that flickers on ordinary cadence
+    /// noise, so it is never used alone.</summary>
+    public const double OnAirStallMs = 1500;
 
     public static string? Format(NativeMediaCoreStateSnapshot snapshot)
     {
@@ -29,16 +37,19 @@ public static class NetworkCongestionReadout
             return null;
         }
 
-        return $"network congested: {DescribeStream(pressure)}, {stalled} feeds stalled";
+        return $"{DescribeStream(pressure)} and {stalled.ToString(CultureInfo.InvariantCulture)} Zoom feeds stalled";
     }
 
-    /// <summary>Live video feeds the source bus currently reports <c>stalled</c>. Zoom and capture
-    /// only: a paused clip or a still legitimately re-serves one frame and reads stalled on the
-    /// bus's 200 ms diagnostic while perfectly healthy.</summary>
+    /// <summary>Zoom video sources stalled by the on-air rule: bus health "stalled" AND at least
+    /// <see cref="OnAirStallMs"/> since the last new frame. Zoom only: a capture source (a static
+    /// screen share, an idle webcam scene) legitimately re-serves one frame for minutes while
+    /// healthy, and stills, clips and the Tiles wall itself do the same. A row without
+    /// <c>sinceLastNewFrameMs</c> (an older core) is never counted.</summary>
     public static int StalledFeedCount(IReadOnlyList<NativeMediaCoreSourceHealth> sources) =>
-        sources.Count(source => source.HasVideo &&
+        sources.Count(source => source.Kind == "zoom" &&
+            source.HasVideo &&
             source.Health == "stalled" &&
-            source.Kind is "zoom" or "capture");
+            source.SinceLastNewFrameMs is { } age && age >= OnAirStallMs);
 
     /// <summary>Says what the stream is doing in the words the snapshot can back. Since #538 the
     /// compositor keeps full export cadence while a destination recovers its own queue, so
@@ -48,14 +59,14 @@ public static class NetworkCongestionReadout
     {
         if (pressure.AppliedDivisor > 1)
         {
-            return $"stream at 1/{pressure.AppliedDivisor.ToString(CultureInfo.InvariantCulture)} rate";
+            return $"Stream at 1/{pressure.AppliedDivisor.ToString(CultureInfo.InvariantCulture)} rate";
         }
 
         if (pressure.BufferedMs > 0)
         {
-            return $"stream {Math.Round(pressure.BufferedMs).ToString("0", CultureInfo.InvariantCulture)} ms behind";
+            return $"Stream {Math.Round(pressure.BufferedMs).ToString("0", CultureInfo.InvariantCulture)} ms behind";
         }
 
-        return $"stream backpressure level {pressure.Level.ToString(CultureInfo.InvariantCulture)}";
+        return $"Stream backpressure level {pressure.Level.ToString(CultureInfo.InvariantCulture)}";
     }
 }

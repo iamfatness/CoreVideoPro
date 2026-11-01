@@ -1464,14 +1464,14 @@
                         </StackPanel>
 
                         <!-- #1074: collapsed unless the stream is in backpressure AND two or more
-                             feeds are stalled at once. Zero width in the normal footer; when it
-                             shows, the operator reads "network", not "participants leaving". -->
+                             Zoom feeds are stalled (1.5 s on-air rule) at once. Zero width in the
+                             normal footer. States the two facts; it does not claim a cause. -->
                         <StackPanel Spacing="2" MaxWidth="236"
-                                    Visibility="{x:Bind ViewModel.Transport.NetworkCongestionVisibility, Mode=OneWay}"
-                                    ToolTipService.ToolTip="{x:Bind ViewModel.Transport.NetworkCongestionLabel, Mode=OneWay}">
-                            <TextBlock Text="NETWORK" Style="{StaticResource OutputStatLabel}" />
-                            <TextBlock x:Name="NetworkCongestionStatus"
-                                       Text="{x:Bind ViewModel.Transport.NetworkCongestionLabel, Mode=OneWay}"
+                                    Visibility="{x:Bind ViewModel.Transport.StalledFeedsVisibility, Mode=OneWay}"
+                                    ToolTipService.ToolTip="{x:Bind ViewModel.Transport.StalledFeedsLabel, Mode=OneWay}">
+                            <TextBlock Text="FEEDS" Style="{StaticResource OutputStatLabel}" />
+                            <TextBlock x:Name="StalledFeedsStatus"
+                                       Text="{x:Bind ViewModel.Transport.StalledFeedsLabel, Mode=OneWay}"
                                        TextWrapping="WrapWholeWords" MaxLines="2"
                                        FontSize="10" FontWeight="ExtraBold"
                                        Foreground="#F0A85C" />

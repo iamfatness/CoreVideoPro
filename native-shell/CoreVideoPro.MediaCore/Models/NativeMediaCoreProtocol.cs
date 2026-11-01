@@ -351,6 +351,10 @@ public sealed class NativeMediaCoreSourceHealth
     public bool HasVideo { get; init; }
     public bool HasAudio { get; init; }
     public string? DisplayName { get; init; }
+    /// <summary>Milliseconds since this source's last NEW frame on the bus's own clock; null before
+    /// the first frame, and on a core that predates the field (#1074 review). Compare against the
+    /// 1.5 s on-air stall rule, not <see cref="Health"/>'s 200 ms diagnostic.</summary>
+    public double? SinceLastNewFrameMs { get; init; }
 }
 
 public sealed class NativeMediaCoreOutputSenderSession

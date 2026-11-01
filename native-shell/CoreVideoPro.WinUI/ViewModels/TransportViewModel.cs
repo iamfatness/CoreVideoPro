@@ -72,16 +72,16 @@ public sealed partial class TransportViewModel : ObservableObject
 
     public string DiskLoadLine => $"Disk {DiskLoadLabel}";
 
-    /// <summary>#1074: "network congested: stream … , N feeds stalled" while the stream is in
-    /// backpressure and two or more feeds stall together; empty otherwise. From
-    /// <see cref="NetworkCongestionReadout"/>, snapshot facts only.</summary>
+    /// <summary>#1074: "Stream 445 ms behind and 3 Zoom feeds stalled" while the stream is in
+    /// backpressure and two or more Zoom feeds are stalled by the 1.5 s on-air rule; empty
+    /// otherwise. From <see cref="StalledFeedsReadout"/>, snapshot facts only, no claimed cause.</summary>
     [ObservableProperty]
-    private string _networkCongestionLabel = "";
+    private string _stalledFeedsLabel = "";
 
-    public Visibility NetworkCongestionVisibility =>
-        string.IsNullOrEmpty(NetworkCongestionLabel) ? Visibility.Collapsed : Visibility.Visible;
+    public Visibility StalledFeedsVisibility =>
+        string.IsNullOrEmpty(StalledFeedsLabel) ? Visibility.Collapsed : Visibility.Visible;
 
-    partial void OnNetworkCongestionLabelChanged(string value) => OnPropertyChanged(nameof(NetworkCongestionVisibility));
+    partial void OnStalledFeedsLabelChanged(string value) => OnPropertyChanged(nameof(StalledFeedsVisibility));
 
     [ObservableProperty]
     private string _frameDropsLabel = "—";
@@ -210,7 +210,7 @@ public sealed partial class TransportViewModel : ObservableObject
         StreamStatValue = "—";
         StreamStatHealthLabel = streaming ? "Unverified" : "Idle";
         StreamStatHealthBrush = TransportFormatting.HealthBrush(streaming ? OutputHealthKind.Warning : OutputHealthKind.Idle);
-        NetworkCongestionLabel = "";
+        StalledFeedsLabel = "";
 
         RecordStatValue = "—";
         RecordStatHealthLabel = recording ? "Unverified" : "Idle";
@@ -244,7 +244,7 @@ public sealed partial class TransportViewModel : ObservableObject
         StreamStatValue = streamingReadout.Progress;
         StreamStatHealthLabel = streamingReadout.State;
         StreamStatHealthBrush = TransportFormatting.HealthBrush(TransportFormatting.MapNetworkHealth(streamingReadout.Health));
-        NetworkCongestionLabel = NetworkCongestionReadout.Format(snapshot) ?? "";
+        StalledFeedsLabel = StalledFeedsReadout.Format(snapshot) ?? "";
 
         RecordStatValue = recordingReadout.Progress;
         RecordStatHealthLabel = recordingReadout.State;
