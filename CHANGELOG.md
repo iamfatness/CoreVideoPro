@@ -13,7 +13,10 @@ All notable changes to CoreVideo Pro are documented here. The format follows
   transparency as BGRA with straight alpha, so a downstream switcher, vMix or OBS can
   key CoreVideo's graphics over its own picture. Toggle in Production settings, NDI;
   control action `transport.stream.ndi.graphicsKey.set`; persisted with the output
-  preferences. Program output is unchanged. Not yet verified on a live receiver. See
+  preferences. The key is matched to the delayed Program frame when a Program buffer is on,
+  turns transparent and reports `key-stale` when no fresh graphics readback arrives for
+  250 ms, and a key that cannot be sent is dropped on its own without stopping the stream.
+  Program output is unchanged. Not yet verified on a live receiver. See
   `docs/reference/ndi-graphics-key.md`.
 - **Control API `scene.cueWithRoutes` / `scene.route.set` (#861).** A controller can cue a
   scene to Preview and point named routes at Show Input slots over `POST /invoke` (JSON
