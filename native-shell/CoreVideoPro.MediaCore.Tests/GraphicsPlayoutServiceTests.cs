@@ -166,12 +166,14 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.True((await service.ToPreviewAsync(entry)).Accepted);
         var configure = Bodies("graphics.clock.control").Single();
         Assert.Equal("configure", configure.GetProperty("action").GetString());
-        Assert.Equal(0, configure.GetProperty("expectedClockRevision").GetInt64());
+        Assert.Equal(1, configure.GetProperty("expectedClockRevision").GetInt64()); // the core's initial clock revision
+        Assert.Equal(1, configure.GetProperty("expectedRevision").GetInt64());
         Assert.Equal("countdown", configure.GetProperty("configuration").GetProperty("mode").GetString());
         Assert.Equal(120, configure.GetProperty("configuration").GetProperty("durationSeconds").GetInt32());
         _commands.Clear();
         Assert.True((await service.ClockAsync(entry, "start")).Accepted);
-        Assert.Equal("start", Bodies("graphics.clock.control").Single().GetProperty("action").GetString());
+        var start = Bodies("graphics.clock.control").Single();
+        Assert.Equal("start", start.GetProperty("action").GetString()); Assert.True(start.GetProperty("expectedRevision").GetInt64() >= 1);
         Assert.False((await service.ClockAsync(entry, "explode")).Accepted);
     }
 

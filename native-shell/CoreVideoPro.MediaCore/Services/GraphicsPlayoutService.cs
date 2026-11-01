@@ -343,10 +343,10 @@ public sealed class GraphicsPlayoutService
             var created = await Send("graphics.instance.create", body, cancellation);
             if (!created.Accepted) return created;
             if (created.CurrentRevision < 1 || created.InstanceId != id) return Refuse("The native create result has no matching revision identity.");
-            await ConfigureClock(row, id, expectedClockRevision: 0, requested: null, cancellation);
+            await ConfigureClock(row, Current(epoch).Instances.FirstOrDefault(i => i.InstanceId == id) ?? new() { InstanceId = id, Revision = created.CurrentRevision }, cancellation);
             return created with { Reason = "Ready." };
         }
-        await ConfigureClock(row, id, existing.ClockConfigurationRevision, existing.ClockRequestedConfiguration, cancellation);
+        await ConfigureClock(row, existing, cancellation);
         // Only the cue copy is refreshed; a Program copy changes on the next Show, never here.
         if (SameFields(existing.Fields, values) && (identity is null || existing.Binding == identity))
             return new() { Accepted = true, InstanceId = id, CurrentRevision = existing.Revision, Reason = "Ready." };
@@ -361,11 +361,13 @@ public sealed class GraphicsPlayoutService
     /// <summary>Apply the row's clock settings to its instance when they differ from what the
     /// core already has. Non-fatal: a template without a clock answers instance-has-no-clock and
     /// the graphic still plays.</summary>
-    private async Task ConfigureClock(GraphicsPlaylistRow row, string instanceId, long expectedClockRevision, NativeGraphicsClockConfiguration? requested, CancellationToken cancellation)
+    private async Task ConfigureClock(GraphicsPlaylistRow row, NativeGraphicsInstance instance, CancellationToken cancellation)
     {
         if (row.Clock is not { IsValid: true } clock) return;
-        if (requested is not null && SameClock(requested, clock)) return;
-        await Send("graphics.clock.control", new() { ["instanceId"] = instanceId, ["action"] = "configure", ["configuration"] = clock, ["expectedClockRevision"] = expectedClockRevision }, cancellation);
+        if (instance.ClockRequestedConfiguration is { } requested && SameClock(requested, clock)) return;
+        // The gateway needs the instance revision on every instance command and a clock revision >= 1 (the core starts at 1).
+        await Send("graphics.clock.control", new() { ["instanceId"] = instance.InstanceId, ["expectedRevision"] = Math.Max(1, instance.Revision), ["action"] = "configure",
+            ["configuration"] = clock, ["expectedClockRevision"] = Math.Max(1, instance.ClockConfigurationRevision) }, cancellation);
     }
     private static bool SameClock(NativeGraphicsClockConfiguration a, NativeGraphicsClockConfiguration b) =>
         a.Mode == b.Mode && a.Zone == b.Zone && a.Format == b.Format && a.Finish == b.Finish && a.OffsetMinutes == b.OffsetMinutes && a.DurationSeconds == b.DurationSeconds;
@@ -375,8 +377,8 @@ public sealed class GraphicsPlayoutService
     public Task<NativeGraphicsOperationResult> ClockAsync(GraphicsPlaylistEntry entry, string action, CancellationToken cancellation = default) => Run(async () => {
         if (action is not ("start" or "pause" or "resume" or "reset")) return Refuse("Clock action must be start, pause, resume or reset.");
         var id = InstanceIdFor(entry);
-        if (_observe()?.Instances.All(i => i.InstanceId != id) != false) return Refuse("That row is not on Preview or Program yet. Cue or Show it first.");
-        var result = await Send("graphics.clock.control", new() { ["instanceId"] = id, ["action"] = action }, cancellation);
+        if (_observe()?.Instances.FirstOrDefault(i => i.InstanceId == id) is not { } instance) return Refuse("That row is not on Preview or Program yet. Cue or Show it first.");
+        var result = await Send("graphics.clock.control", new() { ["instanceId"] = id, ["expectedRevision"] = Math.Max(1, instance.Revision), ["action"] = action }, cancellation);
         return result.Accepted ? result with { InstanceId = id, Reason = "Clock " + action + "." } : result;
     });
 
