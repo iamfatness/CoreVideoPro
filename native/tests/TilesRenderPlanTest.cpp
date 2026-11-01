@@ -1221,13 +1221,20 @@ TEST(TilesRenderPlan, AZoomGuestAndACaptureDeviceShareOneWallAndDropOutIndepende
 
   // 2. A frozen ZOOM member ages out; the capture tile is untouched by it and
   //    the wall reflows to 1-up around the local source.
+  //    Bounded by WALL CLOCK, not a tick count, so it holds under either rule:
+  //    today a frozen Zoom member drops at kTilesStaleFrameMs (1.5 s); after
+  //    #1074/#1082 it is HELD until kTilesHoldWindowMs (4 s) and only then
+  //    dropped. 10 s covers both with margin; the loop exits on the drop.
   zoom->freeze();
   bool zoomLeft = false;
-  for (int tick = 0; tick < 400 && !zoomLeft; ++tick) {
-    (void)core.applyCommands(corevideo::rpc::Json::Array{});
-    zoomLeft = findLayer(core.lastRenderPlanForTest(), "tile:zoom:guest-1") == nullptr;
+  {
+    const auto start = std::chrono::steady_clock::now();
+    while (!zoomLeft && std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
+      (void)core.applyCommands(corevideo::rpc::Json::Array{});
+      zoomLeft = findLayer(core.lastRenderPlanForTest(), "tile:zoom:guest-1") == nullptr;
+    }
   }
-  EXPECT_TRUE(zoomLeft) << "a frozen Zoom guest ages out at kTilesStaleFrameMs";
+  EXPECT_TRUE(zoomLeft) << "a frozen Zoom guest leaves the wall (1.5 s today; 4 s hold after #1082)";
   const auto solo = core.lastRenderPlanForTest();
   const auto* remaining = findLayer(solo, "tile:capture:cam-1");
   ASSERT_NE(remaining, nullptr) << "the capture seat is not the Zoom guest's problem";
