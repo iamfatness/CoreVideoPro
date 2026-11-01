@@ -144,7 +144,7 @@ public sealed class GraphicsPlayoutControl : UserControl
     private static Brush DotBrush(AirState state) => state switch { AirState.Program => StudioBrushes.Air, AirState.Preview => StudioBrushes.Program, _ => StudioBrushes.Dim };
     private static string Caption(GraphicsPlaylistRow row) => row.Kind switch {
         GraphicsPlaylistRow.Guest => row.FollowSources ? "Guest · names from Sources" : "Guest",
-        GraphicsPlaylistRow.Title => "Title", GraphicsPlaylistRow.Logo => "Logo", GraphicsPlaylistRow.LiveBug => "Live bug",
+        GraphicsPlaylistRow.Title => row.HasVariants ? $"Names list · {row.Variants.Count} · hotkey steps through" : "Title", GraphicsPlaylistRow.Logo => "Logo", GraphicsPlaylistRow.LiveBug => "Live bug",
         GraphicsPlaylistRow.Sponsor => row.TemplateId.Length == 0 && row.Image is null ? "Sponsor card · no image yet" : "Sponsor card", _ => row.Kind };
 
     // ---- rendering -----------------------------------------------------------------------
@@ -307,7 +307,8 @@ public sealed class GraphicsPlayoutControl : UserControl
 
     private FrameworkElement RowCard(GraphicsPlaylistRow row, IReadOnlyList<GraphicsPlaylistEntry> guests, string subject, bool busy)
     {
-        var selected = _selectedKey == row.Id || (row.Kind == GraphicsPlaylistRow.Guest && _selectedKey.StartsWith(row.Id + "|", StringComparison.Ordinal));
+        var multi = row.Kind == GraphicsPlaylistRow.Guest || row.HasVariants;
+        var selected = _selectedKey == row.Id || (multi && _selectedKey.StartsWith(row.Id + "|", StringComparison.Ordinal));
         var card = new Border { Background = StudioBrushes.Panel, BorderBrush = selected ? StudioBrushes.Accent : StudioBrushes.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(10, 8, 10, 8) };
         var body = new StackPanel { Spacing = 6 }; card.Child = body;
         var head = new Grid { ColumnSpacing = 10 };
@@ -317,17 +318,18 @@ public sealed class GraphicsPlayoutControl : UserControl
         text.Children.Add(new TextBlock { Text = row.Name, FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = StudioBrushes.Text, TextTrimming = TextTrimming.CharacterEllipsis });
         text.Children.Add(new TextBlock { Text = Caption(row) + (row.PlayOutAfterMs > 0 ? $" · out after {row.PlayOutAfterMs / 1000} s" : ""), FontSize = 10, Foreground = StudioBrushes.Muted, TextTrimming = TextTrimming.CharacterEllipsis });
         Grid.SetColumn(text, 1); head.Children.Add(text);
-        if (row.Kind != GraphicsPlaylistRow.Guest) {
+        if (!multi) {
             var entry = GraphicsPlayoutService.EntryFor(row); var state = StateOf(GraphicsPlayoutService.InstanceIdFor(entry));
             var dot = new Ellipse { Width = 9, Height = 9, Fill = DotBrush(state), VerticalAlignment = VerticalAlignment.Center }; Grid.SetColumn(dot, 2); head.Children.Add(dot);
             var actions = ActionButtons(row.Id, "", state, busy, compact: Compact); Grid.SetColumn(actions, 3); head.Children.Add(actions);
         } else {
-            var count = new TextBlock { Text = guests.Count == 0 ? "no sources" : guests.Count == 1 ? "1 guest" : guests.Count + " guests", FontSize = 10, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center };
+            var unit = row.HasVariants ? "name" : "guest";
+            var count = new TextBlock { Text = guests.Count == 0 ? (row.HasVariants ? "empty list" : "no sources") : guests.Count == 1 ? "1 " + unit : guests.Count + " " + unit + "s", FontSize = 10, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center };
             Grid.SetColumn(count, 2); head.Children.Add(count);
         }
         body.Children.Add(head);
-        if (row.Kind == GraphicsPlaylistRow.Guest) {
-            if (guests.Count == 0) body.Children.Add(new TextBlock { Text = "No sources in the show yet. Assign a source on the Sources page and it appears here.", FontSize = 11, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(46, 0, 0, 0) });
+        if (multi) {
+            if (guests.Count == 0 && row.Kind == GraphicsPlaylistRow.Guest) body.Children.Add(new TextBlock { Text = "No sources in the show yet. Assign a source on the Sources page and it appears here.", FontSize = 11, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(46, 0, 0, 0) });
             foreach (var guest in guests) body.Children.Add(GuestEntry(row, guest, guest.SourceId == subject, busy));
         }
         card.Tapped += (_, _) => Select(row.Id);

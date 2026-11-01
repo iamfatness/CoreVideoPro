@@ -109,10 +109,24 @@ public sealed class GraphicsPlayoutService
         }
         return entries;
     }
+    /// <summary>One entry per names-list line, in list order.</summary>
+    public static IReadOnlyList<GraphicsPlaylistEntry> VariantEntries(GraphicsPlaylistRow row) =>
+        row.Variants.Select(v => new GraphicsPlaylistEntry(row.Id, GraphicsPlaylistEntry.VariantPrefix + v.Id, v.Name, v.Title)).ToArray();
+    /// <summary>The variant a bare hotkey / rowId-only Show plays: the one after whichever
+    /// variant of this row is on Program (wrapping), else the first. Null when the row has none.</summary>
+    public static GraphicsPlaylistEntry? NextVariant(GraphicsPlaylistRow row, IEnumerable<string> onProgramSourceIds)
+    {
+        var entries = VariantEntries(row); if (entries.Count == 0) return null;
+        var onAir = onProgramSourceIds.ToHashSet(StringComparer.Ordinal);
+        var current = -1; for (var i = 0; i < entries.Count; i++) if (onAir.Contains(entries[i].SourceId)) current = i;
+        return entries[(current + 1) % entries.Count];
+    }
+    /// <summary>Every multi-entry row expanded: Guest rows per bound roster slot, names-list rows
+    /// per variant. (Historical name; callers index it by SourceId either way.)</summary>
     public IReadOnlyList<GraphicsPlaylistEntry> GuestEntries(IEnumerable<GraphicsRosterSlot> slots, Func<string, string, (string Name, string Title)> text)
     {
         var list = slots.ToArray();
-        return Playlist.Where(r => r.Kind == GraphicsPlaylistRow.Guest).SelectMany(r => GuestEntries(r, list, text)).ToArray();
+        return Playlist.SelectMany(r => r.HasVariants ? VariantEntries(r) : r.Kind == GraphicsPlaylistRow.Guest ? GuestEntries(r, list, text) : []).ToArray();
     }
     public GraphicsPlaylistEntry? GuestEntryFor(string sourceId, IEnumerable<GraphicsRosterSlot> slots, Func<string, string, (string Name, string Title)> text) =>
         GuestEntries(slots, text).FirstOrDefault(e => e.SourceId == sourceId);
@@ -223,7 +237,7 @@ public sealed class GraphicsPlayoutService
             var owner = row is not null ? "playlist" : rule is not null ? "auto" : "design";
             var source = i.Binding?.SourceId ?? i.SourceId;
             var label = row is null ? (i.Label.Length > 0 ? i.Label : i.Fields.Name.Length > 0 ? i.Fields.Name : i.TemplateId)
-                : row.Kind == GraphicsPlaylistRow.Guest && i.Fields.Name.Length > 0 ? row.Name + " · " + i.Fields.Name : row.Name;
+                : (row.Kind == GraphicsPlaylistRow.Guest || row.HasVariants) && i.Fields.Name.Length > 0 ? row.Name + " · " + i.Fields.Name : row.Name;
             return new(i.InstanceId, label, owner, row?.Id ?? "", source, i.Revision, i.Visibility, i.CuePending, armed.Contains(i.InstanceId), rule?.Id ?? "");
         }
         var next = new GraphicsStripState {
@@ -297,7 +311,7 @@ public sealed class GraphicsPlayoutService
         var values = row.Fields.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal);
         // Bindings are template variables: apply each one the template declares (compat
         // lower thirds declare name/title implicitly); unknown variables are ignored.
-        if (row.FollowSources && entry.SourceId.Length > 0)
+        if (entry.IsVariant || (row.FollowSources && entry.SourceId.Length > 0))
             foreach (var binding in entry.Bindings)
                 if (declarative ? installed.Fields.Any(f => f.Id == binding.Key && f.Type == "string") : binding.Key is "name" or "title")
                     values[binding.Key] = JsonSerializer.SerializeToElement(binding.Value);

@@ -43,6 +43,10 @@ public sealed class GraphicsBuilderControl : UserControl
     private readonly ComboBox _hotkey = new() { Header = "Hotkey", ItemsSource = HotkeyChoices, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox _playOut = new() { Header = "Hides after", ItemsSource = PlayOutChoices.Select(c => c.Label).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ToggleSwitch _follow = new() { Header = "Names from Sources", OnContent = "Follows whoever is on Program", OffContent = "Uses the text you type here" };
+    private readonly TextBox _names = new() { Header = "Names list (optional)", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 72, MaxHeight = 180, PlaceholderText = "One per line: Name, Title\nAda Lovelace, Analyst\nAlan Turing, Mathematician" };
+    private readonly Button _importCsv = StudioBrushes.GhostButton("Import CSV…");
+    private readonly TextBlock _namesNote = Note("");
+    private readonly StackPanel _namesBlock = new() { Spacing = 6 };
     private readonly Button _save = StudioBrushes.AccentButton("Add to playlist");
     private readonly Button _discard = StudioBrushes.GhostButton("Start over");
     private readonly Button _operate = StudioBrushes.GhostButton("Open in Operate →");
@@ -95,6 +99,9 @@ public sealed class GraphicsBuilderControl : UserControl
         ToolTipService.SetToolTip(_motion, "How the graphic comes in and goes out on air. Shown on Program when you Show it; the preview here is still.");
         _form.Children.Add(Step("5", "SAVE TO PLAYLIST"));
         _form.Children.Add(_name); _form.Children.Add(_follow);
+        _namesBlock.Children.Add(_names); var namesRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; namesRow.Children.Add(_importCsv); _namesBlock.Children.Add(namesRow); _namesBlock.Children.Add(_namesNote);
+        ToolTipService.SetToolTip(_names, "A names list makes this one row play several people in turn: each line is one lower third; the hotkey steps to the next line. Leave empty for a single graphic.");
+        _form.Children.Add(_namesBlock);
         var timing = new Grid { ColumnSpacing = 8 }; timing.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); timing.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         timing.Children.Add(_hotkey); Grid.SetColumn(_playOut, 1); timing.Children.Add(_playOut); _form.Children.Add(timing);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -111,6 +118,8 @@ public sealed class GraphicsBuilderControl : UserControl
         _speed.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
         _name.TextChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
         _sponsorPick.Click += async (_, _) => await PickSponsorAsync();
+        _names.TextChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshNamesNote(); RefreshSaveButton(); } };
+        _importCsv.Click += async (_, _) => await ImportCsvAsync();
         _debounce.Tick += (_, _) => { _debounce.Stop(); var commit = _pendingCommit; _pendingCommit = null; commit?.Invoke(); };
 
         Content = _root; Padding = new Thickness(0, 4, 0, 0);
@@ -178,7 +187,7 @@ public sealed class GraphicsBuilderControl : UserControl
         _editingRowId = ""; _sponsorPath = ""; _dirty = false; _operate.Visibility = Visibility.Collapsed; _status.Text = "";
         if (_attached is { } s && s.GraphicsDesignRowId.Length > 0) s.GraphicsDesignRowId = "";
         _loading = true;
-        try { _name.Text = ""; _follow.IsOn = Kind.Family == "lower-third"; _playOut.SelectedIndex = Kind.Family == "lower-third" ? 1 : 0; _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, GraphicsBuilder.NextFreeHotkey(Rows))); SetMotion(null); }
+        try { _name.Text = ""; _names.Text = ""; _follow.IsOn = Kind.Family == "lower-third"; _playOut.SelectedIndex = Kind.Family == "lower-third" ? 1 : 0; _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, GraphicsBuilder.NextFreeHotkey(Rows))); SetMotion(null); }
         finally { _loading = false; }
         var templates = GraphicsBuilder.TemplatesFor(Kind, _session?.State);
         if (templates.Count > 0 && _session is { Busy: false }) _session.Browse(templates[0]);
@@ -192,7 +201,7 @@ public sealed class GraphicsBuilderControl : UserControl
         _kindId = kind.Id; _editingRowId = row.Id; _sponsorPath = row.ImagePath ?? ""; _dirty = false; _operate.Visibility = Visibility.Collapsed; _status.Text = "";
         _loading = true;
         try {
-            _name.Text = row.Name; _follow.IsOn = row.FollowSources;
+            _name.Text = row.Name; _follow.IsOn = row.FollowSources; _names.Text = GraphicsBuilder.NamesListText(row.Variants);
             _playOut.SelectedIndex = Math.Max(0, Array.FindIndex(PlayOutChoices, c => c.Ms == row.PlayOutAfterMs));
             _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, row.Hotkey));
             SetMotion(row.Motion);
@@ -209,7 +218,7 @@ public sealed class GraphicsBuilderControl : UserControl
     {
         if (_kindId == kind.Id) return;
         _kindId = kind.Id; _editingRowId = ""; _dirty = false; _operate.Visibility = Visibility.Collapsed; _status.Text = "";
-        _loading = true; try { _follow.IsOn = kind.Family == "lower-third"; _playOut.SelectedIndex = kind.Family == "lower-third" ? 1 : 0; } finally { _loading = false; }
+        _loading = true; try { _follow.IsOn = kind.Family == "lower-third"; _names.Text = ""; _playOut.SelectedIndex = kind.Family == "lower-third" ? 1 : 0; } finally { _loading = false; }
         var templates = GraphicsBuilder.TemplatesFor(kind, _session?.State);
         if (templates.Count > 0 && _session is { Busy: false }) _session.Browse(templates[0]);
         _formSignature = ""; _looksSignature = ""; RefreshAll();
@@ -251,7 +260,8 @@ public sealed class GraphicsBuilderControl : UserControl
                 if (ok && _sponsorPath.Length > 0 && _sponsorPath != existing?.ImagePath) ok = await _library.AssignPlaylistImageAsync(row.Id, _sponsorPath);
             } else {
                 if (_session?.Draft is not { } draft || _session.Template is not { } template) { _status.Text = "Pick a look first."; return; }
-                row = GraphicsBuilder.RowFrom(Kind, template, draft, _name.Text, hotkey, playOut, _follow.IsOn, rows, existing, SelectedMotion);
+                var variants = Kind.Family == "lower-third" ? GraphicsBuilder.ParseNamesList(_names.Text, existing?.Variants) : [];
+                row = GraphicsBuilder.RowFrom(Kind, template, draft, _name.Text, hotkey, playOut, _follow.IsOn, rows, existing, SelectedMotion, variants);
                 ok = await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(rows, row));
             }
             if (!ok) { _status.Text = _library.Status; return; }
@@ -305,6 +315,7 @@ public sealed class GraphicsBuilderControl : UserControl
         var kind = Kind; var draft = _session?.Draft; var template = _session?.Template;
         var signature = kind.Id + "|" + _editingRowId + "|" + (template is null ? "" : template.TemplateId + ":" + template.TemplateVersion) + "|" + GraphicsWorkspaceSession.SupportsLogo(template) + "|" + (draft?.Image?.AssetId ?? "");
         _follow.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed;
+        _namesBlock.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed; RefreshNamesNote();
         if (signature == _formSignature) { RefreshColorSwatches(); return; }
         _formSignature = signature; _fields.Children.Clear(); _colors.Children.Clear(); _loading = true;
         try {
@@ -470,6 +481,29 @@ public sealed class GraphicsBuilderControl : UserControl
             _root.ColumnDefinitions[0].Width = new GridLength(300); _root.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star); _root.ColumnDefinitions[2].Width = new GridLength(340);
             foreach (var child in _root.Children.OfType<FrameworkElement>()) { if (Grid.GetRow(child) == 0 && Grid.GetColumnSpan(child) == 3) continue; var row = Grid.GetRow(child); Grid.SetRow(child, 1); Grid.SetColumn(child, row - 1); }
         }
+    }
+
+    private void RefreshNamesNote()
+    {
+        var parsed = GraphicsBuilder.ParseNamesList(_names.Text);
+        if (parsed.Count == 0) { _namesNote.Text = "Empty: this row is one graphic. Add lines to play several people from one hotkey."; _follow.IsEnabled = true; return; }
+        _namesNote.Text = $"{parsed.Count} name{(parsed.Count == 1 ? "" : "s")}. Each line is its own lower third under this row; {(_hotkey.SelectedIndex > 0 ? HotkeyChoices[_hotkey.SelectedIndex] : "the hotkey")} steps to the next one. Names from Sources is off for a list.";
+        _follow.IsOn = false; _follow.IsEnabled = false;
+    }
+    private async Task ImportCsvAsync()
+    {
+        try {
+            var picker = new Windows.Storage.Pickers.FileOpenPicker();
+            picker.FileTypeFilter.Add(".csv"); picker.FileTypeFilter.Add(".txt"); picker.FileTypeFilter.Add(".tsv");
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, App.MainWindowHandle);
+            var file = await picker.PickSingleFileAsync();
+            if (file is null) return;
+            var text = await System.IO.File.ReadAllTextAsync(file.Path);
+            var parsed = GraphicsBuilder.ParseNamesList(text);
+            if (parsed.Count == 0) { _status.Text = "No names found. Expected one per line: Name, Title."; return; }
+            _names.Text = GraphicsBuilder.NamesListText(parsed); _dirty = true; RefreshNamesNote(); RefreshSaveButton();
+            _status.Text = $"Imported {parsed.Count} name{(parsed.Count == 1 ? "" : "s")} from {System.IO.Path.GetFileName(file.Path)}.";
+        } catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = "Could not read that file: " + ex.Message; }
     }
 
     private string SelectedMotionPreset => GraphicsBuilder.MotionPresets[Math.Max(0, _motion.SelectedIndex)].Id;

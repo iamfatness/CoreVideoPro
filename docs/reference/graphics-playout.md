@@ -143,6 +143,20 @@ Sources". A bare F1 or "LT in" plays in the entry for the source currently on
 Program. Entries are re-projected whenever the roster or the Sources text
 changes; nothing is pre-created in the core.
 
+## Names list (one row, many people)
+
+A lower third built in Design can carry a **names list**: one line per person,
+`Name, Title` (a two-column CSV pastes or imports straight in; a `name,title`
+header is skipped; quotes are stripped). The row saves as a Title-kind row with
+`variants[] { id, name, title }`; Names from Sources is off for a list because
+the list is the binding. In Operate the row expands like a Guest row, one entry
+per line with its own Show / Cue / Hide, and the row's bare hotkey (or
+`graphics.playIn <rowId>` with no sourceId) shows the line **after** whichever
+line is on Program, wrapping to the first. `sourceId` for a line is
+`variant:<id>`; ids are slugs of the name and survive a re-save so a line on air
+keeps its instance. Hide on the row with no sourceId takes every line of that
+row off Program.
+
 ## One truth for Preview and Program (#1072)
 
 Before this change a lower third could show in Preview and vanish on Take:
@@ -223,6 +237,7 @@ running Bitfocus Companion (or any OSC sender) gets:
 | Show a specific guest | `/cvp/graphics/playIn` | `guest` `zoom:<id>` (or `media:` / `capture:`) |
 | Cue the title to ride the next Take | `/cvp/graphics/toPreview` | `title` |
 | Hide one row | `/cvp/graphics/playOut` | `title` (or an instance id) |
+| Next name in a names list | `/cvp/graphics/playIn` | `panelists` (the list row's id) |
 | Hide everything | `/cvp/graphics/playOutAll` | |
 | Fire a shot layout | `/cvp/graphics/layout/cue` | `<layoutId>` |
 

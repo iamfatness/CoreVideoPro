@@ -125,6 +125,24 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Equal("fade", Bodies("graphics.instance.create").Single().GetProperty("animations").GetProperty("in").GetProperty("type").GetString());
     }
 
+    [Fact] public async Task PlayInOfANamesListVariantBindsThatLinesNameAndTitle()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        var rows = library.Document.Playlist.ToList();
+        var guest = rows[0]; // lower-third template row
+        rows[0] = guest with { Kind = GraphicsPlaylistRow.Title, FollowSources = false, Variants = GraphicsBuilder.ParseNamesList("Ada Lovelace, Analyst\nAlan Turing, Mathematician") };
+        Assert.True(await library.SavePlaylistAsync(rows), library.Status);
+        var saved = library.Document.Playlist[0];
+        var entries = service.GuestEntries([], (_, _) => ("", ""));
+        Assert.Equal(["variant:ada-lovelace", "variant:alan-turing"], entries.Where(e => e.RowId == saved.Id).Select(e => e.SourceId));
+        Assert.True((await service.PlayInAsync(entries[1])).Accepted);
+        var create = Bodies("graphics.instance.create").Single();
+        Assert.Equal(GraphicsPlayoutService.InstanceIdFor(saved.Id, "variant:alan-turing"), create.GetProperty("instanceId").GetString());
+        Assert.Equal("Alan Turing", create.GetProperty("fields").GetProperty("name").GetString());
+        Assert.Equal("Mathematician", create.GetProperty("fields").GetProperty("title").GetString());
+        Assert.False(create.TryGetProperty("binding", out _));
+    }
+
     [Fact] public async Task PlayInCreatesCuesWaitsThenShowsFromCue()
     {
         var (library, service) = await BuildWithDefaultPlaylist();
