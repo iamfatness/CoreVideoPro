@@ -8,6 +8,13 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **NDI graphics key (fill+key) output (titler spec Phase 1).** A second NDI source,
+  `<NDI program name> Graphics`, carries only the native graphics on Program over
+  transparency as BGRA with straight alpha, so a downstream switcher, vMix or OBS can
+  key CoreVideo's graphics over its own picture. Toggle in Production settings, NDI;
+  control action `transport.stream.ndi.graphicsKey.set`; persisted with the output
+  preferences. Program output is unchanged. Not yet verified on a live receiver. See
+  `docs/reference/ndi-graphics-key.md`.
 - **Control API `scene.cueWithRoutes` / `scene.route.set` (#861).** A controller can cue a
   scene to Preview and point named routes at Show Input slots over `POST /invoke` (JSON
   `{routeId: slot|null}`, or one `sceneId, routeId, slot` triple). Unknown scene, route or

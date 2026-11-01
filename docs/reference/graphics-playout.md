@@ -262,6 +262,7 @@ while it is on Program.
 
 Per-tile names in Tiles (#1073, native placement per tile rect), clocks and
 sheets as data sources, in/out transition choices in the builder, the full visual
-designer (layers, canvas handles, keyframes) behind the builder, crawls, NDI
-fill+key. Shot layouts landed in slice 2, the template-first builder in slice 3
-(above).
+designer (layers, canvas handles, keyframes) behind the builder, crawls, SDI
+key/fill. Shot layouts landed in slice 2, the template-first builder in slice 3
+(above). NDI fill+key landed as a second NDI source carrying the On Air graphics
+alone, straight alpha: [ndi-graphics-key.md](ndi-graphics-key.md).

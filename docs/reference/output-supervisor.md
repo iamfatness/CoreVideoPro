@@ -56,6 +56,8 @@ its own supervisor thread.
   set) and **implements no `interrupt()` at all**, so a wedged libNDI send can be detected,
   published and escalated but NOT released — the writer is detached after
   `AsyncOutputSender`'s 2 s grace and leaks until exit. Moving NDI out of process is PR 20/28.
+  The NDI graphics key (`ndi-graphics`, [ndi-graphics-key.md](ndi-graphics-key.md)) has
+  the same traits and its own writer and supervisor.
   An UNKNOWN destination is assumed unprotected; never claim isolation that was not established.
 
 Tests: `native/tests/OutputDestinationSupervisorTest.cpp` — the ladder, the health rule, and
