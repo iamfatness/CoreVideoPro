@@ -72,6 +72,17 @@ public sealed partial class TransportViewModel : ObservableObject
 
     public string DiskLoadLine => $"Disk {DiskLoadLabel}";
 
+    /// <summary>#1074: "network congested: stream … , N feeds stalled" while the stream is in
+    /// backpressure and two or more feeds stall together; empty otherwise. From
+    /// <see cref="NetworkCongestionReadout"/>, snapshot facts only.</summary>
+    [ObservableProperty]
+    private string _networkCongestionLabel = "";
+
+    public Visibility NetworkCongestionVisibility =>
+        string.IsNullOrEmpty(NetworkCongestionLabel) ? Visibility.Collapsed : Visibility.Visible;
+
+    partial void OnNetworkCongestionLabelChanged(string value) => OnPropertyChanged(nameof(NetworkCongestionVisibility));
+
     [ObservableProperty]
     private string _frameDropsLabel = "—";
 
@@ -199,6 +210,7 @@ public sealed partial class TransportViewModel : ObservableObject
         StreamStatValue = "—";
         StreamStatHealthLabel = streaming ? "Unverified" : "Idle";
         StreamStatHealthBrush = TransportFormatting.HealthBrush(streaming ? OutputHealthKind.Warning : OutputHealthKind.Idle);
+        NetworkCongestionLabel = "";
 
         RecordStatValue = "—";
         RecordStatHealthLabel = recording ? "Unverified" : "Idle";
@@ -232,6 +244,7 @@ public sealed partial class TransportViewModel : ObservableObject
         StreamStatValue = streamingReadout.Progress;
         StreamStatHealthLabel = streamingReadout.State;
         StreamStatHealthBrush = TransportFormatting.HealthBrush(TransportFormatting.MapNetworkHealth(streamingReadout.Health));
+        NetworkCongestionLabel = NetworkCongestionReadout.Format(snapshot) ?? "";
 
         RecordStatValue = recordingReadout.Progress;
         RecordStatHealthLabel = recordingReadout.State;
