@@ -1897,9 +1897,35 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string StreamNdiGraphicsKeySuffix =>
         !StreamNdiGraphicsKeyEnabled
             ? string.Empty
-            : _bridge.Profile is not null && !HasNativeOutputCapability(_bridge.Profile, "ndi-graphics-output")
-                ? " (graphics key unavailable in this native core build)"
+            : StudioStreamOutputValidation.NdiGraphicsKeyRefusal(true, CoreHasNdiGraphicsKey(), StreamNdiProgramName, StreamNdiGraphicsName) is { } refusal
+                ? $" (graphics key not sent: {refusal})"
                 : $" + graphics key - {StudioStreamOutputValidation.ResolveNdiGraphicsKeyName(StreamNdiProgramName, StreamNdiGraphicsName)}";
+
+    /// <summary>Null until the core's profile is known (the core's own sender then reports).</summary>
+    private bool? CoreHasNdiGraphicsKey() =>
+        _bridge.Profile is null ? null : HasNativeOutputCapability(_bridge.Profile, "ndi-graphics-output");
+
+    private bool IncludeNdiGraphicsKeyDestination() =>
+        StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(
+            StreamNdiEnabled, StreamNdiGraphicsKeyEnabled, CoreHasNdiGraphicsKey(), StreamNdiProgramName, StreamNdiGraphicsName);
+
+    /// <summary>Control action: one validated edit, one save, one output sync.</summary>
+    internal ControlInvokeResult SetNdiGraphicsKey(bool on, string? name) =>
+        NdiGraphicsKeyControl.Set(on, name, StreamNdiEnabled, CoreHasNdiGraphicsKey(), StreamNdiProgramName,
+            StreamNdiGraphicsName, (nextOn, nextName) =>
+            {
+                _applyingStreamDestination = true;
+                try
+                {
+                    if (nextName is not null) StreamNdiGraphicsName = nextName;
+                    StreamNdiGraphicsKeyEnabled = nextOn;
+                }
+                finally
+                {
+                    _applyingStreamDestination = false;
+                }
+                OnStreamOutputOptionChanged();
+            });
 
     public string StreamSrtSummary =>
         StreamSrtEnabled
@@ -3479,7 +3505,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnStreamNdiGroupNameChanged(string value) => OnStreamOutputOptionChanged();
 
-    partial void OnStreamNdiGraphicsKeyEnabledChanged(bool value) => OnStreamOutputOptionChanged();
+    partial void OnStreamNdiGraphicsKeyEnabledChanged(bool value)
+    {
+        // A core that cannot carry the key: revert ONLY the key toggle and say why. The key is
+        // never part of stream validation, so this can never stop the running stream.
+        if (value && !_applyingStreamDestination && CoreHasNdiGraphicsKey() == false)
+        {
+            OutputStatus = "NDI graphics key is not available in this native core build (missing ndi-graphics-output).";
+            StreamNdiGraphicsKeyEnabled = false;
+            return;
+        }
+        OnStreamOutputOptionChanged();
+    }
 
     partial void OnStreamNdiGraphicsNameChanged(string value) => OnStreamOutputOptionChanged();
 
@@ -9657,9 +9694,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamNdiEnabled,
             StreamSrtEnabled,
             _bridge.Profile,
-            Hls.Enabled) ?? StudioStreamOutputValidation.ValidateNdiGraphicsKeyCapability(
-            StreamNdiEnabled && StreamNdiGraphicsKeyEnabled,
-            _bridge.Profile is null ? null : HasNativeOutputCapability(_bridge.Profile, "ndi-graphics-output"));
+            Hls.Enabled);
+        // The NDI graphics key is deliberately NOT validated here: a key that cannot be sent is
+        // dropped from the destination list on its own (IncludeNdiGraphicsKeyDestination), so it
+        // can never turn into a whole-stream failure that stops RTMP/SRT/Program NDI.
     }
 
     private static string? ValidateStreamDestinationCapabilities(bool streamRtmpEnabled, bool streamNdiEnabled, bool streamSrtEnabled, NativeMediaCoreProfile? profile, bool hlsEnabled = false) =>

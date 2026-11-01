@@ -66,13 +66,72 @@ public sealed class NdiGraphicsKeyOutputTests
         Assert.Equal(expected, StudioStreamOutputValidation.ResolveNdiGraphicsKeyName(program, graphics));
     }
 
+    // Review 4A: a key the core cannot carry (or with a bad name) is DROPPED from the destination
+    // list on its own; it is never a stream validation error, so it cannot stop RTMP/SRT/Program NDI.
     [Fact]
-    public void CapabilityGateRefusesOnlyASelectedKeyTheCoreCannotCarry()
+    public void KeyThatCannotBeSentIsDroppedAloneAndNeverFailsTheStream()
     {
-        Assert.Null(StudioStreamOutputValidation.ValidateNdiGraphicsKeyCapability(false, false));
-        Assert.Null(StudioStreamOutputValidation.ValidateNdiGraphicsKeyCapability(true, true));
-        Assert.Null(StudioStreamOutputValidation.ValidateNdiGraphicsKeyCapability(true, null));
-        Assert.Contains("ndi-graphics-output", StudioStreamOutputValidation.ValidateNdiGraphicsKeyCapability(true, false));
+        Assert.True(StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(true, true, true, "Program", null));
+        Assert.True(StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(true, true, null, "Program", null));
+        Assert.False(StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(true, true, false, "Program", null));
+        Assert.False(StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(false, true, true, "Program", null));
+        Assert.False(StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(true, false, true, "Program", null));
+        Assert.False(StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(true, true, true, "Program", "Program"));
+        // Stream validation knows nothing about the key: a valid NDI selection stays valid whatever the key state.
+        Assert.Null(StudioStreamOutputValidation.ValidateSelectedDestinations(
+            false, true, false, "rtmps", "", "", "Program", "caller", "", "9000", "120", "", "0", ""));
+    }
+
+    // Review 4A/4B: the action refuses (Fail, nothing applied) a key the core cannot carry or that
+    // has nothing to ride on because NDI output is off.
+    [Theory]
+    [InlineData(false, true, "NDI output")]
+    [InlineData(true, false, "ndi-graphics-output")]
+    public void ActionRefusesMissingCapabilityOrNdiOffAndAppliesNothing(bool ndiEnabled, bool capability, string reason)
+    {
+        var applied = 0;
+        var result = NdiGraphicsKeyControl.Set(true, null, ndiEnabled, capability, "Program", "", (_, _) => applied++);
+        Assert.False(result.Ok);
+        Assert.Contains(reason, result.Error);
+        Assert.Equal(0, applied);
+    }
+
+    // Review 4C: on + name is ONE edit: a single apply carrying both, so the caller saves and
+    // syncs once instead of two concurrent syncs flapping the key sender.
+    [Fact]
+    public void ActionAppliesToggleAndNameAsOneEdit()
+    {
+        var calls = new List<(bool On, string? Name)>();
+        var result = NdiGraphicsKeyControl.Set(true, "  Studio Key ", true, true, "Program", "", (on, name) => calls.Add((on, name)));
+        Assert.True(result.Ok);
+        var call = Assert.Single(calls);
+        Assert.True(call.On);
+        Assert.Equal("Studio Key", call.Name);
+
+        calls.Clear();
+        Assert.True(NdiGraphicsKeyControl.Set(false, null, false, false, "Program", "Studio Key", (on, name) => calls.Add((on, name))).Ok);
+        Assert.Equal((false, (string?)null), Assert.Single(calls));  // off is always allowed; name kept
+    }
+
+    // Review 5: the advertised name follows the native sender's rules and never equals Program's.
+    [Fact]
+    public void KeyNameIsValidatedForLengthReservedCharactersAndCollision()
+    {
+        var longProgram = new string('P', 70);
+        var defaultName = StudioStreamOutputValidation.ResolveNdiGraphicsKeyName(longProgram, null);
+        Assert.True(defaultName.Length <= StudioStreamOutputValidation.NdiMaxSourceNameLength);
+        Assert.EndsWith(" Graphics", defaultName);
+        Assert.Null(StudioStreamOutputValidation.ValidateNdiGraphicsKeyName(longProgram, null));
+
+        Assert.Contains("64", StudioStreamOutputValidation.ValidateNdiGraphicsKeyName("Program", new string('k', 65)));
+        Assert.Contains("characters NDI does not allow", StudioStreamOutputValidation.ValidateNdiGraphicsKeyName("Program", "Key:One"));
+        Assert.Contains("differ", StudioStreamOutputValidation.ValidateNdiGraphicsKeyName("CoreVideo Pro Program", " corevideo pro program "));
+        Assert.Null(StudioStreamOutputValidation.ValidateNdiGraphicsKeyName("Program", "Studio Key"));
+
+        var applied = 0;
+        var refused = NdiGraphicsKeyControl.Set(false, "Program", true, true, "Program", "", (_, _) => applied++);
+        Assert.False(refused.Ok);  // a bad name is refused even when turning the key off
+        Assert.Equal(0, applied);
     }
 
     [Fact]

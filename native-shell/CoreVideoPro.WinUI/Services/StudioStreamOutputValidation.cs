@@ -264,22 +264,58 @@ public static class StudioStreamOutputValidation
     /// <summary>The core's destination id for the NDI graphics key (fill+key) sender.</summary>
     public const string NdiGraphicsKeyDestination = "ndi-graphics";
 
+    /// <summary>NDI's source-name limit (native NdiSourceName.h kNdiMaxSourceNameLength).</summary>
+    public const int NdiMaxSourceNameLength = 64;
+
+    private const string NdiGraphicsKeySuffix = " Graphics";
+
     /// <summary>The NDI source name the graphics key advertises: the operator's own name when
     /// set, otherwise "&lt;NDI program name&gt; Graphics" so the two sources sort together on a
-    /// receiver and never collide.</summary>
+    /// receiver. The default trims the program part so the whole name fits NDI's 64 characters
+    /// (an over-long default used to leave the sender stuck in source-name-invalid).</summary>
     public static string ResolveNdiGraphicsKeyName(string? programName, string? graphicsName)
     {
         var explicitName = NormalizeText(graphicsName, string.Empty);
         if (explicitName.Length > 0) return explicitName;
-        return $"{NormalizeText(programName, "CoreVideo Pro Program")} Graphics";
+        var program = NormalizeText(programName, "CoreVideo Pro Program");
+        var room = NdiMaxSourceNameLength - NdiGraphicsKeySuffix.Length;
+        if (program.Length > room) program = program[..room].TrimEnd();
+        return program + NdiGraphicsKeySuffix;
     }
 
-    /// <summary>Refuses a selected graphics key the running core cannot carry. A null capability
-    /// (no profile yet) defers to the core's own sender warning, like the other destinations.</summary>
-    public static string? ValidateNdiGraphicsKeyCapability(bool keySelected, bool? coreHasCapability) =>
-        keySelected && coreHasCapability == false
-            ? "NDI graphics key is selected, but the native media core profile is missing ndi-graphics-output."
-            : null;
+    /// <summary>Validates the name the key would advertise, with the native sender's rules: at most
+    /// 64 characters, none of NDI's reserved characters, and never the Program source's own name
+    /// (two senders with one name collide on the network).</summary>
+    public static string? ValidateNdiGraphicsKeyName(string? programName, string? graphicsName)
+    {
+        var resolved = ResolveNdiGraphicsKeyName(programName, graphicsName);
+        if (resolved.Length > NdiMaxSourceNameLength)
+            return $"NDI graphics key name must be {NdiMaxSourceNameLength} characters or fewer.";
+        if (resolved.Any(ch => ch <= '\u001f' || "<>:\"/\\|?*".Contains(ch)))
+            return "NDI graphics key name contains characters NDI does not allow (< > : \" / \\ | ? *).";
+        if (string.Equals(resolved, NormalizeText(programName, "CoreVideo Pro Program"), StringComparison.OrdinalIgnoreCase))
+            return "NDI graphics key name must differ from the NDI program name.";
+        return null;
+    }
+
+    /// <summary>Why the graphics key cannot be turned on now, or null. One rule for the control
+    /// action and the stream destination list. NDI must be on (the key rides with it), the running
+    /// core must carry ndi-graphics-output (null = no profile yet: defer to the core's own sender
+    /// warning), and the advertised name must be valid.</summary>
+    public static string? NdiGraphicsKeyRefusal(bool ndiEnabled, bool? coreHasCapability, string? programName, string? graphicsName)
+    {
+        if (!ndiEnabled) return "Turn on NDI output first; the graphics key is a second NDI source that rides with it.";
+        if (coreHasCapability == false)
+            return "NDI graphics key is not available in this native core build (missing ndi-graphics-output).";
+        return ValidateNdiGraphicsKeyName(programName, graphicsName);
+    }
+
+    /// <summary>Whether the key destination is sent. A key that cannot be sent is DROPPED from the
+    /// list on its own; it never fails stream validation, so it can never stop RTMP, SRT or the
+    /// Program NDI source.</summary>
+    public static bool IncludeNdiGraphicsKeyDestination(bool ndiEnabled, bool keyEnabled, bool? coreHasCapability,
+        string? programName, string? graphicsName) =>
+        keyEnabled && NdiGraphicsKeyRefusal(ndiEnabled, coreHasCapability, programName, graphicsName) is null;
 
     public static bool CanSerializeSrtSettings(
         string? mode,

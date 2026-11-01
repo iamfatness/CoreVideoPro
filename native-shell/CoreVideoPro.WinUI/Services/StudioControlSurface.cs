@@ -258,10 +258,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             case "transport.stream.srt.configure":
                 return _vm.ConfigureStreamDestination(true, args);
             case "transport.stream.ndi.graphicsKey.set":
-                // Live like the settings toggle: the core adds or drops only the key sender.
-                if (args.Count > 1 && args[1] is string keyName) _vm.StreamNdiGraphicsName = keyName.Trim();
-                _vm.StreamNdiGraphicsKeyEnabled = Bool(args, 0);
-                return ControlInvokeResult.Success;
+                // Validated first (NDI on, core capability, name), then applied as one edit with one
+                // sync; the core adds or drops only the key sender.
+                return _vm.SetNdiGraphicsKey(Bool(args, 0), args.Count > 1 ? args[1] as string : null);
             case "transport.stream.set":
                 return await RunOutputSet(_vm.StreamingRequested, _vm.Streaming, Bool(args, 0), _vm.CanSetStreaming, _vm.SetStreamingAsync, "streaming").ConfigureAwait(true);
             case "transport.engine.toggle":
