@@ -41,16 +41,40 @@ struct TilesMemberFrameAge {
   int64_t lastFrameAgeMs = 0;
 };
 
+// #1071: only a ZOOM member ages out on a frozen frameId. A Zoom guest whose
+// frameId stops advancing is a stalled feed (the I4 frozen-but-subscribed
+// defect), and leaving its seat empty is the right trade. A LOCAL member
+// (capture:/media:) legitimately re-serves the same frameId for long stretches
+// while perfectly healthy: an idle desktop share, a paused clip, a PNG logo
+// (StillMediaFrameCache keeps a stable frameId by design; see the on-air
+// "stalled" rule in MediaCore::annotateLayerSource, #535 slice 4a R1). Ageing
+// those out would empty a Tiles slot 1.5 s after seating a static source and
+// reflow the wall around it. So a local member is admitted on `hasFrame` alone
+// — the frame is still in this tick's gather, so nothing is fabricated — and
+// it drops the tick its frame LEAVES the gather (unplugged, un-routed,
+// departed). Whether a frozen capture device is a stall is capture liveness,
+// #562's decision, not a frame-age heuristic that cannot tell a dead camera
+// from a still slide.
+inline bool tilesMemberAgesOut(const std::string& sourceId) {
+  return sourceId.rfind("zoom:", 0) == 0;
+}
+
 // What the wall does with one member this tick.
 enum class TilesMemberState { Fresh, Held, Dropped };
 
+// THE one rule for a wall member (#1074 hold window, #1071 local members):
+//   no frame in the gather            -> Dropped, at once, any kind
+//   local member (not tilesMemberAgesOut) with a frame -> Fresh, never Held
+//   Zoom member, age <= staleAfterMs  -> Fresh
+//   Zoom member, age <= holdWindowMs  -> Held (drawn, last picture, labelled)
+//   Zoom member, older                -> Dropped
 inline TilesMemberState classifyTilesMember(const TilesMemberFrameAge& age,
                                             int64_t staleAfterMs = kTilesStaleFrameMs,
                                             int64_t holdWindowMs = kTilesHoldWindowMs) {
   if (!age.hasFrame) {
     return TilesMemberState::Dropped;
   }
-  if (age.lastFrameAgeMs <= staleAfterMs) {
+  if (!tilesMemberAgesOut(age.sourceId) || age.lastFrameAgeMs <= staleAfterMs) {
     return TilesMemberState::Fresh;
   }
   return age.lastFrameAgeMs <= holdWindowMs ? TilesMemberState::Held : TilesMemberState::Dropped;

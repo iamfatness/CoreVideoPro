@@ -4,6 +4,7 @@
 
 #include "core/SourcePreviewDemand.h"
 #include "compositor/TilesMembership.h"
+#include "compositor/TilesHoldEpisodeLog.h"
 #include "compositor/TilesPlanAnimation.h"
 #include "core/TilesWallSource.h"
 #include "core/GradePreviewController.h"
@@ -764,9 +765,8 @@ class MediaCore {
     bool everSeen = false;
     int64_t lastFrameId = -1;
     int64_t lastChangedTickMs = 0;
-    // #1074: the state this member was last classified as, so the gather can
-    // log hold/drop/recover TRANSITIONS once each instead of every tick.
-    compositor::TilesMemberState lastState = compositor::TilesMemberState::Fresh;
+    // #1074: per-episode `[tiles-hold]` log latch (compositor/TilesHoldEpisodeLog.h).
+    compositor::TilesHoldEpisodeLog holdLog;
   };
   std::unordered_map<std::string, TilesFrameFreshness> tilesFrameFreshness_;
   // Task 4: the render plan the render tick actually built, cached for

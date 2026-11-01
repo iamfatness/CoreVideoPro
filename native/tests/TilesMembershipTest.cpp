@@ -1,4 +1,5 @@
 #include "compositor/TilesMembership.h"
+#include "compositor/TilesHoldEpisodeLog.h"
 
 #include <gtest/gtest.h>
 
@@ -7,7 +8,9 @@ namespace {
 using corevideo::compositor::admitTilesMembers;
 using corevideo::compositor::admitTilesMembersWithHold;
 using corevideo::compositor::classifyTilesMember;
+using corevideo::compositor::kTilesHoldLogRearmMs;
 using corevideo::compositor::kTilesHoldWindowMs;
+using corevideo::compositor::TilesHoldEpisodeLog;
 using corevideo::compositor::kTilesStaleFrameMs;
 using corevideo::compositor::TilesMemberFrameAge;
 using corevideo::compositor::TilesMemberState;
@@ -133,6 +136,90 @@ TEST(TilesMembership, DuplicateMembersAreDrawnOnce) {
   const std::vector<TilesMemberFrameAge> ages{{"zoom:1", true, 0}};
   const auto admitted = admitTilesMembers({"zoom:1", "zoom:1"}, ages);
   EXPECT_EQ(admitted.size(), 1u);
+}
+
+// #1074 review / #1071: the hold-and-drop clock is Zoom-only. A local member
+// (capture:/media:) re-serves one frameId while healthy (static share, still,
+// paused clip), so frame age says nothing about it: admitted on hasFrame
+// alone, never labelled held, dropped only when its frame leaves the gather.
+TEST(TilesMembership, ALocalMemberIsNeverHeldAndNeverAgesOut) {
+  for (const char* id : {"capture:screen-1", "media:clip-7"}) {
+    const std::vector<TilesMemberFrameAge> ages{{id, true, kTilesHoldWindowMs * 10}};
+    const auto admission = admitTilesMembersWithHold({id}, ages);
+    EXPECT_EQ(admission.admitted, (std::vector<std::string>{id})) << id;
+    EXPECT_TRUE(admission.held.empty()) << id;
+    EXPECT_EQ(classifyTilesMember(ages[0]), TilesMemberState::Fresh) << id;
+    EXPECT_EQ(classifyTilesMember({id, false, 0}), TilesMemberState::Dropped) << id;
+  }
+}
+
+TEST(TilesMembership, OnlyTheZoomPrefixAgesOut) {
+  EXPECT_TRUE(corevideo::compositor::tilesMemberAgesOut("zoom:16778240"));
+  EXPECT_FALSE(corevideo::compositor::tilesMemberAgesOut("capture:cam-1"));
+  EXPECT_FALSE(corevideo::compositor::tilesMemberAgesOut("media:clip-7"));
+  EXPECT_FALSE(corevideo::compositor::tilesMemberAgesOut("16778240"));
+}
+
+// ---- [tiles-hold] log latch: per episode, not per transition ------------
+
+namespace {
+struct LogCounts { int held = 0; int dropped = 0; int recovered = 0; };
+void count(LogCounts& c, const char* label) {
+  if (label == nullptr) return;
+  const std::string s = label;
+  if (s == "held") ++c.held; else if (s == "dropped") ++c.dropped; else if (s == "recovered") ++c.recovered;
+}
+}  // namespace
+
+// The review's case: a degraded Zoom feed delivering one frame every 1.7 s
+// flips Fresh (1.5 s) -> Held (0.2 s) on every frame. Ten frames, 17 ms ticks:
+// one `held` line for the whole episode, nothing else.
+TEST(TilesMembership, ADegradedFeedFlippingFreshAndHeldLogsHeldOnce) {
+  TilesHoldEpisodeLog log;
+  LogCounts c;
+  int64_t now = 0;
+  for (int frame = 0; frame < 10; ++frame) {
+    for (int64_t age = 0; age <= 1700; age += 17, now += 17) {
+      count(c, log.observe(classifyTilesMember({"zoom:1", true, age}), now));
+    }
+  }
+  EXPECT_EQ(c.held, 1);
+  EXPECT_EQ(c.dropped, 0);
+  EXPECT_EQ(c.recovered, 0);
+}
+
+TEST(TilesMembership, HeldReArmsOnlyAfterContinuousFreshForTheReArmWindow) {
+  TilesHoldEpisodeLog log;
+  LogCounts c;
+  count(c, log.observe(TilesMemberState::Held, 0));
+  count(c, log.observe(TilesMemberState::Fresh, 100));
+  count(c, log.observe(TilesMemberState::Fresh, 100 + kTilesHoldLogRearmMs - 1));
+  count(c, log.observe(TilesMemberState::Held, 100 + kTilesHoldLogRearmMs));
+  EXPECT_EQ(c.held, 1) << "fresh for less than the re-arm window must not re-log held";
+  count(c, log.observe(TilesMemberState::Fresh, 10'000));
+  count(c, log.observe(TilesMemberState::Fresh, 10'000 + kTilesHoldLogRearmMs));
+  count(c, log.observe(TilesMemberState::Held, 20'000));
+  EXPECT_EQ(c.held, 2) << "a new episode after a real recovery is logged";
+  EXPECT_GT(kTilesHoldLogRearmMs, corevideo::compositor::kTilesStaleFrameMs)
+      << "a re-arm at or below the stale threshold re-logs every frame of a degraded feed";
+}
+
+TEST(TilesMembership, DroppedIsAlwaysLoggedAndRecoveredOnlyAfterADrop) {
+  TilesHoldEpisodeLog log;
+  LogCounts c;
+  count(c, log.observe(TilesMemberState::Held, 0));
+  count(c, log.observe(TilesMemberState::Fresh, 17));  // a hold that ends is not a recovery
+  EXPECT_EQ(c.recovered, 0);
+  count(c, log.observe(TilesMemberState::Held, 34));
+  count(c, log.observe(TilesMemberState::Dropped, 51));
+  count(c, log.observe(TilesMemberState::Dropped, 68));  // once per drop
+  EXPECT_TRUE(!log.heldAnnounced());
+  count(c, log.observe(TilesMemberState::Fresh, 85));
+  EXPECT_EQ(c.held, 1);
+  EXPECT_EQ(c.dropped, 1);
+  EXPECT_EQ(c.recovered, 1);
+  count(c, log.observe(TilesMemberState::Dropped, 100));
+  EXPECT_EQ(c.dropped, 2) << "a later drop is logged again";
 }
 
 }  // namespace

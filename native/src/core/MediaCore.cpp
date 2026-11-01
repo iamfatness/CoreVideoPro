@@ -5629,17 +5629,15 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
           freshness.lastChangedTickMs = frameTimestampMs;
         }
         age.lastFrameAgeMs = std::max<int64_t>(0, frameTimestampMs - freshness.lastChangedTickMs);
-        // #1074: one log line per TRANSITION (fresh -> held -> dropped ->
-        // fresh), never per tick, so a show log shows exactly when a slot
-        // was held and when it was given up. No allocation: member is a
-        // reference into combinedMembers.
-        const auto state = compositor::classifyTilesMember(age);
-        if (state != freshness.lastState) {
-          const char* label = state == compositor::TilesMemberState::Held ? "held"
-              : state == compositor::TilesMemberState::Dropped ? "dropped" : "recovered";
+        // #1074: one `[tiles-hold]` line per EPISODE (held once, dropped
+        // always, recovered only after a drop), never per tick and never per
+        // Fresh/Held flip of a degraded feed; see TilesHoldEpisodeLog.h. Only
+        // Zoom members can be Held or age out (tilesMemberAgesOut), so local
+        // members never log here. No allocation: member is a reference into
+        // combinedMembers.
+        if (const char* label = freshness.holdLog.observe(compositor::classifyTilesMember(age), frameTimestampMs)) {
           ::corevideo::core::nativeLogf("[tiles-hold] %s %s ageMs=%lld\n", member.c_str(), label,
                                         static_cast<long long>(age.lastFrameAgeMs));
-          freshness.lastState = state;
         }
       } else {
         age.hasFrame = false;
@@ -5650,7 +5648,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
         // left the gather (video-off, departure, un-route) is dropped at
         // once; say so, since the snapshot's `held` label disappears with it.
         if (const auto it = tilesFrameFreshness_.find(member);
-            it != tilesFrameFreshness_.end() && it->second.lastState == compositor::TilesMemberState::Held) {
+            it != tilesFrameFreshness_.end() && it->second.holdLog.heldAnnounced()) {
           ::corevideo::core::nativeLogf("[tiles-hold] %s dropped reason=no-frame\n", member.c_str());
         }
         tilesFrameFreshness_.erase(member);
