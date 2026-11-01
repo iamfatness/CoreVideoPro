@@ -30,6 +30,7 @@
 #include "compositor/CompositorLayout.h"
 #include "compositor/CompositorFaultInjection.h"  // test-only monitor-pass stall seam (G2)
 #include "compositor/CompositorOverlayRaster.h"  // extracted DirectWrite/WIC/D2D overlay raster
+#include "compositor/OverlayRasterRetention.h"  // #1073: last ready raster per name-line layer
 #include "compositor/TilesDecorationParams.h"
 #include "compositor/CompositorShaders.h"  // extracted HLSL shader sources + pure shader/format helpers
 #include "compositor/D3DGradeScopes.h"
@@ -480,6 +481,7 @@ class D3D11Compositor final : public ICompositor {
     ++frameNumber_;
     compositionInputSequence_ = (std::max)(compositionInputSequence_, frameNumber_);
     overlayRaster_.beginFrame();
+    retainedOverlayRasters_.prune(frameNumber_);
     auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     ProgramFrame frame;
     frame.width = deterministicPlan.width;
@@ -2048,6 +2050,22 @@ class D3D11Compositor final : public ICompositor {
         device_.get(), context_.get(), overlay, rect, targetWidth_, targetHeight_, {}, !layer.plan.graphicsInstanceId.empty(), layer.plan.graphicsPreparedResource);
     if (overlayView && (!gpuReadLeases_ || !gpuReadLeases_->hold(overlayRaster_.lease()))) {
       overlayRaster_.refuseGpuLease(); overlayView = nullptr;
+    }
+    if (overlay.holdLastRaster) {
+      // #1073 Tiles name line: a reflow resizes every band at once and the
+      // raster queue is bounded, so "preparing" can last several frames on a
+      // big wall. Draw the layer's previous raster (the viewport scales it to
+      // the new band) until the new one is ready, and never the bare accent
+      // bar below: a tick with no text is worse than a name a few frames old.
+      const auto widthPx = int(std::lround(double(rect.width) * targetWidth_));
+      const auto heightPx = int(std::lround(double(rect.height) * targetHeight_));
+      overlayView = retainedOverlayRasters_.resolve(layer.plan.layerId, overlayView,
+          overlayView ? overlayRaster_.lease() : nullptr, widthPx, heightPx, frameNumber_);
+      if (overlayView) {
+        const auto* retained = retainedOverlayRasters_.find(layer.plan.layerId);
+        if (!retained || !gpuReadLeases_ || !gpuReadLeases_->hold(retained->lease)) overlayView = nullptr;
+      }
+      if (!overlayView) return false;
     }
     if (!layer.plan.graphicsInstanceId.empty() && !overlayView) return false;
     if (layer.plan.graphicsAwaitingEntrance) {
@@ -3694,6 +3712,10 @@ class D3D11Compositor final : public ICompositor {
   // texture cache). Owns its own state; runs only on the render thread, driven
   // by drawOverlayLayer. Extracted move-only into CompositorOverlayRaster.
   CompositorOverlayRaster overlayRaster_;
+  // #1073: per-layer last ready raster for overlays flagged holdLastRaster
+  // (Tiles name lines), keyed by the resolved layer id so the program,
+  // preview and multiview-cell copies of one name retain independently.
+  compositor::OverlayRasterRetention<ID3D11ShaderResourceView> retainedOverlayRasters_;
   int layerTextureWidth_ = 0;
   int layerTextureHeight_ = 0;
   HANDLE sharedHandle_ = nullptr;
