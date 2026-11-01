@@ -345,12 +345,13 @@ class NdiOutputSender final : public IOutputSender {
       const std::string requested = !settings->ndiName.empty()
                                         ? settings->ndiName
                                         : !settings->streamKey.empty() ? settings->streamKey : settings->label;
-      const auto parsed = parseNdiSourceName(requested.empty() ? defaultName : requested);
-      if (parsed.valid) {
-        configuredSourceName_ = parsed.canonical;
-        configuredProgramName_ = parsed.programName;
-      } else if (!parsed.errors.empty()) {
-        configuredSourceNameError_ = parsed.errors.front();
+      // Every sync is a complete answer: a valid name clears an earlier
+      // rejection (it used to latch for the life of the sender).
+      const auto resolved = resolveNdiSenderName(requested, defaultName);
+      configuredSourceNameError_ = resolved.error;
+      if (resolved.error.empty()) {
+        configuredSourceName_ = resolved.canonical;
+        configuredProgramName_ = resolved.programName;
       }
       configuredFps_ = (std::max)(1, settings->fps);
       // #763: the operator's NDI group(s). libNDI takes a comma-separated
@@ -401,29 +402,28 @@ class NdiOutputSender final : public IOutputSender {
       return snapshot();
     }
     if (role_ == NdiSenderRole::GraphicsKey) {
-      // The key frame is the compositor's graphics-only readback. Until the
-      // first one lands (one render tick + one reader pass after the
-      // destination starts) say so; never fall back to Program pixels here.
-      const bool hasKeyPixels = frame->graphicsKeyBgraShared && !frame->graphicsKeyBgraShared->empty() &&
-                                frame->graphicsKeyWidth > 0 && frame->graphicsKeyHeight > 0 &&
-                                frame->graphicsKeyBgraShared->size() >=
-                                    graphicsKeyFrameBytes(frame->graphicsKeyWidth, frame->graphicsKeyHeight);
-      if (!hasKeyPixels) {
-        sender_.status = "starting";
-        sender_.warning = "NDI graphics key is waiting for the graphics layer readback.";
-        sender_.destinationHealth = "starting";
-        sender_.lastResultCode = "key-pixels-missing";
+      // The key frame is the compositor's graphics-only readback, matched to
+      // this Program frame. Never fall back to Program pixels. A STALE key is
+      // the output worker's transparent stand-in: send it (so the downstream
+      // keyer clears) and say so, never "live/ok" (GraphicsKeyPixels.h).
+      const auto verdict = graphicsKeySendVerdict(*frame);
+      if (!verdict.send) {
+        sender_.status = verdict.status;
+        sender_.warning = verdict.warning;
+        sender_.destinationHealth = verdict.status;
+        sender_.lastResultCode = verdict.resultCode;
         return snapshot();
       }
       submitGraphicsKeyVideo(*frame);
       refreshConnectionCount();
-      sender_.status = "live";
-      sender_.warning.clear();
+      sender_.status = verdict.status;
+      sender_.warning = verdict.warning;
       sender_.lastFrameNumber = frame->frameNumber;
       ++sender_.framesSent;
       sender_.bytesSent += lastSubmittedVideoBytes_;  // BGRA bytes handed to libNDI
-      sender_.destinationHealth = connectionCount_ > 0 ? "ok" : "starting";
-      sender_.lastResultCode = "ok";
+      sender_.destinationHealth = verdict.status == "warning" ? "warning" : connectionCount_ > 0 ? "ok" : "starting";
+      sender_.lastResultCode = verdict.resultCode;
+      if (verdict.status == "warning") sender_.lastError = verdict.warning;
       return snapshot();
     }
     const bool hasProgramPixels =
@@ -607,7 +607,7 @@ class NdiOutputSender final : public IOutputSender {
     video.timestamp = 0;
     api_.send_video(sendInstance_, &video);
     lastSubmittedVideoBytes_ = static_cast<std::int64_t>(video.line_stride_in_bytes) * height;
-    videoSourceDetail_ = "graphics-key-bgra-straight-alpha";
+    videoSourceDetail_ = frame.graphicsKeyStale ? "graphics-key-transparent-stale" : "graphics-key-bgra-straight-alpha";
   }
 
   // The program-audio tap is interleaved float; NDI audio_frame_v2 is planar.

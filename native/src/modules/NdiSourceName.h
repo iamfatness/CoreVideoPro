@@ -138,6 +138,23 @@ inline NdiSourceName parseNdiSourceName(const std::string& input) {
   return result;
 }
 
+// The name a sender should advertise for one sync: the requested name, or
+// `fallback` when none was requested. A complete answer every call â€” a valid
+// name carries no error, so a sender that applies it can never keep an
+// earlier rejection latched after the operator fixed the name.
+struct ResolvedNdiSenderName {
+  std::string canonical;
+  std::string programName;
+  std::string error;  // empty = valid
+};
+
+inline ResolvedNdiSenderName resolveNdiSenderName(const std::string& requested, const std::string& fallback) {
+  const auto source = detail::trimAscii(requested).empty() ? fallback : requested;
+  const auto parsed = parseNdiSourceName(source);
+  if (parsed.valid) return {parsed.canonical, parsed.programName, {}};
+  return {{}, {}, parsed.errors.empty() ? std::string("NDI source name is invalid.") : parsed.errors.front()};
+}
+
 }  // namespace corevideo::modules
 
 #endif  // COREVIDEO_MODULES_NDI_SOURCE_NAME_H
