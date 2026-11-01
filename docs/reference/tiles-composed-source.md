@@ -2,6 +2,73 @@
 
 _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
 
+# Local sources as Tiles members (#1071, 2026-10-31)
+
+Owner request (live show prep, 2026-10-31): "the ability to add local sources
+to Tiles." Until this change the wall's membership was decided in the shell
+from the Zoom room only; a webcam, capture card, screen or media asset could be
+the wall's BACKGROUND but never a tile. The core was never the blocker — its
+frame-age gather already matches a `capture:`/`media:` member by its full id
+and the tile layer keeps that id as `participantId` — so this is a shell
+membership change plus a native test that pins the claim.
+
+**The eligible set is "video-on Zoom participants + every show-input slot bound
+to a local source with video".** `TilesLocalSourcePolicy.LocalVideoSources`
+(`native-shell/CoreVideoPro.WinUI/Services/TilesLocalSourcePolicy.cs`) reads the
+show-input roster: every slot whose kind is not Unassigned/Zoom and whose
+`ShowInputRosterService.SlotSourceId` is canonical (`capture:<id>`,
+`capture:screen:N`, `media:<assetId>`), in slot order, de-duplicated. A Media
+slot counts only when its asset is among the VISUAL assets (video or still;
+an audio-only asset has no picture to tile, and an asset that left the bin is
+not invented). Slots, not enumerated devices: a member is something the
+operator put in the show, the same rule routed mode and the multiviewer use.
+`TilesLayerPayloadBuilder.Build` takes the ids as `localVideoSourceIds` and
+appends them after the roster participants, accepting only canonical local ids
+(a bare device id would be qualified `zoom:` and match no frame). `routed`
+mode keeps filtering to the InShow slot ids, which already carried local ids.
+
+**Identity: a local id IS its own live id.** `TilesIdentityPolicy.ResolveLiveSourceId`
+and `Persist` return a `capture:`/`media:` id unchanged — never resolved
+against the roster, never stale, in any meeting or none — so manual slots and
+the never-show list hold them as written (`scene.tiles.slot.assign` with a
+canonical local id works unchanged). `Label` returns the canonical id for an
+unbound local source rather than "Unavailable source", which reads as a Zoom
+guest who left. Zoom re-join handling (#479) is untouched.
+
+**The member picker lists local sources under their show-input groups.**
+`StudioViewModel.GalleryMemberChoices` = Zoom participants (roster order) then
+the local sources ordered by `ShowInputRosterService.UnifiedSourceGroups`
+(Camera, Screen, Browser, Media, SRT, NDI), slot order within a group;
+`GalleryMemberChoice.Group`/`Label` give the Members list "Camera · Logitech
+Brio" the way the show-input picker button reads. The list and the summary are
+re-raised from `ApplyShowInputRefresh` and the media-bin load, so a slot
+binding appears as a candidate without a gallery edit. Because the picker and
+the eligible set come from one function, what the operator can pick is what
+auto fill can seat; `SetTilesBackground`, `SetTilesOverride`,
+`AssignTilesSlot`, `SetTilesExclusion` validate against the same list.
+
+**Dropout follows the source, not a Tiles rule.** Nothing Tiles-specific was
+added: a local member runs through the same `admitTilesMembers` staleness gate
+as a Zoom member (frameId stops advancing -> out of the wall after
+`kTilesStaleFrameMs`, the wall reflows) and `annotateLayerSource` attaches the
+source's own `dropoutPolicy` when one is set. The core still refuses a dropout
+policy for a non-`zoom:` id (#535 slice 4a R2), so a capture member's hold/black
+behaviour is #562's job (capture liveness), not this change's.
+
+**Decisions the issue left open, taken here:** SRT, RTMP, NDI and Browser
+inputs are admitted too (they are `capture:` sources with video and already
+carry the show-input groups); local members are seated AFTER the Zoom
+participants in eligible mode; a Media slot with an audio-only asset is not a
+candidate; the CLAUDE.md reference-table row was deliberately left as #1078
+edits it. Tests: `TilesLocalSourcePolicyTests`, `TilesMembershipPolicyTests.
+Local1071_*`, `TilesLayerPayloadBuilderTests.Build_SeatsABoundCaptureSlot*` /
+`Build_RoutedModeFiltersLocal*` / `Build_IgnoresANonCanonicalLocalId*`,
+`TilesIdentityPolicyTests.Local1071_*`, and the native
+`TilesRenderPlan.AZoomGuestAndACaptureDeviceShareOneWallAndDropOutIndependently`
+(real tick: one ISource Zoom guest + one capture device on one wall; freezing
+the capture ages only its tile out). **Not verified live** as of the PR: no
+real wall with a webcam tile has been rendered in the running app.
+
 **It has a production WRITER and, as of this slice, no production READER.**
 `MediaCore::renderSyntheticTick` registers and releases walls for real, and the
 only consumers are tests (`sourceRegistrySnapshotForTest`). That is deliberate —
