@@ -218,3 +218,19 @@ public sealed class GraphicsBuilderPlacementTests
         Assert.Null(GraphicsBuilder.RowFrom(kind, t, same with { Placement = null }, "C", "", 0, false, []).Placement);
     }
 }
+
+public sealed class GraphicsBuilderClockTests
+{
+    [Fact]
+    public void AClockRowCarriesItsSettingsOnlyWhenTheTemplateHasAClock()
+    {
+        var clockTemplate = new NativeGraphicsTemplate { TemplateId = "clock-panel", TemplateVersion = 1, Name = "Clock", Family = "clock", Runtime = "declarative" };
+        var title = new NativeGraphicsTemplate { TemplateId = "centered-title", TemplateVersion = 1, Name = "T", Family = "title", Runtime = "declarative" };
+        var draft = new NativeGraphicsDraft("x", 1, JsonSerializer.SerializeToElement(new { label = "LIVE" }), new LowerThirdAppearance(), new());
+        var countdown = new NativeGraphicsClockConfiguration { Mode = "countdown", DurationSeconds = 90, Finish = "hide" };
+        var row = GraphicsBuilder.RowFrom(GraphicsBuilder.Kind("clock")!, clockTemplate, draft, "Break", "", 0, false, [], clock: countdown);
+        Assert.True(row.ShowClock); Assert.Equal(90, row.Clock!.DurationSeconds); Assert.Equal("hide", row.Clock.Finish); Assert.True(row.IsValid);
+        Assert.Null(GraphicsBuilder.RowFrom(GraphicsBuilder.Kind("title")!, title, draft, "T", "", 0, false, [], clock: countdown).Clock);
+        Assert.False((row with { Clock = countdown with { DurationSeconds = 0 } }).IsValid);
+    }
+}

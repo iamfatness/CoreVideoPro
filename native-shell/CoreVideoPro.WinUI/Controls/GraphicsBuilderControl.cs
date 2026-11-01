@@ -40,6 +40,11 @@ public sealed class GraphicsBuilderControl : UserControl
     private readonly ComboBox _anchor = new() { Header = "Position", ItemsSource = GraphicsBuilder.AnchorChoices.Select(a => a.Label).ToArray(), HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly Slider _scale = new() { Header = "Size", Minimum = 50, Maximum = 150, StepFrequency = 5, TickFrequency = 25, Value = 100 };
     private readonly Button _resetPlacement = StudioBrushes.ChipButton("Template default");
+    private readonly ComboBox _clockMode = new() { Header = "Clock", ItemsSource = new[] { "Time of day", "Countdown" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly NumberBox _clockMinutes = new() { Header = "Countdown (minutes)", Value = 5, Minimum = 0.25, Maximum = 1440, SmallChange = 0.5, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox _clockFormat = new() { Header = "Show", ItemsSource = new[] { "Hours : minutes : seconds", "Hours : minutes" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox _clockFinish = new() { Header = "At zero", ItemsSource = new[] { "Hold at 0:00", "Hide the graphic" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly StackPanel _clockBlock = new() { Spacing = 8 };
     private readonly ComboBox _motion = new() { Header = "Motion", ItemsSource = GraphicsBuilder.MotionPresets.Select(m => m.Label).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox _speed = new() { Header = "Speed", ItemsSource = GraphicsBuilder.MotionSpeeds.Select(m => m.Label).ToArray(), SelectedIndex = 1, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox _name = new() { Header = "Name in the playlist", MaxLength = 128, PlaceholderText = "Guest name" };
@@ -97,6 +102,12 @@ public sealed class GraphicsBuilderControl : UserControl
         // 4 + 5: fill in and save
         _form.Children.Add(Step("4", "FILL IT IN"));
         _form.Children.Add(_fields); _form.Children.Add(_colors);
+        var clockRow = new Grid { ColumnSpacing = 8 }; clockRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); clockRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        clockRow.Children.Add(_clockMode); Grid.SetColumn(_clockMinutes, 1); clockRow.Children.Add(_clockMinutes);
+        var clockRow2 = new Grid { ColumnSpacing = 8 }; clockRow2.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); clockRow2.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        clockRow2.Children.Add(_clockFormat); Grid.SetColumn(_clockFinish, 1); clockRow2.Children.Add(_clockFinish);
+        _clockBlock.Children.Add(clockRow); _clockBlock.Children.Add(clockRow2); _clockBlock.Children.Add(Note("A countdown starts from Operate (Start / Pause / Reset on the row) once the graphic is cued or shown."));
+        _form.Children.Add(_clockBlock);
         var placementRow = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 6, 0, 0) }; placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(3, GridUnitType.Star) }); placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
         placementRow.Children.Add(_anchor); Grid.SetColumn(_scale, 1); placementRow.Children.Add(_scale); _form.Children.Add(placementRow);
         var placementNote = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; placementNote.Children.Add(_resetPlacement); placementNote.Children.Add(Note("Drag the preview to nudge.")); _form.Children.Add(placementNote);
@@ -121,6 +132,9 @@ public sealed class GraphicsBuilderControl : UserControl
         _discard.Click += (_, _) => StartNew();
         _operate.Click += (_, _) => { if (_attached is { } s) s.GraphicsMode = StudioViewModel.GraphicsModePlayout; };
         _follow.Toggled += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
+        _clockMode.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; _clockMinutes.IsEnabled = _clockFinish.IsEnabled = _clockMode.SelectedIndex == 1; RefreshSaveButton(); } };
+        foreach (var box in new ComboBox[] { _clockFormat, _clockFinish }) box.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
+        _clockMinutes.ValueChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
         _anchor.SelectionChanged += (_, _) => { if (!_loading && _anchor.SelectedIndex >= 0 && _session?.Draft is { } d) { var p = d.Placement ?? _session.Template?.DefaultPlacement ?? new(); _session.SetPlacement(p with { Anchor = GraphicsBuilder.AnchorChoices[_anchor.SelectedIndex].Id }); _dirty = true; RefreshSaveButton(); } };
         _scale.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is { } d) { var p = d.Placement ?? _session.Template?.DefaultPlacement ?? new(); _session.SetPlacement(p with { Scale = Math.Round(_scale.Value / 100, 2) }); _dirty = true; RefreshSaveButton(); } };
         _resetPlacement.Click += (_, _) => { if (_session?.Draft is not null) { _session.SetPlacement(_session.Template?.DefaultPlacement); _dirty = true; RefreshPlacementControls(); RefreshSaveButton(); } };
@@ -197,7 +211,7 @@ public sealed class GraphicsBuilderControl : UserControl
         _editingRowId = ""; _sponsorPath = ""; _dirty = false; _operate.Visibility = Visibility.Collapsed; _status.Text = "";
         if (_attached is { } s && s.GraphicsDesignRowId.Length > 0) s.GraphicsDesignRowId = "";
         _loading = true;
-        try { _name.Text = ""; _names.Text = ""; _follow.IsOn = Kind.Family == "lower-third"; _playOut.SelectedIndex = Kind.Family == "lower-third" ? 1 : 0; _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, GraphicsBuilder.NextFreeHotkey(Rows))); SetMotion(null); }
+        try { _name.Text = ""; _names.Text = ""; _follow.IsOn = Kind.Family == "lower-third"; _playOut.SelectedIndex = Kind.Family == "lower-third" ? 1 : 0; _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, GraphicsBuilder.NextFreeHotkey(Rows))); SetMotion(null); SetClock(null); }
         finally { _loading = false; }
         var templates = GraphicsBuilder.TemplatesFor(Kind, _session?.State);
         if (templates.Count > 0 && _session is { Busy: false }) _session.Browse(templates[0]);
@@ -214,7 +228,7 @@ public sealed class GraphicsBuilderControl : UserControl
             _name.Text = row.Name; _follow.IsOn = row.FollowSources; _names.Text = GraphicsBuilder.NamesListText(row.Variants);
             _playOut.SelectedIndex = Math.Max(0, Array.FindIndex(PlayOutChoices, c => c.Ms == row.PlayOutAfterMs));
             _hotkey.SelectedIndex = Math.Max(0, Array.IndexOf(HotkeyChoices, row.Hotkey));
-            SetMotion(row.Motion);
+            SetMotion(row.Motion); SetClock(row.Clock);
         } finally { _loading = false; }
         if (kind.Id != GraphicsBuilder.SponsorKindId && _session.State?.Templates.FirstOrDefault(t => t.TemplateId == row.TemplateId && t.TemplateVersion == row.TemplateVersion) is { } template && !_session.Busy) {
             _session.Browse(template);
@@ -271,7 +285,7 @@ public sealed class GraphicsBuilderControl : UserControl
             } else {
                 if (_session?.Draft is not { } draft || _session.Template is not { } template) { _status.Text = "Pick a look first."; return; }
                 var variants = Kind.Family == "lower-third" ? GraphicsBuilder.ParseNamesList(_names.Text, existing?.Variants) : [];
-                row = GraphicsBuilder.RowFrom(Kind, template, draft, _name.Text, hotkey, playOut, _follow.IsOn, rows, existing, SelectedMotion, variants);
+                row = GraphicsBuilder.RowFrom(Kind, template, draft, _name.Text, hotkey, playOut, _follow.IsOn, rows, existing, SelectedMotion, variants, Kind.Family == "clock" ? SelectedClock : null);
                 ok = await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(rows, row));
             }
             if (!ok) { _status.Text = _library.Status; return; }
@@ -326,6 +340,7 @@ public sealed class GraphicsBuilderControl : UserControl
         var signature = kind.Id + "|" + _editingRowId + "|" + (template is null ? "" : template.TemplateId + ":" + template.TemplateVersion) + "|" + GraphicsWorkspaceSession.SupportsLogo(template) + "|" + (draft?.Image?.AssetId ?? "");
         _follow.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed;
         _namesBlock.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed; RefreshNamesNote();
+        _clockBlock.Visibility = kind.Family == "clock" ? Visibility.Visible : Visibility.Collapsed;
         RefreshPlacementControls();
         if (signature == _formSignature) { RefreshColorSwatches(); return; }
         _formSignature = signature; _fields.Children.Clear(); _colors.Children.Clear(); _loading = true;
@@ -515,6 +530,17 @@ public sealed class GraphicsBuilderControl : UserControl
             _names.Text = GraphicsBuilder.NamesListText(parsed); _dirty = true; RefreshNamesNote(); RefreshSaveButton();
             _status.Text = $"Imported {parsed.Count} name{(parsed.Count == 1 ? "" : "s")} from {System.IO.Path.GetFileName(file.Path)}.";
         } catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = "Could not read that file: " + ex.Message; }
+    }
+
+    private NativeGraphicsClockConfiguration SelectedClock => new() {
+        Mode = _clockMode.SelectedIndex == 1 ? "countdown" : "wall", Zone = "local",
+        Format = _clockFormat.SelectedIndex == 1 ? "hm" : "hms", Finish = _clockFinish.SelectedIndex == 1 ? "hide" : "hold-zero",
+        DurationSeconds = (int)Math.Clamp(Math.Round((double.IsNaN(_clockMinutes.Value) ? 5 : _clockMinutes.Value) * 60), 1, 86400) };
+    private void SetClock(NativeGraphicsClockConfiguration? clock)
+    {
+        var c = clock ?? new NativeGraphicsClockConfiguration();
+        _clockMode.SelectedIndex = c.Mode == "countdown" ? 1 : 0; _clockFormat.SelectedIndex = c.Format == "hm" ? 1 : 0; _clockFinish.SelectedIndex = c.Finish == "hide" ? 1 : 0;
+        _clockMinutes.Value = Math.Round(c.DurationSeconds / 60.0, 2); _clockMinutes.IsEnabled = _clockFinish.IsEnabled = c.Mode == "countdown";
     }
 
     private void RefreshPlacementControls()

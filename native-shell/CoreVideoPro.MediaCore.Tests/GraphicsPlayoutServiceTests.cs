@@ -155,6 +155,26 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Equal(.75, placement.GetProperty("scale").GetDouble());
     }
 
+    [Fact] public async Task AClockRowConfiguresItsNativeClockAfterCreateAndOffersTransport()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        var rows = library.Document.Playlist.ToList();
+        rows[3] = rows[3] with { Clock = new() { Mode = "countdown", DurationSeconds = 120 } }; // LIVE bug row (clock template)
+        Assert.True(await library.SavePlaylistAsync(rows), library.Status);
+        var entry = GraphicsPlayoutService.EntryFor(library.Document.Playlist[3]);
+        Assert.True((await service.ClockAsync(entry, "start")).Accepted == false, "transport before an instance exists must be refused");
+        Assert.True((await service.ToPreviewAsync(entry)).Accepted);
+        var configure = Bodies("graphics.clock.control").Single();
+        Assert.Equal("configure", configure.GetProperty("action").GetString());
+        Assert.Equal(0, configure.GetProperty("expectedClockRevision").GetInt64());
+        Assert.Equal("countdown", configure.GetProperty("configuration").GetProperty("mode").GetString());
+        Assert.Equal(120, configure.GetProperty("configuration").GetProperty("durationSeconds").GetInt32());
+        _commands.Clear();
+        Assert.True((await service.ClockAsync(entry, "start")).Accepted);
+        Assert.Equal("start", Bodies("graphics.clock.control").Single().GetProperty("action").GetString());
+        Assert.False((await service.ClockAsync(entry, "explode")).Accepted);
+    }
+
     [Fact] public async Task PlayInCreatesCuesWaitsThenShowsFromCue()
     {
         var (library, service) = await BuildWithDefaultPlaylist();

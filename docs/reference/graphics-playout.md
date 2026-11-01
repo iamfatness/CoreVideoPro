@@ -159,6 +159,20 @@ line is on Program, wrapping to the first. `sourceId` for a line is
 keeps its instance. Hide on the row with no sourceId takes every line of that
 row off Program.
 
+## Clocks and countdowns
+
+A "Clock or countdown" graphic built in Design stores its settings on the row
+as `clock` (`mode` wall|countdown, `format` hms|hm, `finish` hold-zero|hide,
+`durationSeconds`; zone is the computer's local time). When the row is cued or
+shown the service sends `graphics.clock.control configure` to its instance
+(expected revision 0 on a fresh instance, the instance's current revision when
+the saved settings change; a template without a clock refuses harmlessly). A
+countdown never starts by itself: Operate shows the live readout and Start /
+Pause / Resume / Reset chips under the row, which call
+`graphics.playlist.clock <rowId> <action>` (refused until the row has an
+instance, i.e. after Cue or Show). Start never shows the graphic and Reset never
+hides it.
+
 ## One truth for Preview and Program (#1072)
 
 Before this change a lower third could show in Preview and vanish on Take:
@@ -240,6 +254,7 @@ running Bitfocus Companion (or any OSC sender) gets:
 | Cue the title to ride the next Take | `/cvp/graphics/toPreview` | `title` |
 | Hide one row | `/cvp/graphics/playOut` | `title` (or an instance id) |
 | Next name in a names list | `/cvp/graphics/playIn` | `panelists` (the list row's id) |
+| Start the break countdown | `/cvp/graphics/playlist/clock` | `live-bug` `start` |
 | Hide everything | `/cvp/graphics/playOutAll` | |
 | Fire a shot layout | `/cvp/graphics/layout/cue` | `<layoutId>` |
 

@@ -330,8 +330,10 @@ public sealed class GraphicsPlayoutService
             var created = await Send("graphics.instance.create", body, cancellation);
             if (!created.Accepted) return created;
             if (created.CurrentRevision < 1 || created.InstanceId != id) return Refuse("The native create result has no matching revision identity.");
+            await ConfigureClock(row, id, expectedClockRevision: 0, requested: null, cancellation);
             return created with { Reason = "Ready." };
         }
+        await ConfigureClock(row, id, existing.ClockConfigurationRevision, existing.ClockRequestedConfiguration, cancellation);
         // Only the cue copy is refreshed; a Program copy changes on the next Show, never here.
         if (SameFields(existing.Fields, values) && (identity is null || existing.Binding == identity))
             return new() { Accepted = true, InstanceId = id, CurrentRevision = existing.Revision, Reason = "Ready." };
@@ -342,6 +344,28 @@ public sealed class GraphicsPlayoutService
         var revision = updated.CurrentRevision > 0 ? updated.CurrentRevision : Current(epoch).Instances.FirstOrDefault(i => i.InstanceId == id)?.Revision ?? 0;
         return revision < 1 ? Refuse("The native update result has no revision.") : updated with { InstanceId = id, CurrentRevision = revision, Reason = "Ready." };
     }
+
+    /// <summary>Apply the row's clock settings to its instance when they differ from what the
+    /// core already has. Non-fatal: a template without a clock answers instance-has-no-clock and
+    /// the graphic still plays.</summary>
+    private async Task ConfigureClock(GraphicsPlaylistRow row, string instanceId, long expectedClockRevision, NativeGraphicsClockConfiguration? requested, CancellationToken cancellation)
+    {
+        if (row.Clock is not { IsValid: true } clock) return;
+        if (requested is not null && SameClock(requested, clock)) return;
+        await Send("graphics.clock.control", new() { ["instanceId"] = instanceId, ["action"] = "configure", ["configuration"] = clock, ["expectedClockRevision"] = expectedClockRevision }, cancellation);
+    }
+    private static bool SameClock(NativeGraphicsClockConfiguration a, NativeGraphicsClockConfiguration b) =>
+        a.Mode == b.Mode && a.Zone == b.Zone && a.Format == b.Format && a.Finish == b.Finish && a.OffsetMinutes == b.OffsetMinutes && a.DurationSeconds == b.DurationSeconds;
+
+    /// <summary>Countdown transport for a playlist row's instance: start | pause | resume | reset.
+    /// Never shows or hides the graphic. Refused when the row has no instance yet.</summary>
+    public Task<NativeGraphicsOperationResult> ClockAsync(GraphicsPlaylistEntry entry, string action, CancellationToken cancellation = default) => Run(async () => {
+        if (action is not ("start" or "pause" or "resume" or "reset")) return Refuse("Clock action must be start, pause, resume or reset.");
+        var id = InstanceIdFor(entry);
+        if (_observe()?.Instances.All(i => i.InstanceId != id) != false) return Refuse("That row is not on Preview or Program yet. Cue or Show it first.");
+        var result = await Send("graphics.clock.control", new() { ["instanceId"] = id, ["action"] = action }, cancellation);
+        return result.Accepted ? result with { InstanceId = id, Reason = "Clock " + action + "." } : result;
+    });
 
     private async Task<NativeGraphicsOperationResult> Cue(GraphicsPlaylistEntry entry, CancellationToken cancellation)
     {

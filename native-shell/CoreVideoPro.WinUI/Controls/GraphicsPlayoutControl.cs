@@ -328,6 +328,18 @@ public sealed class GraphicsPlayoutControl : UserControl
             Grid.SetColumn(count, 2); head.Children.Add(count);
         }
         body.Children.Add(head);
+        if (row.Clock is { Mode: "countdown" } && !Compact) {
+            var instance = _attached?.GraphicsWorkspace.State?.Instances.FirstOrDefault(i => i.InstanceId == GraphicsPlayoutService.InstanceIdFor(row.Id, ""));
+            var transport = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(46, 0, 0, 0) };
+            var readout = instance?.Clock is { } clock ? $"{clock.Text} · {clock.State}" : $"{TimeSpan.FromSeconds(row.Clock.DurationSeconds):m\\:ss} · not cued";
+            transport.Children.Add(new TextBlock { Text = readout, FontSize = 11, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center });
+            foreach (var (label, action) in new[] { ("Start", "start"), ("Pause", "pause"), ("Resume", "resume"), ("Reset", "reset") }) {
+                var chip = StudioBrushes.ChipButton(label); chip.IsEnabled = !busy && instance is not null;
+                chip.Click += async (_, _) => await Invoke(GraphicsPlayoutActions.PlaylistClock, row.Id, action);
+                transport.Children.Add(chip);
+            }
+            body.Children.Add(transport);
+        }
         if (multi) {
             if (guests.Count == 0 && row.Kind == GraphicsPlaylistRow.Guest) body.Children.Add(new TextBlock { Text = "No sources in the show yet. Assign a source on the Sources page and it appears here.", FontSize = 11, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(46, 0, 0, 0) });
             foreach (var guest in guests) body.Children.Add(GuestEntry(row, guest, guest.SourceId == subject, busy));

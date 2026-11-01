@@ -43,6 +43,10 @@ public sealed record GraphicsPlaylistRow
     /// <summary>Where the graphic sits (anchor, offset, scale). Null = the template's default
     /// placement. Set from the builder's Placement controls or by dragging the preview.</summary>
     public NativeGraphicsPlacement? Placement { get; init; }
+    /// <summary>Clock rows (titler spec Phase 1 "clocks"): wall clock or countdown settings
+    /// applied to the native clock when the row's instance is created or its settings change.
+    /// Null = the template's own default.</summary>
+    public NativeGraphicsClockConfiguration? Clock { get; init; }
     [JsonIgnore] public bool HasVariants => Variants.Count > 0;
     public static bool ValidVariants(IReadOnlyList<GraphicsPlaylistVariant>? variants) => variants is not null && variants.Count <= 64 &&
         variants.All(v => v is { IsValid: true }) && variants.Select(v => v.Id).Distinct(StringComparer.Ordinal).Count() == variants.Count;
@@ -60,7 +64,7 @@ public sealed record GraphicsPlaylistRow
         Hotkey is not null && ValidHotkey(Hotkey) && PlayOutAfterChoices.Contains(PlayOutAfterMs) &&
         TemplateId is not null && TemplateId.Length <= 64 && TemplateVersion >= 0 && (TemplateId.Length == 0) == (TemplateVersion == 0) &&
         Fields is not null && Fields.Count <= 32 && Fields.Keys.All(k => k.Length is > 0 and <= 64) && Style is { IsValid: true } &&
-        (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) && ValidMotion(Motion) && ValidVariants(Variants) && (Placement is null || Placement.IsValid) &&
+        (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) && ValidMotion(Motion) && ValidVariants(Variants) && (Placement is null || Placement.IsValid) && (Clock is null || Clock.IsValid) &&
         (Image is null || (Image.TemplateId.Length is > 0 and <= 64 && Image.TemplateVersion >= 1 && Image.AssetId.Length is > 0 and <= 64));
 }
 

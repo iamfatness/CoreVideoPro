@@ -70,7 +70,7 @@ public static class GraphicsBuilder
     /// shot layouts that name it survive) and its chosen image path.</summary>
     public static GraphicsPlaylistRow RowFrom(GraphicsBuilderKind kind, NativeGraphicsTemplate template, NativeGraphicsDraft draft,
         string name, string hotkey, int playOutAfterMs, bool followSources, IReadOnlyList<GraphicsPlaylistRow> rows, GraphicsPlaylistRow? existing = null,
-        NativeGraphicsAnimations? motion = null, IReadOnlyList<GraphicsPlaylistVariant>? variants = null)
+        NativeGraphicsAnimations? motion = null, IReadOnlyList<GraphicsPlaylistVariant>? variants = null, NativeGraphicsClockConfiguration? clock = null)
     {
         var list = variants ?? [];
         if (list.Count > 0) followSources = false; // a names list is the binding
@@ -89,6 +89,7 @@ public static class GraphicsBuilder
             Fields = fields, Style = draft.Style, Image = draft.Image, ImagePath = existing?.ImagePath,
             FollowSources = rowKind == GraphicsPlaylistRow.Guest, ShowClock = hasClock, Motion = motion, Variants = list,
             Placement = draft.Placement is { IsValid: true } p && !PlacementEquals(p, template.DefaultPlacement) ? p : null,
+            Clock = hasClock && clock is { IsValid: true } ? clock : null,
         };
     }
 

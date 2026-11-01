@@ -445,6 +445,11 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             case "graphics.playlist.list":
                 await _vm.GraphicsLibrary.LoadAsync().ConfigureAwait(true);
                 return ControlInvokeResult.WithData(PlaylistJson());
+            case "graphics.playlist.clock":
+            {
+                if (_vm.GraphicsPlayout.Row(Str(args, 0)) is not { } clockRow) return ControlInvokeResult.Fail("That playlist row does not exist.");
+                return Graphics(await _vm.GraphicsPlayout.ClockAsync(GraphicsPlayoutService.EntryFor(clockRow), Str(args, 1)).ConfigureAwait(true));
+            }
             case "graphics.playlist.row.set":
             {
                 GraphicsPlaylistRow? row;

@@ -206,6 +206,8 @@ public static class ControlActionRegistry
             new("graphics.playlist.list", "List graphics playlist", "Read the playlist rows and the guest entries bound to Show Inputs. Changes nothing; reply carries data."),
             new("graphics.playlist.row.set", "Save graphics playlist row", "Add or replace one playlist row from its JSON (id, kind, name, hotkey, playOutAfterMs, templateId, templateVersion, fields, style, followSources, showClock). Program and Preview are unchanged.",
                 new[] { new ControlParam("rowJson", s, true, "JSON object of one playlist row") }),
+            new("graphics.playlist.clock", "Playlist clock transport", "Start, pause, resume or reset the countdown of a clock playlist row's instance without showing or hiding it. Refused until the row is cued or shown.",
+                new[] { new ControlParam("rowId", s, true), new ControlParam("action", s, true, "start | pause | resume | reset") }),
             new("graphics.playlist.row.remove", "Remove graphics playlist row", "Remove one playlist row by id. An instance it already put on air stays until Play Out.",
                 new[] { new ControlParam("rowId", s, true) }),
             new("graphics.playlist.hotkey.set", "Set graphics hotkey", "Assign F1..F12 to a playlist row (blank clears). A key already on another row moves to this one.",
