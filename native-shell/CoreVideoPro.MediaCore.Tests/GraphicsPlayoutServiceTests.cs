@@ -143,6 +143,18 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.False(create.TryGetProperty("binding", out _));
     }
 
+    [Fact] public async Task PlayInSendsTheRowsOwnPlacementWhenItHasOne()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        var rows = library.Document.Playlist.ToList();
+        rows[1] = rows[1] with { Placement = new() { Anchor = "lower-right", X = -40, Y = -30, Scale = .75 } };
+        Assert.True(await library.SavePlaylistAsync(rows), library.Status);
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(library.Document.Playlist[1]))).Accepted);
+        var placement = Bodies("graphics.instance.create").Single().GetProperty("placement");
+        Assert.Equal("lower-right", placement.GetProperty("anchor").GetString());
+        Assert.Equal(.75, placement.GetProperty("scale").GetDouble());
+    }
+
     [Fact] public async Task PlayInCreatesCuesWaitsThenShowsFromCue()
     {
         var (library, service) = await BuildWithDefaultPlaylist();

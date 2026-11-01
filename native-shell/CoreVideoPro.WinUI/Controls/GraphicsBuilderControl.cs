@@ -37,6 +37,9 @@ public sealed class GraphicsBuilderControl : UserControl
     private readonly StackPanel _form = new() { Spacing = 10, MinWidth = 280 };
     private readonly StackPanel _fields = new() { Spacing = 8 };
     private readonly StackPanel _colors = new() { Spacing = 6 };
+    private readonly ComboBox _anchor = new() { Header = "Position", ItemsSource = GraphicsBuilder.AnchorChoices.Select(a => a.Label).ToArray(), HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly Slider _scale = new() { Header = "Size", Minimum = 50, Maximum = 150, StepFrequency = 5, TickFrequency = 25, Value = 100 };
+    private readonly Button _resetPlacement = StudioBrushes.ChipButton("Template default");
     private readonly ComboBox _motion = new() { Header = "Motion", ItemsSource = GraphicsBuilder.MotionPresets.Select(m => m.Label).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox _speed = new() { Header = "Speed", ItemsSource = GraphicsBuilder.MotionSpeeds.Select(m => m.Label).ToArray(), SelectedIndex = 1, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox _name = new() { Header = "Name in the playlist", MaxLength = 128, PlaceholderText = "Guest name" };
@@ -94,6 +97,10 @@ public sealed class GraphicsBuilderControl : UserControl
         // 4 + 5: fill in and save
         _form.Children.Add(Step("4", "FILL IT IN"));
         _form.Children.Add(_fields); _form.Children.Add(_colors);
+        var placementRow = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 6, 0, 0) }; placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(3, GridUnitType.Star) }); placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
+        placementRow.Children.Add(_anchor); Grid.SetColumn(_scale, 1); placementRow.Children.Add(_scale); _form.Children.Add(placementRow);
+        var placementNote = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; placementNote.Children.Add(_resetPlacement); placementNote.Children.Add(Note("Drag the preview to nudge.")); _form.Children.Add(placementNote);
+        ToolTipService.SetToolTip(_anchor, "Which corner or edge the graphic hangs from. Drag the preview to fine-tune.");
         var motionRow = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 6, 0, 0) }; motionRow.ColumnDefinitions.Add(new() { Width = new GridLength(3, GridUnitType.Star) }); motionRow.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
         motionRow.Children.Add(_motion); Grid.SetColumn(_speed, 1); motionRow.Children.Add(_speed); _form.Children.Add(motionRow);
         ToolTipService.SetToolTip(_motion, "How the graphic comes in and goes out on air. Shown on Program when you Show it; the preview here is still.");
@@ -114,6 +121,9 @@ public sealed class GraphicsBuilderControl : UserControl
         _discard.Click += (_, _) => StartNew();
         _operate.Click += (_, _) => { if (_attached is { } s) s.GraphicsMode = StudioViewModel.GraphicsModePlayout; };
         _follow.Toggled += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
+        _anchor.SelectionChanged += (_, _) => { if (!_loading && _anchor.SelectedIndex >= 0 && _session?.Draft is { } d) { var p = d.Placement ?? _session.Template?.DefaultPlacement ?? new(); _session.SetPlacement(p with { Anchor = GraphicsBuilder.AnchorChoices[_anchor.SelectedIndex].Id }); _dirty = true; RefreshSaveButton(); } };
+        _scale.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is { } d) { var p = d.Placement ?? _session.Template?.DefaultPlacement ?? new(); _session.SetPlacement(p with { Scale = Math.Round(_scale.Value / 100, 2) }); _dirty = true; RefreshSaveButton(); } };
+        _resetPlacement.Click += (_, _) => { if (_session?.Draft is not null) { _session.SetPlacement(_session.Template?.DefaultPlacement); _dirty = true; RefreshPlacementControls(); RefreshSaveButton(); } };
         _motion.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; _speed.IsEnabled = SelectedMotionPreset != "cut"; RefreshSaveButton(); } };
         _speed.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
         _name.TextChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
@@ -208,7 +218,7 @@ public sealed class GraphicsBuilderControl : UserControl
         } finally { _loading = false; }
         if (kind.Id != GraphicsBuilder.SponsorKindId && _session.State?.Templates.FirstOrDefault(t => t.TemplateId == row.TemplateId && t.TemplateVersion == row.TemplateVersion) is { } template && !_session.Busy) {
             _session.Browse(template);
-            if (_session.Draft is { } draft) _session.Edit(draft with { Fields = GraphicsBuilder.FieldsElement(row), Style = row.Style, Image = row.Image });
+            if (_session.Draft is { } draft) _session.Edit(draft with { Fields = GraphicsBuilder.FieldsElement(row), Style = row.Style, Image = row.Image, Placement = row.Placement ?? template.DefaultPlacement });
         }
         if (_attached is { } studio && studio.GraphicsDesignRowId == rowId) studio.GraphicsDesignRowId = "";
         _formSignature = ""; _looksSignature = ""; RefreshAll();
@@ -316,6 +326,7 @@ public sealed class GraphicsBuilderControl : UserControl
         var signature = kind.Id + "|" + _editingRowId + "|" + (template is null ? "" : template.TemplateId + ":" + template.TemplateVersion) + "|" + GraphicsWorkspaceSession.SupportsLogo(template) + "|" + (draft?.Image?.AssetId ?? "");
         _follow.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed;
         _namesBlock.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed; RefreshNamesNote();
+        RefreshPlacementControls();
         if (signature == _formSignature) { RefreshColorSwatches(); return; }
         _formSignature = signature; _fields.Children.Clear(); _colors.Children.Clear(); _loading = true;
         try {
@@ -504,6 +515,19 @@ public sealed class GraphicsBuilderControl : UserControl
             _names.Text = GraphicsBuilder.NamesListText(parsed); _dirty = true; RefreshNamesNote(); RefreshSaveButton();
             _status.Text = $"Imported {parsed.Count} name{(parsed.Count == 1 ? "" : "s")} from {System.IO.Path.GetFileName(file.Path)}.";
         } catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = "Could not read that file: " + ex.Message; }
+    }
+
+    private void RefreshPlacementControls()
+    {
+        var p = _session?.Draft?.Placement ?? _session?.Template?.DefaultPlacement;
+        var sponsor = Kind.Id == GraphicsBuilder.SponsorKindId;
+        _anchor.IsEnabled = _scale.IsEnabled = _resetPlacement.IsEnabled = p is not null && !sponsor;
+        if (p is null) return;
+        var wasLoading = _loading; _loading = true;
+        try {
+            var index = GraphicsBuilder.AnchorChoices.ToList().FindIndex(a => a.Id == p.Anchor); if (_anchor.SelectedIndex != index) _anchor.SelectedIndex = index;
+            var pct = Math.Clamp(Math.Round(p.Scale * 100 / 5) * 5, 50, 150); if (Math.Abs(_scale.Value - pct) >= 1) _scale.Value = pct;
+        } finally { _loading = wasLoading; }
     }
 
     private string SelectedMotionPreset => GraphicsBuilder.MotionPresets[Math.Max(0, _motion.SelectedIndex)].Id;

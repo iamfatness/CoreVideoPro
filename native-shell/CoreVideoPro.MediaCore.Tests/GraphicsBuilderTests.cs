@@ -199,3 +199,22 @@ public sealed class GraphicsBuilderNamesListTests
         Assert.True((row with { Variants = Enumerable.Range(0, 64).Select(i => new GraphicsPlaylistVariant { Id = "v" + i, Name = "n" }).ToArray() }).IsValid);
     }
 }
+
+public sealed class GraphicsBuilderPlacementTests
+{
+    private static NativeGraphicsTemplate Template() => new() { TemplateId = "centered-title", TemplateVersion = 1, Name = "T", Family = "title", Runtime = "declarative",
+        DefaultPlacement = new() { Anchor = "upper-center", X = 0, Y = 120, Scale = 1 } };
+
+    [Fact]
+    public void ARowKeepsOnlyAPlacementThatDiffersFromTheTemplateDefault()
+    {
+        var t = Template(); var kind = GraphicsBuilder.Kind("title")!;
+        var same = new NativeGraphicsDraft(t.TemplateId, 1, JsonSerializer.SerializeToElement(new { heading = "x" }), new LowerThirdAppearance(), new(), t.DefaultPlacement);
+        Assert.Null(GraphicsBuilder.RowFrom(kind, t, same, "A", "", 0, false, []).Placement);
+        var moved = same with { Placement = t.DefaultPlacement! with { Anchor = "lower-right", Scale = .8 } };
+        var row = GraphicsBuilder.RowFrom(kind, t, moved, "B", "", 0, false, []);
+        Assert.Equal(("lower-right", .8), (row.Placement!.Anchor, row.Placement.Scale)); Assert.True(row.IsValid);
+        Assert.False((row with { Placement = row.Placement with { Anchor = "nowhere" } }).IsValid);
+        Assert.Null(GraphicsBuilder.RowFrom(kind, t, same with { Placement = null }, "C", "", 0, false, []).Placement);
+    }
+}

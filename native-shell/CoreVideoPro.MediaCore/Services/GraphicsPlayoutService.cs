@@ -320,12 +320,12 @@ public sealed class GraphicsPlayoutService
         var identity = entry.SourceId.Length == 0 ? null : state.Sources.FirstOrDefault(s => s.VideoOn && s.Identity?.SourceId == entry.SourceId)?.Identity;
         var fields = JsonSerializer.SerializeToElement(values, Json);
         var id = InstanceIdFor(entry);
-        var motion = row.Motion ?? Motion;
-        var draft = new NativeGraphicsDraft(templateId, version, fields, row.Style, motion, installed.DefaultPlacement, Image: row.Image);
+        var motion = row.Motion ?? Motion; var placement = row.Placement ?? installed.DefaultPlacement;
+        var draft = new NativeGraphicsDraft(templateId, version, fields, row.Style, motion, placement, Image: row.Image);
         if (state.Instances.FirstOrDefault(i => i.InstanceId == id) is not { } existing) {
             var body = new Dictionary<string, object?> {
                 ["instanceId"] = id, ["templateId"] = templateId, ["templateVersion"] = version, ["scope"] = "global", ["sceneId"] = "",
-                ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = motion, ["placement"] = installed.DefaultPlacement, ["image"] = row.Image };
+                ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = motion, ["placement"] = placement, ["image"] = row.Image };
             if (identity is not null) body["binding"] = identity;
             var created = await Send("graphics.instance.create", body, cancellation);
             if (!created.Accepted) return created;

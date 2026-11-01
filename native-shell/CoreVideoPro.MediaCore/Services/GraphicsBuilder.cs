@@ -88,6 +88,7 @@ public static class GraphicsBuilder
             TemplateId = template.TemplateId, TemplateVersion = template.TemplateVersion,
             Fields = fields, Style = draft.Style, Image = draft.Image, ImagePath = existing?.ImagePath,
             FollowSources = rowKind == GraphicsPlaylistRow.Guest, ShowClock = hasClock, Motion = motion, Variants = list,
+            Placement = draft.Placement is { IsValid: true } p && !PlacementEquals(p, template.DefaultPlacement) ? p : null,
         };
     }
 
@@ -101,6 +102,13 @@ public static class GraphicsBuilder
         if (sponsor >= 0) list.Insert(sponsor, row); else list.Add(row);
         return list;
     }
+
+    public static bool PlacementEquals(NativeGraphicsPlacement? a, NativeGraphicsPlacement? b) =>
+        a is null ? b is null : b is not null && a.Anchor == b.Anchor && Math.Abs(a.X - b.X) < .5 && Math.Abs(a.Y - b.Y) < .5 && Math.Abs(a.Scale - b.Scale) < .005;
+    public static IReadOnlyList<(string Id, string Label)> AnchorChoices { get; } = [
+        ("upper-left", "Top left"), ("upper-center", "Top center"), ("upper-right", "Top right"),
+        ("center-left", "Middle left"), ("center", "Center"), ("center-right", "Middle right"),
+        ("lower-left", "Bottom left"), ("lower-center", "Bottom center"), ("lower-right", "Bottom right")];
 
     /// <summary>Operator-facing motion presets. "Default" leaves the row's Motion null so the
     /// playout default applies; slides come in from and leave toward the same edge.</summary>
