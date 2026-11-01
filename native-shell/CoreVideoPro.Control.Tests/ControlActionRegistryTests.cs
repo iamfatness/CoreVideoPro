@@ -130,6 +130,7 @@ public sealed class ControlActionRegistryTests
         {
             "zoom.join", "zoom.leave", "transport.take", "transport.record.toggle", "transport.stream.set", "scene.select",
             "scene.cueWithRoutes", "scene.route.set",
+            "scene.list", "scene.restoreStarters",
             "scene.dynamicGallery.create",
             "input.assign", "input.name", "source.dropout.set", "graphics.lowerThird.toggle", "audio.zoomMode.set", "audio.monitor.set",
             "multiview.layout.set", "automation.autoAssignInputs.set"

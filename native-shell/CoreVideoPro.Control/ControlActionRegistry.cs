@@ -95,6 +95,10 @@ public static class ControlActionRegistry
                     new ControlParam("routeId", s, true, "Route id on that scene (for example ohg-host)"),
                     new ControlParam("slot", i, true, "Show Input slot 1-10")
                 }),
+            new("scene.list", "List scenes",
+                "Read the scene rail (id, name, layout) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id."),
+            new("scene.restoreStarters", "Restore starter scenes",
+                "Re-add any removed catalog scene (intro, interview, speaker-slides, panel, closing) at its catalog position with fresh starter routes. Existing scenes, Program and Preview are untouched."),
             new("scene.dynamicGallery.create", "Create CoreVideo Tiles",
                 "Create a dynamic CoreVideo Tiles scene and cue it to Preview."),
             new("scene.tiles.autofill.set", "Tiles automatic fill", "Set automatic roster fill for the Tiles scene in Preview.",

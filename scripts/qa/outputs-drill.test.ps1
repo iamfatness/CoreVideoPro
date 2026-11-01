@@ -539,6 +539,17 @@ Check '-NoWebcam local plan: single-route intro scene with the motion clip, no s
   $json = [ordered]@{ program = $true; iso = @($p.IsoSourceIds) } | ConvertTo-Json -Compress
   Assert ($json.Contains('"iso":[]')) "drill.json would not carry an empty ISO array: $json"
 }
+Check 'planned scene is verified on the rail before cueing; a removed catalog scene is a named problem (#1070)' {
+  $rail = @([pscustomobject]@{ id = 'interview'; name = 'Interview' }, [pscustomobject]@{ id = 'custom-1a2b3c4d'; name = 'Mine' })
+  $p = @(Get-DrillSceneProblems -Scene 'intro' -Scenes $rail)
+  Assert ($p.Count -eq 1 -and $p[0] -match "Scene 'intro' is not on the scene rail" -and $p[0] -match 'interview, custom-1a2b3c4d') ($p -join ';')
+  Assert (@(Get-DrillSceneProblems -Scene 'interview' -Scenes $rail).Count -eq 0) 'present scene reported missing'
+  Assert (@(Get-DrillSceneProblems -Scene 'speaker-slides' -Scenes @()).Count -eq 1) 'empty rail must be a problem'
+  Assert ((Get-DrillSceneProblems -Scene 'speaker-slides' -Scenes $null) -match 'none listed') 'null rail text'
+  # The plan's scenes are the catalog ids the drill cues, so the check guards both modes.
+  Assert ((Get-DrillWorkloadPlan -WebcamSourceId 'capture:f4978a7f6d614c0d').Scene -eq 'speaker-slides') 'webcam plan scene'
+  Assert ((Get-DrillWorkloadPlan -WebcamSourceId '' -MediaSourceId $clipId).Scene -eq 'intro') 'no-webcam plan scene'
+}
 Check '-NoWebcam remote plan keeps the Zoom ISOs and drops only the webcam' {
   $p = Get-DrillWorkloadPlan -RemoteIds @('11', '22') -WebcamSourceId '' -MediaSourceId $clipId
   Assert ((($p.Assignments | ForEach-Object { "$($_.slot)=$($_.source)" }) -join ',') -eq "1=zoom:11,2=zoom:22,6=$clipId") 'slots'

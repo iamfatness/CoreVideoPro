@@ -56,10 +56,12 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $api = 'http://127.0.0.1:8011'
 
-function Invoke-DrillAction([string]$Action, [object[]]$Arguments = @()) {
+function Invoke-DrillAction([string]$Action, [object[]]$Arguments = @()) { $null = Invoke-DrillQuery $Action $Arguments }
+# Read actions (scene.list) answer { ok, data }; the caller reads .data.
+function Invoke-DrillQuery([string]$Action, [object[]]$Arguments = @()) {
   $body = @{ action = $Action; args = $Arguments } | ConvertTo-Json -Depth 8 -Compress
   try {
-    Invoke-RestMethod "$api/invoke" -Method Post -ContentType application/json -Body $body -TimeoutSec 30 | Out-Null
+    Invoke-RestMethod "$api/invoke" -Method Post -ContentType application/json -Body $body -TimeoutSec 30
   } catch {
     # The router answers 400 (bind) or 422 (the surface refused) with the reason
     # in the body; Invoke-RestMethod's own message drops it. Keep action + reason.
@@ -272,6 +274,22 @@ try {
   if ($plan.EngineRequired) { Invoke-DrillAction 'transport.engine.set' @($true) }
   else { Write-DrillLog 'Local sources only: the Zoom capture engine stays off (transport.engine.set is refused outside a meeting)' }
   foreach ($a in $plan.Assignments) { Invoke-DrillAction 'input.assign' @($a.slot, $a.source) }
+  # #1070: catalog scenes (intro, speaker-slides) are deletable and the removal
+  # persists in the profile, so the planned scene is verified on the rail before
+  # it is cued. A missing one is restored once (scene.restoreStarters re-seeds
+  # the catalog scene with its starter routes, so the `<scene>-1` route ids the
+  # plan names exist again); still missing after that is a hard stop.
+  $sceneProblems = @(Get-DrillSceneProblems -Scene $plan.Scene -Scenes @((Invoke-DrillQuery 'scene.list').data.scenes))
+  if ($sceneProblems.Count) {
+    Write-DrillLog "$($sceneProblems -join '; '); restoring starter scenes before cueing"
+    Invoke-DrillAction 'scene.restoreStarters' @()
+    $sceneProblems = @(Get-DrillSceneProblems -Scene $plan.Scene -Scenes @((Invoke-DrillQuery 'scene.list').data.scenes))
+    if ($sceneProblems.Count) { throw ('Program scene unavailable after scene.restoreStarters; no output started: ' + ($sceneProblems -join '; ')) }
+    # drill.json was written before the live phase; carry the restore into its notes.
+    $notes += "Catalog scene '$($plan.Scene)' was missing from the profile (removed by the operator, #1070) and was restored by the drill before cueing."
+    $drill.notes = $notes; Write-DrillJson $drill 'drill.json'
+    Write-DrillLog "Scene '$($plan.Scene)' restored"
+  }
   Invoke-DrillAction 'scene.cueWithRoutes' @($plan.Scene, $plan.Routes)
   $deadline = [DateTime]::UtcNow.AddSeconds(45)
   do {

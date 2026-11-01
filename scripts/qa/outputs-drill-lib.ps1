@@ -419,6 +419,17 @@ function New-DrillSrtSinkUrl {
   return $url
 }
 
+# #1070: catalog scenes can be removed by the operator and the removal persists.
+# Pure check over the `scene.list` reply: empty when the planned scene is on the
+# rail, otherwise one problem naming the scenes that are.
+function Get-DrillSceneProblems {
+  param([string]$Scene, $Scenes)
+  $ids = @($Scenes | ForEach-Object { $_.id } | Where-Object { $_ })
+  if ($ids -contains $Scene) { return @() }
+  $seen = if ($ids.Count) { $ids -join ', ' } else { 'none listed' }
+  return @("Scene '$Scene' is not on the scene rail (scenes: $seen); a removed catalog scene stays removed until restored (#1070)")
+}
+
 function Test-DrillAdmissionsReady {
   param($Snapshot)
   $admissions = @($Snapshot.programSourceAdmission.sources)

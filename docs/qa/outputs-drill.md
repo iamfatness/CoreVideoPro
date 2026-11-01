@@ -121,8 +121,19 @@ With a webcam, media sources are not part of the workload.
    (`preferences-applied.json`). Readiness also fails hard if the recording
    writes outside `<Out>\recordings` or any RTMP sender appears.
 6. Through the control API only: joins the meeting (remote mode), turns
-   automation off, assigns inputs, cues and takes the scene, and starts record
-   and stream. It then waits until every check has held for 30 s (300 s cap).
+   automation off, assigns inputs, verifies the planned scene is on the rail,
+   cues and takes the scene, and starts record and stream. Both Program scenes
+   the drill cues (`speaker-slides`, and `intro` with `-NoWebcam`) are catalog
+   scenes, and since #1070 the operator can delete any catalog scene and the
+   deletion persists in the profile. So before `scene.cueWithRoutes` the drill
+   reads `scene.list`; when the planned scene is missing it invokes
+   `scene.restoreStarters` once (re-seeds the missing catalog scenes at their
+   catalog position with starter routes, so the `<scene>-1` / `-2` route ids
+   the plan names exist again), re-reads the rail, and refuses to start any
+   output if the scene is still absent. A restore is logged and recorded in the
+   `notes` of `drill.json`; the restored scene is left in the profile (it is a
+   catalog scene the operator can delete again). It then waits until every
+   check has held for 30 s (300 s cap).
    The checks are remotes at 1920x1080, captures ingesting, every ISO writing,
    Program source admissions consistent, and one stream sender delivering at
    55 fps or more with no retry and no warnings. The sink must also have
