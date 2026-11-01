@@ -8,6 +8,14 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **Catalog scenes are deletable and restorable (#1070).** Intro, Interview, Speaker + Slides,
+  Panel and Closing can be removed like custom scenes; only the on-air scene and the last
+  scene are protected, and a removal survives relaunch (`RemovedCatalogSceneIds`, preferences
+  v15). New scene gains Panel grid and Closing starters plus "Restore starter scenes"; the
+  control API gains `scene.list` (read) and `scene.restoreStarters`. Magic Scene presets fall
+  back to the first scene when their catalog scene is gone, and the outputs drill verifies
+  its scene exists before cueing it. See `docs/reference/scenes.md`.
+
 - **Control API `scene.cueWithRoutes` / `scene.route.set` (#861).** A controller can cue a
   scene to Preview and point named routes at Show Input slots over `POST /invoke` (JSON
   `{routeId: slot|null}`, or one `sceneId, routeId, slot` triple). Unknown scene, route or

@@ -224,6 +224,7 @@ phrase they quote.
 | [`docs/reference/persistent-media-source.md`](docs/reference/persistent-media-source.md) | media/clip/still sources, cue/live/pause transport |
 | [`docs/reference/cpu-source-preparation.md`](docs/reference/cpu-source-preparation.md) | bounded CPU arrival preparation, GPU identity and held-frame refresh |
 | [`docs/reference/recording-output-location.md`](docs/reference/recording-output-location.md) | recording output paths |
+| [`docs/reference/scenes.md`](docs/reference/scenes.md) | the scene rail: catalog vs custom scenes, removal rules (on-air + last-scene guards only, #1070), `RemovedCatalogSceneIds` persistence, New scene starters, Restore starter scenes, `scene.list` / `scene.restoreStarters`, consumers that cue catalog ids (Magic Scene, shot layouts, the outputs drill) |
 | [`docs/reference/secrets-and-oauth.md`](docs/reference/secrets-and-oauth.md) | secrets storage, OAuth return URI |
 | [`docs/reference/shared-texture-export-cost.md`](docs/reference/shared-texture-export-cost.md) | creating D3D exports / anything new on the render thread |
 | [`docs/reference/source-bus.md`](docs/reference/source-bus.md) | the source bus, ingests, bus health, slates, hold/black |
