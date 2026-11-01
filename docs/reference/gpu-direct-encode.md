@@ -185,8 +185,8 @@ times in fifteen minutes: every stall backed up the RTMP queue AND froze every i
 feed at the same instant (one burst happened before the stream started, so the stream is an
 amplifier, not the only cause). The Tiles wall now holds a stalled member's last picture for
 up to 4 s instead of dropping it at 1.5 s (`docs/reference/tiles-composed-source.md`), and the
-Studio footer shows `network congested: stream ... behind, N feeds stalled` when both facts are
-present. Those cover the picture; the fix is on the link:
+Studio footer shows `Stream ... ms behind and N Zoom feeds stalled` (FEEDS) when both facts are
+present; it states the symptoms and does not claim a cause. Those cover the picture; the fix is on the link:
 
 - **Lower the stream bitrate.** 10 Mbps for 1080p60 H.264 is the top of YouTube's own range;
   6 to 8 Mbps leaves headroom for Zoom's upload (budget roughly 3 to 4 Mbps for a 1080p send
