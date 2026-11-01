@@ -267,7 +267,7 @@
       "control": "include"
     },
     "sources": {
-      "typed": "omit",
+      "typed": "include",
       "qualification": "include",
       "control": "include"
     },

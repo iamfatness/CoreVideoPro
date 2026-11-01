@@ -585,6 +585,10 @@ struct CompositorRenderPlanLayer {
   std::string sourceHealth;
   std::string dropoutPolicy = "hold";
   std::string sourceDisplayName;
+  // #1074: a Tiles member whose newest frame is past kTilesStaleFrameMs but
+  // inside kTilesHoldWindowMs. The slot keeps its last picture; the snapshot
+  // `tiles.members[].held` labels it so a stall is never a silent pass.
+  bool tilesHeld = false;
   std::string graphicsInstanceId;
   uint64_t graphicsRevision = 0;
   bool graphicsAwaitingEntrance = false;

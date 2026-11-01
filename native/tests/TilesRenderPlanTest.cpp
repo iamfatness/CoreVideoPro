@@ -244,6 +244,53 @@ class FrozenFrameIdCaptureDevice final : public corevideo::modules::ICaptureDevi
       std::make_shared<std::vector<uint8_t>>(64 * 64 * 4, 128);
 };
 
+// #1074 review: a Zoom participant on the SOURCE BUS (kind "zoom", bare
+// participant id, exactly what syncZoomParticipantSources registers), so a
+// real render tick runs the production frameId-age gather AND the bus's own
+// on-air stall clock. advance(): a new frameId every poll. freeze(): the same
+// frameId re-served, the stalled-uplink shape. gone(): no frame at all, the
+// video-off / departure shape.
+class ControllableZoomSource final : public corevideo::core::ISource {
+ public:
+  explicit ControllableZoomSource(std::string pid) {
+    descriptor_.sourceId = std::move(pid);
+    descriptor_.kind = "zoom";
+    descriptor_.width = descriptor_.height = 2;
+    descriptor_.hasVideo = true;
+  }
+  void advance() { mode_ = Mode::Advance; }
+  void freeze() { mode_ = Mode::Freeze; }
+  void gone() { mode_ = Mode::Gone; }
+  const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
+  corevideo::core::SourceTick poll(int64_t) override {
+    corevideo::core::SourceTick tick;
+    tick.health = corevideo::core::SourceHealth::Producing;
+    if (mode_ == Mode::Gone) return tick;
+    if (mode_ == Mode::Advance) ++frameId_;
+    corevideo::modules::VideoFrame frame;
+    frame.participantId = descriptor_.sourceId;
+    frame.frameId = frameId_;
+    frame.width = frame.naturalWidth = frame.pixelWidth = 2;
+    frame.height = frame.naturalHeight = frame.pixelHeight = 2;
+    frame.pixelStride = 8;
+    frame.pixels = pixels_;
+    tick.video.push_back(std::move(frame));
+    return tick;
+  }
+  corevideo::core::SourceIngestCounters counters() const override { return {}; }
+
+ private:
+  enum class Mode { Advance, Freeze, Gone };
+  corevideo::core::SourceDescriptor descriptor_;
+  Mode mode_ = Mode::Advance;
+  int64_t frameId_ = 0;
+  std::shared_ptr<const std::vector<uint8_t>> pixels_ = std::make_shared<const std::vector<uint8_t>>(16, 128);
+};
+
+// The render tick's synthetic clock at the stub core's default 60 fps:
+// frameIntervalMs = round(1000 / 60) = 17 (MediaCore::renderSyntheticTick).
+constexpr int64_t kTickMs = 17;
+
 }  // namespace
 
 TEST(TilesRenderPlan, EachAdmittedMemberBecomesOneTileLayer) {
@@ -397,18 +444,65 @@ TEST(TilesRenderPlan, TilesDoNotDoubleApplyGenericSceneBorders) {
   }
 }
 
-TEST(TilesRenderPlan, AStaleMemberIsNotDrawnAndTheWallReflows) {
+// #1074: a member stalled past the HOLD window leaves the wall and the wall
+// reflows. (Before #1074 this happened at kTilesStaleFrameMs; the live show of
+// 2026-10-31 showed that every 1.5 to 3 s uplink stall emptied a slot.)
+TEST(TilesRenderPlan, AMemberStalledPastTheHoldWindowIsNotDrawnAndTheWallReflows) {
   MediaCore core; loadWall(core, {"zoom:1", "zoom:2"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
   const auto twoUp = core.lastRenderPlanForTest();
   const float pairedWidth = findLayer(twoUp, "tile:zoom:1")->rect.width;
 
   core.setTilesMemberFrameAgesForTest(
-      {{"zoom:1", true, 0}, {"zoom:2", true, corevideo::compositor::kTilesStaleFrameMs + 1}});
+      {{"zoom:1", true, 0}, {"zoom:2", true, corevideo::compositor::kTilesHoldWindowMs + 1}});
   const auto soloPlan = core.lastRenderPlanForTest();
 
   EXPECT_EQ(countLayersOfKind(soloPlan, "participant-video"), 1);
   EXPECT_GT(findLayer(soloPlan, "tile:zoom:1")->rect.width, pairedWidth);
+}
+
+// #1074: inside the hold window the stale member KEEPS its slot (no reflow,
+// same rect) and the plan labels it held. The compositor shows the slot's
+// last picture or black per the source's dropout policy, exactly as it does
+// for any layer whose frame is present but stale; nothing is fabricated.
+TEST(TilesRenderPlan, AStaleMemberInsideTheHoldWindowKeepsItsSlotAndIsLabelledHeld) {
+  MediaCore core; loadWall(core, {"zoom:1", "zoom:2"});
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
+  const auto twoUp = core.lastRenderPlanForTest();
+  const auto pairedRect = findLayer(twoUp, "tile:zoom:2")->rect;
+  ASSERT_FALSE(findLayer(twoUp, "tile:zoom:2")->tilesHeld);
+
+  core.setTilesMemberFrameAgesForTest(
+      {{"zoom:1", true, 0}, {"zoom:2", true, corevideo::compositor::kTilesStaleFrameMs + 1}});
+  const auto heldPlan = core.lastRenderPlanForTest();
+
+  EXPECT_EQ(countLayersOfKind(heldPlan, "participant-video"), 2);
+  const auto* held = findLayer(heldPlan, "tile:zoom:2");
+  ASSERT_NE(held, nullptr) << "a stale member inside the hold window must stay on the wall";
+  EXPECT_TRUE(held->tilesHeld);
+  EXPECT_FALSE(findLayer(heldPlan, "tile:zoom:1")->tilesHeld);
+  EXPECT_EQ(held->rect.x, pairedRect.x);
+  EXPECT_EQ(held->rect.width, pairedRect.width);
+
+  // The snapshot says so too: this is what a show sampler and the shell read.
+  const auto snapshot = core.sessionState();  // keep the Json alive: get() returns a pointer into it
+  const auto* tiles = snapshot.get("tiles");
+  ASSERT_NE(tiles, nullptr);
+  EXPECT_EQ(tiles->getNumber("heldCount"), 1.0);
+  EXPECT_EQ(tiles->getNumber("staleAfterMs"), static_cast<double>(corevideo::compositor::kTilesStaleFrameMs));
+  EXPECT_EQ(tiles->getNumber("holdWindowMs"), static_cast<double>(corevideo::compositor::kTilesHoldWindowMs));
+  const auto& members = tiles->get("members")->asArray();
+  ASSERT_EQ(members.size(), 2u);
+  EXPECT_EQ(members[0].getString("sourceId"), "zoom:1");
+  EXPECT_FALSE(members[0].get("held")->asBool(true));
+  EXPECT_EQ(members[1].getString("sourceId"), "zoom:2");
+  EXPECT_TRUE(members[1].get("held")->asBool(false));
+
+  // One new frame clears the label without any reflow.
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
+  EXPECT_FALSE(findLayer(core.lastRenderPlanForTest(), "tile:zoom:2")->tilesHeld);
+  const auto recovered = core.sessionState();
+  EXPECT_EQ(recovered.get("tiles")->getNumber("heldCount", -1), 0.0);
 }
 
 // Whole-branch review fix: this test used to call `loadWall(core, {})` and read
@@ -593,8 +687,8 @@ TEST(TilesRenderPlan, AnAllStaleWallStillEmitsItsBackground) {
   MediaCore core;
   loadWall(core, {"zoom:1", "zoom:2"});
   core.setTilesMemberFrameAgesForTest(
-      {{"zoom:1", true, corevideo::compositor::kTilesStaleFrameMs + 1},
-       {"zoom:2", true, corevideo::compositor::kTilesStaleFrameMs + 1}});
+      {{"zoom:1", true, corevideo::compositor::kTilesHoldWindowMs + 1},
+       {"zoom:2", true, corevideo::compositor::kTilesHoldWindowMs + 1}});
 
   const auto plan = core.lastRenderPlanForTest();
   ASSERT_FALSE(plan.layers.empty())
@@ -867,32 +961,148 @@ TEST(TilesRenderPlan, AConfiguredWallSuppressesTheLegacyFullCanvasFallback) {
 }
 
 // I4: a frozen-but-subscribed guest (frameId never advances, even though the
-// producer keeps re-stamping timestampMs with the current tick's clock —
-// exactly how every real frame producer in this codebase behaves) must
-// eventually leave the wall, the same as any other stale feed. Drives real
-// render ticks (no test-seam age injection) against a fake capture device
-// with a controllable, frozen frameId.
+// producer keeps re-stamping timestampMs with the current tick's clock) must
+// eventually leave the wall. #1074 (review): drives REAL render ticks through
+// the production frameId-age gather (no test-seam age injection) and pins the
+// two moments the issue is about: the tile is first labelled held just past
+// kTilesStaleFrameMs and is first gone just past kTilesHoldWindowMs. Asserting
+// only "it left eventually" passed with the hold window reverted to 1500.
 TEST(TilesRenderPlan, AFrozenFrameIdAgesTheMemberOutEvenAsTimestampKeepsAdvancing) {
+  auto zoom = std::make_shared<ControllableZoomSource>("1");
+  MediaCore core;
+  core.useZoomSourcesForTest({zoom});
+  loadWall(core, {"zoom:1"});
+  for (int tick = 0; tick < 3; ++tick) (void)core.applyCommands(corevideo::rpc::Json::Array{});
+  ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:zoom:1"), nullptr)
+      << "the member should be admitted on its first real frame";
+
+  zoom->freeze();
+  int firstHeldTick = -1;
+  int firstGoneTick = -1;
+  for (int tick = 1; tick <= 400 && firstGoneTick < 0; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    const auto* tile = findLayer(core.lastRenderPlanForTest(), "tile:zoom:1");
+    if (tile == nullptr) {
+      firstGoneTick = tick;
+    } else if (tile->tilesHeld && firstHeldTick < 0) {
+      firstHeldTick = tick;
+    }
+  }
+  ASSERT_GT(firstHeldTick, 0) << "the frozen member was never labelled held";
+  ASSERT_GT(firstGoneTick, 0) << "the frozen member never left the wall";
+  // Age on tick N after the freeze is about N * kTickMs (frameId last changed
+  // on the tick before the freeze); one tick of slack either way.
+  //
+  // The 1500 / 4000 below are LITERAL on purpose: they are the #1074 behaviour
+  // (held from 1.5 s, dropped at 4 s), not a restatement of the constants. A
+  // bound written as kTilesHoldWindowMs +/- slack moved with the constant and
+  // let a mutant with the window set to 1600 pass. Changing the rule must
+  // change this test.
+  constexpr int64_t kExpectedHeldFromMs = 1500;
+  constexpr int64_t kExpectedGoneAtMs = 4000;
+  const int64_t heldAtMs = firstHeldTick * kTickMs;
+  const int64_t goneAtMs = firstGoneTick * kTickMs;
+  EXPECT_GT(heldAtMs, kExpectedHeldFromMs - kTickMs) << "held on tick " << firstHeldTick;
+  EXPECT_LE(heldAtMs, kExpectedHeldFromMs + 2 * kTickMs) << "held on tick " << firstHeldTick;
+  EXPECT_GT(goneAtMs, kExpectedGoneAtMs - kTickMs) << "gone on tick " << firstGoneTick;
+  EXPECT_LE(goneAtMs, kExpectedGoneAtMs + 2 * kTickMs) << "gone on tick " << firstGoneTick;
+}
+
+// #1074 review: a held Zoom member whose frame then LEAVES the gather
+// (video-off, departure, un-route: the no-frame branch of the age gather) is
+// gone on the very next tick. The hold window never keeps a departed guest.
+TEST(TilesRenderPlan, AHeldZoomMemberWhoseFrameLeavesTheGatherIsGoneOnTheNextTick) {
+  auto zoom = std::make_shared<ControllableZoomSource>("1");
+  MediaCore core;
+  core.useZoomSourcesForTest({zoom});
+  loadWall(core, {"zoom:1"});
+  for (int tick = 0; tick < 3; ++tick) (void)core.applyCommands(corevideo::rpc::Json::Array{});
+  zoom->freeze();
+  const int toHeld = static_cast<int>(corevideo::compositor::kTilesStaleFrameMs / kTickMs) + 10;
+  for (int tick = 0; tick < toHeld; ++tick) (void)core.applyCommands(corevideo::rpc::Json::Array{});
+  const auto* held = findLayer(core.lastRenderPlanForTest(), "tile:zoom:1");
+  ASSERT_NE(held, nullptr);
+  ASSERT_TRUE(held->tilesHeld) << "precondition: the member must be held before its frame leaves";
+
+  zoom->gone();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{});
+  EXPECT_EQ(findLayer(core.lastRenderPlanForTest(), "tile:zoom:1"), nullptr)
+      << "a held member whose frame left the gather must drop at once, not at the hold window";
+}
+
+// #1074 review / #1071: a LOCAL member re-serving one frameId (static screen
+// share, still) is healthy, so the frame-age clock does not apply: it stays on
+// the wall far past both thresholds and is never labelled held.
+TEST(TilesRenderPlan, AFrozenCaptureMemberIsNeverLabelledHeld) {
   auto modules = corevideo::modules::createStubModules();
   modules.captureDevice = std::make_unique<FrozenFrameIdCaptureDevice>();
   MediaCore core(std::move(modules));
   loadWall(core, {"capture:frozen-1"});
-
-  ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:capture:frozen-1"), nullptr)
-      << "the member should be admitted on its first real frame";
-
-  // Drive enough ordinary ticks to cross kTilesStaleFrameMs at the default
-  // output rate (60fps ~= 17ms/tick, so ~88 ticks; 400 gives ample margin
-  // without the test becoming a real-time sleep loop).
-  bool leftTheWall = false;
-  for (int tick = 0; tick < 400; ++tick) {
+  const int pastHoldWindow = static_cast<int>(corevideo::compositor::kTilesHoldWindowMs / kTickMs) + 20;
+  for (int tick = 0; tick < pastHoldWindow; ++tick) {
     (void)core.applyCommands(corevideo::rpc::Json::Array{});
-    if (findLayer(core.lastRenderPlanForTest(), "tile:capture:frozen-1") == nullptr) {
-      leftTheWall = true;
-      break;
-    }
+    const auto* tile = findLayer(core.lastRenderPlanForTest(), "tile:capture:frozen-1");
+    ASSERT_NE(tile, nullptr) << "a static local source left the wall on tick " << tick;
+    ASSERT_FALSE(tile->tilesHeld) << "a static local source was labelled held on tick " << tick;
   }
-  EXPECT_TRUE(leftTheWall);
+}
+
+// #1074 review: under the `black` dropout policy a held Zoom slot is BLACK on
+// air once the bus calls the source stalled (1.5 s, real clock), while the
+// slot itself stays held until the hold window. The snapshot must say which:
+// `showing: black` vs `picture`, counted in `blackCount`. Also pins the
+// sources[] row's sinceLastNewFrameMs that the shell's stall count reads.
+// Sleeps 1.6 s of REAL time: the on-air stall clock is the bus's steady clock,
+// not the synthetic tick clock.
+TEST(TilesRenderPlan, AHeldSlotUnderTheBlackPolicyIsReportedAsShowingBlack) {
+  auto blackGuest = std::make_shared<ControllableZoomSource>("1");
+  auto holdGuest = std::make_shared<ControllableZoomSource>("2");
+  MediaCore core;
+  core.useZoomSourcesForTest({blackGuest, holdGuest});
+  loadWall(core, {"zoom:1", "zoom:2"});
+  (void)core.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json{corevideo::rpc::Json::Object{
+      {"type", corevideo::rpc::Json{"set-source-policy"}},
+      {"sourceId", corevideo::rpc::Json{"zoom:1"}},
+      {"dropoutPolicy", corevideo::rpc::Json{"black"}}}}});
+  for (int tick = 0; tick < 3; ++tick) (void)core.applyCommands(corevideo::rpc::Json::Array{});
+  {
+    const auto snapshot = core.sessionState();
+    const auto& members = snapshot.get("tiles")->get("members")->asArray();
+    ASSERT_EQ(members.size(), 2u);
+    EXPECT_EQ(members[0].getString("showing"), "picture") << "a live black-policy guest shows its picture";
+    EXPECT_EQ(snapshot.get("tiles")->getNumber("blackCount", -1), 0.0);
+  }
+
+  blackGuest->freeze();
+  holdGuest->freeze();
+  const int toHeld = static_cast<int>(corevideo::compositor::kTilesStaleFrameMs / kTickMs) + 10;
+  for (int tick = 0; tick < toHeld; ++tick) (void)core.applyCommands(corevideo::rpc::Json::Array{});
+  std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+  (void)core.applyCommands(corevideo::rpc::Json::Array{});
+
+  const auto snapshot = core.sessionState();
+  const auto* tiles = snapshot.get("tiles");
+  ASSERT_NE(tiles, nullptr);
+  const auto& members = tiles->get("members")->asArray();
+  ASSERT_EQ(members.size(), 2u) << "both stalled guests are still inside the hold window";
+  EXPECT_EQ(members[0].getString("sourceId"), "zoom:1");
+  EXPECT_TRUE(members[0].get("held")->asBool(false));
+  EXPECT_EQ(members[0].getString("showing"), "black")
+      << "a black-policy slot past the on-air stall paints black; the snapshot must not claim a picture";
+  EXPECT_EQ(members[1].getString("sourceId"), "zoom:2");
+  EXPECT_TRUE(members[1].get("held")->asBool(false));
+  EXPECT_EQ(members[1].getString("showing"), "picture");
+  EXPECT_EQ(tiles->getNumber("heldCount", -1), 2.0);
+  EXPECT_EQ(tiles->getNumber("blackCount", -1), 1.0);
+
+  bool sawRow = false;
+  for (const auto& row : snapshot.get("sources")->asArray()) {
+    if (row.getString("sourceId") != "1") continue;
+    sawRow = true;
+    EXPECT_EQ(row.getString("health"), "stalled");
+    EXPECT_GE(row.getNumber("sinceLastNewFrameMs", -1), 1500.0);
+  }
+  EXPECT_TRUE(sawRow) << "the Zoom guest's sources[] row is missing";
 }
 
 // A SuperSource backdrop on the scene must survive a Tiles wall. The wall's
@@ -1478,17 +1688,25 @@ TEST(TilesRenderPlan, AWallsLiveBackgroundSurvivesATakeAcrossAStaleBeat) {
   ASSERT_NE(findLayer(compositor->lastPreviewPlan, "tiles-source-bg:tiles:gallery"), nullptr)
       << "precondition: the live background must be drawn on the preview wall before the take";
 
-  // Lapse every feed — the background's included — past kTilesStaleFrameMs, the
-  // transient CLAUDE.md records as ordinary on a Tiles take. FREEZE, not pause:
-  // the frames keep arriving with a held frameId, which is what a real Zoom or
-  // capture source does. The source is still there; only its age has grown.
+  // Lapse every feed — the background's included — past kTilesStaleFrameMs AND
+  // kTilesHoldWindowMs. FREEZE, not pause: the frames keep arriving with a held
+  // frameId, which is what a real Zoom or capture source does. The source is
+  // still there; only its age has grown.
+  //
+  // #1074 review / #1071: these are LOCAL (capture:) members, which no longer
+  // age out on a frozen frameId, so the wall no longer goes all-stale here and
+  // the old "wall went empty" precondition cannot hold by design. The claim
+  // under test is the background's, and it is asserted directly: frozen far
+  // past both thresholds, the backdrop is still drawn before the take.
   device->freeze();
-  bool wallWentEmpty = false;
-  for (int tick = 0; tick < 400 && !wallWentEmpty; ++tick) {
+  const int pastHoldWindow = static_cast<int>(corevideo::compositor::kTilesHoldWindowMs / kTickMs) + 20;
+  for (int tick = 0; tick < pastHoldWindow; ++tick) {
     (void)core.applyCommands(corevideo::rpc::Json::Array{});
-    wallWentEmpty = tileLayers(compositor->lastPreviewPlan).empty();
   }
-  ASSERT_TRUE(wallWentEmpty) << "the preview wall never went all-stale — the transient is not under test";
+  ASSERT_NE(findLayer(compositor->lastPreviewPlan, "tiles-source-bg:tiles:gallery"), nullptr)
+      << "the frozen background must still be drawn on the preview wall past the stale beat";
+  EXPECT_EQ(tileLayers(compositor->lastPreviewPlan).size(), wallMembers().size())
+      << "frozen local members keep their tiles (only zoom: members age out)";
 
   take(core, wallSceneWithBackground("load-scene-graph", "gallery", wallMembers(), "capture:bg"),
        wallLessScene("set-preview-scene", "solo"));

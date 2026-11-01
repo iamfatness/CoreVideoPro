@@ -6,13 +6,19 @@ namespace CoreVideoPro.MediaCore.Services;
 /// <summary>Applied encoder feed cadence is distinct from receiver delivery FPS.</summary>
 public static class StreamDegradationReadout
 {
-    public static string? Format(NativeMediaCoreStateSnapshot snapshot)
-    {
-        var destinations = snapshot.OutputSenderSession.Senders
+    /// <summary>Producing destinations whose own backpressure is engaged (applied divisor above 1
+    /// or pressure level above 0). Shared with <see cref="StalledFeedsReadout"/> so both
+    /// lines agree on what "the stream is in backpressure" means.</summary>
+    public static IEnumerable<NativeMediaCoreOutputSender> PressuredSenders(NativeMediaCoreStateSnapshot snapshot) =>
+        snapshot.OutputSenderSession.Senders
             .Where(sender => sender.Status is "live" or "warning" &&
                 (sender.Lifecycle is null || sender.Lifecycle.State == "producing") &&
                 sender.Backpressure is { } pressure &&
-                (pressure.AppliedDivisor > 1 || pressure.Level > 0))
+                (pressure.AppliedDivisor > 1 || pressure.Level > 0));
+
+    public static string? Format(NativeMediaCoreStateSnapshot snapshot)
+    {
+        var destinations = PressuredSenders(snapshot)
             .Select(sender =>
             {
                 var fps = snapshot.OutputProfile.Fps;

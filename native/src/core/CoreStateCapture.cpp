@@ -652,6 +652,12 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
     modules::CompositorRenderPlanLayer item;
     item.kind = layer.kind; item.layerId = layer.layerId; item.sourceId = layer.sourceId;
     item.participantId = layer.participantId; item.rect = layer.rect;
+    item.tilesHeld = layer.tilesHeld;
+    // #1074 review: what the compositor actually paints in the slot is
+    // derived from these two (compositor::blackOnStalled), so the snapshot
+    // can say `showing: black` instead of claiming a held picture.
+    item.sourceHealth = layer.sourceHealth;
+    item.dropoutPolicy = layer.dropoutPolicy;
     lastRenderPlan_.layers.push_back(std::move(item));
   }
 
@@ -1077,12 +1083,28 @@ rpc::Json CoreStateCapture::sessionState() const {
   // "multiviewer node that only appears once configured" mistake again.
   if (tilesLayer_.present) {
     rpc::Json::Array memberNodes;
+    int heldCount = 0;
+    int blackCount = 0;
     for (const auto& layer : lastRenderPlan_.layers) {
       if (layer.kind != "participant-video" || layer.layerId.rfind("tile:", 0) != 0) {
         continue;
       }
+      heldCount += layer.tilesHeld ? 1 : 0;
+      // #1074 review: `held` says the SLOT is kept; `showing` says what is IN
+      // it. Under the `black` dropout policy a Zoom source reads "stalled" on
+      // air from 1.5 s and the compositor paints black (blackOnStalled, the
+      // exact predicate D3D11CompositorAdapter uses), while the slot stays
+      // held until 4 s. A held frame passes #1038 only when labelled
+      // truthfully, and black is a different fact from a held picture.
+      const bool black = compositor::blackOnStalled(layer.sourceHealth, layer.dropoutPolicy);
+      blackCount += black ? 1 : 0;
       memberNodes.push_back(rpc::Json{rpc::Json::Object{
           {"sourceId", rpc::Json{layer.sourceId}},
+          // #1074: this slot is kept through a stall (Zoom member stale past
+          // kTilesStaleFrameMs, inside kTilesHoldWindowMs). A drawn member
+          // that is held is counted, never a silent pass.
+          {"held", rpc::Json{layer.tilesHeld}},
+          {"showing", rpc::Json{black ? "black" : "picture"}},
           {"rect", rpc::Json{rpc::Json::Object{
               {"x", rpc::Json{static_cast<double>(layer.rect.x)}},
               {"y", rpc::Json{static_cast<double>(layer.rect.y)}},
@@ -1094,6 +1116,10 @@ rpc::Json CoreStateCapture::sessionState() const {
     state.emplace("tiles", rpc::Json::Object{
                                {"layerId", tilesLayer_.layerId},
                                {"members", rpc::Json{memberNodes}},
+                               {"heldCount", heldCount},
+                               {"blackCount", blackCount},
+                               {"staleAfterMs", static_cast<double>(compositor::kTilesStaleFrameMs)},
+                               {"holdWindowMs", static_cast<double>(compositor::kTilesHoldWindowMs)},
                            });
   }
   // The multiviewer config the core is ACTUALLY running — always published, even

@@ -80,6 +80,11 @@ class SourceBus {
     SourceDescriptor descriptor;
     SourceIngestCounters counters;
     SourceHealth health = SourceHealth::Idle;
+    // #1074 review: time since this source's last NEW frame on the bus's own
+    // clock, as of the snapshot's nowNs; -1 if it never produced a frame.
+    // Published so a reader can apply the 1.5 s on-air stall rule
+    // (kOnAirStallNs) instead of the 200 ms diagnostic `health`.
+    int64_t sinceLastNewFrameNs = -1;
   };
 
   void add(std::shared_ptr<ISource> source) {
@@ -135,7 +140,8 @@ class SourceBus {
     std::vector<SourceStatus> out;
     out.reserve(entries_.size());
     for (const auto& [id, e] : entries_) {
-      out.push_back({e.source->descriptor(), e.counters, healthOf(e, nowNs)});
+      out.push_back({e.source->descriptor(), e.counters, healthOf(e, nowNs),
+                     e.everProduced ? nowNs - e.counters.lastNewFrameNs : -1});
     }
     return out;
   }

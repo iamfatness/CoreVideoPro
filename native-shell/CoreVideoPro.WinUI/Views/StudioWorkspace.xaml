@@ -1463,6 +1463,20 @@
                                        Foreground="{x:Bind ViewModel.Transport.StreamStatHealthBrush, Mode=OneWay}" />
                         </StackPanel>
 
+                        <!-- #1074: collapsed unless the stream is in backpressure AND two or more
+                             Zoom feeds are stalled (1.5 s on-air rule) at once. Zero width in the
+                             normal footer. States the two facts; it does not claim a cause. -->
+                        <StackPanel Spacing="2" MaxWidth="236"
+                                    Visibility="{x:Bind ViewModel.Transport.StalledFeedsVisibility, Mode=OneWay}"
+                                    ToolTipService.ToolTip="{x:Bind ViewModel.Transport.StalledFeedsLabel, Mode=OneWay}">
+                            <TextBlock Text="FEEDS" Style="{StaticResource OutputStatLabel}" />
+                            <TextBlock x:Name="StalledFeedsStatus"
+                                       Text="{x:Bind ViewModel.Transport.StalledFeedsLabel, Mode=OneWay}"
+                                       TextWrapping="WrapWholeWords" MaxLines="2"
+                                       FontSize="10" FontWeight="ExtraBold"
+                                       Foreground="#F0A85C" />
+                        </StackPanel>
+
                         <StackPanel Spacing="2" Width="110" ToolTipService.ToolTip="Frames written in the current or most recent recording session.">
                             <TextBlock Text="RECORD" Style="{StaticResource OutputStatLabel}" />
                             <TextBlock Text="{x:Bind ViewModel.Transport.RecordStatValue, Mode=OneWay}"
