@@ -85,3 +85,72 @@ staying live across many ticks keeps the SAME registry identity — pinned by
 `std::map` keyed by sourceId where a count assertion cannot distinguish "the
 guard works" from "every tick refuses `Conflict` while quietly taking the
 registry mutex 60x/s").
+
+# A stale tile is HELD for a bounded window, then dropped (#1074, live show 2026-10-31)
+
+**Owner-ruling status: working assumption, not yet ruled.** #427 still carries the handoff
+decision on tile staleness. This section describes what the code does on
+`codex/tiles-hold-1074`; if the owner rules differently, `kTilesHoldWindowMs` is the one
+number to change.
+
+**What happened.** Streaming to YouTube at 10 Mbps, the operator's uplink stalled for 1 to 3 s
+at a time, three or four times in fifteen minutes. On every stall the Zoom raw video for all
+video-on participants stopped arriving and the RTMP queue backed up at the same instants
+(`[stream-backpressure] enter divisor=2 buffered=445ms`). Zoom subscription churn was zero,
+the Program buffer missed no deadline. `admitTilesMembers` dropped every member whose newest
+frame was older than `kTilesStaleFrameMs` (1500 ms), so each stall emptied slots, reflowed the
+wall, and popped the tiles back. The owner read it as "participants dropping in the tiles
+source".
+
+**The rule now** (`native/src/compositor/TilesMembership.h`, `classifyTilesMember`):
+
+| Age of the member's newest frame | State | Drawn? | Snapshot |
+|---|---|---|---|
+| no frame in this tick's gather (video-off, departure, un-route, never arrived) | Dropped | no | absent from `tiles.members` |
+| 0 .. `kTilesStaleFrameMs` (1500) inclusive | Fresh | yes | `held: false` |
+| `kTilesStaleFrameMs` + 1 .. `kTilesHoldWindowMs` (4000) inclusive | **Held** | yes, same slot, last picture | `held: true`, counted in `tiles.heldCount` |
+| past `kTilesHoldWindowMs` | Dropped | no, wall reflows | absent |
+
+Age is measured from the tick at which the member's `frameId` last changed (the I4 gather in
+`MediaCore::renderDisplayTick`), never from the frame's own timestamp, which every producer
+re-stamps. A held member keeps its slot order among the fresh ones; one new frame clears the
+label with no reflow. This is the Tiles form of the #1038 outputs rule: a stall is a labelled,
+counted hold caused by the source, never a silent pass and never a fabricated picture
+(`hasFrame` still comes from the gather, so nothing is drawn for a source that is not there).
+
+**What the operator sees in a held slot** is unchanged from any stale layer: the compositor
+renders the last picture, or black when that source's dropout policy is `black`
+(`compositor::slateColorFor`, #535 slice 4a). A Zoom member past 1.5 s also carries
+`sourceHealth: "stalled"` on its layer, as before. The hold changes only membership.
+
+**Why 4 s and why a second constant.** The issue asked for 3 to 5 s. `kTilesStaleFrameMs` is
+shared with the on-air `stalled` label and the per-source dropout policy, so widening it
+would delay those too; the hold window is its own constant with a `static_assert` that it
+outlives the stale threshold. The wall BACKGROUND predicate (`tilesBackgroundSourceIsDrawable`)
+is untouched: it holds for as long as a frame exists and has no window, for the reasons on
+that predicate.
+
+**Telemetry.** `tiles.members[].held`, `tiles.heldCount`, `tiles.staleAfterMs`,
+`tiles.holdWindowMs` in the session snapshot (`CoreStateCapture.cpp`). The core log gets one
+`[tiles-hold] <sourceId> held|dropped|recovered ageMs=N` line per transition, and
+`[tiles-hold] <sourceId> dropped reason=no-frame` when a held member's frame leaves the gather.
+
+**Status line.** When the stream is in backpressure AND two or more zoom/capture video sources
+read `stalled` on the bus at the same snapshot, the Studio footer shows one amber line under
+NETWORK: `network congested: stream 445 ms behind, 3 feeds stalled` (or `stream at 1/N rate`
+when `appliedDivisor` is above 1, or `stream backpressure level L` when the queue has drained
+but pressure has not released). `NetworkCongestionReadout` in `CoreVideoPro.MediaCore`; the
+`sources` node is now bound typed on the snapshot for it (`contracts/observation.schema.json`).
+One stalled feed, or stalls with no stream pressure, show nothing: the first is one source's
+problem, the second has no stream fact to report.
+
+Tests: `native/tests/TilesMembershipTest.cpp` (`TilesMembership.*`: both edges of both
+thresholds, no-frame drops at once, held keeps slot order, classification table),
+`native/tests/TilesRenderPlanTest.cpp`
+(`AStaleMemberInsideTheHoldWindowKeepsItsSlotAndIsLabelledHeld` reads the plan AND the
+snapshot node; `AMemberStalledPastTheHoldWindowIsNotDrawnAndTheWallReflows`;
+`AnAllStaleWallStillEmitsItsBackground` now ages past the hold window), and
+`native-shell/CoreVideoPro.MediaCore.Tests/NetworkCongestionReadoutTests.cs`.
+
+**Not verified live.** No real uplink stall has been watched with this build. The frozen-frame
+and freeze/pause render-plan tests drive a synthetic 60 fps clock, not a Zoom engine.

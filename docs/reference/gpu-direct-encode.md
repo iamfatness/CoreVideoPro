@@ -178,6 +178,26 @@ already-backed-up pipe. **The core was starving; the UI was never blocked.** Two
 plus a restart floor now absorb a destination that cannot carry the configured bitrate.
 Spec + full evidence: `docs/superpowers/specs/2026-09-23-stream-backpressure-design.md`.
 
+**Operator mitigation when the uplink is the bottleneck (#1074, live show 2026-10-31).**
+Backpressure handling keeps the stream alive; it cannot make the link wider. On that show a
+10 Mbps RTMP stream plus the operator's own Zoom upload saturated the uplink at least three
+times in fifteen minutes: every stall backed up the RTMP queue AND froze every incoming Zoom
+feed at the same instant (one burst happened before the stream started, so the stream is an
+amplifier, not the only cause). The Tiles wall now holds a stalled member's last picture for
+up to 4 s instead of dropping it at 1.5 s (`docs/reference/tiles-composed-source.md`), and the
+Studio footer shows `network congested: stream ... behind, N feeds stalled` when both facts are
+present. Those cover the picture; the fix is on the link:
+
+- **Lower the stream bitrate.** 10 Mbps for 1080p60 H.264 is the top of YouTube's own range;
+  6 to 8 Mbps leaves headroom for Zoom's upload (budget roughly 3 to 4 Mbps for a 1080p send
+  plus the receive side) on a link that is not comfortably above 20 Mbps up. Measured
+  uplink, not the ISP's advertised figure.
+- **Wire the operator machine.** A Wi-Fi hiccup stalls RTMP and Zoom together exactly like
+  this; Ethernet, or a dedicated uplink for the show machine, removes the shared hiccup.
+- **Read the signs live:** repeated `[stream-backpressure] enter` lines in `media-core.log`,
+  `backpressure.bufferedMs` climbing in the snapshot, and `sources[]` showing several Zoom
+  rows `stalled` together. One stalled source is that guest's link; several at once is yours.
+
 **#538 update (2026-09-29):** The Lever A compositor export divisor described
 below is historical behavior. It reduced every output's frame rate when one
 destination was congested. The shared Program encoder now keeps full export

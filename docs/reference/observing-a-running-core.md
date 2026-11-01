@@ -35,7 +35,8 @@ judge can now watch the core the operator is actually running instead of spawnin
   `layerId/sourceId/participantId/kind`; rect / fit / opacity / fill colour live on
   `CompositorRenderPlanLayer` inside the core and are never serialized. `ControlProgramVideoSource`
   adds `order` (the index in the core's already-sorted publish order). Only the `tiles` node
-  carries a rect per member. Adding real geometry is a **core** change.
+  carries a rect per member, plus `held` per member and `heldCount`/`staleAfterMs`/`holdWindowMs`
+  (#1074: a member showing its last picture through a stall). Adding real geometry is a **core** change.
 - **The mapped snapshot says only what the core said (#740).** `NativeMediaCoreStateMapper`
   starts from `new NativeMediaCoreStateSnapshot()` (idle, no recording, no senders, no preview,
   no meeting) and overlays the core's JSON. It used to start from `SyntheticMediaCore`, a
