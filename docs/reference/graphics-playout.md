@@ -71,6 +71,9 @@ numbered steps left to right:
    default fade. **Position / Size** (nine anchors, 50–150 %) and dragging the
    preview set the row's `placement`; it is stored only when it differs from the
    template default and is sent with the instance ("Template default" clears it).
+   **Text** offers a typeface (safe Windows families only; a package font shows
+   as unset and is left alone) and name / second-line sizes, written to the
+   row's style.
 5. **Save to playlist**: name, hotkey (defaults to the lowest free F-key; taken
    keys say who owns them), hides after (stays / 8 s / 15 s), then **Add to
    playlist** or, for a row opened from Operate or the "Your graphics" chips,

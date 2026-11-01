@@ -37,6 +37,10 @@ public sealed class GraphicsBuilderControl : UserControl
     private readonly StackPanel _form = new() { Spacing = 10, MinWidth = 280 };
     private readonly StackPanel _fields = new() { Spacing = 8 };
     private readonly StackPanel _colors = new() { Spacing = 6 };
+    private readonly ComboBox _typeface = new() { Header = "Typeface", ItemsSource = GraphicsBuilder.TypefaceChoices.ToArray(), IsEditable = false, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly Slider _nameSize = new() { Header = "Name size", Minimum = 16, Maximum = 120, StepFrequency = 2, Value = 42 };
+    private readonly Slider _titleSize = new() { Header = "Second line size", Minimum = 12, Maximum = 80, StepFrequency = 2, Value = 28 };
+    private readonly StackPanel _typeBlock = new() { Spacing = 6 };
     private readonly ComboBox _anchor = new() { Header = "Position", ItemsSource = GraphicsBuilder.AnchorChoices.Select(a => a.Label).ToArray(), HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly Slider _scale = new() { Header = "Size", Minimum = 50, Maximum = 150, StepFrequency = 5, TickFrequency = 25, Value = 100 };
     private readonly Button _resetPlacement = StudioBrushes.ChipButton("Template default");
@@ -108,6 +112,11 @@ public sealed class GraphicsBuilderControl : UserControl
         clockRow2.Children.Add(_clockFormat); Grid.SetColumn(_clockFinish, 1); clockRow2.Children.Add(_clockFinish);
         _clockBlock.Children.Add(clockRow); _clockBlock.Children.Add(clockRow2); _clockBlock.Children.Add(Note("A countdown starts from Operate (Start / Pause / Reset on the row) once the graphic is cued or shown."));
         _form.Children.Add(_clockBlock);
+        _typeBlock.Children.Add(new TextBlock { Text = "TEXT", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted, Margin = new Thickness(0, 6, 0, 0) });
+        _typeBlock.Children.Add(_typeface);
+        var sizes = new Grid { ColumnSpacing = 8 }; sizes.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); sizes.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        sizes.Children.Add(_nameSize); Grid.SetColumn(_titleSize, 1); sizes.Children.Add(_titleSize); _typeBlock.Children.Add(sizes);
+        _form.Children.Add(_typeBlock);
         var placementRow = new Grid { ColumnSpacing = 8, Margin = new Thickness(0, 6, 0, 0) }; placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(3, GridUnitType.Star) }); placementRow.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
         placementRow.Children.Add(_anchor); Grid.SetColumn(_scale, 1); placementRow.Children.Add(_scale); _form.Children.Add(placementRow);
         var placementNote = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; placementNote.Children.Add(_resetPlacement); placementNote.Children.Add(Note("Drag the preview to nudge.")); _form.Children.Add(placementNote);
@@ -135,6 +144,9 @@ public sealed class GraphicsBuilderControl : UserControl
         _clockMode.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; _clockMinutes.IsEnabled = _clockFinish.IsEnabled = _clockMode.SelectedIndex == 1; RefreshSaveButton(); } };
         foreach (var box in new ComboBox[] { _clockFormat, _clockFinish }) box.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
         _clockMinutes.ValueChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
+        _typeface.SelectionChanged += (_, _) => { if (!_loading && _typeface.SelectedIndex >= 0 && _session?.Draft is { } d) { _session.SetStyle(d.Style with { FontFamily = GraphicsBuilder.TypefaceChoices[_typeface.SelectedIndex] }); _dirty = true; RefreshSaveButton(); } };
+        _nameSize.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is { } d && Math.Abs(d.Style.NameSize - _nameSize.Value) >= 1) { _session.SetStyle(d.Style with { NameSize = Math.Round(_nameSize.Value) }); _dirty = true; RefreshSaveButton(); } };
+        _titleSize.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is { } d && Math.Abs(d.Style.TitleSize - _titleSize.Value) >= 1) { _session.SetStyle(d.Style with { TitleSize = Math.Round(_titleSize.Value) }); _dirty = true; RefreshSaveButton(); } };
         _anchor.SelectionChanged += (_, _) => { if (!_loading && _anchor.SelectedIndex >= 0 && _session?.Draft is { } d) { var p = d.Placement ?? _session.Template?.DefaultPlacement ?? new(); _session.SetPlacement(p with { Anchor = GraphicsBuilder.AnchorChoices[_anchor.SelectedIndex].Id }); _dirty = true; RefreshSaveButton(); } };
         _scale.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is { } d) { var p = d.Placement ?? _session.Template?.DefaultPlacement ?? new(); _session.SetPlacement(p with { Scale = Math.Round(_scale.Value / 100, 2) }); _dirty = true; RefreshSaveButton(); } };
         _resetPlacement.Click += (_, _) => { if (_session?.Draft is not null) { _session.SetPlacement(_session.Template?.DefaultPlacement); _dirty = true; RefreshPlacementControls(); RefreshSaveButton(); } };
@@ -341,7 +353,8 @@ public sealed class GraphicsBuilderControl : UserControl
         _follow.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed;
         _namesBlock.Visibility = kind.Family == "lower-third" ? Visibility.Visible : Visibility.Collapsed; RefreshNamesNote();
         _clockBlock.Visibility = kind.Family == "clock" ? Visibility.Visible : Visibility.Collapsed;
-        RefreshPlacementControls();
+        RefreshPlacementControls(); RefreshTypographyControls();
+        _typeBlock.Visibility = kind.Id == GraphicsBuilder.SponsorKindId ? Visibility.Collapsed : Visibility.Visible;
         if (signature == _formSignature) { RefreshColorSwatches(); return; }
         _formSignature = signature; _fields.Children.Clear(); _colors.Children.Clear(); _loading = true;
         try {
@@ -541,6 +554,19 @@ public sealed class GraphicsBuilderControl : UserControl
         var c = clock ?? new NativeGraphicsClockConfiguration();
         _clockMode.SelectedIndex = c.Mode == "countdown" ? 1 : 0; _clockFormat.SelectedIndex = c.Format == "hm" ? 1 : 0; _clockFinish.SelectedIndex = c.Finish == "hide" ? 1 : 0;
         _clockMinutes.Value = Math.Round(c.DurationSeconds / 60.0, 2); _clockMinutes.IsEnabled = _clockFinish.IsEnabled = c.Mode == "countdown";
+    }
+
+    private void RefreshTypographyControls()
+    {
+        if (_session?.Draft?.Style is not { } style) return;
+        var wasLoading = _loading; _loading = true;
+        try {
+            var index = GraphicsBuilder.TypefaceChoices.ToList().IndexOf(style.FontFamily);
+            if (index >= 0 && _typeface.SelectedIndex != index) _typeface.SelectedIndex = index;
+            else if (index < 0 && _typeface.SelectedIndex != -1) _typeface.SelectedIndex = -1; // a package font: shown as unset, left untouched
+            if (Math.Abs(_nameSize.Value - style.NameSize) >= 1) _nameSize.Value = Math.Clamp(style.NameSize, _nameSize.Minimum, _nameSize.Maximum);
+            if (Math.Abs(_titleSize.Value - style.TitleSize) >= 1) _titleSize.Value = Math.Clamp(style.TitleSize, _titleSize.Minimum, _titleSize.Maximum);
+        } finally { _loading = wasLoading; }
     }
 
     private void RefreshPlacementControls()

@@ -106,6 +106,9 @@ public static class GraphicsBuilder
 
     public static bool PlacementEquals(NativeGraphicsPlacement? a, NativeGraphicsPlacement? b) =>
         a is null ? b is null : b is not null && a.Anchor == b.Anchor && Math.Abs(a.X - b.X) < .5 && Math.Abs(a.Y - b.Y) < .5 && Math.Abs(a.Scale - b.Scale) < .005;
+    /// <summary>Typefaces every Windows 10/11 install has (the compositor rasterizes with
+    /// DirectWrite; a missing family would silently fall back, so only safe names are offered).</summary>
+    public static IReadOnlyList<string> TypefaceChoices { get; } = ["Segoe UI", "Segoe UI Semibold", "Bahnschrift", "Arial", "Verdana", "Trebuchet MS", "Georgia", "Cambria", "Consolas"];
     public static IReadOnlyList<(string Id, string Label)> AnchorChoices { get; } = [
         ("upper-left", "Top left"), ("upper-center", "Top center"), ("upper-right", "Top right"),
         ("center-left", "Middle left"), ("center", "Center"), ("center-right", "Middle right"),
