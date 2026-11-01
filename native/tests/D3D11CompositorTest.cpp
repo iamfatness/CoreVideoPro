@@ -5,12 +5,14 @@
 #include "modules/Interfaces.h"
 #include "graphics/GraphicsInstances.h"
 #include "MonitorTestMode.h"
-#include "modules/D3DGraphicsKeyTap.h"
 #include "modules/GraphicsKeyPixels.h"
+#if COREVIDEO_WITH_D3D11
+#include "modules/D3DGraphicsKeyTap.h"
 // D3DGraphicsKeyTap.h pulls in <Windows.h>, whose rpcndr.h defines `small` as `char`;
 // tests below use `small` as a variable name.
 #ifdef small
 #undef small
+#endif
 #endif
 
 #include <chrono>
@@ -1359,7 +1361,6 @@ TEST(D3D11Compositor, SourceTextureCacheServesBgraFramesWithBufferIdentity) {
   EXPECT_EQ(stats.cachedUploads, 2u);
   EXPECT_NE(second.preview.bgra, third.preview.bgra);
 }
-#endif
 
 // NDI graphics key (titler spec Phase 1). Shared rig for the GPU key tests: a
 // native graphics instance over a full-frame grey Program video, rendered with
@@ -1578,6 +1579,9 @@ TEST(D3D11Compositor, GraphicsKeyTapBacksOffAFailingRigBuild) {
   EXPECT_TRUE(selection.stale);
 }
 
+#endif  // COREVIDEO_WITH_D3D11
+
+#if COREVIDEO_STUB
 // Review item 8: only a compositor that produces the key declares it, so module
 // composition reports ndi-graphics-output omitted on stub/Metal builds.
 TEST(StubCompositor, DoesNotDeclareGraphicsKeySupport) {
@@ -1587,3 +1591,4 @@ TEST(StubCompositor, DoesNotDeclareGraphicsKeySupport) {
   corevideo::modules::GraphicsKeySelection selection;
   EXPECT_FALSE(modules.compositor->selectGraphicsKey(1, 0, selection));
 }
+#endif  // COREVIDEO_STUB
