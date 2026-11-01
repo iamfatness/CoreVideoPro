@@ -71,7 +71,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "graphics.template.select", "graphics.cue.create", "graphics.studio.assign", "graphics.image.import", "graphics.logo.import", "graphics.cue.select", "graphics.cue.action", "graphics.cue.save", "graphics.saved.restore",
         "graphics.template.install", "graphics.template.list", "graphics.authority.set", "graphics.automation.configure", "graphics.automation.control",
         // Graphics playout (#1076): the ids the Graphics tab, the F-key router and Companion share.
-        "graphics.playlist.list", "graphics.playlist.row.set", "graphics.playlist.row.remove", "graphics.playlist.hotkey.set", "graphics.playlist.default",
+        "graphics.playlist.list", "graphics.playlist.clock", "graphics.playlist.row.set", "graphics.playlist.row.remove", "graphics.playlist.hotkey.set", "graphics.playlist.default",
         "graphics.playIn", "graphics.toPreview", "graphics.playOut", "graphics.preview.remove", "graphics.playOutAll", "graphics.preview.clear", "graphics.strip",
         "graphics.layout.list", "graphics.layout.set", "graphics.layout.remove", "graphics.layout.cue", "graphics.layout.take",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
