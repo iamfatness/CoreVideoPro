@@ -7579,31 +7579,20 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     frame.programNv12Height = tapHeight;
     frame.programNv12Shared = latestProgramNv12;
   }
-  // NDI graphics key: the compositor's key tap publishes straight-alpha BGRA
-  // on its own thread; take the newest one here (a cheap shared_ptr handoff)
-  // and stamp the latest known frame so the "ndi-graphics" sender always has
-  // the most recent key, buffered Program or not. Cleared when the destination
-  // is gone so a later session never starts on a stale key.
+  // NDI graphics key: the key that was rendered WITH this Program frame. With
+  // a Program buffer, `frame` is the delayed frame and its frameNumber picks
+  // the matching readback from the compositor's ring, so graphics never lead
+  // Program by the buffer depth. No fresh readback for 250 ms (rig failure,
+  // Map failures, render stall) stamps a transparent key marked stale: the
+  // sender reports key-stale instead of holding the last graphic on air.
   if (std::find(senderDestinations.begin(), senderDestinations.end(),
                 std::string(modules::kNdiGraphicsKeyDestination)) != senderDestinations.end()) {
-    std::shared_ptr<const std::vector<std::uint8_t>> keyBgra;
-    int keyWidth = 0;
-    int keyHeight = 0;
-    if (modules_.compositor->takeGraphicsKeyBgraShared(keyBgra, keyWidth, keyHeight) && keyBgra &&
-        !keyBgra->empty() && keyWidth > 0 && keyHeight > 0) {
-      latestGraphicsKeyBgra_ = std::move(keyBgra);
-      latestGraphicsKeyWidth_ = keyWidth;
-      latestGraphicsKeyHeight_ = keyHeight;
+    modules::GraphicsKeySelection keySelection;
+    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (modules_.compositor->selectGraphicsKey(frame.frameNumber, nowMs, keySelection)) {
+      modules::stampGraphicsKey(frame, keySelection, transparentGraphicsKey_);
     }
-    if (latestGraphicsKeyBgra_) {
-      frame.graphicsKeyBgraShared = latestGraphicsKeyBgra_;
-      frame.graphicsKeyWidth = latestGraphicsKeyWidth_;
-      frame.graphicsKeyHeight = latestGraphicsKeyHeight_;
-    }
-  } else if (latestGraphicsKeyBgra_) {
-    latestGraphicsKeyBgra_.reset();
-    latestGraphicsKeyWidth_ = 0;
-    latestGraphicsKeyHeight_ = 0;
   }
   if (!buffered) frame.timelineTimestamp100ns = monotonic100ns();
   const bool programSubmitted = !buffered || bufferedFrameAvailable;

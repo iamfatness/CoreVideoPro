@@ -1127,14 +1127,10 @@ class MediaCore {
   std::mutex videoOutWaitMutex_;
   uint64_t lastVideoOutPublishSeq_ = 0;
   std::shared_ptr<const std::vector<std::uint8_t>> latestProgramNv12_;
-  // NDI graphics key: the newest straight-alpha BGRA graphics-only composite
-  // the compositor's key tap handed the output worker. Touched only on the
-  // output worker under videoOutputMutex_; re-stamped onto every ProgramFrame
-  // the "ndi-graphics" sender sees so a tick without a fresh key frame still
-  // carries the last one (latest-wins, like the NV12 tap).
-  std::shared_ptr<const std::vector<std::uint8_t>> latestGraphicsKeyBgra_;
-  int latestGraphicsKeyWidth_ = 0;
-  int latestGraphicsKeyHeight_ = 0;
+  // NDI graphics key: a reusable all-zero key the output worker sends when no
+  // fresh graphics readback exists (stale, GraphicsKeyRing). Output worker
+  // only, under videoOutputMutex_.
+  std::shared_ptr<const std::vector<std::uint8_t>> transparentGraphicsKey_;
   int latestProgramNv12Width_ = 0;
   int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;

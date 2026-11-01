@@ -10,19 +10,31 @@
 // on; a second D3D device with its own immediate context (no multithread tax,
 // no coreMutex) opens that texture, copies it into a staging surface, Maps it
 // on its own thread, converts premultiplied -> straight alpha
-// (GraphicsKeyPixels.h) and publishes the latest buffer for the output worker.
+// (GraphicsKeyPixels.h) and publishes the frame into a short ring tagged with
+// the compositor frame number that produced it (GraphicsKeyRing), so a
+// buffered Program can be matched to the key that was on air with it.
 //
-// Unlike the vcam tap there is no shader pass: the key leaves as BGRA, which
-// is the format NDI delivers key+fill in, so the readback is ~8 MB of finished
-// pixels at 1080p and the only CPU work is the per-pixel divide by alpha.
-// Frames are latest-wins; a slow reader skips frames, never blocks the render.
+// No shader pass: the key leaves as BGRA, the format NDI delivers key+fill in.
+// Output buffers come from a small recycled pool (a 4K key is 33 MB; a fresh
+// allocation per frame at 60 Hz is ~2 GB/s of allocator churn). A slow reader
+// skips frames; it never blocks the render.
+//
+// Failure discipline: a rig that cannot be built is retried for the same size
+// only every GraphicsKeyRetryLatch::kRetryAfterMs, and each failing size is
+// logged once — it must never rebuild a D3D device on the render thread every
+// tick. The latch lives outside stop(), which only tears the rig down.
 
 #include "core/BoundedAsyncLog.h"
 #include "core/FrameAllocation.h"
 #include "compositor/ComPtrLite.h"
 #include "modules/GraphicsKeyPixels.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX  // keep std::min/std::max usable in every includer (tests use them)
+#endif
 #include <Windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -31,6 +43,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -40,21 +53,35 @@ namespace corevideo::modules {
 
 class D3DGraphicsKeyTap {
  public:
-  D3DGraphicsKeyTap() = default;
+  using Clock = std::function<std::int64_t()>;
+  // Ring entries + MediaCore's current frame + the sender's in-flight send +
+  // one being filled, with a little slack.
+  static constexpr std::size_t kPoolMax = GraphicsKeyRing::kCapacity + 4;
+
+  static std::int64_t steadyNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+
+  explicit D3DGraphicsKeyTap(Clock clock = &D3DGraphicsKeyTap::steadyNowMs) : clock_(std::move(clock)) {
+    ring_.arm(clock_());
+  }
   ~D3DGraphicsKeyTap() { stop(); }
   D3DGraphicsKeyTap(const D3DGraphicsKeyTap&) = delete;
   D3DGraphicsKeyTap& operator=(const D3DGraphicsKeyTap&) = delete;
 
   // RENDER THREAD. Builds (or rebuilds on a size change) the shared texture on
   // the producer device, the reader device, its staging surface and the reader
-  // thread. Returns false when the rig cannot be built; the failure is logged
-  // once per rig so a TDR/driver refusal is visible and never spams.
+  // thread. False when the rig is not available this tick: a failed size is
+  // not re-attempted until the latch's retry interval has passed.
   bool ensure(ID3D11Device* producer, int width, int height) {
     if (shared1_ && width_ == width && height_ == height) return true;
+    if (!latch_.shouldAttempt(width, height, clock_())) return false;
+    ++buildAttempts_;
     stop();
-    if (!producer || width <= 0 || height <= 0) return false;
     width_ = width;
     height_ = height;
+    if (!producer || width <= 0 || height <= 0) return fail("producer device");
 
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = static_cast<UINT>(width);
@@ -91,6 +118,8 @@ class D3DGraphicsKeyTap {
     staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     if (FAILED(device2_->CreateTexture2D(&staging, nullptr, staging2_.put()))) return fail("reader staging");
 
+    latch_.noteSuccess();
+    mapErrorLogged_ = false;
     stop_.store(false, std::memory_order_release);
     newFrame_.store(false, std::memory_order_release);
     thread_ = std::thread([this] { loop(); });
@@ -99,27 +128,24 @@ class D3DGraphicsKeyTap {
 
   // RENDER THREAD. GPU->GPU copy only; non-blocking. When the reader still
   // holds the texture this frame is skipped (the next one lands instead).
-  void submit(ID3D11DeviceContext* producerContext, ID3D11Texture2D* keyTarget) {
+  void submit(ID3D11DeviceContext* producerContext, ID3D11Texture2D* keyTarget, std::int64_t frameNumber) {
     if (!producerContext || !keyTarget || !shared1_ || !mutex1_) return;
     if (mutex1_->AcquireSync(0, 0) != S_OK) {
-      ++skippedSubmits_;
+      skippedSubmits_.fetch_add(1, std::memory_order_relaxed);
       return;
     }
     producerContext->CopyResource(shared1_.get(), keyTarget);
+    // Written before the release: the reader can only acquire key 1 after it,
+    // and the producer cannot write again until the reader releases key 0.
+    pendingFrameNumber_.store(frameNumber, std::memory_order_release);
     mutex1_->ReleaseSync(1);
     newFrame_.store(true, std::memory_order_release);
     cv_.notify_one();
   }
 
-  // OUTPUT WORKER. The newest straight-alpha BGRA frame since the last take.
-  bool take(std::shared_ptr<const std::vector<uint8_t>>& out, int& width, int& height) {
-    std::lock_guard<std::mutex> lock(latestMutex_);
-    if (!latest_ || latestGen_ == takenGen_) return false;
-    takenGen_ = latestGen_;
-    out = latest_;
-    width = latestW_;
-    height = latestH_;
-    return true;
+  // OUTPUT WORKER (via the compositor): the key for one Program frame.
+  bool select(std::int64_t programFrameNumber, std::int64_t nowMs, GraphicsKeySelection& out) const {
+    return ring_.select(programFrameNumber, nowMs, out);
   }
 
   void stop() {
@@ -135,18 +161,40 @@ class D3DGraphicsKeyTap {
     shared1_ = {};
     width_ = 0;
     height_ = 0;
-    errorLogged_ = false;
   }
 
   [[nodiscard]] bool active() const { return thread_.joinable(); }
   [[nodiscard]] std::uint64_t framesPublished() const { return published_.load(std::memory_order_relaxed); }
-  [[nodiscard]] std::uint64_t skippedSubmits() const { return skippedSubmits_; }
+  [[nodiscard]] std::uint64_t skippedSubmits() const { return skippedSubmits_.load(std::memory_order_relaxed); }
+  [[nodiscard]] std::uint64_t buildAttempts() const { return buildAttempts_; }
+  [[nodiscard]] std::uint64_t failureLogs() const { return failureLogs_; }
 
  private:
   bool fail(const char* stage) {
-    ::corevideo::core::nativeLogf("[graphics-key-tap] rig build failed at %s (%dx%d)\n", stage, width_, height_);
+    const int w = width_, h = height_;
     stop();
+    if (latch_.noteFailure(w, h, clock_())) {
+      ++failureLogs_;
+      ::corevideo::core::nativeLogf("[graphics-key-tap] rig build failed at %s (%dx%d); retrying every %llds\n",
+          stage, w, h, static_cast<long long>(GraphicsKeyRetryLatch::kRetryAfterMs / 1000));
+    }
     return false;
+  }
+
+  // Reader thread only. A pool entry is free when the pool holds its only
+  // reference (the ring, MediaCore and the sender have all let go).
+  core::SharedFrameBytes acquireBuffer(std::size_t bytes) {
+    for (auto it = pool_.begin(); it != pool_.end();) {
+      if (it->use_count() == 1 && (*it)->size() != bytes) it = pool_.erase(it);  // size changed
+      else ++it;
+    }
+    for (auto& entry : pool_) {
+      if (entry.use_count() == 1) return entry;
+    }
+    if (pool_.size() >= kPoolMax) return nullptr;  // every buffer is still held: skip this frame
+    auto fresh = core::tryMakeFrameBuffer(bytes);
+    if (fresh) pool_.push_back(fresh);
+    return fresh;
   }
 
   void loop() {
@@ -165,6 +213,7 @@ class D3DGraphicsKeyTap {
       if (stop_.load(std::memory_order_acquire)) break;
       if (!mutex2_ || !shared2_ || !staging2_ || !context2_) continue;
       if (mutex2_->AcquireSync(1, 8) != S_OK) continue;  // producer still writing; try later
+      const std::int64_t frameNumber = pendingFrameNumber_.load(std::memory_order_acquire);
       ID3D11DeviceContext* ctx = context2_.get();
       ctx->CopyResource(staging2_.get(), shared2_.get());
       // Release as soon as the copy is ISSUED (it queues in order on this
@@ -172,32 +221,38 @@ class D3DGraphicsKeyTap {
       mutex2_->ReleaseSync(0);
       const int w = width_;
       const int h = height_;
-      auto pixels = core::tryMakeFrameBuffer(graphicsKeyFrameBytes(w, h));
+      auto pixels = acquireBuffer(graphicsKeyFrameBytes(w, h));
       if (!pixels) {
         allocationFailures.note(graphicsKeyFrameBytes(w, h));
-        continue;
+        continue;  // the ring keeps its last fresh frame; staleness covers a long gap
       }
       D3D11_MAPPED_SUBRESOURCE mapped{};
       if (FAILED(ctx->Map(staging2_.get(), 0, D3D11_MAP_READ, 0, &mapped))) {
-        if (!errorLogged_) {
-          ::corevideo::core::nativeLogf("[graphics-key-tap] staging Map failed; skipping frames\n");
-          errorLogged_ = true;
+        if (!mapErrorLogged_) {
+          ::corevideo::core::nativeLogf("[graphics-key-tap] staging Map failed; skipping frames (key goes transparent after %lld ms)\n",
+              static_cast<long long>(kGraphicsKeyStaleAfterMs));
+          mapErrorLogged_ = true;
         }
         continue;
       }
       unpremultiplyBgra(static_cast<const uint8_t*>(mapped.pData), mapped.RowPitch, w, h, pixels->data());
       ctx->Unmap(staging2_.get(), 0);
-      {
-        std::lock_guard<std::mutex> lock(latestMutex_);
-        latest_ = std::move(pixels);
-        latestW_ = w;
-        latestH_ = h;
-        ++latestGen_;
-      }
+      GraphicsKeyFrame frame;
+      frame.bgra = pixels;
+      frame.width = w;
+      frame.height = h;
+      frame.frameNumber = frameNumber;
+      frame.publishedMs = clock_();
+      ring_.publish(std::move(frame));
       published_.fetch_add(1, std::memory_order_relaxed);
     }
   }
 
+  Clock clock_;
+  GraphicsKeyRing ring_;
+  GraphicsKeyRetryLatch latch_;   // survives stop(): the backoff must outlive a torn-down rig
+  std::uint64_t buildAttempts_ = 0;
+  std::uint64_t failureLogs_ = 0;
   int width_ = 0;
   int height_ = 0;
   ComPtrLite<ID3D11Texture2D> shared1_;
@@ -207,20 +262,16 @@ class D3DGraphicsKeyTap {
   ComPtrLite<ID3D11Texture2D> shared2_;
   ComPtrLite<IDXGIKeyedMutex> mutex2_;
   ComPtrLite<ID3D11Texture2D> staging2_;
+  std::vector<core::SharedFrameBytes> pool_;
   std::thread thread_;
   std::atomic<bool> stop_{false};
   std::atomic<bool> newFrame_{false};
+  std::atomic<std::int64_t> pendingFrameNumber_{-1};
   std::mutex cvMutex_;
   std::condition_variable cv_;
-  std::mutex latestMutex_;
-  std::shared_ptr<const std::vector<uint8_t>> latest_;
-  int latestW_ = 0;
-  int latestH_ = 0;
-  std::uint64_t latestGen_ = 0;
-  std::uint64_t takenGen_ = 0;
   std::atomic<std::uint64_t> published_{0};
-  std::uint64_t skippedSubmits_ = 0;
-  bool errorLogged_ = false;
+  std::atomic<std::uint64_t> skippedSubmits_{0};
+  bool mapErrorLogged_ = false;
 };
 
 }  // namespace corevideo::modules

@@ -548,7 +548,7 @@ class D3D11Compositor final : public ICompositor {
     // rasters are content-cached) plus one GPU->GPU copy into the tap.
     if (renderPlan.graphicsKeyReadback) {
       renderGraphicsKeyPass(deterministicPlan, layers);
-    } else if (graphicsKeyTarget_) {
+    } else if (graphicsKeyTarget_ || graphicsKeyActive()) {
       releaseGraphicsKey();  // destination gone: free the target + reader rig (runs once)
     }
     // The pixel-signature and base64 preview both do a blocking GPU->CPU Map
@@ -3519,14 +3519,18 @@ class D3D11Compositor final : public ICompositor {
     return true;
   }
 
-  // OUTPUT-WORKER THREAD: the newest straight-alpha graphics-key frame (see
-  // renderGraphicsKeyPass / D3DGraphicsKeyTap). The tap is swapped on the
-  // render thread, so take the shared_ptr under its own mutex first.
-  bool takeGraphicsKeyBgraShared(std::shared_ptr<const std::vector<uint8_t>>& outBgra,
-                                 int& width, int& height) override {
+  // OUTPUT-WORKER THREAD: the straight-alpha key for one Program frame (see
+  // renderGraphicsKeyPass / D3DGraphicsKeyTap / GraphicsKeyRing). The tap is
+  // swapped on the render thread, so take the shared_ptr under its mutex first.
+  bool supportsGraphicsKey() const override { return true; }
+  bool selectGraphicsKey(int64_t programFrameNumber, int64_t nowMs, GraphicsKeySelection& out) override {
     std::shared_ptr<D3DGraphicsKeyTap> tap;
     { std::lock_guard<std::mutex> lock(graphicsKeyTapMutex_); tap = graphicsKeyTap_; }
-    return tap && tap->take(outBgra, width, height);
+    return tap && tap->select(programFrameNumber, nowMs, out);
+  }
+  bool graphicsKeyActive() const override {
+    std::lock_guard<std::mutex> lock(graphicsKeyTapMutex_);
+    return graphicsKeyTap_ != nullptr;
   }
 
   bool takeVcamNv12Shared(std::shared_ptr<const std::vector<uint8_t>>& outNv12,
@@ -3710,10 +3714,13 @@ class D3D11Compositor final : public ICompositor {
   int graphicsKeyHeight_ = 0;
   mutable std::mutex graphicsKeyTapMutex_;
   std::shared_ptr<D3DGraphicsKeyTap> graphicsKeyTap_;
-  bool graphicsKeyErrorLogged_ = false;
+  // Render target backoff (same rule as the tap's): survives releaseGraphicsKey.
+  GraphicsKeyRetryLatch graphicsKeyTargetLatch_;
 
   bool ensureGraphicsKeyTarget(int width, int height) {
     if (graphicsKeyTarget_ && graphicsKeyWidth_ == width && graphicsKeyHeight_ == height) return true;
+    const auto now = D3DGraphicsKeyTap::steadyNowMs();
+    if (!graphicsKeyTargetLatch_.shouldAttempt(width, height, now)) return false;
     graphicsKeyTarget_ = {};
     graphicsKeyTargetView_ = {};
     graphicsKeyWidth_ = width;
@@ -3731,8 +3738,13 @@ class D3D11Compositor final : public ICompositor {
         FAILED(device_->CreateRenderTargetView(graphicsKeyTarget_.get(), nullptr, graphicsKeyTargetView_.put()))) {
       graphicsKeyTarget_ = {};
       graphicsKeyTargetView_ = {};
+      if (graphicsKeyTargetLatch_.noteFailure(width, height, now)) {
+        ::corevideo::core::nativeLogf("[graphics-key] key render target creation failed (%dx%d); retrying every %llds\n",
+            width, height, static_cast<long long>(GraphicsKeyRetryLatch::kRetryAfterMs / 1000));
+      }
       return false;
     }
+    graphicsKeyTargetLatch_.noteSuccess();
     return true;
   }
 
@@ -3753,13 +3765,10 @@ class D3D11Compositor final : public ICompositor {
   // admission/trace frame: the Program pass already recorded both for these
   // layers, and this pass must never add a second "draw-submitted" fact.
   void renderGraphicsKeyPass(const CompositorRenderPlan& plan, const std::vector<ResolvedLayer>& layers) {
-    if (!ensureGraphicsKeyTarget(targetWidth_, targetHeight_)) {
-      if (!graphicsKeyErrorLogged_) {
-        ::corevideo::core::nativeLogf("[graphics-key] key render target creation failed (%dx%d)\n", targetWidth_, targetHeight_);
-        graphicsKeyErrorLogged_ = true;
-      }
-      return;
-    }
+    // The tap (and its ring) exists FIRST, even if the GPU target below cannot
+    // be built: the ring is armed now, so any failure turns into a stale,
+    // transparent key after 250 ms instead of the receiver holding its last
+    // graphic.
     std::shared_ptr<D3DGraphicsKeyTap> tap;
     { std::lock_guard<std::mutex> lock(graphicsKeyTapMutex_); tap = graphicsKeyTap_; }
     if (!tap) {
@@ -3767,7 +3776,8 @@ class D3D11Compositor final : public ICompositor {
       std::lock_guard<std::mutex> lock(graphicsKeyTapMutex_);
       graphicsKeyTap_ = tap;
     }
-    if (!tap->ensure(device_.get(), targetWidth_, targetHeight_)) return;  // logged once by the tap
+    if (!ensureGraphicsKeyTarget(targetWidth_, targetHeight_)) return;      // backoff + log once
+    if (!tap->ensure(device_.get(), targetWidth_, targetHeight_)) return;  // backoff + log once
 
     const float transparent[4] = {0.f, 0.f, 0.f, 0.f};
     ID3D11RenderTargetView* targets[] = {graphicsKeyTargetView_.get()};
@@ -3786,7 +3796,7 @@ class D3D11Compositor final : public ICompositor {
     // Leave the Program target bound again for whatever follows this tick.
     ID3D11RenderTargetView* programTargets[] = {renderTargetView_.get()};
     context_->OMSetRenderTargets(1, programTargets, nullptr);
-    tap->submit(context_.get(), graphicsKeyTarget_.get());
+    tap->submit(context_.get(), graphicsKeyTarget_.get(), frameNumber_);
   }
   ComPtrLite<ID3D11Texture2D> layerTexture_;
   ComPtrLite<ID3D11ShaderResourceView> layerTextureView_;
