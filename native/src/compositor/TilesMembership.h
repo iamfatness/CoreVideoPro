@@ -19,6 +19,24 @@ struct TilesMemberFrameAge {
   int64_t lastFrameAgeMs = 0;
 };
 
+// #1071: only a ZOOM member ages out on a frozen frameId. A Zoom guest whose
+// frameId stops advancing is a stalled feed (the I4 frozen-but-subscribed
+// defect), and leaving its seat empty is the right trade. A LOCAL member
+// (capture:/media:) legitimately re-serves the same frameId for long stretches
+// while perfectly healthy: an idle desktop share, a paused clip, a PNG logo
+// (StillMediaFrameCache keeps a stable frameId by design; see the on-air
+// "stalled" rule in MediaCore::annotateLayerSource, #535 slice 4a R1). Ageing
+// those out would empty a Tiles slot 1.5 s after seating a static source and
+// reflow the wall around it. So a local member is admitted on `hasFrame` alone
+// — the frame is still in this tick's gather, so nothing is fabricated — and
+// it drops the tick its frame LEAVES the gather (unplugged, un-routed,
+// departed). Whether a frozen capture device is a stall is capture liveness,
+// #562's decision, not a frame-age heuristic that cannot tell a dead camera
+// from a still slide.
+inline bool tilesMemberAgesOut(const std::string& sourceId) {
+  return sourceId.rfind("zoom:", 0) == 0;
+}
+
 inline std::vector<std::string> admitTilesMembers(
     const std::vector<std::string>& members,
     const std::vector<TilesMemberFrameAge>& ages,
@@ -32,7 +50,7 @@ inline std::vector<std::string> admitTilesMembers(
     }
     for (const auto& age : ages) {
       if (age.sourceId == member) {
-        if (age.hasFrame && age.lastFrameAgeMs <= staleAfterMs) {
+        if (age.hasFrame && (!tilesMemberAgesOut(member) || age.lastFrameAgeMs <= staleAfterMs)) {
           admitted.push_back(member);
         }
         break;

@@ -428,15 +428,21 @@ class TwoGuestZoomSource final : public corevideo::core::ISource {
  public:
   TwoGuestZoomSource() { init(); }
   explicit TwoGuestZoomSource(std::vector<std::string> ids) : ids_(std::move(ids)) { init(); }
+  // #1071: the frozen-but-subscribed Zoom guest (I4): frames keep arriving
+  // every poll with an UNCHANGED frameId, exactly how a stalled SDK stream
+  // presents. Distinguishable from a frozen local source by the admission rule
+  // (tilesMemberAgesOut): a Zoom member ages out, a local one does not.
+  void freeze() { frozen_ = true; }
   const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
   corevideo::core::SourceTick poll(int64_t) override {
     corevideo::core::SourceTick tick;
     tick.health = corevideo::core::SourceHealth::Producing;
+    if (!frozen_ || frameId_ == 0) ++frameId_;  // a frozen source still delivered ONE real frame
     for (const auto& participantId : ids_) {
       corevideo::modules::VideoFrame frame;
       frame.participantId = participantId;
       frame.width = frame.height = frame.i420Width = frame.i420Height = 2;
-      frame.frameId = ++frameId_;
+      frame.frameId = frameId_;
       frame.i420 = std::make_shared<const std::vector<std::uint8_t>>(6, 128);
       tick.video.push_back(std::move(frame));
     }
@@ -453,6 +459,7 @@ class TwoGuestZoomSource final : public corevideo::core::ISource {
   corevideo::core::SourceDescriptor descriptor_;
   std::vector<std::string> ids_{"guest-1", "operator-1"};
   std::int64_t frameId_ = 0;
+  bool frozen_ = false;
 };
 
 corevideo::rpc::Json::Array followSpeakerScene() {
@@ -870,13 +877,19 @@ TEST(TilesRenderPlan, AConfiguredWallSuppressesTheLegacyFullCanvasFallback) {
 // eventually leave the wall, the same as any other stale feed. Drives real
 // render ticks (no test-seam age injection) against a fake capture device
 // with a controllable, frozen frameId.
+// #1071 moved this vehicle from a fake CAPTURE device to a frozen ZOOM source:
+// a local member no longer ages out on a frozen frameId (tilesMemberAgesOut),
+// because an idle screen share or a still legitimately re-serves one frame
+// for minutes. The defect I4 catches is a stalled ZOOM stream, so the vehicle
+// is now the thing the rule applies to.
 TEST(TilesRenderPlan, AFrozenFrameIdAgesTheMemberOutEvenAsTimestampKeepsAdvancing) {
-  auto modules = corevideo::modules::createStubModules();
-  modules.captureDevice = std::make_unique<FrozenFrameIdCaptureDevice>();
-  MediaCore core(std::move(modules));
-  loadWall(core, {"capture:frozen-1"});
+  MediaCore core;
+  auto zoom = std::make_shared<TwoGuestZoomSource>(std::vector<std::string>{"frozen-1"});
+  zoom->freeze();
+  core.useZoomSourcesForTest({zoom});
+  loadWall(core, {"zoom:frozen-1"});
 
-  ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:capture:frozen-1"), nullptr)
+  ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:zoom:frozen-1"), nullptr)
       << "the member should be admitted on its first real frame";
 
   // Drive enough ordinary ticks to cross kTilesStaleFrameMs at the default
@@ -885,12 +898,35 @@ TEST(TilesRenderPlan, AFrozenFrameIdAgesTheMemberOutEvenAsTimestampKeepsAdvancin
   bool leftTheWall = false;
   for (int tick = 0; tick < 400; ++tick) {
     (void)core.applyCommands(corevideo::rpc::Json::Array{});
-    if (findLayer(core.lastRenderPlanForTest(), "tile:capture:frozen-1") == nullptr) {
+    if (findLayer(core.lastRenderPlanForTest(), "tile:zoom:frozen-1") == nullptr) {
       leftTheWall = true;
       break;
     }
   }
   EXPECT_TRUE(leftTheWall);
+}
+
+// #1071, the complement: the SAME frozen-frameId shape from a capture device
+// (an idle desktop share, a static slide on an HDMI input) keeps its tile for
+// as long as its frame is in the gather. Real ticks, real clock: the loop
+// runs well past kTilesStaleFrameMs before asserting.
+TEST(TilesRenderPlan, AFrozenCaptureMemberKeepsItsTilePastTheStaleThreshold) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.captureDevice = std::make_unique<FrozenFrameIdCaptureDevice>();
+  MediaCore core(std::move(modules));
+  loadWall(core, {"capture:frozen-1"});
+  ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:capture:frozen-1"), nullptr);
+
+  const auto start = std::chrono::steady_clock::now();
+  const auto window = std::chrono::milliseconds(corevideo::compositor::kTilesStaleFrameMs + 700);
+  int ticks = 0;
+  while (std::chrono::steady_clock::now() - start < window) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    ++ticks;
+    ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:capture:frozen-1"), nullptr)
+        << "a static local source left the wall after " << ticks << " ticks";
+  }
+  EXPECT_GT(ticks, 10);
 }
 
 // A SuperSource backdrop on the scene must survive a Tiles wall. The wall's
@@ -1135,16 +1171,21 @@ void take(MediaCore& core, const corevideo::rpc::Json& program, const corevideo:
 //   * both become ordinary participant-video tiles; the Zoom tile binds the
 //     BARE pid, the capture tile keeps its FULL scheme-qualified id (the
 //     compositor matches frames by exact participantId);
-//   * dropout stays per-source: freezing the capture (frameId stops, timestamps
-//     keep advancing, exactly how a stalled UVC device presents) ages ONLY the
-//     capture tile out of the wall; the Zoom guest keeps its seat and the wall
-//     reflows. No Zoom-identity rule is consulted for a local member.
+//   * dropout stays per-source and per-KIND (tilesMemberAgesOut): a frozen
+//     capture (frameId stops, timestamps keep advancing — a static screen
+//     share, or a dead camera that keeps re-serving; the gather cannot tell
+//     them apart, #562 can) KEEPS its tile; a frozen Zoom guest ages out at
+//     kTilesStaleFrameMs; a capture whose frame leaves the gather (unplugged)
+//     drops at once. No Zoom-identity rule is consulted for a local member,
+//     and no scene route references the capture device — the wall alone
+//     names it.
 TEST(TilesRenderPlan, AZoomGuestAndACaptureDeviceShareOneWallAndDropOutIndependently) {
   auto modules = corevideo::modules::createStubModules();
   auto* capture = new LiveWallCaptureDevice({"capture:cam-1"});
   modules.captureDevice.reset(capture);
   MediaCore core(std::move(modules));
-  core.useZoomSourcesForTest({std::make_shared<TwoGuestZoomSource>(std::vector<std::string>{"guest-1"})});
+  auto zoom = std::make_shared<TwoGuestZoomSource>(std::vector<std::string>{"guest-1"});
+  core.useZoomSourcesForTest({zoom});
   loadWall(core, {"zoom:guest-1", "capture:cam-1"});
 
   const auto both = core.lastRenderPlanForTest();
@@ -1164,18 +1205,44 @@ TEST(TilesRenderPlan, AZoomGuestAndACaptureDeviceShareOneWallAndDropOutIndepende
   EXPECT_LT(captureTile->rect.width, 0.75f);
   EXPECT_NE(zoomTile->rect.x, captureTile->rect.x);
 
+  // 1. A frozen LOCAL member keeps its seat past the stale threshold (static
+  //    screen share rule). Real clock: run well past kTilesStaleFrameMs.
   capture->freeze();
+  {
+    const auto start = std::chrono::steady_clock::now();
+    const auto window = std::chrono::milliseconds(corevideo::compositor::kTilesStaleFrameMs + 700);
+    while (std::chrono::steady_clock::now() - start < window) {
+      (void)core.applyCommands(corevideo::rpc::Json::Array{});
+      ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:capture:cam-1"), nullptr)
+          << "a frozen capture member must not age out of the wall";
+    }
+  }
+  EXPECT_EQ(countLayersOfKind(core.lastRenderPlanForTest(), "participant-video"), 2);
+
+  // 2. A frozen ZOOM member ages out; the capture tile is untouched by it and
+  //    the wall reflows to 1-up around the local source.
+  zoom->freeze();
+  bool zoomLeft = false;
+  for (int tick = 0; tick < 400 && !zoomLeft; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    zoomLeft = findLayer(core.lastRenderPlanForTest(), "tile:zoom:guest-1") == nullptr;
+  }
+  EXPECT_TRUE(zoomLeft) << "a frozen Zoom guest ages out at kTilesStaleFrameMs";
+  const auto solo = core.lastRenderPlanForTest();
+  const auto* remaining = findLayer(solo, "tile:capture:cam-1");
+  ASSERT_NE(remaining, nullptr) << "the capture seat is not the Zoom guest's problem";
+  EXPECT_EQ(countLayersOfKind(solo, "participant-video"), 1);
+  EXPECT_GT(remaining->rect.width, captureTile->rect.width) << "the wall reflows to 1-up";
+
+  // 3. A local member whose frame LEAVES the gather (unplugged) drops at once:
+  //    hasFrame is evidence, never memory.
+  capture->pause();
   bool captureLeft = false;
-  for (int tick = 0; tick < 400 && !captureLeft; ++tick) {
+  for (int tick = 0; tick < 20 && !captureLeft; ++tick) {
     (void)core.applyCommands(corevideo::rpc::Json::Array{});
     captureLeft = findLayer(core.lastRenderPlanForTest(), "tile:capture:cam-1") == nullptr;
   }
-  EXPECT_TRUE(captureLeft) << "a frozen capture member ages out like any other stale feed";
-  const auto solo = core.lastRenderPlanForTest();
-  const auto* remaining = findLayer(solo, "tile:zoom:guest-1");
-  ASSERT_NE(remaining, nullptr) << "the Zoom guest's seat is not the capture device's problem";
-  EXPECT_EQ(countLayersOfKind(solo, "participant-video"), 1);
-  EXPECT_GT(remaining->rect.width, zoomTile->rect.width) << "the wall reflows to 1-up";
+  EXPECT_TRUE(captureLeft) << "no frame in the gather means no tile, immediately";
 }
 
 // #448. `TilesPlanAnimation::adoptSettledFrom` refused a wall whose tiles were

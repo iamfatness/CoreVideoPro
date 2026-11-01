@@ -68,4 +68,26 @@ TEST(TilesMembership, DuplicateMembersAreDrawnOnce) {
   EXPECT_EQ(admitted.size(), 1u);
 }
 
+// #1071: a LOCAL member (capture:/media:) does not age out on a frozen
+// frameId — an idle screen share, a paused clip or a still image re-serves the
+// same frame while healthy. Only a Zoom member's seat empties at the stale
+// threshold. (tilesMemberAgesOut)
+TEST(TilesMembership, AStaticLocalMemberStaysWhileItsFrameIsInTheGather) {
+  const std::vector<std::string> members{"zoom:1", "capture:screen:1", "media:logo"};
+  const std::vector<TilesMemberFrameAge> ages{
+      {"zoom:1", true, kTilesStaleFrameMs + 1},
+      {"capture:screen:1", true, kTilesStaleFrameMs * 100},
+      {"media:logo", true, kTilesStaleFrameMs * 100}};
+  const std::vector<std::string> expected{"capture:screen:1", "media:logo"};
+  EXPECT_EQ(admitTilesMembers(members, ages), expected);
+}
+
+// The fabrication rule is unchanged for a local member: no frame in this
+// tick's gather (unplugged, un-routed) means no tile, at once.
+TEST(TilesMembership, ALocalMemberWithNoFrameIsStillNotDrawn) {
+  const std::vector<TilesMemberFrameAge> ages{{"capture:cam-1", false, 0}};
+  EXPECT_TRUE(admitTilesMembers({"capture:cam-1"}, ages).empty());
+  EXPECT_TRUE(admitTilesMembers({"media:logo"}, ages).empty()) << "no age entry at all";
+}
+
 }  // namespace
