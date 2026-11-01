@@ -2083,17 +2083,19 @@ TEST(TilesNameLines, LinesFollowMembershipAndNeverOutnumberTheTiles) {
   loadNamedWall(core, {"zoom:1", "capture:cam0"}, true);
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"capture:cam0", true, 0}});
   EXPECT_EQ(countNameLines(core.lastRenderPlanForTest()), 2);
-  // A member whose frames went stale leaves the wall, and its name goes with it.
-  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"capture:cam0", true, 10000}});
+  // A Zoom member stalled past the hold window (#1074) leaves the wall, and its
+  // name goes with it. (Only zoom: members age out on frame age, #1071, so the
+  // stale one here is the Zoom guest; 10 s is past the 4 s hold window.)
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 10000}, {"capture:cam0", true, 0}});
   const auto& plan = core.lastRenderPlanForTest();
-  EXPECT_EQ(findLayer(plan, "tile:capture:cam0"), nullptr);
-  EXPECT_EQ(findLayer(plan, "tile-name:capture:cam0"), nullptr);
-  EXPECT_NE(findLayer(plan, "tile-name:zoom:1"), nullptr);
+  EXPECT_EQ(findLayer(plan, "tile:zoom:1"), nullptr);
+  EXPECT_EQ(findLayer(plan, "tile-name:zoom:1"), nullptr);
+  EXPECT_NE(findLayer(plan, "tile-name:capture:cam0"), nullptr);
   EXPECT_EQ(countNameLines(plan), 1);
   // A member that departs entirely takes its line.
-  loadNamedWall(core, {"capture:cam0"}, true);
-  core.setTilesMemberFrameAgesForTest({{"capture:cam0", true, 0}});
-  EXPECT_EQ(findLayer(core.lastRenderPlanForTest(), "tile-name:zoom:1"), nullptr);
+  loadNamedWall(core, {"zoom:1"}, true);
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
+  EXPECT_EQ(findLayer(core.lastRenderPlanForTest(), "tile-name:capture:cam0"), nullptr);
   EXPECT_EQ(countNameLines(core.lastRenderPlanForTest()), 1);
 }
 
