@@ -168,7 +168,7 @@ A "Clock or countdown" graphic built in Design stores its settings on the row
 as `clock` (`mode` wall|countdown, `format` hms|hm, `finish` hold-zero|hide,
 `durationSeconds`; zone is the computer's local time). When the row is cued or
 shown the service sends `graphics.clock.control configure` to its instance
-(expected revision 0 on a fresh instance, the instance's current revision when
+(with the instance revision and its current clock revision, 1 on a fresh instance;
 the saved settings change; a template without a clock refuses harmlessly). A
 countdown never starts by itself: Operate shows the live readout and Start /
 Pause / Resume / Reset chips under the row, which call
