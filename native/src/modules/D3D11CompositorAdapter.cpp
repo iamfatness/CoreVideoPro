@@ -40,6 +40,8 @@
 #include "modules/D3DProgramCopyOwner.h"
 #include "modules/ProgramMonitorDispatch.h"
 #include "modules/D3DDecoupledExport.h"
+#include "modules/D3DGraphicsKeyTap.h"  // NDI graphics key: off-thread straight-alpha readback
+#include "modules/GraphicsKeyPixels.h"  // which layers are key content
 #include "modules/BoundedResourceRetirement.h"
 #include "modules/MonitorRenderWorker.h"
 #include "modules/MonitorFrameAdmission.h"
@@ -245,6 +247,7 @@ class D3D11Compositor final : public ICompositor {
     pendingComposition_.reset();
     gpuReadLeases_.reset();
     { std::lock_guard<std::mutex> lock(programBufferMutex_); programBuffer_.reset(); }
+    releaseGraphicsKey();
     stopVcamTap();
   }
 
@@ -539,6 +542,15 @@ class D3D11Compositor final : public ICompositor {
           overlayRaster_.preparationState(), overlayRaster_.lastWarning(), overlayRaster_.preparedResource(),candidate.overlay.graphicsContentHash,candidate.overlay.hasGraphicsContentHash});
     }
     overlayRaster_.beginFrame();
+    // NDI graphics key: the same resolved layers, graphics instances only, into
+    // their own transparent target. Program's target above is already final and
+    // is not touched; the pass costs the graphics draws a second time (their
+    // rasters are content-cached) plus one GPU->GPU copy into the tap.
+    if (renderPlan.graphicsKeyReadback) {
+      renderGraphicsKeyPass(deterministicPlan, layers);
+    } else if (graphicsKeyTarget_) {
+      releaseGraphicsKey();  // destination gone: free the target + reader rig (runs once)
+    }
     // The pixel-signature and base64 preview both do a blocking GPU->CPU Map
     // readback. On the light ~60fps display tick we skip them — only the GPU shared
     // texture is needed for the on-screen program, and stalling the CPU on a Map
@@ -3507,6 +3519,16 @@ class D3D11Compositor final : public ICompositor {
     return true;
   }
 
+  // OUTPUT-WORKER THREAD: the newest straight-alpha graphics-key frame (see
+  // renderGraphicsKeyPass / D3DGraphicsKeyTap). The tap is swapped on the
+  // render thread, so take the shared_ptr under its own mutex first.
+  bool takeGraphicsKeyBgraShared(std::shared_ptr<const std::vector<uint8_t>>& outBgra,
+                                 int& width, int& height) override {
+    std::shared_ptr<D3DGraphicsKeyTap> tap;
+    { std::lock_guard<std::mutex> lock(graphicsKeyTapMutex_); tap = graphicsKeyTap_; }
+    return tap && tap->take(outBgra, width, height);
+  }
+
   bool takeVcamNv12Shared(std::shared_ptr<const std::vector<uint8_t>>& outNv12,
                           int& w, int& h) override {
     std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
@@ -3678,6 +3700,94 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11Texture2D> previewRenderTarget_;
   ComPtrLite<ID3D11RenderTargetView> previewRenderTargetView_;
   std::unique_ptr<D3DDecoupledExport> previewExport_;
+  // NDI graphics key pass: a fourth render target (graphics instances only,
+  // cleared to transparent, Program-sized so the shared viewport/scissor
+  // helpers apply unchanged) and its off-thread straight-alpha reader. Both
+  // exist only while a plan asks for graphicsKeyReadback.
+  ComPtrLite<ID3D11Texture2D> graphicsKeyTarget_;
+  ComPtrLite<ID3D11RenderTargetView> graphicsKeyTargetView_;
+  int graphicsKeyWidth_ = 0;
+  int graphicsKeyHeight_ = 0;
+  mutable std::mutex graphicsKeyTapMutex_;
+  std::shared_ptr<D3DGraphicsKeyTap> graphicsKeyTap_;
+  bool graphicsKeyErrorLogged_ = false;
+
+  bool ensureGraphicsKeyTarget(int width, int height) {
+    if (graphicsKeyTarget_ && graphicsKeyWidth_ == width && graphicsKeyHeight_ == height) return true;
+    graphicsKeyTarget_ = {};
+    graphicsKeyTargetView_ = {};
+    graphicsKeyWidth_ = width;
+    graphicsKeyHeight_ = height;
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = static_cast<UINT>(width);
+    desc.Height = static_cast<UINT>(height);
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(device_->CreateTexture2D(&desc, nullptr, graphicsKeyTarget_.put())) ||
+        FAILED(device_->CreateRenderTargetView(graphicsKeyTarget_.get(), nullptr, graphicsKeyTargetView_.put()))) {
+      graphicsKeyTarget_ = {};
+      graphicsKeyTargetView_ = {};
+      return false;
+    }
+    return true;
+  }
+
+  void releaseGraphicsKey() {
+    std::shared_ptr<D3DGraphicsKeyTap> retired;
+    { std::lock_guard<std::mutex> lock(graphicsKeyTapMutex_); retired = std::exchange(graphicsKeyTap_, nullptr); }
+    retired.reset();  // joins the reader thread outside the handoff mutex
+    graphicsKeyTarget_ = {};
+    graphicsKeyTargetView_ = {};
+    graphicsKeyWidth_ = 0;
+    graphicsKeyHeight_ = 0;
+  }
+
+  // RENDER THREAD, after the Program pass. Draws the graphics-instance layers
+  // of the SAME resolved plan into the transparent key target with the same
+  // pipeline state the Program pass used (so the key is pixel-for-pixel what
+  // Program keyed over its picture), then hands the target to the tap. No
+  // admission/trace frame: the Program pass already recorded both for these
+  // layers, and this pass must never add a second "draw-submitted" fact.
+  void renderGraphicsKeyPass(const CompositorRenderPlan& plan, const std::vector<ResolvedLayer>& layers) {
+    if (!ensureGraphicsKeyTarget(targetWidth_, targetHeight_)) {
+      if (!graphicsKeyErrorLogged_) {
+        ::corevideo::core::nativeLogf("[graphics-key] key render target creation failed (%dx%d)\n", targetWidth_, targetHeight_);
+        graphicsKeyErrorLogged_ = true;
+      }
+      return;
+    }
+    std::shared_ptr<D3DGraphicsKeyTap> tap;
+    { std::lock_guard<std::mutex> lock(graphicsKeyTapMutex_); tap = graphicsKeyTap_; }
+    if (!tap) {
+      tap = std::make_shared<D3DGraphicsKeyTap>();
+      std::lock_guard<std::mutex> lock(graphicsKeyTapMutex_);
+      graphicsKeyTap_ = tap;
+    }
+    if (!tap->ensure(device_.get(), targetWidth_, targetHeight_)) return;  // logged once by the tap
+
+    const float transparent[4] = {0.f, 0.f, 0.f, 0.f};
+    ID3D11RenderTargetView* targets[] = {graphicsKeyTargetView_.get()};
+    context_->OMSetRenderTargets(1, targets, nullptr);
+    context_->ClearRenderTargetView(graphicsKeyTargetView_.get(), transparent);
+    context_->IASetInputLayout(nullptr);
+    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context_->VSSetShader(vertexShader_.get(), nullptr, 0);
+    context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+    context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
+    context_->RSSetState(rasterizerState_.get());
+    for (const auto& layer : layers) {
+      if (!graphicsKeyLayerSelected(layer.plan)) continue;
+      drawLayer(layer, plan);
+    }
+    // Leave the Program target bound again for whatever follows this tick.
+    ID3D11RenderTargetView* programTargets[] = {renderTargetView_.get()};
+    context_->OMSetRenderTargets(1, programTargets, nullptr);
+    tap->submit(context_.get(), graphicsKeyTarget_.get());
+  }
   ComPtrLite<ID3D11Texture2D> layerTexture_;
   ComPtrLite<ID3D11ShaderResourceView> layerTextureView_;
   // I420 plane textures (R8_UNORM) shared by the program-composite draw and the

@@ -1351,3 +1351,84 @@ TEST(D3D11Compositor, SourceTextureCacheServesBgraFramesWithBufferIdentity) {
   EXPECT_NE(second.preview.bgra, third.preview.bgra);
 }
 #endif
+
+// NDI graphics key (titler spec Phase 1): with graphicsKeyReadback set, the
+// compositor publishes the on-air graphics instance ALONE over transparency,
+// straight alpha, at Program size. Program pixels (the full-frame video under
+// the graphic) must never reach the key, and Program itself must be unchanged
+// by asking for the key.
+TEST(D3D11Compositor, GraphicsKeyCarriesOnlyGraphicsWithStraightAlphaAndLeavesProgramUnchanged) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  corevideo::graphics::GraphicsInstances graphics{"test-core"};
+  using corevideo::rpc::Json;
+  int sequence = 0;
+  const auto command = [&](const std::string& type, Json::Object payload) {
+    payload["schemaVersion"] = 1; payload["requestId"] = "key-request-" + std::to_string(++sequence);
+    payload["clientId"] = "gpu-qa"; payload["coreEpoch"] = "test-core"; payload["instanceId"] = "featured";
+    return graphics.apply(Json::Object{{"type", type}, {"graphics", std::move(payload)}});
+  };
+  ASSERT_TRUE(command("graphics-instance-create", {{"scope", "global"}, {"templateId", "compact-solid"},
+      {"templateVersion", 1}, {"fields", Json::Object{{"name", "Key Speaker"}, {"title", "Fill and key"}}}}));
+  ASSERT_TRUE(command("graphics-instance-cue", {{"expectedRevision", 1}}));
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"expectedRevision", 1}, {"action", "show"}}));
+
+  constexpr int kW = 320, kH = 180;
+  const auto video = makeI420SolidFrame("p-key", kW, kH, 200, 1);  // bright grey Program picture
+  const auto render = [&](bool key) {
+    auto plan = fullRectParticipantPlan("graphics-key", "p-key", kW, kH);
+    graphics.append(plan, false);
+    plan.graphicsKeyReadback = key;
+    auto frame = compositor->render(plan, {video});
+    graphics.observe(frame);
+    return frame;
+  };
+  const auto row = [&]() -> const Json& { return graphics.snapshot().get("instances")->asArray().front(); };
+  const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (row().getNumber("firstDrawSubmittedFrame") <= 0 && std::chrono::steady_clock::now() < limit) {
+    render(false); std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_GT(row().getNumber("firstDrawSubmittedFrame"), 0.);
+  const auto programWithoutKey = render(false);
+
+  std::shared_ptr<const std::vector<uint8_t>> key;
+  int keyW = 0, keyH = 0;
+  corevideo::modules::ProgramFrame programWithKey;
+  const auto keyLimit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < keyLimit) {
+    programWithKey = render(true);
+    if (compositor->takeGraphicsKeyBgraShared(key, keyW, keyH)) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_TRUE(key != nullptr) << "no graphics-key frame was published";
+  ASSERT_EQ(kW, keyW);
+  ASSERT_EQ(kH, keyH);
+  ASSERT_EQ(static_cast<size_t>(kW) * kH * 4u, key->size());
+
+  // Program is byte-identical whether or not the key was requested.
+  EXPECT_EQ(programWithoutKey.preview.bgra, programWithKey.preview.bgra);
+
+  size_t transparent = 0, opaque = 0, partial = 0, leaked = 0;
+  for (size_t i = 0; i < key->size(); i += 4) {
+    const uint8_t b = (*key)[i], g = (*key)[i + 1], r = (*key)[i + 2], a = (*key)[i + 3];
+    if (a == 0) {
+      ++transparent;
+      if (b || g || r) ++leaked;  // colour under zero alpha is a Program/noise leak
+    } else if (a == 255) {
+      ++opaque;
+    } else {
+      ++partial;
+    }
+  }
+  // The graphic is a lower band: most of the frame (where only Program video
+  // existed) must be fully transparent, and the graphic itself must be there.
+  EXPECT_GT(transparent, static_cast<size_t>(kW) * kH / 2u);
+  EXPECT_GT(opaque + partial, 100u);
+  EXPECT_EQ(0u, leaked);
+  // The top-left corner holds only Program video in this plan: alpha 0 there.
+  EXPECT_EQ(0, (*key)[3]);
+
+  // Dropping the flag releases the key rig; nothing new is published after.
+  render(false);
+  EXPECT_FALSE(compositor->takeGraphicsKeyBgraShared(key, keyW, keyH));
+}

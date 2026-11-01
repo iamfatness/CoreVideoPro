@@ -28,6 +28,7 @@
 #include "modules/AudioDsp.h"
 #include "modules/AsyncEncoderSink.h"
 #include "modules/AsyncOutputSender.h"
+#include "modules/GraphicsKeyPixels.h"  // kNdiGraphicsKeyDestination
 #include "modules/AsyncAudioMonitorOutput.h"
 #include "core/SyntheticZoomSlateSource.h"
 #include "modules/ProgramFramePreview.h"
@@ -5891,6 +5892,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   renderPlan.fullProgramReadback = virtualCameraEnabled_ || outputActive ||
       ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
        modules_.compositor->wantsFullProgramReadbackForRecording());
+  // NDI graphics key: only while the operator's destination list carries it.
+  // The compositor frees the key target and its reader thread the first tick
+  // this reads false again, so an idle destination costs nothing.
+  renderPlan.graphicsKeyReadback = std::find(outputDestinations_.begin(), outputDestinations_.end(),
+      std::string(modules::kNdiGraphicsKeyDestination)) != outputDestinations_.end();
 
   // #535 slice 3b: media frames already arrived with the EARLY bus ingest above
   // (their transport entries are fed from the command-time desired set, not
@@ -7572,6 +7578,32 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     frame.programNv12Width = tapWidth;
     frame.programNv12Height = tapHeight;
     frame.programNv12Shared = latestProgramNv12;
+  }
+  // NDI graphics key: the compositor's key tap publishes straight-alpha BGRA
+  // on its own thread; take the newest one here (a cheap shared_ptr handoff)
+  // and stamp the latest known frame so the "ndi-graphics" sender always has
+  // the most recent key, buffered Program or not. Cleared when the destination
+  // is gone so a later session never starts on a stale key.
+  if (std::find(senderDestinations.begin(), senderDestinations.end(),
+                std::string(modules::kNdiGraphicsKeyDestination)) != senderDestinations.end()) {
+    std::shared_ptr<const std::vector<std::uint8_t>> keyBgra;
+    int keyWidth = 0;
+    int keyHeight = 0;
+    if (modules_.compositor->takeGraphicsKeyBgraShared(keyBgra, keyWidth, keyHeight) && keyBgra &&
+        !keyBgra->empty() && keyWidth > 0 && keyHeight > 0) {
+      latestGraphicsKeyBgra_ = std::move(keyBgra);
+      latestGraphicsKeyWidth_ = keyWidth;
+      latestGraphicsKeyHeight_ = keyHeight;
+    }
+    if (latestGraphicsKeyBgra_) {
+      frame.graphicsKeyBgraShared = latestGraphicsKeyBgra_;
+      frame.graphicsKeyWidth = latestGraphicsKeyWidth_;
+      frame.graphicsKeyHeight = latestGraphicsKeyHeight_;
+    }
+  } else if (latestGraphicsKeyBgra_) {
+    latestGraphicsKeyBgra_.reset();
+    latestGraphicsKeyWidth_ = 0;
+    latestGraphicsKeyHeight_ = 0;
   }
   if (!buffered) frame.timelineTimestamp100ns = monotonic100ns();
   const bool programSubmitted = !buffered || bufferedFrameAvailable;

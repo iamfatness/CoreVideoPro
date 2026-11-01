@@ -344,6 +344,16 @@ struct ProgramFrame {
   [[nodiscard]] const std::vector<uint8_t>& programNv12Bytes() const noexcept {
     return programNv12Shared ? *programNv12Shared : programNv12;
   }
+  // NDI graphics key (titler spec Phase 1, "NDI fill+key"): the on-air native
+  // graphics layer ALONE, composited over transparency at Program size and
+  // read back as packed BGRA with STRAIGHT (non-premultiplied) alpha, which is
+  // how an NDI BGRA frame carries key+fill in one stream. Populated by the
+  // output worker from ICompositor::takeGraphicsKeyBgraShared only while the
+  // "ndi-graphics" destination is active; empty otherwise. Program pixels never
+  // appear in it (see GraphicsKeyPixels.h for the layer rule and the unpremultiply).
+  int graphicsKeyWidth = 0;
+  int graphicsKeyHeight = 0;
+  std::shared_ptr<const std::vector<uint8_t>> graphicsKeyBgraShared;
   ProgramFrameSharedTexture sharedTexture;
   // Dedicated GPU keyed-mutex DXGI shared texture for hardware H.264 encode.
   // Separate from sharedTexture so sender encode does not contend with WinUI frame
@@ -579,6 +589,13 @@ struct CompositorRenderPlan {
   // thumbnail. Independent of skipCpuReadback (which only gates the small
   // preview + pixel signature).
   bool fullProgramReadback = false;
+  // When true, the GPU compositor ALSO composites the native graphics
+  // instances on this plan (layers with a graphicsInstanceId) into their own
+  // transparent BGRA target and publishes it, straight-alpha, through
+  // ICompositor::takeGraphicsKeyBgraShared for the NDI graphics-key sender.
+  // Set by MediaCore only while the "ndi-graphics" destination is active; the
+  // Program target is untouched either way.
+  bool graphicsKeyReadback = false;
 };
 
 // Per-ISO-writer health (ISO-1). One node per selected ISO source, surfaced in
@@ -1363,6 +1380,16 @@ class ICompositor {
     outNv12 = std::make_shared<const std::vector<uint8_t>>(std::move(copy));
     return true;
   }
+  // NDI graphics key: the latest graphics-only composite (plan flag
+  // graphicsKeyReadback) as packed BGRA with STRAIGHT alpha at Program size.
+  // Same contract as takeVcamNv12Shared: a dedicated device+thread reads the
+  // key target back off the render thread; this hands the output worker the
+  // newest buffer and returns false when nothing new exists since the last
+  // take. Defaulted false so the software/stub/Metal compositors stay valid.
+  virtual bool takeGraphicsKeyBgraShared(std::shared_ptr<const std::vector<uint8_t>>& /*outBgra*/,
+                                         int& /*width*/, int& /*height*/) {
+    return false;
+  }
   // Composites the multiview grid into a second keyed-mutex DXGI shared texture
   // (the whole grid in one texture, the OBS/broadcast-multiviewer model) and
   // returns its handle/dimensions. Defaulted to an empty texture so the
@@ -1985,6 +2012,11 @@ std::unique_ptr<IOutputSender> createSrtOutputSender();
 std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender();
 std::unique_ptr<IOutputSender> createHlsOutputSender();
 std::unique_ptr<IOutputSender> createNdiOutputSender();
+// The NDI graphics-key sender: destination "ndi-graphics", a second libNDI
+// source carrying ProgramFrame::graphicsKeyBgraShared as BGRA with straight
+// alpha (fill+key in one stream) and no audio. Same runtime probe and build
+// gate as createNdiOutputSender; nullptr when NDI output is not built.
+std::unique_ptr<IOutputSender> createNdiGraphicsKeyOutputSender();
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
 std::unique_ptr<ICaptureDevice> createRtmpIngestCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
 std::unique_ptr<ICaptureDevice> createNdiReceiveCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
