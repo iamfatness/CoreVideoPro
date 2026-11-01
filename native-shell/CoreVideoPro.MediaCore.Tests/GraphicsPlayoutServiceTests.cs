@@ -175,6 +175,21 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.False((await service.ClockAsync(entry, "explode")).Accepted);
     }
 
+    [Fact] public async Task StripChipsOfANamesListCarryTheLineSoTheNextShowSteps()
+    {
+        var (library, service) = await BuildWithDefaultPlaylist();
+        var rows = library.Document.Playlist.ToList();
+        rows[0] = rows[0] with { Kind = GraphicsPlaylistRow.Title, FollowSources = false, Variants = GraphicsBuilder.ParseNamesList("Ada, One\nAlan, Two") };
+        Assert.True(await library.SavePlaylistAsync(rows), library.Status);
+        var row = library.Document.Playlist[0];
+        var entries = GraphicsPlayoutService.VariantEntries(row);
+        Assert.True((await service.PlayInAsync(entries[0])).Accepted);
+        var chip = Assert.Single(service.Strip.OnProgram);
+        Assert.Equal("variant:ada", chip.SourceId); Assert.Equal(row.Name + " \u00B7 Ada", chip.Label);
+        Assert.Equal("variant:alan", GraphicsPlayoutService.NextVariant(row, service.Strip.OnProgram.Select(i => i.SourceId))!.SourceId);
+        Assert.Equal("", GraphicsPlayoutService.VariantSourceIdOf(row, "playlist-title"));
+    }
+
     [Fact] public async Task PlayInCreatesCuesWaitsThenShowsFromCue()
     {
         var (library, service) = await BuildWithDefaultPlaylist();

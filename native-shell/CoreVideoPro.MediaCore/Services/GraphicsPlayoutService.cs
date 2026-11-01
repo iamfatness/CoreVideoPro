@@ -109,6 +109,10 @@ public sealed class GraphicsPlayoutService
         }
         return entries;
     }
+    /// <summary>The <c>variant:&lt;id&gt;</c> source id behind one of a names-list row's
+    /// instances, or "" when the instance is not one of its lines.</summary>
+    public static string VariantSourceIdOf(GraphicsPlaylistRow row, string instanceId) =>
+        row.Variants.Select(v => GraphicsPlaylistEntry.VariantPrefix + v.Id).FirstOrDefault(s => InstanceIdFor(row.Id, s) == instanceId) ?? "";
     /// <summary>One entry per names-list line, in list order.</summary>
     public static IReadOnlyList<GraphicsPlaylistEntry> VariantEntries(GraphicsPlaylistRow row) =>
         row.Variants.Select(v => new GraphicsPlaylistEntry(row.Id, GraphicsPlaylistEntry.VariantPrefix + v.Id, v.Name, v.Title)).ToArray();
@@ -236,6 +240,8 @@ public sealed class GraphicsPlayoutService
             var rule = rules.FirstOrDefault(r => r.Enabled && r.InstanceId == i.InstanceId);
             var owner = row is not null ? "playlist" : rule is not null ? "auto" : "design";
             var source = i.Binding?.SourceId ?? i.SourceId;
+            // A names-list instance has no binding; its line is recoverable from the instance id.
+            if (source.Length == 0 && row is { HasVariants: true }) source = VariantSourceIdOf(row, i.InstanceId);
             var label = row is null ? (i.Label.Length > 0 ? i.Label : i.Fields.Name.Length > 0 ? i.Fields.Name : i.TemplateId)
                 : (row.Kind == GraphicsPlaylistRow.Guest || row.HasVariants) && i.Fields.Name.Length > 0 ? row.Name + " · " + i.Fields.Name : row.Name;
             return new(i.InstanceId, label, owner, row?.Id ?? "", source, i.Revision, i.Visibility, i.CuePending, armed.Contains(i.InstanceId), rule?.Id ?? "");
