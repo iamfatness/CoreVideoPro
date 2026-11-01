@@ -148,23 +148,27 @@ public class TilesLayerPayloadBuilderTests
         Assert.Equal(["capture:cam-1"], payload!.Members);
     }
 
-    // #1071: a show-input slot bound to a local source (webcam, screen, media) is eligible
-    // beside the video-on Zoom participants. The local ids come from
+    // #1071: an IN-SHOW slot bound to a local source (webcam, screen) is eligible beside the
+    // video-on Zoom participants. The local ids come from
     // TilesLocalSourcePolicy.LocalVideoSources, already canonical; the builder appends them
-    // after the roster so an operator's slot order decides local seating.
+    // after the roster so an operator's slot order decides local seating. A bound slot that
+    // is not in the show is not seated (review finding 3: a Zoom-only wall must not change
+    // on upgrade because a Camera scene's slot exists).
     [Fact]
-    public void Build_SeatsABoundCaptureSlotAfterTheZoomParticipants()
+    public void Build_SeatsInShowCaptureSlotsAfterTheZoomParticipants()
     {
         var slots = new[]
         {
-            new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.ZoomParticipant, ParticipantId = "1" },
-            new ShowInputSlot { SlotNumber = 2, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-1" },
-            new ShowInputSlot { SlotNumber = 3, Kind = ShowInputKind.Screen, CaptureDeviceId = "screen:1" },
+            new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.ZoomParticipant, ParticipantId = "1", InShow = true },
+            new ShowInputSlot { SlotNumber = 2, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-1", InShow = true },
+            new ShowInputSlot { SlotNumber = 3, Kind = ShowInputKind.Screen, CaptureDeviceId = "screen:1", InShow = true },
+            new ShowInputSlot { SlotNumber = 4, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-offshow", InShow = false },
         };
-        var local = TilesLocalSourcePolicy.LocalVideoSources(slots, [], []).Select(s => s.Id).ToList();
+        var local = TilesLocalSourcePolicy.LocalVideoSources(slots, []).Select(s => s.Id).ToList();
 
         var payload = TilesLayerPayloadBuilder.Build(
-            GalleryScene(), [Guest("1"), Guest("p-2", FeedHealth.VideoOff)], localVideoSourceIds: local);
+            GalleryScene(), [Guest("1"), Guest("p-2", FeedHealth.VideoOff)],
+            routedSourceIds: TilesLocalSourcePolicy.RoutedSourceIds(slots), localVideoSourceIds: local);
 
         Assert.Equal(["zoom:1", "capture:cam-1", "capture:screen:1"], payload!.Members);
     }

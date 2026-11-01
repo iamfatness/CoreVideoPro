@@ -25,10 +25,45 @@ public sealed class TilesIdentityPolicyTests
         Assert.Equal(id, TilesIdentityPolicy.Label(id, roster));
 
         var settings = new DynamicGallerySettings { ManualSlots = [id], ExcludedSourceIds = [id], BoundMeetingId = "97682593786" };
+        // Without a live-local view (null) a local entry is never judged stale ...
         Assert.Empty(TilesIdentityPolicy.DescribeStale(settings, roster, "8916561023"));
         TilesIdentityPolicy.ClearStale(settings, roster, "8916561023");
         Assert.Equal(id, settings.ManualSlots[0]);
         Assert.Equal(id, Assert.Single(settings.ExcludedSourceIds));
+        // ... and while its source is in the show it is live.
+        Assert.Empty(TilesIdentityPolicy.DescribeStale(settings, roster, "8916561023", new HashSet<string> { id }));
+    }
+
+    // Review of #1081, finding 4: a local entry whose source has left the show (device
+    // unbound, slot taken out of the show, asset deleted) is STALE — otherwise manual slot 3
+    // keeps an empty reserved cell forever and "Clear stale" cannot remove it. Zoom entries
+    // keep their meeting rule in the same pass.
+    [Fact]
+    public void Local1071_ALocalEntryWhoseSourceLeftTheShowIsStaleAndClearable()
+    {
+        var roster = new[] { Guest("16778240", "Someone", "pid-1") };
+        var settings = new DynamicGallerySettings
+        {
+            ManualSlots = ["zoom-pid:pid-1", "capture:gone", "capture:cam-1"],
+            ExcludedSourceIds = ["media:deleted", "capture:cam-1"],
+            BoundMeetingId = "97682593786"
+        };
+        var live = new HashSet<string> { "capture:cam-1" };
+
+        var stale = TilesIdentityPolicy.DescribeStale(settings, roster, "8916561023", live);
+        Assert.Equal(
+            ["2: capture:gone: not in the show", "media:deleted: not in the show"],
+            stale.Select(entry => entry.Label));
+        Assert.Equal(["slot", "never-show"], stale.Select(entry => entry.Kind));
+
+        TilesIdentityPolicy.ClearStale(settings, roster, "8916561023", live);
+        Assert.Equal(["zoom-pid:pid-1", null, "capture:cam-1"], settings.ManualSlots);
+        Assert.Equal(["capture:cam-1"], settings.ExcludedSourceIds);
+
+        // An EMPTY live set (nothing local in the show) makes every local entry stale.
+        TilesIdentityPolicy.ClearStale(settings, roster, "8916561023", new HashSet<string>());
+        Assert.Equal(["zoom-pid:pid-1", null, null], settings.ManualSlots);
+        Assert.Empty(settings.ExcludedSourceIds);
     }
 
     [Fact]

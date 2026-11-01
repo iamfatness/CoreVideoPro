@@ -139,10 +139,20 @@ public static class TilesIdentityPolicy
         return live?.DisplayName ?? "Unavailable source";
     }
 
+    /// <summary>
+    /// A saved entry is STALE when it cannot seat anyone now: a Zoom identity not in this
+    /// meeting, or (#1071) a local id that is not among <paramref name="liveLocalSourceIds"/>
+    /// — the in-show local sources the wall can currently seat (a device unbound from its
+    /// input, a slot taken out of the show). <c>null</c> for the set means "do not judge
+    /// local ids" (callers without a roster view); an empty set means every local entry is
+    /// stale. Without this a deleted asset or unplugged device in manual slot 3 kept an
+    /// empty reserved cell forever and "Clear stale" could not remove it.
+    /// </summary>
     public static IReadOnlyList<StaleEntry> DescribeStale(
         DynamicGallerySettings settings,
         IReadOnlyList<Person> roster,
-        string? currentMeetingId)
+        string? currentMeetingId,
+        IReadOnlySet<string>? liveLocalSourceIds = null)
     {
         var stale = new List<StaleEntry>();
         var slots = settings.ManualSlots ?? [];
@@ -154,9 +164,9 @@ public static class TilesIdentityPolicy
                 continue;
             }
 
-            if (ResolveLiveSourceId(key, roster, currentMeetingId, settings.BoundMeetingId) is null)
+            if (IsStale(key, settings, roster, currentMeetingId, liveLocalSourceIds))
             {
-                stale.Add(new StaleEntry(key, $"{index + 1}: {Label(key, roster)}: not in this meeting", "slot"));
+                stale.Add(new StaleEntry(key, $"{index + 1}: {Label(key, roster)}: {StaleReason(key)}", "slot"));
             }
         }
 
@@ -167,9 +177,9 @@ public static class TilesIdentityPolicy
                 continue;
             }
 
-            if (ResolveLiveSourceId(key, roster, currentMeetingId, settings.BoundMeetingId) is null)
+            if (IsStale(key, settings, roster, currentMeetingId, liveLocalSourceIds))
             {
-                stale.Add(new StaleEntry(key, $"{Label(key, roster)}: not in this meeting", "never-show"));
+                stale.Add(new StaleEntry(key, $"{Label(key, roster)}: {StaleReason(key)}", "never-show"));
             }
         }
 
@@ -179,21 +189,38 @@ public static class TilesIdentityPolicy
     public static void ClearStale(
         DynamicGallerySettings settings,
         IReadOnlyList<Person> roster,
-        string? currentMeetingId)
+        string? currentMeetingId,
+        IReadOnlySet<string>? liveLocalSourceIds = null)
     {
         var slots = settings.ManualSlots ?? [];
         for (var index = 0; index < slots.Count; index++)
         {
             var key = slots[index];
-            if (!string.IsNullOrEmpty(key) &&
-                ResolveLiveSourceId(key, roster, currentMeetingId, settings.BoundMeetingId) is null)
+            if (!string.IsNullOrEmpty(key) && IsStale(key, settings, roster, currentMeetingId, liveLocalSourceIds))
             {
                 slots[index] = null;
             }
         }
 
         settings.ExcludedSourceIds.RemoveAll(key =>
-            !string.IsNullOrEmpty(key) &&
-            ResolveLiveSourceId(key, roster, currentMeetingId, settings.BoundMeetingId) is null);
+            !string.IsNullOrEmpty(key) && IsStale(key, settings, roster, currentMeetingId, liveLocalSourceIds));
     }
+
+    private static bool IsStale(
+        string key,
+        DynamicGallerySettings settings,
+        IReadOnlyList<Person> roster,
+        string? currentMeetingId,
+        IReadOnlySet<string>? liveLocalSourceIds)
+    {
+        if (TilesLocalSourcePolicy.IsLocalSourceId(key))
+        {
+            return liveLocalSourceIds is not null && !liveLocalSourceIds.Contains(key);
+        }
+
+        return ResolveLiveSourceId(key, roster, currentMeetingId, settings.BoundMeetingId) is null;
+    }
+
+    private static string StaleReason(string key) =>
+        TilesLocalSourcePolicy.IsLocalSourceId(key) ? "not in the show" : "not in this meeting";
 }

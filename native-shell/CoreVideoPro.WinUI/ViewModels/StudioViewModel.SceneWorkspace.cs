@@ -98,8 +98,7 @@ public sealed partial class StudioViewModel
     public bool WorkspaceMemberIncluded(string id)=>BuildTilesLayerWire(PreviewScene)?.Members.Contains(id)==true;
     public bool WorkspaceMemberRouted(string id)=>ShowInputs.Any(s=>s.InShow&&ShowInputRosterService.SlotSourceId(s)==id);
     public IReadOnlyDictionary<string,WorkspaceMemberState> WorkspaceMemberStates()=>SceneWorkspaceMembershipPolicy.Build(
-        PreviewScene.DynamicGallery,GalleryMemberChoices.Select(c=>c.Id),ShowInputs.Where(s=>s.InShow)
-            .Select(ShowInputRosterService.SlotSourceId).Where(id=>!string.IsNullOrWhiteSpace(id)).Select(id=>id!).ToHashSet(StringComparer.Ordinal),TilesIdentityRoster(),CurrentTilesMeetingId());
+        PreviewScene.DynamicGallery,GalleryMemberChoices.Select(c=>c.Id),TilesLocalSourcePolicy.RoutedSourceIds(ShowInputs),TilesIdentityRoster(),CurrentTilesMeetingId());
     public void WorkspaceIncludeMember(string id,bool included)
     {
         var wall=PreviewScene.DynamicGallery;if(wall is null||wall.MembershipMode=="eligible")return;

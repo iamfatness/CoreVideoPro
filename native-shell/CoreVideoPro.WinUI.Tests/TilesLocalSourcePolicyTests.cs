@@ -4,19 +4,16 @@ using Xunit;
 
 namespace CoreVideoPro.WinUI.Tests;
 
-// #1071: local sources (webcam, capture card, screen, media) as Tiles members.
+// #1071: local sources (webcam, capture card, screen) as Tiles members.
 public sealed class TilesLocalSourcePolicyTests
 {
-    private static ShowInputSlot Slot(int number, ShowInputKind kind, string? capture = null, string? participant = null, bool inShow = true) =>
+    internal static ShowInputSlot Slot(int number, ShowInputKind kind, string? capture = null, string? participant = null, bool inShow = true) =>
         new() { SlotNumber = number, Kind = kind, CaptureDeviceId = capture, ParticipantId = participant, InShow = inShow };
 
-    private static CaptureDevice Device(string id, string name) => new()
+    internal static CaptureDevice Device(string id, string name) => new()
     {
         Id = id, NativeDeviceId = id, Vendor = "uvc", Name = name, Inputs = [], SelectedInputId = id
     };
-
-    private static MediaAsset Asset(string id, string name, string kind = "video") =>
-        new() { Id = id, Name = name, Kind = kind };
 
     [Theory]
     [InlineData("capture:cam-1", true)]
@@ -32,55 +29,55 @@ public sealed class TilesLocalSourcePolicyTests
         Assert.Equal(expected, TilesLocalSourcePolicy.IsLocalSourceId(id));
 
     [Fact]
-    public void LocalVideoSources_ListsBoundLocalSlotsInSlotOrderWithTheirPickerGroups()
+    public void LocalVideoSources_ListsInShowLocalSlotsInSlotOrderWithTheirPickerGroups()
     {
         var slots = new[]
         {
-            Slot(3, ShowInputKind.Media, participant: "media:clip-7"),
+            Slot(4, ShowInputKind.Screen, capture: "screen:1"),
             Slot(1, ShowInputKind.ZoomParticipant, participant: "16778240"),
             Slot(2, ShowInputKind.UvcWebcam, capture: "cam-1"),
-            Slot(4, ShowInputKind.Screen, capture: "screen:1"),
             Slot(5, ShowInputKind.Unassigned),
+            Slot(3, ShowInputKind.Browser, capture: "browser:1"),
         };
 
-        var sources = TilesLocalSourcePolicy.LocalVideoSources(
-            slots, [Device("cam-1", "Logitech Brio")], [Asset("clip-7", "Opening clip")]);
+        var sources = TilesLocalSourcePolicy.LocalVideoSources(slots, [Device("cam-1", "Logitech Brio")]);
 
         Assert.Equal(
             [
                 new TilesLocalSource("capture:cam-1", "Logitech Brio", "Camera"),
-                new TilesLocalSource("media:clip-7", "Opening clip", "Media"),
+                new TilesLocalSource("capture:browser:1", "Input 03", "Browser"),
                 new TilesLocalSource("capture:screen:1", "Input 04", "Screen"),
             ],
             sources);
     }
 
+    // Review of #1081, finding 3: a BOUND-but-not-in-show slot is not a candidate. It is not
+    // brought online (QueueSelectedCaptureDevicesOnline connects InShow devices only), and a
+    // Zoom-only wall must not gain a webcam tile on upgrade because a Camera scene's slot exists.
     [Fact]
-    public void LocalVideoSources_IgnoresInShowBecauseRoutedModeOwnsThatFilter()
-    {
-        // Eligible mode seats any bound local source; routed mode narrows to InShow slots
-        // downstream (TilesMembershipPolicy), exactly as it does for Zoom participants.
-        var sources = TilesLocalSourcePolicy.LocalVideoSources(
-            [Slot(1, ShowInputKind.UvcWebcam, capture: "cam-1", inShow: false)], [], []);
-
-        Assert.Equal("capture:cam-1", Assert.Single(sources).Id);
-    }
-
-    [Fact]
-    public void LocalVideoSources_SkipsAMediaSlotWhoseAssetHasNoVideoOrLeftTheBin()
+    public void LocalVideoSources_SkipsASlotThatIsNotInTheShow()
     {
         var slots = new[]
         {
-            Slot(1, ShowInputKind.Media, participant: "media:song"),
-            Slot(2, ShowInputKind.Media, participant: "media:gone"),
-            Slot(3, ShowInputKind.Media, participant: "media:logo"),
+            Slot(1, ShowInputKind.UvcWebcam, capture: "cam-1", inShow: false),
+            Slot(2, ShowInputKind.UvcWebcam, capture: "cam-2", inShow: true),
         };
-        // The caller passes VISUAL assets only (video + stills); "song" is not among them.
-        var visual = new[] { Asset("logo", "Bug", "image") };
 
-        var sources = TilesLocalSourcePolicy.LocalVideoSources(slots, [], visual);
+        var sources = TilesLocalSourcePolicy.LocalVideoSources(slots, []);
 
-        Assert.Equal(["media:logo"], sources.Select(s => s.Id));
+        Assert.Equal("capture:cam-2", Assert.Single(sources).Id);
+    }
+
+    // Review of #1081, finding 1: the core opens media only for a scene ROUTE (it needs the
+    // asset path, which a Tiles member id does not carry), so a Media tile would never get a
+    // frame. Media slots are not candidates until the tiles wire carries the asset.
+    [Fact]
+    public void LocalVideoSources_DoesNotOfferAMediaSlotYet()
+    {
+        var sources = TilesLocalSourcePolicy.LocalVideoSources(
+            [Slot(1, ShowInputKind.Media, participant: "media:clip-7"), Slot(2, ShowInputKind.UvcWebcam, capture: "cam-1")], []);
+
+        Assert.Equal("capture:cam-1", Assert.Single(sources).Id);
     }
 
     [Fact]
@@ -92,7 +89,7 @@ public sealed class TilesLocalSourcePolicyTests
             Slot(2, ShowInputKind.Blackmagic, capture: "cam-1"),
         };
 
-        var sources = TilesLocalSourcePolicy.LocalVideoSources(slots, [Device("cam-1", "Cam")], []);
+        var sources = TilesLocalSourcePolicy.LocalVideoSources(slots, [Device("cam-1", "Cam")]);
 
         Assert.Equal("Camera", Assert.Single(sources).Group);
     }
@@ -103,10 +100,28 @@ public sealed class TilesLocalSourcePolicyTests
         var sources = TilesLocalSourcePolicy.LocalVideoSources(
             [Slot(1, ShowInputKind.UvcWebcam, capture: "cam-1")],
             [Device("cam-1", "Logitech Brio")],
-            [],
             (id, derived) => id == "capture:cam-1" ? "Wide shot" : derived);
 
         Assert.Equal("Wide shot", Assert.Single(sources).Name);
+    }
+
+    // The routed set is every IN-SHOW slot's canonical id, Zoom and local alike — the same
+    // set BuildTilesLayerWire hands the builder and the workspace member states use.
+    [Fact]
+    public void RoutedSourceIds_AreTheInShowSlotIdsZoomAndLocalAlike()
+    {
+        var slots = new[]
+        {
+            Slot(1, ShowInputKind.ZoomParticipant, participant: "16778240"),
+            Slot(2, ShowInputKind.UvcWebcam, capture: "cam-1"),
+            Slot(3, ShowInputKind.Screen, capture: "screen:1", inShow: false),
+            Slot(4, ShowInputKind.Media, participant: "media:clip-7"),
+            Slot(5, ShowInputKind.Unassigned),
+        };
+
+        var routed = TilesLocalSourcePolicy.RoutedSourceIds(slots);
+
+        Assert.Equal(new HashSet<string> { "zoom:16778240", "capture:cam-1", "media:clip-7" }, routed);
     }
 
     [Theory]
