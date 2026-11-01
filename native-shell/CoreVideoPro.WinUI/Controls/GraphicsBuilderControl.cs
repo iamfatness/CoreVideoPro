@@ -147,8 +147,8 @@ public sealed class GraphicsBuilderControl : UserControl
         _typeface.SelectionChanged += (_, _) => { if (!_loading && _typeface.SelectedIndex >= 0 && _session?.Draft is { } d) { _session.SetStyle(d.Style with { FontFamily = GraphicsBuilder.TypefaceChoices[_typeface.SelectedIndex] }); _dirty = true; RefreshSaveButton(); } };
         _nameSize.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is { } d && Math.Abs(d.Style.NameSize - _nameSize.Value) >= 1) { _session.SetStyle(d.Style with { NameSize = Math.Round(_nameSize.Value) }); _dirty = true; RefreshSaveButton(); } };
         _titleSize.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is { } d && Math.Abs(d.Style.TitleSize - _titleSize.Value) >= 1) { _session.SetStyle(d.Style with { TitleSize = Math.Round(_titleSize.Value) }); _dirty = true; RefreshSaveButton(); } };
-        _anchor.SelectionChanged += (_, _) => { if (!_loading && _anchor.SelectedIndex >= 0 && _session?.Draft is { } d) { var p = d.Placement ?? _session.Template?.DefaultPlacement ?? new(); _session.SetPlacement(p with { Anchor = GraphicsBuilder.AnchorChoices[_anchor.SelectedIndex].Id }); _dirty = true; RefreshSaveButton(); } };
-        _scale.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is { } d) { var p = d.Placement ?? _session.Template?.DefaultPlacement ?? new(); _session.SetPlacement(p with { Scale = Math.Round(_scale.Value / 100, 2) }); _dirty = true; RefreshSaveButton(); } };
+        _anchor.SelectionChanged += (_, _) => { if (!_loading && _anchor.SelectedIndex >= 0 && _session?.Draft is not null && EffectivePlacement() is { } p) { _session.SetPlacement(p with { Anchor = GraphicsBuilder.AnchorChoices[_anchor.SelectedIndex].Id }); _dirty = true; RefreshSaveButton(); } };
+        _scale.ValueChanged += (_, _) => { if (!_loading && _session?.Draft is not null && EffectivePlacement() is { } p) { _session.SetPlacement(p with { Scale = Math.Round(_scale.Value / 100, 2) }); _dirty = true; RefreshSaveButton(); } };
         _resetPlacement.Click += (_, _) => { if (_session?.Draft is not null) { _session.SetPlacement(_session.Template?.DefaultPlacement); _dirty = true; RefreshPlacementControls(); RefreshSaveButton(); } };
         _motion.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; _speed.IsEnabled = SelectedMotionPreset != "cut"; RefreshSaveButton(); } };
         _speed.SelectionChanged += (_, _) => { if (!_loading) { _dirty = true; RefreshSaveButton(); } };
@@ -192,9 +192,14 @@ public sealed class GraphicsBuilderControl : UserControl
     public void ResumePreview() { _suspended = false; UpdatePreviewLease(); RequestThumbnails(); }
     private void UpdatePreviewLease()
     {
-        if (!_suspended && _attached?.IsOverlaysTab == true && _session?.Preview is not null && _session.PreviewValidation.Length == 0 && _editor is not null)
+        if (_editor is null) return;
+        if (_session?.Preview is not { } draft) { _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable("Pick a look to preview."); return; }
+        if (_session.PreviewValidation is { Length: > 0 } invalid) { _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable(invalid); return; }
+        if (!_suspended && _attached?.IsOverlaysTab == true) {
+            // The core renders the private draft onto preview:lower-third; the lease pulls that surface into the canvas.
+            _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview()));
             _previewOwner ??= _attached.CreateAppearancePreview(_editor);
-        else { _previewOwner?.Dispose(); _previewOwner = null; }
+        } else { _previewOwner?.Dispose(); _previewOwner = null; }
     }
     private void OnEditorProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
@@ -378,11 +383,12 @@ public sealed class GraphicsBuilderControl : UserControl
                 }
             }
             _colors.Children.Add(new TextBlock { Text = "COLORS", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted, Margin = new Thickness(0, 6, 0, 0) });
-            var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            swatches.Children.Add(Swatch("Accent", s => s.AccentColor, (s, c) => s with { AccentColor = c }));
-            swatches.Children.Add(Swatch("Background", s => s.BackgroundColor, (s, c) => s with { BackgroundColor = c }));
-            swatches.Children.Add(Swatch("Name", s => s.NameColor, (s, c) => s with { NameColor = c }));
-            swatches.Children.Add(Swatch("Second line", s => s.TitleColor, (s, c) => s with { TitleColor = c }));
+            var swatches = new Grid { ColumnSpacing = 8, RowSpacing = 6 };
+            swatches.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); swatches.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+            swatches.RowDefinitions.Add(new() { Height = GridLength.Auto }); swatches.RowDefinitions.Add(new() { Height = GridLength.Auto });
+            var cells = new[] { Swatch("Accent", s => s.AccentColor, (s, c) => s with { AccentColor = c }), Swatch("Background", s => s.BackgroundColor, (s, c) => s with { BackgroundColor = c }),
+                Swatch("Name", s => s.NameColor, (s, c) => s with { NameColor = c }), Swatch("Second line", s => s.TitleColor, (s, c) => s with { TitleColor = c }) };
+            for (var i = 0; i < cells.Length; i++) { cells[i].HorizontalAlignment = HorizontalAlignment.Stretch; Grid.SetColumn(cells[i], i % 2); Grid.SetRow(cells[i], i / 2); swatches.Children.Add(cells[i]); }
             _colors.Children.Add(swatches);
             var brand = StudioBrushes.ChipButton("Use brand kit colors"); brand.Click += (_, _) => ApplyBrandKit(); _colors.Children.Add(brand);
         } finally { _loading = false; }
@@ -440,7 +446,7 @@ public sealed class GraphicsBuilderControl : UserControl
     }
     private void RefreshColorSwatches()
     {
-        foreach (var panel in _colors.Children.OfType<StackPanel>())
+        foreach (var panel in _colors.Children.OfType<Grid>())
             foreach (var swatch in panel.Children.OfType<Button>())
                 if (swatch.Tag is Func<string> read && swatch.Content is StackPanel body && body.Children.OfType<Border>().FirstOrDefault() is { } chip && HexColor.TryParse(read(), out var color))
                     chip.Background = new SolidColorBrush(color);
@@ -569,9 +575,20 @@ public sealed class GraphicsBuilderControl : UserControl
         } finally { _loading = wasLoading; }
     }
 
+    /// <summary>Compatibility lower thirds carry no template placement; the canvas derives one from
+    /// the style's anchor and safe offsets, and the Position/Size controls start from the same place.</summary>
+    private NativeGraphicsPlacement? EffectivePlacement()
+    {
+        if (_session?.Draft is not { } draft) return null;
+        if (draft.Placement is not null) return draft.Placement;
+        if (_session.Template?.DefaultPlacement is { } templateDefault) return templateDefault;
+        var style = draft.Style;
+        return new() { Anchor = style.Anchor, X = style.SafeOffsetX * 1920 * (style.Anchor.Contains("right", StringComparison.Ordinal) ? -1 : 1),
+            Y = style.SafeOffsetY * 1080 * (style.Anchor.Contains("upper", StringComparison.Ordinal) ? 1 : -1), Scale = 1 };
+    }
     private void RefreshPlacementControls()
     {
-        var p = _session?.Draft?.Placement ?? _session?.Template?.DefaultPlacement;
+        var p = EffectivePlacement();
         var sponsor = Kind.Id == GraphicsBuilder.SponsorKindId;
         _anchor.IsEnabled = _scale.IsEnabled = _resetPlacement.IsEnabled = p is not null && !sponsor;
         if (p is null) return;
