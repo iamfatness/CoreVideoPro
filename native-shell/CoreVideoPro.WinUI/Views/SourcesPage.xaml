@@ -75,6 +75,11 @@
                                 <MenuFlyoutItem Text="Solo · Input 1" Command="{x:Bind ViewModel.NewSceneCommand}" CommandParameter="solo"/>
                                 <MenuFlyoutItem Text="Two people · Inputs 1 and 2" Command="{x:Bind ViewModel.NewSceneCommand}" CommandParameter="two-person"/>
                                 <MenuFlyoutItem Text="Screen + presenter · Share and Input 1" Command="{x:Bind ViewModel.NewSceneCommand}" CommandParameter="screen-presenter"/>
+                                <MenuFlyoutItem Text="Panel grid · Inputs 1 to 6" Command="{x:Bind ViewModel.NewSceneCommand}" CommandParameter="panel-grid"/>
+                                <MenuFlyoutItem Text="Closing · Input 1" Command="{x:Bind ViewModel.NewSceneCommand}" CommandParameter="closing"/>
+                                <MenuFlyoutSeparator/>
+                                <!-- #1070: catalog scenes are deletable; this brings any removed one back. -->
+                                <MenuFlyoutItem Text="Restore starter scenes" Command="{x:Bind ViewModel.RestoreStarterScenesCommand}" ToolTipService.ToolTip="Re-add any removed Intro, Interview, Speaker + Slides, Panel or Closing scene"/>
                             </MenuFlyout>
                         </Button.Flyout>
                     </Button>

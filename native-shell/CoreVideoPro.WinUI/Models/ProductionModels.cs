@@ -1156,7 +1156,38 @@ public static class ProductionStateHelper
         IReadOnlyList<Participant> participants,
         IReadOnlyList<Scene> scenes,
         bool preferScreenShare = true,
-        int panelParticipantThreshold = 4)
+        int panelParticipantThreshold = 4) =>
+        WithExistingScene(BuildCatalogRecommendation(participants, preferScreenShare, panelParticipantThreshold), scenes);
+
+    /// <summary>#1070: the show-type presets name catalog ids (intro, speaker-slides, panel,
+    /// interview). Any of those can now be removed, so a recommendation whose scene is gone
+    /// names the first scene instead of an id the rail no longer has. The fallback is a
+    /// suggestion the operator can read, never a cut: confidence 0 and no bindings keep
+    /// MagicSceneCoordinator on its hold path (its gates are confidence &gt; 0, then &gt;= 88
+    /// for an auto-Take), so Set &amp; Forget cannot Take a scene the operator never chose
+    /// with another layout's bindings.</summary>
+    private static AutoProductionState WithExistingScene(AutoProductionState state, IReadOnlyList<Scene> scenes)
+    {
+        var resolved = Services.SceneCatalogPolicy.ResolveRecommendedSceneId(scenes, state.RecommendedSceneId);
+        if (string.Equals(resolved, state.RecommendedSceneId, StringComparison.Ordinal))
+        {
+            return state;
+        }
+
+        return new AutoProductionState
+        {
+            RecommendedSceneId = resolved,
+            Confidence = 0,
+            Reason = $"{state.Reason} (preferred scene '{state.RecommendedSceneId}' was removed; holding, first scene shown instead)",
+            Action = "hold",
+            SlotBindings = []
+        };
+    }
+
+    private static AutoProductionState BuildCatalogRecommendation(
+        IReadOnlyList<Participant> participants,
+        bool preferScreenShare,
+        int panelParticipantThreshold)
     {
         panelParticipantThreshold = Math.Clamp(panelParticipantThreshold, 2, 10);
         if (participants.Count == 0)

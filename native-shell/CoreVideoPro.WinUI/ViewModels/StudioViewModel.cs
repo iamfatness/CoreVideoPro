@@ -3888,9 +3888,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void RemoveScene(string sceneId)
     {
-        if (!CanRemoveScene(sceneId))
+        // #1070: catalog and custom scenes alike; only the on-air scene and the
+        // last visible scene are protected.
+        if (SceneRemovalRefusal(sceneId) is { } refusal)
         {
-            CommandStatus = "Only idle custom scenes can be removed";
+            CommandStatus = refusal;
             return;
         }
 
@@ -3900,17 +3902,98 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        if (string.Equals(PreviewSceneId, sceneId, StringComparison.Ordinal))
-        {
-            PreviewSceneId = ActiveSceneId;
-        }
+        PreviewSceneId = SceneCatalogPolicy.PreviewAfterRemoval(sceneId, PreviewSceneId, ActiveSceneId);
 
         _scenes.Remove(scene);
         _sceneRoutes.Remove(sceneId);
-        CommandStatus = $"{scene.Name} removed";
+        CommandStatus = SceneCatalogPolicy.IsCatalogScene(sceneId)
+            ? $"{scene.Name} removed - New scene or Restore starter scenes brings it back"
+            : $"{scene.Name} removed";
         RefreshSceneItems();
         RefreshProductionReadouts();
         SaveProductionOutputPreferences();
+    }
+
+    /// <summary>
+    /// #1070: re-seed any catalog scene (Intro through Closing) the operator removed. Each
+    /// comes back at its catalog position with fresh starter routes; existing scenes, Program
+    /// and Preview are untouched. Clears the persisted removal set on save.
+    /// </summary>
+    [RelayCommand]
+    private void RestoreStarterScenes()
+    {
+        var missing = SceneCatalogPolicy.MissingCatalogScenes(_scenes);
+        if (missing.Count == 0)
+        {
+            CommandStatus = "All starter scenes are already present";
+            return;
+        }
+
+        foreach (var (catalogScene, insertIndex) in missing)
+        {
+            _scenes.Insert(Math.Min(insertIndex, _scenes.Count), catalogScene);
+            _sceneRoutes[catalogScene.Id] = SceneRoutingService
+                .GetStarterRoutes(catalogScene)
+                .Select(route => route.Clone())
+                .ToList();
+        }
+
+        CommandStatus = missing.Count == 1
+            ? $"{missing[0].Scene.Name} restored"
+            : $"{missing.Count} starter scenes restored";
+        RefreshSceneItems();
+        RefreshProductionReadouts();
+        SaveProductionOutputPreferences();
+    }
+
+    /// <summary>
+    /// Launch-time half of #1070: drop the catalog scenes the operator removed in an earlier
+    /// session. Runs from ApplyProductionOutputPreferences, before the core is up, so Program
+    /// and Preview still sit on their construction defaults; when one of those defaults is in
+    /// the removed set it is moved to the first surviving scene through the backing fields
+    /// (the O1 vcam pattern: the setters would schedule core syncs the bridge cannot take yet).
+    /// </summary>
+    private void ApplyPersistedCatalogSceneRemovals(IReadOnlyList<string> removedCatalogSceneIds)
+    {
+        var removals = SceneCatalogPolicy.RemovalsToApply(_scenes, removedCatalogSceneIds, IsInternalMultiviewSoloScene);
+        if (removals.Count == 0)
+        {
+            return;
+        }
+
+        var survivor = SceneCatalogPolicy.SurvivorAfterRemovals(_scenes, removals, IsInternalMultiviewSoloScene);
+        if (survivor is null)
+        {
+            return;
+        }
+
+        var relocation = SceneCatalogPolicy.RelocateAfterRemovals(removals, _activeSceneId, _previewSceneId, survivor);
+        if (!string.Equals(relocation.ActiveSceneId, _activeSceneId, StringComparison.Ordinal))
+        {
+            _activeSceneId = relocation.ActiveSceneId;
+            OnPropertyChanged(nameof(ActiveSceneId));
+        }
+
+        if (!string.Equals(relocation.PreviewSceneId, _previewSceneId, StringComparison.Ordinal))
+        {
+            _previewSceneId = relocation.PreviewSceneId;
+            _lastValidPreviewSceneId = relocation.PreviewSceneId;
+            OnPropertyChanged(nameof(PreviewSceneId));
+        }
+
+        foreach (var sceneId in removals)
+        {
+            var scene = _scenes.FirstOrDefault(item => string.Equals(item.Id, sceneId, StringComparison.Ordinal));
+            if (scene is not null)
+            {
+                _scenes.Remove(scene);
+            }
+
+            _sceneRoutes.Remove(sceneId);
+        }
+
+        LaunchLog.Write($"scenes: {removals.Count} removed catalog scene(s) stay removed ({string.Join(",", removals)})");
+        RefreshSceneItems();
     }
 
     [RelayCommand]
@@ -11907,6 +11990,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     _sceneRoutes.TryGetValue(scene.Id, out var routes) ? routes : []))
                 .Select(saved=>_workspaceSavedScenes.TryGetValue(saved.Id,out var draft)?draft:saved)
                 .ToList(),
+            // v15 (#1070): catalog scenes the operator removed stay removed across launches.
+            RemovedCatalogSceneIds = SceneCatalogPolicy.RemovedCatalogSceneIds(_scenes),
             // B2 (v6): the whole master rack — live settings, both A/B slots,
             // the active slot, and the operator's saved presets. The ACTIVE
             // slot's stored copy is refreshed from the live controls first so
@@ -12247,6 +12332,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             RefreshSceneItems();
         }
+
+        // #1070: after the custom scenes are back (so the last-scene guard counts them),
+        // drop the catalog scenes removed in an earlier session.
+        ApplyPersistedCatalogSceneRemovals(preferences.RemovedCatalogSceneIds);
 
         RefreshAudioMonitorBindings();
         RefreshSceneBackgroundSelection();
@@ -12987,13 +13076,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         string.Equals(sceneId, MultiviewSoloSceneAId, StringComparison.Ordinal) ||
         string.Equals(sceneId, MultiviewSoloSceneBId, StringComparison.Ordinal);
 
-    private bool CanRemoveScene(string sceneId) =>
-        IsUserRemovableScene(sceneId) &&
-        !string.Equals(sceneId, ActiveSceneId, StringComparison.Ordinal);
+    // #1070: catalog scenes are removable like custom ones. The on-air scene and the
+    // last visible scene are the only protected ones (SceneCatalogPolicy).
+    private bool CanRemoveScene(string sceneId) => SceneRemovalRefusal(sceneId) is null;
 
-    private static bool IsUserRemovableScene(string sceneId) =>
-        sceneId.StartsWith("custom-", StringComparison.Ordinal) ||
-        sceneId.StartsWith("multiview-solo-", StringComparison.Ordinal);
+    private string? SceneRemovalRefusal(string sceneId) =>
+        SceneCatalogPolicy.RemovalRefusal(
+            sceneId,
+            ActiveSceneId,
+            VisibleScenes.Count,
+            IsInternalMultiviewSoloScene(sceneId));
 
     private string ResolveOnAirSceneLabel(string sceneId)
     {

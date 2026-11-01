@@ -63,7 +63,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "transport.engine.toggle", "transport.engine.set",
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
         "transport.virtualcam.name.set",
-        "scene.select", "scene.cueWithRoutes", "scene.route.set", "scene.dynamicGallery.create", "view.setMode",
+        "scene.select", "scene.cueWithRoutes", "scene.route.set", "scene.list", "scene.restoreStarters", "scene.dynamicGallery.create", "view.setMode",
         "source.capture.online.set", "input.assign", "input.unassign", "input.name", "input.inShow.set", "source.dropout.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
@@ -277,8 +277,19 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
 
             // ---- Scenes / view ------------------------------------------------------
             case "scene.select":
-                _vm.SelectSceneCommand.Execute(Str(args, 0));
-                return ControlInvokeResult.Success;
+            {
+                // #1070 review: an unknown id used to answer ok while the shell only wrote a
+                // status line. Refuse-closed like cueWithRoutes, and report what was queued.
+                var selectSceneId = Str(args, 0);
+                if (SceneSelectArgs.Refuse(selectSceneId, _vm.Scenes.Select(scene => scene.Id).ToList()) is { } selectError)
+                {
+                    return ControlInvokeResult.Fail(selectError);
+                }
+                _vm.SelectSceneCommand.Execute(selectSceneId);
+                return string.Equals(_vm.PreviewSceneId, selectSceneId, StringComparison.Ordinal)
+                    ? ControlInvokeResult.AppliedPreview(_vm.PreviewSceneId)
+                    : ControlInvokeResult.Fail($"Scene '{selectSceneId}' was not queued on Preview.");
+            }
             case "scene.cueWithRoutes":
                 if (!SceneCueWithRoutesArgs.TryParseRoutes(Str(args, 1), out var parsedRoutes, out var parseError))
                 {
@@ -288,6 +299,11 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             case "scene.route.set":
                 return CuePreviewWithRoutes(Str(args, 0),
                     new Dictionary<string, int?>(StringComparer.Ordinal) { [Str(args, 1)] = Int(args, 2) });
+            case "scene.list":
+                return ControlInvokeResult.WithData(ScenesJson());
+            case "scene.restoreStarters":
+                _vm.RestoreStarterScenesCommand.Execute(null);
+                return ControlInvokeResult.Success;
             case "scene.dynamicGallery.create":
                 _vm.NewDynamicGalleryCommand.Execute(null);
                 return ControlInvokeResult.Success;
@@ -728,6 +744,11 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
 
     private IReadOnlyList<ControlGraphicsLayout> ControlLayouts() =>
         _vm.GraphicsPlayout.Layouts.Select(l => new ControlGraphicsLayout(l.Id, l.Name, l.SceneId, l.Hotkey)).ToArray();
+
+    /// <summary>#1070: the scene rail as data, so a drill can verify a catalog id still exists
+    /// before cueing it (the outputs drill cues `intro` / `speaker-slides` by id). The hidden
+    /// multiview-solo scenes are filtered (SceneCatalogPolicy.SceneListJson).</summary>
+    private string ScenesJson() => SceneCatalogPolicy.SceneListJson(_vm.Scenes, _vm.PreviewSceneId, _vm.ActiveSceneId);
 
     private string LayoutsJson() => JsonSerializer.Serialize(new
     {
