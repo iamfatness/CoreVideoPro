@@ -279,7 +279,17 @@ try {
   # it is cued. A missing one is restored once (scene.restoreStarters re-seeds
   # the catalog scene with its starter routes, so the `<scene>-1` route ids the
   # plan names exist again); still missing after that is a hard stop.
-  $sceneProblems = @(Get-DrillSceneProblems -Scene $plan.Scene -Scenes @((Invoke-DrillQuery 'scene.list').data.scenes))
+  $sceneRail = $null
+  try { $sceneRail = @((Invoke-DrillQuery 'scene.list').data.scenes) }
+  catch {
+    if (-not (Test-DrillUnknownActionError $_.Exception.Message)) { throw }
+    # Installed app predates scene.list: nothing to compare against, so the cue
+    # itself stays the check (an unknown scene is still a refused cueWithRoutes).
+    Write-DrillLog "scene.list is not supported by this install (predates #1070); scene check skipped, cueWithRoutes will refuse an unknown scene"
+    $notes += "Installed app does not support scene.list (predates #1070); the planned scene '$($plan.Scene)' was not verified before cueing."
+    $drill.notes = $notes; Write-DrillJson $drill 'drill.json'
+  }
+  $sceneProblems = @(if ($null -ne $sceneRail) { Get-DrillSceneProblems -Scene $plan.Scene -Scenes $sceneRail })
   if ($sceneProblems.Count) {
     Write-DrillLog "$($sceneProblems -join '; '); restoring starter scenes before cueing"
     Invoke-DrillAction 'scene.restoreStarters' @()

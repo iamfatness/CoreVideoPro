@@ -546,6 +546,10 @@ Check 'planned scene is verified on the rail before cueing; a removed catalog sc
   Assert (@(Get-DrillSceneProblems -Scene 'interview' -Scenes $rail).Count -eq 0) 'present scene reported missing'
   Assert (@(Get-DrillSceneProblems -Scene 'speaker-slides' -Scenes @()).Count -eq 1) 'empty rail must be a problem'
   Assert ((Get-DrillSceneProblems -Scene 'speaker-slides' -Scenes $null) -match 'none listed') 'null rail text'
+  # An install that predates scene.list answers HTTP 400 Unknown action: skip the check, not the run.
+  Assert (Test-DrillUnknownActionError "scene.list {""action"":""scene.list"",""args"":[]} failed: HTTP 400: {""ok"":false,""error"":""Unknown action 'scene.list'.""}") 'unknown-action 400 not recognised'
+  Assert (-not (Test-DrillUnknownActionError "scene.list failed: HTTP 422: {""ok"":false,""error"":""Unknown scene 'intro'.""}")) 'a 422 refusal must not be treated as unsupported'
+  Assert (-not (Test-DrillUnknownActionError "scene.list failed: Unable to connect to the remote server")) 'a transport error must not be treated as unsupported'
   # The plan's scenes are the catalog ids the drill cues, so the check guards both modes.
   Assert ((Get-DrillWorkloadPlan -WebcamSourceId 'capture:f4978a7f6d614c0d').Scene -eq 'speaker-slides') 'webcam plan scene'
   Assert ((Get-DrillWorkloadPlan -WebcamSourceId '' -MediaSourceId $clipId).Scene -eq 'intro') 'no-webcam plan scene'

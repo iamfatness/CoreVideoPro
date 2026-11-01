@@ -246,4 +246,21 @@ public sealed class ControlActionRegistryTests
         Assert.Equal(("open", "Open", "intro", "Shift+F1"), (layout.GetProperty("Id").GetString(), layout.GetProperty("Name").GetString(), layout.GetProperty("SceneId").GetString(), layout.GetProperty("Hotkey").GetString()));
         Assert.Equal(0, empty.GetProperty("GraphicsLayouts").GetArrayLength());
     }
+
+    // #1070: the rail read and the catalog restore take no arguments and bind with none.
+    [Fact]
+    public void SceneReadAndRestoreActionsTakeNoArgs()
+    {
+        foreach (var id in new[] { "scene.list", "scene.restoreStarters" })
+        {
+            Assert.True(ControlActionRegistry.TryGet(id, out var descriptor), id);
+            Assert.Empty(descriptor.Params);
+            Assert.True(ControlActionRegistry.TryBind(id, System.Array.Empty<object?>(), out var bound, out var error), error);
+            Assert.Empty(bound);
+        }
+        Assert.True(ControlActionRegistry.TryGet("scene.list", out var list));
+        Assert.Contains("multiview-solo", list.Description);
+        Assert.True(ControlActionRegistry.TryGet("scene.select", out var select));
+        Assert.Contains("Unknown scene fails", select.Description);
+    }
 }

@@ -78,7 +78,7 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("name", s, false) }),
 
             // ---- Scenes / view ----------------------------------------------------------
-            new("scene.select", "Select scene", "Cue a scene to Preview by id.",
+            new("scene.select", "Select scene", "Cue a scene to Preview by id. Unknown scene fails and changes nothing; reply includes previewSceneId when applied.",
                 new[] { new ControlParam("sceneId", s, true) }),
             new("scene.cueWithRoutes", "Cue scene with routes",
                 "Cue a scene to Preview and point named routes at Show Input slots. JSON object: routeId → slot number or null (empty box). Unknown scene, route or slot fails and changes nothing. Reply includes previewSceneId when applied.",
@@ -96,7 +96,7 @@ public static class ControlActionRegistry
                     new ControlParam("slot", i, true, "Show Input slot 1-10")
                 }),
             new("scene.list", "List scenes",
-                "Read the scene rail (id, name, layout) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id."),
+                "Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id."),
             new("scene.restoreStarters", "Restore starter scenes",
                 "Re-add any removed catalog scene (intro, interview, speaker-slides, panel, closing) at its catalog position with fresh starter routes. Existing scenes, Program and Preview are untouched."),
             new("scene.dynamicGallery.create", "Create CoreVideo Tiles",

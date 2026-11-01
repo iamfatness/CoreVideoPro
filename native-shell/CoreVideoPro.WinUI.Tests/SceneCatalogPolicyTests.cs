@@ -97,4 +97,58 @@ public sealed class SceneCatalogPolicyTests
         Assert.Equal("interview", SceneCatalogPolicy.ResolveRecommendedSceneId(scenes, "interview"));
         Assert.Equal("panel", SceneCatalogPolicy.ResolveRecommendedSceneId([], "panel"));
     }
+
+    [Fact]
+    public void RemovingThePreviewSceneMovesPreviewToProgramOnly()
+    {
+        Assert.Equal("speaker-slides", SceneCatalogPolicy.PreviewAfterRemoval("intro", previewSceneId: "intro", activeSceneId: "speaker-slides"));
+        Assert.Equal("panel", SceneCatalogPolicy.PreviewAfterRemoval("intro", previewSceneId: "panel", activeSceneId: "speaker-slides"));
+    }
+
+    [Fact]
+    public void LaunchRelocationPicksTheFirstVisibleSurvivorAndMovesOnlyTheRemovedDefaults()
+    {
+        var scenes = new List<Scene>
+        {
+            new() { Id = "multiview-solo-a", Name = "Solo", Layout = "host-focus" },
+        };
+        scenes.AddRange(ProductionCatalog.Scenes);
+        var removals = new[] { "intro", "speaker-slides" };
+        var internalScene = (string id) => id.StartsWith("multiview-solo-", StringComparison.Ordinal);
+
+        // Internal scenes are never the survivor; the first visible non-removed scene is.
+        Assert.Equal("interview", SceneCatalogPolicy.SurvivorAfterRemovals(scenes, removals, internalScene));
+        Assert.Null(SceneCatalogPolicy.SurvivorAfterRemovals(scenes, ProductionCatalog.Scenes.Select(scene => scene.Id).ToList(), internalScene));
+
+        // Both construction defaults sit on the removed speaker-slides: both move.
+        Assert.Equal(new SceneRelocation("interview", "interview"),
+            SceneCatalogPolicy.RelocateAfterRemovals(removals, activeSceneId: "speaker-slides", previewSceneId: "speaker-slides", survivorSceneId: "interview"));
+        // Only the removed one moves; a Program/Preview the operator left elsewhere stays put.
+        Assert.Equal(new SceneRelocation("panel", "interview"),
+            SceneCatalogPolicy.RelocateAfterRemovals(removals, activeSceneId: "panel", previewSceneId: "intro", survivorSceneId: "interview"));
+        Assert.Equal(new SceneRelocation("panel", "closing"),
+            SceneCatalogPolicy.RelocateAfterRemovals(removals, activeSceneId: "panel", previewSceneId: "closing", survivorSceneId: "interview"));
+    }
+
+    [Fact]
+    public void SceneListPayloadIsTheRailOnlyWithPreviewAndProgram()
+    {
+        var scenes = new List<Scene>(ProductionCatalog.Scenes)
+        {
+            new() { Id = "multiview-solo-a", Name = "Solo", Layout = "host-focus" },
+            new() { Id = "custom-1a2b3c4d", Name = "Mine", Layout = "two-up" },
+        };
+
+        using var doc = System.Text.Json.JsonDocument.Parse(SceneCatalogPolicy.SceneListJson(scenes, "custom-1a2b3c4d", "intro"));
+        var root = doc.RootElement;
+        var rows = root.GetProperty("scenes").EnumerateArray().ToList();
+        Assert.Equal(["intro", "interview", "speaker-slides", "panel", "closing", "custom-1a2b3c4d"],
+            rows.Select(row => row.GetProperty("id").GetString()));
+        Assert.DoesNotContain(rows, row => row.GetProperty("id").GetString()!.StartsWith("multiview-solo-", StringComparison.Ordinal));
+        Assert.Equal("Speaker + Slides", rows[2].GetProperty("name").GetString());
+        Assert.Equal("speaker-slides", rows[2].GetProperty("layout").GetString());
+        Assert.Equal("custom-1a2b3c4d", root.GetProperty("previewSceneId").GetString());
+        Assert.Equal("intro", root.GetProperty("activeSceneId").GetString());
+        Assert.Equal(3, rows[0].EnumerateObject().Count());
+    }
 }

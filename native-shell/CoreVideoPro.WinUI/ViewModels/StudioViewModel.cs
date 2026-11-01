@@ -3902,10 +3902,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        if (string.Equals(PreviewSceneId, sceneId, StringComparison.Ordinal))
-        {
-            PreviewSceneId = ActiveSceneId;
-        }
+        PreviewSceneId = SceneCatalogPolicy.PreviewAfterRemoval(sceneId, PreviewSceneId, ActiveSceneId);
 
         _scenes.Remove(scene);
         _sceneRoutes.Remove(sceneId);
@@ -3964,23 +3961,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var survivor = _scenes.FirstOrDefault(scene =>
-            !IsInternalMultiviewSoloScene(scene.Id) && !removals.Contains(scene.Id, StringComparer.Ordinal));
+        var survivor = SceneCatalogPolicy.SurvivorAfterRemovals(_scenes, removals, IsInternalMultiviewSoloScene);
         if (survivor is null)
         {
             return;
         }
 
-        if (removals.Contains(_activeSceneId, StringComparer.Ordinal))
+        var relocation = SceneCatalogPolicy.RelocateAfterRemovals(removals, _activeSceneId, _previewSceneId, survivor);
+        if (!string.Equals(relocation.ActiveSceneId, _activeSceneId, StringComparison.Ordinal))
         {
-            _activeSceneId = survivor.Id;
+            _activeSceneId = relocation.ActiveSceneId;
             OnPropertyChanged(nameof(ActiveSceneId));
         }
 
-        if (removals.Contains(_previewSceneId, StringComparer.Ordinal))
+        if (!string.Equals(relocation.PreviewSceneId, _previewSceneId, StringComparison.Ordinal))
         {
-            _previewSceneId = survivor.Id;
-            _lastValidPreviewSceneId = survivor.Id;
+            _previewSceneId = relocation.PreviewSceneId;
+            _lastValidPreviewSceneId = relocation.PreviewSceneId;
             OnPropertyChanged(nameof(PreviewSceneId));
         }
 

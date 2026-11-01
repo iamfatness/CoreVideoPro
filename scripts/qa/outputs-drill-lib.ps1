@@ -430,6 +430,14 @@ function Get-DrillSceneProblems {
   return @("Scene '$Scene' is not on the scene rail (scenes: $seen); a removed catalog scene stays removed until restored (#1070)")
 }
 
+# The drill runs from a clone against an INSTALLED app; an install that predates
+# #1070 answers `scene.list` with HTTP 400 "Unknown action". That is "cannot
+# check", not "scene missing": Invoke-DrillQuery's throw text carries the router
+# body, and this tells that case apart from a real failure.
+function Test-DrillUnknownActionError([string]$Message) {
+  return [bool]($Message -match 'HTTP 400' -and $Message -match "Unknown action '")
+}
+
 function Test-DrillAdmissionsReady {
   param($Snapshot)
   $admissions = @($Snapshot.programSourceAdmission.sources)

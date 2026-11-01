@@ -1,6 +1,10 @@
+using System.Text.Json;
 using CoreVideoPro.WinUI.Models;
 
 namespace CoreVideoPro.WinUI.Services;
+
+/// <summary>Where Program and Preview land after launch-time catalog removals.</summary>
+public sealed record SceneRelocation(string ActiveSceneId, string PreviewSceneId);
 
 /// <summary>
 /// Scene removal and catalog-restore rules (#1070). Any scene that is not on air and not the
@@ -13,6 +17,51 @@ public static class SceneCatalogPolicy
 {
     public const string OnAirRefusal = "The on-air scene cannot be removed";
     public const string LastSceneRefusal = "The last scene cannot be removed";
+
+    /// <summary>The hidden multiview double-click one-up scenes; never part of the rail.</summary>
+    public const string InternalScenePrefix = "multiview-solo-";
+
+    public static bool IsInternalScene(string sceneId) =>
+        sceneId.StartsWith(InternalScenePrefix, StringComparison.Ordinal);
+
+    private static readonly JsonSerializerOptions SceneListJsonOptions = new(JsonSerializerDefaults.Web);
+
+    /// <summary>The `scene.list` reply: the rail only (internal scenes filtered), with the
+    /// operator's Preview and Program ids. camelCase, embedded by the router under `data`.</summary>
+    public static string SceneListJson(IEnumerable<Scene> scenes, string previewSceneId, string activeSceneId) =>
+        JsonSerializer.Serialize(new
+        {
+            scenes = scenes
+                .Where(scene => !IsInternalScene(scene.Id))
+                .Select(scene => new { id = scene.Id, name = scene.Name, layout = scene.Layout })
+                .ToList(),
+            previewSceneId,
+            activeSceneId,
+        }, SceneListJsonOptions);
+
+    /// <summary>Removing the Preview scene moves Preview to Program; removing any other
+    /// scene leaves Preview alone.</summary>
+    public static string PreviewAfterRemoval(string removedSceneId, string previewSceneId, string activeSceneId) =>
+        string.Equals(previewSceneId, removedSceneId, StringComparison.Ordinal) ? activeSceneId : previewSceneId;
+
+    /// <summary>The first visible scene that survives the removals, or null when none would.</summary>
+    public static string? SurvivorAfterRemovals(
+        IReadOnlyList<Scene> scenes,
+        IReadOnlyCollection<string> removals,
+        Func<string, bool> isInternalScene) =>
+        scenes.FirstOrDefault(scene =>
+            !isInternalScene(scene.Id) && !removals.Contains(scene.Id, StringComparer.Ordinal))?.Id;
+
+    /// <summary>Program and Preview after launch-time removals: each moves to the survivor
+    /// only when its own scene is being removed.</summary>
+    public static SceneRelocation RelocateAfterRemovals(
+        IReadOnlyCollection<string> removals,
+        string activeSceneId,
+        string previewSceneId,
+        string survivorSceneId) =>
+        new(
+            removals.Contains(activeSceneId, StringComparer.Ordinal) ? survivorSceneId : activeSceneId,
+            removals.Contains(previewSceneId, StringComparer.Ordinal) ? survivorSceneId : previewSceneId);
 
     public static bool IsCatalogScene(string sceneId) =>
         ProductionCatalog.Scenes.Any(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal));
@@ -112,7 +161,7 @@ public static class SceneCatalogPolicy
     }
 
     /// <summary>
-    /// The scene a show-type recommendation should cue when its preferred catalog scene has
+    /// The scene a show-type recommendation should name when its preferred catalog scene has
     /// been removed: the preferred id when present, otherwise the first scene.
     /// </summary>
     public static string ResolveRecommendedSceneId(IReadOnlyList<Scene> scenes, string preferredSceneId)

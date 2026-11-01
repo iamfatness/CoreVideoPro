@@ -107,7 +107,11 @@ public sealed class AutomationPolicyTests
 
         Assert.Equal("intro", recommendation.RecommendedSceneId);
         Assert.Contains("panel", recommendation.Reason);
-        Assert.Equal("suggest", recommendation.Action);
+        // The fallback is shown, never cut: MagicSceneCoordinator holds on confidence <= 0 and
+        // auto-Takes only at >= 88 with bindings, so neither gate can open on it.
+        Assert.Equal(0, recommendation.Confidence);
+        Assert.Equal("hold", recommendation.Action);
+        Assert.Empty(recommendation.SlotBindings);
 
         var intact = ProductionStateHelper.BuildAutomationRecommendation(
             participants, Scenes, preferScreenShare: true, panelParticipantThreshold: 4);

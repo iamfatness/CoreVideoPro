@@ -69,15 +69,19 @@ set that would empty the rail is applied only as far as one visible scene remain
 
 - **Magic Scene / show-type presets** (`ProductionStateHelper.BuildAutomationRecommendation`)
   recommend `intro` / `interview` / `speaker-slides` / `panel`. When the recommended scene is
-  not on the rail the recommendation falls back to the **first scene** and says so in its
-  reason (`SceneCatalogPolicy.ResolveRecommendedSceneId`); the native director branch already
-  required the scene to exist.
+  not on the rail the recommendation names the **first scene** and says so in its reason
+  (`SceneCatalogPolicy.ResolveRecommendedSceneId`), but as a suggestion only: confidence 0,
+  action `hold`, no slot bindings, so `MagicSceneCoordinator` stays on its hold path and
+  Set & Forget never auto-Takes a scene the operator did not choose with another layout's
+  bindings. The native director branch already required the scene to exist.
 - **Shot layouts** (`graphics.layout.*`) carry `sceneExists` in their listing and a layout whose
   scene is gone is reported, not cued (#1076).
 - **Outputs drill** (`scripts/qa/outputs-drill.ps1`) cues `speaker-slides` (or `intro` with
   `-NoWebcam`) by id. It reads `scene.list` first, invokes `scene.restoreStarters` once when the
   planned scene is missing, re-reads, and refuses to start any output if it is still absent
-  (`docs/qa/outputs-drill.md` step 6).
+  (`docs/qa/outputs-drill.md` step 6). The restore does not outlive the run: the drill puts the
+  preferences file back byte-for-byte after the app exits. An installed app that predates
+  `scene.list` (HTTP 400) skips the check with a note.
 - `DirectorBindingHoldPolicy` compares ids only; a missing id simply never matches.
 
 ## Control API
@@ -86,7 +90,8 @@ set that would empty the rail is applied only as far as one visible scene remain
 |---|---|
 | `scene.list` | read: `{scenes:[{id,name,layout}], previewSceneId, activeSceneId}` under `data` |
 | `scene.restoreStarters` | re-add any removed catalog scene; no-op when all are present |
-| `scene.select`, `scene.cueWithRoutes`, `scene.route.set` | unchanged; an unknown scene id is still a `422` that changes nothing |
+| `scene.select` | now refuse-closed like the two below: an unknown scene id is a `422` that changes nothing, and the reply carries `previewSceneId` when applied (it used to answer `ok` and only write a status line) |
+| `scene.cueWithRoutes`, `scene.route.set` | unchanged; an unknown scene id is a `422` that changes nothing |
 
 ## Tests
 
@@ -94,8 +99,11 @@ set that would empty the rail is applied only as far as one visible scene remain
 `StarterSceneFactoryTests.CatalogOnlyLayoutsHaveStartersBoundToDistinctInputs`,
 `AutomationPolicyTests.RecommendationFallsBackToTheFirstSceneWhenThePresetSceneWasRemoved`,
 `ProductionOutputPreferencesStoreTests.Serializer_RoundTripsRemovedCatalogSceneIds`,
-`ControlActionRegistryTests.CoreActions_ArePresent` and
+`SceneSelectArgsTests`, `ControlActionRegistryTests.CoreActions_ArePresent` /
+`SceneReadAndRestoreActionsTakeNoArgs` and
 `StudioControlSurfaceCoverageTests.Adapter_HandlesEveryRegisteredAction` (new ids), and the
 drill lib check in `scripts/qa/outputs-drill.test.ps1`. `StudioViewModel` is not constructible
-in tests, so the launch-time removal path (`ApplyPersistedCatalogSceneRemovals`) is covered
-through the policy, not end to end.
+in tests, so the launch-time removal path (`ApplyPersistedCatalogSceneRemovals`), the
+Preview-moves-to-Program rule and the `scene.list` payload are covered through the policy
+statics (`SurvivorAfterRemovals`, `RelocateAfterRemovals`, `PreviewAfterRemoval`,
+`SceneListJson`), not end to end.

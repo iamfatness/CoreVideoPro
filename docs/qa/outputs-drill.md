@@ -131,9 +131,12 @@ With a webcam, media sources are not part of the workload.
    catalog position with starter routes, so the `<scene>-1` / `-2` route ids
    the plan names exist again), re-reads the rail, and refuses to start any
    output if the scene is still absent. A restore is logged and recorded in the
-   `notes` of `drill.json`; the restored scene is left in the profile (it is a
-   catalog scene the operator can delete again). It then waits until every
-   check has held for 30 s (300 s cap).
+   `notes` of `drill.json`; it does not outlive the run, because step 10
+   restores the preferences file byte-for-byte once the app has exited, so the
+   operator's deletion is back afterwards. An installed app that predates
+   `scene.list` (HTTP 400 "Unknown action") skips the check with a logged note
+   and relies on `scene.cueWithRoutes` refusing an unknown scene. It then waits
+   until every check has held for 30 s (300 s cap).
    The checks are remotes at 1920x1080, captures ingesting, every ISO writing,
    Program source admissions consistent, and one stream sender delivering at
    55 fps or more with no retry and no warnings. The sink must also have

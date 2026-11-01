@@ -277,8 +277,19 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
 
             // ---- Scenes / view ------------------------------------------------------
             case "scene.select":
-                _vm.SelectSceneCommand.Execute(Str(args, 0));
-                return ControlInvokeResult.Success;
+            {
+                // #1070 review: an unknown id used to answer ok while the shell only wrote a
+                // status line. Refuse-closed like cueWithRoutes, and report what was queued.
+                var selectSceneId = Str(args, 0);
+                if (SceneSelectArgs.Refuse(selectSceneId, _vm.Scenes.Select(scene => scene.Id).ToList()) is { } selectError)
+                {
+                    return ControlInvokeResult.Fail(selectError);
+                }
+                _vm.SelectSceneCommand.Execute(selectSceneId);
+                return string.Equals(_vm.PreviewSceneId, selectSceneId, StringComparison.Ordinal)
+                    ? ControlInvokeResult.AppliedPreview(_vm.PreviewSceneId)
+                    : ControlInvokeResult.Fail($"Scene '{selectSceneId}' was not queued on Preview.");
+            }
             case "scene.cueWithRoutes":
                 if (!SceneCueWithRoutesArgs.TryParseRoutes(Str(args, 1), out var parsedRoutes, out var parseError))
                 {
@@ -730,12 +741,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         _vm.GraphicsPlayout.Layouts.Select(l => new ControlGraphicsLayout(l.Id, l.Name, l.SceneId, l.Hotkey)).ToArray();
 
     /// <summary>#1070: the scene rail as data, so a drill can verify a catalog id still exists
-    /// before cueing it (the outputs drill cues `intro` / `speaker-slides` by id).</summary>
-    private string ScenesJson() => JsonSerializer.Serialize(new
-    {
-        scenes = _vm.Scenes.Select(scene => new { id = scene.Id, name = scene.Name, layout = scene.Layout }),
-        previewSceneId = _vm.PreviewSceneId, activeSceneId = _vm.ActiveSceneId,
-    }, PlayoutJson);
+    /// before cueing it (the outputs drill cues `intro` / `speaker-slides` by id). The hidden
+    /// multiview-solo scenes are filtered (SceneCatalogPolicy.SceneListJson).</summary>
+    private string ScenesJson() => SceneCatalogPolicy.SceneListJson(_vm.Scenes, _vm.PreviewSceneId, _vm.ActiveSceneId);
 
     private string LayoutsJson() => JsonSerializer.Serialize(new
     {

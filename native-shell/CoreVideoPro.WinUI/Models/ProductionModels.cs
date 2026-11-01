@@ -1161,7 +1161,11 @@ public static class ProductionStateHelper
 
     /// <summary>#1070: the show-type presets name catalog ids (intro, speaker-slides, panel,
     /// interview). Any of those can now be removed, so a recommendation whose scene is gone
-    /// falls back to the first scene instead of cueing an id the rail no longer has.</summary>
+    /// names the first scene instead of an id the rail no longer has. The fallback is a
+    /// suggestion the operator can read, never a cut: confidence 0 and no bindings keep
+    /// MagicSceneCoordinator on its hold path (its gates are confidence &gt; 0, then &gt;= 88
+    /// for an auto-Take), so Set &amp; Forget cannot Take a scene the operator never chose
+    /// with another layout's bindings.</summary>
     private static AutoProductionState WithExistingScene(AutoProductionState state, IReadOnlyList<Scene> scenes)
     {
         var resolved = Services.SceneCatalogPolicy.ResolveRecommendedSceneId(scenes, state.RecommendedSceneId);
@@ -1173,10 +1177,10 @@ public static class ProductionStateHelper
         return new AutoProductionState
         {
             RecommendedSceneId = resolved,
-            Confidence = state.Confidence,
-            Reason = $"{state.Reason} (preferred scene '{state.RecommendedSceneId}' was removed; using the first scene)",
-            Action = state.Action,
-            SlotBindings = state.SlotBindings
+            Confidence = 0,
+            Reason = $"{state.Reason} (preferred scene '{state.RecommendedSceneId}' was removed; holding, first scene shown instead)",
+            Action = "hold",
+            SlotBindings = []
         };
     }
 
