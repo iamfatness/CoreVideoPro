@@ -5003,12 +5003,33 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         if (wall.style.nameEachTile) {
           const std::string name = tilesMemberDisplayName(slots[index]);
           if (!name.empty()) {
+            // Inset from the tile edge: the grid gutter, or the decoration's
+            // border stroke plus the bite of a rounded corner, whichever is
+            // larger (tilesNameInsetPx; both decoration values are canvas px).
+            // Pinned tiles use their own rect (canvasTileRect already is it).
             const double gutterWall = wall.style.gutterPercent <= 0.0
                 ? 0.0 : std::clamp(1.0 / (100.0 / wall.style.gutterPercent), 0.0, 0.1);
-            const float gutterYCanvas = static_cast<float>(gutterWall * wall.rect.height);
-            const float gutterXCanvas = static_cast<float>(gutterWall / wallAspect * wall.rect.width);
-            const auto placed = compositor::placeTilesNameLine(
-                canvasTileRect, gutterXCanvas, gutterYCanvas, lowerThirdAppearance_, canvasAspect);
+            const double canvasH = std::max(1, outputHeight_), canvasW = std::max(1, outputWidth_);
+            const double insetYPx = compositor::tilesNameInsetPx(gutterWall * wall.rect.height * canvasH,
+                wall.style.decoration.borderWidth, wall.style.decoration.radius);
+            const double insetXPx = compositor::tilesNameInsetPx(gutterWall / wallAspect * wall.rect.width * canvasW,
+                wall.style.decoration.borderWidth, wall.style.decoration.radius);
+            const float insetY = static_cast<float>(insetYPx / canvasH);
+            const float insetX = static_cast<float>(insetXPx / canvasW);
+            // Memo: a steady wall re-emits the same band every tick on every
+            // bus; only recompute when something that feeds the geometry moved.
+            auto& memo = tilesNameLineMemo_[slots[index]];
+            const bool memoHit = memo.name == name && memo.insetX == insetX && memo.insetY == insetY &&
+                memo.tileRect.x == canvasTileRect.x && memo.tileRect.y == canvasTileRect.y &&
+                memo.tileRect.width == canvasTileRect.width && memo.tileRect.height == canvasTileRect.height &&
+                memo.style == lowerThirdAppearance_;
+            if (!memoHit) {
+              memo.name = name; memo.insetX = insetX; memo.insetY = insetY;
+              memo.tileRect = {canvasTileRect.x, canvasTileRect.y, canvasTileRect.width, canvasTileRect.height};
+              memo.style = lowerThirdAppearance_;
+              memo.placed = compositor::placeTilesNameLine(canvasTileRect, insetX, insetY, lowerThirdAppearance_, canvasAspect);
+            }
+            const auto& placed = memo.placed;
             if (placed.shown) {
               modules::CompositorRenderPlanLayer nameLayer;
               nameLayer.layerId = "tile-name:" + slots[index];
@@ -5028,6 +5049,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
               nameLayer.overlay.keyPhase = "on-air";   // the TILE's entrance animates it
               nameLayer.overlay.keyProgress = 1.f;
               nameLayer.overlay.keyer = "downstream";
+              nameLayer.overlay.holdLastRaster = true;  // previous raster, never a bare bar, while preparing
               nameLayer.overlay.brandColor = brandColor_;
               nameLayer.overlay.brandAccentColor = brandAccentColor_;
               nameLayer.overlay.brandBackgroundColor = brandBackgroundColor_;
@@ -5035,6 +5057,14 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
               renderPlan.layers.push_back(std::move(nameLayer));
             }
           }
+        }
+      }
+      // Bounded memo: both buses' walls share it (<= 64 members each), so it
+      // is only swept when it outgrows that, dropping members this wall did
+      // not draw. The other bus simply re-derives its lines next tick.
+      if (tilesNameLineMemo_.size() > 128) {
+        for (auto it = tilesNameLineMemo_.begin(); it != tilesNameLineMemo_.end();) {
+          it = drawn.contains(it->first) ? std::next(it) : tilesNameLineMemo_.erase(it);
         }
       }
     }

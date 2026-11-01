@@ -6,11 +6,13 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <chrono>
 #include <map>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1718,6 +1720,7 @@ TEST(TilesNameLines, EachNamedMemberGetsOneLowerThirdStyledLineInsideItsTile) {
     EXPECT_TRUE(line->overlay.appearance.enabled);
     EXPECT_EQ(line->overlay.appearance.titleSize, 0);
     EXPECT_EQ(line->overlay.keyPhase, "on-air");
+    EXPECT_TRUE(line->overlay.holdLastRaster);  // previous raster, never a bare bar, while preparing
     EXPECT_GT(line->order, tile->order);
     // Inside the tile rect.
     EXPECT_GE(line->rect.x, tile->rect.x - 1e-6f);
@@ -1757,11 +1760,14 @@ TEST(TilesNameLines, LinesFollowMembershipAndNeverOutnumberTheTiles) {
   EXPECT_EQ(countNameLines(core.lastRenderPlanForTest()), 1);
 }
 
-TEST(TilesNameLines, TilesTooSmallForAReadableLineStayUnlabelled) {
+namespace {
+// A wall of `count` named members through the REAL solver (defaults: 16:9,
+// 0.741% gutter and margin), returning (tiles drawn, name lines emitted).
+std::pair<int, int> namedWallCounts(int count) {
   MediaCore core;
   std::vector<std::string> members;
   std::vector<corevideo::compositor::TilesMemberFrameAge> ages;
-  for (int i = 1; i <= 64; ++i) {
+  for (int i = 1; i <= count; ++i) {
     members.push_back("zoom:" + std::to_string(i));
     ages.push_back({"zoom:" + std::to_string(i), true, 0});
   }
@@ -1772,9 +1778,80 @@ TEST(TilesNameLines, TilesTooSmallForAReadableLineStayUnlabelled) {
   }
   core.setTilesMemberFrameAgesForTest(ages);
   const auto& plan = core.lastRenderPlanForTest();
-  // 64 tiles are drawn, every one named, and none is large enough for a line.
-  EXPECT_EQ(countLayersOfKind(plan, "participant-video"), 64);
-  EXPECT_EQ(countNameLines(plan), 0);
+  return {countLayersOfKind(plan, "participant-video"), countNameLines(plan)};
+}
+}  // namespace
+
+// The readable threshold is judged against the solver's real tile heights
+// (margins and gutters included), never an idealised 1/N (#1073 review).
+TEST(TilesNameLines, TheRealSolverDecidesHowManyNamesAWallCarries) {
+  EXPECT_EQ(namedWallCounts(42), (std::pair<int, int>{42, 42}));  // 7x6: 149.1 px tiles, 29.3% band
+  EXPECT_EQ(namedWallCounts(49), (std::pair<int, int>{49, 49}));  // 7x7: 145.1 px tiles, 30.1% band
+  EXPECT_EQ(namedWallCounts(50), (std::pair<int, int>{50, 0}));   // 8x7, width-bound: 129.9 px, 33.6%
+  EXPECT_EQ(namedWallCounts(64), (std::pair<int, int>{64, 0}));   // 8x8: 126.0 px tiles, 34.7%
+}
+
+// A pinned tile is laid out from its own override rect, not the grid; its
+// name sits inside THAT rect, inset by the decoration where it is wider than
+// the gutter (a rounded corner must not swallow the band).
+TEST(TilesNameLines, APinnedTilesNameSitsInsideItsOwnRectClearOfTheRoundedCorner) {
+  MediaCore core;
+  const auto command = corevideo::rpc::Json::parse(R"({"type":"load-scene-graph","sceneId":"pinned","routes":[],
+    "tiles":{"layerId":"tiles:pinned","members":["zoom:1","zoom:2"],
+      "style":{"nameEachTile":true,"backgroundColor":"#123456","borderShape":"rounded","borderThickness":6,"cornerRadius":48},
+      "overrides":{"zoom:1":{"rect":{"x":0.55,"y":0.5,"w":0.4,"h":0.4}}}}})");
+  ASSERT_TRUE(command.has_value());
+  (void)core.applyCommands(corevideo::rpc::Json::Array{*command,
+      corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "zoom:1"}, {"displayName", "Pinned guest"}},
+      corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "zoom:2"}, {"displayName", "Grid guest"}}});
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
+  const auto& plan = core.lastRenderPlanForTest();
+  const auto* pinned = findLayer(plan, "tile:zoom:1");
+  const auto* line = findLayer(plan, "tile-name:zoom:1");
+  ASSERT_NE(pinned, nullptr); ASSERT_NE(line, nullptr);
+  EXPECT_NEAR(pinned->rect.x, .55f, 1e-6f); EXPECT_NEAR(pinned->rect.width, .4f, 1e-6f);
+  // Inside the pinned rect.
+  EXPECT_GE(line->rect.x, pinned->rect.x);
+  EXPECT_LE(line->rect.x + line->rect.width, pinned->rect.x + pinned->rect.width + 1e-6f);
+  EXPECT_LE(line->rect.y + line->rect.height, pinned->rect.y + pinned->rect.height + 1e-6f);
+  // Inset by border + corner bite (6 + 48*(1-1/sqrt2) = 20.06 px), which beats
+  // the 8 px gutter: measured in canvas px on both axes.
+  const double bite = 6 + 48 * (1 - 1 / std::sqrt(2.0));
+  EXPECT_NEAR((line->rect.x - pinned->rect.x) * 1920, bite, .05);
+  EXPECT_NEAR(((pinned->rect.y + pinned->rect.height) - (line->rect.y + line->rect.height)) * 1080, bite, .05);
+  // The grid member next to it is named too, from its own (grid) rect.
+  const auto* grid = findLayer(plan, "tile:zoom:2");
+  const auto* gridLine = findLayer(plan, "tile-name:zoom:2");
+  ASSERT_NE(grid, nullptr); ASSERT_NE(gridLine, nullptr);
+  EXPECT_LE(gridLine->rect.x + gridLine->rect.width, grid->rect.x + grid->rect.width + 1e-6f);
+}
+
+// A steady wall memoises its placements; a moved tile, a renamed member or a
+// restyled scene invalidates them. Observable only through the output: the
+// same plan twice, then a different one after each change.
+TEST(TilesNameLines, TheMemoNeverServesAStalePlacement) {
+  MediaCore core;
+  loadNamedWall(core, {"zoom:1"}, true);
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
+  const auto first = *findLayer(core.lastRenderPlanForTest(), "tile-name:zoom:1");
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
+  const auto again = *findLayer(core.lastRenderPlanForTest(), "tile-name:zoom:1");
+  EXPECT_EQ(first.rect.x, again.rect.x); EXPECT_EQ(first.overlay.title, again.overlay.title);
+  // Rename: the title follows.
+  (void)core.applyCommand(corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "zoom:1"}, {"displayName", "Renamed"}});
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
+  EXPECT_EQ(findLayer(core.lastRenderPlanForTest(), "tile-name:zoom:1")->overlay.title, "Renamed");
+  // Restyle: the look follows.
+  (void)core.applyCommand(corevideo::rpc::Json::Object{{"type", "set-brand-kit"},
+      {"lowerThirdAppearance", corevideo::rpc::Json::Object{{"anchor", "upper-left"}}}});
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}});
+  const auto restyled = *findLayer(core.lastRenderPlanForTest(), "tile-name:zoom:1");
+  EXPECT_EQ(restyled.overlay.keyPosition, "upper-left");
+  EXPECT_LT(restyled.rect.y, first.rect.y);
+  // Reflow (a second member): the tile moved, so did the band.
+  loadNamedWall(core, {"zoom:1", "capture:cam0"}, true);
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"capture:cam0", true, 0}});
+  EXPECT_NE(findLayer(core.lastRenderPlanForTest(), "tile-name:zoom:1")->rect.width, restyled.rect.width);
 }
 
 TEST(TilesNameLines, TheSceneLowerThirdAppearanceIsTheLook) {

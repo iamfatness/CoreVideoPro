@@ -911,6 +911,20 @@ class MediaCore {
     std::string displayName;
   };
   std::unordered_map<std::string, SourcePolicy> sourcePolicies_;
+  // #1073: the last placed name line per Tiles member, so a steady wall does
+  // not re-derive the band geometry and re-copy the appearance every tick on
+  // every bus. Keyed by member id; hit only when tile rect, insets, name and
+  // style are all unchanged. mutable: buildRenderPlanForScene is const, and
+  // this is a pure memo of its own output. Pruned to the members of the walls
+  // being built (bounded by 2 x 64 entries).
+  struct TilesNameLineMemo {
+    modules::CompositorLayerRect tileRect{};
+    float insetX = 0.f, insetY = 0.f;
+    std::string name;
+    compositor::LowerThirdAppearance style;
+    compositor::TilesNameLinePlacement placed;
+  };
+  mutable std::unordered_map<std::string, TilesNameLineMemo> tilesNameLineMemo_;
   // Resolves the layer's frame key (participantId, else sourceId, else
   // "media:" + mediaAssetId) and fills sourceHealth/dropoutPolicy/
   // sourceDisplayName from sourceBus_ / sourcePolicies_. Called once per

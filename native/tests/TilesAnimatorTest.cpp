@@ -273,3 +273,43 @@ TEST(TilesAnimator, AnEnteringTilesNameLineFadesInWithIt) {
   EXPECT_EQ(plan.layers[1].opacity, 1.f);
   EXPECT_EQ(plan.layers[1].rect.x, .05f);
 }
+
+// #1073 review: a tile GROWING into place (4-up -> 1-up) must not carry a
+// full-size band past its own edges mid-flight; the band scales with the
+// tile about its anchored corner and fades with the tile's alpha.
+TEST(TilesAnimator, AGrowingTilesNameLineScalesWithItAndStaysInside) {
+  TilesPlanAnimation animation;
+  corevideo::modules::CompositorRenderPlanLayer video;
+  video.kind = "participant-video"; video.layerId = "tile:zoom:9";
+  // Settled in a 2x2 cell first.
+  video.rect = {.5f, .5f, .5f, .5f};
+  corevideo::modules::CompositorRenderPlan small; small.layers = {video};
+  animation.advance(small, "scene:wall", true, true, 350, 0);
+  // Now the only member: target is the full canvas.
+  video.rect = {0, 0, 1, 1};
+  LowerThirdAppearance style; style.enabled = true;
+  const auto placed = placeTilesNameLine({0, 0, 1, 1}, .004f, .007f, style);
+  ASSERT_TRUE(placed.shown);
+  corevideo::modules::CompositorRenderPlanLayer name;
+  name.kind = "overlay"; name.layerId = "tile-name:zoom:9"; name.hasOverlayContent = true;
+  name.overlay.appearance = placed.appearance;
+  name.rect = {placed.rect.x, placed.rect.y, placed.rect.width, placed.rect.height};
+  corevideo::modules::CompositorRenderPlan plan; plan.layers = {video, name};
+  animation.advance(plan, "scene:wall", true, true, 350, 16);
+  const auto& tile = plan.layers[0];
+  const auto& line = plan.layers[1];
+  ASSERT_LT(tile.rect.width, 1.f);  // mid-flight, still growing
+  const float scale = std::min(tile.rect.width, tile.rect.height);
+  EXPECT_NEAR(line.rect.width, placed.rect.width * scale, 1e-5f);
+  EXPECT_NEAR(line.rect.height, placed.rect.height * scale, 1e-5f);
+  EXPECT_GE(line.rect.x, tile.rect.x - 1e-6f);
+  EXPECT_LE(line.rect.x + line.rect.width, tile.rect.x + tile.rect.width + 1e-6f);
+  EXPECT_GE(line.rect.y, tile.rect.y - 1e-6f);
+  EXPECT_LE(line.rect.y + line.rect.height, tile.rect.y + tile.rect.height + 1e-6f);
+  EXPECT_EQ(line.opacity, tile.opacity);
+  // Settled: full size again.
+  plan.layers = {video, name};
+  animation.advance(plan, "scene:wall", true, true, 350, 5000);
+  EXPECT_NEAR(plan.layers[1].rect.width, placed.rect.width, 1e-6f);
+  EXPECT_NEAR(plan.layers[1].rect.x, placed.rect.x, 1e-6f);
+}
