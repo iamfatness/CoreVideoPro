@@ -42,6 +42,28 @@ public sealed class ControlActionRegistryTests
         Assert.Equal("perGuestIso", zoomMode[0]);
     }
 
+    // #1073: the Tiles "name each tile" option beside the other scene.tiles.* actions,
+    // one required bool, exposed in the control state as previewTilesNamesOn.
+    [Fact]
+    public void TilesNamesSet_IsRegisteredWithOneRequiredBoolAndExposedInState()
+    {
+        Assert.True(ControlActionRegistry.TryGet("scene.tiles.names.set", out var descriptor));
+        var parameter = Assert.Single(descriptor.Params);
+        Assert.Equal("enabled", parameter.Name);
+        Assert.Equal(ControlParamType.Bool, parameter.Type);
+        Assert.True(parameter.Required);
+        Assert.True(ControlActionRegistry.TryBind("scene.tiles.names.set", new object?[] { 1 }, out var bound, out _));
+        Assert.True(Assert.IsType<bool>(bound[0]));
+        Assert.False(ControlActionRegistry.TryBind("scene.tiles.names.set", System.Array.Empty<object?>(), out _, out var error));
+        Assert.NotNull(error);
+
+        Assert.Contains("previewTilesNamesOn", ControlManifest.StateFields);
+        var on = ControlState.Empty with { PreviewTilesNamesOn = true };
+        var message = Assert.Single(Osc.OscFeedback.Encode(on, new Osc.OscAddressMap()),
+            m => m.Address.EndsWith("/previewTilesNamesOn", StringComparison.Ordinal));
+        Assert.Equal(1, Assert.IsType<int>(message.Args[0]));
+    }
+
     [Fact]
     public void TryBind_RejectsMissingRequiredArg()
     {

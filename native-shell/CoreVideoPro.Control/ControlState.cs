@@ -61,6 +61,9 @@ public sealed record ControlState
 
     public string ActiveSceneId { get; init; } = string.Empty;
     public string PreviewSceneId { get; init; } = string.Empty;
+    /// <summary>#1073: the Preview Tiles scene's "name each tile" option (<c>scene.tiles.names.set</c>).
+    /// False when Preview is not a Tiles scene.</summary>
+    public bool PreviewTilesNamesOn { get; init; }
     // Native observations are nullable when no running core snapshot is available.
     // The original fields above remain operator/local state for compatibility.
     public string? NativeActiveSceneId { get; init; }

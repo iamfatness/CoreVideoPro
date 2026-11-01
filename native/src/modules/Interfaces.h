@@ -498,6 +498,11 @@ struct CompositorOverlayContent {
   // by the compositor's animation clock. 0 = phase just entered, 1 = settled.
   float keyProgress = 1.f;
   bool isCaption = false;   // True for caption layers (lower band styling).
+  // #1073: a Tiles per-tile name line. While its DirectWrite raster is still
+  // preparing the compositor draws the layer's PREVIOUS raster (scaled
+  // through the viewport) or nothing at all, never the legacy bare accent
+  // bar, and keeps the last ready raster per layer (OverlayRasterRetention).
+  bool holdLastRaster = false;
   // BrandKit styling resolved at plan-build time (#RRGGBB / #RRGGBBAA).
   std::string brandColor = "#44c1a1";
   std::string brandAccentColor = "#f0a85c";

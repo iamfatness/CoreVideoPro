@@ -912,6 +912,7 @@ if(BUILD_TESTING)
     tests/TilesLayerTest.cpp
     tests/TilesMembershipTest.cpp
     tests/TilesWallSourceTest.cpp
+    tests/TilesNameLineTest.cpp
     tests/TilesRenderPlanTest.cpp
     tests/UvcCaptureSupportTest.cpp
     tests/PeriodicDeviceDiscoveryTest.cpp

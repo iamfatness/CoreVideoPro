@@ -47,7 +47,8 @@ public static class ScenePersistenceService
             GlowIntensity = settings.GlowIntensity,
             GlowSoftness = settings.GlowSoftness,
             AnimateLayout = settings.AnimateLayout,
-            AnimationDurationMs = settings.AnimationDurationMs
+            AnimationDurationMs = settings.AnimationDurationMs,
+            NameEachTile = settings.NameEachTile
         };
 
     public static PersistedSceneRoute ToPersisted(SourceRoute route) =>
@@ -126,7 +127,8 @@ public static class ScenePersistenceService
             GlowIntensity = Math.Clamp(persisted.GlowIntensity, 0, 100),
             GlowSoftness = Math.Clamp(persisted.GlowSoftness, 0, 100),
             AnimateLayout = persisted.AnimateLayout,
-            AnimationDurationMs = Math.Clamp(persisted.AnimationDurationMs, 100, 2000)
+            AnimationDurationMs = Math.Clamp(persisted.AnimationDurationMs, 100, 2000),
+            NameEachTile = persisted.NameEachTile
         };
 
     public static SourceRoute FromPersisted(PersistedSceneRoute persisted)

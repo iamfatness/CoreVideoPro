@@ -131,6 +131,10 @@ public sealed class DynamicGallerySettings
     public double GlowSoftness { get; set; }
     public bool AnimateLayout { get; set; }
     public int AnimationDurationMs { get; set; } = 350;
+    /// <summary>#1073: one name line per member tile (the source's lower-third name,
+    /// top line only) in the scene's lower-third style. The core places and draws it;
+    /// this is only the switch, persisted with the scene.</summary>
+    public bool NameEachTile { get; set; }
 
     public DynamicGallerySettings Clone() => new()
     {
@@ -159,7 +163,8 @@ public sealed class DynamicGallerySettings
         GlowIntensity = GlowIntensity,
         GlowSoftness = GlowSoftness,
         AnimateLayout = AnimateLayout,
-        AnimationDurationMs = AnimationDurationMs
+        AnimationDurationMs = AnimationDurationMs,
+        NameEachTile = NameEachTile
     };
 }
 

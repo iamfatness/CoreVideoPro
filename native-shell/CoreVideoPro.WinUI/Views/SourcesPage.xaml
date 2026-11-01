@@ -318,6 +318,10 @@
     </StackPanel>
     <TextBlock Text="Pixels are relative to this wall. Automatic tiles reflow in the remaining space. Unpinning keeps this member’s crop." Style="{StaticResource WorkspaceHelp}"/>
    </StackPanel></ContentControl>
+   <Border Style="{StaticResource WorkspaceDivider}"/>
+   <TextBlock Text="NAMES" Style="{StaticResource WorkspaceSectionTitle}"/>
+   <ToggleSwitch Header="Name each tile" IsOn="{x:Bind ViewModel.GalleryNameEachTile, Mode=TwoWay}" GotFocus="OnDiscreteEditStarted" AutomationProperties.Name="Name each tile"/>
+   <TextBlock Text="One line per tile in the scene’s lower-third style: the source’s name from Sources, top line only. Zoom participants and capture devices are named; media and browser members are not yet. Names scale with their tiles; tiles too small for a readable line stay unlabelled." Style="{StaticResource WorkspaceHelp}"/>
    <Expander Header="Advanced membership" HorizontalAlignment="Stretch">
     <StackPanel Spacing="10">
      <cvcontrols:SliderValueControl Compact="True" Header="Manual slot" Value="{x:Bind ViewModel.GalleryManualSlot, Mode=TwoWay}" Minimum="1" Maximum="64" Unit="slot" StepFrequency="1"/>

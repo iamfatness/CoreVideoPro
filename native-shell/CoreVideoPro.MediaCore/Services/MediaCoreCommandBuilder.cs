@@ -218,7 +218,8 @@ public static class MediaCoreCommandBuilder
                     ["glowSoftness"] = tiles.GlowSoftness,
                     ["animateLayout"] = tiles.AnimateLayout,
                     ["animationDurationMs"] = tiles.AnimationDurationMs,
-                    ["fillMode"] = tiles.FillMode
+                    ["fillMode"] = tiles.FillMode,
+                    ["nameEachTile"] = tiles.NameEachTile
                 }
             };
 

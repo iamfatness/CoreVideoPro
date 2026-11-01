@@ -24,6 +24,7 @@ public static class OscFeedback
             Str("commandStatus", state.CommandStatus),
             Str("activeSceneId", state.ActiveSceneId),
             Str("previewSceneId", state.PreviewSceneId),
+            Flag("previewTilesNamesOn", state.PreviewTilesNamesOn),
             Str("viewMode", state.ViewMode),
             Str("multiviewLayoutMode", state.MultiviewLayoutMode),
             new(addressMap.StateAddress("multiviewTileCount"), state.MultiviewTileCount),

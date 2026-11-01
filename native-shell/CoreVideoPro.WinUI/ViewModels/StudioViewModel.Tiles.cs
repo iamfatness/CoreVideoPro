@@ -135,6 +135,14 @@ public sealed partial class StudioViewModel
         RequireTilesPreview();
         GalleryMembershipMode = enabled ? "eligible" : "manual";
     }
+    /// <summary>#1073 control action <c>scene.tiles.names.set</c>: name each tile on/off
+    /// for the Tiles scene in Preview. Refused (like every other Tiles action) when
+    /// Preview is not a Tiles scene.</summary>
+    public void SetTilesNames(bool enabled)
+    {
+        RequireTilesPreview();
+        GalleryNameEachTile = enabled;
+    }
     public void AssignTilesSlot(int slot, string sourceId)
     {
         RequireTilesPreview();

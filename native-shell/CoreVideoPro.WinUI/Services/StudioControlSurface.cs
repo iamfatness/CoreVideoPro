@@ -85,6 +85,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "settings.programBuffer.set",
         "scene.tiles.autofill.set", "scene.tiles.slot.assign", "scene.tiles.exclusion.set",
         "scene.tiles.background.set", "scene.tiles.override.set", "scene.tiles.override.clear",
+        "scene.tiles.names.set",
         // Shell-owned OHG action (spec §6.3): restarting the show engine is a SHELL concern, not
         // an engine action — a dead engine could not answer one. Every `ohg.*` id comes from the
         // engine's own manifest at handshake and is deliberately NOT listed here; the 1:1
@@ -328,6 +329,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 return ControlInvokeResult.Success;
             case "scene.tiles.override.clear":
                 _vm.ClearTilesOverride(Str(args, 0));
+                return ControlInvokeResult.Success;
+            case "scene.tiles.names.set":
+                _vm.SetTilesNames(Bool(args, 0));
                 return ControlInvokeResult.Success;
             case "view.setMode":
                 if (!ViewModeContract.TryNormalize(Str(args, 0), out var viewMode))
@@ -973,6 +977,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             CommandStatus = _vm.CommandStatus,
             ActiveSceneId = _vm.ActiveSceneId,
             PreviewSceneId = _vm.PreviewSceneId,
+            PreviewTilesNamesOn = _vm.PreviewScene.DynamicGallery?.NameEachTile ?? false,
             ViewMode = _vm.ViewMode.ToString(),
             MultiviewLayoutMode = _vm.MultiviewLayoutMode,
             MultiviewTileCount = _vm.MultiviewTileCount,

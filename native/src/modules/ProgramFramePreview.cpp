@@ -241,23 +241,37 @@ void mixHash(uint32_t& hash, const std::string& value) {
 }
 
 CompositorRenderPlan sortCompositorRenderPlan(CompositorRenderPlan renderPlan) {
-  std::stable_sort(
-      renderPlan.layers.begin(),
-      renderPlan.layers.end(),
-      [](const CompositorRenderPlanLayer& left, const CompositorRenderPlanLayer& right) {
-        const int leftDepth = semanticLayerDepth(left);
-        const int rightDepth = semanticLayerDepth(right);
-        if (leftDepth != rightDepth) {
-          return leftDepth < rightDepth;
-        }
-        if (left.order != right.order) {
-          return left.order < right.order;
-        }
-        if (left.layerId != right.layerId) {
-          return left.layerId < right.layerId;
-        }
-        return left.sourceId < right.sourceId;
-      });
+  // Depth is computed ONCE per layer, not inside the comparator: it
+  // lowercases three strings per call and a comparator runs O(n log n)
+  // times (#1073 review: per-tile name layers made that visible). Sort an
+  // index permutation, then apply it.
+  const size_t count = renderPlan.layers.size();
+  std::vector<int> depths(count);
+  std::vector<size_t> order(count);
+  for (size_t i = 0; i < count; ++i) {
+    depths[i] = semanticLayerDepth(renderPlan.layers[i]);
+    order[i] = i;
+  }
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    const auto& left = renderPlan.layers[a];
+    const auto& right = renderPlan.layers[b];
+    if (depths[a] != depths[b]) {
+      return depths[a] < depths[b];
+    }
+    if (left.order != right.order) {
+      return left.order < right.order;
+    }
+    if (left.layerId != right.layerId) {
+      return left.layerId < right.layerId;
+    }
+    return left.sourceId < right.sourceId;
+  });
+  std::vector<CompositorRenderPlanLayer> sorted;
+  sorted.reserve(count);
+  for (const size_t i : order) {
+    sorted.push_back(std::move(renderPlan.layers[i]));
+  }
+  renderPlan.layers = std::move(sorted);
   return renderPlan;
 }
 

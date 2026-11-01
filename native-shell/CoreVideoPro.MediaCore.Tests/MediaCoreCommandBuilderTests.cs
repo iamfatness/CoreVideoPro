@@ -1119,7 +1119,8 @@ public sealed class MediaCoreCommandBuilderTests
         BackgroundColor: "#101418", BorderShape: "rounded", BorderColor: "#123456", BorderThickness: 4,
         CornerRadius: 22, GlowColor: "#abcdef", GlowSize: 12, GlowIntensity: 75, GlowSoftness: 40,
         AnimateLayout: true, AnimationDurationMs: 800, FillMode: "manual", BackgroundSourceId: "zoom:bg",
-        Overrides: new Dictionary<string, MediaCoreTilesOverrideWire> { ["zoom:p1"] = new(new(0, 0, .4, 1), 10, 20, 3) });
+        Overrides: new Dictionary<string, MediaCoreTilesOverrideWire> { ["zoom:p1"] = new(new(0, 0, .4, 1), 10, 20, 3) },
+        NameEachTile: true);
 
     private static IReadOnlyList<NativeMediaCoreCommand> BuildWithWall(MediaCoreTilesLayerWire? wall) =>
         MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
@@ -1163,6 +1164,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal(800, style.GetProperty("animationDurationMs").GetInt32());
         Assert.Equal("manual", style.GetProperty("fillMode").GetString());
         Assert.Equal("zoom:bg", style.GetProperty("backgroundSourceId").GetString());
+        Assert.True(style.GetProperty("nameEachTile").GetBoolean());  // #1073
         var pinned = tiles.GetProperty("overrides").GetProperty("zoom:p1");
         Assert.Equal(.4, pinned.GetProperty("rect").GetProperty("w").GetDouble());
         Assert.Equal(10, pinned.GetProperty("cropLeftPercent").GetDouble());
@@ -1242,7 +1244,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal(
             ["animateLayout", "animationDurationMs", "backgroundColor", "backgroundSourceId", "borderColor", "borderShape",
                 "borderThickness", "cornerRadius", "customAspectRatio", "fillMode", "glowColor", "glowIntensity",
-                "glowSize", "glowSoftness", "gutterPercent", "marginPercent", "tileAspect"],
+                "glowSize", "glowSoftness", "gutterPercent", "marginPercent", "nameEachTile", "tileAspect"],
             styleKeys);
     }
 
