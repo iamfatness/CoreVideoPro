@@ -1601,17 +1601,31 @@ TEST(TilesRenderPlan, AWallsLiveBackgroundSurvivesATakeAcrossAStaleBeat) {
   ASSERT_NE(findLayer(compositor->lastPreviewPlan, "tiles-source-bg:tiles:gallery"), nullptr)
       << "precondition: the live background must be drawn on the preview wall before the take";
 
-  // Lapse every feed — the background's included — past kTilesStaleFrameMs, the
-  // transient CLAUDE.md records as ordinary on a Tiles take. FREEZE, not pause:
-  // the frames keep arriving with a held frameId, which is what a real Zoom or
-  // capture source does. The source is still there; only its age has grown.
+  // Lapse every feed — the background's included — past kTilesStaleFrameMs AND
+  // kTilesHoldWindowMs. FREEZE, not pause: the frames keep arriving with a held
+  // frameId, which is what a real Zoom or capture source does. The source is
+  // still there; only its age has grown.
+  //
+  // #1074 review / #1071: these are LOCAL (capture:) members, which no longer
+  // age out on a frozen frameId, so the wall no longer goes all-stale here and
+  // the old "wall went empty" precondition cannot hold by design. The claim
+  // under test is the background's, and it is asserted directly: frozen far
+  // past both thresholds, the backdrop is still drawn before the take.
+  // (Same assertions as #1082's rewrite; the wait is wall-clock here because
+  // kTilesHoldWindowMs and kTickMs arrive with #1082. 3 x 1.5 s = 4.5 s clears
+  // the 4 s hold window too, so this stays valid after that merge.)
   device->freeze();
-  bool wallWentEmpty = false;
-  for (int tick = 0; tick < 400 && !wallWentEmpty; ++tick) {
-    (void)core.applyCommands(corevideo::rpc::Json::Array{});
-    wallWentEmpty = tileLayers(compositor->lastPreviewPlan).empty();
+  {
+    const auto start = std::chrono::steady_clock::now();
+    const auto pastHoldWindow = std::chrono::milliseconds(corevideo::compositor::kTilesStaleFrameMs * 3);
+    while (std::chrono::steady_clock::now() - start < pastHoldWindow) {
+      (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    }
   }
-  ASSERT_TRUE(wallWentEmpty) << "the preview wall never went all-stale — the transient is not under test";
+  ASSERT_NE(findLayer(compositor->lastPreviewPlan, "tiles-source-bg:tiles:gallery"), nullptr)
+      << "the frozen background must still be drawn on the preview wall past the stale beat";
+  EXPECT_EQ(tileLayers(compositor->lastPreviewPlan).size(), wallMembers().size())
+      << "frozen local members keep their tiles (only zoom: members age out)";
 
   take(core, wallSceneWithBackground("load-scene-graph", "gallery", wallMembers(), "capture:bg"),
        wallLessScene("set-preview-scene", "solo"));
