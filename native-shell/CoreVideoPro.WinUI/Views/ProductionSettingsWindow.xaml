@@ -464,6 +464,20 @@
                                          Header="Group"
                                          Text="{x:Bind ViewModel.StreamNdiGroupName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                             </Grid>
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <CheckBox Content="NDI graphics key"
+                                          VerticalAlignment="Bottom"
+                                          ToolTipService.ToolTip="A second NDI source with only the on-air graphics over transparency (fill+key), for a downstream switcher to key over its own picture."
+                                          IsChecked="{x:Bind ViewModel.StreamNdiGraphicsKeyEnabled, Mode=TwoWay}" />
+                                <TextBox Grid.Column="1"
+                                         Header="Graphics key name"
+                                         PlaceholderText="Program name + Graphics"
+                                         Text="{x:Bind ViewModel.StreamNdiGraphicsName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            </Grid>
                             <TextBlock Text="{x:Bind ViewModel.StreamNdiSummary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>

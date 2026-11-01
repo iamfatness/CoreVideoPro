@@ -5,11 +5,22 @@
 #include "modules/Interfaces.h"
 #include "graphics/GraphicsInstances.h"
 #include "MonitorTestMode.h"
+#include "modules/GraphicsKeyPixels.h"
+#if COREVIDEO_WITH_D3D11
+#include "modules/D3DGraphicsKeyTap.h"
+// D3DGraphicsKeyTap.h pulls in <Windows.h>, whose rpcndr.h defines `small` as `char`;
+// tests below use `small` as a variable name.
+#ifdef small
+#undef small
+#endif
+#endif
 
 #include <chrono>
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <functional>
+#include <utility>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -1350,4 +1361,234 @@ TEST(D3D11Compositor, SourceTextureCacheServesBgraFramesWithBufferIdentity) {
   EXPECT_EQ(stats.cachedUploads, 2u);
   EXPECT_NE(second.preview.bgra, third.preview.bgra);
 }
-#endif
+
+// NDI graphics key (titler spec Phase 1). Shared rig for the GPU key tests: a
+// native graphics instance over a full-frame grey Program video, rendered with
+// graphicsKeyReadback, and the key readback matched to that exact frame.
+namespace {
+
+struct KeyRig {
+  std::unique_ptr<corevideo::modules::ICompositor> compositor = corevideo::modules::createD3D11Compositor();
+  corevideo::graphics::GraphicsInstances graphics{"test-core"};
+  corevideo::modules::VideoFrame video = makeI420SolidFrame("p-key", 320, 180, 200, 1);
+  int sequence = 0;
+
+  bool command(const std::string& type, corevideo::rpc::Json::Object payload) {
+    payload["schemaVersion"] = 1; payload["requestId"] = "key-request-" + std::to_string(++sequence);
+    payload["clientId"] = "gpu-qa"; payload["coreEpoch"] = "test-core"; payload["instanceId"] = "featured";
+    return static_cast<bool>(graphics.apply(corevideo::rpc::Json::Object{{"type", type}, {"graphics", std::move(payload)}}));
+  }
+
+  bool showInstance() {
+    using corevideo::rpc::Json;
+    return command("graphics-instance-create", {{"scope", "global"}, {"templateId", "compact-solid"},
+               {"templateVersion", 1}, {"fields", Json::Object{{"name", "Key Speaker"}, {"title", "Fill and key"}}}}) &&
+           command("graphics-instance-cue", {{"expectedRevision", 1}}) &&
+           command("graphics-instance-trigger", {{"expectedRevision", 1}, {"action", "show"}});
+  }
+
+  corevideo::modules::CompositorRenderPlan plan(bool key,
+      const std::function<void(corevideo::modules::CompositorRenderPlanLayer&)>& mutateGraphic = {}) {
+    auto value = fullRectParticipantPlan("graphics-key", "p-key", 320, 180);
+    graphics.append(value, false);
+    if (mutateGraphic) {
+      for (auto& layer : value.layers) if (!layer.graphicsInstanceId.empty()) mutateGraphic(layer);
+    }
+    value.graphicsKeyReadback = key;
+    return value;
+  }
+
+  corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& value) {
+    auto frame = compositor->render(value, {video});
+    graphics.observe(frame);
+    return frame;
+  }
+
+  bool waitUntilOnAir() {
+    const auto row = [&]() -> const corevideo::rpc::Json& { return graphics.snapshot().get("instances")->asArray().front(); };
+    const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (row().getNumber("firstDrawSubmittedFrame") <= 0 && std::chrono::steady_clock::now() < limit) {
+      render(plan(false)); std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return row().getNumber("firstDrawSubmittedFrame") > 0;
+  }
+
+  // Render `value` and return that Program frame with the key readback of the
+  // SAME frame number (re-render if the reader skipped it).
+  bool keyed(const corevideo::modules::CompositorRenderPlan& value, corevideo::modules::ProgramFrame& program,
+             corevideo::modules::GraphicsKeySelection& key) {
+    const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < limit) {
+      program = render(value);
+      const auto frameLimit = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+      while (std::chrono::steady_clock::now() < frameLimit) {
+        const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (compositor->selectGraphicsKey(program.frameNumber, nowMs, key) && !key.stale && key.exact) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+    }
+    return false;
+  }
+};
+
+struct KeyStats { size_t transparent = 0, opaque = 0, partial = 0, maxAlpha = 0, compositingMismatches = 0; };
+
+// The defining property of a correct straight-alpha fill+key: keying the key
+// over the Program's own background reproduces Program exactly, pixel for
+// pixel: Program = keyColour * a + background * (1 - a). Program pixels in the
+// key (or a premultiplied key) break this wherever a < 255.
+KeyStats checkKeyAgainstProgram(const std::vector<uint8_t>& key, const corevideo::modules::ProgramFrame& program,
+                                uint32_t background) {
+  KeyStats stats;
+  const int width = program.preview.width, height = program.preview.height;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const uint8_t* k = &key[(static_cast<size_t>(y) * width + x) * 4];
+      const uint32_t p = previewPixelRgba(program.preview, x, y);
+      const int a = k[3];
+      stats.maxAlpha = std::max<size_t>(stats.maxAlpha, static_cast<size_t>(a));
+      if (a == 0) ++stats.transparent; else if (a == 255) ++stats.opaque; else ++stats.partial;
+      const auto expect = [&](int keyChannel, int shift) {
+        const int bg = static_cast<int>((background >> shift) & 0xff);
+        return static_cast<int>(std::lround((keyChannel * a + bg * (255 - a)) / 255.0));
+      };
+      const int r = static_cast<int>((p >> 16) & 0xff), g = static_cast<int>((p >> 8) & 0xff), b = static_cast<int>(p & 0xff);
+      if (std::abs(r - expect(k[2], 16)) > 4 || std::abs(g - expect(k[1], 8)) > 4 || std::abs(b - expect(k[0], 0)) > 4) {
+        ++stats.compositingMismatches;
+      }
+    }
+  }
+  return stats;
+}
+
+}  // namespace
+
+// The key carries only the graphic: every Program pixel equals the key keyed
+// over the grey Program video, the graphic itself is opaque somewhere, most of
+// the frame (video only) is fully transparent, and Program is byte-identical
+// whether or not the key was requested. Dropping the flag releases the rig.
+TEST(D3D11Compositor, GraphicsKeyCarriesOnlyGraphicsWithStraightAlphaAndLeavesProgramUnchanged) {
+  KeyRig rig;
+  ASSERT_NE(rig.compositor, nullptr);
+  EXPECT_TRUE(rig.compositor->supportsGraphicsKey());
+  ASSERT_TRUE(rig.showInstance());
+  ASSERT_TRUE(rig.waitUntilOnAir());
+  const auto withoutKey = rig.render(rig.plan(false));
+  const uint32_t background = previewPixelRgba(withoutKey.preview, 4, 4);  // top-left: video only
+
+  corevideo::modules::ProgramFrame program;
+  corevideo::modules::GraphicsKeySelection key;
+  ASSERT_TRUE(rig.keyed(rig.plan(true), program, key));
+  ASSERT_EQ(320, key.frame.width);
+  ASSERT_EQ(180, key.frame.height);
+  ASSERT_EQ(program.preview.width, key.frame.width);
+  EXPECT_EQ(withoutKey.preview.bgra, program.preview.bgra);  // Program unchanged by the key
+
+  const auto stats = checkKeyAgainstProgram(*key.frame.bgra, program, background);
+  std::printf("[graphics-key-test] transparent=%zu opaque=%zu partial=%zu maxAlpha=%zu mismatches=%zu\n",
+      stats.transparent, stats.opaque, stats.partial, stats.maxAlpha, stats.compositingMismatches);
+  EXPECT_EQ(0u, stats.compositingMismatches);
+  EXPECT_GT(stats.transparent, static_cast<size_t>(320 * 180 / 2));
+  // The on-air compact-solid band is nearly but not fully opaque (measured
+  // peak alpha 253, no 255), so every band pixel is a PARTIAL-alpha pixel that
+  // the compositing check above verified: the strongest straight-alpha proof.
+  EXPECT_GT(stats.opaque + stats.partial, 1000u);
+  EXPECT_GE(stats.maxAlpha, 240u);
+  // The graphic's own pixels: where the key is substantially opaque, its colour
+  // is the graphic's, not the grey video underneath.
+  size_t solidNotVideo = 0;
+  for (size_t i = 0; i < key.frame.bgra->size(); i += 4) {
+    const auto* k = &(*key.frame.bgra)[i];
+    if (k[3] >= 240 && (std::abs(static_cast<int>(k[2]) - static_cast<int>((background >> 16) & 0xff)) > 8 ||
+                        std::abs(static_cast<int>(k[0]) - static_cast<int>(background & 0xff)) > 8)) ++solidNotVideo;
+  }
+  EXPECT_GT(solidNotVideo, 100u);
+
+  // Dropping the flag releases the target and reader rig on the next tick.
+  rig.render(rig.plan(false));
+  EXPECT_FALSE(rig.compositor->graphicsKeyActive());
+  corevideo::modules::GraphicsKeySelection after;
+  EXPECT_FALSE(rig.compositor->selectGraphicsKey(program.frameNumber, 0, after));
+}
+
+// With nothing on Program but video, the key is entirely transparent while
+// Program still shows the video: no Program pixel can reach the key.
+TEST(D3D11Compositor, GraphicsKeyIsFullyTransparentWhenNoGraphicIsOnAir) {
+  KeyRig rig;
+  ASSERT_NE(rig.compositor, nullptr);
+  corevideo::modules::ProgramFrame program;
+  corevideo::modules::GraphicsKeySelection key;
+  ASSERT_TRUE(rig.keyed(rig.plan(true), program, key));
+  for (const auto byte : *key.frame.bgra) ASSERT_EQ(0, byte);
+  EXPECT_GT(gpuDistinctColorsInRegion(program.preview, 0.f, 0.f, 1.f, 1.f), 0u);
+  EXPECT_NE(0u, previewPixelRgba(program.preview, 160, 90) & 0x00ffffffu);  // Program has its picture
+}
+
+// Mid-animation (building in at half progress) and a cross-fade (layer at half
+// opacity): the key carries PARTIAL alpha, and keying it over the video still
+// reproduces Program exactly, which is only true for straight alpha.
+TEST(D3D11Compositor, GraphicsKeyMidAnimationAndCrossFadeCarryPartialStraightAlpha) {
+  KeyRig rig;
+  ASSERT_NE(rig.compositor, nullptr);
+  ASSERT_TRUE(rig.showInstance());
+  ASSERT_TRUE(rig.waitUntilOnAir());
+  const uint32_t background = previewPixelRgba(rig.render(rig.plan(false)).preview, 4, 4);
+
+  const std::pair<const char*, std::function<void(corevideo::modules::CompositorRenderPlanLayer&)>> cases[] = {
+      {"building-in", [](auto& layer) { layer.overlay.keyPhase = "building-in"; layer.overlay.keyProgress = 0.5f; }},
+      {"cross-fade", [](auto& layer) { layer.opacity = 0.5f; }},
+  };
+  for (const auto& [name, mutate] : cases) {
+    corevideo::modules::ProgramFrame program;
+    corevideo::modules::GraphicsKeySelection key;
+    ASSERT_TRUE(rig.keyed(rig.plan(true, mutate), program, key)) << name;
+    const auto stats = checkKeyAgainstProgram(*key.frame.bgra, program, background);
+    EXPECT_EQ(0u, stats.compositingMismatches) << name;
+    EXPECT_GT(stats.partial, 100u) << name;
+    EXPECT_LT(stats.maxAlpha, 200u) << name;  // nothing near opaque at half strength
+    EXPECT_EQ(0u, stats.opaque) << name;
+    std::printf("[graphics-key-test] %s partial=%zu maxAlpha=%zu mismatches=%zu\n", name, stats.partial, stats.maxAlpha,
+        stats.compositingMismatches);
+  }
+}
+
+// Review item 2: a rig that cannot be built is retried for the same size only
+// every 5 s and logged once per size; it must not rebuild a D3D device on the
+// render thread every tick.
+TEST(D3D11Compositor, GraphicsKeyTapBacksOffAFailingRigBuild) {
+  int64_t now = 10'000;
+  corevideo::modules::D3DGraphicsKeyTap tap([&] { return now; });
+  for (int tick = 0; tick < 120; ++tick) {
+    EXPECT_FALSE(tap.ensure(nullptr, 1920, 1080));  // no producer device: always fails
+    now += 16;
+  }
+  EXPECT_EQ(1u, tap.buildAttempts());
+  EXPECT_EQ(1u, tap.failureLogs());
+  now = 10'000 + corevideo::modules::GraphicsKeyRetryLatch::kRetryAfterMs;
+  EXPECT_FALSE(tap.ensure(nullptr, 1920, 1080));
+  EXPECT_EQ(2u, tap.buildAttempts());
+  EXPECT_EQ(1u, tap.failureLogs());  // same size: not logged again
+  EXPECT_FALSE(tap.ensure(nullptr, 1280, 720));  // a new size is tried at once and logged
+  EXPECT_EQ(3u, tap.buildAttempts());
+  EXPECT_EQ(2u, tap.failureLogs());
+  EXPECT_FALSE(tap.active());
+  // The ring is armed from construction, so the failure turns stale, not silent.
+  corevideo::modules::GraphicsKeySelection selection;
+  ASSERT_TRUE(tap.select(1, now + 250, selection));
+  EXPECT_TRUE(selection.stale);
+}
+
+#endif  // COREVIDEO_WITH_D3D11
+
+#if COREVIDEO_STUB
+// Review item 8: only a compositor that produces the key declares it, so module
+// composition reports ndi-graphics-output omitted on stub/Metal builds.
+TEST(StubCompositor, DoesNotDeclareGraphicsKeySupport) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+  EXPECT_FALSE(modules.compositor->supportsGraphicsKey());
+  corevideo::modules::GraphicsKeySelection selection;
+  EXPECT_FALSE(modules.compositor->selectGraphicsKey(1, 0, selection));
+}
+#endif  // COREVIDEO_STUB

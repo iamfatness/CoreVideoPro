@@ -28,6 +28,7 @@
 #include "modules/AudioDsp.h"
 #include "modules/AsyncEncoderSink.h"
 #include "modules/AsyncOutputSender.h"
+#include "modules/GraphicsKeyPixels.h"  // kNdiGraphicsKeyDestination
 #include "modules/AsyncAudioMonitorOutput.h"
 #include "core/SyntheticZoomSlateSource.h"
 #include "modules/ProgramFramePreview.h"
@@ -5891,6 +5892,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   renderPlan.fullProgramReadback = virtualCameraEnabled_ || outputActive ||
       ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
        modules_.compositor->wantsFullProgramReadbackForRecording());
+  // NDI graphics key: only while the operator's destination list carries it.
+  // The compositor frees the key target and its reader thread the first tick
+  // this reads false again, so an idle destination costs nothing.
+  renderPlan.graphicsKeyReadback = std::find(outputDestinations_.begin(), outputDestinations_.end(),
+      std::string(modules::kNdiGraphicsKeyDestination)) != outputDestinations_.end();
 
   // #535 slice 3b: media frames already arrived with the EARLY bus ingest above
   // (their transport entries are fed from the command-time desired set, not
@@ -7572,6 +7578,21 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     frame.programNv12Width = tapWidth;
     frame.programNv12Height = tapHeight;
     frame.programNv12Shared = latestProgramNv12;
+  }
+  // NDI graphics key: the key that was rendered WITH this Program frame. With
+  // a Program buffer, `frame` is the delayed frame and its frameNumber picks
+  // the matching readback from the compositor's ring, so graphics never lead
+  // Program by the buffer depth. No fresh readback for 250 ms (rig failure,
+  // Map failures, render stall) stamps a transparent key marked stale: the
+  // sender reports key-stale instead of holding the last graphic on air.
+  if (std::find(senderDestinations.begin(), senderDestinations.end(),
+                std::string(modules::kNdiGraphicsKeyDestination)) != senderDestinations.end()) {
+    modules::GraphicsKeySelection keySelection;
+    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (modules_.compositor->selectGraphicsKey(frame.frameNumber, nowMs, keySelection)) {
+      modules::stampGraphicsKey(frame, keySelection, transparentGraphicsKey_);
+    }
   }
   if (!buffered) frame.timelineTimestamp100ns = monotonic100ns();
   const bool programSubmitted = !buffered || bufferedFrameAvailable;

@@ -66,6 +66,8 @@ public static class ControlActionRegistry
             new("transport.stream.srt.configure", "Configure SRT destination", "Save SRT settings without starting streaming. Refused while streaming or transitioning; omitted passphrase retains it, empty clears it.",
                 new[] { new ControlParam("enabled", b), new ControlParam("mode", s), new ControlParam("host", s), new ControlParam("port", s),
                     new ControlParam("latencyMs", s), new ControlParam("streamId", s), new ControlParam("keyLength", s), new ControlParam("passphrase", s, false) }),
+            new("transport.stream.ndi.graphicsKey.set", "NDI graphics key", "Turn the NDI graphics key (fill+key: on-air graphics only, BGRA with straight alpha) on or off. It rides with NDI output; omitted name keeps the current one, empty uses \"<NDI program name> Graphics\".",
+                new[] { new ControlParam("on", b, true), new ControlParam("name", s, false, "NDI source name for the key") }),
             new("transport.engine.toggle", "Engine toggle", "Toggle the capture engine on/off."),
             new("transport.engine.set", "Engine set", "Turn the capture engine on or off explicitly.",
                 new[] { new ControlParam("on", b, true) }),

@@ -1,8 +1,10 @@
 #include "modules/Interfaces.h"
+#include "modules/GraphicsKeyPixels.h"
 #include "modules/NdiPixelConvert.h"
 #include "modules/NdiSourceName.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstdint>
@@ -38,6 +40,18 @@ struct RuntimeProbe {
   std::string detail;
   std::vector<RuntimeCandidate> candidates;
 };
+
+// Which NDI source a sender instance publishes. Program is the composed show
+// as UYVY with Program audio; GraphicsKey is the on-air graphics layer alone
+// as BGRA with straight alpha (fill+key in one stream) and NO audio, so a
+// downstream switcher keys CoreVideo's graphics over its own picture.
+enum class NdiSenderRole { Program, GraphicsKey };
+
+// NDIlib_initialize/NDIlib_destroy are process-wide. Two live sender instances
+// (Program + graphics key) each load the runtime, so destroy only when the
+// LAST one goes away; otherwise the first destructor tears the library state
+// out from under the sender still on air.
+std::atomic<int> g_ndiInitRefs{0};
 
 // ---------------------------------------------------------------------------
 // Minimal libNDI ABI surface, declared locally so this scaffold COMPILES on a
@@ -214,9 +228,10 @@ std::string trimAscii(const std::string& value) {
   return value.substr(first, last - first + 1);
 }
 
-const OutputDestinationSettings* findNdiSettings(const std::vector<OutputDestinationSettings>& destinationSettings) {
+const OutputDestinationSettings* findNdiSettings(const std::vector<OutputDestinationSettings>& destinationSettings,
+                                                 const std::string& destination) {
   for (const auto& settings : destinationSettings) {
-    if (settings.id == "ndi" || settings.protocol == "ndi") {
+    if (settings.id == destination || settings.protocol == destination) {
       return &settings;
     }
   }
@@ -271,16 +286,19 @@ void convertBgraToUyvy(const uint8_t* bgra, int width, int height, std::vector<u
 
 class NdiOutputSender final : public IOutputSender {
  public:
-  explicit NdiOutputSender(RuntimeProbe runtimeProbe, LibraryHandle library, NdiApi api)
+  explicit NdiOutputSender(RuntimeProbe runtimeProbe, LibraryHandle library, NdiApi api,
+                           NdiSenderRole role = NdiSenderRole::Program)
       : runtimeProbe_(std::move(runtimeProbe)),
         runtimeDetail_(runtimeProbe_.detail),
         runtimeAvailable_(runtimeProbe_.available),
         library_(library),
-        api_(api) {}
+        api_(api),
+        role_(role),
+        destination_(role == NdiSenderRole::GraphicsKey ? kNdiGraphicsKeyDestination : "ndi") {}
 
   ~NdiOutputSender() override {
     destroySender();
-    if (ndiInitialized_ && api_.destroy) {
+    if (ndiInitialized_ && api_.destroy && g_ndiInitRefs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
       api_.destroy();
     }
     unloadLibrary(library_);
@@ -288,7 +306,10 @@ class NdiOutputSender final : public IOutputSender {
 
   // Program PCM normally arrives on the audio worker through submitAudio.
   // AsyncOutputSender serializes that call with sync on this sender's writer.
+  // The graphics key is a video-only source: a receiver keys it over its own
+  // picture and takes Program audio (if it wants it) from the Program source.
   void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override {
+    if (role_ == NdiSenderRole::GraphicsKey) return;
     if (sendInstance_ && !pcm.empty() && channels > 0 && sampleRate > 0) {
       submitProgramAudio(pcm, channels, sampleRate);
       sender_.audioFramesSent += static_cast<std::int64_t>(pcm.size() / static_cast<size_t>(channels));
@@ -304,7 +325,7 @@ class NdiOutputSender final : public IOutputSender {
       const std::vector<float>* programAudioPcm = nullptr,
       int audioChannels = 0,
       int audioSampleRate = 0) override {
-    const bool wantsNdi = std::find(destinations.begin(), destinations.end(), "ndi") != destinations.end();
+    const bool wantsNdi = std::find(destinations.begin(), destinations.end(), destination_) != destinations.end();
     if (!wantsNdi) {
       destroySender();
       if (sender_.status != "idle" && sender_.status != "stopped") {
@@ -318,17 +339,19 @@ class NdiOutputSender final : public IOutputSender {
     }
 
     ensureSender(elapsedMs);
-    const auto* settings = findNdiSettings(destinationSettings);
+    const char* defaultName = role_ == NdiSenderRole::GraphicsKey ? "Program Graphics" : "Program";
+    const auto* settings = findNdiSettings(destinationSettings, destination_);
     if (settings) {
       const std::string requested = !settings->ndiName.empty()
                                         ? settings->ndiName
                                         : !settings->streamKey.empty() ? settings->streamKey : settings->label;
-      const auto parsed = parseNdiSourceName(requested.empty() ? "Program" : requested);
-      if (parsed.valid) {
-        configuredSourceName_ = parsed.canonical;
-        configuredProgramName_ = parsed.programName;
-      } else if (!parsed.errors.empty()) {
-        configuredSourceNameError_ = parsed.errors.front();
+      // Every sync is a complete answer: a valid name clears an earlier
+      // rejection (it used to latch for the life of the sender).
+      const auto resolved = resolveNdiSenderName(requested, defaultName);
+      configuredSourceNameError_ = resolved.error;
+      if (resolved.error.empty()) {
+        configuredSourceName_ = resolved.canonical;
+        configuredProgramName_ = resolved.programName;
       }
       configuredFps_ = (std::max)(1, settings->fps);
       // #763: the operator's NDI group(s). libNDI takes a comma-separated
@@ -337,7 +360,7 @@ class NdiOutputSender final : public IOutputSender {
       sender_.bitrateMbps = (std::max)(0.5, settings->targetBitrateMbps);
     }
     if (configuredSourceName_.empty()) {
-      const auto fallback = parseNdiSourceName("Program");
+      const auto fallback = parseNdiSourceName(defaultName);
       configuredSourceName_ = fallback.canonical;
       configuredProgramName_ = fallback.programName;
     }
@@ -378,6 +401,31 @@ class NdiOutputSender final : public IOutputSender {
       sender_.lastResultCode = "waiting-for-frame";
       return snapshot();
     }
+    if (role_ == NdiSenderRole::GraphicsKey) {
+      // The key frame is the compositor's graphics-only readback, matched to
+      // this Program frame. Never fall back to Program pixels. A STALE key is
+      // the output worker's transparent stand-in: send it (so the downstream
+      // keyer clears) and say so, never "live/ok" (GraphicsKeyPixels.h).
+      const auto verdict = graphicsKeySendVerdict(*frame);
+      if (!verdict.send) {
+        sender_.status = verdict.status;
+        sender_.warning = verdict.warning;
+        sender_.destinationHealth = verdict.status;
+        sender_.lastResultCode = verdict.resultCode;
+        return snapshot();
+      }
+      submitGraphicsKeyVideo(*frame);
+      refreshConnectionCount();
+      sender_.status = verdict.status;
+      sender_.warning = verdict.warning;
+      sender_.lastFrameNumber = frame->frameNumber;
+      ++sender_.framesSent;
+      sender_.bytesSent += lastSubmittedVideoBytes_;  // BGRA bytes handed to libNDI
+      sender_.destinationHealth = verdict.status == "warning" ? "warning" : connectionCount_ > 0 ? "ok" : "starting";
+      sender_.lastResultCode = verdict.resultCode;
+      if (verdict.status == "warning") sender_.lastError = verdict.warning;
+      return snapshot();
+    }
     const bool hasProgramPixels =
         (!frame->programNv12Bytes().empty() && frame->programNv12Width > 0 && frame->programNv12Height > 0) ||
         (!frame->programFullBgra.bgra.empty() && frame->programFullBgra.width > 0) ||
@@ -408,7 +456,7 @@ class NdiOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override {
-    if (destination != "ndi") {
+    if (destination != destination_) {
       return snapshot();
     }
     ensureSender(elapsedMs);
@@ -423,7 +471,7 @@ class NdiOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override {
-    if (destination != "ndi") {
+    if (destination != destination_) {
       return snapshot();
     }
     destroySender();
@@ -446,8 +494,8 @@ class NdiOutputSender final : public IOutputSender {
     if (!sender_.senderId.empty()) {
       return;
     }
-    sender_.senderId = "ndi:program";
-    sender_.destination = "ndi";
+    sender_.senderId = role_ == NdiSenderRole::GraphicsKey ? kNdiGraphicsKeySenderId : "ndi:program";
+    sender_.destination = destination_;
     sender_.status = "starting";
     sender_.startedAtMs = elapsedMs;
     // No latencyMs: libNDI exposes no transport latency to measure (#519).
@@ -467,6 +515,7 @@ class NdiOutputSender final : public IOutputSender {
         return false;
       }
       ndiInitialized_ = true;
+      g_ndiInitRefs.fetch_add(1, std::memory_order_acq_rel);
     }
     NDIlib_send_create_t create{};
     // libNDI adds this machine's name to discovery automatically. Passing the
@@ -533,6 +582,32 @@ class NdiOutputSender final : public IOutputSender {
     video.timestamp = 0;
     api_.send_video(sendInstance_, &video);
     lastSubmittedVideoBytes_ = static_cast<std::int64_t>(video.line_stride_in_bytes) * height;
+  }
+
+  // Graphics key: packed BGRA with STRAIGHT alpha, exactly as the compositor's
+  // key tap published it (GraphicsKeyPixels.h unpremultiplied it). NDI's BGRA
+  // FourCC is the one-stream fill+key form; a receiver keys with this alpha and
+  // takes the colour as fill, so nothing here may premultiply or flatten it.
+  void submitGraphicsKeyVideo(const ProgramFrame& frame) {
+    const int width = frame.graphicsKeyWidth;
+    const int height = frame.graphicsKeyHeight;
+    keyFrameHold_ = frame.graphicsKeyBgraShared;  // keep the buffer alive across the (synchronous) send
+    NDIlib_video_frame_v2_t video{};
+    video.xres = width;
+    video.yres = height;
+    video.FourCC = NDIlib_FourCC_type_BGRA;
+    video.frame_rate_N = configuredFps_ * 1000;
+    video.frame_rate_D = 1000;
+    video.picture_aspect_ratio = static_cast<float>(width) / static_cast<float>((std::max)(1, height));
+    video.frame_format_type = NDIlib_frame_format_type_progressive;
+    video.timecode = INT64_MAX;  // NDIlib_send_timecode_synthesize
+    video.p_data = keyFrameHold_->data();
+    video.line_stride_in_bytes = width * 4;
+    video.p_metadata = nullptr;
+    video.timestamp = 0;
+    api_.send_video(sendInstance_, &video);
+    lastSubmittedVideoBytes_ = static_cast<std::int64_t>(video.line_stride_in_bytes) * height;
+    videoSourceDetail_ = frame.graphicsKeyStale ? "graphics-key-transparent-stale" : "graphics-key-bgra-straight-alpha";
   }
 
   // The program-audio tap is interleaved float; NDI audio_frame_v2 is planar.
@@ -626,14 +701,12 @@ class NdiOutputSender final : public IOutputSender {
   std::string videoSourceDetail_ = "none";
   std::vector<float> audioBuffer_;
   OutputSender sender_;
+  NdiSenderRole role_ = NdiSenderRole::Program;
+  std::string destination_ = "ndi";  // the destination id this instance answers to
+  std::shared_ptr<const std::vector<uint8_t>> keyFrameHold_;
 };
 
-#endif  // dev gate
-
-}  // namespace
-
-std::unique_ptr<IOutputSender> createNdiOutputSender() {
-#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_NDI_OUTPUT
+std::unique_ptr<IOutputSender> createNdiSender(NdiSenderRole role) {
   // REQUIRES DEV MACHINE: a real NDI sender needs the libNDI runtime. We
   // runtime-probe the shared library (mirrors the RTMP FFmpeg-probe approach);
   // when it is absent we return a sender that reports a clear runtime-missing
@@ -646,7 +719,24 @@ std::unique_ptr<IOutputSender> createNdiOutputSender() {
     probe.detail = "incomplete:libNDI symbol set";
     probe.candidates.push_back({"NDIlib_send_*", "unavailable", "required v5 send entrypoints not resolved"});
   }
-  return std::make_unique<NdiOutputSender>(std::move(probe), library, api);
+  return std::make_unique<NdiOutputSender>(std::move(probe), library, api, role);
+}
+
+#endif  // dev gate
+
+}  // namespace
+
+std::unique_ptr<IOutputSender> createNdiOutputSender() {
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_NDI_OUTPUT
+  return createNdiSender(NdiSenderRole::Program);
+#else
+  return nullptr;
+#endif
+}
+
+std::unique_ptr<IOutputSender> createNdiGraphicsKeyOutputSender() {
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_NDI_OUTPUT
+  return createNdiSender(NdiSenderRole::GraphicsKey);
 #else
   return nullptr;
 #endif

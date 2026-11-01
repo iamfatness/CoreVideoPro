@@ -89,6 +89,10 @@ public sealed class ProductionOutputPreferences
     public string? StreamRtmpStreamKey { get; set; }
     public string? StreamNdiProgramName { get; set; }
     public string? StreamNdiGroupName { get; set; }
+    // NDI graphics key (titler spec Phase 1). Additive, no version bump: a file
+    // without these fields loads with the key off and the default name.
+    public bool StreamNdiGraphicsKeyEnabled { get; set; }
+    public string? StreamNdiGraphicsName { get; set; }
     public string? StreamSrtMode { get; set; }
     public string? StreamSrtHost { get; set; }
     public string? StreamSrtPort { get; set; }

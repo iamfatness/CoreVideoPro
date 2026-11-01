@@ -308,6 +308,24 @@ struct GraphicsFrameFact {
   bool hasRequestedContentHash=false;
 };
 
+// NDI graphics key: one straight-alpha BGRA readback of the graphics-only
+// composite, tagged with the compositor frame number that produced it and the
+// steady-clock millisecond it was published (GraphicsKeyRing, GraphicsKeyPixels.h).
+struct GraphicsKeyFrame {
+  std::shared_ptr<const std::vector<uint8_t>> bgra;
+  int width = 0;
+  int height = 0;
+  int64_t frameNumber = -1;
+  int64_t publishedMs = 0;
+};
+// The key chosen for one Program frame. `stale` = no fresh readback within
+// kGraphicsKeyStaleAfterMs: send a transparent key, never the last graphic.
+struct GraphicsKeySelection {
+  GraphicsKeyFrame frame;
+  bool stale = false;
+  bool exact = false;
+};
+
 struct ProgramFrame {
   int width = 1920;
   int height = 1080;
@@ -344,6 +362,20 @@ struct ProgramFrame {
   [[nodiscard]] const std::vector<uint8_t>& programNv12Bytes() const noexcept {
     return programNv12Shared ? *programNv12Shared : programNv12;
   }
+  // NDI graphics key (titler spec Phase 1, "NDI fill+key"): the on-air native
+  // graphics layer ALONE, composited over transparency at Program size and
+  // read back as packed BGRA with STRAIGHT (non-premultiplied) alpha, which is
+  // how an NDI BGRA frame carries key+fill in one stream. Populated by the
+  // output worker from ICompositor::selectGraphicsKey only while the
+  // "ndi-graphics" destination is active; empty otherwise. Program pixels never
+  // appear in it (see GraphicsKeyPixels.h for the layer rule and the unpremultiply).
+  int graphicsKeyWidth = 0;
+  int graphicsKeyHeight = 0;
+  std::shared_ptr<const std::vector<uint8_t>> graphicsKeyBgraShared;
+  // The compositor frame that produced the key (-1 for a transparent stand-in)
+  // and whether it IS a transparent stand-in because no fresh key arrived.
+  int64_t graphicsKeyFrameNumber = -1;
+  bool graphicsKeyStale = false;
   ProgramFrameSharedTexture sharedTexture;
   // Dedicated GPU keyed-mutex DXGI shared texture for hardware H.264 encode.
   // Separate from sharedTexture so sender encode does not contend with WinUI frame
@@ -579,6 +611,13 @@ struct CompositorRenderPlan {
   // thumbnail. Independent of skipCpuReadback (which only gates the small
   // preview + pixel signature).
   bool fullProgramReadback = false;
+  // When true, the GPU compositor ALSO composites the native graphics
+  // instances on this plan (layers with a graphicsInstanceId) into their own
+  // transparent BGRA target and publishes it, straight-alpha, through
+  // ICompositor::selectGraphicsKey for the NDI graphics-key sender.
+  // Set by MediaCore only while the "ndi-graphics" destination is active; the
+  // Program target is untouched either way.
+  bool graphicsKeyReadback = false;
 };
 
 // Per-ISO-writer health (ISO-1). One node per selected ISO source, surfaced in
@@ -1363,6 +1402,23 @@ class ICompositor {
     outNv12 = std::make_shared<const std::vector<uint8_t>>(std::move(copy));
     return true;
   }
+  // NDI graphics key. Does this compositor produce the graphics-only key at
+  // all (plan flag graphicsKeyReadback)? Only the D3D11 adapter does; module
+  // composition reports ndi-graphics-output as omitted everywhere else, so the
+  // shell never offers a key that would only ever send nothing.
+  [[nodiscard]] virtual bool supportsGraphicsKey() const { return false; }
+  // The straight-alpha BGRA key for Program frame `programFrameNumber` (the
+  // newest readback produced at or before it, so a buffered/delayed Program
+  // gets the graphics that were on air WITH it), from a dedicated
+  // device+thread readback. False while the key is warming or not requested;
+  // a selection with `stale` set means "no fresh readback for 250 ms: send a
+  // transparent key". See GraphicsKeyRing in GraphicsKeyPixels.h.
+  virtual bool selectGraphicsKey(int64_t /*programFrameNumber*/, int64_t /*nowMs*/, GraphicsKeySelection& /*out*/) {
+    return false;
+  }
+  // Is the key's GPU target / reader rig currently alive? Test and diagnostics
+  // seam: it must read false once a plan stops asking for the key.
+  [[nodiscard]] virtual bool graphicsKeyActive() const { return false; }
   // Composites the multiview grid into a second keyed-mutex DXGI shared texture
   // (the whole grid in one texture, the OBS/broadcast-multiviewer model) and
   // returns its handle/dimensions. Defaulted to an empty texture so the
@@ -1985,6 +2041,11 @@ std::unique_ptr<IOutputSender> createSrtOutputSender();
 std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender();
 std::unique_ptr<IOutputSender> createHlsOutputSender();
 std::unique_ptr<IOutputSender> createNdiOutputSender();
+// The NDI graphics-key sender: destination "ndi-graphics", a second libNDI
+// source carrying ProgramFrame::graphicsKeyBgraShared as BGRA with straight
+// alpha (fill+key in one stream) and no audio. Same runtime probe and build
+// gate as createNdiOutputSender; nullptr when NDI output is not built.
+std::unique_ptr<IOutputSender> createNdiGraphicsKeyOutputSender();
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
 std::unique_ptr<ICaptureDevice> createRtmpIngestCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
 std::unique_ptr<ICaptureDevice> createNdiReceiveCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});

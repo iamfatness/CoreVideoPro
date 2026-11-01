@@ -29,6 +29,9 @@ keeps the current value; empty clears it. With encryption enabled, the existing
 validation requires 10–79 characters. Disabling encryption requires clearing the
 passphrase. Numeric fields accept strings, matching the bound settings controls.
 
+The NDI graphics key (fill+key) has its own live toggle,
+`transport.stream.ndi.graphicsKey.set`; see [ndi-graphics-key.md](ndi-graphics-key.md).
+
 Each action changes only its named destination. Other RTMP/SRT/NDI/HLS selections
 remain as configured. To switch from RTMP to SRT, disable RTMP with its configure
 action before starting the stream; configuration is not exclusive destination

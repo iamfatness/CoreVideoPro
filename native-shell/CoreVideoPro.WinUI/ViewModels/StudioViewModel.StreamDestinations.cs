@@ -21,6 +21,11 @@ public sealed partial class StudioViewModel
             (!validatedOnly || StudioStreamOutputValidation.CanSerializeNdiSettings(StreamNdiProgramName)))
         {
             destinations.Add("ndi");
+            // The graphics key rides with NDI output, and only when it can be sent.
+            if (IncludeNdiGraphicsKeyDestination())
+            {
+                destinations.Add(StudioStreamOutputValidation.NdiGraphicsKeyDestination);
+            }
         }
 
         if (StreamSrtEnabled &&
@@ -93,6 +98,17 @@ public sealed partial class StudioViewModel
                 AudioBitrateKbps: streamProfile.AudioBitrateKbps,
                 VideoCodec: streamProfile.Codec,
                 EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode)));
+            if (IncludeNdiGraphicsKeyDestination())
+            {
+                // Second NDI source: on-air graphics only, BGRA straight alpha, no audio.
+                destinations.Add(new MediaCoreStreamDestinationWire(
+                    Id: StudioStreamOutputValidation.NdiGraphicsKeyDestination,
+                    Label: "NDI graphics key",
+                    Protocol: StudioStreamOutputValidation.NdiGraphicsKeyDestination,
+                    NdiName: StudioStreamOutputValidation.ResolveNdiGraphicsKeyName(StreamNdiProgramName, StreamNdiGraphicsName),
+                    NdiGroup: NormalizeOutputText(StreamNdiGroupName, "public"),
+                    Fps: streamProfile.Fps));
+            }
         }
 
         if (StreamSrtEnabled &&

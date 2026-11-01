@@ -343,3 +343,57 @@ TEST(AsyncOutputSender, StopNeverInterruptsADestinationStillRequested) {
   EXPECT_EQ(std::find(raw->interrupted.begin(), raw->interrupted.end(), "srt"), raw->interrupted.end());
   EXPECT_NE(std::find(raw->interrupted.begin(), raw->interrupted.end(), "rtmp"), raw->interrupted.end());
 }
+
+namespace {
+// Records every destination list a sender's writer saw, and every interrupt.
+class DestinationRecordingSender final : public IOutputSender {
+ public:
+  OutputSenderSession sync(const std::vector<std::string>& destinations, const ProgramFrame*, double,
+                           const std::vector<OutputDestinationSettings>&, const std::vector<float>*, int,
+                           int) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    syncs.push_back(destinations);
+    return {};
+  }
+  OutputSenderSession fail(const std::string&, const std::string&, double) override { return {}; }
+  OutputSenderSession recover(const std::string& destination, double, const std::string&) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    recovered.push_back(destination);
+    return {};
+  }
+  OutputSenderSession session() const override { return {}; }
+  void interrupt(const std::string& destination) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    interrupted.push_back(destination);
+  }
+  std::mutex mutex;
+  std::vector<std::vector<std::string>> syncs;
+  std::vector<std::string> interrupted;
+  std::vector<std::string> recovered;
+};
+}  // namespace
+
+// NDI graphics key: turning the key on and off is a destination-list change
+// that must never touch Program NDI. Program's writer must see "ndi" in every
+// sync (it only tears its sender down when "ndi" is absent) and must never be
+// interrupted or recovered; only the key's own destination is interrupted
+// when it is removed.
+TEST(AsyncOutputSender, TogglingTheGraphicsKeyNeverInterruptsProgramNdi) {
+  auto inner = std::make_unique<DestinationRecordingSender>();
+  auto* raw = inner.get();
+  AsyncOutputSender sender(std::move(inner));
+  sender.sync({"ndi"}, nullptr, 0.0);
+  ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(1)));
+  sender.sync({"ndi", "ndi-graphics"}, nullptr, 1.0);
+  ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(1)));
+  sender.sync({"ndi"}, nullptr, 2.0);
+  ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(1)));
+  std::lock_guard<std::mutex> lock(raw->mutex);
+  ASSERT_FALSE(raw->syncs.empty());
+  for (const auto& destinations : raw->syncs) {
+    EXPECT_NE(std::find(destinations.begin(), destinations.end(), "ndi"), destinations.end());
+  }
+  EXPECT_EQ(std::find(raw->interrupted.begin(), raw->interrupted.end(), "ndi"), raw->interrupted.end());
+  EXPECT_NE(std::find(raw->interrupted.begin(), raw->interrupted.end(), "ndi-graphics"), raw->interrupted.end());
+  EXPECT_TRUE(raw->recovered.empty());
+}

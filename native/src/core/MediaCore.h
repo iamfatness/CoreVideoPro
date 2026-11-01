@@ -1127,6 +1127,10 @@ class MediaCore {
   std::mutex videoOutWaitMutex_;
   uint64_t lastVideoOutPublishSeq_ = 0;
   std::shared_ptr<const std::vector<std::uint8_t>> latestProgramNv12_;
+  // NDI graphics key: a reusable all-zero key the output worker sends when no
+  // fresh graphics readback exists (stale, GraphicsKeyRing). Output worker
+  // only, under videoOutputMutex_.
+  std::shared_ptr<const std::vector<std::uint8_t>> transparentGraphicsKey_;
   int latestProgramNv12Width_ = 0;
   int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;

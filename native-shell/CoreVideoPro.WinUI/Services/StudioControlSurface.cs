@@ -42,6 +42,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         nameof(StudioViewModel.AudioMonitoringEnabled), nameof(StudioViewModel.AudioMonitorVolume),
         nameof(StudioViewModel.MasterLimiterEnabled), nameof(StudioViewModel.MasteringEnabled),
         nameof(StudioViewModel.MasteringTargetIndex), nameof(StudioViewModel.VirtualCameraEnabled),
+        nameof(StudioViewModel.StreamNdiGraphicsKeyEnabled), nameof(StudioViewModel.StreamNdiGraphicsName),
         nameof(StudioViewModel.VstPluginHostSummary),
         nameof(StudioViewModel.ProgramLowerThirdKey),
         nameof(StudioViewModel.ProgramLowerThirdEnabled), nameof(StudioViewModel.ShowInputSummary),
@@ -59,7 +60,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "transport.take", "transport.transition.set",
         "transport.record.toggle", "transport.record.set",
         "transport.stream.toggle", "transport.stream.set",
-        "transport.stream.rtmp.configure", "transport.stream.srt.configure",
+        "transport.stream.rtmp.configure", "transport.stream.srt.configure", "transport.stream.ndi.graphicsKey.set",
         "transport.engine.toggle", "transport.engine.set",
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
         "transport.virtualcam.name.set",
@@ -256,6 +257,10 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 return _vm.ConfigureStreamDestination(false, args);
             case "transport.stream.srt.configure":
                 return _vm.ConfigureStreamDestination(true, args);
+            case "transport.stream.ndi.graphicsKey.set":
+                // Validated first (NDI on, core capability, name), then applied as one edit with one
+                // sync; the core adds or drops only the key sender.
+                return _vm.SetNdiGraphicsKey(Bool(args, 0), args.Count > 1 ? args[1] as string : null);
             case "transport.stream.set":
                 return await RunOutputSet(_vm.StreamingRequested, _vm.Streaming, Bool(args, 0), _vm.CanSetStreaming, _vm.SetStreamingAsync, "streaming").ConfigureAwait(true);
             case "transport.engine.toggle":
@@ -1001,6 +1006,8 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             VstHostStatus = _vm.VstHostStatus,
             VstPluginCount = _vm.VstPlugins.Count,
             VstHostSummary = _vm.VstPluginHostSummary,
+            NdiGraphicsKeyOn = _vm.StreamNdiGraphicsKeyEnabled,
+            NdiGraphicsKeyName = StudioStreamOutputValidation.ResolveNdiGraphicsKeyName(_vm.StreamNdiProgramName, _vm.StreamNdiGraphicsName),
             VirtualCameraOn = _vm.VirtualCameraEnabled,
             VirtualCameraStatus = _vm.VirtualCameraStatusLabel,
             VirtualCameraRawStatus = _vm.VirtualCameraRawStatus,

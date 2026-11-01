@@ -128,6 +128,11 @@ public sealed record ControlState
     public int VstPluginCount { get; init; }
     public string VstHostSummary { get; init; } = string.Empty;
 
+    /// <summary>NDI graphics key (fill+key) selected, and the NDI source name it advertises.
+    /// Selection, not delivery: the sender's live state is in /snapshot outputSenderSession.</summary>
+    public bool NdiGraphicsKeyOn { get; init; }
+    public string NdiGraphicsKeyName { get; init; } = string.Empty;
+
     public bool VirtualCameraOn { get; init; }
     public string VirtualCameraStatus { get; init; } = string.Empty;
     public string VirtualCameraRawStatus { get; init; } = string.Empty;

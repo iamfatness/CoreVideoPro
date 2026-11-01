@@ -780,6 +780,7 @@ if(BUILD_TESTING)
     tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
     tests/GraphicsTemplateTest.cpp
+    tests/GraphicsKeyPixelsTest.cpp
     tests/GraphicsRpcPixelTest.cpp
     tests/DeliveryTraceTest.cpp
     tests/RenderWorkDistributionTest.cpp

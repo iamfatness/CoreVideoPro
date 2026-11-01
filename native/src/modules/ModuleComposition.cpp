@@ -5,6 +5,7 @@
 #include "modules/AsyncEncoderSink.h"
 #include "modules/AsyncOutputSender.h"
 #include "modules/AudioDsp.h"
+#include "modules/GraphicsKeyPixels.h"  // kNdiGraphicsKeyDestination
 #include "core/TestPattern.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramStreamClock.h"
@@ -31,7 +32,8 @@ namespace corevideo::modules {
 namespace {
 
 bool isNetworkDestination(const std::string& destination) {
-  return destination == "rtmp" || destination == "ndi" || destination == "srt" || destination == "webrtc";
+  return destination == "rtmp" || destination == "ndi" || destination == "srt" || destination == "webrtc" ||
+         destination == kNdiGraphicsKeyDestination;
 }
 
 class CompositeOutputSender final : public IOutputSender {
@@ -516,6 +518,23 @@ ModuleSet createDefaultModules() {
     supportedOutputDestinations.push_back("ndi");
   } else if (COREVIDEO_WITH_NDI_OUTPUT) {
     recordCapability(modules, "ndi-output", "failed-to-construct", "", "process");
+  }
+  // NDI graphics key (titler spec Phase 1): a second libNDI source carrying the
+  // on-air graphics layer alone, BGRA with straight alpha. Its own sender,
+  // writer thread and supervisor, so a wedged key send cannot stall Program's.
+  // Only a compositor that PRODUCES the key (D3D11) gets one: on Metal/stub the
+  // capability reads omitted, so the shell never offers a key that sends nothing.
+  const bool compositorMakesKey = modules.compositor && modules.compositor->supportsGraphicsKey();
+  if (!compositorMakesKey) {
+    if (COREVIDEO_WITH_NDI_OUTPUT) recordCapability(modules, "ndi-graphics-output", "omitted", "compositor-has-no-graphics-key", "process");
+  } else if (auto keySender = createNdiGraphicsKeyOutputSender()) {
+    recordCapability(modules, "ndi-graphics-output", keySender->runtimeAvailableAtConstruction()
+        ? "available" : "omitted", keySender->runtimeAvailableAtConstruction()
+        ? "" : "ndi-runtime-missing", "process");
+    outputSenders.push_back(std::move(keySender));
+    supportedOutputDestinations.push_back(kNdiGraphicsKeyDestination);
+  } else if (COREVIDEO_WITH_NDI_OUTPUT) {
+    recordCapability(modules, "ndi-graphics-output", "failed-to-construct", "", "process");
   }
   if (!outputSenders.empty()) {
     modules.outputSender = std::make_unique<CompositeOutputSender>(std::move(outputSenders), std::move(supportedOutputDestinations));
