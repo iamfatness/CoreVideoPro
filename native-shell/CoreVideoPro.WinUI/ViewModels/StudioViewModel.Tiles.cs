@@ -107,9 +107,11 @@ public sealed partial class StudioViewModel
         {
             var zoom = RoomVideoParticipants
                 .Select(p => new GalleryMemberChoice(p.Id.Contains(':') ? p.Id : "zoom:" + p.Id, p.Name));
-            var groupOrder = ShowInputRosterService.UnifiedSourceGroups;
+            var groupOrder = ShowInputRosterService.UnifiedSourceGroups
+                .Select((group, index) => (group, index))
+                .ToDictionary(pair => pair.group, pair => pair.index, StringComparer.Ordinal);
             var local = TilesLocalVideoSources()
-                .OrderBy(s => { var index = groupOrder.ToList().IndexOf(s.Group); return index < 0 ? int.MaxValue : index; })
+                .OrderBy(s => groupOrder.GetValueOrDefault(s.Group, int.MaxValue))  // stable: slot order within a group
                 .Select(s => new GalleryMemberChoice(s.Id, s.Name, s.Group));
             return zoom.Concat(local).DistinctBy(c => c.Id, StringComparer.Ordinal).ToList();
         }
