@@ -1412,35 +1412,29 @@ TEST(TilesRenderPlan, AZoomGuestAndACaptureDeviceShareOneWallAndDropOutIndepende
   EXPECT_NE(zoomTile->rect.x, captureTile->rect.x);
 
   // 1. A frozen LOCAL member keeps its seat past the stale threshold (static
-  //    screen share rule). Real clock: run well past kTilesStaleFrameMs.
+  //    screen share rule). Ticks past BOTH thresholds: frame age is measured
+  //    on the render tick clock (kTickMs per tick), so a tick count is exact
+  //    under any build speed (a wall-clock bound ran short under TSan).
   capture->freeze();
-  {
-    const auto start = std::chrono::steady_clock::now();
-    const auto window = std::chrono::milliseconds(corevideo::compositor::kTilesStaleFrameMs + 700);
-    while (std::chrono::steady_clock::now() - start < window) {
-      (void)core.applyCommands(corevideo::rpc::Json::Array{});
-      ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:capture:cam-1"), nullptr)
-          << "a frozen capture member must not age out of the wall";
-    }
+  const int pastHoldWindow = static_cast<int>(corevideo::compositor::kTilesHoldWindowMs / kTickMs) + 40;
+  for (int tick = 0; tick < pastHoldWindow; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:capture:cam-1"), nullptr)
+        << "a frozen capture member must not age out of the wall (tick " << tick << ")";
   }
   EXPECT_EQ(countLayersOfKind(core.lastRenderPlanForTest(), "participant-video"), 2);
 
   // 2. A frozen ZOOM member ages out; the capture tile is untouched by it and
   //    the wall reflows to 1-up around the local source.
-  //    Bounded by WALL CLOCK, not a tick count, so it holds under either rule:
-  //    today a frozen Zoom member drops at kTilesStaleFrameMs (1.5 s); after
-  //    #1074/#1082 it is HELD until kTilesHoldWindowMs (4 s) and only then
-  //    dropped. 10 s covers both with margin; the loop exits on the drop.
+  //    It is HELD until kTilesHoldWindowMs (#1082) and then dropped; bounded
+  //    by tick count for the same reason as above.
   zoom->freeze();
   bool zoomLeft = false;
-  {
-    const auto start = std::chrono::steady_clock::now();
-    while (!zoomLeft && std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
-      (void)core.applyCommands(corevideo::rpc::Json::Array{});
-      zoomLeft = findLayer(core.lastRenderPlanForTest(), "tile:zoom:guest-1") == nullptr;
-    }
+  for (int tick = 0; tick < pastHoldWindow && !zoomLeft; ++tick) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{});
+    zoomLeft = findLayer(core.lastRenderPlanForTest(), "tile:zoom:guest-1") == nullptr;
   }
-  EXPECT_TRUE(zoomLeft) << "a frozen Zoom guest leaves the wall (1.5 s today; 4 s hold after #1082)";
+  EXPECT_TRUE(zoomLeft) << "a frozen Zoom guest leaves the wall after the 4 s hold window";
   const auto solo = core.lastRenderPlanForTest();
   const auto* remaining = findLayer(solo, "tile:capture:cam-1");
   ASSERT_NE(remaining, nullptr) << "the capture seat is not the Zoom guest's problem";
