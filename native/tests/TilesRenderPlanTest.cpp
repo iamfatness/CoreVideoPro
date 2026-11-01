@@ -395,18 +395,65 @@ TEST(TilesRenderPlan, TilesDoNotDoubleApplyGenericSceneBorders) {
   }
 }
 
-TEST(TilesRenderPlan, AStaleMemberIsNotDrawnAndTheWallReflows) {
+// #1074: a member stalled past the HOLD window leaves the wall and the wall
+// reflows. (Before #1074 this happened at kTilesStaleFrameMs; the live show of
+// 2026-10-31 showed that every 1.5 to 3 s uplink stall emptied a slot.)
+TEST(TilesRenderPlan, AMemberStalledPastTheHoldWindowIsNotDrawnAndTheWallReflows) {
   MediaCore core; loadWall(core, {"zoom:1", "zoom:2"});
   core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
   const auto twoUp = core.lastRenderPlanForTest();
   const float pairedWidth = findLayer(twoUp, "tile:zoom:1")->rect.width;
 
   core.setTilesMemberFrameAgesForTest(
-      {{"zoom:1", true, 0}, {"zoom:2", true, corevideo::compositor::kTilesStaleFrameMs + 1}});
+      {{"zoom:1", true, 0}, {"zoom:2", true, corevideo::compositor::kTilesHoldWindowMs + 1}});
   const auto soloPlan = core.lastRenderPlanForTest();
 
   EXPECT_EQ(countLayersOfKind(soloPlan, "participant-video"), 1);
   EXPECT_GT(findLayer(soloPlan, "tile:zoom:1")->rect.width, pairedWidth);
+}
+
+// #1074: inside the hold window the stale member KEEPS its slot (no reflow,
+// same rect) and the plan labels it held. The compositor shows the slot's
+// last picture or black per the source's dropout policy, exactly as it does
+// for any layer whose frame is present but stale; nothing is fabricated.
+TEST(TilesRenderPlan, AStaleMemberInsideTheHoldWindowKeepsItsSlotAndIsLabelledHeld) {
+  MediaCore core; loadWall(core, {"zoom:1", "zoom:2"});
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
+  const auto twoUp = core.lastRenderPlanForTest();
+  const auto pairedRect = findLayer(twoUp, "tile:zoom:2")->rect;
+  ASSERT_FALSE(findLayer(twoUp, "tile:zoom:2")->tilesHeld);
+
+  core.setTilesMemberFrameAgesForTest(
+      {{"zoom:1", true, 0}, {"zoom:2", true, corevideo::compositor::kTilesStaleFrameMs + 1}});
+  const auto heldPlan = core.lastRenderPlanForTest();
+
+  EXPECT_EQ(countLayersOfKind(heldPlan, "participant-video"), 2);
+  const auto* held = findLayer(heldPlan, "tile:zoom:2");
+  ASSERT_NE(held, nullptr) << "a stale member inside the hold window must stay on the wall";
+  EXPECT_TRUE(held->tilesHeld);
+  EXPECT_FALSE(findLayer(heldPlan, "tile:zoom:1")->tilesHeld);
+  EXPECT_EQ(held->rect.x, pairedRect.x);
+  EXPECT_EQ(held->rect.width, pairedRect.width);
+
+  // The snapshot says so too: this is what a show sampler and the shell read.
+  const auto snapshot = core.sessionState();  // keep the Json alive: get() returns a pointer into it
+  const auto* tiles = snapshot.get("tiles");
+  ASSERT_NE(tiles, nullptr);
+  EXPECT_EQ(tiles->getNumber("heldCount"), 1.0);
+  EXPECT_EQ(tiles->getNumber("staleAfterMs"), static_cast<double>(corevideo::compositor::kTilesStaleFrameMs));
+  EXPECT_EQ(tiles->getNumber("holdWindowMs"), static_cast<double>(corevideo::compositor::kTilesHoldWindowMs));
+  const auto& members = tiles->get("members")->asArray();
+  ASSERT_EQ(members.size(), 2u);
+  EXPECT_EQ(members[0].getString("sourceId"), "zoom:1");
+  EXPECT_FALSE(members[0].get("held")->asBool(true));
+  EXPECT_EQ(members[1].getString("sourceId"), "zoom:2");
+  EXPECT_TRUE(members[1].get("held")->asBool(false));
+
+  // One new frame clears the label without any reflow.
+  core.setTilesMemberFrameAgesForTest({{"zoom:1", true, 0}, {"zoom:2", true, 0}});
+  EXPECT_FALSE(findLayer(core.lastRenderPlanForTest(), "tile:zoom:2")->tilesHeld);
+  const auto recovered = core.sessionState();
+  EXPECT_EQ(recovered.get("tiles")->getNumber("heldCount", -1), 0.0);
 }
 
 // Whole-branch review fix: this test used to call `loadWall(core, {})` and read
@@ -591,8 +638,8 @@ TEST(TilesRenderPlan, AnAllStaleWallStillEmitsItsBackground) {
   MediaCore core;
   loadWall(core, {"zoom:1", "zoom:2"});
   core.setTilesMemberFrameAgesForTest(
-      {{"zoom:1", true, corevideo::compositor::kTilesStaleFrameMs + 1},
-       {"zoom:2", true, corevideo::compositor::kTilesStaleFrameMs + 1}});
+      {{"zoom:1", true, corevideo::compositor::kTilesHoldWindowMs + 1},
+       {"zoom:2", true, corevideo::compositor::kTilesHoldWindowMs + 1}});
 
   const auto plan = core.lastRenderPlanForTest();
   ASSERT_FALSE(plan.layers.empty())
@@ -879,9 +926,10 @@ TEST(TilesRenderPlan, AFrozenFrameIdAgesTheMemberOutEvenAsTimestampKeepsAdvancin
   ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:capture:frozen-1"), nullptr)
       << "the member should be admitted on its first real frame";
 
-  // Drive enough ordinary ticks to cross kTilesStaleFrameMs at the default
-  // output rate (60fps ~= 17ms/tick, so ~88 ticks; 400 gives ample margin
-  // without the test becoming a real-time sleep loop).
+  // Drive enough ordinary ticks to cross kTilesHoldWindowMs at the default
+  // output rate (60fps ~= 17ms/tick, so ~240 ticks; 400 gives margin without
+  // the test becoming a real-time sleep loop). #1074: the member is HELD from
+  // kTilesStaleFrameMs (~88 ticks) and leaves only at the hold window.
   bool leftTheWall = false;
   for (int tick = 0; tick < 400; ++tick) {
     (void)core.applyCommands(corevideo::rpc::Json::Array{});

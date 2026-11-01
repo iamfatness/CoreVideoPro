@@ -5,8 +5,12 @@
 namespace {
 
 using corevideo::compositor::admitTilesMembers;
+using corevideo::compositor::admitTilesMembersWithHold;
+using corevideo::compositor::classifyTilesMember;
+using corevideo::compositor::kTilesHoldWindowMs;
 using corevideo::compositor::kTilesStaleFrameMs;
 using corevideo::compositor::TilesMemberFrameAge;
+using corevideo::compositor::TilesMemberState;
 
 TEST(TilesMembership, FreshMembersAreAdmittedInOrder) {
   const std::vector<std::string> members{"zoom:1", "zoom:2", "capture:a"};
@@ -35,9 +39,72 @@ TEST(TilesMembership, AnOrdinaryFrameGapKeepsTheMemberOnTheWall) {
   EXPECT_EQ(admitTilesMembers({"zoom:1"}, ages).size(), 1u);
 }
 
-TEST(TilesMembership, AStaleFeedLeavesTheWall) {
+// #1074 (live show 2026-10-31): a 1.5 to 3 s uplink stall used to empty the
+// slot, reflow the wall, and pop the tile back. A stale feed is now HELD in
+// its slot, and labelled, until the hold window runs out.
+TEST(TilesMembership, AStaleFeedIsHeldInItsSlotNotDropped) {
   const std::vector<TilesMemberFrameAge> ages{{"zoom:1", true, kTilesStaleFrameMs + 1}};
+  const auto admission = admitTilesMembersWithHold({"zoom:1"}, ages);
+  EXPECT_EQ(admission.admitted, (std::vector<std::string>{"zoom:1"}));
+  EXPECT_EQ(admission.held, (std::vector<std::string>{"zoom:1"}));
+  EXPECT_EQ(admitTilesMembers({"zoom:1"}, ages).size(), 1u)
+      << "the plain admission must agree with the labelled one";
+}
+
+TEST(TilesMembership, AFreshFeedIsNeverLabelledHeld) {
+  const std::vector<TilesMemberFrameAge> ages{{"zoom:1", true, kTilesStaleFrameMs}};
+  const auto admission = admitTilesMembersWithHold({"zoom:1"}, ages);
+  EXPECT_EQ(admission.admitted.size(), 1u);
+  EXPECT_TRUE(admission.held.empty());
+}
+
+// The hold is BOUNDED: a dead feed still leaves the wall, one tick past the
+// window. Both edges pinned, inclusive at the window like the stale edge.
+TEST(TilesMembership, AMemberExactlyAtTheHoldWindowIsStillHeld) {
+  const std::vector<TilesMemberFrameAge> ages{{"zoom:1", true, kTilesHoldWindowMs}};
+  const auto admission = admitTilesMembersWithHold({"zoom:1"}, ages);
+  EXPECT_EQ(admission.admitted.size(), 1u);
+  EXPECT_EQ(admission.held.size(), 1u);
+}
+
+TEST(TilesMembership, AStallLongerThanTheHoldWindowDropsTheMember) {
+  const std::vector<TilesMemberFrameAge> ages{{"zoom:1", true, kTilesHoldWindowMs + 1}};
+  const auto admission = admitTilesMembersWithHold({"zoom:1"}, ages);
+  EXPECT_TRUE(admission.admitted.empty());
+  EXPECT_TRUE(admission.held.empty());
   EXPECT_TRUE(admitTilesMembers({"zoom:1"}, ages).empty());
+}
+
+// Video-off, departure and un-route all take the frame OUT of the gather
+// (hasFrame=false). Those drop at once; the hold window never applies, so a
+// slot can never be held for a guest who is actually gone.
+TEST(TilesMembership, AMemberWhoseFrameLeftTheGatherIsDroppedNotHeld) {
+  const std::vector<TilesMemberFrameAge> ages{{"zoom:1", false, 0}, {"zoom:2", false, kTilesStaleFrameMs + 1}};
+  const auto admission = admitTilesMembersWithHold({"zoom:1", "zoom:2"}, ages);
+  EXPECT_TRUE(admission.admitted.empty());
+  EXPECT_TRUE(admission.held.empty());
+}
+
+TEST(TilesMembership, ClassificationTableIsFreshHeldDroppedInThatOrder) {
+  EXPECT_EQ(classifyTilesMember({"zoom:1", true, 0}), TilesMemberState::Fresh);
+  EXPECT_EQ(classifyTilesMember({"zoom:1", true, kTilesStaleFrameMs}), TilesMemberState::Fresh);
+  EXPECT_EQ(classifyTilesMember({"zoom:1", true, kTilesStaleFrameMs + 1}), TilesMemberState::Held);
+  EXPECT_EQ(classifyTilesMember({"zoom:1", true, kTilesHoldWindowMs}), TilesMemberState::Held);
+  EXPECT_EQ(classifyTilesMember({"zoom:1", true, kTilesHoldWindowMs + 1}), TilesMemberState::Dropped);
+  EXPECT_EQ(classifyTilesMember({"zoom:1", false, 0}), TilesMemberState::Dropped);
+  // The window is a parameter, so a caller can tighten it without a new rule.
+  EXPECT_EQ(classifyTilesMember({"zoom:1", true, 2000}, 1500, 1999), TilesMemberState::Dropped);
+}
+
+// Held members keep their ORIGINAL slot order among the fresh ones: the wall
+// must not reflow around a hold, that is the whole point of holding.
+TEST(TilesMembership, AHeldMemberKeepsItsSlotOrderBetweenFreshOnes) {
+  const std::vector<std::string> members{"zoom:1", "zoom:2", "zoom:3"};
+  const std::vector<TilesMemberFrameAge> ages{
+      {"zoom:1", true, 16}, {"zoom:2", true, kTilesStaleFrameMs + 500}, {"zoom:3", true, 16}};
+  const auto admission = admitTilesMembersWithHold(members, ages);
+  EXPECT_EQ(admission.admitted, members);
+  EXPECT_EQ(admission.held, (std::vector<std::string>{"zoom:2"}));
 }
 
 // Lock the inclusive boundary: a member at EXACTLY the threshold is still live.
@@ -49,12 +116,12 @@ TEST(TilesMembership, AMemberExactlyAtTheThresholdIsStillAdmitted) {
   EXPECT_EQ(admitTilesMembers({"zoom:1"}, ages).size(), 1u);
 }
 
-// Re-admission is immediate: one fresh frame puts the guest back, in their
-// original slot order.
+// Re-admission after a DROP is immediate: one fresh frame puts the guest back,
+// in their original slot order, and without a held label.
 TEST(TilesMembership, AReturningFeedIsReadmittedInOriginalOrder) {
   const std::vector<std::string> members{"zoom:1", "zoom:2", "zoom:3"};
   const std::vector<TilesMemberFrameAge> stale{
-      {"zoom:1", true, 16}, {"zoom:2", true, kTilesStaleFrameMs + 500}, {"zoom:3", true, 16}};
+      {"zoom:1", true, 16}, {"zoom:2", true, kTilesHoldWindowMs + 500}, {"zoom:3", true, 16}};
   ASSERT_EQ(admitTilesMembers(members, stale).size(), 2u);
 
   const std::vector<TilesMemberFrameAge> recovered{

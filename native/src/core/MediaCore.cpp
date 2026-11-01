@@ -4859,7 +4859,11 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       annotateLayerSource(background, videoFrames, nowNs);
       renderPlan.layers.push_back(std::move(background));
     }
-    const auto admitted = compositor::admitTilesMembers(wall.members, tilesMemberFrameAges_);
+    // #1074: a member past kTilesStaleFrameMs is HELD (still admitted, its
+    // last picture kept, labelled below) until kTilesHoldWindowMs; see
+    // compositor/TilesMembership.h for the rule and why the window is bounded.
+    const auto admission = compositor::admitTilesMembersWithHold(wall.members, tilesMemberFrameAges_);
+    const auto& admitted = admission.admitted;
     const auto& slots = wall.style.manualFill ? wall.members : admitted;
     std::unordered_set<std::string> drawn;
     if (!admitted.empty()) {
@@ -4972,6 +4976,13 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
           layer.participantId = slots[index];
         }
         annotateLayerSource(layer, videoFrames, nowNs);
+        // #1074: label a held slot. The compositor already renders the last
+        // picture (or black, per the source's dropout policy) for a layer
+        // whose frame is present but stale; this flag only makes the hold
+        // visible in the snapshot. A linear find: `held` is a short subset
+        // of a wall that is at most a few dozen members.
+        layer.tilesHeld = std::find(admission.held.begin(), admission.held.end(), slots[index]) !=
+                          admission.held.end();
         renderPlan.layers.push_back(std::move(layer));
       }
     }
@@ -5618,12 +5629,30 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
           freshness.lastChangedTickMs = frameTimestampMs;
         }
         age.lastFrameAgeMs = std::max<int64_t>(0, frameTimestampMs - freshness.lastChangedTickMs);
+        // #1074: one log line per TRANSITION (fresh -> held -> dropped ->
+        // fresh), never per tick, so a show log shows exactly when a slot
+        // was held and when it was given up. No allocation: member is a
+        // reference into combinedMembers.
+        const auto state = compositor::classifyTilesMember(age);
+        if (state != freshness.lastState) {
+          const char* label = state == compositor::TilesMemberState::Held ? "held"
+              : state == compositor::TilesMemberState::Dropped ? "dropped" : "recovered";
+          ::corevideo::core::nativeLogf("[tiles-hold] %s %s ageMs=%lld\n", member.c_str(), label,
+                                        static_cast<long long>(age.lastFrameAgeMs));
+          freshness.lastState = state;
+        }
       } else {
         age.hasFrame = false;
         // The member has no real-content frame at all this tick (departed or
         // never arrived) — forget its freshness history so a LATER return
         // starts fresh at age 0 rather than replaying a stale frameId's
-        // elapsed time.
+        // elapsed time. A member that was being HELD and whose frame then
+        // left the gather (video-off, departure, un-route) is dropped at
+        // once; say so, since the snapshot's `held` label disappears with it.
+        if (const auto it = tilesFrameFreshness_.find(member);
+            it != tilesFrameFreshness_.end() && it->second.lastState == compositor::TilesMemberState::Held) {
+          ::corevideo::core::nativeLogf("[tiles-hold] %s dropped reason=no-frame\n", member.c_str());
+        }
         tilesFrameFreshness_.erase(member);
       }
       tilesMemberFrameAges_.push_back(age);

@@ -764,6 +764,9 @@ class MediaCore {
     bool everSeen = false;
     int64_t lastFrameId = -1;
     int64_t lastChangedTickMs = 0;
+    // #1074: the state this member was last classified as, so the gather can
+    // log hold/drop/recover TRANSITIONS once each instead of every tick.
+    compositor::TilesMemberState lastState = compositor::TilesMemberState::Fresh;
   };
   std::unordered_map<std::string, TilesFrameFreshness> tilesFrameFreshness_;
   // Task 4: the render plan the render tick actually built, cached for

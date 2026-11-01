@@ -652,6 +652,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
     modules::CompositorRenderPlanLayer item;
     item.kind = layer.kind; item.layerId = layer.layerId; item.sourceId = layer.sourceId;
     item.participantId = layer.participantId; item.rect = layer.rect;
+    item.tilesHeld = layer.tilesHeld;
     lastRenderPlan_.layers.push_back(std::move(item));
   }
 
@@ -1077,12 +1078,18 @@ rpc::Json CoreStateCapture::sessionState() const {
   // "multiviewer node that only appears once configured" mistake again.
   if (tilesLayer_.present) {
     rpc::Json::Array memberNodes;
+    int heldCount = 0;
     for (const auto& layer : lastRenderPlan_.layers) {
       if (layer.kind != "participant-video" || layer.layerId.rfind("tile:", 0) != 0) {
         continue;
       }
+      heldCount += layer.tilesHeld ? 1 : 0;
       memberNodes.push_back(rpc::Json{rpc::Json::Object{
           {"sourceId", rpc::Json{layer.sourceId}},
+          // #1074: this slot is showing its last picture through a stall
+          // (stale past kTilesStaleFrameMs, inside kTilesHoldWindowMs). A
+          // drawn member that is held is counted, never a silent pass.
+          {"held", rpc::Json{layer.tilesHeld}},
           {"rect", rpc::Json{rpc::Json::Object{
               {"x", rpc::Json{static_cast<double>(layer.rect.x)}},
               {"y", rpc::Json{static_cast<double>(layer.rect.y)}},
@@ -1094,6 +1101,9 @@ rpc::Json CoreStateCapture::sessionState() const {
     state.emplace("tiles", rpc::Json::Object{
                                {"layerId", tilesLayer_.layerId},
                                {"members", rpc::Json{memberNodes}},
+                               {"heldCount", heldCount},
+                               {"staleAfterMs", static_cast<double>(compositor::kTilesStaleFrameMs)},
+                               {"holdWindowMs", static_cast<double>(compositor::kTilesHoldWindowMs)},
                            });
   }
   // The multiviewer config the core is ACTUALLY running — always published, even
