@@ -266,6 +266,13 @@ public sealed class GraphicsPlayoutService
     public Task<NativeGraphicsOperationResult> PlayInAsync(GraphicsPlaylistEntry entry, CancellationToken cancellation = default) => Run(async () => {
         var cued = await Cue(entry, cancellation);
         if (!cued.Accepted) return cued;
+        // A names list is one lower third with many lines: showing a line replaces the row's
+        // other lines on Program (the operator asked for the next name, not a stack of them).
+        if (entry.IsVariant && Row(entry.RowId) is { HasVariants: true } list)
+            foreach (var sibling in Strip.OnProgram.Where(i => i.RowId == list.Id && i.InstanceId != cued.InstanceId).ToArray()) {
+                var hidden = await Hide(sibling.InstanceId, cancellation);
+                if (!hidden.Accepted) return hidden with { Reason = "Could not take the previous name off: " + hidden.Reason };
+            }
         var shown = await Send("graphics.instance.trigger", new() { ["instanceId"] = cued.InstanceId, ["expectedRevision"] = cued.CurrentRevision, ["target"] = "cue", ["action"] = "show" }, cancellation);
         if (shown.Accepted && Row(entry.RowId) is { } row) ArmAutoOut(row, cued.InstanceId, _epoch);
         return shown.Accepted ? shown with { InstanceId = cued.InstanceId, Reason = "Shown from Preview." } : shown;

@@ -179,7 +179,7 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
     {
         var (library, service) = await BuildWithDefaultPlaylist();
         var rows = library.Document.Playlist.ToList();
-        rows[0] = rows[0] with { Kind = GraphicsPlaylistRow.Title, FollowSources = false, Variants = GraphicsBuilder.ParseNamesList("Ada, One\nAlan, Two") };
+        rows[0] = rows[0] with { Kind = GraphicsPlaylistRow.Title, FollowSources = false, PlayOutAfterMs = 0, Variants = GraphicsBuilder.ParseNamesList("Ada, One\nAlan, Two") };
         Assert.True(await library.SavePlaylistAsync(rows), library.Status);
         var row = library.Document.Playlist[0];
         var entries = GraphicsPlayoutService.VariantEntries(row);
@@ -188,6 +188,13 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Equal("variant:ada", chip.SourceId); Assert.Equal(row.Name + " \u00B7 Ada", chip.Label);
         Assert.Equal("variant:alan", GraphicsPlayoutService.NextVariant(row, service.Strip.OnProgram.Select(i => i.SourceId))!.SourceId);
         Assert.Equal("", GraphicsPlayoutService.VariantSourceIdOf(row, "playlist-title"));
+        // Showing the next line replaces the previous one; another row's graphic is untouched.
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(library.Document.Playlist[1]))).Accepted);
+        _commands.Clear();
+        Assert.True((await service.PlayInAsync(entries[1])).Accepted);
+        var hides = _commands.Where(c => c.Action == "graphics.instance.trigger" && c.Body.GetProperty("action").GetString() == "hide").Select(c => c.Body.GetProperty("instanceId").GetString()).ToArray();
+        Assert.Equal([GraphicsPlayoutService.InstanceIdFor(row.Id, "variant:ada")], hides);
+        Assert.Equal(["variant:alan", ""], service.Strip.OnProgram.Select(i => i.SourceId).OrderBy(s => s.Length == 0).ToArray());
     }
 
     [Fact] public async Task PlayInCreatesCuesWaitsThenShowsFromCue()
