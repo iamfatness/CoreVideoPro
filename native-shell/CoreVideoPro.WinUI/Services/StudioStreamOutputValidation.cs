@@ -261,6 +261,26 @@ public static class StudioStreamOutputValidation
     public static bool CanSerializeNdiSettings(string? programName) =>
         !string.IsNullOrWhiteSpace(programName);
 
+    /// <summary>The core's destination id for the NDI graphics key (fill+key) sender.</summary>
+    public const string NdiGraphicsKeyDestination = "ndi-graphics";
+
+    /// <summary>The NDI source name the graphics key advertises: the operator's own name when
+    /// set, otherwise "&lt;NDI program name&gt; Graphics" so the two sources sort together on a
+    /// receiver and never collide.</summary>
+    public static string ResolveNdiGraphicsKeyName(string? programName, string? graphicsName)
+    {
+        var explicitName = NormalizeText(graphicsName, string.Empty);
+        if (explicitName.Length > 0) return explicitName;
+        return $"{NormalizeText(programName, "CoreVideo Pro Program")} Graphics";
+    }
+
+    /// <summary>Refuses a selected graphics key the running core cannot carry. A null capability
+    /// (no profile yet) defers to the core's own sender warning, like the other destinations.</summary>
+    public static string? ValidateNdiGraphicsKeyCapability(bool keySelected, bool? coreHasCapability) =>
+        keySelected && coreHasCapability == false
+            ? "NDI graphics key is selected, but the native media core profile is missing ndi-graphics-output."
+            : null;
+
     public static bool CanSerializeSrtSettings(
         string? mode,
         string? host,

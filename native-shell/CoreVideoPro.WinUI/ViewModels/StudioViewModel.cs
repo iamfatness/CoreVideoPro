@@ -537,6 +537,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private string _streamNdiGroupName = "public";
 
+    // NDI graphics key (titler spec Phase 1): a second NDI source carrying only
+    // the on-air graphics, BGRA with straight alpha. Rides with NDI output.
+    [ObservableProperty]
+    private bool _streamNdiGraphicsKeyEnabled;
+
+    // Blank = "<NDI program name> Graphics" (StudioStreamOutputValidation.ResolveNdiGraphicsKeyName).
+    [ObservableProperty]
+    private string _streamNdiGraphicsName = string.Empty;
+
     [ObservableProperty]
     private string _streamSrtMode = "caller";
 
@@ -1881,9 +1890,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? _bridge.Profile is not null && !HasNativeOutputCapability(_bridge.Profile, "ndi-output")
                 ? "NDI unavailable in this native core build"
                 : IsNdiConfigured()
-                ? $"NDI ready - {NormalizeOutputText(StreamNdiProgramName, string.Empty)}"
+                ? $"NDI ready - {NormalizeOutputText(StreamNdiProgramName, string.Empty)}" + StreamNdiGraphicsKeySuffix
                 : "NDI needs a program name"
             : "NDI disabled";
+
+    private string StreamNdiGraphicsKeySuffix =>
+        !StreamNdiGraphicsKeyEnabled
+            ? string.Empty
+            : _bridge.Profile is not null && !HasNativeOutputCapability(_bridge.Profile, "ndi-graphics-output")
+                ? " (graphics key unavailable in this native core build)"
+                : $" + graphics key - {StudioStreamOutputValidation.ResolveNdiGraphicsKeyName(StreamNdiProgramName, StreamNdiGraphicsName)}";
 
     public string StreamSrtSummary =>
         StreamSrtEnabled
@@ -3462,6 +3478,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnStreamNdiProgramNameChanged(string value) => OnStreamOutputOptionChanged();
 
     partial void OnStreamNdiGroupNameChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamNdiGraphicsKeyEnabledChanged(bool value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamNdiGraphicsNameChanged(string value) => OnStreamOutputOptionChanged();
 
     partial void OnStreamSrtModeChanged(string value) => OnStreamOutputOptionChanged();
 
@@ -9637,7 +9657,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamNdiEnabled,
             StreamSrtEnabled,
             _bridge.Profile,
-            Hls.Enabled);
+            Hls.Enabled) ?? StudioStreamOutputValidation.ValidateNdiGraphicsKeyCapability(
+            StreamNdiEnabled && StreamNdiGraphicsKeyEnabled,
+            _bridge.Profile is null ? null : HasNativeOutputCapability(_bridge.Profile, "ndi-graphics-output"));
     }
 
     private static string? ValidateStreamDestinationCapabilities(bool streamRtmpEnabled, bool streamNdiEnabled, bool streamSrtEnabled, NativeMediaCoreProfile? profile, bool hlsEnabled = false) =>
@@ -11817,6 +11839,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamRtmpStreamKey = StreamRtmpStreamKey,
             StreamNdiProgramName = StreamNdiProgramName,
             StreamNdiGroupName = StreamNdiGroupName,
+            StreamNdiGraphicsKeyEnabled = StreamNdiGraphicsKeyEnabled,
+            StreamNdiGraphicsName = StreamNdiGraphicsName,
             StreamSrtMode = StreamSrtMode,
             StreamSrtHost = StreamSrtHost,
             StreamSrtPort = StreamSrtPort,
@@ -12027,6 +12051,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         StreamRtmpStreamKey = preferences.StreamRtmpStreamKey ?? StreamRtmpStreamKey;
         StreamNdiProgramName = preferences.StreamNdiProgramName ?? StreamNdiProgramName;
         StreamNdiGroupName = preferences.StreamNdiGroupName ?? StreamNdiGroupName;
+        StreamNdiGraphicsKeyEnabled = preferences.StreamNdiGraphicsKeyEnabled;
+        StreamNdiGraphicsName = preferences.StreamNdiGraphicsName ?? string.Empty;
         StreamSrtMode = preferences.StreamSrtMode ?? StreamSrtMode;
         StreamSrtHost = preferences.StreamSrtHost ?? StreamSrtHost;
         StreamSrtPort = preferences.StreamSrtPort ?? StreamSrtPort;
