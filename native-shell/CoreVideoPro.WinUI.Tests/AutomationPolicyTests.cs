@@ -94,4 +94,23 @@ public sealed class AutomationPolicyTests
         Health = FeedHealth.Live,
         IsScreenSharing = isScreenSharing
     };
+
+    // #1070: catalog scenes are deletable; a preset whose scene is gone cues the first scene.
+    [Fact]
+    public void RecommendationFallsBackToTheFirstSceneWhenThePresetSceneWasRemoved()
+    {
+        var withoutPanel = Scenes.Where(scene => scene.Id != "panel").ToList();
+        var participants = new[] { Participant("a"), Participant("b"), Participant("c"), Participant("d") };
+
+        var recommendation = ProductionStateHelper.BuildAutomationRecommendation(
+            participants, withoutPanel, preferScreenShare: true, panelParticipantThreshold: 4);
+
+        Assert.Equal("intro", recommendation.RecommendedSceneId);
+        Assert.Contains("panel", recommendation.Reason);
+        Assert.Equal("suggest", recommendation.Action);
+
+        var intact = ProductionStateHelper.BuildAutomationRecommendation(
+            participants, Scenes, preferScreenShare: true, panelParticipantThreshold: 4);
+        Assert.Equal("panel", intact.RecommendedSceneId);
+    }
 }

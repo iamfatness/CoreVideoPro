@@ -1156,7 +1156,34 @@ public static class ProductionStateHelper
         IReadOnlyList<Participant> participants,
         IReadOnlyList<Scene> scenes,
         bool preferScreenShare = true,
-        int panelParticipantThreshold = 4)
+        int panelParticipantThreshold = 4) =>
+        WithExistingScene(BuildCatalogRecommendation(participants, preferScreenShare, panelParticipantThreshold), scenes);
+
+    /// <summary>#1070: the show-type presets name catalog ids (intro, speaker-slides, panel,
+    /// interview). Any of those can now be removed, so a recommendation whose scene is gone
+    /// falls back to the first scene instead of cueing an id the rail no longer has.</summary>
+    private static AutoProductionState WithExistingScene(AutoProductionState state, IReadOnlyList<Scene> scenes)
+    {
+        var resolved = Services.SceneCatalogPolicy.ResolveRecommendedSceneId(scenes, state.RecommendedSceneId);
+        if (string.Equals(resolved, state.RecommendedSceneId, StringComparison.Ordinal))
+        {
+            return state;
+        }
+
+        return new AutoProductionState
+        {
+            RecommendedSceneId = resolved,
+            Confidence = state.Confidence,
+            Reason = $"{state.Reason} (preferred scene '{state.RecommendedSceneId}' was removed; using the first scene)",
+            Action = state.Action,
+            SlotBindings = state.SlotBindings
+        };
+    }
+
+    private static AutoProductionState BuildCatalogRecommendation(
+        IReadOnlyList<Participant> participants,
+        bool preferScreenShare,
+        int panelParticipantThreshold)
     {
         panelParticipantThreshold = Math.Clamp(panelParticipantThreshold, 2, 10);
         if (participants.Count == 0)
