@@ -68,14 +68,14 @@ public sealed partial class StudioViewModel
     public void SetTilesBackground(string color, string sourceId)
     {
         RequireTilesPreview();
-        if (!string.IsNullOrEmpty(sourceId) && !GalleryMemberChoices.Any(p => p.Id == sourceId))
+        if (!string.IsNullOrEmpty(sourceId) && !TilesMemberChoicePolicy.Contains(GalleryMemberChoices, sourceId))
             throw new ArgumentException("Choose an available background source.");
         UpdateGallery(s => { s.BackgroundColor = SceneRoutingService.NormalizeBorderColor(color); s.BackgroundSourceId = sourceId; });
     }
     public void SetTilesOverride(string sourceId, double x, double y, double width, double height, double left, double right, double z)
     {
         RequireTilesPreview();
-        if (!GalleryMemberChoices.Any(p => p.Id == sourceId)) throw new ArgumentException("Choose an available tile source.");
+        if (!TilesMemberChoicePolicy.Contains(GalleryMemberChoices, sourceId)) throw new ArgumentException("Choose an available tile source.");
         var item = TilesOverridePolicy.Create(x, y, width, height, left, right, z);
         UpdateGallery(s => s.Overrides[sourceId] = item);
         LoadGalleryTileEditor(force: true);
@@ -95,12 +95,21 @@ public sealed partial class StudioViewModel
     [System.Diagnostics.CodeAnalysis.AllowNull]
     public string GallerySelectedMemberId { get => _gallerySelectedMemberId; set { if (SetProperty(ref _gallerySelectedMemberId, value ?? string.Empty)) LoadGalleryTileEditor(); } }
     public double GalleryManualSlot { get => _galleryManualSlot; set => SetProperty(ref _galleryManualSlot, double.IsFinite(value) ? Math.Clamp(Math.Round(value), 1, 64) : 1); }
-    public IReadOnlyList<GalleryMemberChoice> GalleryMemberChoices => RoomVideoParticipants
-        .Select(p => new GalleryMemberChoice(p.Id.Contains(':') ? p.Id : "zoom:" + p.Id, p.Name)).ToList();
+    // #1071: the Tiles member picker lists Zoom participants (roster order) and then every
+    // IN-SHOW slot bound to a local source with video, grouped the way the show-input
+    // picker groups them (TilesMemberChoicePolicy). Same local list the payload builder's
+    // eligible set is drawn from (TilesLocalVideoSources), so what the operator can pick is
+    // what auto fill can seat.
+    public IReadOnlyList<GalleryMemberChoice> GalleryMemberChoices =>
+        TilesMemberChoicePolicy.Build(RoomVideoParticipants, TilesLocalVideoSources());
+    internal IReadOnlyList<TilesLocalSource> TilesLocalVideoSources() =>
+        TilesLocalSourcePolicy.LocalVideoSources(ShowInputs, CaptureDevices, ResolveSourceDisplayName);
+    private HashSet<string> TilesLiveLocalSourceIds() =>
+        TilesLocalVideoSources().Select(source => source.Id).ToHashSet(StringComparer.Ordinal);
     public IReadOnlyList<RouteSelectOption> GalleryMembershipModeOptions { get; } =
     [
         new() { Value = "routed", Label = "Routed show sources only" },
-        new() { Value = "eligible", Label = "All eligible meeting participants" },
+        new() { Value = "eligible", Label = "All eligible: meeting participants + in-show local sources" },
         new() { Value = "manual", Label = "Manual slots only" }
     ];
     public string GalleryMembershipMode
@@ -123,7 +132,7 @@ public sealed partial class StudioViewModel
                 GalleryMemberChoices.FirstOrDefault(p => p.Id == id)?.Name ?? TilesIdentityPolicy.Label(id, roster);
             var slots = settings.ManualSlots.Select((id, index) => string.IsNullOrEmpty(id) ? null : $"{index + 1}: {Name(id)}").Where(s => s is not null);
             var exclusions = settings.ExcludedSourceIds.Select(Name);
-            var stale = TilesIdentityPolicy.DescribeStale(settings, roster, CurrentTilesMeetingId());
+            var stale = TilesIdentityPolicy.DescribeStale(settings, roster, CurrentTilesMeetingId(), TilesLiveLocalSourceIds());
             var summary = "Manual slots: " + string.Join(", ", slots) + " · Never show: " + string.Join(", ", exclusions);
             return stale.Count == 0
                 ? summary
@@ -147,7 +156,7 @@ public sealed partial class StudioViewModel
     {
         RequireTilesPreview();
         if (slot is < 1 or > 64) throw new ArgumentOutOfRangeException(nameof(slot), "Tiles slot must be 1–64.");
-        if (!string.IsNullOrEmpty(sourceId) && !GalleryMemberChoices.Any(p => p.Id == sourceId))
+        if (!string.IsNullOrEmpty(sourceId) && !TilesMemberChoicePolicy.Contains(GalleryMemberChoices, sourceId))
             throw new ArgumentException("Choose an available source for this Tiles slot.");
         UpdateGallery(settings =>
         {
@@ -177,7 +186,7 @@ public sealed partial class StudioViewModel
     {
         RequireTilesPreview();
         if (string.IsNullOrWhiteSpace(sourceId)) throw new ArgumentException("Choose a source to exclude or allow.");
-        if (excluded && !GalleryMemberChoices.Any(p => p.Id == sourceId)) throw new ArgumentException("Choose an available source to exclude.");
+        if (excluded && !TilesMemberChoicePolicy.Contains(GalleryMemberChoices, sourceId)) throw new ArgumentException("Choose an available source to exclude.");
         UpdateGallery(settings =>
         {
             var roster = TilesIdentityRoster();
@@ -202,7 +211,7 @@ public sealed partial class StudioViewModel
     {
         RequireTilesPreview();
         UpdateGallery(settings =>
-            TilesIdentityPolicy.ClearStale(settings, TilesIdentityRoster(), CurrentTilesMeetingId()));
+            TilesIdentityPolicy.ClearStale(settings, TilesIdentityRoster(), CurrentTilesMeetingId(), TilesLiveLocalSourceIds()));
     }
     private void RequireTilesPreview()
     {
@@ -232,5 +241,3 @@ public sealed partial class StudioViewModel
         set => UpdateGallery(settings => settings.CornerRadius = double.IsFinite(value) ? Math.Clamp(value, 0, 100) : 16);
     }
 }
-
-public sealed record GalleryMemberChoice(string Id, string Name);

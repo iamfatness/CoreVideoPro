@@ -5839,6 +5839,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
         OnPropertyChanged(nameof(MediaBinGroups));
+        OnPropertyChanged(nameof(GalleryMemberChoices));  // #1071: keep the Tiles picker current with the bin (Media members are a follow-up)
         OnPropertyChanged(nameof(HasMediaBinAssets));
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
@@ -12560,6 +12561,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SchedulePreviewRoutingRefresh();
         QueueSelectedCaptureDevicesOnline();
         SaveShowInputRoster();
+        // #1071: a slot binding is a Tiles member candidate (local sources), so the
+        // member picker and its summary follow every roster edit, not only gallery edits.
+        OnPropertyChanged(nameof(GalleryMemberChoices));
+        OnPropertyChanged(nameof(GalleryMembershipSummary));
         var inShowCount = ShowInputs.Count(slot => slot.InShow);
         CommandStatus = $"Show input roster updated — {inShowCount} of {ShowInputRosterService.MaxShowInputs} sources on the multiviewer";
     }
@@ -13403,14 +13408,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     /// </summary>
     private MediaCoreTilesLayerWire? BuildTilesLayerWire(Scene scene)
     {
-        var routedSourceIds = ShowInputs
-            .Where(slot => slot.InShow)
-            .Select(ShowInputRosterService.SlotSourceId)
-            .Where(sourceId => !string.IsNullOrWhiteSpace(sourceId))
-            .Select(sourceId => sourceId!)
-            .ToHashSet(StringComparer.Ordinal);
+        var routedSourceIds = TilesLocalSourcePolicy.RoutedSourceIds(ShowInputs);
         var payload = TilesLayerPayloadBuilder.Build(
-            scene, RoomVideoParticipants, routedSourceIds, RoomParticipantsForInputs, CurrentTilesMeetingId());
+            scene, RoomVideoParticipants, routedSourceIds, RoomParticipantsForInputs, CurrentTilesMeetingId(),
+            // #1071: in-show slots bound to a local source with video are eligible too.
+            localVideoSourceIds: TilesLocalVideoSources().Select(source => source.Id).ToList());
         if (payload is null)
         {
             return null;
