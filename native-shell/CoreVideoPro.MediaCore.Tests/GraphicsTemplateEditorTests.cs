@@ -99,4 +99,106 @@ public sealed class GraphicsTemplateEditorTests
         Assert.DoesNotContain("graphics.instance.update",actions);Assert.DoesNotContain("graphics.instance.trigger",actions);Assert.Equal(3,session.Selected!.ProgramRevision);
         Assert.Equal(conflict?1:2,session.Draft!.TemplateVersion);Assert.Equal(conflict,session.Draft.Scratch is not null);
     }
+
+    private static NativeGraphicsScratch LowerThird()=>NativeGraphicsScratch.From(JsonSerializer.SerializeToElement(GraphicsDesignSeeds.Manifest("lower-third","design-vars-a1b2c3",1,"Vars")));
+    private static JsonObject Parse(NativeGraphicsScratch s)=>JsonNode.Parse(s.Manifest)!.AsObject();
+    private static JsonObject FieldOf(NativeGraphicsScratch s,string id)=>Parse(s)["fields"]!.AsArray().OfType<JsonObject>().Single(f=>f["id"]!.GetValue<string>()==id);
+    private static JsonElement Json(object value)=>JsonSerializer.SerializeToElement(value);
+
+    [Fact]
+    public void AddFieldMapsKindsToNativeTypesAndBindsANewTextLayer()
+    {
+        var s=GraphicsTemplateEditor.AddField(LowerThird(),"location","text",40);
+        var f=FieldOf(s,"location"); Assert.Equal("string",f["type"]!.GetValue<string>()); Assert.Equal(40,f["maxLength"]!.GetValue<int>());
+        foreach(var (kind,native) in new[]{("number","number"),("colour","color"),("on-off","boolean"),("image","image")})
+            Assert.Equal(native,FieldOf(GraphicsTemplateEditor.AddField(s,"extra-"+kind,kind),"extra-"+kind)["type"]!.GetValue<string>());
+        s=GraphicsTemplateEditor.Add(s,"text"); var layer=GraphicsTemplateEditor.Layers(s).Last().Id;
+        s=GraphicsTemplateEditor.BindLayer(s,layer,"text","location",null);
+        Assert.Equal("location",GraphicsTemplateEditor.Layer(s,layer).GetProperty("text").GetProperty("field").GetString());
+        Assert.Contains(GraphicsTemplateEditor.FieldUsage(s),u=>u.FieldId=="location" && u.LayerLabels.SequenceEqual(new[]{layer}));
+        Assert.Contains(GraphicsTemplateEditor.FieldUsage(s),u=>u.FieldId=="name" && u.LayerLabels.SequenceEqual(new[]{"name-label"}));
+    }
+    [Fact]
+    public void RenameFieldRewritesEveryBindingAndRefusesCollisionsAndBadIds()
+    {
+        var s=GraphicsTemplateEditor.AddField(LowerThird(),"location","text",40);
+        s=GraphicsTemplateEditor.Add(s,"text"); var layer=GraphicsTemplateEditor.Layers(s).Last().Id;
+        s=GraphicsTemplateEditor.BindLayer(s,layer,"text","location",null);
+        s=GraphicsTemplateEditor.Duplicate(s,layer);
+        var renamed=GraphicsTemplateEditor.RenameField(s,"location","city");
+        Assert.DoesNotContain("\"location\"",renamed.Manifest);
+        Assert.Equal(2,GraphicsTemplateEditor.FieldUsage(renamed).Single(u=>u.FieldId=="city").LayerLabels.Count);
+        Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.RenameField(s,"location","name"));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.RenameField(s,"location","Bad Id"));
+        Assert.Same(s,GraphicsTemplateEditor.RenameField(s,"location","location"));
+    }
+    [Fact]
+    public void RemoveFieldRefusesUsedFieldNamingLayersButRemovesUnusedOnes()
+    {
+        var s=LowerThird();
+        var ex=Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.RemoveField(s,"title"));
+        Assert.Equal("Used by: title-label",ex.Message);
+        s=GraphicsTemplateEditor.AddField(s,"spare","text");
+        var gone=GraphicsTemplateEditor.RemoveField(s,"spare");
+        Assert.DoesNotContain(Parse(gone)["fields"]!.AsArray(),f=>f!["id"]!.GetValue<string>()=="spare");
+    }
+    [Fact]
+    public void FieldLimitsAndIdRulesFollowNative()
+    {
+        var s=LowerThird();
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.AddField(s,"Upper","text"));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.AddField(s,"1st","text"));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.AddField(s,new string('a',65),"text"));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.AddField(s,"ok","bogus"));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.AddField(s,"ok","number",10));
+        Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.AddField(s,"name","text"));
+        _=GraphicsTemplateEditor.AddField(s,new string('a',64),"text");
+        for(var i=0;i<30;i++) s=GraphicsTemplateEditor.AddField(s,"f"+i,"text");
+        Assert.Equal(32,Parse(s)["fields"]!.AsArray().Count);
+        Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.AddField(s,"one-too-many","text"));
+    }
+    [Fact]
+    public void HideWhenEmptySetsCollapseOnBoundTextLayersAndOptionsAreValidated()
+    {
+        var s=LowerThird();
+        var on=GraphicsTemplateEditor.SetFieldOptions(s,"name",64,Json("Grace"),true);
+        Assert.True(GraphicsTemplateEditor.Layer(on,"name-label").GetProperty("collapseWhenEmpty").GetBoolean());
+        Assert.Equal(64,FieldOf(on,"name")["maxLength"]!.GetValue<int>()); Assert.Equal("Grace",FieldOf(on,"name")["default"]!.GetValue<string>());
+        var off=GraphicsTemplateEditor.SetFieldOptions(on,"name",null,null,false);
+        Assert.False(GraphicsTemplateEditor.Layer(off,"name-label").TryGetProperty("collapseWhenEmpty",out _)); Assert.Null(FieldOf(off,"name")["maxLength"]);
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.SetFieldOptions(s,"name",3,Json("Grace"),false));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.SetFieldOptions(s,"name",null,Json(5),false));
+        var c=GraphicsTemplateEditor.AddField(s,"tint","colour");
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.SetFieldOptions(c,"tint",null,Json("red"),false));
+        Assert.Equal("#102030",FieldOf(GraphicsTemplateEditor.SetFieldOptions(c,"tint",null,Json("#102030"),false),"tint")["default"]!.GetValue<string>());
+    }
+    [Fact]
+    public void BindLayerNeedsExactlyOneSourceAndMatchingFieldTypeAndRespectsLocks()
+    {
+        var s=GraphicsTemplateEditor.AddField(GraphicsTemplateEditor.AddField(LowerThird(),"tint","colour"),"count","number");
+        Assert.Throws<ArgumentException>(()=>GraphicsTemplateEditor.BindLayer(s,"plate","fill",null,null));
+        Assert.Throws<ArgumentException>(()=>GraphicsTemplateEditor.BindLayer(s,"plate","fill","tint",Json("#FFFFFF")));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.BindLayer(s,"plate","fill","count",null));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.BindLayer(s,"plate","fill","missing",null));
+        var bound=GraphicsTemplateEditor.BindLayer(s,"plate","fill","tint",null);
+        Assert.Equal("tint",GraphicsTemplateEditor.Layer(bound,"plate").GetProperty("fill").GetProperty("field").GetString());
+        var brand=GraphicsTemplateEditor.BindLayer(bound,"plate","fill",null,Json(new{token="brand.accent"}));
+        Assert.Equal("brand.accent",GraphicsTemplateEditor.Layer(brand,"plate").GetProperty("fill").GetProperty("token").GetString());
+        Assert.Empty(GraphicsTemplateEditor.FieldUsage(brand).Single(u=>u.FieldId=="tint").LayerLabels);
+        Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.BindLayer(GraphicsTemplateEditor.Lock(s,"plate",true),"plate","fill","tint",null));
+    }
+    [Fact]
+    public void EditedManifestKeepsNativeShape()
+    {
+        // No C# scratch-validation helper exists; native loading is proven by the native seed test. Assert structure.
+        var s=GraphicsTemplateEditor.AddField(LowerThird(),"location","text",40);
+        s=GraphicsTemplateEditor.Add(s,"text"); var layer=GraphicsTemplateEditor.Layers(s).Last().Id;
+        s=GraphicsTemplateEditor.SetFieldOptions(GraphicsTemplateEditor.BindLayer(s,layer,"text","location",null),"location",40,Json("Oslo"),true);
+        var root=Parse(s); var ids=root["fields"]!.AsArray().Select(f=>f!["id"]!.GetValue<string>()).ToArray();
+        Assert.Equal(ids.Length,ids.Distinct().Count());
+        foreach(var f in root["fields"]!.AsArray()) Assert.Contains(f!["type"]!.GetValue<string>(),new[]{"string","number","color","boolean","image"});
+        var node=root["layers"]!.AsArray().OfType<JsonObject>().Single(l=>l["id"]!.GetValue<string>()==layer);
+        Assert.Equal("location",node["text"]!["field"]!.GetValue<string>()); Assert.True(node["collapseWhenEmpty"]!.GetValue<bool>());
+        Assert.Contains(ids,i=>i=="name"); Assert.Equal("lower-third",root["family"]!.GetValue<string>());
+    }
 }

@@ -121,4 +121,102 @@ public static class GraphicsTemplateEditor
         foreach(var node in children.Prepend(copy)) node["id"]="layer-"+Guid.NewGuid().ToString("N");
         row.Siblings.Insert(row.Index+1,copy); return Save(root);
     }
+
+    // ---- Variables (template fields). Limits mirror native GraphicsTemplate.cpp validation. ----
+    private const int MaxFields=32;
+    private static readonly System.Text.RegularExpressions.Regex FieldIdPattern=new(@"\A[a-z][a-z0-9-]{0,63}\z",System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    private static readonly System.Text.RegularExpressions.Regex ColourPattern=new(@"\A#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})\z",System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    private static string NativeFieldType(string kind)=>kind switch {
+        "text"=>"string","number"=>"number","colour"=>"color","on-off"=>"boolean","image"=>"image",
+        _=>throw new InvalidDataException("Choose a variable kind: text, number, colour, on-off or image.") };
+    // Layer property -> native field type it may be bound to (native resolve() rejects a mismatch).
+    private static string? BindableType(string property)=>property switch {
+        "text"=>"string","color" or "fill"=>"color","asset"=>"image",
+        "opacity" or "fontSize" or "cornerRadius"=>"number",_=>null };
+    private static JsonArray Fields(JsonObject root)=>root["fields"] as JsonArray ?? throw new InvalidDataException("Missing fields.");
+    private static JsonObject? FindField(JsonObject root,string id)=>Fields(root).OfType<JsonObject>().FirstOrDefault(f=>f["id"]?.GetValue<string>()==id);
+    private static string LabelOf(JsonObject node)=>node["metadata"] is JsonObject m && m["label"] is JsonValue l && l.TryGetValue<string>(out var caption) ? caption : node["id"]!.GetValue<string>();
+    private static bool BindsField(JsonNode? value,string id)=>value is JsonObject o && o["field"] is JsonValue f && f.TryGetValue<string>(out var name) && name==id;
+    private static JsonNode DefaultFor(string type)=>type switch { "number"=>0,"color"=>"#FFFFFF","boolean"=>false,_=>"" };
+    private static void CheckValue(string type,JsonNode? value,int? maxLength)
+    {
+        switch(type) {
+            case "string" or "color" or "image":
+                if(value is not JsonValue v || !v.TryGetValue<string>(out var text)) throw new InvalidDataException("Sample value must be text.");
+                if(maxLength is int cap && text.Length>cap) throw new InvalidDataException($"Sample value is longer than the {cap}-character limit.");
+                if(type=="color" && !ColourPattern.IsMatch(text)) throw new InvalidDataException("Use a colour like #RRGGBB.");
+                if(type=="image" && text.Length!=0 && !FieldIdPattern.IsMatch(text)) throw new InvalidDataException("Choose an image asset.");
+                break;
+            case "number":
+                if(value is not JsonValue n || !n.TryGetValue<double>(out var d) || !double.IsFinite(d)) throw new InvalidDataException("Sample value must be a number.");
+                break;
+            default:
+                if(value is not JsonValue b || !b.TryGetValue<bool>(out _)) throw new InvalidDataException("Sample value must be on or off.");
+                break;
+        }
+    }
+    private static void CheckLength(string type,int? maxLength)
+    {
+        if(maxLength is null) return;
+        if(type is not ("string" or "color" or "image")) throw new InvalidDataException("Only text variables have a length limit.");
+        if(maxLength<0 || maxLength>4096) throw new InvalidDataException("Use a length limit of 0–4096.");
+    }
+    public static NativeGraphicsScratch AddField(NativeGraphicsScratch scratch,string id,string kind,int? maxLength=null)
+    {
+        var type=NativeFieldType(kind); var root=Read(scratch); var fields=Fields(root);
+        if(!FieldIdPattern.IsMatch(id ?? "")) throw new InvalidDataException("Use a variable name of lowercase letters, digits and hyphens, starting with a letter (up to 64).");
+        if(fields.Count>=MaxFields) throw new InvalidOperationException("A template supports at most 32 variables.");
+        if(FindField(root,id!) is not null) throw new InvalidOperationException("A variable with that name already exists.");
+        CheckLength(type,maxLength);
+        var field=new JsonObject { ["id"]=id,["type"]=type,["default"]=DefaultFor(type),["bindable"]=true };
+        if(maxLength is not null) field["maxLength"]=maxLength;
+        fields.Add(field); return Save(root);
+    }
+    public static NativeGraphicsScratch RenameField(NativeGraphicsScratch scratch,string id,string newId)
+    {
+        var root=Read(scratch); var field=FindField(root,id) ?? throw new InvalidDataException("Variable was removed.");
+        if(id==newId) return scratch;
+        if(!FieldIdPattern.IsMatch(newId ?? "")) throw new InvalidDataException("Use a variable name of lowercase letters, digits and hyphens, starting with a letter (up to 64).");
+        if(FindField(root,newId!) is not null) throw new InvalidOperationException("A variable with that name already exists.");
+        field["id"]=newId;
+        // Identifier rewrite is allowed on locked layers: leaving a stale binding would break the template.
+        foreach(var row in Walk(root["layers"]!.AsArray()))
+            foreach(var property in row.Node.Where(p=>BindsField(p.Value,id)).Select(p=>p.Key).ToArray()) row.Node[property]=new JsonObject { ["field"]=newId };
+        return Save(root);
+    }
+    public static IReadOnlyList<(string FieldId,IReadOnlyList<string> LayerLabels)> FieldUsage(NativeGraphicsScratch scratch)
+    {
+        var root=Read(scratch); var rows=Walk(root["layers"]!.AsArray()).ToArray();
+        return Fields(root).OfType<JsonObject>().Select(f=>f["id"]!.GetValue<string>()).Select(id=>
+            (id,(IReadOnlyList<string>)rows.Where(r=>r.Node.Any(p=>BindsField(p.Value,id))).Select(r=>LabelOf(r.Node)).ToArray())).ToArray();
+    }
+    public static NativeGraphicsScratch RemoveField(NativeGraphicsScratch scratch,string id)
+    {
+        var root=Read(scratch); var field=FindField(root,id) ?? throw new InvalidDataException("Variable was removed.");
+        var used=FieldUsage(scratch).First(u=>u.FieldId==id).LayerLabels;
+        if(used.Count!=0) throw new InvalidOperationException("Used by: "+string.Join(", ",used));
+        Fields(root).Remove(field); return Save(root);
+    }
+    public static NativeGraphicsScratch SetFieldOptions(NativeGraphicsScratch scratch,string id,int? maxLength,JsonElement? sample,bool hideWhenEmpty)
+    {
+        var root=Read(scratch); var field=FindField(root,id) ?? throw new InvalidDataException("Variable was removed.");
+        var type=field["type"]!.GetValue<string>(); CheckLength(type,maxLength);
+        if(maxLength is not null) field["maxLength"]=maxLength; else field.Remove("maxLength");
+        var cap=field["maxLength"]?.GetValue<int>();
+        if(sample is JsonElement value) { var node=JsonNode.Parse(value.GetRawText()); CheckValue(type,node,cap); field["default"]=node; }
+        else CheckValue(type,field["default"],cap);
+        foreach(var row in Walk(root["layers"]!.AsArray()).Where(r=>r.Node["type"]!.GetValue<string>() is "text" or "image" && r.Node.Any(p=>BindsField(p.Value,id)))) {
+            if(hideWhenEmpty) row.Node["collapseWhenEmpty"]=true; else row.Node.Remove("collapseWhenEmpty");
+        }
+        return Save(root);
+    }
+    public static NativeGraphicsScratch BindLayer(NativeGraphicsScratch scratch,string layerId,string property,string? fieldId,JsonElement? literal)
+    {
+        if((fieldId is null)==(literal is null)) throw new ArgumentException("Give either a variable or a fixed value, not both.");
+        if(fieldId is null) return Set(scratch,layerId,property,literal!.Value);
+        var field=FindField(Read(scratch),fieldId) ?? throw new InvalidDataException("Variable was removed.");
+        var expected=BindableType(property) ?? throw new InvalidDataException("This layer property cannot use a variable.");
+        if(field["type"]!.GetValue<string>()!=expected) throw new InvalidDataException($"This property needs a {expected} variable.");
+        return Set(scratch,layerId,property,JsonSerializer.SerializeToElement(new JsonObject { ["field"]=fieldId }));
+    }
 }
