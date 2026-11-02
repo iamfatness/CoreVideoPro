@@ -360,8 +360,6 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 
     bool ITransportHost.StreamRtmpEnabled => StreamRtmpEnabled;
 
-    bool ITransportHost.StreamNdiEnabled => NdiOutputEnabled;
-
     bool ITransportHost.StreamSrtEnabled => StreamSrtEnabled;
 
     double ITransportHost.StreamLogBitrateMbps => NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps);

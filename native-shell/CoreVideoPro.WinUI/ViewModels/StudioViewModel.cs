@@ -517,6 +517,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private bool _ndiOutputEnabled;
 
+    /// <summary>The last reason NDI output was refused or turned off; cleared when NDI turns on.
+    /// Not persisted.</summary>
+    [ObservableProperty]
+    private string? _ndiOutputStatusReason;
+
+    // Set while NDI output is flipped by code that saves and syncs on its own.
+    private bool _applyingNdiOutput;
+
     [ObservableProperty]
     private bool _streamSrtEnabled;
 
@@ -1928,8 +1936,92 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 {
                     _applyingStreamDestination = false;
                 }
-                OnStreamOutputOptionChanged();
+                OnNdiOutputOptionChanged();
             });
+
+    private string? ValidateNdiOutput() =>
+        StudioStreamOutputValidation.ValidateNdiOutput(
+            StreamNdiProgramName,
+            StreamNdiGraphicsName,
+            StreamNdiGraphicsKeyEnabled,
+            _bridge.Profile is null ? null : HasNativeOutputCapability(_bridge.Profile, "ndi-output"),
+            CoreHasNdiGraphicsKey());
+
+    /// <summary>The NDI toggle (UI and control API). Validates first: a refusal returns the reason
+    /// and changes nothing but <see cref="NdiOutputStatusReason"/>. Otherwise sets
+    /// <see cref="NdiOutputEnabled"/>, which saves and runs one output sync. Never touches Stream
+    /// or Record.</summary>
+    internal string? SetNdiOutput(bool on)
+    {
+        if (on && ValidateNdiOutput() is { } refusal)
+        {
+            LaunchLog.Write($"ndi: on refused ({refusal})");
+            NdiOutputStatusReason = refusal;
+            return refusal;
+        }
+
+        if (on) NdiOutputStatusReason = null;
+        NdiOutputEnabled = on;
+        return null;
+    }
+
+    /// <summary>Turns NDI output off with the reason and saves; the caller runs the one sync.
+    /// Never touches Stream or Record.</summary>
+    private void TurnNdiOutputOff(string reason)
+    {
+        LaunchLog.Write($"ndi: turned off ({reason})");
+        NdiOutputStatusReason = reason;
+        _applyingNdiOutput = true;
+        try
+        {
+            NdiOutputEnabled = false;
+        }
+        finally
+        {
+            _applyingNdiOutput = false;
+        }
+
+        OnPropertyChanged(nameof(StreamNdiSummary));
+        SaveProductionOutputPreferences();
+    }
+
+    /// <summary>NDI settings (name, group, key, key name) changed: save; while NDI is on, an
+    /// invalid setting turns NDI off alone, otherwise one sync re-applies the NDI senders. Stream
+    /// validation is never consulted.</summary>
+    private void OnNdiOutputOptionChanged()
+    {
+        if (_applyingStreamDestination) return;
+        OnPropertyChanged(nameof(StreamNdiSummary));
+        SaveProductionOutputPreferences();
+        if (!NdiOutputEnabled) return;
+
+        if (ValidateNdiOutput() is { } reason)
+        {
+            TurnNdiOutputOff(reason);
+            RunNdiOutputSync("ndi-off");
+            return;
+        }
+
+        RunNdiOutputSync("ndi-settings");
+    }
+
+    private async void RunNdiOutputSync(string reason)
+    {
+        if (!_bridge.Running) return;
+        try
+        {
+            await SyncActiveSceneAsync(reason).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"ndi: sync {reason} failed ({ex.Message})");
+            RunOnUiThread(() =>
+            {
+                OutputStatus = $"NDI output update failed: {ex.Message}";
+                OutputSessionStatus = OutputStatus;
+            });
+        }
+    }
 
     public string StreamSrtSummary =>
         StreamSrtEnabled
@@ -3490,7 +3582,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnStreamRtmpEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
-    partial void OnNdiOutputEnabledChanged(bool value) => OnStreamOutputOptionChanged();
+    partial void OnNdiOutputEnabledChanged(bool value)
+    {
+        if (_applyingNdiOutput) return;
+        // A direct set (a two-way binding) follows SetNdiOutput's rule: never on while invalid.
+        if (value && ValidateNdiOutput() is { } refusal)
+        {
+            TurnNdiOutputOff(refusal);
+            return;
+        }
+
+        if (value) NdiOutputStatusReason = null;
+        OnPropertyChanged(nameof(StreamNdiSummary));
+        SaveProductionOutputPreferences();
+        RunNdiOutputSync(value ? "ndi-on" : "ndi-off");
+    }
 
     partial void OnStreamSrtEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
@@ -3505,9 +3611,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnStreamRtmpStreamKeyChanged(string value) => OnStreamOutputOptionChanged();
 
-    partial void OnStreamNdiProgramNameChanged(string value) => OnStreamOutputOptionChanged();
+    partial void OnStreamNdiProgramNameChanged(string value) => OnNdiOutputOptionChanged();
 
-    partial void OnStreamNdiGroupNameChanged(string value) => OnStreamOutputOptionChanged();
+    partial void OnStreamNdiGroupNameChanged(string value) => OnNdiOutputOptionChanged();
 
     partial void OnStreamNdiGraphicsKeyEnabledChanged(bool value)
     {
@@ -3519,10 +3625,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamNdiGraphicsKeyEnabled = false;
             return;
         }
-        OnStreamOutputOptionChanged();
+        OnNdiOutputOptionChanged();
     }
 
-    partial void OnStreamNdiGraphicsNameChanged(string value) => OnStreamOutputOptionChanged();
+    partial void OnStreamNdiGraphicsNameChanged(string value) => OnNdiOutputOptionChanged();
 
     partial void OnStreamSrtModeChanged(string value) => OnStreamOutputOptionChanged();
 
@@ -9737,11 +9843,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             destinations.Add(IsRtmpConfigured() ? "RTMP configured" : "RTMP missing");
         }
 
-        if (NdiOutputEnabled)
-        {
-            destinations.Add(IsNdiConfigured() ? "NDI configured" : "NDI missing");
-        }
-
         if (StreamSrtEnabled)
         {
             destinations.Add(ValidateSrtSettings() is null ? "SRT configured" : "SRT missing");
@@ -9760,12 +9861,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var settingsError = StudioStreamOutputValidation.ValidateSelectedDestinations(
             StreamRtmpEnabled,
-            NdiOutputEnabled,
             StreamSrtEnabled,
             StreamRtmpProtocol,
             StreamRtmpServerUrl,
             StreamRtmpStreamKey,
-            StreamNdiProgramName,
             StreamSrtMode,
             StreamSrtHost,
             StreamSrtPort,
@@ -9783,17 +9882,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         return settingsError ?? ValidateStreamDestinationCapabilities(
             StreamRtmpEnabled,
-            NdiOutputEnabled,
             StreamSrtEnabled,
             _bridge.Profile,
             Hls.Enabled);
-        // The NDI graphics key is deliberately NOT validated here: a key that cannot be sent is
-        // dropped from the destination list on its own (IncludeNdiGraphicsKeyDestination), so it
-        // can never turn into a whole-stream failure that stops RTMP/SRT/Program NDI.
+        // NDI (and its graphics key) is deliberately NOT validated here: NDI is its own output
+        // with its own validation (ValidateNdiOutput), so it can never stop RTMP/SRT/HLS and a
+        // stream failure can never stop NDI.
     }
 
-    private static string? ValidateStreamDestinationCapabilities(bool streamRtmpEnabled, bool streamNdiEnabled, bool streamSrtEnabled, NativeMediaCoreProfile? profile, bool hlsEnabled = false) =>
-        TransportStatusFormatter.ValidateStreamDestinationCapabilities(streamRtmpEnabled, streamNdiEnabled, streamSrtEnabled, profile, hlsEnabled);
+    private static string? ValidateStreamDestinationCapabilities(bool streamRtmpEnabled, bool streamSrtEnabled, NativeMediaCoreProfile? profile, bool hlsEnabled = false) =>
+        TransportStatusFormatter.ValidateStreamDestinationCapabilities(streamRtmpEnabled, streamSrtEnabled, profile, hlsEnabled);
 
     private static bool HasNativeOutputCapability(NativeMediaCoreProfile profile, string capability) =>
         TransportStatusFormatter.HasNativeOutputCapability(profile, capability);
@@ -10036,36 +10134,56 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task SyncOutputProfileChangeAsync()
     {
-        if (StreamingRequested && ValidateStreamDestinations() is { Length: > 0 } validationError)
+        // The stream and NDI are validated apart: a stream failure stops the stream only, an NDI
+        // failure turns NDI off only. A valid NDI output is resynced at the new profile.
+        var (streamError, ndiOffReason) = StudioStreamOutputValidation.ResolveOutputValidation(
+            StreamingRequested, ValidateStreamDestinations, NdiOutputEnabled, ValidateNdiOutput);
+        if (string.IsNullOrEmpty(streamError) && ndiOffReason is null)
         {
-            LaunchLog.Write($"stream: profile change blocked invalid destination ({validationError})");
-            var failureStatus = FormatStreamingFailureStatus("settings", new InvalidOperationException(validationError));
-            RunOnUiThread(() =>
+            await SyncActiveSceneAsync().ConfigureAwait(false);
+            return;
+        }
+
+        var streamStopping = !string.IsNullOrEmpty(streamError);
+        if (streamStopping)
+        {
+            LaunchLog.Write($"stream: profile change blocked invalid destination ({streamError})");
+        }
+
+        var failureStatus = streamStopping
+            ? FormatStreamingFailureStatus("settings", new InvalidOperationException(streamError))
+            : null;
+        RunOnUiThread(() =>
+        {
+            if (ndiOffReason is not null)
+            {
+                TurnNdiOutputOff(ndiOffReason);
+            }
+
+            if (failureStatus is not null)
             {
                 StreamingRequested = false;
                 RefreshOutputStatus();
                 OutputStatus = $"{failureStatus} Streaming stopping.";
                 OutputSessionStatus = OutputStatus;
-            });
-
-            try
-            {
-                await SyncActiveSceneAsync().ConfigureAwait(false);
             }
-            catch (Exception ex)
-            {
-                var cleanupStatus = FormatStreamingFailureStatus("stop", ex);
-                RunOnUiThread(() =>
-                {
-                    OutputStatus = $"Streaming settings cleanup failed: {cleanupStatus}";
-                    OutputSessionStatus = OutputStatus;
-                });
-            }
+        });
 
-            return;
+        try
+        {
+            await SyncActiveSceneAsync().ConfigureAwait(false);
         }
-
-        await SyncActiveSceneAsync().ConfigureAwait(false);
+        catch (Exception ex)
+        {
+            var cleanupStatus = streamStopping
+                ? $"Streaming settings cleanup failed: {FormatStreamingFailureStatus("stop", ex)}"
+                : $"NDI output update failed: {ex.Message}";
+            RunOnUiThread(() =>
+            {
+                OutputStatus = cleanupStatus;
+                OutputSessionStatus = OutputStatus;
+            });
+        }
     }
 
     private async void OnStreamOutputOptionChanged()
@@ -10074,17 +10192,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StreamDestinationSummary));
         OnPropertyChanged(nameof(StreamConfigurationSummary));
         OnPropertyChanged(nameof(StreamRtmpSummary));
-        OnPropertyChanged(nameof(StreamNdiSummary));
         OnPropertyChanged(nameof(StreamSrtSummary));
         OnPropertyChanged(nameof(Hls));
         SaveProductionOutputPreferences();
 
-        if (!StreamingRequested || !_bridge.Running)
+        if (!_bridge.Running)
         {
             return;
         }
 
-        if (ValidateStreamDestinations() is { Length: > 0 } validationError)
+        // The stream and NDI are validated apart: a stream failure stops the stream only, an NDI
+        // failure turns NDI off only.
+        var (streamError, ndiOffReason) = StudioStreamOutputValidation.ResolveOutputValidation(
+            StreamingRequested, ValidateStreamDestinations, NdiOutputEnabled, ValidateNdiOutput);
+        if (ndiOffReason is not null)
+        {
+            TurnNdiOutputOff(ndiOffReason);
+        }
+
+        if (!StreamingRequested && ndiOffReason is null)
+        {
+            return;
+        }
+
+        if (streamError is { Length: > 0 } validationError)
         {
             var failureStatus = FormatStreamingFailureStatus("settings", new InvalidOperationException(validationError));
             StreamingRequested = false;

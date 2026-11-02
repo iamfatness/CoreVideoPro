@@ -1482,8 +1482,6 @@ public sealed class TransportCoordinatorTests
 
         public bool StreamRtmpEnabled => true;
 
-        public bool StreamNdiEnabled => false;
-
         public bool StreamSrtEnabled => false;
 
         public double StreamLogBitrateMbps => 8;

@@ -32,14 +32,14 @@ public static class StudioStreamOutputValidation
         return $"{NormalizeRtmpProtocol(protocol)}://{normalizedUrl}";
     }
 
+    /// <summary>Validates the stream's own destinations (RTMP, SRT, HLS). NDI is a separate output
+    /// with its own validation (<see cref="ValidateNdiOutput"/>) and is never a stream destination.</summary>
     public static string? ValidateSelectedDestinations(
         bool rtmpEnabled,
-        bool ndiEnabled,
         bool srtEnabled,
         string? rtmpProtocol,
         string? rtmpServerUrl,
         string? rtmpStreamKey,
-        string? ndiProgramName,
         string? srtMode,
         string? srtHost,
         string? srtPort,
@@ -51,7 +51,7 @@ public static class StudioStreamOutputValidation
         bool hlsEnabled = false,
         string? hlsPlaylistUrl = null)
     {
-        if (!rtmpEnabled && !ndiEnabled && !srtEnabled && !hlsEnabled)
+        if (!rtmpEnabled && !srtEnabled && !hlsEnabled)
         {
             return "Select at least one stream destination.";
         }
@@ -64,11 +64,6 @@ public static class StudioStreamOutputValidation
         if (rtmpEnabled && ValidateFfmpegRuntime(ffmpegBinDirectory) is { Length: > 0 } ffmpegError)
         {
             return ffmpegError;
-        }
-
-        if (ndiEnabled && string.IsNullOrWhiteSpace(ndiProgramName))
-        {
-            return "Configure an NDI program name before streaming.";
         }
 
         if (srtEnabled &&
@@ -257,6 +252,33 @@ public static class StudioStreamOutputValidation
 
         return null;
     }
+
+    /// <summary>NDI output's own validation, or null when NDI can run. A reason refuses the NDI
+    /// toggle, or turns a running NDI output off; it never touches the stream. The program name
+    /// must be serialisable, the running core must carry ndi-output (null = core not up yet: defer
+    /// to the core's own sender status), and a graphics key that will actually be sent must not
+    /// advertise the program's own name. Any other key problem drops the key alone
+    /// (<see cref="IncludeNdiGraphicsKeyDestination"/>), so it never fails NDI.</summary>
+    public static string? ValidateNdiOutput(string? programName, string? graphicsName, bool graphicsKeyOn,
+        bool? coreHasNdiOutput, bool? coreHasGraphicsKey)
+    {
+        if (!CanSerializeNdiSettings(programName))
+            return "Configure an NDI program name before turning on NDI output.";
+        if (coreHasNdiOutput == false)
+            return "NDI output is not available in this core build (missing ndi-output).";
+        if (graphicsKeyOn && coreHasGraphicsKey != false &&
+            string.Equals(ResolveNdiGraphicsKeyName(programName, graphicsName),
+                NormalizeText(programName, string.Empty), StringComparison.OrdinalIgnoreCase))
+            return "NDI graphics key name must differ from the NDI program name.";
+        return null;
+    }
+
+    /// <summary>What an output settings change stops. The stream and NDI are validated apart, and
+    /// only while each is on: a stream failure stops the stream only, an NDI failure turns NDI off
+    /// only.</summary>
+    public static (string? StreamStopReason, string? NdiOffReason) ResolveOutputValidation(
+        bool streamingRequested, Func<string?> validateStream, bool ndiOutputEnabled, Func<string?> validateNdi) =>
+        (streamingRequested ? validateStream() : null, ndiOutputEnabled ? validateNdi() : null);
 
     /// <summary>NDI destination ids for the NDI output flag. The key is decided by the caller
     /// (<see cref="IncludeNdiGraphicsKeyDestination"/>) and rides with the program source only.</summary>
