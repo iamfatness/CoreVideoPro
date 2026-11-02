@@ -131,6 +131,11 @@ public sealed record ControlState
     public int VstPluginCount { get; init; }
     public string VstHostSummary { get; init; } = string.Empty;
 
+    /// <summary>NDI output selected (independent of streaming), and its status label
+    /// (Off / Starting / Live · name / Warning · reason / Unavailable · reason).</summary>
+    public bool NdiOutputOn { get; init; }
+    public string NdiOutputStatus { get; init; } = string.Empty;
+
     /// <summary>NDI graphics key (fill+key) selected, and the NDI source name it advertises.
     /// Selection, not delivery: the sender's live state is in /snapshot outputSenderSession.</summary>
     public bool NdiGraphicsKeyOn { get; init; }

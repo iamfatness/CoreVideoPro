@@ -9,6 +9,10 @@ bounded restart policy**. It is a decorator that sits OUTSIDE the per-protocol a
 CompositeOutputSender -> SupervisedOutputSender -> AsyncOutputSender -> RTMP / SRT / NDI adapter
 ```
 
+The `ndi` and `ndi-graphics` senders are driven by the independent NDI output flag, not by
+Streaming; stream destination edits never restart them (pinned by
+`AsyncOutputSender.RemovingTheStreamDestinationNeverInterruptsNdi`).
+
 **Outside, not inside — that is the entire isolation argument.** Every call the supervisor
 makes lands on `AsyncOutputSender` (enqueue-and-return; `session()` is a cached snapshot),
 so a wedged FFmpeg pipe or a blocked libNDI send cannot block the supervisor, the control

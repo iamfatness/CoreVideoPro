@@ -1042,7 +1042,7 @@
                 </StackPanel>
 
                 <!-- Keep all production actions on the same row and baseline. -->
-                <Grid x:Name="FooterTransport" Width="718" HorizontalAlignment="Center" VerticalAlignment="Top">
+                <Grid x:Name="FooterTransport" Width="916" HorizontalAlignment="Center" VerticalAlignment="Top">
                     <StackPanel x:Name="FooterOutputActions" Orientation="Horizontal" Spacing="8">
                     <StackPanel Orientation="Horizontal" Spacing="0">
                         <Button Style="{StaticResource TakeButton}" Width="122" MinHeight="48"
@@ -1334,8 +1334,6 @@
                                             <StackPanel Orientation="Horizontal" Spacing="10">
                                                 <CheckBox Content="RTMP"
                                                           IsChecked="{x:Bind ViewModel.StreamRtmpEnabled, Mode=TwoWay}" />
-                                                <CheckBox Content="NDI"
-                                                          IsChecked="{x:Bind ViewModel.StreamNdiEnabled, Mode=TwoWay}" />
                                                 <CheckBox Content="SRT"
                                                           IsChecked="{x:Bind ViewModel.StreamSrtEnabled, Mode=TwoWay}" />
                                                 <CheckBox Content="HLS"
@@ -1405,6 +1403,58 @@
                                              Text="{x:Bind ViewModel.VirtualCameraDeviceName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
                                              PlaceholderText="CoreVideo Pro Camera" />
                                     <TextBlock Text="The name apps show in their camera list. Takes effect next time you enable the camera."
+                                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                               TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                            </Flyout>
+                        </Button.Flyout>
+                    </Button>
+                    </StackPanel>
+                    <!-- NDI output (spec 2026-11-01): its own output, independent of Streaming.
+                         IsChecked is one-way; Click asks the ViewModel, so a refusal leaves the
+                         tile off with the reason in its subtitle. -->
+                    <StackPanel Orientation="Horizontal" Spacing="0">
+                    <ToggleButton Width="160" MinHeight="48" CornerRadius="8,0,0,8" Padding="12,4"
+                                  AutomationProperties.Name="NDI output"
+                                  IsChecked="{x:Bind ViewModel.NdiOutputEnabled, Mode=OneWay}"
+                                  Click="OnNdiOutputTileClicked"
+                                  ToolTipService.ToolTip="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}">
+                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+                            <FontIcon Glyph="&#xE968;" FontSize="14" />
+                            <StackPanel Spacing="1">
+                                <TextBlock Text="NDI" FontSize="11" FontWeight="Bold" />
+                                <TextBlock Text="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}"
+                                           Style="{StaticResource StudioMonoLabel}" FontSize="9"
+                                           TextTrimming="CharacterEllipsis" MaxWidth="140" />
+                            </StackPanel>
+                        </StackPanel>
+                    </ToggleButton>
+                    <Button MinHeight="48" Width="30" CornerRadius="0,8,8,0" Padding="0" BorderThickness="1"
+                             AutomationProperties.Name="NDI options"
+                             ToolTipService.ToolTip="NDI options">
+                        <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
+                        <Button.Flyout>
+                            <Flyout Placement="Top">
+                                <StackPanel Spacing="10" MinWidth="230" MaxWidth="300">
+                                    <TextBlock Text="NDI output" FontWeight="Bold" FontSize="13" />
+                                    <TextBlock Text="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}"
+                                               FontSize="11" TextWrapping="WrapWholeWords" />
+                                    <!-- Commit on LostFocus/Enter: every edit is validated, so a
+                                         per-keystroke commit could turn NDI off mid-typing. -->
+                                    <TextBox Header="Program name" Tag="ProgramName"
+                                             Text="{x:Bind ViewModel.StreamNdiProgramName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                             KeyDown="OnNdiTextBoxKeyDown" />
+                                    <TextBox Header="Group" Tag="GroupName"
+                                             Text="{x:Bind ViewModel.StreamNdiGroupName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                             KeyDown="OnNdiTextBoxKeyDown" />
+                                    <ToggleSwitch Header="Graphics key (fill+key)"
+                                                  ToolTipService.ToolTip="A second NDI source with only the on-air graphics over transparency (fill+key), for a downstream switcher to key over its own picture."
+                                                  IsOn="{x:Bind ViewModel.StreamNdiGraphicsKeyEnabled, Mode=TwoWay}" />
+                                    <TextBox Header="Graphics key name" Tag="GraphicsName"
+                                             PlaceholderText="Program name + Graphics"
+                                             Text="{x:Bind ViewModel.StreamNdiGraphicsName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                             KeyDown="OnNdiTextBoxKeyDown" />
+                                    <TextBlock Text="Sends Program at the stream output size and frame rate. Runs with or without streaming."
                                                FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
                                                TextWrapping="WrapWholeWords" />
                                 </StackPanel>

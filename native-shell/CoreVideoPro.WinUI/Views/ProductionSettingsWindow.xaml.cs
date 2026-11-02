@@ -69,6 +69,12 @@ public sealed partial class ProductionSettingsWindow : Window
         WindowClosed?.Invoke(this, EventArgs.Empty);
     }
 
+    private void OnNdiOutputSwitchToggled(object sender, RoutedEventArgs args) =>
+        NdiOutputControls.ToggleFromSwitch(ViewModel, sender);
+
+    private void OnNdiTextBoxKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs args) =>
+        NdiOutputControls.CommitTextOnEnter(ViewModel, sender, args);
+
     private void OnOutputClicked(object sender, RoutedEventArgs args) => ShowSection("output");
 
     private void OnStreamingClicked(object sender, RoutedEventArgs args) => ShowSection("streaming");

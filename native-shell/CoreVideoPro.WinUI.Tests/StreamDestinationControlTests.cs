@@ -53,11 +53,10 @@ public sealed class StreamDestinationControlTests
     [Fact]
     public void OmittedSecretsRetainAndExplicitEmptyClearsOnlyWhenDisabled()
     {
-        var current = new ProductionOutputPreferences { StreamRtmpStreamKey = "existing-key", StreamSrtPassphrase = "existing-passphrase", StreamNdiEnabled = true };
+        var current = new ProductionOutputPreferences { StreamRtmpStreamKey = "existing-key", StreamSrtPassphrase = "existing-passphrase" };
         ProductionOutputPreferences applied = current;
         Assert.True(StreamDestinationControl.Configure(false, Rtmp[..3], false, current, _ => { }, next => applied = next).Ok);
         Assert.Equal("existing-key", applied.StreamRtmpStreamKey);
-        Assert.True(applied.StreamNdiEnabled);
         Assert.True(StreamDestinationControl.Configure(true, Srt[..7], false, current, _ => { }, next => applied = next).Ok);
         Assert.Equal("existing-passphrase", applied.StreamSrtPassphrase);
         Assert.False(StreamDestinationControl.Configure(false, [true, "rtmps", "example.test/live", ""], false, current,
@@ -119,7 +118,7 @@ public sealed class StreamDestinationControlTests
 
     private sealed class DestinationSurface(IProductionOutputPreferencesStore store) : IControlSurface
     {
-        internal ProductionOutputPreferences Current = new() { StreamNdiEnabled = true };
+        internal ProductionOutputPreferences Current = new();
         internal int Applied;
         public Task<ControlInvokeResult> InvokeAsync(string actionId, IReadOnlyList<object?> args, CancellationToken cancellationToken = default) =>
             Task.FromResult(StreamDestinationControl.Configure(actionId == "transport.stream.srt.configure", args, false,

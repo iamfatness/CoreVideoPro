@@ -36,7 +36,7 @@ public sealed record ControlManifest(
     // template since the slot index is dynamic).
     public static readonly IReadOnlyList<string> StateFields = new[]
     {
-        "recording", "streaming", "engineOn", "canTake", "lowerThirdOnAir",
+        "recording", "streaming", "ndi", "engineOn", "canTake", "lowerThirdOnAir",
         "zoomStatus", "engineStatus", "commandStatus", "activeSceneId", "previewSceneId", "previewTilesNamesOn", "viewMode",
         "multiviewLayoutMode", "multiviewTileCount",
         "automationOn", "autoTake", "autoAssignInputs", "autoLowerThirds", "autoCaptions",

@@ -11,12 +11,10 @@ public sealed class StudioStreamOutputValidationTests
     {
         var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
             rtmpEnabled: false,
-            ndiEnabled: false,
             srtEnabled: false,
             rtmpProtocol: "rtmps",
             rtmpServerUrl: "",
             rtmpStreamKey: "",
-            ndiProgramName: "",
             srtMode: "caller",
             srtHost: "",
             srtPort: "",
@@ -33,12 +31,10 @@ public sealed class StudioStreamOutputValidationTests
     {
         var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
             rtmpEnabled: true,
-            ndiEnabled: false,
             srtEnabled: false,
             rtmpProtocol: "rtmps",
             rtmpServerUrl: "live.example.com",
             rtmpStreamKey: "stream-key",
-            ndiProgramName: "",
             srtMode: "caller",
             srtHost: "",
             srtPort: "",
@@ -51,17 +47,15 @@ public sealed class StudioStreamOutputValidationTests
     }
 
     [Fact]
-    public void Destinations_AcceptsConfiguredRtmpNdiAndSrt()
+    public void Destinations_AcceptsConfiguredRtmpAndSrt()
     {
         var ffmpegBin = CreateFfmpegBinDirectory();
         var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
             rtmpEnabled: true,
-            ndiEnabled: true,
             srtEnabled: true,
             rtmpProtocol: "rtmps",
             rtmpServerUrl: "live.example.com/app",
             rtmpStreamKey: "stream-key",
-            ndiProgramName: "CoreVideo Pro Program",
             srtMode: "caller",
             srtHost: "receiver.example.com",
             srtPort: "9000",
@@ -156,12 +150,10 @@ public sealed class StudioStreamOutputValidationTests
     {
         var error = WithIsolatedFfmpegProbe(() => StudioStreamOutputValidation.ValidateSelectedDestinations(
                 rtmpEnabled: true,
-                ndiEnabled: false,
                 srtEnabled: false,
                 rtmpProtocol: "rtmps",
                 rtmpServerUrl: "live.example.com/app",
                 rtmpStreamKey: "stream-key",
-                ndiProgramName: "",
                 srtMode: "caller",
                 srtHost: "",
                 srtPort: "",
@@ -179,12 +171,10 @@ public sealed class StudioStreamOutputValidationTests
     {
         var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
             rtmpEnabled: true,
-            ndiEnabled: false,
             srtEnabled: false,
             rtmpProtocol: "rtmps",
             rtmpServerUrl: "live.example.com/app",
             rtmpStreamKey: "stream-key",
-            ndiProgramName: "",
             srtMode: "caller",
             srtHost: "",
             srtPort: "",
@@ -315,12 +305,10 @@ public sealed class StudioStreamOutputValidationTests
     {
         var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
             rtmpEnabled: false,
-            ndiEnabled: false,
             srtEnabled: false,
             rtmpProtocol: "rtmps",
             rtmpServerUrl: "",
             rtmpStreamKey: "",
-            ndiProgramName: "",
             srtMode: "caller",
             srtHost: "",
             srtPort: "",

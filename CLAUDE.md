@@ -219,7 +219,7 @@ phrase they quote.
 | [`docs/reference/ohg-show-engine-host.md`](docs/reference/ohg-show-engine-host.md) | the OHG show engine, `show-engine/`, its host process |
 | [`docs/reference/operator-stutter-snapshot-apply.md`](docs/reference/operator-stutter-snapshot-apply.md) | shell lag/stutter, snapshot apply cost |
 | [`docs/reference/output-supervisor.md`](docs/reference/output-supervisor.md) | stream/record destinations, restarts, the output supervisor |
-| [`docs/reference/ndi-graphics-key.md`](docs/reference/ndi-graphics-key.md) | the NDI graphics key (fill+key): graphics-only composite, straight alpha, `ndi-graphics` sender, `transport.stream.ndi.graphicsKey.set` |
+| [`docs/reference/ndi-graphics-key.md`](docs/reference/ndi-graphics-key.md) | the NDI graphics key (fill+key): graphics-only composite, straight alpha, `ndi-graphics` sender, `transport.ndi.graphicsKey.set`; NDI output is its own on/off (`transport.ndi.set`/`toggle`), independent of Streaming; see [`stream-destination-control.md`](docs/reference/stream-destination-control.md) |
 | [`docs/reference/performance-profiling.md`](docs/reference/performance-profiling.md) | measuring lag/stutter/crash: PresentMon, perf.log, dumps |
 | [`docs/reference/redesign-video-delivery-audit.md`](docs/reference/redesign-video-delivery-audit.md) | UI-independent video, blocked-UI probes and combined workload qualification |
 | [`docs/reference/persistent-media-source.md`](docs/reference/persistent-media-source.md) | media/clip/still sources, cue/live/pause transport |

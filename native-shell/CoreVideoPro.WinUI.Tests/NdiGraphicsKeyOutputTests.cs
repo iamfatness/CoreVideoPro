@@ -11,20 +11,20 @@ public sealed class NdiGraphicsKeyOutputTests
     [Fact]
     public void ControlActionIsRegisteredAndHandledByTheStudioSurface()
     {
-        Assert.True(ControlActionRegistry.TryGet("transport.stream.ndi.graphicsKey.set", out _));
-        Assert.Contains("transport.stream.ndi.graphicsKey.set", StudioControlSurface.SupportedActionIds);
+        Assert.True(ControlActionRegistry.TryGet("transport.ndi.graphicsKey.set", out _));
+        Assert.Contains("transport.ndi.graphicsKey.set", StudioControlSurface.SupportedActionIds);
     }
 
     [Fact]
     public void ControlActionBindsOnAndAnOptionalName()
     {
-        Assert.True(ControlActionRegistry.TryBind("transport.stream.ndi.graphicsKey.set", [true], out var onOnly, out _));
+        Assert.True(ControlActionRegistry.TryBind("transport.ndi.graphicsKey.set", [true], out var onOnly, out _));
         Assert.True(Assert.IsType<bool>(onOnly[0]));
         Assert.Null(onOnly[1]);
-        Assert.True(ControlActionRegistry.TryBind("transport.stream.ndi.graphicsKey.set", [0, "Studio Key"], out var named, out _));
+        Assert.True(ControlActionRegistry.TryBind("transport.ndi.graphicsKey.set", [0, "Studio Key"], out var named, out _));
         Assert.False(Assert.IsType<bool>(named[0]));
         Assert.Equal("Studio Key", named[1]);
-        Assert.False(ControlActionRegistry.TryBind("transport.stream.ndi.graphicsKey.set", [], out _, out var error));
+        Assert.False(ControlActionRegistry.TryBind("transport.ndi.graphicsKey.set", [], out _, out var error));
         Assert.Contains("on", error);
     }
 
@@ -33,7 +33,7 @@ public sealed class NdiGraphicsKeyOutputTests
     {
         var json = ProductionOutputPreferencesSerializer.Serialize(new ProductionOutputPreferences
         {
-            StreamNdiEnabled = true,
+            NdiOutputEnabled = true,
             StreamNdiGraphicsKeyEnabled = true,
             StreamNdiGraphicsName = "Studio Key",
         });
@@ -47,10 +47,10 @@ public sealed class NdiGraphicsKeyOutputTests
     public void PreferencesWithoutTheKeyFieldsLoadWithTheKeyOff()
     {
         var loaded = ProductionOutputPreferencesSerializer.Deserialize(
-            $"{{\"Version\":{ProductionOutputPreferences.CurrentVersion},\"StreamNdiEnabled\":true}}", out var migrated);
+            $"{{\"Version\":{ProductionOutputPreferences.CurrentVersion},\"NdiOutputEnabled\":true}}", out var migrated);
         Assert.NotNull(loaded);
         Assert.False(migrated);
-        Assert.True(loaded!.StreamNdiEnabled);
+        Assert.True(loaded!.NdiOutputEnabled);
         Assert.False(loaded.StreamNdiGraphicsKeyEnabled);
         Assert.Null(loaded.StreamNdiGraphicsName);
     }
@@ -77,20 +77,20 @@ public sealed class NdiGraphicsKeyOutputTests
         Assert.False(StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(false, true, true, "Program", null));
         Assert.False(StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(true, false, true, "Program", null));
         Assert.False(StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(true, true, true, "Program", "Program"));
-        // Stream validation knows nothing about the key: a valid NDI selection stays valid whatever the key state.
-        Assert.Null(StudioStreamOutputValidation.ValidateSelectedDestinations(
-            false, true, false, "rtmps", "", "", "Program", "caller", "", "9000", "120", "", "0", ""));
+        // NDI validation knows nothing about a key that cannot be sent: valid NDI stays valid whatever the key state.
+        Assert.Null(StudioStreamOutputValidation.ValidateNdiOutput("Program", null, true, true, false));
+        Assert.Null(StudioStreamOutputValidation.ValidateNdiOutput("Program", "Key:One", true, true, true));
     }
 
     // Review 4A/4B: the action refuses (Fail, nothing applied) a key the core cannot carry or that
     // has nothing to ride on because NDI output is off.
     [Theory]
-    [InlineData(false, true, "NDI output")]
+    [InlineData(false, true, "Turn on NDI output first; the graphics key is a second NDI source that rides with it.")]
     [InlineData(true, false, "ndi-graphics-output")]
-    public void ActionRefusesMissingCapabilityOrNdiOffAndAppliesNothing(bool ndiEnabled, bool capability, string reason)
+    public void ActionRefusesMissingCapabilityOrNdiOffAndAppliesNothing(bool ndiOutputEnabled, bool capability, string reason)
     {
         var applied = 0;
-        var result = NdiGraphicsKeyControl.Set(true, null, ndiEnabled, capability, "Program", "", (_, _) => applied++);
+        var result = NdiGraphicsKeyControl.Set(true, null, ndiOutputEnabled, capability, "Program", "", (_, _) => applied++);
         Assert.False(result.Ok);
         Assert.Contains(reason, result.Error);
         Assert.Equal(0, applied);

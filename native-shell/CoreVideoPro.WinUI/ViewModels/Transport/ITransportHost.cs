@@ -160,8 +160,6 @@ public interface ITransportHost
 
     bool StreamRtmpEnabled { get; }
 
-    bool StreamNdiEnabled { get; }
-
     bool StreamSrtEnabled { get; }
 
     double StreamLogBitrateMbps { get; }

@@ -322,6 +322,9 @@ public sealed record MediaCoreProductionSyncContext
     public IReadOnlyList<MediaCoreParticipantWire> Participants { get; init; } = [];
     public bool Recording { get; init; }
     public bool Streaming { get; init; }
+    /// <summary>NDI output is independent of Stream and Record; true sends <see cref="NdiDestinations"/>.</summary>
+    public bool NdiOutput { get; init; }
+    public IReadOnlyList<string> NdiDestinations { get; init; } = [];
     public IReadOnlyList<string> StreamDestinations { get; init; } = ["rtmp"];
     public IReadOnlyList<MediaCoreStreamDestinationWire> StreamDestinationSettings { get; init; } = [];
     public IReadOnlyList<MediaCoreSrtIngestSourceWire> SrtIngestSources { get; init; } = [];

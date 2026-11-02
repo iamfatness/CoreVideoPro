@@ -86,30 +86,38 @@ The key advertises `<NDI program name> Graphics` (for example
 program part so the whole name fits NDI's 64 characters. A name over 64 characters,
 with NDI's reserved characters (`< > : " / \ | ? *`), or equal to the Program
 source's name is refused. It uses the Program source's NDI group. It rides with NDI
-output: it is sent only while NDI is enabled and streaming is on, and can be toggled
+output: it is sent whenever NDI output is on (streaming is not required), and can be toggled
 live without touching the Program source.
 
-**A key that cannot be sent is dropped on its own.** Missing core capability, NDI
-off or an invalid name removes only `ndi-graphics` from the destination list and the
-NDI summary says why; the key is never part of stream validation, so it can never
-stop RTMP, SRT or the Program NDI source.
+**A key that cannot be sent is usually dropped on its own.** Missing core capability,
+NDI off, or a name that is too long or uses reserved characters removes only
+`ndi-graphics` from the destination list and the NDI summary says why; the key is never
+part of stream validation, so it can never stop RTMP or SRT.
+
+**One exception turns all of NDI off.** When the key is on, the core is not known to lack
+`ndi-graphics-output`, and
+its name equals the Program source's name (case-insensitive),
+`ValidateNdiOutput` fails NDI output as a whole: turning NDI on is refused, and a
+settings change that creates the collision while NDI runs turns NDI output off (Program
+source and key) with the reason "NDI graphics key name must differ from the NDI program
+name." The tile then shows `Unavailable · <reason>`.
 
 - **UI.** Production settings, NDI section: "NDI graphics key" and "Graphics key
   name" (blank = the default above). The NDI summary line names the key or says the
   core build cannot carry it.
 - **Persistence.** `StreamNdiGraphicsKeyEnabled` and `StreamNdiGraphicsName` in the
-  output preferences. Additive fields, no version bump: older files load with the key off.
-- **Control API.** `transport.stream.ndi.graphicsKey.set` with `on` (bool) and
+  output preferences. The key fields are unchanged (older files load with the key off); NDI itself is gated by `NdiOutputEnabled` (preferences v16).
+- **Control API.** `transport.ndi.graphicsKey.set` with `on` (bool) and
   optional `name` (omitted keeps the current name, empty restores the default).
   The whole request is validated first and returns an error, changing nothing, when
   NDI output is off, the core lacks `ndi-graphics-output`, or the name is invalid.
   Toggle and name are applied as one edit with one save and one output sync:
 
   ```json
-  {"action":"transport.stream.ndi.graphicsKey.set","args":[true,"Studio Key"]}
+  {"action":"transport.ndi.graphicsKey.set","args":[true,"Studio Key"]}
   ```
 
-  OSC: `/cvp/transport/stream/ndi/graphicsKey/set`. Control state:
+  OSC: `/cvp/transport/ndi/graphicsKey/set`. Control state:
   `ndiGraphicsKeyOn`, `ndiGraphicsKeyName` (selection, not delivery). The sender's
   real state is `outputSenderSession` in `GET /snapshot`; its `runtimeDetail` ends
   `video=graphics-key-bgra-straight-alpha`.
