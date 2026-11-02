@@ -33,12 +33,31 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(studio.IsGraphicsPlayoutMode && Descendants(page).OfType<GraphicsPlayoutControl>().Single().Visibility == Visibility.Visible, "Graphics did not open in Playout mode");
             Require(Descendants(page).OfType<GraphicsOnAirStripControl>().Any(), "On Air strip is missing from the Graphics tab");
             Require(Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed, "Design workspace is visible in Playout mode");
+            // Graphics Designer slice 1: one stored design (document only; no core needed to list it).
+            var seedManifest = GraphicsDesignSeeds.Manifest("lower-third", "design-probe-strap-a1b2c3", 1, "Probe strap");
+            var seedDefinition = System.Text.Json.JsonSerializer.SerializeToElement(seedManifest);
+            Require(await studio.GraphicsLibrary.SaveDesignsAsync([new GraphicsDesign("design-probe-strap-a1b2c3", "Probe strap", "lower-third", "design-probe-strap-a1b2c3", 1, seedDefinition, [], DateTimeOffset.UtcNow)], "Probe design stored."), "Probe design could not be stored");
             Invoke(Button(page, "Design")); await Task.Delay(80); page.UpdateLayout();
             // #1076 slice 3: Design opens on the template-first builder; the workspace sits behind "Advanced editor".
             Require(studio.IsGraphicsDesignMode && Descendants(page).OfType<GraphicsBuilderControl>().Single().Visibility == Visibility.Visible, "Design toggle did not reveal the builder");
             Require(Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed, "Advanced workspace is visible before Advanced editor is chosen");
             Require(Descendants(page).OfType<Microsoft.UI.Xaml.Controls.Button>().Count(b => b.Tag is GraphicsBuilderKind) == GraphicsBuilder.Kinds.Count, "Builder does not offer every kind of graphic");
+            await Eventually(() => Descendants(page).OfType<Button>().Any(b => b.Content?.ToString() == "Probe strap"), "Design does not list the stored design under Your designs");
+            Require(Descendants(page).OfType<TextBlock>().Any(t => t.Text == "YOUR DESIGNS" && t.ActualHeight > 0), "Design does not show Your designs");
+            foreach (var action in new[] { "New design", "Open design", "Duplicate design", "Delete design" })
+                Require(Button(page, action).ActualHeight > 0, action + " is missing from Your designs");
             await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-builder.png"));
+            Invoke(Button(page, "New design"));
+            GraphicsDesignStartDialog? startDialog = null;
+            await Eventually(() => (startDialog = VisualTreeHelper.GetOpenPopupsForXamlRoot(page.XamlRoot).Select(p => p.Child).Where(c => c is not null)
+                .SelectMany(c => Descendants(c).Prepend(c)).OfType<GraphicsDesignStartDialog>().FirstOrDefault()) is { IsLoaded: true }, "New design did not open the start dialog");
+            var blankKinds = Descendants(startDialog!).OfType<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>().Where(b => b.Tag is string kind && GraphicsDesignSeeds.Kinds.Contains(kind)).Select(b => (string)b.Tag).ToArray();
+            Require(blankKinds.SequenceEqual(GraphicsDesignSeeds.Kinds), "Start dialog does not list the four blank kinds: " + string.Join(",", blankKinds));
+            Require(Descendants(startDialog!).OfType<TextBox>().Any(t => t.Header as string == "Name"), "Start dialog has no name field");
+            Require(Descendants(startDialog!).OfType<ComboBox>().Any(c => c.Header as string == "Or start from a look"), "Start dialog does not offer starting from a look");
+            await ReviewImageWriter.SaveAsync(startDialog!, Path.Combine(directory, "graphics-design-start-dialog.png"));
+            startDialog!.Hide(); await Task.Delay(150);
+            checks.Add("Design lists Your designs (Open / Duplicate / Delete) and New design opens the start dialog with the four blank kinds, a look picker and a name");
             Invoke(Button(page, "Advanced editor")); await Task.Delay(80); page.UpdateLayout();
             Require(studio.GraphicsDesignAdvanced && Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Visible, "Advanced editor did not reveal the workspace");
             checks.Add("Graphics opens in Playout (strip + playlist); Design reveals the builder with every kind; Advanced editor reveals the single existing workspace control");
@@ -115,6 +134,19 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(studio.GraphicsWorkspace.Selected is null && studio.GraphicsLibrary.Document.StudioLowerThird is null,"Logo editing implicitly created or assigned a cue");
             checks.Add("Declarative logo template exposes an enabled PNG/JPEG uploader in Content without creating or showing a cue");
             Invoke(Button(workspace,"Use simple controls"));
+            var seedTemplate = System.Text.Json.JsonSerializer.Deserialize<NativeGraphicsTemplate>(seedManifest.ToJsonString(),new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))! with {
+                Runtime="declarative", Definition=seedDefinition, ManifestHash=NativeGraphicsScratch.From(seedDefinition).Hash };
+            studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=[..catalog,seedTemplate]});
+            studio.GraphicsWorkspace.Browse(seedTemplate); Invoke(Button(workspace,"Content")); await Task.Delay(150); page.UpdateLayout();
+            var variablesPanel = Descendants(workspace).OfType<GraphicsVariablesPanel>().SingleOrDefault();
+            Require(variablesPanel is { Visibility: Visibility.Visible, ActualHeight: > 0 }, "The Variables panel is not shown for an open design");
+            var variableNames = Descendants(variablesPanel!).OfType<TextBlock>().Select(t => t.Text).ToHashSet(StringComparer.Ordinal);
+            Require(variableNames.Contains("name") && variableNames.Contains("title"), "The Variables panel does not list the seed's name and title variables");
+            Require(Descendants(variablesPanel!).OfType<TextBlock>().Any(t => t.Text == "Used by: name-label"), "The Variables panel does not say which layer uses a variable");
+            Require(Button(workspace,"Save design").ActualHeight > 0 && Button(workspace,"Save to playlist").ActualHeight > 0, "Save design / Save to playlist are missing for an open design");
+            await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,"graphics-design-variables-1080.png"));
+            checks.Add("An open design shows the Variables panel with the seed's name and title (Used by) plus Save design and Save to playlist");
+            studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=catalog});
             studio.GraphicsWorkspace.Browse(catalog[0]);
             var state = new NativeGraphicsState { CoreEpoch="isolated-layout", SchemaVersion=1, Templates=catalog,
                 Instances=Enumerable.Range(1,8).Select(n=>new NativeGraphicsInstance { InstanceId=$"fixture-{n}", Label=n==1?"Guest introduction":$"Show cue {n}", TemplateId=template.TemplateId, TemplateVersion=1, Scope=n==8?"scene":"global", SceneId=n==8?"other-scene":"", Revision=1, Fields=new() { Name="Alex Rivera",Title="Producer · Office Hours" } }).ToArray() };

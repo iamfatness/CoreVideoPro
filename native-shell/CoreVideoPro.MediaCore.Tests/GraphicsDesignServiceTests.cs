@@ -26,7 +26,8 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Runtime = "declarative", ManifestHash = Hash(definition.GetRawText()), Definition = definition.Clone(), PackageRoot = packageRoot };
     private static string Hash(string text) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
 
-    private NativeGraphicsState? Observe() => _state;
+    private Action? _onObserve;
+    private NativeGraphicsState? Observe() { _onObserve?.Invoke(); return _state; }
     private Task<NativeGraphicsOperationResult> Invoke(string action, string body, CancellationToken cancellation)
     {
         var input = JsonDocument.Parse(body).RootElement.Clone(); _commands.Add((action, input));
@@ -256,6 +257,42 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.False(GraphicsCommandRequest.TryBuild("graphics.template.remove", Request(",\"templateId\":\"design-strap-a1b2c3\",\"templateVersion\":0"), observed, out _, out _, out _));
         Assert.False(GraphicsCommandRequest.TryBuild("graphics.template.remove", Request(",\"templateVersion\":2"), observed, out _, out _, out _));
         Assert.False(GraphicsCommandRequest.TryBuild("graphics.template.remove", Request(",\"templateId\":\"Bad Id\",\"templateVersion\":2"), observed, out _, out _, out _));
+    }
+
+    [Fact] public async Task ACoreRestartAfterTheNewVersionIsStoredStillReportsTheSaveAsDone()
+    {
+        var (library, service) = Build();
+        var design = (await service.CreateBlankAsync("title", "Opening title")).Design!;
+        _onObserve = () => {
+            if (library.Document.Designs.Any(d => d.TemplateVersion == 2)) { _state = _state with { CoreEpoch = "core-b" }; _onObserve = null; }
+        };
+        var saved = await service.SaveAsync(design.DesignId, Edited(design, "v2"));
+        Assert.True(saved.Ok, saved.Message);
+        Assert.Contains("restarted", saved.Message);
+        Assert.Equal(2, Assert.Single(library.Document.Designs).TemplateVersion);
+        Assert.Equal(2, saved.Design!.TemplateVersion);
+    }
+
+    [Fact] public async Task OpenReinstallsWithThePinnedPackageRoot()
+    {
+        var (library, service) = Build();
+        _state = _state with { Templates = [.. _state.Templates, Installed(JsonSerializer.SerializeToElement(new { templateId = "package-look", templateVersion = 1, name = "Package look", family = "lower-third" }), @"D:\looks\package")] };
+        var design = (await service.CreateFromAsync("package-look", 1, "Package strap")).Design!;
+        await PinToPlaylist(library, design);
+        Assert.Equal(@"D:\looks\package", library.Document.Templates.Single(t => t.TemplateId == design.TemplateId).PackageRoot);
+        RestartCore(); _commands.Clear();
+        Assert.True((await service.OpenAsync(design.DesignId)).Ok);
+        Assert.Equal(@"D:\looks\package", Assert.Single(Bodies("graphics.template.install")).GetProperty("packageRoot").GetString());
+    }
+
+    [Fact] public async Task SaveRefusesAMalformedDraftInsteadOfThrowing()
+    {
+        var (library, service) = Build();
+        var design = (await service.CreateBlankAsync("title", "Opening title")).Design!;
+        var result = await service.SaveAsync(design.DesignId, new NativeGraphicsScratch("{not json", "x"));
+        Assert.False(result.Ok);
+        Assert.Equal("The design is not a valid template.", result.Message);
+        Assert.Equal(1, Assert.Single(library.Document.Designs).TemplateVersion);
     }
 
     public void Dispose() { try { Directory.Delete(_directory, true); } catch (IOException) { } }

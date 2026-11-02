@@ -5,6 +5,10 @@ using CoreVideoPro.MediaCore.Models;
 namespace CoreVideoPro.MediaCore.Services;
 
 public sealed record GraphicsEditorLayer(string Id,string Type,string Label,string Parent,int Depth,bool Locked,bool Visible);
+/// <summary>One template variable as the Variables panel shows it. <see cref="Kind"/> is the operator word
+/// (text, number, colour, on-off, image); <see cref="HideWhenEmpty"/> is true when a text or image layer
+/// bound to it collapses while it is empty; <see cref="UsedBy"/> lists those layers' labels.</summary>
+public sealed record GraphicsEditorVariable(string Id,string Kind,int? MaxLength,JsonElement Sample,bool Required,bool HideWhenEmpty,IReadOnlyList<string> UsedBy);
 
 /// <summary>Bounded immutable document edits only. Native layout/rasterization
 /// validates each scratch document; this type never generates media pixels.</summary>
@@ -220,6 +224,34 @@ public static class GraphicsTemplateEditor
             foreach(var property in row.Node.Where(p=>p.Key is not ("metadata" or "children")).Select(p=>p.Value).ToArray()) RewriteReferences(property,id,newId);
         return Save(root);
     }
+    public static IReadOnlyList<GraphicsEditorVariable> Variables(NativeGraphicsScratch scratch)
+    {
+        var root=Read(scratch); var rows=Walk(root["layers"]!.AsArray()).ToArray();
+        return Fields(root).OfType<JsonObject>().Select(field=>{
+            var id=field["id"]!.GetValue<string>(); var type=field["type"]?.GetValue<string>() ?? "string";
+            var users=rows.Where(r=>UsedProperties(r.Node,id).Any()).ToArray();
+            var hide=users.Any(r=>r.Node["type"]!.GetValue<string>() is "text" or "image" && r.Node["collapseWhenEmpty"] is JsonValue c && c.TryGetValue<bool>(out var on) && on);
+            return new GraphicsEditorVariable(id,OperatorKind(type),field["maxLength"] is JsonValue m && m.TryGetValue<int>(out var cap) ? cap : null,
+                JsonSerializer.SerializeToElement(field["default"] ?? DefaultFor(type)),field["required"] is JsonValue r && r.TryGetValue<bool>(out var required) && required,
+                hide,users.Select(u=>LabelOf(u.Node)).ToArray());
+        }).ToArray();
+    }
+    /// <summary>The variables an edited manifest declares, as native validates them.</summary>
+    public static IReadOnlyList<NativeGraphicsTemplateField> TemplateFields(NativeGraphicsScratch scratch) =>
+        JsonSerializer.Deserialize<NativeGraphicsTemplate>(scratch.Manifest,new JsonSerializerOptions(JsonSerializerDefaults.Web))?.Fields ?? [];
+    /// <summary>Draft values matched to <paramref name="scratch"/>'s variables: native refuses unknown or
+    /// missing fields, so keep each still-valid value (a renamed variable keeps its value) and fill the
+    /// rest from the variable's sample.</summary>
+    public static JsonElement SyncFields(JsonElement current,NativeGraphicsScratch scratch,string? renamedFrom=null,string? renamedTo=null)
+    {
+        var values=current.ValueKind==JsonValueKind.Object ? current.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone(),StringComparer.Ordinal) : new(StringComparer.Ordinal);
+        if(renamedFrom is not null && renamedTo is not null && values.Remove(renamedFrom,out var moved)) values[renamedTo]=moved;
+        var result=new Dictionary<string,JsonElement>(StringComparer.Ordinal);
+        foreach(var field in TemplateFields(scratch))
+            result[field.Id]=values.TryGetValue(field.Id,out var value) && GraphicsCommandRequest.ValidField(value,field) ? value : (field.Default ?? JsonSerializer.SerializeToElement(DefaultFor(field.Type))).Clone();
+        return JsonSerializer.SerializeToElement(result);
+    }
+    private static string OperatorKind(string type)=>type switch { "number"=>"number","color"=>"colour","boolean"=>"on-off","image"=>"image",_=>"text" };
     public static IReadOnlyList<(string FieldId,IReadOnlyList<string> LayerLabels)> FieldUsage(NativeGraphicsScratch scratch)
     {
         var root=Read(scratch); var rows=Walk(root["layers"]!.AsArray()).ToArray();

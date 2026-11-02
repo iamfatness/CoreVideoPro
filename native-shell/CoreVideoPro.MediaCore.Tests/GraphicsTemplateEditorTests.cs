@@ -261,4 +261,43 @@ public sealed class GraphicsTemplateEditorTests
         var result=GraphicsTemplateEditor.SetFieldOptions(locked,"title",null,null,false); // seed has collapse on title-label
         Assert.True(GraphicsTemplateEditor.Layer(result,"title-label").GetProperty("collapseWhenEmpty").GetBoolean());
     }
+    [Fact]
+    public void VariablesListsKindLimitSampleIfEmptyAndUsedBy()
+    {
+        var s=GraphicsTemplateEditor.AddField(LowerThird(),"show-logo","on-off");
+        var rows=GraphicsTemplateEditor.Variables(s);
+        Assert.Equal(new[]{"name","title","show-logo"},rows.Select(r=>r.Id));
+        var name=rows[0]; Assert.Equal(("text",128,"Name",true,false),(name.Kind,name.MaxLength,name.Sample.GetString(),name.Required,name.HideWhenEmpty));
+        Assert.Equal(new[]{"name-label"},name.UsedBy);
+        var title=rows[1]; Assert.True(title.HideWhenEmpty); Assert.False(title.Required); Assert.Equal(new[]{"title-label"},title.UsedBy);
+        var logo=rows[2]; Assert.Equal(("on-off",(int?)null,false),(logo.Kind,logo.MaxLength,logo.Sample.GetBoolean())); Assert.Empty(logo.UsedBy);
+        Assert.False(GraphicsTemplateEditor.Variables(GraphicsTemplateEditor.SetFieldOptions(s,"title",256,null,false))[1].HideWhenEmpty);
+    }
+    [Fact]
+    public void SyncFieldsMatchesTheDraftValuesToTheEditedVariables()
+    {
+        var current=Json(new{name="Ada",title="Host"});
+        var renamed=GraphicsTemplateEditor.AddField(GraphicsTemplateEditor.RenameField(LowerThird(),"title","role"),"location","text",40);
+        var synced=GraphicsTemplateEditor.SyncFields(current,renamed,"title","role");
+        Assert.Equal(new[]{"name","role","location"},synced.EnumerateObject().Select(p=>p.Name));
+        Assert.Equal(("Ada","Host",""),(synced.GetProperty("name").GetString(),synced.GetProperty("role").GetString(),synced.GetProperty("location").GetString()));
+        var removed=GraphicsTemplateEditor.SyncFields(synced,GraphicsTemplateEditor.RemoveField(renamed,"location"));
+        Assert.False(removed.TryGetProperty("location",out _));
+        var capped=GraphicsTemplateEditor.SetFieldOptions(renamed,"name",3,Json("Al"),false);
+        Assert.Equal("Al",GraphicsTemplateEditor.SyncFields(Json(new{name="Ada Lovelace",role="Host",location=""}),capped).GetProperty("name").GetString());
+    }
+    [Fact]
+    public void PreviewValidationChecksTheEditedVariablesNotTheInstalledOnes()
+    {
+        var seed=LowerThird(); var definition=JsonDocument.Parse(seed.Manifest).RootElement.Clone();
+        var template=JsonSerializer.Deserialize<NativeGraphicsTemplate>(seed.Manifest,new JsonSerializerOptions(JsonSerializerDefaults.Web))! with {Runtime="declarative",Definition=definition,ManifestHash=seed.Hash};
+        var state=new NativeGraphicsState {SchemaVersion=1,CoreEpoch="test-core",Templates=[template]};
+        var session=new GraphicsWorkspaceSession((_,_,_)=>Task.FromResult(new NativeGraphicsOperationResult()),()=>state);
+        session.Observe(state); session.Browse(template);
+        Assert.Equal("",session.PreviewValidation);
+        session.EditTemplate(d=>GraphicsTemplateEditor.AddField(d,"location","text",40));
+        Assert.StartsWith("location:",session.PreviewValidation);
+        session.Edit(session.Draft! with {Fields=GraphicsTemplateEditor.SyncFields(session.Draft.Fields,session.Draft.Scratch!)});
+        Assert.Equal("",session.PreviewValidation);
+    }
 }

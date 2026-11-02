@@ -104,7 +104,7 @@ public sealed partial class GraphicsWorkspaceControl
 
         var inspector = new Grid { RowSpacing = 8, Padding = new Thickness(12) };
         foreach (var height in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto }) inspector.RowDefinitions.Add(new() { Height = height });
-        var selection = new StackPanel { Spacing = 4 }; selection.Children.Add(_selectionTitle); selection.Children.Add(_selectionSummary); selection.Children.Add(_customizeGraphic); inspector.Children.Add(selection);
+        var selection = new StackPanel { Spacing = 4 }; selection.Children.Add(_selectionTitle); selection.Children.Add(_selectionSummary); selection.Children.Add(_customizeGraphic); BuildDesignActions(selection); inspector.Children.Add(selection);
         _customizeGraphic.Click += (_, _) => { SetGraphicsCustomization(!_advancedGraphicsControls); };
         var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
         var panels = new[] { _contentControls, _styleControls, _layoutControls, _motionControls };
@@ -190,6 +190,7 @@ public sealed partial class GraphicsWorkspaceControl
         _layerPanelRow.Height = new GridLength(advanced ? 118 : 0);
         _layerHeading.Visibility = _layerList.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
         if (!advanced) SelectInspectorTab(0);
+        if (_session is not null) RefreshDesignChrome();
     }
     private void ApplyWorkspaceSize(double width)
     {

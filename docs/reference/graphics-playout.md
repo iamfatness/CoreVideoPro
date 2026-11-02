@@ -87,6 +87,56 @@ one Design surface holds the private preview lease at a time. The pure decisions
 upsert order) are unit-tested; the control is `GraphicsBuilderControl`, hosted by
 `OverlaysPage` beside the workspace and the playlist.
 
+## Designs (Graphics Designer slice 1)
+
+A **design** is a graphic the operator authored, stored in the show's graphics
+document (`GraphicsShowDocument.Designs`, schema 3; a v2 file loads with none and
+is kept as `<name>.v2.bak` on the first v3 save). It survives restarts and
+belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../superpowers/specs/2026-11-01-graphics-designer-phase2-design.md).
+
+- **Your designs** (a bar under the builder's header) lists the show's designs
+  (at most 32). **Open design** (or double-click) installs the design's current
+  version if the core lacks it and opens it in the Advanced editor as the
+  workspace's *private draft*. **Duplicate** makes a new design (new id, same
+  definition, "<name> copy"). **Delete** asks first and is refused while a
+  playlist row uses the design ("Used by: <row names>"); otherwise it removes
+  the design and every installed version no saved cue or live instance uses.
+- **New design** opens the start dialog (mockup D2): **Start blank** with one of
+  four seeds (Lower third, Title, Bug or corner, Full screen; manifests in
+  `contracts/graphics-seeds`), **or start from a look** (any design or installed
+  declarative template, always copied under a new id; built-ins are never edited
+  in place), a **Name** (1–80 characters), then **Open in the designer**. A
+  refusal (library full, too many designs, invalid name) keeps the dialog open
+  with the reason.
+- **Variables** (mockup D3, in the inspector's Content tab while a design is
+  open, or for any declarative look under "Customize layout & motion"): each
+  variable with its kind, limit and **Used by** (the layers bound to it); add
+  (Text with max length, Number, Colour, On/off, Image), rename (every binding
+  follows), delete (refused while a layer uses it), max length, sample value and
+  **If empty: hide its layer / show the sample**. Native limits stay: 32
+  variables, ids `[a-z][a-z0-9-]{0,63}`. Edits change the private draft only
+  (the template scratch plus draft values kept in step, since the core refuses
+  unknown or missing fields). The layer editor's text and image sources list the
+  edited variables, so a new variable can be bound before saving.
+- **Save design** installs the edited manifest as the design's next template
+  version (`design-<slug>-<6 hex>`, never a built-in id), stores it as the
+  design's definition, removes superseded versions nothing references, and
+  re-opens the draft on the new version. Saving a look that is not a design
+  first makes it a new design "<look> copy". **Save to playlist** saves, then
+  adds (or re-pins) one playlist row for the design on the next free F-key.
+- **Core restart**: designs nobody uses stay uninstalled (the native registry
+  holds 16 definitions). On a new core generation the shell reinstalls the
+  design versions that playlist rows and saved cues pin
+  (`EnsureInstalledForPlaylistAsync`, armed from `OnBridgeProfileChanged` and run
+  once the new core's graphics state arrives).
+
+One `GraphicsDesignService` (MediaCore) owns the lifecycle; the ViewModel seam is
+`StudioViewModel.GraphicsDesigns.cs`; the UI is `GraphicsBuilderControl` (Your
+designs), `GraphicsDesignStartDialog`, `GraphicsVariablesPanel` and
+`GraphicsWorkspaceControl.Designs.cs` (Save / Save to playlist). The builder's
+logo picker offers PNG and JPEG only; SVG returns with rasterised import
+(slice 4).
+
 ## Show vs Cue
 
 **Show** puts the graphic on Program now: the row's native instance is created
@@ -297,7 +347,9 @@ while it is on Program.
 
 Per-tile names in Tiles (#1073, native placement per tile rect), clocks and
 sheets as data sources, in/out transition choices in the builder, the full visual
-designer (layers, canvas handles, keyframes) behind the builder, crawls, SDI
+designer (Graphics Designer slices 2–5: Designer surface, per-layer motion,
+shapes/outline/size-to-content/SVG import, Sources columns; slice 1 "Designs"
+above), crawls, SDI
 key/fill. Shot layouts landed in slice 2, the template-first builder in slice 3
 (above). NDI fill+key landed as a second NDI source carrying the On Air graphics
 alone, straight alpha: [ndi-graphics-key.md](ndi-graphics-key.md).

@@ -84,7 +84,7 @@ public sealed partial class GraphicsWorkspaceSession
             var template = State?.Templates.FirstOrDefault(t => t.TemplateId == draft.TemplateId && t.TemplateVersion == draft.TemplateVersion);
             if (draft.Declarative && template is null) return "This template version is unavailable. Re-import its exact version before previewing.";
             if (template?.Runtime == "declarative") {
-                foreach (var field in template.Fields) {
+                foreach (var field in draft.Scratch is { } scratch ? ScratchFields(scratch) : template.Fields) {
                     if (!draft.Fields.TryGetProperty(field.Id, out var value) || !GraphicsCommandRequest.ValidField(value,field))
                         return $"{field.Id}: enter a value within this template's type and range.";
                     if (field.Required && value.ValueKind == JsonValueKind.String && value.GetString() == "") return $"{field.Id} is required before previewing or cueing.";
@@ -95,6 +95,16 @@ public sealed partial class GraphicsWorkspaceSession
         }
     }
 
+    private (string Hash,IReadOnlyList<NativeGraphicsTemplateField> Fields) _scratchFields=("",[]);
+    // Private template edits may add, rename or remove variables; validate against the edited manifest.
+    private IReadOnlyList<NativeGraphicsTemplateField> ScratchFields(NativeGraphicsScratch scratch)
+    {
+        if(_scratchFields.Hash!=scratch.Hash) {
+            try { _scratchFields=(scratch.Hash,GraphicsTemplateEditor.TemplateFields(scratch)); }
+            catch(JsonException) { _scratchFields=(scratch.Hash,[]); }
+        }
+        return _scratchFields.Fields;
+    }
     public void Observe(NativeGraphicsState? state)
     {
         if (state is null) return;

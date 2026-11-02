@@ -72,7 +72,8 @@ public sealed class GraphicsDesignService
     /// <summary>Install the design's current version when the core does not have it.</summary>
     public Task<GraphicsDesignResult> OpenAsync(string designId, CancellationToken ct = default) => Run(async () => {
         if (Find(designId) is not { } design) return Fail(Missing);
-        var (template, refusal) = await Install(design.Definition, "", design.TemplateId, design.TemplateVersion, ct);
+        var packageRoot = _library.Document.Templates.FirstOrDefault(t => t.TemplateId == design.TemplateId && t.TemplateVersion == design.TemplateVersion)?.PackageRoot ?? "";
+        var (template, refusal) = await Install(design.Definition, packageRoot, design.TemplateId, design.TemplateVersion, ct);
         return template is null ? Fail(refusal) : new(true, Status = "Design ready.", design, template);
     });
 
@@ -80,7 +81,7 @@ public sealed class GraphicsDesignService
     /// store it as the design's definition, then remove superseded versions nothing references.</summary>
     public Task<GraphicsDesignResult> SaveAsync(string designId, NativeGraphicsScratch scratch, CancellationToken ct = default) => Run(async () => {
         if (Find(designId) is not { } design) return Fail(Missing);
-        if (scratch is null || JsonNode.Parse(scratch.Manifest) is not JsonObject manifest) return Fail("The design is not a valid template.");
+        if (ParseManifest(scratch) is not { } manifest) return Fail("The design is not a valid template.");
         var state = Available();
         var version = checked(state.Templates.Where(t => t.TemplateId == design.TemplateId).Select(t => t.TemplateVersion)
             .Concat(_library.Document.Templates.Where(t => t.TemplateId == design.TemplateId).Select(t => t.TemplateVersion))
@@ -95,7 +96,11 @@ public sealed class GraphicsDesignService
             await Remove(design.TemplateId, version, ct);
             return Fail(_library.Status);
         }
-        await RemoveUnreferenced(design.TemplateId, keep: version, ct);
+        // The new version is stored: a core restart during cleanup must not report the save as failed.
+        try { await RemoveUnreferenced(design.TemplateId, keep: version, ct); }
+        catch (InvalidOperationException) {
+            return new(true, Status = _library.Status + " The core restarted before older versions were tidied; they are gone with the old core.", saved, template);
+        }
         return new(true, Status = _library.Status, saved, template);
     });
 
@@ -144,6 +149,12 @@ public sealed class GraphicsDesignService
     private static string? CleanName(string? name) => name?.Trim() is { Length: > 0 and <= GraphicsDesignIds.MaxNameLength } clean ? clean : null;
     private string NewTemplateId(string name) => GraphicsDesignIds.NewTemplateId(name,
         _library.Document.Designs.Select(d => d.TemplateId).Concat(_library.Document.Templates.Select(t => t.TemplateId)).Concat(Available().Templates.Select(t => t.TemplateId)), _hex6);
+    private static JsonObject? ParseManifest(NativeGraphicsScratch? scratch)
+    {
+        if (scratch is null) return null;
+        try { return JsonNode.Parse(scratch.Manifest) as JsonObject; }
+        catch (JsonException) { return null; }
+    }
     private static JsonObject Stamp(JsonElement definition, string templateId, int version, string name)
     {
         var manifest = JsonNode.Parse(definition.GetRawText())!.AsObject();

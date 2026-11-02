@@ -10,6 +10,7 @@ public sealed partial class StudioViewModel
     {
         _graphicsWorkspace?.Observe(state);
         ObserveGraphicsPlayout(state);
+        ResyncGraphicsDesigns(state);
         var authority=state?.FamilyAuthorities.GetValueOrDefault("lower-third")=="instances";
         var visible=authority && ManagedLowerThirdVisible;
         var authorityChanged=authority!=_lastManagedGraphicsAuthority;
