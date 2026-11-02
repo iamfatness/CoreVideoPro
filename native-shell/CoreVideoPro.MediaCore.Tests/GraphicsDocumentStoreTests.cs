@@ -207,6 +207,14 @@ public sealed class GraphicsDocumentStoreTests : IDisposable
         await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [Design("d1", templateId: "Design-Bad-a1b2c3")] }));
         await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [Design("d1", name: "")] }));
         await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [Design("d1", name: new string('x', 81))] }));
+        GraphicsDesign WithAsset(GraphicsDesignAsset asset) => Design("d1") with { Assets = [asset] };
+        var hash = new string('a', 64);
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [WithAsset(new("Logo 1", hash, "assets/logo.png"))] }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [WithAsset(new("1logo", hash, "assets/logo.png"))] }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [WithAsset(new("logo", hash, "c:foo"))] }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [WithAsset(new("logo", hash, "assets/a|b.png"))] }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [WithAsset(new("logo", hash, "assets/../x.png"))] }));
+        await store.SaveAsync(Example with { Designs = [WithAsset(new("logo-2", hash, "assets/sub/logo.png"))] });
         await store.SaveAsync(Example with { Designs = [Design("d1", name: new string('x', 80))] });
     }
     public void Dispose() { if (Directory.Exists(_directory)) Directory.Delete(_directory, true); }

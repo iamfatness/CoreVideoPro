@@ -18,7 +18,11 @@ public static class GraphicsDesignIds
     public const int MaxLength = 64, MaxDesigns = 32, MaxNameLength = 80;
     private const string Prefix = "design-";
     private const int SlugBudget = MaxLength - 7 - 7; // "design-" + slug + "-" + 6 hex
-    private static readonly Regex Shape = new("^design-[a-z0-9]+(-[a-z0-9]+)*-[0-9a-f]{6}$", RegexOptions.CultureInvariant);
+    private static readonly Regex Shape = new(@"^design-[a-z0-9]+(-[a-z0-9]+)*-[0-9a-f]{6}\z", RegexOptions.CultureInvariant);
+
+    /// <summary>The native id rule (validTemplateId): [a-z0-9-], leading letter, at most 64 characters.</summary>
+    public static bool IsNativeId(string? id) => id is { Length: > 0 and <= MaxLength } && id[0] is >= 'a' and <= 'z' &&
+        id.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
 
     public static bool IsDesignTemplateId(string templateId) =>
         templateId is { Length: <= MaxLength } && Shape.IsMatch(templateId);

@@ -44,6 +44,7 @@ public sealed class GraphicsDesignIdsTests
     [InlineData("designx-a1b2c3", false)]
     [InlineData("design--a1b2c3", false)]
     [InlineData("design-x_y-a1b2c3", false)]
+    [InlineData("design-x-a1b2c3\n", false)]
     [InlineData("", false)]
     public void IsDesignTemplateIdChecksShape(string id, bool expected) => Assert.Equal(expected, GraphicsDesignIds.IsDesignTemplateId(id));
     [Fact]

@@ -201,7 +201,9 @@ public sealed class GraphicsDocumentStore
         d.TemplateId is not null && GraphicsDesignIds.IsDesignTemplateId(d.TemplateId) && d.TemplateVersion >= 1 &&
         d.Definition.ValueKind == JsonValueKind.Object && Encoding.UTF8.GetByteCount(d.Definition.GetRawText()) <= 256 * 1024 &&
         d.Assets is { Count: <= 32 } && d.Assets.All(ValidDesignAsset) && d.Assets.Select(a=>a.AssetId).Distinct(StringComparer.Ordinal).Count()==d.Assets.Count;
-    private static bool ValidDesignAsset(GraphicsDesignAsset? a) => a is not null && a.AssetId is { Length: > 0 and <= 64 } &&
+    private static bool ValidDesignAsset(GraphicsDesignAsset? a) => a is not null && GraphicsDesignIds.IsNativeId(a.AssetId) &&
         a.Sha256 is { Length: 64 } && a.Sha256.All(Uri.IsHexDigit) && a.RelativePath is { Length: > 0 and <= 260 } &&
-        !a.RelativePath.Contains((char)0) && !Path.IsPathRooted(a.RelativePath) && !a.RelativePath.Split('/', (char)92).Contains("..");
+        !Path.IsPathRooted(a.RelativePath) && a.RelativePath.Split('/', (char)92).All(ValidPathSegment);
+    private static bool ValidPathSegment(string segment) => segment.Length > 0 && segment != ".." &&
+        segment.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && segment.IndexOfAny(Path.GetInvalidPathChars()) < 0;
 }
