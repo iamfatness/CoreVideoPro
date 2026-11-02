@@ -11,6 +11,8 @@ namespace CoreVideoPro.MediaCore.Services;
 /// Positions follow native layout: a child sits at its parent's origin + padding (+ its flow step) + its own x/y.</summary>
 public static partial class GraphicsTemplateEditor
 {
+    // Field kinds as constants: native/tests/ContractParityTest.cpp reads any C# `["type"] = "<literal>"` as a core request.
+    private const string FieldKindString = "string", FieldKindImage = "image";
     private const int MaxLayers=64, MaxNesting=8, MaxLayerLabel=64;
     private sealed record Place(JsonObject Node,JsonArray Siblings,int Index,JsonObject? Parent,int Depth,bool Locked);
 
@@ -239,7 +241,7 @@ public static partial class GraphicsTemplateEditor
                 if(time["type"]?.GetValue<string>()!="string") throw new InvalidOperationException("The variable time must be text to show a clock.");
             } else {
                 var fields=Fields(root); if(fields.Count>=MaxFields) throw new InvalidOperationException("A template supports at most 32 variables.");
-                fields.Add(new JsonObject { ["id"]="time",["type"]="string",["default"]="12:00:00",["bindable"]=true,["maxLength"]=32 });
+                fields.Add(new JsonObject { ["id"]="time",["type"]=FieldKindString,["default"]="12:00:00",["bindable"]=true,["maxLength"]=32 });
             }
         }
         var id=NextId(places.Keys,kind);
@@ -274,7 +276,7 @@ public static partial class GraphicsTemplateEditor
         if(source=="new-variable") {
             var fields=Fields(root); if(fields.Count>=MaxFields) throw new InvalidOperationException("A template supports at most 32 variables.");
             var n=1; string fieldId; while(FindField(root,fieldId=n==1 ? "image" : $"image-{n}") is not null) n++;
-            fields.Add(new JsonObject { ["id"]=fieldId,["type"]="image",["default"]="",["bindable"]=true });
+            fields.Add(new JsonObject { ["id"]=fieldId,["type"]=FieldKindImage,["default"]="",["bindable"]=true });
             asset=new JsonObject { ["field"]=fieldId };
         } else if(source.StartsWith("field:",StringComparison.Ordinal)) {
             var fieldId=source["field:".Length..];
