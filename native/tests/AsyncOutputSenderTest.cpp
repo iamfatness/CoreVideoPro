@@ -6,8 +6,11 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
+#include <string>
 #include <thread>
 
 namespace {
@@ -396,4 +399,67 @@ TEST(AsyncOutputSender, TogglingTheGraphicsKeyNeverInterruptsProgramNdi) {
   EXPECT_EQ(std::find(raw->interrupted.begin(), raw->interrupted.end(), "ndi"), raw->interrupted.end());
   EXPECT_NE(std::find(raw->interrupted.begin(), raw->interrupted.end(), "ndi-graphics"), raw->interrupted.end());
   EXPECT_TRUE(raw->recovered.empty());
+}
+
+namespace {
+// Models a per-destination writer: a destination "starts" when it enters the
+// synced list from absence and "stops" when it leaves; every sync carrying a
+// frame while it is listed counts as a frame for that destination.
+class PerDestinationLifecycleSender final : public IOutputSender {
+ public:
+  OutputSenderSession sync(const std::vector<std::string>& destinations, const ProgramFrame* frame, double,
+                           const std::vector<OutputDestinationSettings>&, const std::vector<float>*, int,
+                           int) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (const auto& destination : destinations) {
+      if (!active.count(destination)) ++starts[destination];
+      if (frame != nullptr) ++frames[destination];
+    }
+    active.clear();
+    active.insert(destinations.begin(), destinations.end());
+    return {};
+  }
+  OutputSenderSession fail(const std::string&, const std::string&, double) override { return {}; }
+  OutputSenderSession recover(const std::string&, double, const std::string&) override { return {}; }
+  OutputSenderSession session() const override { return {}; }
+  void interrupt(const std::string&) override {}
+  std::mutex mutex;
+  std::set<std::string> active;
+  std::map<std::string, int> starts;
+  std::map<std::string, int> frames;
+};
+}  // namespace
+
+// NDI is independent of Streaming: editing the stream destinations (removing
+// and re-adding rtmp) must neither restart the ndi writer nor interrupt its
+// frame flow.
+TEST(AsyncOutputSender, RemovingTheStreamDestinationNeverInterruptsNdi) {
+  auto inner = std::make_unique<PerDestinationLifecycleSender>();
+  auto* raw = inner.get();
+  AsyncOutputSender sender(std::move(inner));
+  ProgramFrame frame;
+  auto push = [&](const std::vector<std::string>& destinations, int number) {
+    frame.frameNumber = number;
+    sender.sync(destinations, &frame, number * 16.0);
+    ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(1)));
+  };
+  auto ndiFrames = [&] {
+    std::lock_guard<std::mutex> lock(raw->mutex);
+    return raw->frames["ndi"];
+  };
+
+  push({"rtmp", "ndi"}, 1);
+  push({"rtmp", "ndi"}, 2);
+  const int beforeRemoval = ndiFrames();
+  push({"ndi"}, 3);
+  push({"ndi"}, 4);
+  const int afterRemoval = ndiFrames();
+  EXPECT_GT(afterRemoval, beforeRemoval);
+  push({"rtmp", "ndi"}, 5);
+  push({"rtmp", "ndi"}, 6);
+  EXPECT_GT(ndiFrames(), afterRemoval);
+
+  std::lock_guard<std::mutex> lock(raw->mutex);
+  EXPECT_EQ(raw->starts["ndi"], 1);
+  EXPECT_EQ(raw->starts["rtmp"], 2);
 }

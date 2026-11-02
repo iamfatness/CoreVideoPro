@@ -8,6 +8,13 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **NDI output independent of streaming.** NDI has its own on/off (`NdiOutputEnabled`, preferences
+  v16; the old stream NDI tick does not carry over), a Studio footer tile and a Settings switch,
+  and runs without Stream or Record. Stream validation, start proof, readout and the close guard
+  ignore NDI. Control actions `transport.ndi.set`, `transport.ndi.toggle`,
+  `transport.ndi.graphicsKey.set` (replaces `transport.stream.ndi.graphicsKey.set`); state
+  `ndiOutputOn`, `ndiOutputStatus`; OSC `/cvp/state/ndi`. See
+  `docs/reference/stream-destination-control.md`.
 - **Catalog scenes are deletable and restorable (#1070).** Intro, Interview, Speaker + Slides,
   Panel and Closing can be removed like custom scenes; only the on-air scene and the last
   scene are protected, and a removal survives relaunch (`RemovedCatalogSceneIds`, preferences
@@ -19,7 +26,7 @@ All notable changes to CoreVideo Pro are documented here. The format follows
   `<NDI program name> Graphics`, carries only the native graphics on Program over
   transparency as BGRA with straight alpha, so a downstream switcher, vMix or OBS can
   key CoreVideo's graphics over its own picture. Toggle in Production settings, NDI;
-  control action `transport.stream.ndi.graphicsKey.set`; persisted with the output
+  control action `transport.ndi.graphicsKey.set` (renamed); persisted with the output
   preferences. The key is matched to the delayed Program frame when a Program buffer is on,
   turns transparent and reports `key-stale` when no fresh graphics readback arrives for
   250 ms, and a key that cannot be sent is dropped on its own without stopping the stream.

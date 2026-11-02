@@ -86,7 +86,7 @@ The key advertises `<NDI program name> Graphics` (for example
 program part so the whole name fits NDI's 64 characters. A name over 64 characters,
 with NDI's reserved characters (`< > : " / \ | ? *`), or equal to the Program
 source's name is refused. It uses the Program source's NDI group. It rides with NDI
-output: it is sent only while NDI is enabled and streaming is on, and can be toggled
+output: it is sent whenever NDI output is on (streaming is not required), and can be toggled
 live without touching the Program source.
 
 **A key that cannot be sent is dropped on its own.** Missing core capability, NDI
@@ -99,14 +99,14 @@ stop RTMP, SRT or the Program NDI source.
   core build cannot carry it.
 - **Persistence.** `StreamNdiGraphicsKeyEnabled` and `StreamNdiGraphicsName` in the
   output preferences. Additive fields, no version bump: older files load with the key off.
-- **Control API.** `transport.stream.ndi.graphicsKey.set` with `on` (bool) and
+- **Control API.** `transport.ndi.graphicsKey.set` with `on` (bool) and
   optional `name` (omitted keeps the current name, empty restores the default).
   The whole request is validated first and returns an error, changing nothing, when
   NDI output is off, the core lacks `ndi-graphics-output`, or the name is invalid.
   Toggle and name are applied as one edit with one save and one output sync:
 
   ```json
-  {"action":"transport.stream.ndi.graphicsKey.set","args":[true,"Studio Key"]}
+  {"action":"transport.ndi.graphicsKey.set","args":[true,"Studio Key"]}
   ```
 
   OSC: `/cvp/transport/stream/ndi/graphicsKey/set`. Control state:

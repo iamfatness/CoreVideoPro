@@ -29,10 +29,11 @@ keeps the current value; empty clears it. With encryption enabled, the existing
 validation requires 10–79 characters. Disabling encryption requires clearing the
 passphrase. Numeric fields accept strings, matching the bound settings controls.
 
-The NDI graphics key (fill+key) has its own live toggle,
-`transport.stream.ndi.graphicsKey.set`; see [ndi-graphics-key.md](ndi-graphics-key.md).
+NDI is not a stream destination. It has its own on/off and actions; see
+[NDI output](#ndi-output) below. The NDI graphics key (fill+key) is controlled by
+`transport.ndi.graphicsKey.set`; see [ndi-graphics-key.md](ndi-graphics-key.md).
 
-Each action changes only its named destination. Other RTMP/SRT/NDI/HLS selections
+Each action changes only its named destination. Other RTMP/SRT/HLS selections
 remain as configured. To switch from RTMP to SRT, disable RTMP with its configure
 action before starting the stream; configuration is not exclusive destination
 selection. Disabled destinations may retain incomplete drafts. Existing stream
@@ -57,3 +58,33 @@ It checks single-commit RTMP/SRT updates, current UI state, write-failure recove
 and requested/observed streaming refusal. It opens no visible window, listener,
 media core, meeting or production preferences. Focused tests separately cover
 DPAPI file persistence, invalid settings, omitted/cleared secrets and safe errors.
+
+## NDI output
+
+NDI output is independent of Streaming and Recording. It runs with or without
+either, and starting, stopping or editing a stream destination never restarts it
+(the core keeps one writer per destination; adding or removing `rtmp` does not
+touch `ndi`).
+
+- **On/off.** `NdiOutputEnabled`, persisted in the output preferences (schema v16,
+  default off). The v15 `StreamNdiEnabled` value is ignored on upgrade: NDI is off
+  after upgrading until the operator turns it on. Controls: the NDI tile in the
+  Studio footer (next to Virtual Cam; its flyout holds program name, group, graphics
+  key and key name, text fields committing on LostFocus/Enter) and the "NDI output"
+  switch in Settings, NDI.
+- **Format.** The stream output profile (resolution, fps); there is no separate NDI profile.
+- **Sync.** Whenever NDI is on, the production sync sends `ndi`, plus `ndi-graphics`
+  when the graphics key is on.
+- **Validation.** NDI validates alone (`ValidateNdiOutput`): program name, key-name
+  collision and the `ndi-output` core capability. Stream validation, the start proof,
+  failures, the STREAM readout, stream summaries and the close guard ignore NDI
+  (`OutputDestinationKind.IsStream`). A failure while NDI runs turns NDI off and
+  records `NdiOutputStatusReason`; it never touches the stream. NDI on does not
+  prompt on close, like the virtual camera.
+- **Status strings.** `Off`, `Starting`, `Live · {name}`, `Warning · {reason}`,
+  `Unavailable · {reason}`, each with ` + key` appended when the `ndi-graphics`
+  sender is live.
+- **Control API.** `transport.ndi.set` (`on`: bool, required), `transport.ndi.toggle`
+  (no arguments), `transport.ndi.graphicsKey.set` (`on`, optional `name`). Control
+  state: `ndiOutputOn`, `ndiOutputStatus`. OSC feedback: `/cvp/state/ndi` (0/1).
+  `transport.stream.ndi.graphicsKey.set` was removed; use `transport.ndi.graphicsKey.set`.
