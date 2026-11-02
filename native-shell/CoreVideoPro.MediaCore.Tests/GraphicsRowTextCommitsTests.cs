@@ -52,4 +52,14 @@ public sealed class GraphicsRowTextCommitsTests
         await commits.Commit(() => { count++; return Task.CompletedTask; });
         Assert.Equal(2, count);
     }
+
+    [Fact] // final re-review I2: one failed row save must not block every later Show / Hide
+    public async Task AFailedRowSaveDoesNotBlockTheNextShow()
+    {
+        var commits = new GraphicsRowTextCommits();
+        _ = commits.Commit(() => Task.FromException(new IOException("disk")));
+        await commits.BeforeAirAsync(); // must not throw
+        commits.Track("guest|location", () => Task.FromException(new IOException("disk")));
+        await commits.BeforeAirAsync(); // a pending commit that fails does not throw into Show either
+    }
 }

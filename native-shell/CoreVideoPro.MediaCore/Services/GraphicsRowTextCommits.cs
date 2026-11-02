@@ -37,11 +37,13 @@ public sealed class GraphicsRowTextCommits
         return pending is null ? CurrentTask() : Commit(pending);
     }
 
-    /// <summary>Before Show, Cue or Take: commit the pending text and wait until every row save has finished.</summary>
+    /// <summary>Before Show, Cue or Take: commit the pending text and wait until every row save has finished.
+    /// A failed save never blocks the action: the save reports its own failure, and Show / Hide must still run
+    /// (final re-review I2 — a faulted in-flight task used to rethrow into every later Show).</summary>
     public async Task BeforeAirAsync()
     {
-        await Flush().ConfigureAwait(true);
-        await CurrentTask().ConfigureAwait(true);
+        try { await Flush().ConfigureAwait(true); } catch (Exception ex) when (ex is not OutOfMemoryException) { }
+        try { await CurrentTask().ConfigureAwait(true); } catch (Exception ex) when (ex is not OutOfMemoryException) { }
     }
 
     private Task CurrentTask() { lock (_gate) return _inFlight; }
