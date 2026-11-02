@@ -146,7 +146,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(variablesPanel is { Visibility: Visibility.Visible, ActualHeight: > 0 }, "The Variables panel is not shown for an open design");
             var variableNames = Descendants(variablesPanel!).OfType<TextBlock>().Select(t => t.Text).ToHashSet(StringComparer.Ordinal);
             Require(variableNames.Contains("name") && variableNames.Contains("title"), "The Variables panel does not list the seed's name and title variables");
-            Require(Descendants(variablesPanel!).OfType<TextBlock>().Any(t => t.Text == "Used by: name-label"), "The Variables panel does not say which layer uses a variable");
+            Require(Descendants(variablesPanel!).OfType<TextBlock>().Any(t => t.Text == "Used by: Name"), "The Variables panel does not say which layer uses a variable");
             Require(Button(workspace,"Save design").ActualHeight > 0 && Button(workspace,"Save to playlist").ActualHeight > 0, "Save design / Save to playlist are missing for an open design");
             await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,"graphics-design-variables-1080.png"));
             checks.Add("An open design shows the Variables panel with the seed's name and title (Used by) plus Save design and Save to playlist");
@@ -249,6 +249,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             var rows = Rows();
             Require(rows.Select(r => r.Id).SequenceEqual(new[] { "title-label", "name-label", "accent", "plate" }), "Designer layer rows are not front-to-back: " + string.Join(",", rows.Select(r => r.Id)));
             Require(rows[0].Detail == "{title}" && rows[1].Detail == "{name}", "Designer text rows do not show the variable they show");
+            Require(rows.Select(r => r.Label).SequenceEqual(new[] { "Title", "Name", "Accent bar", "Plate" }), "Designer rows do not show the seed's layer names: " + string.Join(",", rows.Select(r => r.Label)));
             Require(designer.ActualWidth <= width + 1, $"The Designer overflows the page horizontally ({designer.ActualWidth:0} > {width:0})");
             foreach (var name in new[] { "Add text layer", "Add shape layer", "Add image layer", "Add clock layer", "Undo", "Save design", "Save to playlist", "Typical", "Longest name", "Empty title" }) {
                 var button = Button(designer, name); var point = button.TransformToVisual(designer).TransformPoint(new(0, 0));
@@ -267,9 +268,14 @@ internal static class GraphicsWorkspaceLayoutProbe
         Invoke(Button(designer, "Variables tab")); await Task.Delay(100); designer.UpdateLayout();
         var variables = Descendants(designer).OfType<GraphicsVariablesPanel>().Single();
         var texts = Descendants(variables).OfType<TextBlock>().Select(t => t.Text).ToHashSet(StringComparer.Ordinal);
-        Require(variables.ActualHeight > 0 && texts.Contains("name") && texts.Contains("title") && texts.Contains("Used by: name-label"), "The Designer's Variables tab does not list name and title with Used by");
+        Require(variables.ActualHeight > 0 && texts.Contains("name") && texts.Contains("title") && texts.Contains("Used by: Name"), "The Designer's Variables tab does not list name and title with Used by");
         Invoke(Button(designer, "Layer tab")); await Task.Delay(50);
         checks.Add("The Designer's Variables tab lists the seed's name and title variables with Used by");
+        // Selecting another layer restyles the rows in place (a rebuild would swallow the second tap of a double-click).
+        var rowElements = Descendants(designer).OfType<Grid>().Where(g => g.Tag is GraphicsDesignerRow).ToArray();
+        studio.GraphicsWorkspace.SelectLayer("plate"); await Task.Delay(50); designer.UpdateLayout();
+        Require(Descendants(designer).OfType<Grid>().Where(g => g.Tag is GraphicsDesignerRow).SequenceEqual(rowElements), "Selecting a layer rebuilt the layer rows");
+        checks.Add("Selecting a layer restyles the Designer's rows in place");
         Invoke(Button(designer, "Add text layer"));
         await Eventually(() => Rows().Count == 5, () => $"Add text layer did not add a row (rows={Rows().Count}, status='{studio.GraphicsWorkspace.Status}')");
         Require(studio.GraphicsWorkspace.SelectedLayerId == "text-1", $"Add text layer did not select the new layer (selected '{studio.GraphicsWorkspace.SelectedLayerId}')");

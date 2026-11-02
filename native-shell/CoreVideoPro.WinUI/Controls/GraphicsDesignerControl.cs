@@ -118,7 +118,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
         Detach();
         _attached = Studio; _session = Studio.GraphicsWorkspace;
         _canvas.Session = _session; _variables.Session = _session;
-        _session.Changed += OnSessionChanged; _session.PreviewChanged += OnSessionChanged;
+        _session.Changed += OnSessionChanged; _session.PreviewChanged += OnPreviewChanged; _session.EditRefused += OnEditRefused;
         _attached.PropertyChanged += OnStudioProperty; _attached.GraphicsDesignOpened += OnDesignOpened;
         _attached.GraphicsLibrary.Changed += OnLibraryChanged;
         _editor = new("preview:lower-third", "Graphics designer preview", new() { Lut = "none" }) { LiveEditing = false };
@@ -127,7 +127,8 @@ public sealed partial class GraphicsDesignerControl : UserControl
     }
     private void Detach()
     {
-        if (_session is not null) { _session.Changed -= OnSessionChanged; _session.PreviewChanged -= OnSessionChanged; }
+        if (_session is not null) { _session.Changed -= OnSessionChanged; _session.PreviewChanged -= OnPreviewChanged; _session.EditRefused -= OnEditRefused; }
+        _pending.Clear();
         if (_attached is not null) { _attached.PropertyChanged -= OnStudioProperty; _attached.GraphicsDesignOpened -= OnDesignOpened; _attached.GraphicsLibrary.Changed -= OnLibraryChanged; }
         if (_editor is not null) _editor.PropertyChanged -= OnEditorProperty;
         _previewOwner?.Dispose(); _previewOwner = null; _canvas.Session = null; _variables.Session = null;
@@ -156,7 +157,17 @@ public sealed partial class GraphicsDesignerControl : UserControl
         else if (e.PropertyName == nameof(StudioViewModel.IsGraphicsDesignerVisible)) RefreshAll();
     }
     private void OnLibraryChanged(object? sender, EventArgs e) => RefreshHeader();
+    // Changed accompanies every draft edit; PreviewChanged alone (clock text, a removed cue) only needs the lease,
+    // so one edit refreshes once.
     private void OnSessionChanged(object? sender, EventArgs e) { RefreshAll(); UpdatePreviewLease(); }
+    // Every refused edit (the Designer's own, or a canvas drag on a locked layer) lands in the status line.
+    private void OnEditRefused(object? sender, string message) { if (Visible) Say(message); }
+    private void OnPreviewChanged(object? sender, EventArgs e) { if (_session?.Draft is null) RefreshAll(); UpdatePreviewLease(); }
+    private readonly GraphicsPendingEdit _pending = new();
+    private IReadOnlyCollection<string> _rowIds = [];
+
+    /// <summary>Select a layer, first committing text typed into the inspector for the layer being left.</summary>
+    private void SelectLayer(string id) { _pending.Flush(); _session?.SelectLayer(id); }
     private void OnDesignOpened(object? sender, EventArgs e)
     {
         _status.Text = "Design open. Your edits stay private until you Save."; SelectTab(layerTab: true); RefreshAll();
@@ -169,11 +180,15 @@ public sealed partial class GraphicsDesignerControl : UserControl
     private void RefreshAll()
     {
         if (_session is null || _loading) return;
+        // Text typed for a layer that is no longer selected (picked on the canvas) lands on that layer before the rebuild.
+        if (_pending.Owner.Length > 0 && _pending.Owner != _session.SelectedLayerId) _pending.Flush();
         _loading = true;
         try {
             var rows = CurrentRows();
-            // The inspector always shows a layer: keep the selection on an existing row (front-most when none).
-            if (Visible && !_saving && !_session.Busy && rows.Count > 0 && rows.All(r => r.Id != _session.SelectedLayerId)) _session.SelectLayer(rows[0].Id);
+            // The inspector always shows a layer: keep the selection, else a layer an Undo restored, else the front-most.
+            if (Visible && !_saving && !_session.Busy && GraphicsDesignerModel.SelectionAfter(_rowIds, rows, _session.SelectedLayerId) is { } keep && keep != _session.SelectedLayerId)
+                _session.SelectLayer(keep);
+            _rowIds = rows.Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
             RefreshHeader(); RefreshRows(rows); RefreshInspector(rows); RefreshSamples();
             _canvas.IsEnabled = !_saving;
             if (_variablesScroll.Visibility == Visibility.Visible) _variables.Refresh();
@@ -217,13 +232,9 @@ public sealed partial class GraphicsDesignerControl : UserControl
     {
         if (_session is not { } session) return false;
         if (_saving) { Say("Editing is paused while the design saves."); return false; }
-        if (session.Busy) { Say("Graphics is busy. Try again in a moment."); return false; }
-        if (session.Draft is not { Declarative: true } draft || session.TemplateDocument is not { } document) { Say("Open a design to edit it."); return false; }
-        NativeGraphicsScratch edited; JsonElement fields;
-        try { edited = change(document); fields = GraphicsTemplateEditor.SyncFields(draft.Fields, edited); }
-        catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) { Say(ex.Message); return false; }
-        session.Edit(draft with { Scratch = edited.Hash == session.Template?.ManifestHash ? null : edited, Fields = fields });
-        if (select is not null) session.SelectLayer(select);
+        var refusal = session.EditTemplateSynced(change);
+        if (refusal.Length > 0) { Say(refusal); return false; }
+        if (select is not null) SelectLayer(select);
         if (done is not null) Say(done);
         return true;
     }
@@ -233,9 +244,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
     {
         if (_session is not { } session) return;
         if (_saving) { Say("Editing is paused while the design saves."); return; }
-        var before = session.Draft; var status = session.Status;
-        session.SetLayerNumbers(id, values);
-        if (ReferenceEquals(before, session.Draft) && session.Status != status) Say(session.Status);
+        session.SetLayerNumbers(id, values); // a refusal reaches the status line through EditRefused
     }
 
     private async Task SaveAsync(bool toPlaylist)

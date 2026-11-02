@@ -13,3 +13,14 @@ public sealed class GraphicsDesignSurfacesTests
     public void OneDesignSurfaceAtATime(string mode, bool designer, bool workspace, GraphicsDesignSurface expected) =>
         Assert.Equal(expected, GraphicsDesignSurfaces.For(mode, designer, workspace));
 }
+
+public sealed class GraphicsDesignPreviewLeaseTests
+{
+    [Theory]
+    [InlineData(GraphicsDesignSurface.Playout, "Builder,Designer,Workspace")]
+    [InlineData(GraphicsDesignSurface.Builder, "Designer,Workspace")]
+    [InlineData(GraphicsDesignSurface.Designer, "Builder,Workspace")]
+    [InlineData(GraphicsDesignSurface.Workspace, "Builder,Designer")]
+    public void EveryOtherDesignSurfaceGivesUpThePreview(GraphicsDesignSurface active, string suspended) =>
+        Assert.Equal(suspended, string.Join(",", GraphicsDesignSurfaces.SuspendFor(active)));
+}

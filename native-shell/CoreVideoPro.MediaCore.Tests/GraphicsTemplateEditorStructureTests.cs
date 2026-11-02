@@ -233,7 +233,7 @@ public sealed class GraphicsTemplateEditorStructureTests
     {
         var copy=GraphicsTemplateEditor.Duplicate(Seed,"plate",out var id);
         Assert.NotEqual("plate",id);
-        Assert.Equal("plate copy",GraphicsTemplateEditor.Layers(copy).Single(l=>l.Id==id).Label);
+        Assert.Equal("Plate copy",GraphicsTemplateEditor.Layers(copy).Single(l=>l.Id==id).Label);
     }
 
     // ---- Fix round 1 (task-2 review) ----
@@ -323,5 +323,22 @@ public sealed class GraphicsTemplateEditorStructureTests
         var copy=GraphicsTemplateEditor.Duplicate(GraphicsTemplateEditor.SetLabel(Seed,"plate",label),"plate",out var id);
         var name=GraphicsTemplateEditor.Layers(copy).Single(l=>l.Id==id).Label;
         Assert.Equal(new string('a',58)+" copy",name);
+    }
+
+    [Fact]
+    public void LayersWithoutANameReadAsWords()
+    {
+        Assert.Equal("Name label",GraphicsTemplateEditor.HumanizeId("name-label"));
+        Assert.Equal("Lower third bg",GraphicsTemplateEditor.HumanizeId("lower_third-bg"));
+        Assert.Equal("Plate",GraphicsTemplateEditor.HumanizeId("plate"));
+        var corporate=GraphicsTemplateEditor.Layers(Corporate);
+        Assert.All(corporate,l=>Assert.DoesNotContain("-",l.Label));
+    }
+    [Fact]
+    public void SeedLayersCarryTheMockupNames()
+    {
+        Assert.Equal(new[] { "Plate","Accent bar","Name","Title" },GraphicsTemplateEditor.Layers(Seed).Select(l=>l.Label));
+        foreach(var kind in GraphicsDesignSeeds.Kinds)
+            Assert.All(GraphicsTemplateEditor.Layers(From(GraphicsDesignSeeds.Manifest(kind,"design-test-a1b2c3",1,"Test"))),l=>Assert.NotEqual(l.Id,l.Label));
     }
 }

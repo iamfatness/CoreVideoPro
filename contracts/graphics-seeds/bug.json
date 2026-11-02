@@ -27,6 +27,9 @@
     "layers":  [
                    {
                        "id":  "backing",
+                       "metadata":  {
+                                        "label":  "Backing"
+                                    },
                        "type":  "rect",
                        "x":  0,
                        "y":  0,
@@ -38,6 +41,9 @@
                    },
                    {
                        "id":  "logo-image",
+                       "metadata":  {
+                                        "label":  "Logo"
+                                    },
                        "type":  "image",
                        "asset":  {
                                      "field":  "logo"

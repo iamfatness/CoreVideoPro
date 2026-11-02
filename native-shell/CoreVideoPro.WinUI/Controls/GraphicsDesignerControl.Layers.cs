@@ -79,7 +79,7 @@ public sealed partial class GraphicsDesignerControl
     }
 
     private string? _pendingSelect;
-    private void SelectPending() { if (_pendingSelect is { } id && _session is not null) { _pendingSelect = null; _session.SelectLayer(id); } _pendingSelect = null; }
+    private void SelectPending() { if (_pendingSelect is { } id) { _pendingSelect = null; SelectLayer(id); } _pendingSelect = null; }
 
     private void AddLayer(string kind)
     {
@@ -90,16 +90,10 @@ public sealed partial class GraphicsDesignerControl
     private void FillImageSources()
     {
         _imageSources.Items.Clear();
-        var document = _session?.TemplateDocument;
         var sources = new List<(string Source, string Label)>();
-        if (document is not null) {
-            try {
-                foreach (var field in GraphicsTemplateEditor.TemplateFields(document).Where(f => f.Type == "image")) sources.Add(("field:" + field.Id, "Variable: " + field.Id));
-                using var manifest = System.Text.Json.JsonDocument.Parse(document.Manifest);
-                if (manifest.RootElement.TryGetProperty("assets", out var assets) && assets.ValueKind == System.Text.Json.JsonValueKind.Array)
-                    foreach (var asset in assets.EnumerateArray())
-                        if (asset.TryGetProperty("id", out var id) && id.GetString() is { Length: > 0 } assetId) sources.Add(("asset:" + assetId, "Image: " + assetId));
-            } catch (Exception ex) when (ex is InvalidDataException or System.Text.Json.JsonException) { Say(ex.Message); }
+        if (_session?.TemplateDocument is { } document) {
+            try { sources.AddRange(GraphicsDesignerModel.ImageSources(document)); }
+            catch (Exception ex) when (ex is InvalidDataException or System.Text.Json.JsonException) { Say(ex.Message); }
         }
         sources.Add(("new-variable", "New image variable (chosen when the graphic is used)"));
         foreach (var (source, label) in sources) {
@@ -120,7 +114,8 @@ public sealed partial class GraphicsDesignerControl
     private void RefreshRows(IReadOnlyList<GraphicsDesignerRow> rows)
     {
         var selected = _session?.SelectedLayerId ?? "";
-        var signature = string.Join('|', rows.Select(r => $"{r.Id}:{r.Kind}:{r.Label}:{r.Detail}:{r.Depth}:{r.Locked}:{r.Visible}:{r.VisibilityBound}")) + "#" + selected + "#" + _renaming + "#" + _saving;
+        // Selection is not in the signature: it restyles the existing rows, so the second tap of a double-click hits the same row.
+        var signature = GraphicsDesignerModel.RowsSignature(rows) + "#" + _renaming + "#" + _saving + "#" + CanEdit;
         _rows = rows;
         var row = rows.FirstOrDefault(r => r.Id == selected);
         var editable = CanEdit;
@@ -131,18 +126,31 @@ public sealed partial class GraphicsDesignerControl
         var clock = family is "clock" or "countdown";
         _addClock.IsEnabled = editable && clock;
         ToolTipService.SetToolTip(_clockHost, clock ? "Add a clock layer that shows the live time." : ClockRefusal);
-        if (signature == _rowsSignature) return;
-        _rowsSignature = signature;
-        _rowsPanel.Children.Clear();
-        for (var i = 0; i < rows.Count; i++) _rowsPanel.Children.Add(Row(rows[i], i, rows[i].Id == selected));
-        if (rows.Count == 0) _rowsPanel.Children.Add(new TextBlock { Text = "Open a design to see its layers.", FontSize = 14, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap });
+        if (signature != _rowsSignature) {
+            _rowsSignature = signature;
+            _rowsPanel.Children.Clear(); _rowParts.Clear();
+            for (var i = 0; i < rows.Count; i++) _rowsPanel.Children.Add(Row(rows[i], i));
+            if (rows.Count == 0) _rowsPanel.Children.Add(new TextBlock { Text = "Open a design to see its layers.", FontSize = 14, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap });
+        }
+        foreach (var (id, parts) in _rowParts) StyleRow(parts, id == selected);
     }
 
-    private Grid Row(GraphicsDesignerRow row, int index, bool selected)
+    private sealed record RowParts(Grid Row, TextBlock Glyph, TextBlock? Label, TextBlock? Detail);
+    private readonly Dictionary<string, RowParts> _rowParts = new(StringComparer.Ordinal);
+    private static readonly SolidColorBrush ClearBrush = new(Microsoft.UI.Colors.Transparent);
+    private static void StyleRow(RowParts parts, bool selected)
+    {
+        parts.Row.Background = selected ? StudioBrushes.SurfaceRaised : ClearBrush;
+        parts.Row.BorderBrush = selected ? StudioBrushes.Accent : ClearBrush;
+        parts.Glyph.Foreground = selected ? StudioBrushes.Accent : StudioBrushes.Muted;
+        if (parts.Label is { } label) label.FontWeight = selected ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+        if (parts.Detail is { } detail) detail.Foreground = selected ? StudioBrushes.Accent : StudioBrushes.Muted;
+    }
+
+    private Grid Row(GraphicsDesignerRow row, int index)
     {
         var grid = new Grid { ColumnSpacing = 4, Padding = new Thickness(4 + row.Depth * 14, 3, 2, 3), CornerRadius = new CornerRadius(6), MinHeight = 34, Tag = row,
-            Background = selected ? StudioBrushes.SurfaceRaised : new SolidColorBrush(Microsoft.UI.Colors.Transparent),
-            BorderBrush = selected ? StudioBrushes.Accent : new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(1) };
+            Background = ClearBrush, BorderBrush = ClearBrush, BorderThickness = new Thickness(1) };
         foreach (var width in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto }) grid.ColumnDefinitions.Add(new() { Width = width });
         AutomationProperties.SetName(grid, $"{row.Label}, {row.Kind.ToLowerInvariant()} layer{(row.Locked ? ", locked" : "")}{(row.Visible ? "" : ", hidden")}");
         var editable = CanEdit;
@@ -155,7 +163,7 @@ public sealed partial class GraphicsDesignerControl
         grid.Children.Add(eyeHost);
 
         var glyph = new TextBlock { Text = row.Kind switch { "Text" => "T", "Clock" => "", "Image" => "", "Group" => "", _ => "■" }, FontSize = row.Kind == "Text" ? 14 : 13,
-            FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = selected ? StudioBrushes.Accent : StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center, Width = 14, TextAlignment = TextAlignment.Center };
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center, Width = 14, TextAlignment = TextAlignment.Center };
         if (row.Kind is not ("Text" or "Shape")) glyph.FontFamily = Icons;
         Grid.SetColumn(glyph, 1); grid.Children.Add(glyph);
 
@@ -163,19 +171,22 @@ public sealed partial class GraphicsDesignerControl
             var box = new TextBox { Text = row.Label, MaxLength = 64, FontSize = 14, MinHeight = 28, Padding = new Thickness(6, 2, 6, 2), VerticalAlignment = VerticalAlignment.Center };
             AutomationProperties.SetName(box, "Layer name");
             box.KeyDown += (_, e) => {
-                if (e.Key == VirtualKey.Enter) { e.Handled = true; var name = box.Text; _renaming = ""; if (!Apply(s => GraphicsTemplateEditor.SetLabel(s, row.Id, name))) { _rowsSignature = ""; RefreshAll(); } }
+                // Always close the box: an unchanged name is a no-op edit that raises no session change.
+                if (e.Key == VirtualKey.Enter) { e.Handled = true; var name = box.Text; _renaming = ""; Apply(s => GraphicsTemplateEditor.SetLabel(s, row.Id, name)); _rowsSignature = ""; RefreshAll(); }
                 else if (e.Key == VirtualKey.Escape) { e.Handled = true; _renaming = ""; _rowsSignature = ""; RefreshAll(); }
             };
             box.LostFocus += (_, _) => { if (_renaming == row.Id) { _renaming = ""; _rowsSignature = ""; RefreshAll(); } };
             box.Loaded += (_, _) => { box.Focus(FocusState.Programmatic); box.SelectAll(); };
             Grid.SetColumn(box, 2); Grid.SetColumnSpan(box, 2); grid.Children.Add(box);
+            _rowParts[row.Id] = new(grid, glyph, null, null);
         } else {
             var label = new TextBlock { Text = row.Label, FontSize = 14, Foreground = StudioBrushes.Text, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
-                FontWeight = selected ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal, Opacity = row.Visible ? 1 : .6 };
+                Opacity = row.Visible ? 1 : .6 };
             ToolTipService.SetToolTip(label, row.Label);
             Grid.SetColumn(label, 2); grid.Children.Add(label);
-            var detail = new TextBlock { Text = row.Detail, FontSize = 12, Foreground = selected ? StudioBrushes.Accent : StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 76, TextTrimming = TextTrimming.CharacterEllipsis };
+            var detail = new TextBlock { Text = row.Detail, FontSize = 12, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 76, TextTrimming = TextTrimming.CharacterEllipsis };
             Grid.SetColumn(detail, 3); grid.Children.Add(detail);
+            _rowParts[row.Id] = new(grid, glyph, label, detail);
         }
 
         var lockButton = IconButton(row.Locked ? "" : "", (row.Locked ? "Unlock " : "Lock ") + row.Label);
@@ -183,9 +194,12 @@ public sealed partial class GraphicsDesignerControl
         lockButton.Click += (_, _) => Apply(s => GraphicsTemplateEditor.Lock(s, row.Id, !row.Locked));
         Grid.SetColumn(lockButton, 4); grid.Children.Add(lockButton);
 
-        grid.Tapped += (_, e) => { if (e.OriginalSource is DependencyObject d && IsInside<ButtonBase>(d, grid)) return; _session?.SelectLayer(row.Id); };
+        grid.Tapped += (_, e) => {
+            if (e.OriginalSource is DependencyObject d && (IsInside<ButtonBase>(d, grid) || IsInside<TextBox>(d, grid))) return;
+            SelectLayer(row.Id);
+        };
         grid.DoubleTapped += (_, e) => {
-            if (e.OriginalSource is DependencyObject d && IsInside<ButtonBase>(d, grid)) return;
+            if (e.OriginalSource is DependencyObject d && (IsInside<ButtonBase>(d, grid) || IsInside<TextBox>(d, grid))) return;
             if (!CanEdit) return;
             _renaming = row.Id; _rowsSignature = ""; RefreshAll(); e.Handled = true;
         };
@@ -232,7 +246,8 @@ public sealed partial class GraphicsDesignerControl
         if (id.Length == 0 || _session is null) return;
         if (GraphicsDesignerModel.DropTarget(_rows, id, insertion, onto) is not { } target) { Say("That layer cannot go there: it is locked, or a group cannot go inside itself."); return; }
         // Keep the layer where native drew it on the canvas when it changes group.
-        var node = _session.AuthoringLayout?.Nodes.FirstOrDefault(n => n.Id == id);
+        // Only the Typical sample's layout is the draft's own geometry; a sample's flow layout would misplace the layer.
+        var node = _session.PreviewSample == "current" ? _session.AuthoringLayout?.Nodes.FirstOrDefault(n => n.Id == id) : null;
         (double X, double Y)? absolute = node is null ? null : (node.X, node.Y);
         var shifted = false;
         if (Apply(s => { var (moved, wasShifted) = GraphicsDesignerModel.MoveLayer(s, id, target.Parent, target.FrontIndex, absolute); shifted = wasShifted; return moved; }, select: id))

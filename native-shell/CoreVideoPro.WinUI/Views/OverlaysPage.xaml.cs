@@ -68,9 +68,12 @@ public sealed partial class OverlaysPage : UserControl
         if (LegacyDesignerExpander.IsExpanded && ExistingOverlayDrawer.IsPaneOpen) return;
         var surface = ViewModel.GraphicsDesignSurface;
         // Release before acquiring: the losing surfaces drop their lease first.
-        if (surface != GraphicsDesignSurface.Builder) GraphicsBuilder.SuspendPreview();
-        if (surface != GraphicsDesignSurface.Designer) GraphicsDesigner.SuspendPreview();
-        if (surface != GraphicsDesignSurface.Workspace) GraphicsWorkspace.SuspendPreview();
+        foreach (var other in GraphicsDesignSurfaces.SuspendFor(surface))
+            switch (other) {
+                case GraphicsDesignSurface.Builder: GraphicsBuilder.SuspendPreview(); break;
+                case GraphicsDesignSurface.Designer: GraphicsDesigner.SuspendPreview(); break;
+                case GraphicsDesignSurface.Workspace: GraphicsWorkspace.SuspendPreview(); break;
+            }
         switch (surface) {
             case GraphicsDesignSurface.Builder: GraphicsBuilder.ResumePreview(); break;
             case GraphicsDesignSurface.Designer: GraphicsDesigner.ResumePreview(); break;

@@ -32,6 +32,10 @@ public sealed partial class GraphicsWorkspaceSession
 
     public event EventHandler? Changed;
     public event EventHandler? PreviewChanged;
+    /// <summary>A draft edit was refused (the message is also the <see cref="Status"/>): raised for template and layer-number
+    /// edits whichever surface started them, so the Designer can show a canvas drag's refusal in its status line.</summary>
+    public event EventHandler<string>? EditRefused;
+    private void RefuseEdit(string message) { Status=message; Changed?.Invoke(this,EventArgs.Empty); EditRefused?.Invoke(this,message); }
     public NativeGraphicsState? State { get; private set; }
     public string SelectedId { get; private set; } = "";
     public string SelectedLayerId { get; private set; } = "";
@@ -174,14 +178,28 @@ public sealed partial class GraphicsWorkspaceSession
             var edited=change(document);
             Edit(draft with { Scratch=edited.Hash==Template?.ManifestHash ? null : edited });
         } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) {
-            Status=ex.Message; Changed?.Invoke(this,EventArgs.Empty);
+            RefuseEdit(ex.Message);
         }
+    }
+    /// <summary>Like <see cref="EditTemplate"/>, and the draft's values follow the edited variables (an added variable gets
+    /// its default, a removed one is dropped) in the same undo step. Returns "" when applied (or unchanged), else the
+    /// refusal, which is also the <see cref="Status"/>.</summary>
+    public string EditTemplateSynced(Func<NativeGraphicsScratch,NativeGraphicsScratch> change)
+    {
+        string Refuse(string message) { RefuseEdit(message); return message; }
+        if(Busy) return Refuse("Graphics is busy. Try again in a moment.");
+        if(Draft is not { Declarative:true } draft || TemplateDocument is not { } document) return Refuse("Open a design to edit it.");
+        try {
+            var edited=change(document);
+            Edit(draft with { Scratch=edited.Hash==Template?.ManifestHash ? null : edited, Fields=GraphicsTemplateEditor.SyncFields(draft.Fields,edited) });
+            return "";
+        } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) { return Refuse(ex.Message); }
     }
     public void SetLayerNumber(string id,string property,double value)=>SetLayerNumbers(id,new Dictionary<string,double> {[property]=value});
     public void SetLayerNumbers(string id,IReadOnlyDictionary<string,double> values)
     {
         if(Busy || Draft is not { } draft || TemplateDocument is not { } document) return;
-        if(GraphicsTemplateEditor.Layers(document).FirstOrDefault(l=>l.Id==id)?.Locked==true) {Status="Unlock the layer or its parent before editing.";Changed?.Invoke(this,EventArgs.Empty);return;}
+        if(GraphicsTemplateEditor.Layers(document).FirstOrDefault(l=>l.Id==id)?.Locked==true) {RefuseEdit("Unlock the layer or its parent before editing.");return;}
         try {
             var layer=GraphicsTemplateEditor.Layer(document,id);
             var fields=draft.Fields.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone());
@@ -194,7 +212,7 @@ public sealed partial class GraphicsWorkspaceSession
                 } else document=GraphicsTemplateEditor.Set(document,id,pair.Key,JsonSerializer.SerializeToElement(pair.Value));
             }
             Edit(draft with {Fields=JsonSerializer.SerializeToElement(fields,Json),Scratch=document.Hash==Template?.ManifestHash?null:document});
-        } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) {Status=ex.Message;Changed?.Invoke(this,EventArgs.Empty);}
+        } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) {RefuseEdit(ex.Message);}
     }
     public void SetField(string field, JsonElement value)
     {

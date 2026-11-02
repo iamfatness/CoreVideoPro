@@ -39,7 +39,7 @@ public static partial class GraphicsTemplateEditor
     {
         var root=Read(scratch); if(root["layers"] is not JsonArray layers) throw new InvalidDataException("Missing layers.");
         var result=Walk(layers).Select(row=>new GraphicsEditorLayer(row.Node["id"]!.GetValue<string>(),row.Node["type"]!.GetValue<string>(),
-            row.Node["metadata"] is JsonObject metadata && metadata["label"] is JsonValue label && label.TryGetValue<string>(out var caption) ? caption : row.Node["id"]!.GetValue<string>(),row.Parent,row.Depth,row.Locked,
+            LabelOf(row.Node),row.Parent,row.Depth,row.Locked,
             row.Node["visible"] is not JsonValue visible || !visible.TryGetValue<bool>(out var on) || on)).Take(65).ToArray();
         if(result.Length>64 || result.Select(l=>l.Id).Distinct(StringComparer.Ordinal).Count()!=result.Length) throw new InvalidDataException("A template supports at most 64 layers."); return result;
     }
@@ -180,7 +180,13 @@ public static partial class GraphicsTemplateEditor
     }
     private static JsonArray Fields(JsonObject root)=>root["fields"] as JsonArray ?? throw new InvalidDataException("Missing fields.");
     private static JsonObject? FindField(JsonObject root,string id)=>Fields(root).OfType<JsonObject>().FirstOrDefault(f=>f["id"]?.GetValue<string>()==id);
-    private static string LabelOf(JsonObject node)=>node["metadata"] is JsonObject m && m["label"] is JsonValue l && l.TryGetValue<string>(out var caption) ? caption : node["id"]!.GetValue<string>();
+    private static string LabelOf(JsonObject node)=>node["metadata"] is JsonObject m && m["label"] is JsonValue l && l.TryGetValue<string>(out var caption) ? caption : HumanizeId(node["id"]!.GetValue<string>());
+    /// <summary>A readable name for a layer with no editor label: dashes and underscores become spaces, first letter capitalised ("name-label" → "Name label").</summary>
+    public static string HumanizeId(string id)
+    {
+        var text=(id ?? "").Replace('-',' ').Replace('_',' ').Trim();
+        return text.Length==0 ? id ?? "" : char.ToUpperInvariant(text[0])+text[1..];
+    }
     private static JsonNode DefaultFor(string type)=>type switch { "number"=>0,"color"=>"#FFFFFF","boolean"=>false,_=>"" };
     private static void CheckValue(string type,JsonNode? value,int? maxLength)
     {

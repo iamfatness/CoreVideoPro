@@ -12,4 +12,9 @@ public static class GraphicsDesignSurfaces
         : designerOpen ? GraphicsDesignSurface.Designer
         : workspaceOpen ? GraphicsDesignSurface.Workspace
         : GraphicsDesignSurface.Builder;
+
+    /// <summary>The Design surfaces that must give up the private preview while <paramref name="active"/> shows (all three in
+    /// Playout). The page suspends these before resuming the active one, so two surfaces never hold the lease.</summary>
+    public static IReadOnlyList<GraphicsDesignSurface> SuspendFor(GraphicsDesignSurface active) =>
+        new[] { GraphicsDesignSurface.Builder, GraphicsDesignSurface.Designer, GraphicsDesignSurface.Workspace }.Where(s => s != active).ToArray();
 }

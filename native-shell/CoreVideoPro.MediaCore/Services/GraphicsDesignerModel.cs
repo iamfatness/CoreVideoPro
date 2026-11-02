@@ -105,6 +105,34 @@ public static class GraphicsDesignerModel
             gradient ? "" : Choice(n,"fill"),gradient,Number("cornerRadius",0),image,Str(n,"fit") ?? "contain",Str(n,"align") ?? "center",Str(n,"verticalAlign") ?? "center");
     }
 
+    /// <summary>What the layers list must rebuild for: the rows' structure and state, never the selection
+    /// (selection restyles rows in place, so a double-click's second tap lands on the same row).</summary>
+    public static string RowsSignature(IReadOnlyList<GraphicsDesignerRow> rows)=>
+        string.Join('|',rows.Select(r=>$"{r.Id}:{r.Kind}:{r.Label}:{r.Detail}:{r.Depth}:{r.Parent}:{r.Locked}:{r.Visible}:{r.VisibilityBound}"));
+
+    /// <summary>The layer to select after the rows changed: the current one while it exists; else a layer that has just
+    /// (re)appeared, e.g. one an Undo of Delete restored; else the front-most. Null when there are no rows.</summary>
+    public static string? SelectionAfter(IReadOnlyCollection<string> previousIds,IReadOnlyList<GraphicsDesignerRow> rows,string selected)
+    {
+        if(rows.Count==0) return null;
+        if(rows.Any(r=>r.Id==selected)) return selected;
+        var known=previousIds as ISet<string> ?? previousIds.ToHashSet(StringComparer.Ordinal);
+        return previousIds.Count>0 && rows.FirstOrDefault(r=>!known.Contains(r.Id)) is { } restored ? restored.Id : rows[0].Id;
+    }
+
+    /// <summary>Image sources a layer can use: the design's image variables (<c>field:id</c>), then its declared image
+    /// assets (<c>asset:id</c>).</summary>
+    public static IReadOnlyList<(string Source,string Label)> ImageSources(NativeGraphicsScratch s)
+    {
+        var sources=GraphicsTemplateEditor.TemplateFields(s).Where(f=>f.Type=="image").Select(f=>("field:"+f.Id,"Variable: "+f.Id)).ToList();
+        using var manifest=JsonDocument.Parse(s.Manifest);
+        if(manifest.RootElement.TryGetProperty("assets",out var assets) && assets.ValueKind==JsonValueKind.Array)
+            foreach(var asset in assets.EnumerateArray())
+                if(asset.ValueKind==JsonValueKind.Object && asset.TryGetProperty("id",out var id) && id.ValueKind==JsonValueKind.String && id.GetString() is { Length: > 0 } assetId)
+                    sources.Add(("asset:"+assetId,"Image: "+assetId));
+        return sources;
+    }
+
     /// <summary>The Typeface list for a layer: the brand fonts and listed families, plus the layer's own custom family
     /// (appended) when it uses one, so the list always contains the current choice.</summary>
     public static IReadOnlyList<(string Id,string Label)> FontChoices(string current)=>

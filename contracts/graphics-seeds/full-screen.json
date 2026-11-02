@@ -30,6 +30,9 @@
     "layers":  [
                    {
                        "id":  "backdrop",
+                       "metadata":  {
+                                        "label":  "Backdrop"
+                                    },
                        "type":  "rect",
                        "x":  0,
                        "y":  0,
@@ -41,6 +44,9 @@
                    },
                    {
                        "id":  "heading-label",
+                       "metadata":  {
+                                        "label":  "Heading"
+                                    },
                        "type":  "text",
                        "text":  {
                                     "field":  "heading"

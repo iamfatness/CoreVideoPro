@@ -115,8 +115,8 @@ public sealed class GraphicsTemplateEditorTests
         s=GraphicsTemplateEditor.Add(s,"text"); var layer=GraphicsTemplateEditor.Layers(s).Last().Id;
         s=GraphicsTemplateEditor.BindLayer(s,layer,"text","location",null);
         Assert.Equal("location",GraphicsTemplateEditor.Layer(s,layer).GetProperty("text").GetProperty("field").GetString());
-        Assert.Contains(GraphicsTemplateEditor.FieldUsage(s),u=>u.FieldId=="location" && u.LayerLabels.SequenceEqual(new[]{layer}));
-        Assert.Contains(GraphicsTemplateEditor.FieldUsage(s),u=>u.FieldId=="name" && u.LayerLabels.SequenceEqual(new[]{"name-label"}));
+        Assert.Contains(GraphicsTemplateEditor.FieldUsage(s),u=>u.FieldId=="location" && u.LayerLabels.SequenceEqual(new[]{GraphicsTemplateEditor.HumanizeId(layer)}));
+        Assert.Contains(GraphicsTemplateEditor.FieldUsage(s),u=>u.FieldId=="name" && u.LayerLabels.SequenceEqual(new[]{"Name"}));
     }
     [Fact]
     public void RenameFieldRewritesEveryBindingAndRefusesCollisionsAndBadIds()
@@ -137,7 +137,7 @@ public sealed class GraphicsTemplateEditorTests
     {
         var s=LowerThird();
         var ex=Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.RemoveField(s,"title"));
-        Assert.Equal("Used by: title-label",ex.Message);
+        Assert.Equal("Used by: Title",ex.Message);
         s=GraphicsTemplateEditor.AddField(s,"spare","text");
         var gone=GraphicsTemplateEditor.RemoveField(s,"spare");
         Assert.DoesNotContain(Parse(gone)["fields"]!.AsArray(),f=>f!["id"]!.GetValue<string>()=="spare");
@@ -212,8 +212,8 @@ public sealed class GraphicsTemplateEditorTests
     {
         var s=WithGradient(LowerThird());
         var ex=Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.RemoveField(s,"to-colour"));
-        Assert.Equal("Used by: plate",ex.Message);
-        Assert.Equal(["plate"],GraphicsTemplateEditor.FieldUsage(s).Single(u=>u.FieldId=="from-colour").LayerLabels);
+        Assert.Equal("Used by: Plate",ex.Message);
+        Assert.Equal(["Plate"],GraphicsTemplateEditor.FieldUsage(s).Single(u=>u.FieldId=="from-colour").LayerLabels);
         var renamed=GraphicsTemplateEditor.RenameField(s,"to-colour","end-colour");
         var stops=GraphicsTemplateEditor.Layer(renamed,"plate").GetProperty("fill").GetProperty("stops");
         Assert.Equal("from-colour",stops[0].GetProperty("field").GetString()); Assert.Equal("end-colour",stops[1].GetProperty("field").GetString());
@@ -268,8 +268,8 @@ public sealed class GraphicsTemplateEditorTests
         var rows=GraphicsTemplateEditor.Variables(s);
         Assert.Equal(new[]{"name","title","show-logo"},rows.Select(r=>r.Id));
         var name=rows[0]; Assert.Equal(("text",128,"Name",true,false),(name.Kind,name.MaxLength,name.Sample.GetString(),name.Required,name.HideWhenEmpty));
-        Assert.Equal(new[]{"name-label"},name.UsedBy);
-        var title=rows[1]; Assert.True(title.HideWhenEmpty); Assert.False(title.Required); Assert.Equal(new[]{"title-label"},title.UsedBy);
+        Assert.Equal(new[]{"Name"},name.UsedBy);
+        var title=rows[1]; Assert.True(title.HideWhenEmpty); Assert.False(title.Required); Assert.Equal(new[]{"Title"},title.UsedBy);
         var logo=rows[2]; Assert.Equal(("on-off",(int?)null,false),(logo.Kind,logo.MaxLength,logo.Sample.GetBoolean())); Assert.Empty(logo.UsedBy);
         Assert.False(GraphicsTemplateEditor.Variables(GraphicsTemplateEditor.SetFieldOptions(s,"title",256,null,false))[1].HideWhenEmpty);
     }
@@ -299,5 +299,37 @@ public sealed class GraphicsTemplateEditorTests
         Assert.StartsWith("location:",session.PreviewValidation);
         session.Edit(session.Draft! with {Fields=GraphicsTemplateEditor.SyncFields(session.Draft.Fields,session.Draft.Scratch!)});
         Assert.Equal("",session.PreviewValidation);
+    }
+    [Fact]
+    public void EditTemplateSyncedAddsNewVariablesToTheDraftAndReportsRefusals()
+    {
+        var seed=LowerThird(); var definition=JsonDocument.Parse(seed.Manifest).RootElement.Clone();
+        var template=JsonSerializer.Deserialize<NativeGraphicsTemplate>(seed.Manifest,new JsonSerializerOptions(JsonSerializerDefaults.Web))! with {Runtime="declarative",Definition=definition,ManifestHash=seed.Hash};
+        var state=new NativeGraphicsState {SchemaVersion=1,CoreEpoch="test-core",Templates=[template]};
+        var session=new GraphicsWorkspaceSession((_,_,_)=>Task.FromResult(new NativeGraphicsOperationResult()),()=>state);
+        session.Observe(state); session.Browse(template);
+        Assert.Equal("",session.EditTemplateSynced(d=>GraphicsTemplateEditor.AddImage(d,"new-variable").Scratch));
+        Assert.True(session.Draft!.Fields.TryGetProperty("image",out _));
+        Assert.Equal("",session.PreviewValidation);
+        Assert.True(session.CanUndo);
+        var before=session.Draft;
+        Assert.Equal("Use a layer name of 1–64 characters.",session.EditTemplateSynced(d=>GraphicsTemplateEditor.SetLabel(d,"plate","")));
+        Assert.Same(before,session.Draft);
+        Assert.Equal("Use a layer name of 1–64 characters.",session.Status);
+    }
+    [Fact]
+    public void EditRefusalsAreRaisedForWhicheverSurfaceStartedThem()
+    {
+        var seed=GraphicsTemplateEditor.Lock(LowerThird(),"plate",true); var definition=JsonDocument.Parse(seed.Manifest).RootElement.Clone();
+        var template=JsonSerializer.Deserialize<NativeGraphicsTemplate>(seed.Manifest,new JsonSerializerOptions(JsonSerializerDefaults.Web))! with {Runtime="declarative",Definition=definition,ManifestHash=seed.Hash};
+        var state=new NativeGraphicsState {SchemaVersion=1,CoreEpoch="test-core",Templates=[template]};
+        var session=new GraphicsWorkspaceSession((_,_,_)=>Task.FromResult(new NativeGraphicsOperationResult()),()=>state);
+        session.Observe(state); session.Browse(template);
+        var refused=new List<string>(); session.EditRefused+=(_,message)=>refused.Add(message);
+        session.SetLayerNumbers("plate",new Dictionary<string,double> {["x"]=10});          // the canvas dragging a locked layer
+        session.EditTemplate(d=>GraphicsTemplateEditor.SetLabel(d,"accent",""));
+        session.EditTemplateSynced(d=>GraphicsTemplateEditor.Remove(d,"plate"));
+        session.SetLayerNumbers("accent",new Dictionary<string,double> {["x"]=10});         // applied: no refusal
+        Assert.Equal(new[] { "Unlock the layer or its parent before editing.","Use a layer name of 1–64 characters.","Unlock the layer before removing it." },refused);
     }
 }

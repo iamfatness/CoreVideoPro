@@ -116,4 +116,52 @@ public sealed class GraphicsDesignerModelTests
         Assert.Equal("Chicago",Layer(fixedText,"title-label").GetProperty("text").GetString());
         Assert.Equal("title",Layer(GraphicsDesignerModel.SetShows(fixedText,"title-label","title",""),"title-label").GetProperty("text").GetProperty("field").GetString());
     }
+    [Fact]
+    public void SelectionStaysElseFollowsARestoredLayerElseTheFrontmost()
+    {
+        var rows=GraphicsDesignerModel.Rows(Seed);
+        Assert.Equal("accent",GraphicsDesignerModel.SelectionAfter(["title-label","name-label","accent","plate"],rows,"accent"));
+        // Undo of a Delete brings plate back: select it.
+        Assert.Equal("plate",GraphicsDesignerModel.SelectionAfter(["title-label","name-label","accent"],rows,"gone"));
+        // Undo of an Add removes the selected layer: the front-most row.
+        Assert.Equal("title-label",GraphicsDesignerModel.SelectionAfter(["text-1","title-label","name-label","accent","plate"],rows,"text-1"));
+        Assert.Null(GraphicsDesignerModel.SelectionAfter([],[],"x"));
+    }
+    [Fact]
+    public void RowsSignatureIgnoresSelectionButNotStructure()
+    {
+        var rows=GraphicsDesignerModel.Rows(Seed);
+        Assert.Equal(GraphicsDesignerModel.RowsSignature(rows),GraphicsDesignerModel.RowsSignature(GraphicsDesignerModel.Rows(Seed)));
+        Assert.NotEqual(GraphicsDesignerModel.RowsSignature(rows),GraphicsDesignerModel.RowsSignature(GraphicsDesignerModel.Rows(GraphicsTemplateEditor.SetLabel(Seed,"plate","Backing"))));
+        Assert.NotEqual(GraphicsDesignerModel.RowsSignature(rows),GraphicsDesignerModel.RowsSignature(GraphicsDesignerModel.Rows(GraphicsTemplateEditor.Lock(Seed,"plate",true))));
+    }
+    [Fact]
+    public void ImageSourcesListImageVariablesThenDeclaredAssets()
+    {
+        var manifest=GraphicsDesignSeeds.Manifest("bug","design-test-a1b2c3",1,"Test");
+        var scratch=NativeGraphicsScratch.From(JsonSerializer.SerializeToElement(manifest));
+        var sources=GraphicsDesignerModel.ImageSources(scratch);
+        var images=GraphicsTemplateEditor.TemplateFields(scratch).Where(f=>f.Type=="image").Select(f=>"field:"+f.Id);
+        Assert.Equal(images,sources.Where(s=>s.Source.StartsWith("field:")).Select(s=>s.Source));
+        Assert.All(sources,s=>Assert.False(string.IsNullOrWhiteSpace(s.Label)));
+        manifest["assets"]=new JsonArray(new JsonObject { ["id"]="logo",["file"]="assets/a.png",["sha256"]=new string('a',64) });
+        var withAsset=GraphicsDesignerModel.ImageSources(NativeGraphicsScratch.From(JsonSerializer.SerializeToElement(manifest)));
+        Assert.Equal(("asset:logo","Image: logo"),withAsset[^1]);
+    }
+    [Fact]
+    public void PendingTextCommitsOnceForItsOwnLayerBeforeTheSelectionMoves()
+    {
+        var pending=new GraphicsPendingEdit(); var committed=new List<string>();
+        pending.Track("text-1",()=>{ committed.Add("text-1"); return true; });
+        Assert.Equal("text-1",pending.Owner);
+        Assert.True(pending.Flush());
+        Assert.False(pending.Flush()); // once
+        Assert.Equal(new[] { "text-1" },committed);
+        // A commit that triggers a refresh (which flushes again) does not run twice.
+        pending.Track("plate",()=>{ committed.Add("plate"); pending.Flush(); return true; });
+        pending.Flush();
+        Assert.Equal(new[] { "text-1","plate" },committed);
+        pending.Track("a",()=>{ committed.Add("a"); return true; }); pending.Clear(); Assert.False(pending.Flush());
+        Assert.Equal("",pending.Owner);
+    }
 }

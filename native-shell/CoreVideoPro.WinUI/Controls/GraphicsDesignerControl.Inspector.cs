@@ -20,7 +20,6 @@ public sealed partial class GraphicsDesignerControl
     private readonly GraphicsVariablesPanel _variables = new();
     private readonly List<Action<GraphicsLayerInspection>> _inspectorRefresh = [];
     private readonly List<Microsoft.UI.Xaml.Controls.Control> _inspectorInputs = [];
-    private readonly List<Action> _pendingText = [];
     private string _inspectorSignature = "";
 
     private Border BuildInspector()
@@ -50,7 +49,7 @@ public sealed partial class GraphicsDesignerControl
         if (!layerTab) _variables.Refresh();
     }
 
-    private void CommitPendingText() { foreach (var commit in _pendingText.ToArray()) commit(); }
+    private void CommitPendingText() => _pending.Flush();
 
     private void RefreshInspector(IReadOnlyList<GraphicsDesignerRow> rows)
     {
@@ -76,7 +75,7 @@ public sealed partial class GraphicsDesignerControl
 
     private void BuildLayerInspector(GraphicsLayerInspection? layer, IReadOnlyList<NativeGraphicsTemplateField> fields, NativeGraphicsScratch? document)
     {
-        _layerBody.Children.Clear(); _inspectorRefresh.Clear(); _inspectorInputs.Clear(); _pendingText.Clear();
+        _layerBody.Children.Clear(); _inspectorRefresh.Clear(); _inspectorInputs.Clear(); _pending.Clear(); // RefreshAll flushed text typed for another layer first
         if (layer is null) { _layerBody.Children.Add(Note("Choose a layer in the list or on the canvas.")); return; }
         var id = layer.Id;
         if (layer.Locked) _layerBody.Children.Add(Note("This layer is locked. Unlock it in the layers list to edit it."));
@@ -117,11 +116,21 @@ public sealed partial class GraphicsDesignerControl
             var text = fixedText.Text.Length > 0 ? fixedText.Text : "Text";
             Apply(s => GraphicsDesignerModel.SetShows(s, id, variable, text));
         };
-        void CommitFixed() { if (!_loading && fixedText.Visibility == Visibility.Visible && CurrentInspection() is { ShowsVariable: null } now && fixedText.Text != now.FixedText) Apply(s => GraphicsDesignerModel.SetShows(s, id, null, fixedText.Text)); }
+        // Checked and written against the captured layer id, never the current selection: the commit may run after the
+        // selection moved (flushed by SelectLayer / RefreshAll, or a late LostFocus from the removed box).
+        bool CommitFixed()
+        {
+            if (_loading || _session?.TemplateDocument is not { } document || _session.Draft is not { } draft) return false;
+            GraphicsLayerInspection own;
+            try { own = GraphicsDesignerModel.Inspect(document, draft.Fields, id); }
+            catch (Exception ex) when (ex is InvalidDataException or JsonException) { return false; }
+            var text = fixedText.Text;
+            return own is { ShowsVariable: null, Locked: false } && text != own.FixedText && Apply(s => GraphicsDesignerModel.SetShows(s, id, null, text));
+        }
+        fixedText.TextChanged += (_, _) => { if (!_loading && fixedText.FocusState != FocusState.Unfocused) _pending.Track(id, CommitFixed); };
         _inspectorRefresh.Add(l => { if (fixedText.FocusState == FocusState.Unfocused && fixedText.Text != l.FixedText) fixedText.Text = l.FixedText; });
-        fixedText.KeyDown += (_, e) => { if (e.Key == Windows.System.VirtualKey.Enter) { e.Handled = true; CommitFixed(); } };
-        fixedText.LostFocus += (_, _) => CommitFixed();
-        _pendingText.Add(CommitFixed);
+        fixedText.KeyDown += (_, e) => { if (e.Key == Windows.System.VirtualKey.Enter) { e.Handled = true; _pending.Clear(); CommitFixed(); } };
+        fixedText.LostFocus += (_, _) => { if (_pending.Owner == id) _pending.Flush(); else CommitFixed(); };
         _layerBody.Children.Add(shows); _layerBody.Children.Add(fixedText);
 
         var typeface = Choice("Typeface", GraphicsDesignerModel.FontChoices(layer.FontChoice), layer.FontChoice);
@@ -159,12 +168,10 @@ public sealed partial class GraphicsDesignerControl
     private void BuildImage(GraphicsLayerInspection layer, IReadOnlyList<NativeGraphicsTemplateField> fields, NativeGraphicsScratch? document)
     {
         var id = layer.Id;
-        var sources = fields.Where(f => f.Type == "image").Select(f => ("field:" + f.Id, "Variable: " + f.Id)).ToList();
+        var sources = new List<(string, string)>();
         if (document is not null) {
-            using var manifest = JsonDocument.Parse(document.Manifest);
-            if (manifest.RootElement.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
-                foreach (var asset in assets.EnumerateArray())
-                    if (asset.TryGetProperty("id", out var assetId) && assetId.GetString() is { Length: > 0 } known) sources.Add(("asset:" + known, "Image: " + known));
+            try { sources.AddRange(GraphicsDesignerModel.ImageSources(document)); }
+            catch (Exception ex) when (ex is InvalidDataException or JsonException) { Say(ex.Message); }
         }
         if (layer.ImageSource.Length > 0 && sources.All(s => s.Item1 != layer.ImageSource)) sources.Add((layer.ImageSource, layer.ImageSource.StartsWith("token:", StringComparison.Ordinal) ? "Brand logo" : layer.ImageSource));
         var source = Choice("Source", sources, layer.ImageSource);
@@ -218,15 +225,17 @@ public sealed partial class GraphicsDesignerControl
         var box = Choice(header, choices, current);
         box.IsEditable = true; box.PlaceholderText = current.Length == 0 ? "Follows a variable" : "#RRGGBB";
         ToolTipService.SetToolTip(box, "Choose a brand colour or type a colour like #FF8800.");
+        void Reset() { var label = choices.FirstOrDefault(c => c.Id == current).Label; box.Text = label ?? ""; }
         box.SelectionChanged += (_, _) => {
             if (_loading || box.SelectedValue is not string value || value == current) return;
-            Apply(s => GraphicsDesignerModel.SetColour(s, id, property, value));
+            if (!Apply(s => GraphicsDesignerModel.SetColour(s, id, property, value))) Reset();
         };
         box.TextSubmitted += (_, e) => {
             var typed = e.Text.Trim(); var match = choices.FirstOrDefault(c => c.Label == typed || c.Id == typed);
             e.Handled = true;
-            if (match.Id is { } known) { if (known != current) Apply(s => GraphicsDesignerModel.SetColour(s, id, property, known)); return; }
-            Apply(s => GraphicsDesignerModel.SetColour(s, id, property, typed));
+            if (match.Id is { } known) { if (known != current && !Apply(s => GraphicsDesignerModel.SetColour(s, id, property, known))) Reset(); return; }
+            // A refusal ("orange") leaves the layer's colour; show that colour again rather than the rejected text.
+            if (!Apply(s => GraphicsDesignerModel.SetColour(s, id, property, typed))) Reset();
         };
         return box;
     }
