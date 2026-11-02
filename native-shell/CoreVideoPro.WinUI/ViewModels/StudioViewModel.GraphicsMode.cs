@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.WinUI.Services;
 
 namespace CoreVideoPro.WinUI.ViewModels;
 
@@ -31,30 +33,58 @@ public sealed partial class StudioViewModel
         var next = value == GraphicsModeDesign ? GraphicsModeDesign : GraphicsModePlayout;
         if (!SetProperty(ref _graphicsMode, next, nameof(GraphicsMode))) return false;
         OnPropertyChanged(nameof(IsGraphicsPlayoutMode)); OnPropertyChanged(nameof(IsGraphicsDesignMode));
-        OnPropertyChanged(nameof(IsGraphicsBuilderVisible)); OnPropertyChanged(nameof(IsGraphicsAdvancedVisible));
+        NotifyGraphicsDesignSurface();
         return true;
     }
 
     /// <summary>The compact playlist column in the Studio tab (spec: right panel of the console).</summary>
     [ObservableProperty] private bool _showGraphicsPanel = true;
 
-    /// <summary>Design mode shows the template-first builder by default; the full workspace
-    /// (looks library, private cues, layer editor, automation) sits behind "Advanced editor".
+    /// <summary>Design mode shows the template-first builder by default; the old workspace
+    /// (show templates, saved cues and styles, packages, automation) sits behind "Cues &amp; automation".
     /// Session-only: a new launch always opens on the builder.</summary>
     [ObservableProperty] private bool _graphicsDesignAdvanced;
     /// <summary>Playlist row the builder opens for editing ("" = start a new graphic). Set by
     /// Operate's "Open in Design"; the builder clears it after loading the row.</summary>
     [ObservableProperty] private string _graphicsDesignRowId = "";
-    public bool IsGraphicsBuilderVisible => IsGraphicsDesignMode && !GraphicsDesignAdvanced;
-    public bool IsGraphicsAdvancedVisible => IsGraphicsDesignMode && GraphicsDesignAdvanced;
-    partial void OnGraphicsDesignAdvancedChanged(bool value) { OnPropertyChanged(nameof(IsGraphicsBuilderVisible)); OnPropertyChanged(nameof(IsGraphicsAdvancedVisible)); }
+    /// <summary>Graphics Designer slice 2: a design is open in the Designer (layers, canvas, inspector). It wins over
+    /// the builder and the advanced workspace while Design mode is showing. Session-only.</summary>
+    [ObservableProperty] private bool _graphicsDesignerOpen;
+    public GraphicsDesignSurface GraphicsDesignSurface => GraphicsDesignSurfaces.For(_graphicsMode, GraphicsDesignerOpen, GraphicsDesignAdvanced);
+    public bool IsGraphicsBuilderVisible => GraphicsDesignSurface == GraphicsDesignSurface.Builder;
+    public bool IsGraphicsAdvancedVisible => GraphicsDesignSurface == GraphicsDesignSurface.Workspace;
+    public bool IsGraphicsDesignerVisible => GraphicsDesignSurface == GraphicsDesignSurface.Designer;
+    partial void OnGraphicsDesignAdvancedChanged(bool value) => NotifyGraphicsDesignSurface();
+    partial void OnGraphicsDesignerOpenChanged(bool value) => NotifyGraphicsDesignSurface();
+    private void NotifyGraphicsDesignSurface()
+    {
+        OnPropertyChanged(nameof(GraphicsDesignSurface)); OnPropertyChanged(nameof(IsGraphicsBuilderVisible));
+        OnPropertyChanged(nameof(IsGraphicsAdvancedVisible)); OnPropertyChanged(nameof(IsGraphicsDesignerVisible));
+    }
 
-    /// <summary>Operate → Design for one row: the builder opens that row's look and fields.
+    /// <summary>Operate → Design for one row. A design's row opens the design in the Designer; any other row
+    /// opens in the builder with its look and fields (also the fallback when the design cannot be opened).
     /// Program and Preview are unchanged.</summary>
     public void OpenGraphicInDesign(string rowId)
     {
-        GraphicsDesignRowId = rowId; GraphicsDesignAdvanced = false;
-        GraphicsMode = GraphicsModeDesign; ActiveTab = StudioTab.Overlays;
+        GraphicsDesignAdvanced = false; GraphicsMode = GraphicsModeDesign; ActiveTab = StudioTab.Overlays;
+        if (GraphicsLibrary.Document.Playlist.FirstOrDefault(r => r.Id == rowId) is { } row && GraphicsDesignForRow(row) is not null) {
+            _ = OpenRowDesignAsync(row);
+            return;
+        }
+        GraphicsDesignerOpen = false; GraphicsDesignRowId = rowId;
+    }
+
+    /// <summary>A design's row: the Designer; when the design cannot be opened the builder opens the row and its
+    /// design status says why.</summary>
+    private async Task OpenRowDesignAsync(GraphicsPlaylistRow row)
+    {
+        GraphicsDesignResult? result;
+        try { result = await GraphicsDesignWorkflow.OpenForRowAsync(row); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { result = new(false, ex.Message, null, null); }
+        if (result is { Ok: true }) return;
+        GraphicsDesignerOpen = false; GraphicsDesignRowId = row.Id;
+        GraphicsDesignNotice = $"Could not open \"{row.Name}\" in the Designer: {result?.Message} It is open here in the builder instead.";
     }
 
     /// <summary>Canonical source id of the source currently occupying Program (the Guest-row

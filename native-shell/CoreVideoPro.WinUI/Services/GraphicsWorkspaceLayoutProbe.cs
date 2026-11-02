@@ -38,9 +38,9 @@ internal static class GraphicsWorkspaceLayoutProbe
             var seedDefinition = System.Text.Json.JsonSerializer.SerializeToElement(seedManifest);
             Require(await studio.GraphicsLibrary.SaveDesignsAsync([new GraphicsDesign("design-probe-strap-a1b2c3", "Probe strap", "lower-third", "design-probe-strap-a1b2c3", 1, seedDefinition, [], DateTimeOffset.UtcNow)], "Probe design stored."), "Probe design could not be stored");
             Invoke(Button(page, "Design")); await Task.Delay(80); page.UpdateLayout();
-            // #1076 slice 3: Design opens on the template-first builder; the workspace sits behind "Advanced editor".
+            // #1076 slice 3: Design opens on the template-first builder; the old workspace sits behind "Cues & automation".
             Require(studio.IsGraphicsDesignMode && Descendants(page).OfType<GraphicsBuilderControl>().Single().Visibility == Visibility.Visible, "Design toggle did not reveal the builder");
-            Require(Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed, "Advanced workspace is visible before Advanced editor is chosen");
+            Require(Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed, "The Cues & automation workspace is visible before it is chosen");
             Require(Descendants(page).OfType<Microsoft.UI.Xaml.Controls.Button>().Count(b => b.Tag is GraphicsBuilderKind) == GraphicsBuilder.Kinds.Count, "Builder does not offer every kind of graphic");
             await Eventually(() => Descendants(page).OfType<Button>().Any(b => b.Content?.ToString() == "Probe strap"), "Design does not list the stored design under Your designs");
             Require(Descendants(page).OfType<TextBlock>().Any(t => t.Text == "YOUR DESIGNS" && t.ActualHeight > 0), "Design does not show Your designs");
@@ -62,9 +62,21 @@ internal static class GraphicsWorkspaceLayoutProbe
             await ReviewImageWriter.SaveAsync(startDialog!, Path.Combine(directory, "graphics-design-start-dialog.png"));
             startDialog!.Hide(); await Task.Delay(150);
             checks.Add("Design lists Your designs (Open / Duplicate / Delete) and New design opens the start dialog with the four blank kinds, a look picker and a name");
-            Invoke(Button(page, "Advanced editor")); await Task.Delay(80); page.UpdateLayout();
-            Require(studio.GraphicsDesignAdvanced && Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Visible, "Advanced editor did not reveal the workspace");
-            checks.Add("Graphics opens in Playout (strip + playlist); Design reveals the builder with every kind; Advanced editor reveals the single existing workspace control");
+            Invoke(Button(page, "Cues & automation")); await Task.Delay(80); page.UpdateLayout();
+            Require(studio.GraphicsDesignAdvanced && Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Visible, "Cues & automation did not reveal the workspace");
+            // Graphics Designer slice 2: the Designer is the editor; the workspace keeps no layer pane and no design actions.
+            var cuesWorkspace = Descendants(page).OfType<GraphicsWorkspaceControl>().Single();
+            Require(!Descendants(cuesWorkspace).OfType<Button>().Any(b => b.Content?.ToString() is "Edit layers ↗" or "Save design" || Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(b) is "Save design" or "Save to playlist"),
+                "Cues & automation still offers Edit layers or the design save actions");
+            checks.Add("Graphics opens in Playout (strip + playlist); Design reveals the builder with every kind; Cues & automation reveals the single existing workspace control, with no Edit layers or design save actions");
+            var backToBuilder = Button(cuesWorkspace, "← Build a graphic");
+            Require(backToBuilder.ActualHeight > 0 && backToBuilder.IsEnabled, "Cues & automation has no visible way back to the builder");
+            Invoke(backToBuilder); await Task.Delay(80); page.UpdateLayout();
+            Require(!studio.GraphicsDesignAdvanced && Descendants(page).OfType<GraphicsBuilderControl>().Single().Visibility == Visibility.Visible && cuesWorkspace.Visibility == Visibility.Collapsed,
+                "← Build a graphic did not return from Cues & automation to the builder");
+            Invoke(Button(page, "Cues & automation")); await Task.Delay(80); page.UpdateLayout();
+            Require(studio.GraphicsDesignAdvanced && cuesWorkspace.Visibility == Visibility.Visible, "Cues & automation did not reopen after returning to the builder");
+            checks.Add("← Build a graphic (Cues & automation header) returns to the builder");
             // Reserve the existing navigation/header/production footer rather
             // than pretending Graphics can consume the entire display.
             page.Width = 1840; page.Height = 820; page.HorizontalAlignment = HorizontalAlignment.Left; page.VerticalAlignment = VerticalAlignment.Top;
@@ -141,23 +153,8 @@ internal static class GraphicsWorkspaceLayoutProbe
             var seedTemplate = System.Text.Json.JsonSerializer.Deserialize<NativeGraphicsTemplate>(seedManifest.ToJsonString(),new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))! with {
                 Runtime="declarative", Definition=seedDefinition, ManifestHash=NativeGraphicsScratch.From(seedDefinition).Hash };
             studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=[..catalog,seedTemplate]});
-            studio.GraphicsWorkspace.Browse(seedTemplate); await Task.Delay(100); Invoke(Button(workspace,"Variables")); await Task.Delay(150); page.UpdateLayout();
-            var variablesPanel = Descendants(workspace).OfType<GraphicsVariablesPanel>().SingleOrDefault();
-            Require(variablesPanel is { Visibility: Visibility.Visible, ActualHeight: > 0 }, "The Variables panel is not shown for an open design");
-            var variableNames = Descendants(variablesPanel!).OfType<TextBlock>().Select(t => t.Text).ToHashSet(StringComparer.Ordinal);
-            Require(variableNames.Contains("name") && variableNames.Contains("title"), "The Variables panel does not list the seed's name and title variables");
-            Require(Descendants(variablesPanel!).OfType<TextBlock>().Any(t => t.Text == "Used by: name-label"), "The Variables panel does not say which layer uses a variable");
-            Require(Button(workspace,"Save design").ActualHeight > 0 && Button(workspace,"Save to playlist").ActualHeight > 0, "Save design / Save to playlist are missing for an open design");
-            await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,"graphics-design-variables-1080.png"));
-            checks.Add("An open design shows the Variables panel with the seed's name and title (Used by) plus Save design and Save to playlist");
-            // 1360x768 shell: the Graphics page gets about 1320 x 640 (measured from graphics-full-1360x768.png).
-            page.Width = 1320; page.Height = 640; await Task.Delay(150); page.UpdateLayout();
-            var variablesScroll = Descendants(workspace).OfType<ScrollViewer>().Single(v => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(v) == "Design variables");
-            var variablesTop = variablesScroll.TransformToVisual(workspace).TransformPoint(new(0, 0)).Y;
-            var visibleVariables = Math.Min(variablesScroll.ViewportHeight, workspace.ActualHeight - variablesTop);
-            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-design-variables-1360x768.png"));
-            Require(variablesScroll.Visibility == Visibility.Visible && visibleVariables >= 200, $"Variables panel has only {visibleVariables:0} px visible at 1360x768");
-            checks.Add($"At 1360x768 an open design's Variables panel keeps {visibleVariables:0} px of visible height (>= 200)");
+            await CheckDesignerAsync(page, studio, seedTemplate, checks, directory);
+            studio.GraphicsDesignAdvanced = true; await Task.Delay(80);
             page.Width = 1840; page.Height = 820; await Task.Delay(100); page.UpdateLayout();
             studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=catalog});
             studio.GraphicsWorkspace.Browse(catalog[0]);
@@ -230,6 +227,144 @@ internal static class GraphicsWorkspaceLayoutProbe
             await CheckBusyTextBindingAsync(window, checks);
             await CheckAutomationEditingAsync(window, studio, checks);
         } finally { Environment.SetEnvironmentVariable("COREVIDEO_GRAPHICS_DOCUMENT_PATH",previousPath); }
+    }
+    /// <summary>Graphics Designer slice 2: the builder's "Open in Designer" with "Probe strap" selected (already the
+    /// private draft) shows it in the Designer; then, at the 1360x768 and
+    /// 1600x900 shell budgets (page 1320x640 and 1560x772): one surface, the seed's layer rows, every fixed action
+    /// inside the designer, a canvas that is not crowded out, the Variables tab, and Add text / Undo.</summary>
+    private static async Task CheckDesignerAsync(OverlaysPage page, StudioViewModel studio, NativeGraphicsTemplate seedTemplate, List<string> checks, string directory)
+    {
+        studio.GraphicsWorkspace.Browse(seedTemplate);
+        studio.GraphicsDesignAdvanced = false; await Task.Delay(80); page.UpdateLayout();
+        var builder = Descendants(page).OfType<GraphicsBuilderControl>().Single();
+        Require(builder.Visibility == Visibility.Visible, "The builder is not shown before Open in Designer");
+        Invoke(Button(builder, "Probe strap")); await Task.Delay(50);
+        Invoke(Button(builder, "Open in Designer"));
+        var designer = Descendants(page).OfType<GraphicsDesignerControl>().Single();
+        await Eventually(() => studio.GraphicsDesignerOpen && designer.Visibility == Visibility.Visible, () => $"Open in Designer with Probe strap selected did not show the Designer (open={studio.GraphicsDesignerOpen}, surface={studio.GraphicsDesignSurface})");
+        checks.Add("Builder: Open in Designer with the Probe strap design selected shows it in the Designer");
+        IReadOnlyList<GraphicsDesignerRow> Rows() => Descendants(designer).OfType<FrameworkElement>().Select(e => e.Tag).OfType<GraphicsDesignerRow>().ToArray();
+        foreach (var (width, height, shot, minCanvasWidth, minCanvasHeight) in new[] { (1320d, 640d, "graphics-designer-1360x768.png", 640d, 360d), (1560d, 772d, "graphics-designer-1600x900.png", 800d, 450d) }) {
+            page.Width = width; page.Height = height; await Task.Delay(150); page.UpdateLayout();
+            await Eventually(() => designer.Visibility == Visibility.Visible && Rows().Count == 4, () => $"The Designer did not open on the Probe strap draft (visible={designer.Visibility}, rows={Rows().Count})");
+            Require(Descendants(page).OfType<GraphicsBuilderControl>().Single().Visibility == Visibility.Collapsed && Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed,
+                "The builder or the advanced workspace is visible while the Designer is open");
+            var rows = Rows();
+            Require(rows.Select(r => r.Id).SequenceEqual(new[] { "title-label", "name-label", "accent", "plate" }), "Designer layer rows are not front-to-back: " + string.Join(",", rows.Select(r => r.Id)));
+            Require(rows[0].Detail == "{title}" && rows[1].Detail == "{name}", "Designer text rows do not show the variable they show");
+            Require(rows.Select(r => r.Label).SequenceEqual(new[] { "Title", "Name", "Accent bar", "Plate" }), "Designer rows do not show the seed's layer names: " + string.Join(",", rows.Select(r => r.Label)));
+            Require(designer.ActualWidth <= width + 1, $"The Designer overflows the page horizontally ({designer.ActualWidth:0} > {width:0})");
+            foreach (var name in new[] { "Add text layer", "Add shape layer", "Add image layer", "Add clock layer", "Undo", "Save design", "Save to playlist", "Typical", "Longest name", "Empty title" }) {
+                var button = Button(designer, name); var point = button.TransformToVisual(designer).TransformPoint(new(0, 0));
+                Require(button.ActualHeight > 0 && point.X >= -1 && point.Y >= -1 && point.X + button.ActualWidth <= designer.ActualWidth + 1 && point.Y + button.ActualHeight <= designer.ActualHeight + 1,
+                    $"{name} is clipped or outside the Designer at {width:0}x{height:0} ({point.X:0},{point.Y:0} {button.ActualWidth:0}x{button.ActualHeight:0} in {designer.ActualWidth:0}x{designer.ActualHeight:0})");
+            }
+            var canvas = Descendants(designer).OfType<GraphicsAuthoringCanvas>().Single();
+            Require(canvas.ActualWidth >= minCanvasWidth && canvas.ActualHeight >= minCanvasHeight, $"Designer canvas is {canvas.ActualWidth:0}x{canvas.ActualHeight:0} at {width:0}x{height:0}; needs {minCanvasWidth:0}x{minCanvasHeight:0}");
+            var layerScroll = Descendants(designer).OfType<ScrollViewer>().Single(v => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(v) == "Layer properties");
+            var layerTop = layerScroll.TransformToVisual(designer).TransformPoint(new(0, 0)).Y;
+            var visibleLayer = Math.Min(layerScroll.ViewportHeight, designer.ActualHeight - layerTop);
+            if (width < 1500) {
+                Require(layerScroll.Visibility == Visibility.Visible && visibleLayer >= 300, $"The Layer tab has only {visibleLayer:0} px visible at {width:0}x{height:0}");
+                Invoke(Button(designer, "Variables tab")); await Task.Delay(100); designer.UpdateLayout();
+                var variables = Descendants(designer).OfType<GraphicsVariablesPanel>().Single();
+                var texts = Descendants(variables).OfType<TextBlock>().Select(t => t.Text).ToHashSet(StringComparer.Ordinal);
+                Require(variables.ActualHeight > 0 && texts.Contains("name") && texts.Contains("title") && texts.Contains("Used by: Name"), "The Designer's Variables tab does not list name and title with Used by");
+                var variablesScroll = Descendants(designer).OfType<ScrollViewer>().Single(v => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(v) == "Design variables");
+                var variablesTop = variablesScroll.TransformToVisual(designer).TransformPoint(new(0, 0)).Y;
+                var visibleVariables = Math.Min(variablesScroll.ViewportHeight, designer.ActualHeight - variablesTop);
+                await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-designer-variables-1360x768.png"));
+                Require(variablesScroll.Visibility == Visibility.Visible && visibleVariables >= 200, $"The Designer's Variables tab has only {visibleVariables:0} px visible at {width:0}x{height:0}");
+                checks.Add($"At 1360x768 the Designer's Variables tab lists name and title with Used by and keeps {visibleVariables:0} px visible (>= 200)");
+                Invoke(Button(designer, "Layer tab")); await Task.Delay(50); designer.UpdateLayout();
+            }
+            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, shot));
+            checks.Add($"Designer at page {width:0}x{height:0}: one surface, layer rows front-to-back, every header/add/sample action inside, canvas {canvas.ActualWidth:0}x{canvas.ActualHeight:0}, Layer tab {visibleLayer:0} px");
+        }
+        // Selecting another layer restyles the rows in place (a rebuild would swallow the second tap of a double-click).
+        var rowElements = Descendants(designer).OfType<Grid>().Where(g => g.Tag is GraphicsDesignerRow).ToArray();
+        studio.GraphicsWorkspace.SelectLayer("plate"); await Task.Delay(50); designer.UpdateLayout();
+        Require(Descendants(designer).OfType<Grid>().Where(g => g.Tag is GraphicsDesignerRow).SequenceEqual(rowElements), "Selecting a layer rebuilt the layer rows");
+        checks.Add("Selecting a layer restyles the Designer's rows in place");
+        Invoke(Button(designer, "Add text layer"));
+        await Eventually(() => Rows().Count == 5, () => $"Add text layer did not add a row (rows={Rows().Count}, status='{studio.GraphicsWorkspace.Status}')");
+        Require(studio.GraphicsWorkspace.SelectedLayerId == "text-1", $"Add text layer did not select the new layer (selected '{studio.GraphicsWorkspace.SelectedLayerId}')");
+        Require(Button(designer, "Undo").IsEnabled, "Undo is disabled after an edit");
+        Invoke(Button(designer, "Undo"));
+        await Eventually(() => Rows().Count == 4, () => $"Undo did not remove the added layer (rows={Rows().Count})");
+        checks.Add("Designer Add text layer adds and selects text-1; Undo removes it");
+        await CheckLocationVariableAsync(studio, designer, Rows, checks);
+        studio.GraphicsDesignerOpen = false; await Task.Delay(80); page.UpdateLayout();
+        Require(designer.Visibility == Visibility.Collapsed, "Your designs did not close the Designer");
+        await CheckOperateRowVariableAsync(page, studio, seedTemplate, checks, directory);
+    }
+    /// <summary>Acceptance 1 in the Designer (final review C1b / M5): add <c>location</c> (Text, 40), give it a Sample value
+    /// (the draft follows), add a text layer and choose Shows: Variable location in the ComboBox (the inspector rebuild is
+    /// deferred past the box's own SelectionChanged). Undo then restores the probe draft.</summary>
+    private static async Task CheckLocationVariableAsync(StudioViewModel studio, GraphicsDesignerControl designer, Func<IReadOnlyList<GraphicsDesignerRow>> rows, List<string> checks)
+    {
+        var session = studio.GraphicsWorkspace;
+        Invoke(Button(designer, "Variables tab")); await Task.Delay(80); designer.UpdateLayout();
+        var panel = Descendants(designer).OfType<GraphicsVariablesPanel>().Single();
+        Descendants(panel).OfType<TextBox>().Single(t => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(t) == "New variable name").Text = "location";
+        Descendants(panel).OfType<NumberBox>().Single(n => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(n) == "New variable max length").Value = 40;
+        Invoke(Button(panel, "Add variable"));
+        await Eventually(() => session.Draft?.Fields.TryGetProperty("location", out _) == true, () => $"Add variable did not add location (status='{session.Status}')");
+        Require(session.TemplateDocument is { } added && GraphicsTemplateEditor.TemplateFields(added).Single(f => f.Id == "location").MaxLength == 40, "location was not added as Text (40)");
+        await Task.Delay(80); panel.UpdateLayout();
+        Descendants(panel).OfType<TextBox>().Single(t => t.Header as string == "Sample value").Text = "Oslo";
+        Invoke(Button(panel, "Apply variable options"));
+        await Eventually(() => session.Draft?.Fields.GetProperty("location").GetString() == "Oslo", () => $"Sample value did not seed the draft's location (draft='{session.Draft?.Fields.GetProperty("location")}')");
+        checks.Add("Designer Variables: add location (Text, 40); its Sample value Oslo also becomes the draft's value (Typical shows it)");
+        Invoke(Button(designer, "Layer tab")); await Task.Delay(50); designer.UpdateLayout();
+        Invoke(Button(designer, "Add text layer"));
+        await Eventually(() => session.SelectedLayerId == "text-1" && Descendants(designer).OfType<ComboBox>().Any(c => c.Header as string == "Shows"), () => $"Add text layer did not select text-1 with a Shows box (selected '{session.SelectedLayerId}')");
+        var shows = Descendants(designer).OfType<ComboBox>().Single(c => c.Header as string == "Shows");
+        shows.SelectedValue = "location";
+        await Eventually(() => rows().Any(r => r.Id == "text-1" && r.Detail == "{location}"), () => $"Shows: Variable location did not bind text-1 (rows={string.Join(",", rows().Select(r => r.Id + "=" + r.Detail))}, status='{session.Status}')");
+        await Eventually(() => Descendants(designer).OfType<ComboBox>().SingleOrDefault(c => c.Header as string == "Shows") is { SelectedValue: "location" } rebuilt && !ReferenceEquals(rebuilt, shows),
+            "The inspector was not rebuilt with Shows: Variable location after the deferred edit");
+        Require(session.SelectedLayerId == "text-1", "Choosing Shows moved the layer selection");
+        checks.Add("Designer: Add text layer then Shows: Variable location binds the new layer; the inspector rebuilds after the ComboBox's own event");
+        for (var i = 0; i < 8 && session.CanUndo; i++) { Invoke(Button(designer, "Undo")); await Task.Delay(30); }
+        await Eventually(() => rows().Count == 4 && session.Draft?.Fields.TryGetProperty("location", out _) == false, () => $"Undo did not restore the probe draft (rows={rows().Count})");
+    }
+    /// <summary>Final review C1a: a Guest design row (following Sources) whose template has an extra text variable shows a
+    /// box for it in Operate's row inspector (header = the variable's label, max length = its limit).</summary>
+    private static async Task CheckOperateRowVariableAsync(OverlaysPage page, StudioViewModel studio, NativeGraphicsTemplate seedTemplate, List<string> checks, string directory)
+    {
+        var withLocation = GraphicsTemplateEditor.AddField(NativeGraphicsScratch.From(seedTemplate.Definition!.Value), "location", "text", 40);
+        var manifest = System.Text.Json.Nodes.JsonNode.Parse(withLocation.Manifest)!.AsObject(); manifest["templateVersion"] = 2;
+        var definition = System.Text.Json.JsonSerializer.SerializeToElement(manifest);
+        var v2 = System.Text.Json.JsonSerializer.Deserialize<NativeGraphicsTemplate>(manifest.ToJsonString(), new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))! with {
+            Runtime = "declarative", Definition = definition, ManifestHash = NativeGraphicsScratch.From(definition).Hash };
+        var before = studio.GraphicsWorkspace.State;
+        studio.GraphicsWorkspace.Observe((before ?? new()) with { Templates = [.. before?.Templates ?? [], v2] });
+        static System.Text.Json.JsonElement Text(string value) => System.Text.Json.JsonSerializer.SerializeToElement(value);
+        var row = new GraphicsPlaylistRow { Id = "probe-strap", Kind = GraphicsPlaylistRow.Guest, Name = "Probe strap", FollowSources = true, Hotkey = "F6", PlayOutAfterMs = 8000,
+            TemplateId = v2.TemplateId, TemplateVersion = 2, Fields = new Dictionary<string, System.Text.Json.JsonElement> { ["name"] = Text("Name"), ["title"] = Text("Title"), ["location"] = Text("Oslo") } };
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([row]), "The probe design row could not be saved: " + studio.GraphicsLibrary.Status);
+        var mode = studio.GraphicsMode;
+        studio.GraphicsMode = StudioViewModel.GraphicsModePlayout; await Task.Delay(100); page.UpdateLayout();
+        var playout = Descendants(page).OfType<GraphicsPlayoutControl>().Single();
+        Require(playout.Visibility == Visibility.Visible, "Operate did not show the playlist");
+        playout.SelectRow("probe-strap"); await Task.Delay(100); page.UpdateLayout();
+        TextBox? Location() => Descendants(playout).OfType<TextBox>().SingleOrDefault(t => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(t) == "Row variable location");
+        await Eventually(() => Location() is { ActualHeight: > 0 }, "Operate's row inspector has no box for the design's location variable");
+        var box = Location()!;
+        Require(box.Header as string == "Location" && box.MaxLength == 40 && box.Text == "Oslo", $"The location box is wrong (header='{box.Header}', max={box.MaxLength}, text='{box.Text}')");
+        Require(Descendants(playout).OfType<TextBox>().Any(t => t.Header as string == "Title line" && t.IsReadOnly), "The Guest row's Title line is not the read-only Sources text");
+        await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-operate-row-variable.png"));
+        checks.Add("Operate: a Guest design row with an extra text variable shows a Location box (max 40, row value) beside the Sources title line");
+        // Re-review m1: a saved value updates the box in place; the inspector is not rebuilt (a rebuild would drop focus).
+        var saved = studio.GraphicsLibrary.Document.Playlist.Single();
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([GraphicsRowFields.WithText(saved, "location", "Bergen")]), "The probe row could not be re-saved: " + studio.GraphicsLibrary.Status);
+        await Eventually(() => box.Text == "Bergen", () => $"The Location box did not show the saved value (text='{box.Text}')");
+        Require(ReferenceEquals(Location(), box), "Saving a row value rebuilt the inspector instead of updating the box in place");
+        checks.Add("Operate: a saved row value updates the Location box in place, without rebuilding the inspector");
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([]), "The probe playlist could not be cleared");
+        if (before is not null) studio.GraphicsWorkspace.Observe(before);
+        studio.GraphicsMode = mode; await Task.Delay(80); page.UpdateLayout();
     }
     private static async Task CheckAutomationEditingAsync(Window window, StudioViewModel studio, List<string> checks)
     {

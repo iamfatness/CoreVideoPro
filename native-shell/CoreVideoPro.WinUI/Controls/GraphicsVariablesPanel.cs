@@ -148,7 +148,7 @@ public sealed class GraphicsVariablesPanel : UserControl
         var id = _newName.Text.Trim();
         var kind = KindChoices[Math.Max(0, _newKind.SelectedIndex)].Kind;
         int? maxLength = kind == "text" && !double.IsNaN(_newMaxLength.Value) ? (int)Math.Round(_newMaxLength.Value) : null;
-        if (Apply(s => GraphicsTemplateEditor.AddField(s, id, kind, maxLength), $"Added {id}. Bind a layer to it in Edit layers, then Save design.")) {
+        if (Apply(s => GraphicsTemplateEditor.AddField(s, id, kind, maxLength), $"Added {id}. To put it on screen, select a layer and choose it under Shows, then Save design.")) {
             _selected = id; _newName.Text = ""; Refresh();
         }
     }
@@ -170,7 +170,7 @@ public sealed class GraphicsVariablesPanel : UserControl
             _ => JsonSerializer.SerializeToElement(_sampleText.Text),
         };
         var hide = variable.Kind is "text" or "image" ? _ifEmpty.SelectedIndex == 0 : variable.HideWhenEmpty;
-        Apply(s => GraphicsTemplateEditor.SetFieldOptions(s, variable.Id, maxLength, sample, hide), $"Updated {variable.Id}.");
+        Apply(s => GraphicsTemplateEditor.SetFieldOptions(s, variable.Id, maxLength, sample, hide), $"Updated {variable.Id}.", seedSample: variable.Id);
     }
 
     private void DeleteVariable()
@@ -181,13 +181,18 @@ public sealed class GraphicsVariablesPanel : UserControl
 
     /// <summary>One private edit: the template change plus draft values matched to the new variables
     /// (native refuses unknown or missing fields). A refusal leaves the draft untouched and says why.</summary>
-    private bool Apply(Func<NativeGraphicsScratch, NativeGraphicsScratch> change, string done, string? renamedFrom = null, string? renamedTo = null, string failurePrefix = "")
+    /// <paramref name="seedSample"/>: the variable whose new Sample value also becomes the draft's value
+    /// while the draft still shows the previous sample (see <see cref="GraphicsTemplateEditor.SeedSample"/>).
+    private bool Apply(Func<NativeGraphicsScratch, NativeGraphicsScratch> change, string done, string? renamedFrom = null, string? renamedTo = null, string failurePrefix = "", string? seedSample = null)
     {
         if (_session is not { } session) return false;
         if (session.Busy) { _status.Text = "Graphics is busy. Try again in a moment."; return false; }
         if (session.Draft is not { Declarative: true } draft || session.TemplateDocument is not { } document) { _status.Text = "Open a design to edit its variables."; return false; }
         NativeGraphicsScratch edited; JsonElement fields;
-        try { edited = change(document); fields = GraphicsTemplateEditor.SyncFields(draft.Fields, edited, renamedFrom, renamedTo); }
+        try {
+            edited = change(document); fields = GraphicsTemplateEditor.SyncFields(draft.Fields, edited, renamedFrom, renamedTo);
+            if (seedSample is not null) fields = GraphicsTemplateEditor.SeedSample(fields, document, edited, seedSample);
+        }
         catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) {
             _status.Text = failurePrefix + ex.Message; return false;
         }

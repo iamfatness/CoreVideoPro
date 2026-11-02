@@ -21,14 +21,14 @@ public sealed partial class StudioViewModel
             if (_graphicsDesignWorkflow is not null) return _graphicsDesignWorkflow;
             _graphicsDesignWorkflow = new(GraphicsDesigns, GraphicsWorkspace, GraphicsLibrary, () => _bridge.LastSnapshot?.Graphics);
             _graphicsDesignWorkflow.Opened += (_, _) => {
-                GraphicsMode = GraphicsModeDesign; GraphicsDesignAdvanced = true;
+                GraphicsMode = GraphicsModeDesign; GraphicsDesignerOpen = true; GraphicsDesignAdvanced = false;
                 GraphicsDesignOpened?.Invoke(this, EventArgs.Empty);
             };
             return _graphicsDesignWorkflow;
         }
     }
 
-    /// <summary>Raised after a design became the workspace's private draft (Design → Advanced editor).</summary>
+    /// <summary>Raised after a design became the workspace's private draft (Design → the Designer).</summary>
     public event EventHandler? GraphicsDesignOpened;
 
     /// <summary>The design a draft belongs to (by template id), or null for a built-in or package look.</summary>
@@ -36,9 +36,18 @@ public sealed partial class StudioViewModel
 
     public Task<GraphicsDesignResult> CreateGraphicsDesignAsync(string? kind, string? lookTemplateId, int lookTemplateVersion, string name) =>
         GraphicsDesignWorkflow.CreateAsync(kind, lookTemplateId, lookTemplateVersion, name);
-    public Task<GraphicsDesignResult> OpenGraphicsDesignAsync(string designId) => GraphicsDesignWorkflow.OpenAsync(designId);
+    /// <summary>The design a playlist row shows; null for a built-in or imported look.</summary>
+    public GraphicsDesign? GraphicsDesignForRow(GraphicsPlaylistRow row) => GraphicsDesignWorkflow.DesignForRow(row);
+    /// <summary>"Open in Designer" for a design: show the Designer when the design is already the private draft
+    /// (unsaved edits kept), else open it (its Opened event shows the Designer). Program is unchanged.</summary>
+    public Task<GraphicsDesignResult> OpenGraphicsDesignInDesignerAsync(GraphicsDesign design) => GraphicsDesignWorkflow.OpenInDesignerAsync(design);
+    /// <summary>A design message raised outside the builder (Operate's "Open in Design" that could not open the
+    /// design); the builder shows it in its design status. Session-only.</summary>
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private string _graphicsDesignNotice = "";
     public Task<GraphicsDesignResult> SaveGraphicsDesignAsync() => GraphicsDesignWorkflow.SaveAsync();
     public Task<GraphicsDesignResult> SaveGraphicsDesignToPlaylistAsync() => GraphicsDesignWorkflow.SaveToPlaylistAsync();
+    /// <summary>The F-key Save to playlist will use for <paramref name="design"/> ("" when none is free).</summary>
+    public string GraphicsDesignPlaylistHotkey(GraphicsDesign design) => GraphicsDesignWorkflow.PlaylistHotkey(design, GraphicsLibrary.Document.Playlist);
 
     public Task<GraphicsDesignResult> DuplicateGraphicsDesignAsync(GraphicsDesign design)
     {

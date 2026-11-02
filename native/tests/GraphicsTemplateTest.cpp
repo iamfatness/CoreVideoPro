@@ -7,6 +7,9 @@
 #include <chrono>
 #include <thread>
 #include <fstream>
+#include <algorithm>
+#include <filesystem>
+#include <sstream>
 #include <cstdlib>
 
 using corevideo::graphics::GraphicsTemplate;
@@ -251,6 +254,26 @@ TEST(GraphicsTemplate, BooleanVisibilityHasAConsumerAndUnusedRequiredFieldsAreRe
   values["show-title"] = false; ASSERT_TRUE(definition->resolve(values,brand(),drawing,error)); EXPECT_EQ(2u,drawing.primitives.size());
   fields.emplace_back(Json::Object{{"id","unreachable"},{"type","string"},{"default",""},{"required",true}}); object["fields"] = fields;
   EXPECT_FALSE(load(object,error)); EXPECT_EQ("required-template-field-unused",error);
+}
+
+// Designer layer structure (Slice 2): a hidden group draws none of its children, and the shell-only layer name and
+// lock under node metadata survive native load untouched (no native change backs these edits).
+TEST(GraphicsTemplate, HiddenGroupDrawsNoChildrenAndKeepsEditorMetadata) {
+  std::ifstream in(std::filesystem::path(COREVIDEO_REPO_ROOT) / "native" / "tests" / "fixtures" / "graphics-editor" / "designer-structure.json", std::ios::binary);
+  ASSERT_TRUE(in.good());
+  std::ostringstream text; text << in.rdbuf();
+  std::string error; const auto definition = GraphicsTemplate::load(text.str(), error); ASSERT_TRUE(definition) << error;
+  GraphicsDrawing drawing;
+  ASSERT_TRUE(definition->resolve(Json::Object{{"name","Ada"},{"title","Host"},{"image",""},{"show-title",true}}, brand(), drawing, error)) << error;
+  for (const auto& primitive : drawing.primitives) { EXPECT_NE("name-label", primitive.id); EXPECT_NE("title-label", primitive.id); }
+  EXPECT_FALSE(drawing.primitives.empty());
+  const auto group = std::find_if(drawing.nodes.begin(), drawing.nodes.end(), [](const auto& node) { return node.id == "group-1"; });
+  ASSERT_NE(group, drawing.nodes.end()); EXPECT_FALSE(group->visible);
+  const auto& layers = definition->document().get("layers")->asArray();
+  const auto stored = std::find_if(layers.begin(), layers.end(), [](const auto& node) { return node.getString("id") == "group-1"; });
+  ASSERT_NE(stored, layers.end()); const auto* metadata = stored->get("metadata"); ASSERT_NE(metadata, nullptr);
+  EXPECT_EQ("Name block", metadata->getString("label"));
+  ASSERT_NE(metadata->get("editorLocked"), nullptr); EXPECT_TRUE(metadata->get("editorLocked")->asBool());
 }
 
 TEST(GraphicsTemplate, EveryCuratedLookResolvesToNativePrimitivesWithVerifiedLogoAndPlacement) {

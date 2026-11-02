@@ -307,8 +307,10 @@ public sealed class GraphicsPlayoutService
         var pin = _library.Document.Templates.FirstOrDefault(t => t.TemplateId == templateId && t.TemplateVersion == version);
         var installed = state.Templates.FirstOrDefault(t => t.TemplateId == templateId && t.TemplateVersion == version);
         if (installed is null && pin is not null) {
+            // A full library evicts unused design versions first (the same evictor as the design lifecycle).
             var (landed, refusal) = await GraphicsTemplateInstall.RunAsync(Send, () => Current(epoch), _delay, _utcNow,
-                pin.Definition.GetRawText(), pin.PackageRoot, templateId, version, cancellation);
+                pin.Definition.GetRawText(), pin.PackageRoot, templateId, version, cancellation,
+                evictWhenFull: c => GraphicsDesignEviction.EvictUnusedAsync(_library, Current(epoch), Send, _delay, c));
             if (refusal is not null) return refusal;
             installed = landed;
         }
@@ -476,12 +478,25 @@ public sealed class GraphicsPlayoutService
 
 /// <summary>The one install-then-poll path for a template manifest: playout's pin reinstall and
 /// the design lifecycle both use it. Sends graphics.template.install, then lists until the exact
-/// id+version appears, the native install record for this request fails, or 5 s pass.</summary>
+/// id+version appears, the native install record for this request fails, or 5 s pass. On a
+/// <see cref="LibraryFull"/> refusal it runs <c>evictWhenFull</c> once and, when that removed at least
+/// one version, retries the install once.</summary>
 internal static class GraphicsTemplateInstall
 {
     public const string LibraryFull = "The graphics library is full. Delete designs you no longer use, or remove graphics from the playlist.";
 
     public static async Task<(NativeGraphicsTemplate? Installed, NativeGraphicsOperationResult? Refusal)> RunAsync(
+        Func<string, Dictionary<string, object?>, CancellationToken, Task<NativeGraphicsOperationResult>> send, Func<NativeGraphicsState> current,
+        Func<TimeSpan, CancellationToken, Task> delay, Func<DateTime> utcNow, string manifest, string packageRoot, string templateId, int version, CancellationToken cancellation,
+        Func<CancellationToken, Task<int>>? evictWhenFull = null)
+    {
+        var attempt = await AttemptAsync(send, current, delay, utcNow, manifest, packageRoot, templateId, version, cancellation);
+        if (attempt.Refusal?.Reason == LibraryFull && evictWhenFull is not null && await evictWhenFull(cancellation) > 0)
+            attempt = await AttemptAsync(send, current, delay, utcNow, manifest, packageRoot, templateId, version, cancellation);
+        return attempt;
+    }
+
+    private static async Task<(NativeGraphicsTemplate? Installed, NativeGraphicsOperationResult? Refusal)> AttemptAsync(
         Func<string, Dictionary<string, object?>, CancellationToken, Task<NativeGraphicsOperationResult>> send, Func<NativeGraphicsState> current,
         Func<TimeSpan, CancellationToken, Task> delay, Func<DateTime> utcNow, string manifest, string packageRoot, string templateId, int version, CancellationToken cancellation)
     {

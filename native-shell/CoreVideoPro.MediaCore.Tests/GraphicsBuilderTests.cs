@@ -38,6 +38,13 @@ public sealed class GraphicsBuilderTests
     }
 
     [Fact]
+    public void TemplatesForLeavesDesignsToYourDesigns() // #1087 N3: a design is listed once, under Your designs
+    {
+        var state = State(Template("corporate-lower-third", "lower-third"), Template("design-guest-a1b2c3", "lower-third"));
+        Assert.Equal(new[] { "corporate-lower-third" }, GraphicsBuilder.TemplatesFor(GraphicsBuilder.Kind("lower-third")!, state).Select(t => t.TemplateId));
+    }
+
+    [Fact]
     public void NextFreeHotkeySkipsTakenKeysExceptTheRowBeingEdited()
     {
         var rows = new[] { Row("a", "title", "F1"), Row("b", "title", "F2"), Row("c", "title", "F4") };

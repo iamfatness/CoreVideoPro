@@ -38,6 +38,9 @@
     "layers":  [
                    {
                        "id":  "plate",
+                       "metadata":  {
+                                        "label":  "Plate"
+                                    },
                        "type":  "rect",
                        "x":  0,
                        "y":  0,
@@ -49,6 +52,9 @@
                    },
                    {
                        "id":  "accent",
+                       "metadata":  {
+                                        "label":  "Accent bar"
+                                    },
                        "type":  "rect",
                        "x":  0,
                        "y":  0,
@@ -60,6 +66,9 @@
                    },
                    {
                        "id":  "name-label",
+                       "metadata":  {
+                                        "label":  "Name"
+                                    },
                        "type":  "text",
                        "text":  {
                                     "field":  "name"
@@ -83,6 +92,9 @@
                    },
                    {
                        "id":  "title-label",
+                       "metadata":  {
+                                        "label":  "Title"
+                                    },
                        "type":  "text",
                        "text":  {
                                     "field":  "title"

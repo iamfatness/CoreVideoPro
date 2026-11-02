@@ -16,7 +16,7 @@
 
     <SplitView x:Name="ExistingOverlayDrawer" DisplayMode="Overlay" PanePlacement="Right" OpenPaneLength="820" PaneClosed="OnExistingPaneClosed">
       <SplitView.Content>
-        <!-- #1076: Playout (playlist + inspector) or Design (the existing workspace). The
+        <!-- #1076: Playout (playlist + inspector) or Design (builder, Designer or the existing workspace; one at a time). The
              workspace stays in the tree with Visibility toggled so GraphicsWorkspaceLayoutProbe
              still finds exactly one GraphicsWorkspaceControl; the On Air strip sits above both. -->
         <Grid RowSpacing="10">
@@ -46,6 +46,8 @@
                                            Visibility="{x:Bind ViewModel.IsGraphicsPlayoutMode, Mode=OneWay}" />
           <controls:GraphicsBuilderControl Grid.Row="2" x:Name="GraphicsBuilder" Studio="{x:Bind ViewModel, Mode=OneWay}"
                                            Visibility="{x:Bind ViewModel.IsGraphicsBuilderVisible, Mode=OneWay}" />
+          <controls:GraphicsDesignerControl Grid.Row="2" x:Name="GraphicsDesigner" Studio="{x:Bind ViewModel, Mode=OneWay}"
+                                            Visibility="{x:Bind ViewModel.IsGraphicsDesignerVisible, Mode=OneWay}" />
           <controls:GraphicsWorkspaceControl Grid.Row="2" x:Name="GraphicsWorkspace" Studio="{x:Bind ViewModel, Mode=OneWay}" ExistingControlsRequested="OnExistingControlsRequested"
                                              Visibility="{x:Bind ViewModel.IsGraphicsAdvancedVisible, Mode=OneWay}" />
         </Grid>

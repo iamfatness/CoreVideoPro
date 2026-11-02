@@ -323,6 +323,15 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.Equal((GraphicsPlaylistRow.Title, 0), (fullScreen.Kind, fullScreen.PlayOutAfterMs));
     }
 
+    [Fact] public void PlaylistHotkeyIsTheRowsKeyOrTheNextFree()
+    {
+        var design = DesignOf("design-strap-a1b2c3", "lower-third");
+        GraphicsPlaylistRow Row(string id, string key, string template) => new() { Id = id, Kind = GraphicsPlaylistRow.Title, Name = id, Hotkey = key, TemplateId = template, TemplateVersion = 1 };
+        Assert.Equal("F3", GraphicsDesignWorkflow.PlaylistHotkey(design, [Row("logo", "F1", "corner-logo"), Row("strap", "F3", "design-strap-a1b2c3")]));
+        Assert.Equal("F6", GraphicsDesignWorkflow.PlaylistHotkey(design, Enumerable.Range(1, 5).Select(n => Row("r" + n, "F" + n, "other-" + n)).ToArray()));
+        Assert.Equal("", GraphicsDesignWorkflow.PlaylistHotkey(design, Enumerable.Range(1, 12).Select(n => Row("r" + n, "F" + n, "other-" + n)).ToArray()));
+    }
+
     [Fact] public void PlaylistRowRepinsTheDesignsExistingRowAndKeepsItsKeyNameAndTiming()
     {
         var existing = new GraphicsPlaylistRow { Id = "strap", Kind = GraphicsPlaylistRow.Title, Name = "Opening strap", Hotkey = "F6", PlayOutAfterMs = 15000, TemplateId = "design-strap-a1b2c3", TemplateVersion = 1 };
@@ -341,6 +350,72 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.Equal((design.TemplateId, 1), (_session!.Draft!.TemplateId, _session.Draft.TemplateVersion));
         Assert.Equal(1, opened);
         Assert.Same(design.DesignId, workflow.DesignFor(_session.Draft)!.DesignId);
+    }
+
+    [Fact] public async Task DesignForRowFindsTheRowsDesign()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        var designRow = new GraphicsPlaylistRow { Id = "strap", Kind = GraphicsPlaylistRow.Guest, Name = "Strap", TemplateId = design.TemplateId, TemplateVersion = 1 };
+        var builtInRow = new GraphicsPlaylistRow { Id = "logo", Kind = GraphicsPlaylistRow.Logo, Name = "Logo", TemplateId = "corner-logo", TemplateVersion = 1 };
+        Assert.Equal(design.DesignId, workflow.DesignForRow(designRow)?.DesignId);
+        Assert.Null(workflow.DesignForRow(builtInRow));
+    }
+
+    [Fact] public async Task IsEditingOnlyWhenTheDraftIsTheDesignsCurrentVersion()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        Assert.False(workflow.IsEditing(design));
+        Assert.True((await workflow.OpenAsync(design.DesignId)).Ok);
+        Assert.True(workflow.IsEditing(design));
+        Assert.False(workflow.IsEditing(design with { TemplateVersion = 2 })); // an older version is not the design
+    }
+
+    [Fact] public async Task OpenInDesignerKeepsTheDraftWhenTheDesignIsAlreadyOpenAndNeedsNoCore()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        Assert.True((await workflow.OpenAsync(design.DesignId)).Ok);
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        var opened = 0; workflow.Opened += (_, _) => opened++;
+        _coreDown = true;
+        var result = await workflow.OpenInDesignerAsync(design);
+        Assert.True(result.Ok, result.Message);
+        Assert.Equal(1, opened); // the Designer is shown
+        Assert.Contains("\"location\"", _session.Draft!.Scratch!.Manifest); // unsaved edits kept
+    }
+
+    [Fact] public async Task OpenForRowOpensTheRowsDesignAndSaysWhyWhenItCannot()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        var builtIn = new GraphicsPlaylistRow { Id = "logo", Kind = GraphicsPlaylistRow.Logo, Name = "Logo", TemplateId = "corner-logo", TemplateVersion = 1 };
+        Assert.Null(await workflow.OpenForRowAsync(builtIn)); // not a design: the builder opens the row
+        var row = new GraphicsPlaylistRow { Id = "strap", Kind = GraphicsPlaylistRow.Guest, Name = "Strap", TemplateId = design.TemplateId, TemplateVersion = 1 };
+        _coreDown = true;
+        var refused = await workflow.OpenForRowAsync(row);
+        Assert.False(refused!.Ok);
+        Assert.False(string.IsNullOrWhiteSpace(refused.Message));
+        _coreDown = false;
+        Assert.True((await workflow.OpenForRowAsync(row))!.Ok);
+        Assert.True(workflow.IsEditing(design));
+    }
+
+    [Fact] public async Task ASecondOpenWhileOneIsRunningIsRefusedNotRunTwice()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var first = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        var second = (await service.CreateBlankAsync("title", "Opening title")).Design!;
+        Task<GraphicsDesignResult>? nested = null;
+        _onObserve = () => { if (nested is null) nested = workflow.OpenInDesignerAsync(second); };
+        var result = await workflow.OpenInDesignerAsync(first);
+        _onObserve = null;
+        Assert.True(result.Ok, result.Message);
+        var refused = await nested!;
+        Assert.False(refused.Ok);
+        Assert.Equal("Graphics is busy. Try Open design again in a moment.", refused.Message);
+        Assert.True(workflow.IsEditing(first));
     }
 
     [Fact] public async Task SaveOnALookMakesOneCopyAndARetryAfterAFailedSaveGoesIntoThatCopy()
@@ -430,15 +505,105 @@ public sealed class GraphicsDesignServiceTests : IDisposable
 
     [Fact] public async Task DeletingADesignRemovesItsPins()
     {
+        // Written straight to disk so no playlist save prunes the pin first: Delete's own prune must drop it.
+        const string id = "design-guest-strap-a1b2c3";
+        var definition = JsonSerializer.SerializeToElement(GraphicsDesignSeeds.Manifest("lower-third", id, 1, "Guest strap"));
+        var design = new GraphicsDesign(id, "Guest strap", "lower-third", id, 1, definition, [], DateTimeOffset.UtcNow);
+        await new GraphicsDocumentStore(Path.Combine(_directory, "show.json")).SaveAsync(new GraphicsShowDocument {
+            Designs = [design], Templates = [new GraphicsSavedTemplate(id, 1, Hash(definition.GetRawText()), definition)] });
         var (library, service) = Build();
-        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
-        var other = (await service.CreateBlankAsync("title", "Opening title")).Design!;
-        await PinToPlaylist(library, design);
-        var titleRow = new GraphicsPlaylistRow { Id = "title", Kind = GraphicsPlaylistRow.Title, Name = "Show title", TemplateId = other.TemplateId, TemplateVersion = 1 };
-        Assert.True(await library.SavePlaylistAsync([titleRow]), library.Status);
+        await library.LoadAsync();
+        Assert.Contains(library.Document.Templates, t => t.TemplateId == design.TemplateId); // present before Delete
         Assert.True((await service.DeleteAsync(design.DesignId)).Ok);
         Assert.DoesNotContain(library.Document.Templates, t => t.TemplateId == design.TemplateId);
-        Assert.Contains(library.Document.Templates, t => t.TemplateId == other.TemplateId);
+        var reloaded = await new GraphicsDocumentStore(Path.Combine(_directory, "show.json")).LoadAsync();
+        Assert.Empty(reloaded.Document.Templates);
+    }
+
+    [Fact] public async Task MovingOffADesignKeepsItsTypedValuesStyleAndPlacement()
+    {
+        var (_, _, workflow) = BuildWorkflow();
+        var a = (await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Design!;
+        _session!.SetField("title", JsonSerializer.SerializeToElement("London"));
+        _session.SetStyle(_session.Draft!.Style with { AccentColor = "#FF8800" });
+        var placement = new NativeGraphicsPlacement { Anchor = "lower-right", X = -120, Y = -80, Scale = 1.25 };
+        _session.SetPlacement(placement);
+        Assert.True((await workflow.CreateAsync("title", null, 0, "Opening title")).Ok);
+        Assert.Contains(_commands, c => c.Action == "graphics.template.remove" && c.Body.GetProperty("templateId").GetString() == a.TemplateId); // still released
+        Assert.False(IsInstalled(a.TemplateId, 1));
+        _session.Observe(_state); // the shell pushes every snapshot: the session sees A's version gone
+        Assert.DoesNotContain((a.TemplateId, 1), _session.UnsavedTemplateEdits); // value-only memory never pins a slot
+        Assert.True((await workflow.OpenAsync(a.DesignId)).Ok);
+        Assert.Equal("London", _session.Draft!.Fields.GetProperty("title").GetString());
+        Assert.Equal("#FF8800", _session.Draft.Style.AccentColor);
+        Assert.Equal(placement, _session.Draft.Placement);
+    }
+
+    [Fact] public async Task ACoreRestartStillClearsRememberedDesignValues()
+    {
+        var (_, _, workflow) = BuildWorkflow();
+        var a = (await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Design!;
+        _session!.SetField("title", JsonSerializer.SerializeToElement("London"));
+        Assert.True((await workflow.CreateAsync("title", null, 0, "Opening title")).Ok);
+        RestartCore(); _session.Observe(_state);
+        Assert.True((await workflow.OpenAsync(a.DesignId)).Ok);
+        Assert.False(_session.Draft!.Fields.TryGetProperty("title", out var title) && title.GetString() == "London");
+    }
+
+    [Fact] public async Task SavingWhileTheOldVersionIsOnAirDoesNotPinItAsUnsaved()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var design = (await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Design!;
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        _state = _state with { Instances = [new() { InstanceId = "on-air", TemplateId = design.TemplateId, TemplateVersion = 1, ProgramTemplateVersion = 1, ProgramRevision = 1, Revision = 1 }] };
+        _session.Observe(_state);
+        var saved = await workflow.SaveAsync();
+        Assert.True(saved.Ok, saved.Message);
+        Assert.True(IsInstalled(design.TemplateId, 1)); // on air, so the save's tidy keeps it
+        Assert.DoesNotContain((design.TemplateId, 1), _session.UnsavedTemplateEdits);
+        _state = _state with { Instances = [] }; _session.Observe(_state);
+        // 6 built-ins + v1 + v2 + 8 bugs fill the 16 slots; the 9th bug install evicts (the editor stays on v2).
+        for (var i = 0; i < 9; i++) {
+            var created = await service.CreateBlankAsync("bug", "Bug " + i);
+            Assert.True(created.Ok, $"create {i}: {created.Message}");
+        }
+        Assert.Contains(_commands, c => c.Action == "graphics.template.remove" && c.Body.GetProperty("templateId").GetString() == design.TemplateId && c.Body.GetProperty("templateVersion").GetInt32() == 1);
+        Assert.False(IsInstalled(design.TemplateId, 1));
+        Assert.True(IsInstalled(design.TemplateId, 2));
+    }
+
+    [Fact] public async Task UndoRightAfterSaveKeepsTheCarriedValues()
+    {
+        var (_, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        _session!.SetField("title", JsonSerializer.SerializeToElement("London"));
+        _session.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        var saved = await workflow.SaveAsync();
+        Assert.True(saved.Ok, saved.Message);
+        Assert.False(_session.CanUndo);
+        Assert.False(_session.Dirty);
+        _session.Undo();
+        Assert.Equal("London", _session.Draft!.Fields.GetProperty("title").GetString());
+        Assert.Equal(2, _session.Draft.TemplateVersion);
+    }
+
+    // M1 (final review): Save re-opens the saved version; the author's selected layer stays selected.
+    [Fact] public async Task SaveKeepsTheSelectedLayer()
+    {
+        var (_, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        _session.SelectLayer("title-label");
+        Assert.Equal("title-label", _session.SelectedLayerId);
+        var saved = await workflow.SaveAsync();
+        Assert.True(saved.Ok, saved.Message);
+        Assert.Equal(2, _session.Draft!.TemplateVersion);
+        Assert.Equal("title-label", _session.SelectedLayerId);
+        // A layer the saved version no longer has is not carried.
+        _session.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "spare", "text"));
+        _session.SelectLayer("not-a-layer");
+        Assert.True((await workflow.SaveAsync()).Ok);
+        Assert.Equal("", _session.SelectedLayerId);
     }
 
     [Fact] public async Task SaveToPlaylistKeepsTheValuesTypedIntoTheDraft()
@@ -455,6 +620,29 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.Equal("#FF8800", row.Style.AccentColor);
         Assert.Equal("London", _session.Draft!.Fields.GetProperty("location").GetString());
         Assert.Equal(2, _session.Draft.TemplateVersion);
+    }
+
+    // Re-review I1: the Operate row is where the location is typed; a later Save to playlist from the Designer re-pins
+    // the row but keeps its non-empty typed text. Empty values and new variables take the draft's; dropped ones go.
+    [Fact] public async Task SaveToPlaylistAgainKeepsTheTextTypedOnTheRow()
+    {
+        var (library, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(GraphicsTemplateEditor.AddField(GraphicsTemplateEditor.AddField(d, "location", "text", 40), "venue", "text", 40), "extra", "text"));
+        Assert.True((await workflow.SaveToPlaylistAsync()).Ok);
+        var typed = GraphicsRowFields.WithText(GraphicsRowFields.WithText(Assert.Single(library.Document.Playlist), "location", "Oslo"), "extra", "gone soon");
+        Assert.True(await library.SavePlaylistAsync([typed]), library.Status);
+        // Back in the Designer: move a layer, fill venue in the draft, drop extra; Save to playlist again.
+        _session.SetLayerNumbers("name-label", new Dictionary<string, double> { ["x"] = 48 });
+        _session.SetField("venue", JsonSerializer.SerializeToElement("Main hall"));
+        _session.EditTemplate(d => GraphicsTemplateEditor.RemoveField(d, "extra"));
+        var again = await workflow.SaveToPlaylistAsync();
+        Assert.True(again.Ok, again.Message);
+        var row = Assert.Single(library.Document.Playlist);
+        Assert.Equal(3, row.TemplateVersion);
+        Assert.Equal("Oslo", row.Fields["location"].GetString());
+        Assert.Equal("Main hall", row.Fields["venue"].GetString());
+        Assert.False(row.Fields.ContainsKey("extra"));
     }
 
     [Fact] public async Task OpeningTwelveDesignsInSequenceNeverFillsTheLibrary()

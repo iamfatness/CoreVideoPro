@@ -10,13 +10,15 @@ namespace CoreVideoPro.MediaCore.Services;
 /// design so a retry never makes a second copy) and Save to playlist. Every outcome is a message; a
 /// design that was stored is reported as stored even when the editor could not open it. Moving the
 /// editor off a design (open/create another) uninstalls the design's versions nothing references,
-/// unless its draft holds unsaved template edits.</summary>
+/// unless its draft holds unsaved template edits; its typed values, style and placement are remembered
+/// (without holding a slot) and come back when it is opened again.</summary>
 public sealed class GraphicsDesignWorkflow
 {
     private readonly GraphicsDesignService _designs;
     private readonly GraphicsWorkspaceSession _session;
     private readonly GraphicsWorkspaceLibrary _library;
     private readonly Func<NativeGraphicsState?> _snapshot;
+    private bool _opening;
 
     public GraphicsDesignWorkflow(GraphicsDesignService designs, GraphicsWorkspaceSession session, GraphicsWorkspaceLibrary library, Func<NativeGraphicsState?> snapshot) =>
         (_designs, _session, _library, _snapshot) = (designs, session, library, snapshot);
@@ -26,6 +28,29 @@ public sealed class GraphicsDesignWorkflow
 
     public GraphicsDesign? DesignFor(NativeGraphicsDraft? draft) =>
         draft is null ? null : _library.Document.Designs.FirstOrDefault(d => d.TemplateId == draft.TemplateId);
+
+    /// <summary>The design a playlist row shows (by its template id); null for a built-in or imported look.</summary>
+    public GraphicsDesign? DesignForRow(GraphicsPlaylistRow row) =>
+        GraphicsDesignIds.IsDesignTemplateId(row.TemplateId) ? _library.Document.Designs.FirstOrDefault(d => d.TemplateId == row.TemplateId) : null;
+
+    /// <summary>The editor's browse draft is this design's current version (not a cue, not an older
+    /// version a playlist row pins): the Designer can show it as is, unsaved edits included.</summary>
+    public bool IsEditing(GraphicsDesign design) =>
+        _session.SelectedId.Length == 0 && _session.Draft is { } draft && draft.TemplateId == design.TemplateId && draft.TemplateVersion == design.TemplateVersion;
+
+    /// <summary>Show a design in the Designer: when it is already the private draft (<see cref="IsEditing"/>) it
+    /// is shown as is (unsaved edits kept, no core needed; <see cref="Opened"/> is raised), else it is opened.</summary>
+    public Task<GraphicsDesignResult> OpenInDesignerAsync(GraphicsDesign design)
+    {
+        if (!IsEditing(design)) return OpenAsync(design.DesignId);
+        Opened?.Invoke(this, EventArgs.Empty);
+        return Task.FromResult(new GraphicsDesignResult(true, "", design, _session.Template));
+    }
+
+    /// <summary>Operate's "Open in Design" on a row: its design in the Designer (the result says why when it
+    /// cannot open); null when the row is not a design's, so the builder opens the row instead.</summary>
+    public async Task<GraphicsDesignResult?> OpenForRowAsync(GraphicsPlaylistRow row) =>
+        DesignForRow(row) is { } design ? await OpenInDesignerAsync(design) : null;
 
     public async Task<GraphicsDesignResult> CreateAsync(string? kind, string? lookTemplateId, int lookTemplateVersion, string name)
     {
@@ -39,14 +64,19 @@ public sealed class GraphicsDesignWorkflow
         return created;
     }
 
+    /// <summary>One open at a time (the builder and Operate can both start one): a second is refused, not run.</summary>
     public async Task<GraphicsDesignResult> OpenAsync(string designId)
     {
-        var leaving = Leaving();
-        var opened = await _designs.OpenAsync(designId);
-        if (!opened.Ok || opened.Template is not { } template) return opened;
-        if (!Show(template)) return opened with { Ok = false, Message = "Graphics is busy. Try Open design again in a moment." };
-        await ReleaseLeft(leaving, template);
-        return opened;
+        if (_opening) return new(false, "Graphics is busy. Try Open design again in a moment.", null, null);
+        _opening = true;
+        try {
+            var leaving = Leaving();
+            var opened = await _designs.OpenAsync(designId);
+            if (!opened.Ok || opened.Template is not { } template) return opened;
+            if (!Show(template)) return opened with { Ok = false, Message = "Graphics is busy. Try Open design again in a moment." };
+            await ReleaseLeft(leaving, template);
+            return opened;
+        } finally { _opening = false; }
     }
 
     /// <summary>Delete a design; refused while it is the editor's draft, so the draft never points at
@@ -67,6 +97,7 @@ public sealed class GraphicsDesignWorkflow
         if (_session.Busy) return new(false, "Graphics is busy. Try Save again in a moment.", null, null);
         if (_session.Draft is not { Declarative: true } draft || _session.TemplateDocument is not { } document)
             return new(false, "Open a design (or a look to copy) before saving.", null, null);
+        var selectedLayer = _session.SelectedLayerId; // the re-open below clears it; Carry restores it
         await _library.LoadAsync();
         var design = DesignFor(draft);
         var prefix = "";
@@ -89,8 +120,12 @@ public sealed class GraphicsDesignWorkflow
             return saved with { Design = design, Message = prefix.Length > 0 ? prefix + "your edits were not saved: " + saved.Message : saved.Message };
         var reopened = await _designs.OpenAsync(saved.Design.DesignId);
         var message = prefix + saved.Message;
-        if (reopened is { Ok: true, Template: { } current } && Show(current)) {
-            Carry(typed, current, document);
+        var current = reopened is { Ok: true, Template: { } latest } && Show(latest) ? latest : null;
+        // The saved version supersedes every remembered draft of the design's older versions (Show just
+        // remembered the pre-save one): they must not keep an old, perhaps on-air, version from eviction.
+        _session.ForgetBrowseEdits(design.TemplateId, saved.Design.TemplateVersion);
+        if (current is not null) {
+            Carry(typed, current, document, selectedLayer);
             return saved with { Message = message, Template = current };
         }
         return saved with { Message = message + " Open it again from Your designs to keep editing." };
@@ -112,18 +147,23 @@ public sealed class GraphicsDesignWorkflow
         return saved with { Message = saved.Message + $" \"{row.Name}\" is in the playlist{(row.Hotkey.Length > 0 ? " on " + row.Hotkey : "")}. Show it from Operate when you want it on air." };
     }
 
+    /// <summary>The F-key Save to playlist will use: the design's existing row's key, else the next free one ("" when all twelve are taken).</summary>
+    public static string PlaylistHotkey(GraphicsDesign design, IReadOnlyList<GraphicsPlaylistRow> rows) =>
+        rows.FirstOrDefault(r => r.TemplateId == design.TemplateId) is { } existing ? existing.Hotkey : GraphicsBuilder.NextFreeHotkey(rows);
+
     /// <summary>The design's playlist row: its existing row re-pinned to <paramref name="template"/> (name,
     /// hotkey, timing, motion, names list and clock kept), else a new row on the next free F-key. The kind
     /// follows the template family (full screen saves as a title); a new lower third follows Sources and
-    /// plays out after 8 s.</summary>
+    /// plays out after 8 s. Non-empty text already typed on the existing row is kept.</summary>
     public static GraphicsPlaylistRow PlaylistRow(GraphicsDesign design, NativeGraphicsTemplate template, NativeGraphicsDraft draft, IReadOnlyList<GraphicsPlaylistRow> rows)
     {
         var existing = rows.FirstOrDefault(r => r.TemplateId == design.TemplateId);
         var kind = GraphicsBuilder.Kinds.FirstOrDefault(k => k.Family.Length > 0 && k.Family == template.Family) ?? GraphicsBuilder.Kind("title")!;
         var lowerThird = kind.Family == "lower-third";
-        var hotkey = existing is not null ? existing.Hotkey : GraphicsBuilder.NextFreeHotkey(rows);
-        return GraphicsBuilder.RowFrom(kind, template, draft, existing?.Name ?? design.Name, hotkey, existing?.PlayOutAfterMs ?? (lowerThird ? 8000 : 0),
-            existing?.FollowSources ?? lowerThird, rows, existing, existing?.Motion, existing?.Variants, existing?.Clock);
+        var hotkey = PlaylistHotkey(design, rows);
+        // Text typed on the Operate row survives the re-pin (re-review I1); see GraphicsRowFields.KeepTyped.
+        return GraphicsRowFields.KeepTyped(GraphicsBuilder.RowFrom(kind, template, draft, existing?.Name ?? design.Name, hotkey, existing?.PlayOutAfterMs ?? (lowerThird ? 8000 : 0),
+            existing?.FollowSources ?? lowerThird, rows, existing, existing?.Motion, existing?.Variants, existing?.Clock), existing);
     }
 
     /// <summary>The design the editor is on, when moving off it may uninstall it: a browse draft (not a
@@ -137,12 +177,13 @@ public sealed class GraphicsDesignWorkflow
     }
 
     /// <summary>Re-apply the pre-save values, style, placement and motion to the re-opened draft
-    /// (variables follow the saved manifest; a removed variable's value is dropped).</summary>
-    private void Carry(NativeGraphicsDraft typed, NativeGraphicsTemplate template, NativeGraphicsScratch saved)
+    /// (variables follow the saved manifest; a removed variable's value is dropped) as its new baseline:
+    /// no undo entry, so Undo right after Save never reverts them.</summary>
+    private void Carry(NativeGraphicsDraft typed, NativeGraphicsTemplate template, NativeGraphicsScratch saved, string selectedLayer)
     {
         if (_session.Draft is not { } fresh) return;
         var manifest = template.Definition is { } definition ? NativeGraphicsScratch.From(definition) : saved;
-        _session.Edit(fresh with { Fields = GraphicsTemplateEditor.SyncFields(typed.Fields, manifest), Style = typed.Style, Placement = typed.Placement, Animations = typed.Animations });
+        _session.Rebase(fresh with { Fields = GraphicsTemplateEditor.SyncFields(typed.Fields, manifest), Style = typed.Style, Placement = typed.Placement, Animations = typed.Animations }, selectedLayer);
     }
 
     private bool Show(NativeGraphicsTemplate template)

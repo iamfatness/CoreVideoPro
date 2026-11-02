@@ -81,6 +81,23 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
                     _ => _state };
                 break;
             case "graphics.instance.remove": _state = _state with { Instances = _state.Instances.Where(i => i.InstanceId != id).ToArray() }; break;
+            case "graphics.template.install": {
+                // The native library holds 16 definitions; a full one fails the install record asynchronously.
+                var requestId = input.GetProperty("requestId").GetString()!;
+                var manifest = JsonDocument.Parse(input.GetProperty("manifest").GetString()!).RootElement;
+                var templateId = manifest.GetProperty("templateId").GetString()!;
+                _state = _state.Templates.Count >= 16
+                    ? _state with { TemplateInstalls = [.. _state.TemplateInstalls, new() { RequestId = requestId, State = "failed", Reason = "template-library-capacity" }] }
+                    : _state with { Templates = [.. _state.Templates, Template(templateId, "lower-third", "declarative") with { TemplateVersion = manifest.GetProperty("templateVersion").GetInt32() }] };
+                break;
+            }
+            case "graphics.template.remove": {
+                var templateId = input.GetProperty("templateId").GetString()!; var version = input.GetProperty("templateVersion").GetInt32();
+                if (!_state.Templates.Any(t => t.TemplateId == templateId && t.TemplateVersion == version))
+                    return Task.FromResult(new NativeGraphicsOperationResult { Reason = "template-not-found" });
+                _state = _state with { Templates = _state.Templates.Where(t => !(t.TemplateId == templateId && t.TemplateVersion == version)).ToArray() };
+                break;
+            }
         }
         return Task.FromResult(new NativeGraphicsOperationResult { Accepted = true, InstanceId = id, CurrentRevision = revision, Reason = "accepted" });
     }
@@ -89,6 +106,25 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
     private void ClearCommands() { lock (_commands) _commands.Clear(); }
     private IEnumerable<string> Actions => Commands.Select(c => c.Action);
     private IEnumerable<JsonElement> Bodies(string action) => Commands.Where(c => c.Action == action).Select(c => c.Body);
+
+    [Fact] public async Task PlaylistReinstallEvictsUnusedDesignVersionsWhenTheLibraryIsFull()
+    {
+        const string pinned = "design-guest-a1b2c3";
+        var row = new GraphicsPlaylistRow { Id = "guest", Kind = GraphicsPlaylistRow.Guest, Name = "Guest name", TemplateId = pinned, TemplateVersion = 1 };
+        // The row's pin is in the document but the design is not installed (e.g. after a core restart).
+        await new GraphicsDocumentStore(Path.Combine(_directory, "show.json")).SaveAsync(new GraphicsShowDocument {
+            Playlist = [row], Templates = [new GraphicsSavedTemplate(pinned, 1, Hash(pinned), JsonSerializer.SerializeToElement(new { templateId = pinned, templateVersion = 1 }))] });
+        // 6 curated + 10 design versions nothing references = a full 16-definition library.
+        _state = _state with { Templates = [.. _state.Templates, .. Enumerable.Range(0, 10).Select(i => Template($"design-bug-{i:x6}", "bug", "declarative"))] };
+        var (_, service) = Build();
+        var result = await service.EnsureInstanceAsync(GraphicsPlayoutService.EntryFor(row));
+        Assert.True(result.Accepted, result.Reason);
+        Assert.Contains(Commands, c => c.Action == "graphics.template.remove");
+        Assert.DoesNotContain(Commands, c => c.Action == "graphics.template.remove" && c.Body.GetProperty("templateId").GetString() == pinned);
+        Assert.DoesNotContain(Commands, c => c.Action == "graphics.template.remove" && !c.Body.GetProperty("templateId").GetString()!.StartsWith("design-", StringComparison.Ordinal));
+        Assert.Contains(_state.Templates, t => t.TemplateId == pinned && t.TemplateVersion == 1);
+        Assert.Contains(_state.Instances, i => i.TemplateId == pinned);
+    }
 
     [Fact] public async Task DefaultPlaylistUsesCuratedTemplatesAndAssignsF1ToF5()
     {
@@ -144,6 +180,27 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Equal("Alan Turing", create.GetProperty("fields").GetProperty("name").GetString());
         Assert.Equal("Mathematician", create.GetProperty("fields").GetProperty("title").GetString());
         Assert.False(create.TryGetProperty("binding", out _));
+    }
+
+    // Acceptance 1 (spec §4): a design with an extra variable, saved as a Guest row that follows
+    // Sources; the operator types the extra value on the row and Show sends it beside the Sources text.
+    [Fact] public async Task ShowOfAGuestDesignRowSendsTheTypedExtraVariableBesideTheSourcesText()
+    {
+        const string design = "design-lower-third-a1b2c3";
+        _state = _state with { Templates = [.. _state.Templates, Template(design, "lower-third", "declarative", "name", "title", "location")] };
+        var (library, service) = Build();
+        var row = new GraphicsPlaylistRow { Id = "guest", Kind = GraphicsPlaylistRow.Guest, Name = "Guest", FollowSources = true, TemplateId = design, TemplateVersion = 1, Hotkey = "F1",
+            Fields = new Dictionary<string, JsonElement> { ["name"] = JsonSerializer.SerializeToElement("Name"), ["title"] = JsonSerializer.SerializeToElement("Title"), ["location"] = JsonSerializer.SerializeToElement("") } };
+        Assert.True(await library.SavePlaylistAsync([row]), library.Status);
+        var saved = library.Document.Playlist.Single();
+        Assert.Equal(["location"], GraphicsRowFields.Typeable(saved, _state, library.Document.Templates).Select(f => f.Id));
+        Assert.True(await library.SavePlaylistAsync([GraphicsRowFields.WithText(saved, "location", "Oslo")]), library.Status);
+        var entries = service.GuestEntries([new(1, "zoom:7", "Ada")], (_, name) => (name, "Analyst"));
+        Assert.True((await service.PlayInAsync(entries.Single())).Accepted);
+        var fields = Bodies("graphics.instance.create").Single().GetProperty("fields");
+        Assert.Equal("Ada", fields.GetProperty("name").GetString());
+        Assert.Equal("Analyst", fields.GetProperty("title").GetString());
+        Assert.Equal("Oslo", fields.GetProperty("location").GetString());
     }
 
     [Fact] public async Task PlayInSendsTheRowsOwnPlacementWhenItHasOne()

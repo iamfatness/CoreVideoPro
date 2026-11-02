@@ -36,11 +36,12 @@ public static class GraphicsBuilder
     }
 
     /// <summary>Installed templates for a kind, newest version of each id, name order. Sponsor
-    /// cards are images, never templates.</summary>
+    /// cards are images, never templates. Designs are left out: they are listed once, under Your
+    /// designs (#1087 N3).</summary>
     public static IReadOnlyList<NativeGraphicsTemplate> TemplatesFor(GraphicsBuilderKind kind, NativeGraphicsState? state)
     {
         if (state is null || kind.Family.Length == 0) return [];
-        return state.Templates.Where(t => t.Family == kind.Family)
+        return state.Templates.Where(t => t.Family == kind.Family && !GraphicsDesignIds.IsDesignTemplateId(t.TemplateId))
             .GroupBy(t => t.TemplateId, StringComparer.Ordinal).Select(g => g.OrderByDescending(t => t.TemplateVersion).First())
             .OrderBy(t => t.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
     }

@@ -12,7 +12,7 @@ public sealed record GraphicsEditorVariable(string Id,string Kind,int? MaxLength
 
 /// <summary>Bounded immutable document edits only. Native layout/rasterization
 /// validates each scratch document; this type never generates media pixels.</summary>
-public static class GraphicsTemplateEditor
+public static partial class GraphicsTemplateEditor
 {
     private const string LayerTypeKey="type"; // Document node discriminator, not an IPC request type.
     private static JsonObject Read(NativeGraphicsScratch scratch) => JsonNode.Parse(scratch.Manifest,new JsonNodeOptions { PropertyNameCaseInsensitive=false },new JsonDocumentOptions { MaxDepth=32 })?.AsObject() ?? throw new InvalidDataException("Invalid template object.");
@@ -39,7 +39,7 @@ public static class GraphicsTemplateEditor
     {
         var root=Read(scratch); if(root["layers"] is not JsonArray layers) throw new InvalidDataException("Missing layers.");
         var result=Walk(layers).Select(row=>new GraphicsEditorLayer(row.Node["id"]!.GetValue<string>(),row.Node["type"]!.GetValue<string>(),
-            row.Node["metadata"] is JsonObject metadata && metadata["label"] is JsonValue label && label.TryGetValue<string>(out var caption) ? caption : row.Node["id"]!.GetValue<string>(),row.Parent,row.Depth,row.Locked,
+            LabelOf(row.Node),row.Parent,row.Depth,row.Locked,
             row.Node["visible"] is not JsonValue visible || !visible.TryGetValue<bool>(out var on) || on)).Take(65).ToArray();
         if(result.Length>64 || result.Select(l=>l.Id).Distinct(StringComparer.Ordinal).Count()!=result.Length) throw new InvalidDataException("A template supports at most 64 layers."); return result;
     }
@@ -53,7 +53,7 @@ public static class GraphicsTemplateEditor
         var root=Read(scratch); var row=Walk(root["layers"]!.AsArray()).FirstOrDefault(r=>r.Node["id"]?.GetValue<string>()==id);
         if(row.Node is null) throw new InvalidDataException("Layer was removed.");
         if(row.Locked) throw new InvalidOperationException("Unlock the layer or its parent before editing.");
-        if(property is not ("x" or "y" or "width" or "height" or "opacity" or "visible" or "fill" or "cornerRadius" or "font" or "fontSize" or "fontWeight" or "lineHeight" or "color" or "text" or "align" or "maxLines" or "overflow" or "gap" or "padding" or "fit" or "flow" or "asset"))
+        if(property is not ("x" or "y" or "width" or "height" or "opacity" or "visible" or "fill" or "cornerRadius" or "font" or "fontSize" or "fontWeight" or "lineHeight" or "color" or "text" or "align" or "maxLines" or "overflow" or "gap" or "padding" or "fit" or "flow" or "asset" or "verticalAlign"))
             throw new InvalidDataException("This layer property is not editable.");
         var replacement=JsonNode.Parse(value.GetRawText()); if(JsonNode.DeepEquals(row.Node[property],replacement)) return scratch;
         row.Node[property]=replacement;
@@ -116,14 +116,19 @@ public static class GraphicsTemplateEditor
         row.Siblings.RemoveAt(row.Index);destination.Add(row.Node);
         _=Walk(layers).Count();return Save(root);
     }
-    public static NativeGraphicsScratch Duplicate(NativeGraphicsScratch scratch,string id)
+    public static NativeGraphicsScratch Duplicate(NativeGraphicsScratch scratch,string id)=>Duplicate(scratch,id,out _);
+    /// <summary>Copies the layer (and its children) just in front of it; the copy is named "&lt;label&gt; copy".</summary>
+    public static NativeGraphicsScratch Duplicate(NativeGraphicsScratch scratch,string id,out string copyId)
     {
         var root=Read(scratch); var rows=Walk(root["layers"]!.AsArray()).ToArray(); var row=rows.FirstOrDefault(r=>r.Node["id"]?.GetValue<string>()==id);
         if(row.Node is null || row.Locked) throw new InvalidOperationException("Unlock the layer before duplicating.");
         var copy=row.Node.DeepClone().AsObject(); var children=copy["children"] is JsonArray nested ? Walk(nested).Select(r=>r.Node).ToArray() : [];
         if(rows.Length+1+children.Length>64) throw new InvalidOperationException("A template supports at most 64 layers.");
         foreach(var node in children.Prepend(copy)) node["id"]="layer-"+Guid.NewGuid().ToString("N");
-        row.Siblings.Insert(row.Index+1,copy); return Save(root);
+        var label=LabelOf(row.Node); if(label.Length>59) label=label[..(char.IsHighSurrogate(label[58]) ? 58 : 59)].TrimEnd();
+        if(copy["metadata"] is null) copy["metadata"]=new JsonObject();
+        if(copy["metadata"] is JsonObject metadata) metadata["label"]=label+" copy";
+        copyId=copy["id"]!.GetValue<string>(); row.Siblings.Insert(row.Index+1,copy); return Save(root);
     }
 
     // ---- Variables (template fields). Limits mirror native GraphicsTemplate.cpp validation. ----
@@ -143,7 +148,7 @@ public static class GraphicsTemplateEditor
     private static bool LayerAllows(string layerType,string property)=>property is "x" or "y" or "width" or "height" or "opacity" or "visible" || layerType switch {
         "rect"=>property is "fill" or "cornerRadius",
         "text"=>property is "text" or "font" or "fontWeight" or "fontSize" or "lineHeight" or "color" or "align" or "maxLines" or "overflow",
-        "image"=>property is "asset" or "fit" or "align",
+        "image"=>property is "asset" or "fit" or "align" or "verticalAlign",
         "group"=>property is "flow" or "gap" or "padding",
         _=>false };
     // Field references may nest (gradient stops), so look through objects and arrays.
@@ -175,7 +180,13 @@ public static class GraphicsTemplateEditor
     }
     private static JsonArray Fields(JsonObject root)=>root["fields"] as JsonArray ?? throw new InvalidDataException("Missing fields.");
     private static JsonObject? FindField(JsonObject root,string id)=>Fields(root).OfType<JsonObject>().FirstOrDefault(f=>f["id"]?.GetValue<string>()==id);
-    private static string LabelOf(JsonObject node)=>node["metadata"] is JsonObject m && m["label"] is JsonValue l && l.TryGetValue<string>(out var caption) ? caption : node["id"]!.GetValue<string>();
+    private static string LabelOf(JsonObject node)=>node["metadata"] is JsonObject m && m["label"] is JsonValue l && l.TryGetValue<string>(out var caption) ? caption : HumanizeId(node["id"]!.GetValue<string>());
+    /// <summary>A readable name for a layer with no editor label: dashes and underscores become spaces, first letter capitalised ("name-label" → "Name label").</summary>
+    public static string HumanizeId(string id)
+    {
+        var text=(id ?? "").Replace('-',' ').Replace('_',' ').Trim();
+        return text.Length==0 ? id ?? "" : char.ToUpperInvariant(text[0])+text[1..];
+    }
     private static JsonNode DefaultFor(string type)=>type switch { "number"=>0,"color"=>"#FFFFFF","boolean"=>false,_=>"" };
     private static void CheckValue(string type,JsonNode? value,int? maxLength)
     {
@@ -250,6 +261,18 @@ public static class GraphicsTemplateEditor
         foreach(var field in TemplateFields(scratch))
             result[field.Id]=values.TryGetValue(field.Id,out var value) && GraphicsCommandRequest.ValidField(value,field) ? value : (field.Default ?? JsonSerializer.SerializeToElement(DefaultFor(field.Type))).Clone();
         return JsonSerializer.SerializeToElement(result);
+    }
+    /// <summary>The Variables panel's Sample value also sets the draft's value while that value still equals
+    /// the variable's previous sample (a just-added variable's draft value is its empty sample), so the
+    /// Typical preview shows the line and Save to playlist carries it. A value typed elsewhere is kept.</summary>
+    public static JsonElement SeedSample(JsonElement fields,NativeGraphicsScratch before,NativeGraphicsScratch after,string id)
+    {
+        if(fields.ValueKind!=JsonValueKind.Object || TemplateFields(after).FirstOrDefault(f=>f.Id==id) is not { } next) return fields;
+        var values=fields.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone(),StringComparer.Ordinal);
+        var sample=(next.Default ?? JsonSerializer.SerializeToElement(DefaultFor(next.Type))).Clone();
+        var previous=TemplateFields(before).FirstOrDefault(f=>f.Id==id) is { } old ? (old.Default ?? JsonSerializer.SerializeToElement(DefaultFor(old.Type))) : (JsonElement?)null;
+        if(!values.TryGetValue(id,out var current) || previous is null || JsonElement.DeepEquals(current,previous.Value)) values[id]=sample;
+        return JsonSerializer.SerializeToElement(values);
     }
     private static string OperatorKind(string type)=>type switch { "number"=>"number","color"=>"colour","boolean"=>"on-off","image"=>"image",_=>"text" };
     public static IReadOnlyList<(string FieldId,IReadOnlyList<string> LayerLabels)> FieldUsage(NativeGraphicsScratch scratch)

@@ -131,6 +131,7 @@ public sealed class GraphicsOnAirStripControl : UserControl
 /// (StudioTheme.xaml / App.xaml), never literal hex where a token exists.</summary>
 internal static class StudioBrushes
 {
+    public static Brush Background => Lookup("StudioBackgroundBrush", 0x0A, 0x0B, 0x0C);
     public static Brush Panel => Lookup("StudioPanelBrush", 0x10, 0x13, 0x15);
     public static Brush SurfaceRaised => Lookup("StudioSurfaceRaisedBrush", 0x1B, 0x1F, 0x22);
     public static Brush Field => Lookup("StudioFieldBrush", 0x0E, 0x11, 0x12);

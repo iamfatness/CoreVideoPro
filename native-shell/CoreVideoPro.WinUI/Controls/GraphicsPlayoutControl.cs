@@ -45,6 +45,11 @@ public sealed class GraphicsPlayoutControl : UserControl
     private readonly Button _add;
     private string _selectedKey = "", _listSignature = "", _inspectorSignature = "";
     private bool _loading;
+    /// <summary>Row variable text typed but not yet saved, and saves still running (re-review m1): Show, Cue and Take wait for them.</summary>
+    private readonly GraphicsRowTextCommits _rowText = new();
+    private readonly List<(string RowId, string Key, TextBox Box)> _fieldBoxes = [];
+    /// <summary>The core's default cap for a string variable with no maxLength (native GraphicsTemplate.cpp).</summary>
+    private const int CoreStringLimit = 512;
 
     public GraphicsPlayoutControl()
     {
@@ -106,6 +111,7 @@ public sealed class GraphicsPlayoutControl : UserControl
     private async Task Invoke(string actionId, params object?[] args)
     {
         if (_attached is not { } studio) return;
+        await _rowText.BeforeAirAsync(); // a variable typed without Enter reaches the row before Show / Cue / Take reads it
         var result = await GraphicsPlayoutActions.InvokeAsync(studio, actionId, args);
         if (!result.Ok) _status.Text = result.Error ?? "Refused.";
         Refresh();
@@ -123,15 +129,13 @@ public sealed class GraphicsPlayoutControl : UserControl
         if (!await studio.GraphicsLibrary.SavePlaylistAsync(rows)) _status.Text = studio.GraphicsLibrary.Status;
         Refresh();
     }
-    private static GraphicsPlaylistRow WithField(GraphicsPlaylistRow row, string key, string value)
-    {
-        var fields = row.Fields.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
-        fields[key] = JsonSerializer.SerializeToElement(value);
-        return row with { Fields = fields };
-    }
+    private static GraphicsPlaylistRow WithField(GraphicsPlaylistRow row, string key, string value) => GraphicsRowFields.WithText(row, key, value);
     private static string? TitleFieldKey(GraphicsPlaylistRow row) => row.Kind == GraphicsPlaylistRow.Guest ? "title" :
         new[] { "title", "subtitle", "label" }.FirstOrDefault(row.Fields.ContainsKey);
-    private static string FieldText(GraphicsPlaylistRow row, string key) => row.Fields.TryGetValue(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+    private static string FieldText(GraphicsPlaylistRow row, string key) => GraphicsRowFields.Text(row, key);
+    /// <summary>The row's extra text variables (e.g. a design's <c>location</c>) typed here, per spec §4.</summary>
+    private IReadOnlyList<GraphicsRowTypeableField> TypeableFields(GraphicsPlaylistRow row) => _attached is not { } studio ? [] :
+        GraphicsRowFields.Typeable(row, studio.GraphicsWorkspace.State, studio.GraphicsLibrary.Document.Templates, row.Kind == GraphicsPlaylistRow.Guest ? null : TitleFieldKey(row));
 
     // ---- state ---------------------------------------------------------------------------
     private enum AirState { Off, Preview, Program }
@@ -396,6 +400,8 @@ public sealed class GraphicsPlayoutControl : UserControl
     }
 
     private void Select(string key) { if (_selectedKey == key) return; _selectedKey = key; _listSignature = ""; Refresh(); }
+    /// <summary>Select a row (or <c>row|source</c> entry) as a tap on its card would; used by the layout probe.</summary>
+    internal void SelectRow(string key) => Select(key);
 
     // ---- empty state ---------------------------------------------------------------------
     private FrameworkElement EmptyState(bool busy)
@@ -437,9 +443,18 @@ public sealed class GraphicsPlayoutControl : UserControl
         var rowId = _selectedKey.Split('|')[0]; var sourceId = _selectedKey.Contains('|') ? _selectedKey[(rowId.Length + 1)..] : "";
         var row = rows.FirstOrDefault(r => r.Id == rowId);
         var entry = row is null ? null : sourceId.Length == 0 ? null : entries.FirstOrDefault(e => e.RowId == rowId && e.SourceId == sourceId);
-        var signature = row is null ? "" : $"{row.Id}:{row.Name}:{row.Hotkey}:{row.PlayOutAfterMs}:{row.FollowSources}:{TitleFieldKey(row)}:{(TitleFieldKey(row) is { } k ? FieldText(row, k) : "")}:{entry?.SourceId}:{entry?.Label}:{entry?.Title}";
-        if (signature == _inspectorSignature) return;
-        _inspectorSignature = signature; _inspector.Children.Clear(); _loading = true;
+        var typeable = row is null ? [] : TypeableFields(row);
+        var signature = row is null ? "" : $"{row.Id}:{row.Name}:{row.Hotkey}:{row.PlayOutAfterMs}:{row.FollowSources}:{TitleFieldKey(row)}:{(TitleFieldKey(row) is { } k ? FieldText(row, k) : "")}:{entry?.SourceId}:{entry?.Label}:{entry?.Title}:" +
+            string.Join('\u001f', typeable.Select(f => $"{f.Id}={f.Label}={f.MaxLength}"));
+        // Variable values are not in the signature: a commit (Enter / LostFocus) must not rebuild the inspector under the
+        // box being typed in. Boxes without focus show the row's current value instead.
+        if (signature == _inspectorSignature) {
+            if (row is not null) foreach (var (boxRow, key, box) in _fieldBoxes)
+                if (boxRow == row.Id && box.FocusState == FocusState.Unfocused && box.Text != FieldText(row, key)) { _loading = true; try { box.Text = FieldText(row, key); } finally { _loading = false; } }
+            return;
+        }
+        _ = _rowText.Flush(); // text typed in a box about to be removed still lands on its row
+        _inspectorSignature = signature; _inspector.Children.Clear(); _fieldBoxes.Clear(); _loading = true;
         try {
             _inspector.Children.Add(new TextBlock { Text = "INSPECTOR", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted });
             if (row is null) { _inspector.Children.Add(new TextBlock { Text = "Select a row or a guest to edit its name, title line and timing.", FontSize = 12, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap }); return; }
@@ -462,6 +477,21 @@ public sealed class GraphicsPlayoutControl : UserControl
                 void CommitTitle() { if (!_loading && title.Text != FieldText(row, key)) _ = SaveRowAsync(id, r => WithField(r, key, title.Text)); }
                 title.LostFocus += (_, _) => CommitTitle(); title.KeyDown += (_, e) => { if (e.Key == Windows.System.VirtualKey.Enter) CommitTitle(); };
                 _inspector.Children.Add(title);
+            }
+            // Extra variables of the row's template (a design's location, say): typed here, kept on the row,
+            // sent on Show. A Guest row following Sources still gets them: playout overlays only name/title.
+            foreach (var field in typeable) {
+                var key = field.Id;
+                var box = new TextBox { Header = field.Label, Text = FieldText(row, key), MaxLength = field.MaxLength is int cap and > 0 ? Math.Min(cap, 4096) : CoreStringLimit, PlaceholderText = "Typed for this row" };
+                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(box, "Row variable " + key);
+                ToolTipService.SetToolTip(box, $"The {key} variable of this graphic. It goes on air with the next Show.");
+                // Commits only on Enter or LostFocus; while typing, the text is pending so Show / Cue / Take can commit it first.
+                Task Save() => _attached?.GraphicsPlayout.Row(id) is { } current && box.Text != FieldText(current, key) ? SaveRowAsync(id, r => WithField(r, key, box.Text)) : Task.CompletedTask;
+                void CommitField() { if (!_loading) _ = _rowText.Commit(Save); }
+                box.TextChanged += (_, _) => { if (!_loading && box.FocusState != FocusState.Unfocused) _rowText.Track(id + "|" + key, Save); };
+                box.LostFocus += (_, _) => CommitField(); box.KeyDown += (_, e) => { if (e.Key == Windows.System.VirtualKey.Enter) CommitField(); };
+                _fieldBoxes.Add((id, key, box));
+                _inspector.Children.Add(box);
             }
 
             if (row.Kind == GraphicsPlaylistRow.Guest) {

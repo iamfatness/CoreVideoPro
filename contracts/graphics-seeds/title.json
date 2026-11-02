@@ -36,6 +36,9 @@
     "layers":  [
                    {
                        "id":  "plate",
+                       "metadata":  {
+                                        "label":  "Plate"
+                                    },
                        "type":  "rect",
                        "x":  0,
                        "y":  0,
@@ -47,6 +50,9 @@
                    },
                    {
                        "id":  "heading-label",
+                       "metadata":  {
+                                        "label":  "Heading"
+                                    },
                        "type":  "text",
                        "text":  {
                                     "field":  "heading"
@@ -70,6 +76,9 @@
                    },
                    {
                        "id":  "subheading-label",
+                       "metadata":  {
+                                        "label":  "Subheading"
+                                    },
                        "type":  "text",
                        "text":  {
                                     "field":  "subheading"

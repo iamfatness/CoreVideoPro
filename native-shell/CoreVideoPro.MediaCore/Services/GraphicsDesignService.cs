@@ -18,7 +18,8 @@ public sealed record GraphicsDesignResult(bool Ok, string Message, GraphicsDesig
 /// The native library holds 16 definitions (6 curated templates among them), so a design version is
 /// installed only while something needs it: when an install meets a full library, every installed
 /// design version that nothing references, that is not the operator's open draft and that holds no
-/// unsaved template edits is removed and the install is retried once.</summary>
+/// unsaved template edits is removed and the install is retried once (<see cref="GraphicsDesignEviction"/>,
+/// shared with playout's pin reinstall).</summary>
 public sealed class GraphicsDesignService
 {
     public const string ClientId = "graphics-designs";
@@ -205,25 +206,10 @@ public sealed class GraphicsDesignService
     {
         var epoch = _epoch;
         if (Current(epoch).Templates.FirstOrDefault(t => t.TemplateId == templateId && t.TemplateVersion == version) is { } present) return (present, "");
-        var (installed, refusal) = await GraphicsTemplateInstall.RunAsync(Send, () => Current(epoch), _delay, _utcNow, definition.GetRawText(), packageRoot, templateId, version, ct);
-        if (refusal?.Reason == LibraryFull && await EvictUnusedDesigns(epoch, ct) > 0)
-            (installed, refusal) = await GraphicsTemplateInstall.RunAsync(Send, () => Current(epoch), _delay, _utcNow, definition.GetRawText(), packageRoot, templateId, version, ct);
+        var (installed, refusal) = await GraphicsTemplateInstall.RunAsync(Send, () => Current(epoch), _delay, _utcNow, definition.GetRawText(), packageRoot, templateId, version, ct,
+            evictWhenFull: c => GraphicsDesignEviction.EvictUnusedAsync(_library, Current(epoch), Send, _delay, c));
         if (refusal is not null) return (null, refusal.Reason);
         return installed is null ? (null, "The design did not finish installing. Check the graphics library and try again.") : (installed, "");
-    }
-
-    /// <summary>The library is full: remove every installed design version that nothing references,
-    /// that is not the operator's open draft and that holds no unsaved template edits the operator moved
-    /// off (uninstalling it would drop them). Returns how many were removed.</summary>
-    private async Task<int> EvictUnusedDesigns(string epoch, CancellationToken ct)
-    {
-        var keep = Pins(_library.Document, rowsAndCuesOnly: false);
-        if (_library.EditorDraft is { } draft) keep.Add((draft.TemplateId, draft.TemplateVersion));
-        keep.UnionWith(_library.UnsavedTemplateEdits);
-        var removed = 0;
-        foreach (var template in Current(epoch).Templates.Where(t => GraphicsDesignIds.IsDesignTemplateId(t.TemplateId) && !keep.Contains((t.TemplateId, t.TemplateVersion))).ToArray())
-            if ((await Remove(template.TemplateId, template.TemplateVersion, ct)).Accepted) removed++;
-        return removed;
     }
 
     /// <summary>Cleanup after a stored save or delete: never turns the stored change into a failure.
@@ -248,28 +234,11 @@ public sealed class GraphicsDesignService
             if (!referenced.Contains((templateId, version))) await Remove(templateId, version, ct);
     }
 
-    /// <summary>Native remove; template-library-busy never blocks, so retry it briefly (3 × 100 ms).</summary>
-    private async Task<NativeGraphicsOperationResult> Remove(string templateId, int version, CancellationToken ct)
-    {
-        for (var attempt = 0; ; attempt++) {
-            var result = await Send("graphics.template.remove", new() { ["templateId"] = templateId, ["templateVersion"] = version }, ct);
-            if (result.Accepted || result.Reason != "template-library-busy" || attempt == 3) return result;
-            await _delay(TimeSpan.FromMilliseconds(100), ct);
-        }
-    }
+    private Task<NativeGraphicsOperationResult> Remove(string templateId, int version, CancellationToken ct) =>
+        GraphicsDesignEviction.RemoveAsync(Send, _delay, templateId, version, ct);
 
-    private HashSet<(string Id, int Version)> Pins(GraphicsShowDocument document, bool rowsAndCuesOnly)
-    {
-        var pins = GraphicsWorkspaceLibrary.ReferencedTemplates(document);
-        if (rowsAndCuesOnly) return pins;
-        foreach (var instance in Current(_epoch).Instances) {
-            foreach (var version in new[] { instance.TemplateVersion, instance.CueTemplateVersion, instance.ProgramTemplateVersion }.Where(v => v > 0))
-                pins.Add((instance.TemplateId, version));
-            foreach (var image in new[] { instance.Image, instance.CueImage, instance.ProgramImage })
-                if (image is not null) pins.Add((image.TemplateId, image.TemplateVersion));
-        }
-        return pins;
-    }
+    private HashSet<(string Id, int Version)> Pins(GraphicsShowDocument document, bool rowsAndCuesOnly) =>
+        rowsAndCuesOnly ? GraphicsWorkspaceLibrary.ReferencedTemplates(document) : GraphicsDesignEviction.InUse(document, Current(_epoch));
 
     /// <summary>One operation at a time. <paramref name="needsCore"/> false (Duplicate, Delete) runs
     /// without a core; <see cref="_epoch"/> is then "" and native steps are skipped.</summary>

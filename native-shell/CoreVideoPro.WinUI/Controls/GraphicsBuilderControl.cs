@@ -12,7 +12,7 @@ using Microsoft.UI.Xaml.Media;
 namespace CoreVideoPro.WinUI.Controls;
 
 /// <summary>Design mode's default surface (#1076 slice 3, titler spec "basic designer"): make a
-/// graphic in four steps without the looks library, private cues or layer editor. 1 pick what
+/// graphic in four steps without the looks library, private cues or the Designer. 1 pick what
 /// you are making, 2 pick a look, 3 fill it in while the native preview updates, 4 save it to the
 /// playlist with an F-key. Everything here edits the workspace session's PRIVATE draft; nothing
 /// reaches Program or Preview until the operator shows the row from Operate.</summary>
@@ -80,13 +80,19 @@ public sealed class GraphicsBuilderControl : UserControl
         _root.ColumnDefinitions.Add(new() { Width = new GridLength(300) }); _root.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); _root.ColumnDefinitions.Add(new() { Width = new GridLength(340) });
 
         var title = new TextBlock { Text = "Build a graphic", FontSize = 18, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = StudioBrushes.Text, VerticalAlignment = VerticalAlignment.Center };
-        var advanced = StudioBrushes.GhostButton("Advanced editor"); advanced.Click += (_, _) => { if (_attached is { } s) s.GraphicsDesignAdvanced = true; };
-        ToolTipService.SetToolTip(advanced, "Looks library, private cues, layer editor, templates and automation.");
+        var openInDesigner = StudioBrushes.AccentButton("Open in Designer"); openInDesigner.Click += async (_, _) => await OpenInDesignerAsync();
+        AutomationProperties.SetName(openInDesigner, "Open in Designer");
+        ToolTipService.SetToolTip(openInDesigner, "Edit the selected design's layers in the Designer. With no design yet, New design starts one.");
+        var advanced = StudioBrushes.GhostButton("Cues & automation"); advanced.Click += (_, _) => { if (_attached is { } s) s.GraphicsDesignAdvanced = true; };
+        AutomationProperties.SetName(advanced, "Cues & automation");
+        ToolTipService.SetToolTip(advanced, "Show templates, saved cues and styles, package import and export, automation and the existing overlay controls.");
+        var headerButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        headerButtons.Children.Add(openInDesigner); headerButtons.Children.Add(advanced);
         var yoursLabel = new TextBlock { Text = "YOUR GRAPHICS", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(14, 0, 0, 0) };
         var yoursScroll = new ScrollViewer { Content = _yours, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalAlignment = VerticalAlignment.Center };
         var headerGrid = new Grid { ColumnSpacing = 10 };
         headerGrid.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); headerGrid.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); headerGrid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); headerGrid.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        headerGrid.Children.Add(title); Grid.SetColumn(yoursLabel, 1); headerGrid.Children.Add(yoursLabel); Grid.SetColumn(yoursScroll, 2); headerGrid.Children.Add(yoursScroll); Grid.SetColumn(advanced, 3); headerGrid.Children.Add(advanced);
+        headerGrid.Children.Add(title); Grid.SetColumn(yoursLabel, 1); headerGrid.Children.Add(yoursLabel); Grid.SetColumn(yoursScroll, 2); headerGrid.Children.Add(yoursScroll); Grid.SetColumn(headerButtons, 3); headerGrid.Children.Add(headerButtons);
         var header = new StackPanel { Spacing = 8 }; header.Children.Add(headerGrid); header.Children.Add(BuildDesignsBar());
         Grid.SetColumnSpan(header, 3); _root.Children.Add(header);
 
@@ -177,6 +183,7 @@ public sealed class GraphicsBuilderControl : UserControl
         _editor = new("preview:lower-third", "Graphics builder preview", new() { Lut = "none" }) { LiveEditing = false };
         _editor.PropertyChanged += OnEditorProperty;
         _ = _library.LoadAsync();
+        if (_attached.GraphicsDesignNotice.Length > 0) { _designStatus.Text = _attached.GraphicsDesignNotice; _attached.GraphicsDesignNotice = ""; }
         if (_attached.GraphicsDesignRowId.Length > 0) LoadRow(_attached.GraphicsDesignRowId); else if (_session.Draft is null) StartNew(); else RefreshAll();
         UpdatePreviewLease();
     }
@@ -210,6 +217,7 @@ public sealed class GraphicsBuilderControl : UserControl
     private void OnStudioProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(StudioViewModel.GraphicsDesignRowId) && _attached is { GraphicsDesignRowId.Length: > 0 } s) LoadRow(s.GraphicsDesignRowId);
+        else if (e.PropertyName == nameof(StudioViewModel.GraphicsDesignNotice) && _attached is { GraphicsDesignNotice.Length: > 0 } n) { _designStatus.Text = n.GraphicsDesignNotice; n.GraphicsDesignNotice = ""; RefreshDesigns(); }
         else if (e.PropertyName is nameof(StudioViewModel.ActiveTab) or nameof(StudioViewModel.IsOverlaysTab)) UpdatePreviewLease();
     }
     private void OnSessionChanged(object? sender, EventArgs e) { RefreshAll(); RequestThumbnails(); UpdatePreviewLease(); }
@@ -349,7 +357,7 @@ public sealed class GraphicsBuilderControl : UserControl
             card.Click += (_, _) => ChooseLook(template);
             _looks.Children.Add(card);
         }
-        _looksNote.Text = templates.Count == 0 ? (state is null ? "Waiting for native graphics." : $"No {kind.Label.ToLowerInvariant()} looks are installed. Import a package in the Advanced editor.")
+        _looksNote.Text = templates.Count == 0 ? (state is null ? "Waiting for native graphics." : $"No {kind.Label.ToLowerInvariant()} looks are installed. Import a package in Cues & automation.")
             : "Looks come from the installed templates. Your colors apply to any of them.";
     }
 
@@ -638,7 +646,7 @@ public sealed class GraphicsBuilderControl : UserControl
         flyout.Opening += (_, _) => confirmText.Text = SelectedDesign is { } d ? $"Delete \"{d.Name}\"? This cannot be undone. A design the playlist uses is kept." : "Choose a design first.";
         _deleteDesign.Flyout = flyout;
         confirm.Click += async (_, _) => { flyout.Hide(); await RunDesignAsync(async studio => SelectedDesign is { } d ? await studio.DeleteGraphicsDesignAsync(d.DesignId) : null); };
-        _openDesign.Click += async (_, _) => await RunDesignAsync(async studio => SelectedDesign is { } d ? await studio.OpenGraphicsDesignAsync(d.DesignId) : null);
+        _openDesign.Click += async (_, _) => await RunDesignAsync(async studio => SelectedDesign is { } d ? await studio.OpenGraphicsDesignInDesignerAsync(d) : null);
         _duplicateDesign.Click += async (_, _) => await RunDesignAsync(async studio => {
             if (SelectedDesign is not { } d) return null;
             var copy = await studio.DuplicateGraphicsDesignAsync(d);
@@ -672,7 +680,7 @@ public sealed class GraphicsBuilderControl : UserControl
                 AutomationProperties.SetName(chip, "Design " + design.Name);
                 ToolTipService.SetToolTip(chip, $"{design.Name} · {design.Family} · version {design.TemplateVersion}. Double-click or Open design to edit.");
                 chip.Click += (_, _) => { _selectedDesignId = design.DesignId; RefreshDesigns(); };
-                chip.DoubleTapped += async (_, _) => { _selectedDesignId = design.DesignId; await RunDesignAsync(async studio => await studio.OpenGraphicsDesignAsync(design.DesignId)); };
+                chip.DoubleTapped += async (_, _) => { _selectedDesignId = design.DesignId; await RunDesignAsync(async studio => await studio.OpenGraphicsDesignInDesignerAsync(design)); };
                 _designChips.Children.Add(chip);
             }
         }
@@ -694,6 +702,15 @@ public sealed class GraphicsBuilderControl : UserControl
         try { _designStatus.Text = (await operation(studio))?.Message ?? "Choose a design first."; }
         catch (Exception ex) when (ex is not OutOfMemoryException) { _designStatus.Text = "The design operation failed: " + ex.Message; }
         finally { _designBusy = false; _designsSignature = ""; RefreshDesigns(); }
+    }
+
+    /// <summary>"Open in Designer": the selected design (already the draft: the Designer shows it with its
+    /// unsaved edits), else the New design dialog.</summary>
+    private async Task OpenInDesignerAsync()
+    {
+        if (_attached is not { } studio) return;
+        if (SelectedDesign is not { } design) { await ShowStartDialogAsync(); return; }
+        await RunDesignAsync(async s => await s.OpenGraphicsDesignInDesignerAsync(design));
     }
 
     private async Task ShowStartDialogAsync()
