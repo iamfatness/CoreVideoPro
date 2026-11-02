@@ -994,7 +994,7 @@
                         </Button>
                     </StackPanel>
 
-                    <Border Padding="10,6" Width="150" CornerRadius="6"
+                    <Border Padding="10,6" Width="96" CornerRadius="6"
                             BorderThickness="1" BorderBrush="{StaticResource StudioBorderBrush}"
                             ToolTipService.ToolTip="{x:Bind ViewModel.StudioAssignedLowerThirdDetail, Mode=OneWay}">
                         <StackPanel Spacing="3">
@@ -1042,7 +1042,7 @@
                 </StackPanel>
 
                 <!-- Keep all production actions on the same row and baseline. -->
-                <Grid x:Name="FooterTransport" Width="916" HorizontalAlignment="Center" VerticalAlignment="Top">
+                <Grid x:Name="FooterTransport" Width="770" HorizontalAlignment="Center" VerticalAlignment="Top">
                     <StackPanel x:Name="FooterOutputActions" Orientation="Horizontal" Spacing="8">
                     <StackPanel Orientation="Horizontal" Spacing="0">
                         <Button Style="{StaticResource TakeButton}" Width="122" MinHeight="48"
@@ -1085,7 +1085,7 @@
                         </Button>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <Button Width="144" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button Width="132" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             AutomationProperties.Name="Record"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
@@ -1247,7 +1247,7 @@
                     </Button>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <Button Width="144" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button Width="132" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="13" AutomationProperties.Name="Stream" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
@@ -1364,7 +1364,7 @@
                     <!-- Virtual camera (virtual-camera-spec V4): output the program as a
                          system webcam Zoom/Teams/Meet can select. -->
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <ToggleButton Width="160" MinHeight="48" CornerRadius="8,0,0,8" Padding="12,4"
+                    <ToggleButton Width="106" MinHeight="48" CornerRadius="8,0,0,8" Padding="8,4"
                                   AutomationProperties.Name="Virtual camera"
                                   IsChecked="{x:Bind ViewModel.VirtualCameraEnabled, Mode=TwoWay}"
                                   ToolTipService.ToolTip="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}">
@@ -1374,7 +1374,7 @@
                                 <TextBlock Text="Virtual Cam" FontSize="11" FontWeight="Bold" />
                                 <TextBlock Text="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}"
                                            Style="{StaticResource StudioMonoLabel}" FontSize="9"
-                                           TextTrimming="CharacterEllipsis" MaxWidth="140" />
+                                           TextTrimming="CharacterEllipsis" MaxWidth="70" />
                             </StackPanel>
                         </StackPanel>
                     </ToggleButton>
@@ -1414,7 +1414,7 @@
                          IsChecked is one-way; Click asks the ViewModel, so a refusal leaves the
                          tile off with the reason in its subtitle. -->
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <ToggleButton Width="160" MinHeight="48" CornerRadius="8,0,0,8" Padding="12,4"
+                    <ToggleButton Width="92" MinHeight="48" CornerRadius="8,0,0,8" Padding="8,4"
                                   AutomationProperties.Name="NDI output"
                                   IsChecked="{x:Bind ViewModel.NdiOutputEnabled, Mode=OneWay}"
                                   Click="OnNdiOutputTileClicked"
@@ -1425,7 +1425,7 @@
                                 <TextBlock Text="NDI" FontSize="11" FontWeight="Bold" />
                                 <TextBlock Text="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}"
                                            Style="{StaticResource StudioMonoLabel}" FontSize="9"
-                                           TextTrimming="CharacterEllipsis" MaxWidth="140" />
+                                           TextTrimming="CharacterEllipsis" MaxWidth="56" />
                             </StackPanel>
                         </StackPanel>
                     </ToggleButton>
