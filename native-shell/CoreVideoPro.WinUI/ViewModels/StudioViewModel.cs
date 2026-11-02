@@ -9244,7 +9244,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Recording = RecordingRequested,
             Streaming = StreamingRequested,
             StreamDestinations = BuildSelectedStreamDestinations(validatedOnly: true),
-            StreamDestinationSettings = BuildStreamDestinationSettings(),
+            NdiOutput = NdiOutputEnabled,
+            NdiDestinations = BuildNdiDestinations(validatedOnly: true),
+            StreamDestinationSettings = BuildStreamDestinationSettings()
+                .Concat(BuildNdiDestinationSettings())
+                .ToArray(),
             SrtIngestSources = BuildSrtIngestSourceSettings(),
             RtmpIngestSources = _rtmpIngestCoordinator.BuildWire(),
             CanvasOutputProfile = canvasProfile,

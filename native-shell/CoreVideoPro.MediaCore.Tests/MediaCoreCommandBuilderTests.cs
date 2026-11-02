@@ -372,7 +372,9 @@ public sealed class MediaCoreCommandBuilderTests
                 Format = "mkv",
                 Quality = "archive"
             },
-            StreamDestinations = ["rtmp", "ndi", "srt"],
+            StreamDestinations = ["rtmp", "srt"],
+            NdiOutput = true,
+            NdiDestinations = ["ndi"],
             StreamDestinationSettings =
             [
                 new(
@@ -393,15 +395,6 @@ public sealed class MediaCoreCommandBuilderTests
                     BFrames: 2,
                     AllowEnhancedRtmp: true),
                 new(
-                    "ndi",
-                    "NDI",
-                    NdiName: "CoreVideo Pro Program",
-                    NdiGroup: "public",
-                    Fps: 30,
-                    TargetBitrateMbps: 4.1,
-                    VideoCodec: "h265",
-                    EncoderMode: "nvenc"),
-                new(
                     "srt",
                     "SRT",
                     Mode: "caller",
@@ -412,6 +405,15 @@ public sealed class MediaCoreCommandBuilderTests
                     Passphrase: "secret-passphrase",
                     KeyLength: 32,
                     StreamId: "publish/live/main",
+                    Fps: 30,
+                    TargetBitrateMbps: 4.1,
+                    VideoCodec: "h265",
+                    EncoderMode: "nvenc"),
+                new(
+                    "ndi",
+                    "NDI",
+                    NdiName: "CoreVideo Pro Program",
+                    NdiGroup: "public",
                     Fps: 30,
                     TargetBitrateMbps: 4.1,
                     VideoCodec: "h265",
@@ -434,7 +436,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal(60, outputProfile.ExtensionData!["fps"].GetInt32());
 
         var output = commands.Single(command => command.Type == "start-program-output");
-        Assert.Equal(["recording", "rtmp", "ndi", "srt"], GetStringArray(output, "destinations"));
+        Assert.Equal(["recording", "rtmp", "srt", "ndi"], GetStringArray(output, "destinations"));
         Assert.Empty(GetStringArray(output, "isoParticipantIds"));
         Assert.Equal("stream-1080p30", GetObject(output, "streamOutputProfile").GetProperty("profileId").GetString());
         Assert.Equal(30, GetObject(output, "streamOutputProfile").GetProperty("fps").GetInt32());
@@ -443,7 +445,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("av1", GetObject(output, "recordingOutputProfile").GetProperty("codec").GetString());
         Assert.Equal(28, GetObject(output, "recordingOutputProfile").GetProperty("targetBitrateMbps").GetDouble());
         var destinationSettings = GetObjectArray(output, "destinationSettings");
-        Assert.Equal(["rtmp", "ndi", "srt"], destinationSettings.Select(destination => destination.GetProperty("id").GetString()));
+        Assert.Equal(["rtmp", "srt", "ndi"], destinationSettings.Select(destination => destination.GetProperty("id").GetString()));
         Assert.Equal("rtmps", destinationSettings[0].GetProperty("protocol").GetString());
         Assert.Equal("rtmps://live.example.com/app", destinationSettings[0].GetProperty("url").GetString());
         Assert.Equal("abc123", destinationSettings[0].GetProperty("streamKey").GetString());
@@ -458,24 +460,24 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("high", destinationSettings[0].GetProperty("h264Profile").GetString());
         Assert.Equal(2, destinationSettings[0].GetProperty("bFrames").GetInt32());
         Assert.True(destinationSettings[0].GetProperty("allowEnhancedRtmp").GetBoolean());
-        Assert.Equal("CoreVideo Pro Program", destinationSettings[1].GetProperty("ndiName").GetString());
-        Assert.Equal("public", destinationSettings[1].GetProperty("ndiGroup").GetString());
-        Assert.Equal(4.1, destinationSettings[1].GetProperty("targetBitrateMbps").GetDouble());
-        Assert.Equal(30, destinationSettings[1].GetProperty("fps").GetInt32());
-        Assert.Equal("h265", destinationSettings[1].GetProperty("videoCodec").GetString());
-        Assert.Equal("nvenc", destinationSettings[1].GetProperty("encoderMode").GetString());
-        Assert.Equal("caller", destinationSettings[2].GetProperty("mode").GetString());
-        Assert.Equal("receiver.example.com", destinationSettings[2].GetProperty("host").GetString());
-        Assert.Equal(9000, destinationSettings[2].GetProperty("port").GetInt32());
-        Assert.Equal(120, destinationSettings[2].GetProperty("latencyMs").GetInt32());
-        Assert.Equal(120000, destinationSettings[2].GetProperty("latencyUs").GetInt32());
-        Assert.Equal("secret-passphrase", destinationSettings[2].GetProperty("passphrase").GetString());
-        Assert.Equal(32, destinationSettings[2].GetProperty("keyLength").GetInt32());
-        Assert.Equal("publish/live/main", destinationSettings[2].GetProperty("streamId").GetString());
+        Assert.Equal("CoreVideo Pro Program", destinationSettings[2].GetProperty("ndiName").GetString());
+        Assert.Equal("public", destinationSettings[2].GetProperty("ndiGroup").GetString());
         Assert.Equal(4.1, destinationSettings[2].GetProperty("targetBitrateMbps").GetDouble());
         Assert.Equal(30, destinationSettings[2].GetProperty("fps").GetInt32());
         Assert.Equal("h265", destinationSettings[2].GetProperty("videoCodec").GetString());
         Assert.Equal("nvenc", destinationSettings[2].GetProperty("encoderMode").GetString());
+        Assert.Equal("caller", destinationSettings[1].GetProperty("mode").GetString());
+        Assert.Equal("receiver.example.com", destinationSettings[1].GetProperty("host").GetString());
+        Assert.Equal(9000, destinationSettings[1].GetProperty("port").GetInt32());
+        Assert.Equal(120, destinationSettings[1].GetProperty("latencyMs").GetInt32());
+        Assert.Equal(120000, destinationSettings[1].GetProperty("latencyUs").GetInt32());
+        Assert.Equal("secret-passphrase", destinationSettings[1].GetProperty("passphrase").GetString());
+        Assert.Equal(32, destinationSettings[1].GetProperty("keyLength").GetInt32());
+        Assert.Equal("publish/live/main", destinationSettings[1].GetProperty("streamId").GetString());
+        Assert.Equal(4.1, destinationSettings[1].GetProperty("targetBitrateMbps").GetDouble());
+        Assert.Equal(30, destinationSettings[1].GetProperty("fps").GetInt32());
+        Assert.Equal("h265", destinationSettings[1].GetProperty("videoCodec").GetString());
+        Assert.Equal("nvenc", destinationSettings[1].GetProperty("encoderMode").GetString());
 
         var targets = commands.Single(command => command.Type == "set-recording-targets");
         Assert.Equal("Recordings/CoreVideo Pro", GetString(targets, "targetFolder"));
@@ -524,6 +526,95 @@ public sealed class MediaCoreCommandBuilderTests
             GetString(stopRecording, "reason"));
     }
 
+    private static MediaCoreProductionSyncContext NdiContext() => new()
+    {
+        ActiveSceneId = "interview",
+        SceneRoutes = [new("interview-1", "active-speaker", "mix", null)],
+        Participants = Participants
+    };
+
+    [Fact]
+    public void NdiOnAloneStartsProgramOutputWithOnlyNdi()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(NdiContext() with
+        {
+            Recording = false,
+            Streaming = false,
+            NdiOutput = true,
+            NdiDestinations = ["ndi", "ndi-graphics"]
+        });
+
+        var output = commands.Single(command => command.Type == "start-program-output");
+        Assert.Equal(["ndi", "ndi-graphics"], GetStringArray(output, "destinations"));
+        Assert.Contains(commands, command => command.Type == "start-encoder-session");
+        Assert.DoesNotContain(commands, command => command.Type == "stop-encoder-session");
+    }
+
+    [Fact]
+    public void StoppingTheStreamKeepsNdiInTheDestinationList()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(NdiContext() with
+        {
+            Streaming = false,
+            StreamDestinations = ["rtmp"],
+            NdiOutput = true,
+            NdiDestinations = ["ndi"]
+        });
+
+        var output = commands.Single(command => command.Type == "start-program-output");
+        Assert.Equal(["ndi"], GetStringArray(output, "destinations"));
+    }
+
+    [Fact]
+    public void StreamOnNdiOffSendsNoNdi()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(NdiContext() with
+        {
+            Streaming = true,
+            StreamDestinations = ["rtmp"],
+            NdiOutput = false,
+            NdiDestinations = ["ndi"]
+        });
+
+        var output = commands.Single(command => command.Type == "start-program-output");
+        Assert.Equal(["rtmp"], GetStringArray(output, "destinations"));
+    }
+
+    [Fact]
+    public void RecordingPlusNdiThenNdiOffNeverStopsTheEncoderSession()
+    {
+        var withNdi = MediaCoreCommandBuilder.BuildSyncCommands(NdiContext() with
+        {
+            Recording = true,
+            NdiOutput = true,
+            NdiDestinations = ["ndi"]
+        });
+        var withoutNdi = MediaCoreCommandBuilder.BuildSyncCommands(NdiContext() with
+        {
+            Recording = true,
+            NdiOutput = false,
+            NdiDestinations = ["ndi"]
+        });
+
+        Assert.Equal(["recording", "ndi"], GetStringArray(withNdi.Single(c => c.Type == "start-program-output"), "destinations"));
+        Assert.Equal(["recording"], GetStringArray(withoutNdi.Single(c => c.Type == "start-program-output"), "destinations"));
+        Assert.DoesNotContain(withNdi, command => command.Type == "stop-encoder-session");
+        Assert.DoesNotContain(withoutNdi, command => command.Type == "stop-encoder-session");
+    }
+
+    [Fact]
+    public void NothingOnStopsTheEncoderSession()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(NdiContext() with
+        {
+            NdiOutput = false,
+            NdiDestinations = ["ndi"]
+        });
+
+        Assert.Contains(commands, command => command.Type == "stop-encoder-session");
+        Assert.DoesNotContain(commands, command => command.Type == "start-program-output");
+    }
+
     [Fact]
     public void StopsEncoderSessionWhenStreamingHasNoDestinations()
     {
@@ -554,7 +645,9 @@ public sealed class MediaCoreCommandBuilderTests
             Participants = Participants,
             Recording = true,
             Streaming = true,
-            StreamDestinations = ["rtmp", "ndi"],
+            StreamDestinations = ["rtmp"],
+            NdiOutput = true,
+            NdiDestinations = ["ndi", "ndi-graphics"],
             CaptionText = "Welcome to the show.",
             CaptionSpeaker = "Sophia Martinez"
         });
