@@ -201,4 +201,64 @@ public sealed class GraphicsTemplateEditorTests
         Assert.Equal("location",node["text"]!["field"]!.GetValue<string>()); Assert.True(node["collapseWhenEmpty"]!.GetValue<bool>());
         Assert.Contains(ids,i=>i=="name"); Assert.Equal("lower-third",root["family"]!.GetValue<string>());
     }
+
+    private static NativeGraphicsScratch WithGradient(NativeGraphicsScratch s)
+    {
+        s=GraphicsTemplateEditor.AddField(GraphicsTemplateEditor.AddField(s,"from-colour","colour"),"to-colour","colour");
+        return GraphicsTemplateEditor.Set(s,"plate","fill",Json(new{stops=new object[]{new{field="from-colour"},new{field="to-colour"}},direction="horizontal"}));
+    }
+    [Fact]
+    public void GradientStopBindingsCountAsUsageAndRenameRewritesThem()
+    {
+        var s=WithGradient(LowerThird());
+        var ex=Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.RemoveField(s,"to-colour"));
+        Assert.Equal("Used by: plate",ex.Message);
+        Assert.Equal(["plate"],GraphicsTemplateEditor.FieldUsage(s).Single(u=>u.FieldId=="from-colour").LayerLabels);
+        var renamed=GraphicsTemplateEditor.RenameField(s,"to-colour","end-colour");
+        var stops=GraphicsTemplateEditor.Layer(renamed,"plate").GetProperty("fill").GetProperty("stops");
+        Assert.Equal("from-colour",stops[0].GetProperty("field").GetString()); Assert.Equal("end-colour",stops[1].GetProperty("field").GetString());
+        Assert.DoesNotContain("to-colour",renamed.Manifest);
+    }
+    [Fact]
+    public void NumberBindingsMustKeepTheSampleInsideTheNativeRange()
+    {
+        var s=GraphicsTemplateEditor.AddField(LowerThird(),"size","number");
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.BindLayer(s,"name-label","fontSize","size",null)); // default 0, native needs 1-512
+        s=GraphicsTemplateEditor.SetFieldOptions(s,"size",null,Json(24),false);
+        var bound=GraphicsTemplateEditor.BindLayer(s,"name-label","fontSize","size",null);
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.SetFieldOptions(bound,"size",null,Json(0),false));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.SetFieldOptions(bound,"size",null,Json(600),false));
+        Assert.Equal(48,FieldOf(GraphicsTemplateEditor.SetFieldOptions(bound,"size",null,Json(48),false),"size")["default"]!.GetValue<double>());
+        var opacity=GraphicsTemplateEditor.AddField(LowerThird(),"fade","number"); // 0 is valid for opacity
+        Assert.NotNull(GraphicsTemplateEditor.BindLayer(opacity,"plate","opacity","fade",null));
+    }
+    [Fact]
+    public void EditsThatWouldOrphanARequiredFieldAreRefusedNamingIt()
+    {
+        var s=LowerThird(); // name is required and used only by name-label
+        var ex=Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.BindLayer(s,"name-label","text",null,Json("Fixed")));
+        Assert.Contains("name",ex.Message);
+        ex=Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.Remove(s,"name-label"));
+        Assert.Contains("name",ex.Message);
+        Assert.NotNull(GraphicsTemplateEditor.Remove(s,"title-label")); // optional field may be orphaned
+        var second=GraphicsTemplateEditor.Duplicate(s,"name-label"); // still used elsewhere
+        Assert.NotNull(GraphicsTemplateEditor.Remove(second,"name-label"));
+    }
+    [Fact]
+    public void BindLayerRefusesPropertiesTheLayerTypeLacksAndLiteralFieldReferences()
+    {
+        var s=GraphicsTemplateEditor.AddField(LowerThird(),"extra","text");
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.BindLayer(s,"plate","text","extra",null));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.BindLayer(s,"plate","fontSize",null,Json(20)));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.BindLayer(s,"title-label","text",null,Json(new{field="extra"})));
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.BindLayer(s,"nope","text","extra",null));
+    }
+    [Fact]
+    public void AddFieldChecksItsDefaultAgainstMaxLengthAndHideWhenEmptySkipsLockedLayers()
+    {
+        Assert.Throws<InvalidDataException>(()=>GraphicsTemplateEditor.AddField(LowerThird(),"tint","colour",3)); // default #FFFFFF is 7 long
+        var locked=GraphicsTemplateEditor.Lock(LowerThird(),"title-label",true);
+        var result=GraphicsTemplateEditor.SetFieldOptions(locked,"title",null,null,false); // seed has collapse on title-label
+        Assert.True(GraphicsTemplateEditor.Layer(result,"title-label").GetProperty("collapseWhenEmpty").GetBoolean());
+    }
 }

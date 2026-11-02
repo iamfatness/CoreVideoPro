@@ -56,7 +56,7 @@ public static class GraphicsTemplateEditor
         if(replacement is JsonObject reference && reference["token"] is JsonValue token && token.TryGetValue<string>(out var name)) {
             var tokens=root["brandTokens"]?.AsArray(); if(tokens is not null && !tokens.Any(t=>t?.GetValue<string>()==name)) tokens.Add(name);
         }
-        return Save(root);
+        KeepRequiredFieldsUsed(Read(scratch),root); return Save(root);
     }
     public static NativeGraphicsScratch Lock(NativeGraphicsScratch scratch,string id,bool locked)
     {
@@ -79,7 +79,7 @@ public static class GraphicsTemplateEditor
         var root=Read(scratch); var row=Walk(root["layers"]!.AsArray()).FirstOrDefault(r=>r.Node["id"]?.GetValue<string>()==id);
         if(row.Node is null || row.Locked) throw new InvalidOperationException("Unlock the layer before removing it.");
         row.Siblings.RemoveAt(row.Index); if(root["layers"]!.AsArray().Count==0) throw new InvalidOperationException("Keep at least one template layer.");
-        return Save(root);
+        KeepRequiredFieldsUsed(Read(scratch),root); return Save(root);
     }
     public static NativeGraphicsScratch Add(NativeGraphicsScratch scratch,string type)
     {
@@ -133,10 +133,45 @@ public static class GraphicsTemplateEditor
     private static string? BindableType(string property)=>property switch {
         "text"=>"string","color" or "fill"=>"color","asset"=>"image",
         "opacity" or "fontSize" or "cornerRadius"=>"number",_=>null };
+    // Native quantity() ranges for the number-bindable properties.
+    private static (double Min,double Max) NumberRange(string property)=>property switch { "fontSize"=>(1,512),"cornerRadius"=>(0,4096),_=>(0,1) };
+    // Properties each native layer type accepts (GraphicsTemplate.cpp keys(node, allowed)).
+    private static bool LayerAllows(string layerType,string property)=>property is "x" or "y" or "width" or "height" or "opacity" or "visible" || layerType switch {
+        "rect"=>property is "fill" or "cornerRadius",
+        "text"=>property is "text" or "font" or "fontWeight" or "fontSize" or "lineHeight" or "color" or "align" or "maxLines" or "overflow",
+        "image"=>property is "asset" or "fit" or "align",
+        "group"=>property is "flow" or "gap" or "padding",
+        _=>false };
+    // Field references may nest (gradient stops), so look through objects and arrays.
+    private static bool Contains(JsonNode? value,string id)=>value switch {
+        JsonObject o=>(o["field"] is JsonValue f && f.TryGetValue<string>(out var name) && name==id) || o.Any(p=>Contains(p.Value,id)),
+        JsonArray a=>a.Any(i=>Contains(i,id)),_=>false };
+    private static void RewriteReferences(JsonNode? value,string id,string newId)
+    {
+        if(value is JsonObject o) {
+            if(o["field"] is JsonValue f && f.TryGetValue<string>(out var name) && name==id) o["field"]=newId;
+            foreach(var child in o.Select(p=>p.Value).ToArray()) RewriteReferences(child,id,newId);
+        } else if(value is JsonArray a) foreach(var child in a.ToArray()) RewriteReferences(child,id,newId);
+    }
+    private static IEnumerable<string> UsedProperties(JsonObject layer,string id)=>layer.Where(p=>p.Key is not ("metadata" or "children") && Contains(p.Value,id)).Select(p=>p.Key);
+    private static HashSet<string> UsedFieldIds(JsonObject root)
+    {
+        var used=new HashSet<string>(StringComparer.Ordinal);
+        foreach(var id in Fields(root).OfType<JsonObject>().Select(f=>f["id"]!.GetValue<string>()))
+            if(Walk(root["layers"]!.AsArray()).Any(r=>UsedProperties(r.Node,id).Any())) used.Add(id);
+        return used;
+    }
+    // Native rejects a template whose required field no layer uses; refuse the edit that would orphan one.
+    private static void KeepRequiredFieldsUsed(JsonObject before,JsonObject after)
+    {
+        var usedBefore=UsedFieldIds(before); var usedAfter=UsedFieldIds(after);
+        var orphaned=Fields(after).OfType<JsonObject>().Where(f=>f["required"] is JsonValue r && r.TryGetValue<bool>(out var on) && on)
+            .Select(f=>f["id"]!.GetValue<string>()).Where(id=>usedBefore.Contains(id) && !usedAfter.Contains(id)).ToArray();
+        if(orphaned.Length!=0) throw new InvalidOperationException("Required variable "+string.Join(", ",orphaned)+" must stay on a layer.");
+    }
     private static JsonArray Fields(JsonObject root)=>root["fields"] as JsonArray ?? throw new InvalidDataException("Missing fields.");
     private static JsonObject? FindField(JsonObject root,string id)=>Fields(root).OfType<JsonObject>().FirstOrDefault(f=>f["id"]?.GetValue<string>()==id);
     private static string LabelOf(JsonObject node)=>node["metadata"] is JsonObject m && m["label"] is JsonValue l && l.TryGetValue<string>(out var caption) ? caption : node["id"]!.GetValue<string>();
-    private static bool BindsField(JsonNode? value,string id)=>value is JsonObject o && o["field"] is JsonValue f && f.TryGetValue<string>(out var name) && name==id;
     private static JsonNode DefaultFor(string type)=>type switch { "number"=>0,"color"=>"#FFFFFF","boolean"=>false,_=>"" };
     private static void CheckValue(string type,JsonNode? value,int? maxLength)
     {
@@ -148,7 +183,7 @@ public static class GraphicsTemplateEditor
                 if(type=="image" && text.Length!=0 && !FieldIdPattern.IsMatch(text)) throw new InvalidDataException("Choose an image asset.");
                 break;
             case "number":
-                if(value is not JsonValue n || !n.TryGetValue<double>(out var d) || !double.IsFinite(d)) throw new InvalidDataException("Sample value must be a number.");
+                if(value is not JsonValue n || JsonSerializer.SerializeToElement(n) is not { ValueKind: JsonValueKind.Number } num || !double.IsFinite(num.GetDouble())) throw new InvalidDataException("Sample value must be a number.");
                 break;
             default:
                 if(value is not JsonValue b || !b.TryGetValue<bool>(out _)) throw new InvalidDataException("Sample value must be on or off.");
@@ -170,6 +205,7 @@ public static class GraphicsTemplateEditor
         CheckLength(type,maxLength);
         var field=new JsonObject { ["id"]=id,["type"]=type,["default"]=DefaultFor(type),["bindable"]=true };
         if(maxLength is not null) field["maxLength"]=maxLength;
+        CheckValue(type,field["default"],maxLength);
         fields.Add(field); return Save(root);
     }
     public static NativeGraphicsScratch RenameField(NativeGraphicsScratch scratch,string id,string newId)
@@ -181,14 +217,14 @@ public static class GraphicsTemplateEditor
         field["id"]=newId;
         // Identifier rewrite is allowed on locked layers: leaving a stale binding would break the template.
         foreach(var row in Walk(root["layers"]!.AsArray()))
-            foreach(var property in row.Node.Where(p=>BindsField(p.Value,id)).Select(p=>p.Key).ToArray()) row.Node[property]=new JsonObject { ["field"]=newId };
+            foreach(var property in row.Node.Where(p=>p.Key is not ("metadata" or "children")).Select(p=>p.Value).ToArray()) RewriteReferences(property,id,newId);
         return Save(root);
     }
     public static IReadOnlyList<(string FieldId,IReadOnlyList<string> LayerLabels)> FieldUsage(NativeGraphicsScratch scratch)
     {
         var root=Read(scratch); var rows=Walk(root["layers"]!.AsArray()).ToArray();
         return Fields(root).OfType<JsonObject>().Select(f=>f["id"]!.GetValue<string>()).Select(id=>
-            (id,(IReadOnlyList<string>)rows.Where(r=>r.Node.Any(p=>BindsField(p.Value,id))).Select(r=>LabelOf(r.Node)).ToArray())).ToArray();
+            (id,(IReadOnlyList<string>)rows.Where(r=>UsedProperties(r.Node,id).Any()).Select(r=>LabelOf(r.Node)).ToArray())).ToArray();
     }
     public static NativeGraphicsScratch RemoveField(NativeGraphicsScratch scratch,string id)
     {
@@ -205,7 +241,16 @@ public static class GraphicsTemplateEditor
         var cap=field["maxLength"]?.GetValue<int>();
         if(sample is JsonElement value) { var node=JsonNode.Parse(value.GetRawText()); CheckValue(type,node,cap); field["default"]=node; }
         else CheckValue(type,field["default"],cap);
-        foreach(var row in Walk(root["layers"]!.AsArray()).Where(r=>r.Node["type"]!.GetValue<string>() is "text" or "image" && r.Node.Any(p=>BindsField(p.Value,id)))) {
+        if(type=="number") {
+            // Native validates with field defaults, so the default must satisfy every bound property's range.
+            var number=field["default"]!.GetValue<double>();
+            foreach(var row in Walk(root["layers"]!.AsArray()))
+                foreach(var property in UsedProperties(row.Node,id).Where(p=>BindableType(p)=="number")) {
+                    var (min,max)=NumberRange(property);
+                    if(number<min || number>max) throw new InvalidDataException($"Sample value must be {min}–{max} while {property} uses this variable.");
+                }
+        }
+        foreach(var row in Walk(root["layers"]!.AsArray()).Where(r=>r.Node["type"]!.GetValue<string>() is "text" or "image" && !r.Locked && UsedProperties(r.Node,id).Any())) {
             if(hideWhenEmpty) row.Node["collapseWhenEmpty"]=true; else row.Node.Remove("collapseWhenEmpty");
         }
         return Save(root);
@@ -213,10 +258,20 @@ public static class GraphicsTemplateEditor
     public static NativeGraphicsScratch BindLayer(NativeGraphicsScratch scratch,string layerId,string property,string? fieldId,JsonElement? literal)
     {
         if((fieldId is null)==(literal is null)) throw new ArgumentException("Give either a variable or a fixed value, not both.");
-        if(fieldId is null) return Set(scratch,layerId,property,literal!.Value);
-        var field=FindField(Read(scratch),fieldId) ?? throw new InvalidDataException("Variable was removed.");
+        var root=Read(scratch); var layer=Walk(root["layers"]!.AsArray()).FirstOrDefault(r=>r.Node["id"]?.GetValue<string>()==layerId);
+        if(layer.Node is null) throw new InvalidDataException("Layer was removed.");
+        if(!LayerAllows(layer.Node["type"]!.GetValue<string>(),property)) throw new InvalidDataException("This layer does not have that property.");
+        if(fieldId is null) {
+            if(literal!.Value.ValueKind==JsonValueKind.Object && literal.Value.TryGetProperty("field",out _)) throw new InvalidDataException("Use a variable binding, not a fixed value, to reference a variable.");
+            return Set(scratch,layerId,property,literal.Value);
+        }
+        var field=FindField(root,fieldId) ?? throw new InvalidDataException("Variable was removed.");
         var expected=BindableType(property) ?? throw new InvalidDataException("This layer property cannot use a variable.");
         if(field["type"]!.GetValue<string>()!=expected) throw new InvalidDataException($"This property needs a {expected} variable.");
+        if(expected=="number") {
+            var (min,max)=NumberRange(property); var sample=field["default"]!.GetValue<double>();
+            if(sample<min || sample>max) throw new InvalidDataException($"Set the variable's sample value to {min}–{max} before using it for {property}.");
+        }
         return Set(scratch,layerId,property,JsonSerializer.SerializeToElement(new JsonObject { ["field"]=fieldId }));
     }
 }
