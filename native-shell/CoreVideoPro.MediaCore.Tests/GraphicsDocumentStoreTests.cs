@@ -28,7 +28,7 @@ public sealed class GraphicsDocumentStoreTests : IDisposable
     public async Task SchemaOneMigratesInMemoryAndPrivateScratchRoundTripsWithoutAiringState()
     {
         Directory.CreateDirectory(_directory);var old=JsonSerializer.Serialize(Example with {SchemaVersion=1},new JsonSerializerOptions(JsonSerializerDefaults.Web));await File.WriteAllTextAsync(DocumentPath,old);
-        var store=new GraphicsDocumentStore(DocumentPath);var loaded=await store.LoadAsync();Assert.Equal(2,loaded.Document.SchemaVersion);Assert.Equal(old,await File.ReadAllTextAsync(DocumentPath));
+        var store=new GraphicsDocumentStore(DocumentPath);var loaded=await store.LoadAsync();Assert.Equal(3,loaded.Document.SchemaVersion);Assert.Equal(old,await File.ReadAllTextAsync(DocumentPath));
         var definition=JsonSerializer.SerializeToElement(new {templateId="card",templateVersion=1,layers=new[] {new {id="plate",type="rect",x=0,y=0,width=640,height=200,fill="#123456"}}});
         var scratch=NativeGraphicsScratch.From(definition);var cue=Example.Cues[0] with {Draft=new("card",1,JsonSerializer.SerializeToElement(new {name="Ada"}),new(),new(),Scratch:scratch)};
         await store.SaveAsync(loaded.Document with {Cues=[cue]});var restored=await new GraphicsDocumentStore(DocumentPath).LoadAsync();
@@ -50,7 +50,7 @@ public sealed class GraphicsDocumentStoreTests : IDisposable
     [Fact]
     public async Task NewerSchemaStaysReadOnlyAndExternalEditsCannotBeOverwritten()
     {
-        Directory.CreateDirectory(_directory); var newer = "{\"schemaVersion\":3,\"future\":true}";
+        Directory.CreateDirectory(_directory); var newer = "{\"schemaVersion\":4,\"future\":true}";
         await File.WriteAllTextAsync(DocumentPath, newer);
         var store = new GraphicsDocumentStore(DocumentPath);
         Assert.True((await store.LoadAsync()).ReadOnly);
@@ -99,7 +99,7 @@ public sealed class GraphicsDocumentStoreTests : IDisposable
         await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Playlist = [rows[0] with { Hotkey = "F13" }] }));
         await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Playlist = [rows[0] with { PlayOutAfterMs = 5000 }] }));
     }
-    // #1076 slice 2: shot layouts persist additively in schema 2; a document saved before
+    // #1076 slice 2: shot layouts persist additively (since schema 2); a document saved before
     // they existed loads them empty, and the validator refuses malformed ones whole.
     [Fact]
     public async Task ShotLayoutsRoundTripAndOlderDocumentsLoadEmpty()
@@ -107,7 +107,7 @@ public sealed class GraphicsDocumentStoreTests : IDisposable
         var store = new GraphicsDocumentStore(DocumentPath);
         await store.SaveAsync(Example);
         var before = await new GraphicsDocumentStore(DocumentPath).LoadAsync();
-        Assert.Empty(before.Document.ShotLayouts); Assert.Equal(2, before.Document.SchemaVersion);
+        Assert.Empty(before.Document.ShotLayouts); Assert.Equal(3, before.Document.SchemaVersion);
         ShotLayout[] layouts = [
             new() { Id = "open", Name = "Open", SceneId = "intro", RowIds = ["title", "logo"], Hotkey = "Shift+F1" },
             new() { Id = "clean", Name = "Clean", SceneId = "", RowIds = [], Hotkey = "Shift+F11", PlayOutOthers = true },
@@ -115,7 +115,7 @@ public sealed class GraphicsDocumentStoreTests : IDisposable
         Assert.All(layouts, l => Assert.True(l.IsValid));
         await store.SaveAsync(Example with { ShotLayouts = layouts });
         var loaded = (await new GraphicsDocumentStore(DocumentPath).LoadAsync()).Document;
-        Assert.Equal(2, loaded.SchemaVersion);
+        Assert.Equal(3, loaded.SchemaVersion);
         Assert.Equal(new[] { "open", "clean", "unkeyed" }, loaded.ShotLayouts.Select(l => l.Id));
         Assert.Equal(new[] { "Shift+F1", "Shift+F11", "" }, loaded.ShotLayouts.Select(l => l.Hotkey));
         Assert.Equal(new[] { "title", "logo" }, loaded.ShotLayouts[0].RowIds); Assert.Equal("intro", loaded.ShotLayouts[0].SceneId);
@@ -127,6 +127,87 @@ public sealed class GraphicsDocumentStoreTests : IDisposable
         await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { ShotLayouts = [layouts[0] with { RowIds = ["title", "title"] }] }));
         await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { ShotLayouts = [layouts[0] with { Name = "" }] }));
         Assert.False(new ShotLayout { Id = "Bad Id", Name = "x" }.IsValid);
+    }
+    private const string V2Document = """
+    {"schemaVersion":2,"showId":"default","authority":"legacy",
+     "cues":[{"id":"cue-one","name":"Interview","scope":"global","sceneId":"","sourceId":"","draft":{"templateId":"compact-solid","templateVersion":1,"fields":{"name":"Ada","title":""},"style":{},"animations":{"in":{"type":"none","direction":"left","easing":"linear","durationMs":0},"out":{"type":"none","direction":"left","easing":"linear","durationMs":0}}}}],
+     "templates":[{"templateId":"graphic-abc","templateVersion":1,"manifestHash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","definition":{"templateId":"graphic-abc","templateVersion":1},"packageRoot":""}],
+     "playlist":[
+      {"id":"guest","kind":"guest","name":"Guest name","hotkey":"F1","playOutAfterMs":8000,"templateId":"minimal-accent","templateVersion":1,"fields":{"name":"Alex Rivera","title":""},"followSources":true,
+       "motion":{"in":{"type":"slide","direction":"left","easing":"ease-out","durationMs":300},"out":{"type":"fade","direction":"left","easing":"linear","durationMs":200}}},
+      {"id":"names","kind":"title","name":"Names list","hotkey":"F2","playOutAfterMs":0,"templateId":"graphic-abc","templateVersion":1,"fields":{},
+       "variants":[{"id":"ada","name":"Ada Lovelace","title":"Analyst"},{"id":"grace","name":"Grace Hopper","title":""}],
+       "placement":{"anchor":"lower-left","x":96,"y":-54,"scale":1.25},
+       "clock":{"mode":"countdown","zone":"local","format":"hms","finish":"hold-zero","offsetMinutes":0,"durationSeconds":600}}],
+     "shotLayouts":[{"id":"open","name":"Open","sceneId":"intro","rowIds":["guest","names"],"hotkey":"Shift+F1","playOutOthers":true}],
+     "stylePresets":{"Evening":{"nameSize":64}}}
+    """;
+    private static GraphicsDesign Design(string id, string name = "Panel name bar", string? templateId = null) =>
+        new(id, name, "lower-third", templateId ?? "design-panel-name-bar-a1b2c3", 1, JsonSerializer.SerializeToElement(new { templateId = templateId ?? "design-panel-name-bar-a1b2c3", templateVersion = 1 }),
+            [new("logo", new string('a', 64), "assets/logo.png")], DateTimeOffset.Parse("2026-11-01T10:00:00Z"));
+    [Fact]
+    public async Task SchemaTwoDocumentLoadsAsSchemaThreeWithNoDesignsAndEverythingElseIntact()
+    {
+        Directory.CreateDirectory(_directory); await File.WriteAllTextAsync(DocumentPath, V2Document);
+        var loaded = await new GraphicsDocumentStore(DocumentPath).LoadAsync();
+        Assert.False(loaded.ReadOnly); var d = loaded.Document;
+        Assert.Equal(3, d.SchemaVersion); Assert.Empty(d.Designs);
+        Assert.Equal("cue-one", Assert.Single(d.Cues).Id); Assert.Equal("graphic-abc", Assert.Single(d.Templates).TemplateId);
+        Assert.Equal(new[] { "guest", "names" }, d.Playlist.Select(r => r.Id));
+        Assert.True(d.Playlist[0].FollowSources); Assert.Equal("slide", d.Playlist[0].Motion!.In.Type); Assert.Equal(8000, d.Playlist[0].PlayOutAfterMs);
+        Assert.Equal(new[] { "ada", "grace" }, d.Playlist[1].Variants.Select(v => v.Id)); Assert.Equal(1.25, d.Playlist[1].Placement!.Scale);
+        Assert.Equal("countdown", d.Playlist[1].Clock!.Mode); Assert.Equal(600, d.Playlist[1].Clock!.DurationSeconds);
+        Assert.Equal(new[] { "guest", "names" }, Assert.Single(d.ShotLayouts).RowIds); Assert.True(d.ShotLayouts[0].PlayOutOthers);
+        Assert.Equal(64, d.StylePresets["Evening"].NameSize);
+        Assert.Equal(V2Document, await File.ReadAllTextAsync(DocumentPath));
+    }
+    [Fact]
+    public async Task FirstSchemaThreeSaveKeepsTheV2FileOnceAndNeverOverwritesIt()
+    {
+        Directory.CreateDirectory(_directory); await File.WriteAllTextAsync(DocumentPath, V2Document);
+        var store = new GraphicsDocumentStore(DocumentPath); var loaded = await store.LoadAsync();
+        Assert.False(File.Exists(DocumentPath + ".v2.bak"));
+        await store.SaveAsync(loaded.Document with { Designs = [Design("d1")] });
+        Assert.Equal(V2Document, await File.ReadAllTextAsync(DocumentPath + ".v2.bak"));
+        Assert.Contains("\"schemaVersion\": 3", await File.ReadAllTextAsync(DocumentPath));
+        await store.SaveAsync(loaded.Document with { Designs = [Design("d1"), Design("d2", "Second", "design-second-ffffff")] });
+        Assert.Equal(V2Document, await File.ReadAllTextAsync(DocumentPath + ".v2.bak"));
+        // A fresh store over the now-v3 file never makes another copy.
+        var again = new GraphicsDocumentStore(DocumentPath); await again.SaveAsync((await again.LoadAsync()).Document);
+        Assert.Equal(V2Document, await File.ReadAllTextAsync(DocumentPath + ".v2.bak"));
+        // A v1 file next to an existing .v2.bak leaves that .bak untouched.
+        File.Delete(DocumentPath); await File.WriteAllTextAsync(DocumentPath, V2Document.Replace("\"schemaVersion\":2", "\"schemaVersion\":1"));
+        await File.WriteAllTextAsync(DocumentPath + ".v2.bak", "earlier backup");
+        var third = new GraphicsDocumentStore(DocumentPath); await third.SaveAsync((await third.LoadAsync()).Document);
+        Assert.Equal("earlier backup", await File.ReadAllTextAsync(DocumentPath + ".v2.bak"));
+    }
+    [Fact]
+    public async Task FreshWorkspaceSavesWithoutAV2Backup()
+    {
+        await new GraphicsDocumentStore(DocumentPath).SaveAsync(Example);
+        Assert.False(File.Exists(DocumentPath + ".v2.bak"));
+    }
+    [Fact]
+    public async Task DesignsRoundTripAndAreValidated()
+    {
+        var store = new GraphicsDocumentStore(DocumentPath);
+        var designs = new[] { Design("d1"), Design("d2", "Second", "design-second-ffffff") };
+        await store.SaveAsync(Example with { Designs = designs });
+        var loaded = (await new GraphicsDocumentStore(DocumentPath).LoadAsync()).Document;
+        Assert.Equal(new[] { "d1", "d2" }, loaded.Designs.Select(d => d.DesignId));
+        Assert.Equal("design-panel-name-bar-a1b2c3", loaded.Designs[0].TemplateId); Assert.Equal("lower-third", loaded.Designs[0].Family);
+        Assert.Equal(1, loaded.Designs[0].Definition.GetProperty("templateVersion").GetInt32());
+        Assert.Equal(new GraphicsDesignAsset("logo", new string('a', 64), "assets/logo.png"), Assert.Single(loaded.Designs[0].Assets));
+        Assert.Equal(designs[0].UpdatedAt, loaded.Designs[0].UpdatedAt);
+        var many = Enumerable.Range(0, 32).Select(i => Design("d" + i, "N" + i, "design-n-" + i.ToString("x6"))).ToArray();
+        await store.SaveAsync(Example with { Designs = many });
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = many.Append(Design("d33", "N33", "design-n-000033")).ToArray() }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [Design("d1"), Design("d1", "Other", "design-other-aaaaaa")] }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [Design("d1", templateId: "compact-solid")] }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [Design("d1", templateId: "Design-Bad-a1b2c3")] }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [Design("d1", name: "")] }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { Designs = [Design("d1", name: new string('x', 81))] }));
+        await store.SaveAsync(Example with { Designs = [Design("d1", name: new string('x', 80))] });
     }
     public void Dispose() { if (Directory.Exists(_directory)) Directory.Delete(_directory, true); }
 }
