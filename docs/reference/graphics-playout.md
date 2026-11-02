@@ -42,8 +42,10 @@ Guest name (F1, plays out after 8 s), Show title (F2), Logo (F3), LIVE bug (F4)
 and Sponsor card (F5, 15 s, no image until you pick one), plus the four preset
 shot layouts below. With a playlist in place, new graphics are built in Design
 (below) and land as rows. Rows are edited in the inspector: name, title line,
-From Sources, hides-after and hotkey; "Open in Design" reopens that row in the
-builder. Nothing is created in the core until a row is shown or cued.
+From Sources, hides-after and hotkey; "Open in Design" reopens that row: a
+design's row opens the design in the Designer (below), any other row opens in
+the builder with its look and fields (also the fallback when the design cannot
+be opened). Nothing is created in the core until a row is shown or cued.
 
 ## Build a graphic (Design)
 
@@ -56,7 +58,8 @@ numbered steps left to right:
    Sources" is on, otherwise as a fixed-text Title-kind row; a clock template turns
    the row clock on).
 2. **Pick a look**: every installed template of that family, newest version of
-   each, with the core's native thumbnail. A sponsor card is an image you choose
+   each, with the core's native thumbnail. Your own designs are not repeated
+   here; they are listed once, under Your designs (#1087 N3). A sponsor card is an image you choose
    instead (PNG/JPG, full frame), pinned through `AssignPlaylistImageAsync`.
 3. **Preview**: the workspace session's private draft on the native authoring
    canvas. It is never on air.
@@ -80,9 +83,20 @@ numbered steps left to right:
    **Save changes** (the id is kept so shot layouts still find it). "Open in
    Operate →" appears after a save.
 
-**Advanced editor** (top right) is the previous workspace unchanged: looks
-library, private cues, layer editor, templates, styles and automation. Exactly
-one Design surface holds the private preview lease at a time. The pure decisions
+The builder's header has two more entries (top right):
+
+- **Open in Designer** opens the design selected under Your designs in the
+  Designer (if it is already the private draft, the Designer shows it with its
+  unsaved edits). With no design yet it opens New design.
+- **Cues & automation** is the previous workspace without its layer editor and
+  design actions: show templates, saved cues and styles, package import and
+  export, the Automation drawer, the existing overlay controls, and Cue / Show /
+  Hide of private cues. Probes, the control API and scripts still rely on it;
+  its actions run on `GraphicsWorkspaceSession` / `GraphicsWorkspaceLibrary`.
+  It has no back button yet: opening a design, or Open in Designer, leaves it.
+
+Exactly one Design surface (builder, Designer or Cues & automation) shows and
+holds the private preview lease at a time (`GraphicsDesignSurfaces`). The pure decisions
 (`GraphicsBuilder`: kinds, template filter, slug ids, free hotkey, row shape,
 upsert order) are unit-tested; the control is `GraphicsBuilderControl`, hosted by
 `OverlaysPage` beside the workspace and the playlist.
@@ -97,7 +111,7 @@ belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../s
 - **Your designs** (a bar under the builder's header) lists the show's designs
   (at most 32). Click a design to select it; **Open design** (or double-click the
   design) installs the design's current
-  version if the core lacks it and opens it in the Advanced editor as the
+  version if the core lacks it and opens it in the **Designer** as the
   workspace's *private draft*. **Duplicate** makes a new design (new id, same
   definition, "<name> copy"). **Delete** asks first and is refused while a
   playlist row uses the design ("Used by: <row names>") and while the design is
@@ -112,18 +126,17 @@ belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../s
   in place), a **Name** (1–80 characters), then **Open in the designer**. A
   refusal (library full, too many designs, invalid name) keeps the dialog open
   with the reason.
-- **Variables** (mockup D3, its own inspector tab, selected when a design opens;
-  also offered for any declarative look under "Customize layout & motion"): each
+- **Variables** (mockup D3, the Designer inspector's Variables tab): each
   variable with its kind, limit and **Used by** (the layers bound to it); add
   (Text with max length, Number, Colour, On/off, Image), rename (every binding
   follows), delete (refused while a layer uses it), max length, sample value and
   **If empty: hide its layer / show the sample**. Native limits stay: 32
   variables, ids `[a-z][a-z0-9-]{0,63}`. Edits change the private draft only
   (the template scratch plus draft values kept in step, since the core refuses
-  unknown or missing fields). The layer editor's text and image sources list the
-  edited variables, so a new variable can be bound before saving.
-- **Save design** and **Save to playlist** sit in the workspace header beside the
-  title, with their status line; editing is paused while a save runs. **Save design** installs the edited manifest as the design's next template
+  unknown or missing fields). The Designer's **Shows** and **Image…** lists offer
+  the edited variables, so a new variable can be bound before saving.
+- **Save** (Save design) and **Save to playlist · F-key** sit in the Designer's
+  header, with its status line; editing is paused while a save runs. **Save design** installs the edited manifest as the design's next template
   version (`design-<slug>-<6 hex>`, never a built-in id), stores it as the
   design's definition, removes superseded versions nothing references, and
   re-opens the draft on the new version. Saving a look that is not a design
@@ -171,13 +184,13 @@ the same copy; a stored design is reported as stored even if the editor was busy
 `PlaylistRow` re-pins the design's existing row or takes the next free F-key. The
 ViewModel seam is `StudioViewModel.GraphicsDesigns.cs`; the UI is `GraphicsBuilderControl` (Your
 designs), `GraphicsDesignStartDialog`, `GraphicsVariablesPanel` and
-`GraphicsWorkspaceControl.Designs.cs` (Save / Save to playlist). The builder's
+`GraphicsDesignerControl` (Save / Save to playlist). The builder's
 logo picker offers PNG and JPEG only; SVG returns with rasterised import
 (slice 4).
 
-**Layer structure edits (slice 2, document only; the layers panel is not built yet).**
+**Layer structure edits (slice 2).**
 `GraphicsTemplateEditor.Structure.cs` holds the pure edits the Designer's layers panel
-will call: `SetLabel` (layer name = `metadata.label`, 1–64 characters; allowed on locked
+calls: `SetLabel` (layer name = `metadata.label`, 1–64 characters; allowed on locked
 layers), `SetVisible` (hide = native `"visible": false`, show removes it; allowed on locked
 layers; refused when a variable drives visibility), `MoveTo` (reorder or reparent; front
 index 0 = frontmost; a parent change keeps the canvas position and grows a free-layout
@@ -188,6 +201,83 @@ new optional image variable); `Duplicate` names the copy "… copy". Every edit 
 native limits (64 layers, nesting 8, literal x/y 0–8192) and keeps required variables on a layer. Names and
 locks are shell-only metadata; native round-trips them untouched, pinned by the
 `designer-structure` fixture (`GraphicsTemplate.HiddenGroupDrawsNoChildrenAndKeepsEditorMetadata`).
+
+## The Designer (Graphics Designer slice 2)
+
+The Designer is where a design's layers are edited (mockup D1). It opens from
+**Open in Designer**, **Open design** / double-click under Your designs, New
+design, and Operate's "Open in Design" on a design's row. It replaces the old
+workspace's layer pane. Everything you do here edits the private draft;
+nothing reaches Preview or Program until you Show or Cue the row in Operate.
+
+**Header.** `LOWER THIRD · DRAFT` and the design name; **← Your designs** (back
+to the builder; unsaved edits stay in the draft); **Undo**; **Save** ("Save as
+new design" when the draft is a look, not a design); **Save to playlist · F6**
+(the key it will use: the design's existing row's key, else the next free one);
+and a two-line status (full text in its tooltip). Editing is paused while a save
+runs.
+
+**Layers panel (left).** One row per layer, front to back: "Top of the list is
+in front. Drag to reorder, double-click to rename." Each row shows the layer's
+name and what it shows (`{name}` for a variable, or its kind).
+
+- **Eye** hides or shows the layer. **A hidden layer is hidden on air too**:
+  the hide is saved in the design (native `"visible": false`), not just in the
+  editor. A layer whose visibility a variable drives cannot be hidden here (the
+  eye is disabled and says why).
+- **Lock**: a locked layer cannot be moved, resized, edited in the inspector or
+  dragged elsewhere; it can still be renamed and hidden.
+- **Rename**: double-click, type, Enter (Esc or clicking away cancels).
+- **Drag** a row onto the upper or lower half of another to put it before or
+  after it, onto the middle of a group to put it inside, or to the end of the
+  list to send it to the back. A layer moved into a group may shift so it fits
+  inside the group; the status then says "Moved to fit inside the group."
+- **Duplicate** (the copy goes just in front, named "… copy"), **Delete** (Undo
+  brings it back), **Group** (wraps the selected layer in a new group) and
+  **Ungroup** (replaces the selected group with its layers; positions are kept).
+- **Add**: **Text**, **Shape**, **Image…** (an image variable, an image already
+  in the design, or a new image variable chosen when the graphic is used) and
+  **Clock** (only in clock and countdown designs; elsewhere the button says
+  "Clocks tick in clock and countdown designs. Start one from the Clock look.").
+  The new layer is selected.
+
+**Canvas (centre).** The native preview of the draft. Click a layer to select
+it, drag to move it, drag its corner to resize it. Moves and edge resizes
+**snap** to the safe area and the centre lines (within 8 px), and the guide is
+drawn while they hold; **hold Ctrl to place freely**. Resizes that keep the
+aspect ratio, scaling the whole graphic, and keyboard nudges do not snap.
+**Sample text** buttons under the canvas change only the preview: **Typical**
+(your draft's values; drags work on this one), **Longest name** (each text
+variable filled to its limit, to check the layout) and **Empty title** (the
+second line left blank).
+
+**Inspector (right), Layer tab.** `NAME · KIND LAYER` and the selected layer's
+properties; a locked layer shows them disabled.
+
+| Layer | Fields |
+|---|---|
+| Text, Clock | **Shows** (a variable, or Fixed text with its box), Typeface (brand fonts plus the layer's own), Size, Colour (brand colours, or type `#RRGGBB`), Weight, Lines, Overflow, Align |
+| Shape | Fill (same colour box; a gradient fill says choosing a colour replaces it), Corner radius |
+| Image | Source, Fit, Align, Vertical align |
+| Every layer | X, Y, W, H, Opacity |
+
+The **Variables tab** is the Variables panel (above).
+
+**Not in this slice.** Slice 3: per-layer motion (each layer's own in / out)
+and a Play preview of it. Slice 4: stroke, ellipse and line shapes, text
+outline and shadow, size to content, text that shrinks to fit, and image
+import into the design.
+
+**#1087** (Slice 1 review follow-ups): N1, N2, N4, N5 and (c) were fixed at the
+start of this slice, and N3 (designs listed twice in the builder) with the
+Designer; (b) (a design's own asset folder after a core restart) moves to
+Slice 4.
+
+Code: `GraphicsDesignerControl` (+ `.Layers` / `.Inspector`) over MediaCore
+`GraphicsDesignerModel` (rows, drop targets, inspector), `GraphicsSnap`,
+`GraphicsPreviewSamples` and the `GraphicsTemplateEditor` structure edits;
+`GraphicsDesignWorkflow.DesignForRow` / `IsEditing` decide what Open in
+Designer and Operate's "Open in Design" do.
 
 ## Show vs Cue
 
@@ -314,6 +404,7 @@ makes the Take carry them:
 | Default playlist and preset layouts from the curated templates | `Services/GraphicsWorkspaceLibrary.Playlist.cs` (`DefaultPlaylistFor`, `DefaultShotLayouts`, `SaveShotLayoutsAsync`) |
 | ViewModel seam (strangler partial; scene select + routed guests for layouts) | `ViewModels/StudioViewModel.GraphicsPlayout.cs`, routing in `StudioViewModel.StudioLowerThird.cs` |
 | Control API and state | `CoreVideoPro.Control/ControlActionRegistry.cs`, `ControlState.cs` (`GraphicsStrip`, `GraphicsPlaylist`, `GraphicsLayouts`, `LowerThirdOnAir`), `WinUI/Services/StudioControlSurface.cs` |
+| Design surfaces | `Controls/GraphicsBuilderControl.cs` (builder, Your designs, Open in Designer, Cues & automation), `Controls/GraphicsDesignerControl*.cs` (Designer), `Controls/GraphicsWorkspaceControl*.cs` (Cues & automation), `Services/GraphicsDesignSurfaces.cs` (one surface at a time); decisions in MediaCore `GraphicsBuilder`, `GraphicsDesignWorkflow`, `GraphicsDesignerModel`, `GraphicsSnap`, `GraphicsPreviewSamples` |
 | UI | `Controls/GraphicsOnAirStripControl.cs`, `Controls/GraphicsPlayoutControl.cs` (full and `Compact`), `Views/OverlaysPage.xaml` (toggle), `Views/StudioWorkspace.xaml` (strip + compact playlist), `Services/GraphicsHotkeyRouter.cs` |
 | Core | `native/src/graphics/GraphicsInstances.*` (`rideTake`, `promoteCuedForTake`, `uncue`), `native/src/core/MediaCore.cpp` (`beginTakeTransition`) |
 

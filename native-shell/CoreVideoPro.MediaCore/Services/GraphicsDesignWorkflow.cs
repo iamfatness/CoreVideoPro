@@ -28,6 +28,15 @@ public sealed class GraphicsDesignWorkflow
     public GraphicsDesign? DesignFor(NativeGraphicsDraft? draft) =>
         draft is null ? null : _library.Document.Designs.FirstOrDefault(d => d.TemplateId == draft.TemplateId);
 
+    /// <summary>The design a playlist row shows (by its template id); null for a built-in or imported look.</summary>
+    public GraphicsDesign? DesignForRow(GraphicsPlaylistRow row) =>
+        GraphicsDesignIds.IsDesignTemplateId(row.TemplateId) ? _library.Document.Designs.FirstOrDefault(d => d.TemplateId == row.TemplateId) : null;
+
+    /// <summary>The editor's browse draft is this design's current version (not a cue, not an older
+    /// version a playlist row pins): the Designer can show it as is, unsaved edits included.</summary>
+    public bool IsEditing(GraphicsDesign design) =>
+        _session.SelectedId.Length == 0 && _session.Draft is { } draft && draft.TemplateId == design.TemplateId && draft.TemplateVersion == design.TemplateVersion;
+
     public async Task<GraphicsDesignResult> CreateAsync(string? kind, string? lookTemplateId, int lookTemplateVersion, string name)
     {
         var leaving = Leaving();

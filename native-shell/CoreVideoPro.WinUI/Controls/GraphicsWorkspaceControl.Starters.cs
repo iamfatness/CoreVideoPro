@@ -161,9 +161,8 @@ public sealed partial class GraphicsWorkspaceControl
         _starterBrandTools.Visibility = trying ? Visibility.Visible : Visibility.Collapsed;
         foreach(var control in _starterBrandTools.Children.OfType<Microsoft.UI.Xaml.Controls.Control>()) control.IsEnabled = !_starterAdding && !_starterLogoImporting;
         _cues.IsEnabled=_starterGraphics.IsEnabled=_samples.IsEnabled=_compare.IsEnabled=_customizeGraphic.IsEnabled=!_starterAdding;
-        // A design save pauses editing (RefreshDesignChrome); opening the library pane must not resume it.
-        _canvas.IsEnabled=!_starterAdding && !_designSaving;
-        foreach(var scroll in _inspectorScrolls)scroll.IsEnabled=!_starterAdding && !_designSaving;
+        _canvas.IsEnabled=!_starterAdding;
+        foreach(var scroll in _inspectorScrolls)scroll.IsEnabled=!_starterAdding;
         _starterHeading.Text = "2. Personalize · " + (_activeStarter?.Name ?? "");
         _starterGraphics.Visibility = trying ? Visibility.Visible : Visibility.Collapsed;
         _cues.Visibility = trying ? Visibility.Collapsed : Visibility.Visible;

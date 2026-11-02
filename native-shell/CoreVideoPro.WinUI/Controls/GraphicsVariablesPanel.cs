@@ -148,7 +148,7 @@ public sealed class GraphicsVariablesPanel : UserControl
         var id = _newName.Text.Trim();
         var kind = KindChoices[Math.Max(0, _newKind.SelectedIndex)].Kind;
         int? maxLength = kind == "text" && !double.IsNaN(_newMaxLength.Value) ? (int)Math.Round(_newMaxLength.Value) : null;
-        if (Apply(s => GraphicsTemplateEditor.AddField(s, id, kind, maxLength), $"Added {id}. Bind a layer to it in Edit layers, then Save design.")) {
+        if (Apply(s => GraphicsTemplateEditor.AddField(s, id, kind, maxLength), $"Added {id}. To put it on screen, select a layer and choose it under Shows, then Save design.")) {
             _selected = id; _newName.Text = ""; Refresh();
         }
     }

@@ -61,7 +61,7 @@ public sealed partial class OverlaysPage : UserControl
     }
     private void SuspendDesignPreviews() { GraphicsWorkspace.SuspendPreview(); GraphicsBuilder.SuspendPreview(); GraphicsDesigner.SuspendPreview(); }
     /// <summary>Exactly one Design surface holds the private preview: the builder by default, the Designer while a
-    /// design is open in it, the advanced workspace behind "Advanced editor" (<see cref="GraphicsDesignSurfaces"/>).</summary>
+    /// design is open in it, the workspace behind "Cues & automation" (<see cref="GraphicsDesignSurfaces"/>).</summary>
     private void ResumeWorkspacePreviewIfDesign()
     {
         if (ViewModel?.IsGraphicsDesignMode != true) return;

@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 
@@ -39,8 +40,8 @@ public sealed partial class StudioViewModel
     /// <summary>The compact playlist column in the Studio tab (spec: right panel of the console).</summary>
     [ObservableProperty] private bool _showGraphicsPanel = true;
 
-    /// <summary>Design mode shows the template-first builder by default; the full workspace
-    /// (looks library, private cues, layer editor, automation) sits behind "Advanced editor".
+    /// <summary>Design mode shows the template-first builder by default; the old workspace
+    /// (show templates, saved cues and styles, packages, automation) sits behind "Cues &amp; automation".
     /// Session-only: a new launch always opens on the builder.</summary>
     [ObservableProperty] private bool _graphicsDesignAdvanced;
     /// <summary>Playlist row the builder opens for editing ("" = start a new graphic). Set by
@@ -61,12 +62,25 @@ public sealed partial class StudioViewModel
         OnPropertyChanged(nameof(IsGraphicsAdvancedVisible)); OnPropertyChanged(nameof(IsGraphicsDesignerVisible));
     }
 
-    /// <summary>Operate → Design for one row: the builder opens that row's look and fields.
+    /// <summary>Operate → Design for one row. A design's row opens the design in the Designer; any other row
+    /// opens in the builder with its look and fields (also the fallback when the design cannot be opened).
     /// Program and Preview are unchanged.</summary>
     public void OpenGraphicInDesign(string rowId)
     {
-        GraphicsDesignRowId = rowId; GraphicsDesignAdvanced = false; GraphicsDesignerOpen = false;
-        GraphicsMode = GraphicsModeDesign; ActiveTab = StudioTab.Overlays;
+        GraphicsDesignAdvanced = false; GraphicsMode = GraphicsModeDesign; ActiveTab = StudioTab.Overlays;
+        if (GraphicsLibrary.Document.Playlist.FirstOrDefault(r => r.Id == rowId) is { } row && GraphicsDesignForRow(row) is { } design) {
+            _ = OpenRowDesignAsync(rowId, design);
+            return;
+        }
+        GraphicsDesignerOpen = false; GraphicsDesignRowId = rowId;
+    }
+
+    private async Task OpenRowDesignAsync(string rowId, GraphicsDesign design)
+    {
+        GraphicsDesignResult result;
+        try { result = await OpenGraphicsDesignInDesignerAsync(design); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { result = new(false, ex.Message, design, null); }
+        if (!result.Ok) { GraphicsDesignerOpen = false; GraphicsDesignRowId = rowId; }
     }
 
     /// <summary>Canonical source id of the source currently occupying Program (the Guest-row

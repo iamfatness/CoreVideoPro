@@ -32,7 +32,6 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
     private readonly TextBox _search = new() { PlaceholderText = "Search looks" };
     private readonly ComboBox _scope=new() {Header="New cue scope",HorizontalAlignment=HorizontalAlignment.Stretch};
     private readonly ComboBox _family = new() { ItemsSource = new[] { "All", "lower-third", "title", "bug", "clock", "countdown" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly GraphicsTemplateLayerEditor _layersEditor=new();
     private readonly GraphicsAuthoringCanvas _canvas = new();
     private readonly TextBlock _status = Copy("Choose a look, create a cue, then edit privately."), _native = Copy("Native authoring canvas"), _facts = Copy("");
     private readonly ComboBox _samples=new() {Header="Private preview copy",ItemsSource=GraphicsPreviewSamples.All.Select(sample=>sample.Label).ToArray(),SelectedIndex=0,HorizontalAlignment=HorizontalAlignment.Stretch};
@@ -70,10 +69,9 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
     private void Attach()
     {
         if (Studio is null || !IsLoaded || _session == Studio.GraphicsWorkspace) return;
-        Detach(); _session = Studio.GraphicsWorkspace; _canvas.Session=_session; _layersEditor.Session=_session;
+        Detach(); _session = Studio.GraphicsWorkspace; _canvas.Session=_session;
         _automation=new(Studio);_automationDrawer.Content=_automation;
-        _variables.Session=_session; _layersEditor.IsDesignDraft=draft=>Studio?.GraphicsDesignFor(draft) is not null;
-        _attachedStudio = Studio; _attachedStudio.PropertyChanged += OnStudioProperty; _attachedStudio.GraphicsDesignOpened += OnDesignOpened;
+        _attachedStudio = Studio; _attachedStudio.PropertyChanged += OnStudioProperty;
         _savedLibrary = Studio.GraphicsLibrary; _savedLibrary.Changed += OnLibraryChanged; _ = _savedLibrary.LoadAsync();
         _session.Changed += OnChanged; _session.PreviewChanged += OnPreviewChanged;
         _editor = new("preview:lower-third", "Graphics private draft", new() { Lut = "none" }) { LiveEditing = false };
@@ -85,10 +83,10 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         RetireTextFields(); _inspectorKey = "";
         if (_session is not null) { _session.Changed -= OnChanged; _session.PreviewChanged -= OnPreviewChanged; }
         if (_savedLibrary is not null) _savedLibrary.Changed -= OnLibraryChanged;
-        if (_attachedStudio is not null) { _attachedStudio.PropertyChanged -= OnStudioProperty; _attachedStudio.GraphicsDesignOpened -= OnDesignOpened; }
+        if (_attachedStudio is not null) _attachedStudio.PropertyChanged -= OnStudioProperty;
         _previewOwner?.Dispose(); _previewOwner = null;
         if (_editor is not null) _editor.PropertyChanged -= OnPreviewProperty;
-        _canvas.Session=null; _layersEditor.Session=null; _variables.Session=null; _layersEditor.IsDesignDraft=null;
+        _canvas.Session=null;
         _automationDrawer.Content=null;_automation=null;
         _session = null; _editor = null; _savedLibrary = null; _attachedStudio = null;
     }
@@ -182,7 +180,6 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
             if (_inspectorKey != inspectorKey) { _inspectorKey = inspectorKey; BuildInspector(); }
             RefreshStarterCards(); RefreshStarterChrome();
             RefreshDesignChrome();
-            RefreshLayerList();
             foreach (var refresh in _refreshFields) refresh();
             foreach (var panel in new[] { _contentControls, _styleControls, _layoutControls, _motionControls })
                 foreach (var child in panel.Children.OfType<Microsoft.UI.Xaml.Controls.Control>()) child.IsEnabled = !_session.Busy;

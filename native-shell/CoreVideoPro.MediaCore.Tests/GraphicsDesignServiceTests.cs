@@ -352,6 +352,26 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.Same(design.DesignId, workflow.DesignFor(_session.Draft)!.DesignId);
     }
 
+    [Fact] public async Task DesignForRowFindsTheRowsDesign()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        var designRow = new GraphicsPlaylistRow { Id = "strap", Kind = GraphicsPlaylistRow.Guest, Name = "Strap", TemplateId = design.TemplateId, TemplateVersion = 1 };
+        var builtInRow = new GraphicsPlaylistRow { Id = "logo", Kind = GraphicsPlaylistRow.Logo, Name = "Logo", TemplateId = "corner-logo", TemplateVersion = 1 };
+        Assert.Equal(design.DesignId, workflow.DesignForRow(designRow)?.DesignId);
+        Assert.Null(workflow.DesignForRow(builtInRow));
+    }
+
+    [Fact] public async Task IsEditingOnlyWhenTheDraftIsTheDesignsCurrentVersion()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        Assert.False(workflow.IsEditing(design));
+        Assert.True((await workflow.OpenAsync(design.DesignId)).Ok);
+        Assert.True(workflow.IsEditing(design));
+        Assert.False(workflow.IsEditing(design with { TemplateVersion = 2 })); // an older version is not the design
+    }
+
     [Fact] public async Task SaveOnALookMakesOneCopyAndARetryAfterAFailedSaveGoesIntoThatCopy()
     {
         var (library, _, workflow) = BuildWorkflow();

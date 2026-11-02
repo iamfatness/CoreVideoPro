@@ -38,9 +38,9 @@ internal static class GraphicsWorkspaceLayoutProbe
             var seedDefinition = System.Text.Json.JsonSerializer.SerializeToElement(seedManifest);
             Require(await studio.GraphicsLibrary.SaveDesignsAsync([new GraphicsDesign("design-probe-strap-a1b2c3", "Probe strap", "lower-third", "design-probe-strap-a1b2c3", 1, seedDefinition, [], DateTimeOffset.UtcNow)], "Probe design stored."), "Probe design could not be stored");
             Invoke(Button(page, "Design")); await Task.Delay(80); page.UpdateLayout();
-            // #1076 slice 3: Design opens on the template-first builder; the workspace sits behind "Advanced editor".
+            // #1076 slice 3: Design opens on the template-first builder; the old workspace sits behind "Cues & automation".
             Require(studio.IsGraphicsDesignMode && Descendants(page).OfType<GraphicsBuilderControl>().Single().Visibility == Visibility.Visible, "Design toggle did not reveal the builder");
-            Require(Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed, "Advanced workspace is visible before Advanced editor is chosen");
+            Require(Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed, "The Cues & automation workspace is visible before it is chosen");
             Require(Descendants(page).OfType<Microsoft.UI.Xaml.Controls.Button>().Count(b => b.Tag is GraphicsBuilderKind) == GraphicsBuilder.Kinds.Count, "Builder does not offer every kind of graphic");
             await Eventually(() => Descendants(page).OfType<Button>().Any(b => b.Content?.ToString() == "Probe strap"), "Design does not list the stored design under Your designs");
             Require(Descendants(page).OfType<TextBlock>().Any(t => t.Text == "YOUR DESIGNS" && t.ActualHeight > 0), "Design does not show Your designs");
@@ -62,9 +62,13 @@ internal static class GraphicsWorkspaceLayoutProbe
             await ReviewImageWriter.SaveAsync(startDialog!, Path.Combine(directory, "graphics-design-start-dialog.png"));
             startDialog!.Hide(); await Task.Delay(150);
             checks.Add("Design lists Your designs (Open / Duplicate / Delete) and New design opens the start dialog with the four blank kinds, a look picker and a name");
-            Invoke(Button(page, "Advanced editor")); await Task.Delay(80); page.UpdateLayout();
-            Require(studio.GraphicsDesignAdvanced && Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Visible, "Advanced editor did not reveal the workspace");
-            checks.Add("Graphics opens in Playout (strip + playlist); Design reveals the builder with every kind; Advanced editor reveals the single existing workspace control");
+            Invoke(Button(page, "Cues & automation")); await Task.Delay(80); page.UpdateLayout();
+            Require(studio.GraphicsDesignAdvanced && Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Visible, "Cues & automation did not reveal the workspace");
+            // Graphics Designer slice 2: the Designer is the editor; the workspace keeps no layer pane and no design actions.
+            var cuesWorkspace = Descendants(page).OfType<GraphicsWorkspaceControl>().Single();
+            Require(!Descendants(cuesWorkspace).OfType<Button>().Any(b => b.Content?.ToString() is "Edit layers ↗" or "Save design" || Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(b) is "Save design" or "Save to playlist"),
+                "Cues & automation still offers Edit layers or the design save actions");
+            checks.Add("Graphics opens in Playout (strip + playlist); Design reveals the builder with every kind; Cues & automation reveals the single existing workspace control, with no Edit layers or design save actions");
             // Reserve the existing navigation/header/production footer rather
             // than pretending Graphics can consume the entire display.
             page.Width = 1840; page.Height = 820; page.HorizontalAlignment = HorizontalAlignment.Left; page.VerticalAlignment = VerticalAlignment.Top;
@@ -141,24 +145,8 @@ internal static class GraphicsWorkspaceLayoutProbe
             var seedTemplate = System.Text.Json.JsonSerializer.Deserialize<NativeGraphicsTemplate>(seedManifest.ToJsonString(),new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))! with {
                 Runtime="declarative", Definition=seedDefinition, ManifestHash=NativeGraphicsScratch.From(seedDefinition).Hash };
             studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=[..catalog,seedTemplate]});
-            studio.GraphicsWorkspace.Browse(seedTemplate); await Task.Delay(100); Invoke(Button(workspace,"Variables")); await Task.Delay(150); page.UpdateLayout();
-            var variablesPanel = Descendants(workspace).OfType<GraphicsVariablesPanel>().SingleOrDefault();
-            Require(variablesPanel is { Visibility: Visibility.Visible, ActualHeight: > 0 }, "The Variables panel is not shown for an open design");
-            var variableNames = Descendants(variablesPanel!).OfType<TextBlock>().Select(t => t.Text).ToHashSet(StringComparer.Ordinal);
-            Require(variableNames.Contains("name") && variableNames.Contains("title"), "The Variables panel does not list the seed's name and title variables");
-            Require(Descendants(variablesPanel!).OfType<TextBlock>().Any(t => t.Text == "Used by: Name"), "The Variables panel does not say which layer uses a variable");
-            Require(Button(workspace,"Save design").ActualHeight > 0 && Button(workspace,"Save to playlist").ActualHeight > 0, "Save design / Save to playlist are missing for an open design");
-            await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,"graphics-design-variables-1080.png"));
-            checks.Add("An open design shows the Variables panel with the seed's name and title (Used by) plus Save design and Save to playlist");
-            // 1360x768 shell: the Graphics page gets about 1320 x 640 (measured from graphics-full-1360x768.png).
-            page.Width = 1320; page.Height = 640; await Task.Delay(150); page.UpdateLayout();
-            var variablesScroll = Descendants(workspace).OfType<ScrollViewer>().Single(v => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(v) == "Design variables");
-            var variablesTop = variablesScroll.TransformToVisual(workspace).TransformPoint(new(0, 0)).Y;
-            var visibleVariables = Math.Min(variablesScroll.ViewportHeight, workspace.ActualHeight - variablesTop);
-            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-design-variables-1360x768.png"));
-            Require(variablesScroll.Visibility == Visibility.Visible && visibleVariables >= 200, $"Variables panel has only {visibleVariables:0} px visible at 1360x768");
-            checks.Add($"At 1360x768 an open design's Variables panel keeps {visibleVariables:0} px of visible height (>= 200)");
             await CheckDesignerAsync(page, studio, seedTemplate, checks, directory);
+            studio.GraphicsDesignAdvanced = true; await Task.Delay(80);
             page.Width = 1840; page.Height = 820; await Task.Delay(100); page.UpdateLayout();
             studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=catalog});
             studio.GraphicsWorkspace.Browse(catalog[0]);
@@ -232,14 +220,21 @@ internal static class GraphicsWorkspaceLayoutProbe
             await CheckAutomationEditingAsync(window, studio, checks);
         } finally { Environment.SetEnvironmentVariable("COREVIDEO_GRAPHICS_DOCUMENT_PATH",previousPath); }
     }
-    /// <summary>Graphics Designer slice 2: the stored "Probe strap" draft open in the Designer at the 1360x768 and
+    /// <summary>Graphics Designer slice 2: the builder's "Open in Designer" with "Probe strap" selected (already the
+    /// private draft) shows it in the Designer; then, at the 1360x768 and
     /// 1600x900 shell budgets (page 1320x640 and 1560x772): one surface, the seed's layer rows, every fixed action
     /// inside the designer, a canvas that is not crowded out, the Variables tab, and Add text / Undo.</summary>
     private static async Task CheckDesignerAsync(OverlaysPage page, StudioViewModel studio, NativeGraphicsTemplate seedTemplate, List<string> checks, string directory)
     {
         studio.GraphicsWorkspace.Browse(seedTemplate);
-        studio.GraphicsDesignerOpen = true;
+        studio.GraphicsDesignAdvanced = false; await Task.Delay(80); page.UpdateLayout();
+        var builder = Descendants(page).OfType<GraphicsBuilderControl>().Single();
+        Require(builder.Visibility == Visibility.Visible, "The builder is not shown before Open in Designer");
+        Invoke(Button(builder, "Probe strap")); await Task.Delay(50);
+        Invoke(Button(builder, "Open in Designer"));
         var designer = Descendants(page).OfType<GraphicsDesignerControl>().Single();
+        await Eventually(() => studio.GraphicsDesignerOpen && designer.Visibility == Visibility.Visible, () => $"Open in Designer with Probe strap selected did not show the Designer (open={studio.GraphicsDesignerOpen}, surface={studio.GraphicsDesignSurface})");
+        checks.Add("Builder: Open in Designer with the Probe strap design selected shows it in the Designer");
         IReadOnlyList<GraphicsDesignerRow> Rows() => Descendants(designer).OfType<FrameworkElement>().Select(e => e.Tag).OfType<GraphicsDesignerRow>().ToArray();
         foreach (var (width, height, shot, minCanvasWidth, minCanvasHeight) in new[] { (1320d, 640d, "graphics-designer-1360x768.png", 640d, 360d), (1560d, 772d, "graphics-designer-1600x900.png", 800d, 450d) }) {
             page.Width = width; page.Height = height; await Task.Delay(150); page.UpdateLayout();
