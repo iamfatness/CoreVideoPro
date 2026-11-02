@@ -181,11 +181,11 @@ will call: `SetLabel` (layer name = `metadata.label`, 1–64 characters; allowed
 layers), `SetVisible` (hide = native `"visible": false`, show removes it; allowed on locked
 layers; refused when a variable drives visibility), `MoveTo` (reorder or reparent; front
 index 0 = frontmost; a parent change keeps the canvas position and grows a free-layout
-group to fit), `Group` / `Ungroup` (positions, flow steps, opacity and hidden state carried
-over), `AddLayer` (text / shape / clock, readable ids `text-1`…, brand tokens; clocks only
+group to fit inside its padding, never past its parent's origin), `Group` / `Ungroup` (positions, flow steps,
+opacity and hidden state carried over; refused when a variable-driven opacity or visibility cannot be), `AddLayer` (text / shape / clock, readable ids `text-1`…, brand tokens; clocks only
 in clock and countdown designs) and `AddImage` (an image variable, a declared asset or a
 new optional image variable); `Duplicate` names the copy "… copy". Every edit keeps the
-native limits (64 layers, nesting 8) and keeps required variables on a layer. Names and
+native limits (64 layers, nesting 8, literal x/y 0–8192) and keeps required variables on a layer. Names and
 locks are shell-only metadata; native round-trips them untouched, pinned by the
 `designer-structure` fixture (`GraphicsTemplate.HiddenGroupDrawsNoChildrenAndKeepsEditorMetadata`).
 

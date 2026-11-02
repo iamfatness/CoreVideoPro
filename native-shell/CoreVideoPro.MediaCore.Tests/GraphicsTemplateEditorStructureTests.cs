@@ -235,4 +235,93 @@ public sealed class GraphicsTemplateEditorStructureTests
         Assert.NotEqual("plate",id);
         Assert.Equal("plate copy",GraphicsTemplateEditor.Layers(copy).Single(l=>l.Id==id).Label);
     }
+
+    // ---- Fix round 1 (task-2 review) ----
+    private static void AssertNativeGeometry(NativeGraphicsScratch s)
+    {
+        void Visit(JsonElement layers) { foreach(var layer in layers.EnumerateArray()) {
+            foreach(var key in new[] { "x","y" }) if(layer.TryGetProperty(key,out var v) && v.ValueKind==JsonValueKind.Number) Assert.InRange(v.GetDouble(),0,8192);
+            if(layer.TryGetProperty("children",out var c)) Visit(c); } }
+        Visit(Root(s).GetProperty("layers"));
+    }
+    [Fact]
+    public void MoveIntoANestedGroupNeverWritesANegativePosition()
+    {
+        var (grouped,inner)=GraphicsTemplateEditor.Group(Seed,"title-label");
+        var (nested,_)=GraphicsTemplateEditor.Group(grouped,inner); // outer at (32,94), inner at (0,0) inside it
+        var moved=GraphicsTemplateEditor.MoveTo(nested,"accent",inner,0);
+        AssertNativeGeometry(moved);
+        Assert.Equal((0d,0d),Pos(moved,inner)); Assert.Equal((0d,0d),Pos(moved,"title-label")); Assert.Equal((0d,0d),Pos(moved,"accent"));
+    }
+    [Fact]
+    public void MoveIntoAPaddedGroupNeverWritesANegativePositionAndKeepsSiblingsInPlace()
+    {
+        var (grouped,g)=GraphicsTemplateEditor.Group(Seed,"title-label");
+        grouped=GraphicsTemplateEditor.Set(grouped,g,"padding",JsonSerializer.SerializeToElement(16));
+        var moved=GraphicsTemplateEditor.MoveTo(grouped,"accent",g,0);
+        AssertNativeGeometry(moved);
+        Assert.Equal((0d,0d),Pos(moved,g)); Assert.Equal((32d,94d),Pos(moved,"title-label")); // title-label still at canvas (48,110)
+    }
+    [Fact]
+    public void MoveFromEarlierInTheSameFlowParentUsesTheOriginAfterRemoval()
+    {
+        var (grouped,g)=GraphicsTemplateEditor.Group(Corporate,"title-text"); // group-1 is flow index 1 of text-stack
+        var moved=GraphicsTemplateEditor.MoveTo(grouped,"name-text",g,0);
+        AssertNativeGeometry(moved);
+        Assert.Equal((0d,0d),Pos(moved,"name-text")); // group-1 is now flow index 0 at canvas (24,20): name-text stays at (24,20)
+        Assert.False(GraphicsTemplateEditor.Layer(moved,g).TryGetProperty("y",out _));
+        Assert.Equal(62d,Box(moved,g).Item4);
+    }
+    [Fact]
+    public void GrowingAPaddedGroupKeepsChildrenInsideItsContentBox()
+    {
+        var (grouped,g)=GraphicsTemplateEditor.Group(Seed,"title-label");
+        grouped=GraphicsTemplateEditor.Set(grouped,g,"padding",JsonSerializer.SerializeToElement(16));
+        var moved=GraphicsTemplateEditor.MoveTo(grouped,"name-label",g,0);
+        Assert.Equal((16d,11d,1044d,157d),Box(moved,g));
+        Assert.Equal((0d,0d),Pos(moved,"name-label")); Assert.Equal((16d,83d),Pos(moved,"title-label"));
+    }
+    [Fact]
+    public void UngroupCarriesAVariableOpacityOrRefuses()
+    {
+        var manifest=SeedObject(); manifest["fields"]!.AsArray().Add(new JsonObject { ["id"]="fade",["type"]="number",["default"]=1,["bindable"]=true });
+        var (grouped,g)=GraphicsTemplateEditor.Group(From(manifest),"accent");
+        grouped=GraphicsTemplateEditor.BindLayer(grouped,g,"opacity","fade",null);
+        var flat=GraphicsTemplateEditor.Ungroup(grouped,g);
+        Assert.Equal("fade",GraphicsTemplateEditor.Layer(flat,"accent").GetProperty("opacity").GetProperty("field").GetString());
+        var own=GraphicsTemplateEditor.Set(grouped,"accent","opacity",JsonSerializer.SerializeToElement(0.5));
+        var ex=Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.Ungroup(own,g));
+        Assert.Equal("This group's opacity follows the variable fade. Clear it before ungrouping.",ex.Message);
+    }
+    [Fact]
+    public void UngroupRefusesTwoVariablesDrivingOneLayersVisibility()
+    {
+        var manifest=SeedObject(); var fields=manifest["fields"]!.AsArray();
+        fields.Add(new JsonObject { ["id"]="show-title",["type"]="boolean",["default"]=true,["bindable"]=true });
+        fields.Add(new JsonObject { ["id"]="show-block",["type"]="boolean",["default"]=true,["bindable"]=true });
+        manifest["layers"]!.AsArray().OfType<JsonObject>().Single(l=>l["id"]!.GetValue<string>()=="title-label")["visible"]=new JsonObject { ["field"]="show-title" };
+        var (grouped,g)=GraphicsTemplateEditor.Group(From(manifest),"title-label");
+        var doc=JsonNode.Parse(grouped.Manifest)!.AsObject();
+        doc["layers"]!.AsArray().OfType<JsonObject>().Single(l=>l["id"]!.GetValue<string>()==g)["visible"]=new JsonObject { ["field"]="show-block" };
+        var ex=Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.Ungroup(From(doc),g));
+        Assert.Equal("Two variables would drive this layer's visibility. Clear one before ungrouping.",ex.Message);
+    }
+    [Fact]
+    public void MovingALayerWhosePositionFollowsAVariableIsRefused()
+    {
+        var manifest=SeedObject(); manifest["fields"]!.AsArray().Add(new JsonObject { ["id"]="left",["type"]="number",["default"]=4,["bindable"]=true });
+        manifest["layers"]!.AsArray().OfType<JsonObject>().Single(l=>l["id"]!.GetValue<string>()=="accent")["x"]=new JsonObject { ["field"]="left" };
+        var (grouped,g)=GraphicsTemplateEditor.Group(From(manifest),"title-label");
+        var ex=Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.MoveTo(grouped,"accent",g,0));
+        Assert.Equal("This layer's position follows a variable. Fix its position before moving it into another group.",ex.Message);
+        Assert.NotNull(GraphicsTemplateEditor.MoveTo(grouped,"accent","",0)); // reorder in place keeps the binding
+    }
+    [Fact]
+    public void DuplicateNeverSplitsASurrogatePairInTheCopyName()
+    {
+        var label=new string('a',58)+"\U0001F600"+"bbb"; // emoji at UTF-16 index 58..59
+        var copy=GraphicsTemplateEditor.Duplicate(GraphicsTemplateEditor.SetLabel(Seed,"plate",label),"plate",out var id);
+        var name=GraphicsTemplateEditor.Layers(copy).Single(l=>l.Id==id).Label;
+        Assert.Equal(new string('a',58)+" copy",name);
+    }
 }

@@ -55,7 +55,16 @@ public static partial class GraphicsTemplateEditor
     }
     private static NativeGraphicsScratch Commit(NativeGraphicsScratch before,JsonObject root)
     {
-        CheckStructure(root); KeepRequiredFieldsUsed(Read(before),root); return Save(root);
+        CheckStructure(root); CheckPositions(root["layers"]!.AsArray()); KeepRequiredFieldsUsed(Read(before),root); return Save(root);
+    }
+    // Native quantity(node,"x"/"y",0,8192): never emit a literal position native would refuse to load.
+    private static void CheckPositions(JsonArray layers)
+    {
+        foreach(var node in layers.OfType<JsonObject>()) {
+            foreach(var key in new[] { "x","y" })
+                if(IsNumber(node,key) && Literal(node,key) is < 0 or > 8192) throw new InvalidOperationException("This edit would place a layer outside the design area.");
+            if(node["children"] is JsonArray children) CheckPositions(children);
+        }
     }
     // Offset of a group's children on the canvas: the group's own canvas position plus its padding.
     private static (double X,double Y) ContentOrigin(Dictionary<string,Place> places,JsonObject? group)
@@ -118,9 +127,12 @@ public static partial class GraphicsTemplateEditor
             group=target.Node; destination=group["children"] as JsonArray ?? throw new InvalidDataException("Invalid template group.");
         }
         var sameParent=ReferenceEquals(place.Siblings,destination);
+        if(!sameParent && (place.Node["x"] is JsonObject || place.Node["y"] is JsonObject))
+            throw new InvalidOperationException("This layer's position follows a variable. Fix its position before moving it into another group.");
         var canvas=sameParent ? default : absolute ?? CanvasPosition(places,place);
-        var origin=sameParent ? default : ContentOrigin(places,group);
         place.Siblings.RemoveAt(place.Index);
+        // The destination's origin after the layer has left: an earlier flow sibling no longer pushes it along.
+        var origin=sameParent ? default : ContentOrigin(Places(root),group);
         var at=destination.Count-Math.Clamp(frontIndex,0,destination.Count);
         if(sameParent && at==place.Index) return scratch;
         destination.Insert(at,place.Node);
@@ -131,19 +143,25 @@ public static partial class GraphicsTemplateEditor
         }
         return Commit(scratch,root);
     }
-    // Grow a free-layout group to contain its children; the moved child's signed position never reaches the document unshifted.
+    // Grow a free-layout group to contain its children inside its content box (box minus padding on each side).
+    // The group itself can only grow back to its parent's origin (x/y >= 0, native's range), so a moved layer
+    // that sat further left/up lands at the nearest valid position, as a root move does.
     private static void Grow(JsonObject group,JsonObject moved,double movedX,double movedY)
     {
         var children=group["children"]!.AsArray().OfType<JsonObject>().ToArray();
+        movedX=Math.Max(movedX,-Literal(group,"x")); movedY=Math.Max(movedY,-Literal(group,"y"));
         double X(JsonObject c)=>ReferenceEquals(c,moved) ? movedX : Literal(c,"x");
         double Y(JsonObject c)=>ReferenceEquals(c,moved) ? movedY : Literal(c,"y");
         var minX=Math.Min(0,children.Min(X)); var minY=Math.Min(0,children.Min(Y));
-        var maxX=Math.Max(Literal(group,"width"),children.Max(c=>X(c)+Literal(c,"width")));
-        var maxY=Math.Max(Literal(group,"height"),children.Max(c=>Y(c)+Literal(c,"height")));
+        if(children.Any(c=>!ReferenceEquals(c,moved) && ((minX!=0 && c["x"] is JsonObject) || (minY!=0 && c["y"] is JsonObject))))
+            throw new InvalidOperationException("A layer in this group takes its position from a variable. Fix its position before moving layers in.");
+        var padding=Literal(group,"padding");
+        var maxX=Math.Max(Literal(group,"width")-padding*2,children.Max(c=>X(c)+Literal(c,"width")));
+        var maxY=Math.Max(Literal(group,"height")-padding*2,children.Max(c=>Y(c)+Literal(c,"height")));
         if(minX!=0) group["x"]=Number(Literal(group,"x")+minX);
         if(minY!=0) group["y"]=Number(Literal(group,"y")+minY);
-        if(maxX-minX!=Literal(group,"width")) group["width"]=Number(maxX-minX);
-        if(maxY-minY!=Literal(group,"height")) group["height"]=Number(maxY-minY);
+        if(maxX-minX+padding*2!=Literal(group,"width")) group["width"]=Number(maxX-minX+padding*2);
+        if(maxY-minY+padding*2!=Literal(group,"height")) group["height"]=Number(maxY-minY+padding*2);
         foreach(var child in children) {
             var isMoved=ReferenceEquals(child,moved);
             if(isMoved || (minX!=0 && IsNumber(child,"x"))) child["x"]=Number(X(child)-minX);
@@ -167,7 +185,8 @@ public static partial class GraphicsTemplateEditor
         return (Commit(scratch,root),groupId);
     }
     /// <summary>Replaces the group with its children (same order) at the same canvas positions. Literal
-    /// opacities take on the group's opacity; a hidden group hides its children.</summary>
+    /// opacities take on the group's opacity (a variable opacity moves onto children that have none); a hidden
+    /// group hides its children. Refused when a variable-driven group opacity or visibility cannot be carried.</summary>
     public static NativeGraphicsScratch Ungroup(NativeGraphicsScratch scratch,string groupId)
     {
         var root=Read(scratch); var places=Places(root); var place=Find(places,groupId);
@@ -178,6 +197,12 @@ public static partial class GraphicsTemplateEditor
         var originX=Literal(group,"x")+padding; var originY=Literal(group,"y")+padding;
         double? opacity=group["opacity"] is null ? 1d : IsNumber(group,"opacity") ? Literal(group,"opacity") : (double?)null; // null = variable-bound
         var visibility=group["visible"]; double step=0;
+        if(opacity is null && children.Any(c=>c["opacity"] is not null)) {
+            var field=group["opacity"] is JsonObject o && o["field"] is JsonValue f && f.TryGetValue<string>(out var fieldId) ? fieldId : "";
+            throw new InvalidOperationException($"This group's opacity follows the variable {field}. Clear it before ungrouping.");
+        }
+        if(visibility is JsonObject && children.Any(c=>c["visible"] is JsonObject))
+            throw new InvalidOperationException("Two variables would drive this layer's visibility. Clear one before ungrouping.");
         list.Clear(); place.Siblings.RemoveAt(place.Index);
         for(var i=0;i<children.Length;i++) {
             var child=children[i];
@@ -185,7 +210,8 @@ public static partial class GraphicsTemplateEditor
             if(flow is "vertical" or "horizontal") step+=Literal(child,flow=="vertical" ? "height" : "width")+gap;
             if(child["x"] is null || IsNumber(child,"x")) child["x"]=Number(x);
             if(child["y"] is null || IsNumber(child,"y")) child["y"]=Number(y);
-            if(opacity is double factor && factor!=1) {
+            if(opacity is null) child["opacity"]=group["opacity"]!.DeepClone(); // no child opacity (checked above): carry the binding
+            else if(opacity is double factor && factor!=1) {
                 if(child["opacity"] is null) child["opacity"]=Number(factor);
                 else if(IsNumber(child,"opacity")) child["opacity"]=Number(Literal(child,"opacity")*factor);
             }

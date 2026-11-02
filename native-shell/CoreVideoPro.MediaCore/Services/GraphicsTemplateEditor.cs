@@ -125,7 +125,7 @@ public static partial class GraphicsTemplateEditor
         var copy=row.Node.DeepClone().AsObject(); var children=copy["children"] is JsonArray nested ? Walk(nested).Select(r=>r.Node).ToArray() : [];
         if(rows.Length+1+children.Length>64) throw new InvalidOperationException("A template supports at most 64 layers.");
         foreach(var node in children.Prepend(copy)) node["id"]="layer-"+Guid.NewGuid().ToString("N");
-        var label=LabelOf(row.Node); if(label.Length>59) label=label[..59].TrimEnd();
+        var label=LabelOf(row.Node); if(label.Length>59) label=label[..(char.IsHighSurrogate(label[58]) ? 58 : 59)].TrimEnd();
         if(copy["metadata"] is null) copy["metadata"]=new JsonObject();
         if(copy["metadata"] is JsonObject metadata) metadata["label"]=label+" copy";
         copyId=copy["id"]!.GetValue<string>(); row.Siblings.Insert(row.Index+1,copy); return Save(root);
