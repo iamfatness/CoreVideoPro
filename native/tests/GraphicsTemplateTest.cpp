@@ -334,7 +334,8 @@ std::string installAndWait(corevideo::graphics::GraphicsTemplateRegistry& regist
   while(std::chrono::steady_clock::now()<limit);
   if(submitted!="template-install-queued") return "submit-"+submitted;
   while(std::chrono::steady_clock::now()<limit) {
-    for(const auto& row:registry.poll()->installs.asArray()) if(row.getString("requestId")==request) {
+    const auto publication=registry.poll(); // keep the snapshot alive for the whole loop
+    for(const auto& row:publication->installs.asArray()) if(row.getString("requestId")==request) {
       const auto state=row.getString("state");
       if(state=="installed") return "installed";
       if(state=="failed") return "failed-"+row.getString("reason");
