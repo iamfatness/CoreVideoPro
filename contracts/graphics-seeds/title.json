@@ -1,0 +1,114 @@
+{
+    "schemaVersion":  1,
+    "templateId":  "design-title-000000",
+    "templateVersion":  1,
+    "name":  "Title",
+    "family":  "title",
+    "canvas":  {
+                   "width":  1920,
+                   "height":  1080
+               },
+    "bounds":  {
+                   "width":  1440,
+                   "height":  288
+               },
+    "brandTokens":  [
+                        "brand.primary",
+                        "brand.onPrimary",
+                        "brand.accent",
+                        "brand.fontBody"
+                    ],
+    "fields":  [
+                   {
+                       "id":  "heading",
+                       "type":  "string",
+                       "default":  "Heading",
+                       "required":  true,
+                       "maxLength":  128
+                   },
+                   {
+                       "id":  "subheading",
+                       "type":  "string",
+                       "default":  "Subheading",
+                       "maxLength":  256
+                   }
+               ],
+    "layers":  [
+                   {
+                       "id":  "plate",
+                       "type":  "rect",
+                       "x":  0,
+                       "y":  0,
+                       "width":  1440,
+                       "height":  288,
+                       "fill":  {
+                                    "token":  "brand.primary"
+                                }
+                   },
+                   {
+                       "id":  "heading-label",
+                       "type":  "text",
+                       "text":  {
+                                    "field":  "heading"
+                                },
+                       "x":  48,
+                       "y":  52,
+                       "width":  1344,
+                       "height":  100,
+                       "font":  {
+                                    "token":  "brand.fontBody"
+                                },
+                       "fontWeight":  600,
+                       "fontSize":  64,
+                       "lineHeight":  1.2,
+                       "color":  {
+                                     "token":  "brand.onPrimary"
+                                 },
+                       "align":  "center",
+                       "maxLines":  1,
+                       "overflow":  "ellipsis"
+                   },
+                   {
+                       "id":  "subheading-label",
+                       "type":  "text",
+                       "text":  {
+                                    "field":  "subheading"
+                                },
+                       "x":  48,
+                       "y":  174,
+                       "width":  1344,
+                       "height":  58,
+                       "font":  {
+                                    "token":  "brand.fontBody"
+                                },
+                       "fontWeight":  600,
+                       "fontSize":  32,
+                       "lineHeight":  1.2,
+                       "color":  {
+                                     "token":  "brand.onPrimary"
+                                 },
+                       "align":  "center",
+                       "maxLines":  1,
+                       "overflow":  "ellipsis",
+                       "collapseWhenEmpty":  true
+                   }
+               ],
+    "animations":  {
+                       "in":  {
+                                  "type":  "fade",
+                                  "durationMs":  250,
+                                  "easing":  "ease-out"
+                              },
+                       "out":  {
+                                   "type":  "fade",
+                                   "durationMs":  200,
+                                   "easing":  "ease-in"
+                               }
+                   },
+    "defaultPlacement":  {
+                             "anchor":  "center",
+                             "x":  0,
+                             "y":  0,
+                             "scale":  1
+                         }
+}

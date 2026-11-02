@@ -780,6 +780,7 @@ if(BUILD_TESTING)
     tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
     tests/GraphicsTemplateTest.cpp
+    tests/GraphicsDesignSeedsTest.cpp
     tests/GraphicsKeyPixelsTest.cpp
     tests/GraphicsRpcPixelTest.cpp
     tests/DeliveryTraceTest.cpp
@@ -978,6 +979,7 @@ if(BUILD_TESTING)
     tests/TestMain.cpp tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp tests/GraphicsRpcPixelTest.cpp
     tests/GraphicsTemplateTest.cpp
+    tests/GraphicsDesignSeedsTest.cpp
     tests/GradePreviewTest.cpp tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp tests/OverlayTileRasterTest.cpp tests/ContractParityTest.cpp)
   target_link_libraries(corevideo-graphics-tests PRIVATE corevideo_native)
