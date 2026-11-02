@@ -258,6 +258,21 @@ public static class StudioStreamOutputValidation
         return null;
     }
 
+    /// <summary>NDI destination ids for the NDI output flag. The key is decided by the caller
+    /// (<see cref="IncludeNdiGraphicsKeyDestination"/>) and rides with the program source only.</summary>
+    public static IReadOnlyList<string> SelectNdiDestinations(
+        bool ndiOn, string? programName, bool keyIncluded, bool validatedOnly)
+    {
+        var destinations = new List<string>(2);
+        if (ndiOn && (!validatedOnly || CanSerializeNdiSettings(programName)))
+        {
+            destinations.Add("ndi");
+            if (keyIncluded) destinations.Add(NdiGraphicsKeyDestination);
+        }
+
+        return destinations;
+    }
+
     public static bool CanSerializeNdiSettings(string? programName) =>
         !string.IsNullOrWhiteSpace(programName);
 

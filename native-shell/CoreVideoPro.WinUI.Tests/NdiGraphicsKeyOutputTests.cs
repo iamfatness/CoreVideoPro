@@ -33,7 +33,7 @@ public sealed class NdiGraphicsKeyOutputTests
     {
         var json = ProductionOutputPreferencesSerializer.Serialize(new ProductionOutputPreferences
         {
-            StreamNdiEnabled = true,
+            NdiOutputEnabled = true,
             StreamNdiGraphicsKeyEnabled = true,
             StreamNdiGraphicsName = "Studio Key",
         });
@@ -47,10 +47,10 @@ public sealed class NdiGraphicsKeyOutputTests
     public void PreferencesWithoutTheKeyFieldsLoadWithTheKeyOff()
     {
         var loaded = ProductionOutputPreferencesSerializer.Deserialize(
-            $"{{\"Version\":{ProductionOutputPreferences.CurrentVersion},\"StreamNdiEnabled\":true}}", out var migrated);
+            $"{{\"Version\":{ProductionOutputPreferences.CurrentVersion},\"NdiOutputEnabled\":true}}", out var migrated);
         Assert.NotNull(loaded);
         Assert.False(migrated);
-        Assert.True(loaded!.StreamNdiEnabled);
+        Assert.True(loaded!.NdiOutputEnabled);
         Assert.False(loaded.StreamNdiGraphicsKeyEnabled);
         Assert.Null(loaded.StreamNdiGraphicsName);
     }

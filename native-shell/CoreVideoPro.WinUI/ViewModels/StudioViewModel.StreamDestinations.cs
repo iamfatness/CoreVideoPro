@@ -17,17 +17,6 @@ public sealed partial class StudioViewModel
             destinations.Add("rtmp");
         }
 
-        if (StreamNdiEnabled &&
-            (!validatedOnly || StudioStreamOutputValidation.CanSerializeNdiSettings(StreamNdiProgramName)))
-        {
-            destinations.Add("ndi");
-            // The graphics key rides with NDI output, and only when it can be sent.
-            if (IncludeNdiGraphicsKeyDestination())
-            {
-                destinations.Add(StudioStreamOutputValidation.NdiGraphicsKeyDestination);
-            }
-        }
-
         if (StreamSrtEnabled &&
             (!validatedOnly || StudioStreamOutputValidation.CanSerializeSrtSettings(
                 StreamSrtMode,
@@ -45,6 +34,51 @@ public sealed partial class StudioViewModel
             (!validatedOnly || StudioStreamOutputValidation.ValidateHls(Hls.PlaylistUrl) is null))
         {
             destinations.Add("hls");
+        }
+
+        return destinations;
+    }
+
+    private IReadOnlyList<string> BuildNdiDestinations(bool validatedOnly = false) =>
+        StudioStreamOutputValidation.SelectNdiDestinations(
+            NdiOutputEnabled, StreamNdiProgramName, IncludeNdiGraphicsKeyDestination(), validatedOnly);
+
+    private IReadOnlyList<MediaCoreStreamDestinationWire> BuildNdiDestinationSettings()
+    {
+        var destinations = new List<MediaCoreStreamDestinationWire>(2);
+        if (!NdiOutputEnabled ||
+            !StudioStreamOutputValidation.CanSerializeNdiSettings(StreamNdiProgramName))
+        {
+            return destinations;
+        }
+
+        var streamProfile = BuildRequestedOutputProfile(
+            "stream",
+            StreamRenderResolution,
+            StreamRenderFps,
+            StreamVideoCodec,
+            NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
+            NormalizeAudioBitrateKbps(StreamAudioBitrateKbps));
+        destinations.Add(new MediaCoreStreamDestinationWire(
+            Id: "ndi",
+            Label: "NDI",
+            NdiName: NormalizeOutputText(StreamNdiProgramName, "CoreVideo Pro Program"),
+            NdiGroup: NormalizeOutputText(StreamNdiGroupName, "public"),
+            Fps: streamProfile.Fps,
+            TargetBitrateMbps: streamProfile.TargetBitrateMbps,
+            AudioBitrateKbps: streamProfile.AudioBitrateKbps,
+            VideoCodec: streamProfile.Codec,
+            EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode)));
+        if (IncludeNdiGraphicsKeyDestination())
+        {
+            // Second NDI source: on-air graphics only, BGRA straight alpha, no audio.
+            destinations.Add(new MediaCoreStreamDestinationWire(
+                Id: StudioStreamOutputValidation.NdiGraphicsKeyDestination,
+                Label: "NDI graphics key",
+                Protocol: StudioStreamOutputValidation.NdiGraphicsKeyDestination,
+                NdiName: StudioStreamOutputValidation.ResolveNdiGraphicsKeyName(StreamNdiProgramName, StreamNdiGraphicsName),
+                NdiGroup: NormalizeOutputText(StreamNdiGroupName, "public"),
+                Fps: streamProfile.Fps));
         }
 
         return destinations;
@@ -83,32 +117,6 @@ public sealed partial class StudioViewModel
                 H264Profile: NormalizeStreamH264Profile(StreamH264Profile),
                 BFrames: (int)Math.Clamp(Math.Round(StreamBFrames), 0, 4),
                 AllowEnhancedRtmp: StreamAllowEnhancedRtmp));
-        }
-
-        if (StreamNdiEnabled &&
-            StudioStreamOutputValidation.CanSerializeNdiSettings(StreamNdiProgramName))
-        {
-            destinations.Add(new MediaCoreStreamDestinationWire(
-                Id: "ndi",
-                Label: "NDI",
-                NdiName: NormalizeOutputText(StreamNdiProgramName, "CoreVideo Pro Program"),
-                NdiGroup: NormalizeOutputText(StreamNdiGroupName, "public"),
-                Fps: streamProfile.Fps,
-                TargetBitrateMbps: streamProfile.TargetBitrateMbps,
-                AudioBitrateKbps: streamProfile.AudioBitrateKbps,
-                VideoCodec: streamProfile.Codec,
-                EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode)));
-            if (IncludeNdiGraphicsKeyDestination())
-            {
-                // Second NDI source: on-air graphics only, BGRA straight alpha, no audio.
-                destinations.Add(new MediaCoreStreamDestinationWire(
-                    Id: StudioStreamOutputValidation.NdiGraphicsKeyDestination,
-                    Label: "NDI graphics key",
-                    Protocol: StudioStreamOutputValidation.NdiGraphicsKeyDestination,
-                    NdiName: StudioStreamOutputValidation.ResolveNdiGraphicsKeyName(StreamNdiProgramName, StreamNdiGraphicsName),
-                    NdiGroup: NormalizeOutputText(StreamNdiGroupName, "public"),
-                    Fps: streamProfile.Fps));
-            }
         }
 
         if (StreamSrtEnabled &&

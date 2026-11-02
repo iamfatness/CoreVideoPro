@@ -515,7 +515,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _streamRtmpEnabled = true;
 
     [ObservableProperty]
-    private bool _streamNdiEnabled;
+    private bool _ndiOutputEnabled;
 
     [ObservableProperty]
     private bool _streamSrtEnabled;
@@ -1890,7 +1890,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : "RTMP disabled";
 
     public string StreamNdiSummary =>
-        StreamNdiEnabled
+        NdiOutputEnabled
             ? _bridge.Profile is not null && !HasNativeOutputCapability(_bridge.Profile, "ndi-output")
                 ? "NDI unavailable in this native core build"
                 : IsNdiConfigured()
@@ -1911,11 +1911,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private bool IncludeNdiGraphicsKeyDestination() =>
         StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(
-            StreamNdiEnabled, StreamNdiGraphicsKeyEnabled, CoreHasNdiGraphicsKey(), StreamNdiProgramName, StreamNdiGraphicsName);
+            NdiOutputEnabled, StreamNdiGraphicsKeyEnabled, CoreHasNdiGraphicsKey(), StreamNdiProgramName, StreamNdiGraphicsName);
 
     /// <summary>Control action: one validated edit, one save, one output sync.</summary>
     internal ControlInvokeResult SetNdiGraphicsKey(bool on, string? name) =>
-        NdiGraphicsKeyControl.Set(on, name, StreamNdiEnabled, CoreHasNdiGraphicsKey(), StreamNdiProgramName,
+        NdiGraphicsKeyControl.Set(on, name, NdiOutputEnabled, CoreHasNdiGraphicsKey(), StreamNdiProgramName,
             StreamNdiGraphicsName, (nextOn, nextName) =>
             {
                 _applyingStreamDestination = true;
@@ -3490,7 +3490,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnStreamRtmpEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
-    partial void OnStreamNdiEnabledChanged(bool value) => OnStreamOutputOptionChanged();
+    partial void OnNdiOutputEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
     partial void OnStreamSrtEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
@@ -9733,7 +9733,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             destinations.Add(IsRtmpConfigured() ? "RTMP configured" : "RTMP missing");
         }
 
-        if (StreamNdiEnabled)
+        if (NdiOutputEnabled)
         {
             destinations.Add(IsNdiConfigured() ? "NDI configured" : "NDI missing");
         }
@@ -9756,7 +9756,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var settingsError = StudioStreamOutputValidation.ValidateSelectedDestinations(
             StreamRtmpEnabled,
-            StreamNdiEnabled,
+            NdiOutputEnabled,
             StreamSrtEnabled,
             StreamRtmpProtocol,
             StreamRtmpServerUrl,
@@ -9779,7 +9779,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         return settingsError ?? ValidateStreamDestinationCapabilities(
             StreamRtmpEnabled,
-            StreamNdiEnabled,
+            NdiOutputEnabled,
             StreamSrtEnabled,
             _bridge.Profile,
             Hls.Enabled);
@@ -10402,15 +10402,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             });
         }
 
-        if (StreamNdiEnabled)
+        if (NdiOutputEnabled)
         {
             destinations.Add(new SupportBundleOutputDestination
             {
                 Id = "ndi",
                 Name = "NDI",
                 Protocol = "ndi",
-                Enabled = StreamNdiEnabled,
-                Active = Streaming && StreamNdiEnabled,
+                Enabled = NdiOutputEnabled,
+                Active = Streaming && NdiOutputEnabled,
                 Resolution = streamProfile.Resolution,
                 Fps = streamProfile.Fps.ToString(CultureInfo.InvariantCulture),
                 Codec = streamProfile.Codec,
@@ -11956,7 +11956,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OhgShowEnabled = OhgShowEnabled,
             FfmpegBinDirectory = FfmpegBinDirectory,
             StreamRtmpEnabled = StreamRtmpEnabled,
-            StreamNdiEnabled = StreamNdiEnabled,
+            NdiOutputEnabled = NdiOutputEnabled,
             StreamSrtEnabled = StreamSrtEnabled,
             StreamHlsEnabled = Hls.Enabled,
             StreamHlsPlaylistUrl = Hls.PlaylistUrl,
@@ -12170,7 +12170,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RestoreScopePreferences(preferences.ScopeRegions);
         FfmpegBinDirectory = preferences.FfmpegBinDirectory ?? FfmpegBinDirectory;
         StreamRtmpEnabled = preferences.StreamRtmpEnabled;
-        StreamNdiEnabled = preferences.StreamNdiEnabled;
+        _ndiOutputEnabled = preferences.NdiOutputEnabled;
+        OnPropertyChanged(nameof(NdiOutputEnabled));
         StreamSrtEnabled = preferences.StreamSrtEnabled;
         Hls.Enabled = preferences.StreamHlsEnabled;
         Hls.PlaylistUrl = preferences.StreamHlsPlaylistUrl ?? string.Empty;

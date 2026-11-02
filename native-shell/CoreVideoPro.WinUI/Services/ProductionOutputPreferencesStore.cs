@@ -65,7 +65,7 @@ public sealed class ProductionOutputPreferences
     // id and applied after the custom scenes are restored. Absent = nothing
     // removed (byte-identical behavior for older files). Downgrade is safe: an
     // older build drops the field and the catalog scenes simply reappear.
-    public const int CurrentVersion = 15;
+    public const int CurrentVersion = 16;
 
     private int _programBufferFrames = ProgramBufferPreference.DefaultFrames;
     public int ProgramBufferFrames
@@ -80,6 +80,11 @@ public sealed class ProductionOutputPreferences
     public bool OhgShowEnabled { get; set; }
     public string? FfmpegBinDirectory { get; set; }
     public bool StreamRtmpEnabled { get; set; } = true;
+    /// <summary>NDI is its own output (v16), independent of Streaming.</summary>
+    public bool NdiOutputEnabled { get; set; }
+    /// <summary>Pre-v16 NDI-as-a-stream-destination tick. Read on load only so the
+    /// migration can discard it; never written by the view model.</summary>
+    [Obsolete("Superseded by NdiOutputEnabled (v16); read only for migration.")]
     public bool StreamNdiEnabled { get; set; }
     public bool StreamSrtEnabled { get; set; }
     public bool StreamHlsEnabled { get; set; }
@@ -427,6 +432,17 @@ public static class ProductionOutputPreferencesSerializer
             if (preferences.Version < 12 && preferences.MultiviewTileCount == 8)
             {
                 preferences.MultiviewTileCount = 10;
+            }
+
+            if (preferences.Version < 16)
+            {
+                // v16: NDI left the stream destinations. A ticked stream-NDI is
+                // deliberately NOT carried over (it would start emitting NDI the
+                // operator never switched on); the program name is kept.
+#pragma warning disable CS0618
+                preferences.StreamNdiEnabled = false;
+#pragma warning restore CS0618
+                preferences.NdiOutputEnabled = false;
             }
 
             if (preferences.Version < ProductionOutputPreferences.CurrentVersion)
