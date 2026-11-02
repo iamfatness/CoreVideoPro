@@ -73,7 +73,7 @@ public sealed partial class GraphicsWorkspaceSession
         }
     }
     public string PreviewSample { get; private set; }="current";
-    public void SetPreviewSample(string sample) {if(sample is not ("current" or "short" or "long" or "blank" or "unicode")) return;PreviewSample=sample;NotifyPreview();}
+    public void SetPreviewSample(string sample) {if(sample is not ("current" or "short" or "long" or "blank" or "unicode" or "longest-name")) return;PreviewSample=sample;NotifyPreview();}
     public bool CompareOriginal { get; private set; }
     public bool Busy { get; private set; }
     public bool ImportBusy { get; private set; }

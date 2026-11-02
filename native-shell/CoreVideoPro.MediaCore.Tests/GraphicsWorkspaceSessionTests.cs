@@ -64,6 +64,14 @@ public sealed class GraphicsWorkspaceSessionTests
         Assert.Equal("Private", session.Preview.Fields.GetProperty("name").GetString());
     }
     [Fact]
+    public void SessionAcceptsTheLongestNameSample()
+    {
+        var session = new GraphicsWorkspaceSession((_,_,_) => Task.FromResult(new NativeGraphicsOperationResult()), () => Initial);
+        session.Observe(Initial); session.Select("featured");
+        session.SetPreviewSample("longest-name"); Assert.Equal("longest-name", session.PreviewSample);
+        session.SetPreviewSample("nope"); Assert.Equal("longest-name", session.PreviewSample);
+    }
+    [Fact]
     public void SamplesOnlyReplaceConsumedTextAndRespectUnicodeByteLimits()
     {
         var template = new NativeGraphicsTemplate { Runtime="declarative", Fields=[new() {Id="heading",Type="string",MaxLength=7},new() {Id="font",Type="string"},new() {Id="time",Type="string"}],
