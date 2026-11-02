@@ -98,7 +98,7 @@ stop RTMP, SRT or the Program NDI source.
   name" (blank = the default above). The NDI summary line names the key or says the
   core build cannot carry it.
 - **Persistence.** `StreamNdiGraphicsKeyEnabled` and `StreamNdiGraphicsName` in the
-  output preferences. Additive fields, no version bump: older files load with the key off.
+  output preferences. The key fields are unchanged (older files load with the key off); NDI itself is gated by `NdiOutputEnabled` (preferences v16).
 - **Control API.** `transport.ndi.graphicsKey.set` with `on` (bool) and
   optional `name` (omitted keeps the current name, empty restores the default).
   The whole request is validated first and returns an error, changing nothing, when
@@ -109,7 +109,7 @@ stop RTMP, SRT or the Program NDI source.
   {"action":"transport.ndi.graphicsKey.set","args":[true,"Studio Key"]}
   ```
 
-  OSC: `/cvp/transport/stream/ndi/graphicsKey/set`. Control state:
+  OSC: `/cvp/transport/ndi/graphicsKey/set`. Control state:
   `ndiGraphicsKeyOn`, `ndiGraphicsKeyName` (selection, not delivery). The sender's
   real state is `outputSenderSession` in `GET /snapshot`; its `runtimeDetail` ends
   `video=graphics-key-bgra-straight-alpha`.

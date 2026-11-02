@@ -422,8 +422,12 @@ class PerDestinationLifecycleSender final : public IOutputSender {
   OutputSenderSession fail(const std::string&, const std::string&, double) override { return {}; }
   OutputSenderSession recover(const std::string&, double, const std::string&) override { return {}; }
   OutputSenderSession session() const override { return {}; }
-  void interrupt(const std::string&) override {}
+  void interrupt(const std::string& destination) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    interrupted.push_back(destination);
+  }
   std::mutex mutex;
+  std::vector<std::string> interrupted;
   std::set<std::string> active;
   std::map<std::string, int> starts;
   std::map<std::string, int> frames;
@@ -462,4 +466,6 @@ TEST(AsyncOutputSender, RemovingTheStreamDestinationNeverInterruptsNdi) {
   std::lock_guard<std::mutex> lock(raw->mutex);
   EXPECT_EQ(raw->starts["ndi"], 1);
   EXPECT_EQ(raw->starts["rtmp"], 2);
+  EXPECT_EQ(std::find(raw->interrupted.begin(), raw->interrupted.end(), "ndi"), raw->interrupted.end());
+  EXPECT_NE(std::find(raw->interrupted.begin(), raw->interrupted.end(), "rtmp"), raw->interrupted.end());
 }
