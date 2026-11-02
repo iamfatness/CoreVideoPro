@@ -69,6 +69,14 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(!Descendants(cuesWorkspace).OfType<Button>().Any(b => b.Content?.ToString() is "Edit layers ↗" or "Save design" || Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(b) is "Save design" or "Save to playlist"),
                 "Cues & automation still offers Edit layers or the design save actions");
             checks.Add("Graphics opens in Playout (strip + playlist); Design reveals the builder with every kind; Cues & automation reveals the single existing workspace control, with no Edit layers or design save actions");
+            var backToBuilder = Button(cuesWorkspace, "← Build a graphic");
+            Require(backToBuilder.ActualHeight > 0 && backToBuilder.IsEnabled, "Cues & automation has no visible way back to the builder");
+            Invoke(backToBuilder); await Task.Delay(80); page.UpdateLayout();
+            Require(!studio.GraphicsDesignAdvanced && Descendants(page).OfType<GraphicsBuilderControl>().Single().Visibility == Visibility.Visible && cuesWorkspace.Visibility == Visibility.Collapsed,
+                "← Build a graphic did not return from Cues & automation to the builder");
+            Invoke(Button(page, "Cues & automation")); await Task.Delay(80); page.UpdateLayout();
+            Require(studio.GraphicsDesignAdvanced && cuesWorkspace.Visibility == Visibility.Visible, "Cues & automation did not reopen after returning to the builder");
+            checks.Add("← Build a graphic (Cues & automation header) returns to the builder");
             // Reserve the existing navigation/header/production footer rather
             // than pretending Graphics can consume the entire display.
             page.Width = 1840; page.Height = 820; page.HorizontalAlignment = HorizontalAlignment.Left; page.VerticalAlignment = VerticalAlignment.Top;
@@ -256,16 +264,23 @@ internal static class GraphicsWorkspaceLayoutProbe
             var layerScroll = Descendants(designer).OfType<ScrollViewer>().Single(v => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(v) == "Layer properties");
             var layerTop = layerScroll.TransformToVisual(designer).TransformPoint(new(0, 0)).Y;
             var visibleLayer = Math.Min(layerScroll.ViewportHeight, designer.ActualHeight - layerTop);
-            if (width < 1500) Require(layerScroll.Visibility == Visibility.Visible && visibleLayer >= 300, $"The Layer tab has only {visibleLayer:0} px visible at {width:0}x{height:0}");
+            if (width < 1500) {
+                Require(layerScroll.Visibility == Visibility.Visible && visibleLayer >= 300, $"The Layer tab has only {visibleLayer:0} px visible at {width:0}x{height:0}");
+                Invoke(Button(designer, "Variables tab")); await Task.Delay(100); designer.UpdateLayout();
+                var variables = Descendants(designer).OfType<GraphicsVariablesPanel>().Single();
+                var texts = Descendants(variables).OfType<TextBlock>().Select(t => t.Text).ToHashSet(StringComparer.Ordinal);
+                Require(variables.ActualHeight > 0 && texts.Contains("name") && texts.Contains("title") && texts.Contains("Used by: Name"), "The Designer's Variables tab does not list name and title with Used by");
+                var variablesScroll = Descendants(designer).OfType<ScrollViewer>().Single(v => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(v) == "Design variables");
+                var variablesTop = variablesScroll.TransformToVisual(designer).TransformPoint(new(0, 0)).Y;
+                var visibleVariables = Math.Min(variablesScroll.ViewportHeight, designer.ActualHeight - variablesTop);
+                await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-designer-variables-1360x768.png"));
+                Require(variablesScroll.Visibility == Visibility.Visible && visibleVariables >= 200, $"The Designer's Variables tab has only {visibleVariables:0} px visible at {width:0}x{height:0}");
+                checks.Add($"At 1360x768 the Designer's Variables tab lists name and title with Used by and keeps {visibleVariables:0} px visible (>= 200)");
+                Invoke(Button(designer, "Layer tab")); await Task.Delay(50); designer.UpdateLayout();
+            }
             await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, shot));
             checks.Add($"Designer at page {width:0}x{height:0}: one surface, layer rows front-to-back, every header/add/sample action inside, canvas {canvas.ActualWidth:0}x{canvas.ActualHeight:0}, Layer tab {visibleLayer:0} px");
         }
-        Invoke(Button(designer, "Variables tab")); await Task.Delay(100); designer.UpdateLayout();
-        var variables = Descendants(designer).OfType<GraphicsVariablesPanel>().Single();
-        var texts = Descendants(variables).OfType<TextBlock>().Select(t => t.Text).ToHashSet(StringComparer.Ordinal);
-        Require(variables.ActualHeight > 0 && texts.Contains("name") && texts.Contains("title") && texts.Contains("Used by: Name"), "The Designer's Variables tab does not list name and title with Used by");
-        Invoke(Button(designer, "Layer tab")); await Task.Delay(50);
-        checks.Add("The Designer's Variables tab lists the seed's name and title variables with Used by");
         // Selecting another layer restyles the rows in place (a rebuild would swallow the second tap of a double-click).
         var rowElements = Descendants(designer).OfType<Grid>().Where(g => g.Tag is GraphicsDesignerRow).ToArray();
         studio.GraphicsWorkspace.SelectLayer("plate"); await Task.Delay(50); designer.UpdateLayout();

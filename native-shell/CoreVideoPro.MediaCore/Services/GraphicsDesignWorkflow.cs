@@ -18,6 +18,7 @@ public sealed class GraphicsDesignWorkflow
     private readonly GraphicsWorkspaceSession _session;
     private readonly GraphicsWorkspaceLibrary _library;
     private readonly Func<NativeGraphicsState?> _snapshot;
+    private bool _opening;
 
     public GraphicsDesignWorkflow(GraphicsDesignService designs, GraphicsWorkspaceSession session, GraphicsWorkspaceLibrary library, Func<NativeGraphicsState?> snapshot) =>
         (_designs, _session, _library, _snapshot) = (designs, session, library, snapshot);
@@ -37,6 +38,20 @@ public sealed class GraphicsDesignWorkflow
     public bool IsEditing(GraphicsDesign design) =>
         _session.SelectedId.Length == 0 && _session.Draft is { } draft && draft.TemplateId == design.TemplateId && draft.TemplateVersion == design.TemplateVersion;
 
+    /// <summary>Show a design in the Designer: when it is already the private draft (<see cref="IsEditing"/>) it
+    /// is shown as is (unsaved edits kept, no core needed; <see cref="Opened"/> is raised), else it is opened.</summary>
+    public Task<GraphicsDesignResult> OpenInDesignerAsync(GraphicsDesign design)
+    {
+        if (!IsEditing(design)) return OpenAsync(design.DesignId);
+        Opened?.Invoke(this, EventArgs.Empty);
+        return Task.FromResult(new GraphicsDesignResult(true, "", design, _session.Template));
+    }
+
+    /// <summary>Operate's "Open in Design" on a row: its design in the Designer (the result says why when it
+    /// cannot open); null when the row is not a design's, so the builder opens the row instead.</summary>
+    public async Task<GraphicsDesignResult?> OpenForRowAsync(GraphicsPlaylistRow row) =>
+        DesignForRow(row) is { } design ? await OpenInDesignerAsync(design) : null;
+
     public async Task<GraphicsDesignResult> CreateAsync(string? kind, string? lookTemplateId, int lookTemplateVersion, string name)
     {
         var leaving = Leaving();
@@ -49,14 +64,19 @@ public sealed class GraphicsDesignWorkflow
         return created;
     }
 
+    /// <summary>One open at a time (the builder and Operate can both start one): a second is refused, not run.</summary>
     public async Task<GraphicsDesignResult> OpenAsync(string designId)
     {
-        var leaving = Leaving();
-        var opened = await _designs.OpenAsync(designId);
-        if (!opened.Ok || opened.Template is not { } template) return opened;
-        if (!Show(template)) return opened with { Ok = false, Message = "Graphics is busy. Try Open design again in a moment." };
-        await ReleaseLeft(leaving, template);
-        return opened;
+        if (_opening) return new(false, "Graphics is busy. Try Open design again in a moment.", null, null);
+        _opening = true;
+        try {
+            var leaving = Leaving();
+            var opened = await _designs.OpenAsync(designId);
+            if (!opened.Ok || opened.Template is not { } template) return opened;
+            if (!Show(template)) return opened with { Ok = false, Message = "Graphics is busy. Try Open design again in a moment." };
+            await ReleaseLeft(leaving, template);
+            return opened;
+        } finally { _opening = false; }
     }
 
     /// <summary>Delete a design; refused while it is the editor's draft, so the draft never points at

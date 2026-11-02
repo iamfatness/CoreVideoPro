@@ -183,6 +183,7 @@ public sealed class GraphicsBuilderControl : UserControl
         _editor = new("preview:lower-third", "Graphics builder preview", new() { Lut = "none" }) { LiveEditing = false };
         _editor.PropertyChanged += OnEditorProperty;
         _ = _library.LoadAsync();
+        if (_attached.GraphicsDesignNotice.Length > 0) { _designStatus.Text = _attached.GraphicsDesignNotice; _attached.GraphicsDesignNotice = ""; }
         if (_attached.GraphicsDesignRowId.Length > 0) LoadRow(_attached.GraphicsDesignRowId); else if (_session.Draft is null) StartNew(); else RefreshAll();
         UpdatePreviewLease();
     }
@@ -216,6 +217,7 @@ public sealed class GraphicsBuilderControl : UserControl
     private void OnStudioProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(StudioViewModel.GraphicsDesignRowId) && _attached is { GraphicsDesignRowId.Length: > 0 } s) LoadRow(s.GraphicsDesignRowId);
+        else if (e.PropertyName == nameof(StudioViewModel.GraphicsDesignNotice) && _attached is { GraphicsDesignNotice.Length: > 0 } n) { _designStatus.Text = n.GraphicsDesignNotice; n.GraphicsDesignNotice = ""; RefreshDesigns(); }
         else if (e.PropertyName is nameof(StudioViewModel.ActiveTab) or nameof(StudioViewModel.IsOverlaysTab)) UpdatePreviewLease();
     }
     private void OnSessionChanged(object? sender, EventArgs e) { RefreshAll(); RequestThumbnails(); UpdatePreviewLease(); }
@@ -644,7 +646,7 @@ public sealed class GraphicsBuilderControl : UserControl
         flyout.Opening += (_, _) => confirmText.Text = SelectedDesign is { } d ? $"Delete \"{d.Name}\"? This cannot be undone. A design the playlist uses is kept." : "Choose a design first.";
         _deleteDesign.Flyout = flyout;
         confirm.Click += async (_, _) => { flyout.Hide(); await RunDesignAsync(async studio => SelectedDesign is { } d ? await studio.DeleteGraphicsDesignAsync(d.DesignId) : null); };
-        _openDesign.Click += async (_, _) => await RunDesignAsync(async studio => SelectedDesign is { } d ? await studio.OpenGraphicsDesignAsync(d.DesignId) : null);
+        _openDesign.Click += async (_, _) => await RunDesignAsync(async studio => SelectedDesign is { } d ? await studio.OpenGraphicsDesignInDesignerAsync(d) : null);
         _duplicateDesign.Click += async (_, _) => await RunDesignAsync(async studio => {
             if (SelectedDesign is not { } d) return null;
             var copy = await studio.DuplicateGraphicsDesignAsync(d);
@@ -678,7 +680,7 @@ public sealed class GraphicsBuilderControl : UserControl
                 AutomationProperties.SetName(chip, "Design " + design.Name);
                 ToolTipService.SetToolTip(chip, $"{design.Name} · {design.Family} · version {design.TemplateVersion}. Double-click or Open design to edit.");
                 chip.Click += (_, _) => { _selectedDesignId = design.DesignId; RefreshDesigns(); };
-                chip.DoubleTapped += async (_, _) => { _selectedDesignId = design.DesignId; await RunDesignAsync(async studio => await studio.OpenGraphicsDesignAsync(design.DesignId)); };
+                chip.DoubleTapped += async (_, _) => { _selectedDesignId = design.DesignId; await RunDesignAsync(async studio => await studio.OpenGraphicsDesignInDesignerAsync(design)); };
                 _designChips.Children.Add(chip);
             }
         }

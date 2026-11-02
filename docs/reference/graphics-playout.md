@@ -93,7 +93,7 @@ The builder's header has two more entries (top right):
   export, the Automation drawer, the existing overlay controls, and Cue / Show /
   Hide of private cues. Probes, the control API and scripts still rely on it;
   its actions run on `GraphicsWorkspaceSession` / `GraphicsWorkspaceLibrary`.
-  It has no back button yet: opening a design, or Open in Designer, leaves it.
+  **← Build a graphic** (beside the title) returns to the builder.
 
 Exactly one Design surface (builder, Designer or Cues & automation) shows and
 holds the private preview lease at a time (`GraphicsDesignSurfaces`). The pure decisions
@@ -206,7 +206,11 @@ locks are shell-only metadata; native round-trips them untouched, pinned by the
 
 The Designer is where a design's layers are edited (mockup D1). It opens from
 **Open in Designer**, **Open design** / double-click under Your designs, New
-design, and Operate's "Open in Design" on a design's row. It replaces the old
+design, and Operate's "Open in Design" on a design's row. A design that is
+already the private draft is shown as is (unsaved edits kept, no core needed);
+one open runs at a time ("Graphics is busy. Try Open design again in a
+moment."). When Operate's "Open in Design" cannot open the design, the builder
+opens the row instead and its design status says why. It replaces the old
 workspace's layer pane. Everything you do here edits the private draft;
 nothing reaches Preview or Program until you Show or Cue the row in Operate.
 
@@ -245,7 +249,8 @@ name and what it shows (`{name}` for a variable, or its kind).
 it, drag to move it, drag its corner to resize it. Moves and edge resizes
 **snap** to the safe area and the centre lines (within 8 px), and the guide is
 drawn while they hold; **hold Ctrl to place freely**. Resizes that keep the
-aspect ratio, scaling the whole graphic, and keyboard nudges do not snap.
+aspect ratio (image layers, or Shift held), scaling the whole graphic, and
+keyboard nudges do not snap.
 **Sample text** buttons under the canvas change only the preview: **Typical**
 (your draft's values; drags work on this one), **Longest name** (each text
 variable filled to its limit, to check the layout) and **Empty title** (the
@@ -276,7 +281,7 @@ Slice 4.
 Code: `GraphicsDesignerControl` (+ `.Layers` / `.Inspector`) over MediaCore
 `GraphicsDesignerModel` (rows, drop targets, inspector), `GraphicsSnap`,
 `GraphicsPreviewSamples` and the `GraphicsTemplateEditor` structure edits;
-`GraphicsDesignWorkflow.DesignForRow` / `IsEditing` decide what Open in
+`GraphicsDesignWorkflow.OpenInDesignerAsync` / `OpenForRowAsync` (over `DesignForRow` / `IsEditing`) decide what Open in
 Designer and Operate's "Open in Design" do.
 
 ## Show vs Cue

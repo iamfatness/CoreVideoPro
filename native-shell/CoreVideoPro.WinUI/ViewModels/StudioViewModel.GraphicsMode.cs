@@ -68,19 +68,23 @@ public sealed partial class StudioViewModel
     public void OpenGraphicInDesign(string rowId)
     {
         GraphicsDesignAdvanced = false; GraphicsMode = GraphicsModeDesign; ActiveTab = StudioTab.Overlays;
-        if (GraphicsLibrary.Document.Playlist.FirstOrDefault(r => r.Id == rowId) is { } row && GraphicsDesignForRow(row) is { } design) {
-            _ = OpenRowDesignAsync(rowId, design);
+        if (GraphicsLibrary.Document.Playlist.FirstOrDefault(r => r.Id == rowId) is { } row && GraphicsDesignForRow(row) is not null) {
+            _ = OpenRowDesignAsync(row);
             return;
         }
         GraphicsDesignerOpen = false; GraphicsDesignRowId = rowId;
     }
 
-    private async Task OpenRowDesignAsync(string rowId, GraphicsDesign design)
+    /// <summary>A design's row: the Designer; when the design cannot be opened the builder opens the row and its
+    /// design status says why.</summary>
+    private async Task OpenRowDesignAsync(GraphicsPlaylistRow row)
     {
-        GraphicsDesignResult result;
-        try { result = await OpenGraphicsDesignInDesignerAsync(design); }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { result = new(false, ex.Message, design, null); }
-        if (!result.Ok) { GraphicsDesignerOpen = false; GraphicsDesignRowId = rowId; }
+        GraphicsDesignResult? result;
+        try { result = await GraphicsDesignWorkflow.OpenForRowAsync(row); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { result = new(false, ex.Message, null, null); }
+        if (result is { Ok: true }) return;
+        GraphicsDesignerOpen = false; GraphicsDesignRowId = row.Id;
+        GraphicsDesignNotice = $"Could not open \"{row.Name}\" in the Designer: {result?.Message} It is open here in the builder instead.";
     }
 
     /// <summary>Canonical source id of the source currently occupying Program (the Guest-row

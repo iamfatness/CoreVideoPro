@@ -58,6 +58,12 @@ public sealed partial class GraphicsWorkspaceControl
         var titleRow = new Grid { ColumnSpacing = 12 };
         titleRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         titleRow.Children.Add(new TextBlock { Text = "Graphics", FontSize = 24, VerticalAlignment = VerticalAlignment.Center });
+        // Not an Action(...): those are disabled while the session is busy, and a busy session must not take the way out with it.
+        var backToBuilder = ChromeButton("← Build a graphic");
+        AutomationProperties.SetName(backToBuilder, "← Build a graphic");
+        ToolTipService.SetToolTip(backToBuilder, "Back to the builder: Your designs, New design and Open in Designer.");
+        backToBuilder.Click += (_, _) => { _tools.IsPaneOpen = false; if (Studio is not null) Studio.GraphicsDesignAdvanced = false; };
+        Grid.SetColumn(backToBuilder, 1); titleRow.Children.Add(backToBuilder);
         heading.Children.Add(titleRow);
         var headerActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         headerActions.Children.Add(Action("Show templates", () => { OpenShowTemplates(); return Task.CompletedTask; }));

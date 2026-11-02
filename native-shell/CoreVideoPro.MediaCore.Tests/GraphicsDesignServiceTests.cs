@@ -372,6 +372,52 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.False(workflow.IsEditing(design with { TemplateVersion = 2 })); // an older version is not the design
     }
 
+    [Fact] public async Task OpenInDesignerKeepsTheDraftWhenTheDesignIsAlreadyOpenAndNeedsNoCore()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        Assert.True((await workflow.OpenAsync(design.DesignId)).Ok);
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        var opened = 0; workflow.Opened += (_, _) => opened++;
+        _coreDown = true;
+        var result = await workflow.OpenInDesignerAsync(design);
+        Assert.True(result.Ok, result.Message);
+        Assert.Equal(1, opened); // the Designer is shown
+        Assert.Contains("\"location\"", _session.Draft!.Scratch!.Manifest); // unsaved edits kept
+    }
+
+    [Fact] public async Task OpenForRowOpensTheRowsDesignAndSaysWhyWhenItCannot()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        var builtIn = new GraphicsPlaylistRow { Id = "logo", Kind = GraphicsPlaylistRow.Logo, Name = "Logo", TemplateId = "corner-logo", TemplateVersion = 1 };
+        Assert.Null(await workflow.OpenForRowAsync(builtIn)); // not a design: the builder opens the row
+        var row = new GraphicsPlaylistRow { Id = "strap", Kind = GraphicsPlaylistRow.Guest, Name = "Strap", TemplateId = design.TemplateId, TemplateVersion = 1 };
+        _coreDown = true;
+        var refused = await workflow.OpenForRowAsync(row);
+        Assert.False(refused!.Ok);
+        Assert.False(string.IsNullOrWhiteSpace(refused.Message));
+        _coreDown = false;
+        Assert.True((await workflow.OpenForRowAsync(row))!.Ok);
+        Assert.True(workflow.IsEditing(design));
+    }
+
+    [Fact] public async Task ASecondOpenWhileOneIsRunningIsRefusedNotRunTwice()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var first = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        var second = (await service.CreateBlankAsync("title", "Opening title")).Design!;
+        Task<GraphicsDesignResult>? nested = null;
+        _onObserve = () => { if (nested is null) nested = workflow.OpenInDesignerAsync(second); };
+        var result = await workflow.OpenInDesignerAsync(first);
+        _onObserve = null;
+        Assert.True(result.Ok, result.Message);
+        var refused = await nested!;
+        Assert.False(refused.Ok);
+        Assert.Equal("Graphics is busy. Try Open design again in a moment.", refused.Message);
+        Assert.True(workflow.IsEditing(first));
+    }
+
     [Fact] public async Task SaveOnALookMakesOneCopyAndARetryAfterAFailedSaveGoesIntoThatCopy()
     {
         var (library, _, workflow) = BuildWorkflow();
