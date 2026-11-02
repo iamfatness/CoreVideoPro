@@ -8,10 +8,11 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class GraphicsDesignServiceTests : IDisposable
 {
-    private const string LibraryFull = "The graphics library is full. Close another design or remove looks you no longer use.";
+    private const string LibraryFull = "The graphics library is full. Delete designs you no longer use, or remove graphics from the playlist.";
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "cvp-graphics-designs-" + Guid.NewGuid().ToString("N"));
     private readonly List<(string Action, JsonElement Body)> _commands = [];
     private int _hex, _busyRemoves;
+    private bool _coreDown, _cancelRemoves;
     private GraphicsWorkspaceSession? _session;
     private static readonly string[] BuiltIns = ["compact-solid", "minimal-accent", "broadcast", "centered-title", "corner-logo", "clock-panel"];
 
@@ -27,7 +28,7 @@ public sealed class GraphicsDesignServiceTests : IDisposable
     private static string Hash(string text) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
 
     private Action? _onObserve;
-    private NativeGraphicsState? Observe() { _onObserve?.Invoke(); return _state; }
+    private NativeGraphicsState? Observe() { _onObserve?.Invoke(); return _coreDown ? null : _state; }
     private Task<NativeGraphicsOperationResult> Invoke(string action, string body, CancellationToken cancellation)
     {
         var input = JsonDocument.Parse(body).RootElement.Clone(); _commands.Add((action, input));
@@ -46,6 +47,7 @@ public sealed class GraphicsDesignServiceTests : IDisposable
             }
             case "graphics.template.remove": {
                 var id = input.GetProperty("templateId").GetString()!; var version = input.GetProperty("templateVersion").GetInt32();
+                if (_cancelRemoves) throw new OperationCanceledException();
                 if (_busyRemoves > 0) { _busyRemoves--; return Done(requestId, false, "template-library-busy"); }
                 if (BuiltIns.Contains(id)) return Done(requestId, false, "template-built-in");
                 if (_state.Instances.Any(i => i.TemplateId == id && i.TemplateVersion == version)) return Done(requestId, false, "template-in-use");
@@ -402,6 +404,183 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.False(resync.Arm(Epoch("a")));          // re-armed while the old epoch is still reported
         Assert.True(resync.Observe(Epoch("b")));
         Assert.False(resync.Observe(Epoch("c")));      // a new epoch without a new generation does not fire
+    }
+
+    // ---- final review fixes ------------------------------------------------------------------
+    private int DesignSlots => _state.Templates.Count(t => GraphicsDesignIds.IsDesignTemplateId(t.TemplateId));
+
+    [Fact] public async Task SaveToPlaylistTwentyTimesKeepsOnlyTheReferencedPins()
+    {
+        var (library, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        for (var i = 0; i < 20; i++) {
+            var field = "extra-" + i;
+            _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(d, field, "text", 40));
+            var result = await workflow.SaveToPlaylistAsync();
+            Assert.True(result.Ok, $"save {i + 1}: {result.Message}");
+        }
+        var row = Assert.Single(library.Document.Playlist);
+        Assert.Equal(21, row.TemplateVersion);
+        var pin = Assert.Single(library.Document.Templates);
+        Assert.Equal((row.TemplateId, row.TemplateVersion), (pin.TemplateId, pin.TemplateVersion));
+        var reloaded = await new GraphicsDocumentStore(Path.Combine(_directory, "show.json")).LoadAsync();
+        Assert.Single(reloaded.Document.Templates);
+        Assert.Equal(1, DesignSlots);
+    }
+
+    [Fact] public async Task DeletingADesignRemovesItsPins()
+    {
+        var (library, service) = Build();
+        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        var other = (await service.CreateBlankAsync("title", "Opening title")).Design!;
+        await PinToPlaylist(library, design);
+        var titleRow = new GraphicsPlaylistRow { Id = "title", Kind = GraphicsPlaylistRow.Title, Name = "Show title", TemplateId = other.TemplateId, TemplateVersion = 1 };
+        Assert.True(await library.SavePlaylistAsync([titleRow]), library.Status);
+        Assert.True((await service.DeleteAsync(design.DesignId)).Ok);
+        Assert.DoesNotContain(library.Document.Templates, t => t.TemplateId == design.TemplateId);
+        Assert.Contains(library.Document.Templates, t => t.TemplateId == other.TemplateId);
+    }
+
+    [Fact] public async Task SaveToPlaylistKeepsTheValuesTypedIntoTheDraft()
+    {
+        var (library, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        _session.SetField("location", JsonSerializer.SerializeToElement("London"));
+        _session.SetStyle(_session.Draft!.Style with { AccentColor = "#FF8800" });
+        var result = await workflow.SaveToPlaylistAsync();
+        Assert.True(result.Ok, result.Message);
+        var row = Assert.Single(library.Document.Playlist);
+        Assert.Equal("London", row.Fields["location"].GetString());
+        Assert.Equal("#FF8800", row.Style.AccentColor);
+        Assert.Equal("London", _session.Draft!.Fields.GetProperty("location").GetString());
+        Assert.Equal(2, _session.Draft.TemplateVersion);
+    }
+
+    [Fact] public async Task OpeningTwelveDesignsInSequenceNeverFillsTheLibrary()
+    {
+        var (library, service, workflow) = BuildWorkflow();
+        var ids = new List<string>();
+        for (var i = 0; i < 12; i++) {
+            var created = await service.CreateBlankAsync("bug", "Bug " + i);
+            Assert.True(created.Ok, $"create {i}: {created.Message}");
+            ids.Add(created.Design!.DesignId);
+        }
+        RestartCore(); _session!.Observe(_state);
+        foreach (var id in ids) {
+            var opened = await workflow.OpenAsync(id);
+            Assert.True(opened.Ok, opened.Message);
+            Assert.Equal(library.Document.Designs.Single(d => d.DesignId == id).TemplateId, _session.Draft!.TemplateId);
+        }
+        Assert.Equal(1, DesignSlots);
+    }
+
+    [Fact] public async Task ALibraryFullInstallEvictsUnreferencedDesignsButNeverAReferencedOrOpenOne()
+    {
+        var (library, service, workflow) = BuildWorkflow();
+        var pinned = (await service.CreateBlankAsync("lower-third", "Pinned strap")).Design!;
+        await PinToPlaylist(library, pinned);
+        var open = (await service.CreateBlankAsync("title", "Open title")).Design!;
+        Assert.True((await workflow.OpenAsync(open.DesignId)).Ok);
+        for (var i = 0; i < 12; i++) {
+            var created = await service.CreateBlankAsync("bug", "Bug " + i);
+            Assert.True(created.Ok, $"create {i}: {created.Message}");
+            Assert.True(IsInstalled(pinned.TemplateId, 1));
+            Assert.True(IsInstalled(open.TemplateId, 1));
+        }
+        Assert.Equal(14, library.Document.Designs.Count);
+    }
+
+    [Fact] public async Task ALibraryFullOfReferencedVersionsStillRefusesWithAnActionableMessage()
+    {
+        var (library, service) = Build();
+        var rows = new List<GraphicsPlaylistRow>();
+        for (var i = 0; i < 10; i++) {
+            var design = (await service.CreateBlankAsync("bug", "Bug " + i)).Design!;
+            rows.Add(new() { Id = "bug-" + i, Kind = GraphicsPlaylistRow.Title, Name = "Bug " + i, TemplateId = design.TemplateId, TemplateVersion = 1 });
+        }
+        _session!.Observe(_state);
+        Assert.True(await library.SavePlaylistAsync(rows), library.Status);
+        var refused = await service.CreateBlankAsync("bug", "One too many");
+        Assert.False(refused.Ok);
+        Assert.Equal(LibraryFull, refused.Message);
+        Assert.Empty(Bodies("graphics.template.remove"));
+    }
+
+    [Fact] public async Task UnsavedEditsOnADesignTheAuthorMovedOffSurviveAFullLibrary()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var edited = (await service.CreateBlankAsync("title", "Edited title")).Design!;
+        var other = (await service.CreateBlankAsync("bug", "Other bug")).Design!;
+        Assert.True((await workflow.OpenAsync(edited.DesignId)).Ok);
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        Assert.True((await workflow.OpenAsync(other.DesignId)).Ok);
+        Assert.True(IsInstalled(edited.TemplateId, 1));
+        for (var i = 0; i < 12; i++) {
+            var created = await service.CreateBlankAsync("bug", "Bug " + i);
+            Assert.True(created.Ok, $"create {i}: {created.Message}");
+        }
+        Assert.True(IsInstalled(edited.TemplateId, 1));
+        Assert.True((await workflow.OpenAsync(edited.DesignId)).Ok);
+        Assert.Contains("\"location\"", _session.Draft!.Scratch!.Manifest);
+    }
+
+    [Fact] public async Task ACoreRestartDuringDeleteCleanupStillReportsTheDelete()
+    {
+        var (library, service) = Build();
+        var design = (await service.CreateBlankAsync("title", "Opening title")).Design!;
+        _onObserve = () => {
+            if (library.Document.Designs.Count == 0) { _state = _state with { CoreEpoch = "core-b" }; _onObserve = null; }
+        };
+        var deleted = await service.DeleteAsync(design.DesignId);
+        Assert.True(deleted.Ok, deleted.Message);
+        Assert.Contains("restarted", deleted.Message);
+        Assert.Empty(library.Document.Designs);
+    }
+
+    [Fact] public async Task ACancelDuringCleanupDoesNotReportTheSaveOrDeleteAsCancelled()
+    {
+        var (library, service) = Build();
+        var design = (await service.CreateBlankAsync("title", "Opening title")).Design!;
+        _cancelRemoves = true;
+        var saved = await service.SaveAsync(design.DesignId, Edited(design, "v2"));
+        Assert.True(saved.Ok, saved.Message);
+        Assert.DoesNotContain("cancelled", saved.Message);
+        Assert.Equal(2, Assert.Single(library.Document.Designs).TemplateVersion);
+        var deleted = await service.DeleteAsync(design.DesignId);
+        Assert.True(deleted.Ok, deleted.Message);
+        Assert.DoesNotContain("cancelled", deleted.Message);
+        Assert.Empty(library.Document.Designs);
+    }
+
+    [Fact] public async Task DuplicateAndDeleteWorkWhileTheCoreIsDown()
+    {
+        var (library, service) = Build();
+        var design = (await service.CreateBlankAsync("bug", "Corner bug")).Design!;
+        _coreDown = true; _commands.Clear();
+        var copy = await service.DuplicateAsync(design.DesignId, "Corner bug copy");
+        Assert.True(copy.Ok, copy.Message);
+        Assert.Equal(2, library.Document.Designs.Count);
+        var deleted = await service.DeleteAsync(design.DesignId);
+        Assert.True(deleted.Ok, deleted.Message);
+        Assert.Equal(copy.Design!.DesignId, Assert.Single(library.Document.Designs).DesignId);
+        Assert.Empty(_commands);
+        Assert.False((await service.CreateBlankAsync("bug", "Needs a core")).Ok);
+    }
+
+    [Fact] public async Task DeletingTheDesignOpenInTheEditorIsRefused()
+    {
+        var (library, service, workflow) = BuildWorkflow();
+        var design = (await service.CreateBlankAsync("title", "Opening title")).Design!;
+        Assert.True((await workflow.OpenAsync(design.DesignId)).Ok);
+        var refused = await workflow.DeleteAsync(design.DesignId);
+        Assert.False(refused.Ok);
+        Assert.Contains("open in the editor", refused.Message);
+        Assert.Single(library.Document.Designs);
+        Assert.True(IsInstalled(design.TemplateId, 1));
+        var other = (await service.CreateBlankAsync("bug", "Corner bug")).Design!;
+        Assert.True((await workflow.OpenAsync(other.DesignId)).Ok);
+        Assert.True((await workflow.DeleteAsync(design.DesignId)).Ok);
     }
 
     public void Dispose() { try { Directory.Delete(_directory, true); } catch (IOException) { } }

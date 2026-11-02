@@ -479,7 +479,7 @@ public sealed class GraphicsPlayoutService
 /// id+version appears, the native install record for this request fails, or 5 s pass.</summary>
 internal static class GraphicsTemplateInstall
 {
-    public const string LibraryFull = "The graphics library is full. Close another design or remove looks you no longer use.";
+    public const string LibraryFull = "The graphics library is full. Delete designs you no longer use, or remove graphics from the playlist.";
 
     public static async Task<(NativeGraphicsTemplate? Installed, NativeGraphicsOperationResult? Refusal)> RunAsync(
         Func<string, Dictionary<string, object?>, CancellationToken, Task<NativeGraphicsOperationResult>> send, Func<NativeGraphicsState> current,

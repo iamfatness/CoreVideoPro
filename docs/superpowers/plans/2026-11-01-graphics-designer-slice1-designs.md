@@ -12,9 +12,9 @@
 
 ## Global Constraints
 
-- Design template ids: `design-<slug>-<6 lowercase hex>`, total ≤ 64 chars, `[a-z0-9-]`, first char a letter; never equal to a built-in id (`compact-solid`, `minimal-accent`, `broadcast`, `corporate-lower-third`, `logo-accent`, `transparent-name`, `centered-title`, `corner-logo`, `clock-panel`).
+- Design template ids: `design-<slug>-<6 lowercase hex>`, total ≤ 64 chars, `[a-z0-9-]`, first char a letter; never equal to a built-in id: the 6 curated templates in the registry (`corporate-lower-third`, `logo-accent`, `transparent-name`, `centered-title`, `corner-logo`, `clock-panel`) or the 3 compatibility looks outside the registry (`compact-solid`, `minimal-accent`, `broadcast`).
 - `GraphicsShowDocument` schema **2 → 3**, additive: `Designs` defaults to empty; a v2 document loads with no designs; at most **32** designs; design ids unique; names 1–80 chars.
-- Native registry limits are unchanged (16 definitions incl. built-ins, 256 KiB). New command `graphics-template-remove {templateId, templateVersion}`: refuses built-ins (`template-built-in`), versions referenced by any instance (`template-in-use`), unknown versions (`template-not-found`); accepted removal frees the slot and its bytes.
+- Native registry limits are unchanged (16 definitions incl. the 6 curated templates — the 3 compatibility looks are outside the registry — and 256 KiB). New command `graphics-template-remove {templateId, templateVersion}`: refuses built-ins (`template-built-in`), versions referenced by any instance (`template-in-use`), unknown versions (`template-not-found`); accepted removal frees the slot and its bytes.
 - Shell action id `graphics.template.remove` (params `templateId` string, `templateVersion` int), admitted by `GraphicsCommandGateway` and registered in `ControlActionRegistry` + `StudioControlSurface.SupportedActionIds`.
 - Field limits stay native: ≤ 32 fields, field id `[a-z][a-z0-9-]{0,63}`, kinds `string` (maxLength), `number`, `color`, `boolean`, `image`.
 - Seeds: exactly four — `lower-third`, `title`, `bug`, `full-screen` (family `lower-third`, `title`, `bug`, `title` respectively; canvas 1920×1080).
@@ -25,7 +25,7 @@
 
 1. **Save a design while a playlist row shows its previous version on air** — Program keeps the on-air version; the old version is not removed while referenced. Pinned in Task 4.
 2. **Core restart with designs in the show** — designs used by rows are reinstalled; others are not installed; no capacity error at startup. Pinned in Task 4.
-3. **Library full (16 definitions)** — opening a design that cannot be installed reports "close another design or remove unused looks", never a silent failure. Pinned in Task 4.
+3. **Library full (16 definitions)** — opening a design that cannot be installed first evicts unreferenced design versions, then reports "Delete designs you no longer use, or remove graphics from the playlist.", never a silent failure. Pinned in Task 4.
 4. **Rename a variable that layers use** — every binding follows the rename; removing a used variable is refused naming the layers. Pinned in Task 5.
 5. **v2 graphics document from the current beta** — loads, keeps playlist/layouts/pins, gains an empty Designs list. Pinned in Task 2.
 
@@ -103,7 +103,7 @@
   - `Task<GraphicsDesignResult> DeleteAsync(string designId, CancellationToken ct = default)` (refused with the row names when a playlist row pins it; removes its installed versions)
   - `Task EnsureInstalledForPlaylistAsync(CancellationToken ct = default)` (on core restart: install designs pinned by rows/cues only)
   - `public sealed record GraphicsDesignResult(bool Ok, string Message, GraphicsDesign? Design, NativeGraphicsTemplate? Template)`.
-- Library-full message, exact: `The graphics library is full. Close another design or remove looks you no longer use.`
+- Library-full message, exact: `The graphics library is full. Delete designs you no longer use, or remove graphics from the playlist.` (final review: the original wording named actions that do not exist).
 
 - [ ] **Step 1: Failing tests** — blank create stores a design with a `design-…` id and installs v1; create-from copies a built-in under a new id (built-in untouched); save installs v2, stores it, removes v1 when nothing references it; save keeps v1 when a playlist row pins it (Review Focus 1); delete refused with "Used by: Guest name" when pinned, else removes versions and the design; open of an uninstalled design installs it; capacity refusal surfaces the exact library-full message (Review Focus 3); `EnsureInstalledForPlaylistAsync` installs only pinned designs (Review Focus 2); `graphics.template.remove` passes the gateway.
 - [ ] **Step 2: Run** `dotnet test … --filter FullyQualifiedName~GraphicsDesignService` — FAIL.

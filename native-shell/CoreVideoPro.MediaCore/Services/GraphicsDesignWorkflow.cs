@@ -8,7 +8,9 @@ namespace CoreVideoPro.MediaCore.Services;
 /// session's private draft (Graphics Designer slice 1): create / open (install, then browse as the
 /// draft), Save (a look that is not a design first becomes a new design; the draft then follows the
 /// design so a retry never makes a second copy) and Save to playlist. Every outcome is a message; a
-/// design that was stored is reported as stored even when the editor could not open it.</summary>
+/// design that was stored is reported as stored even when the editor could not open it. Moving the
+/// editor off a design (open/create another) uninstalls the design's versions nothing references,
+/// unless its draft holds unsaved template edits.</summary>
 public sealed class GraphicsDesignWorkflow
 {
     private readonly GraphicsDesignService _designs;
@@ -27,18 +29,34 @@ public sealed class GraphicsDesignWorkflow
 
     public async Task<GraphicsDesignResult> CreateAsync(string? kind, string? lookTemplateId, int lookTemplateVersion, string name)
     {
+        var leaving = Leaving();
         var created = kind is { Length: > 0 } ? await _designs.CreateBlankAsync(kind, name)
             : lookTemplateId is { Length: > 0 } ? await _designs.CreateFromAsync(lookTemplateId, lookTemplateVersion, name)
             : new GraphicsDesignResult(false, "Choose a blank kind or a look to start from.", null, null);
         if (!created.Ok || created.Template is not { } template) return created;
-        return Show(template) ? created : created with { Message = created.Message + " It is stored; open it from Your designs." };
+        if (!Show(template)) return created with { Message = created.Message + " It is stored; open it from Your designs." };
+        await ReleaseLeft(leaving, template);
+        return created;
     }
 
     public async Task<GraphicsDesignResult> OpenAsync(string designId)
     {
+        var leaving = Leaving();
         var opened = await _designs.OpenAsync(designId);
         if (!opened.Ok || opened.Template is not { } template) return opened;
-        return Show(template) ? opened : opened with { Ok = false, Message = "Graphics is busy. Try Open design again in a moment." };
+        if (!Show(template)) return opened with { Ok = false, Message = "Graphics is busy. Try Open design again in a moment." };
+        await ReleaseLeft(leaving, template);
+        return opened;
+    }
+
+    /// <summary>Delete a design; refused while it is the editor's draft, so the draft never points at
+    /// a removed version.</summary>
+    public async Task<GraphicsDesignResult> DeleteAsync(string designId)
+    {
+        await _library.LoadAsync();
+        if (DesignFor(_session.Draft)?.DesignId == designId)
+            return new(false, "This design is open in the editor. Open another design or look first, then delete it.", null, null);
+        return await _designs.DeleteAsync(designId);
     }
 
     /// <summary>Save the private template edits as the design's next version. A look that is not a
@@ -64,12 +82,17 @@ public sealed class GraphicsDesignWorkflow
             if (_session.Draft is { } moved) _session.Edit(moved with { Scratch = document, Fields = GraphicsTemplateEditor.SyncFields(draft.Fields, document) });
             prefix = $"Created {design.Name}; ";
         } else if (draft.Scratch is null) return new(true, "No design changes to save.", design, _session.Template);
+        // The values typed into the draft are not part of the template: carry them onto the saved version.
+        var typed = _session.Draft ?? draft;
         var saved = await _designs.SaveAsync(design.DesignId, document);
         if (!saved.Ok || saved.Design is null)
             return saved with { Design = design, Message = prefix.Length > 0 ? prefix + "your edits were not saved: " + saved.Message : saved.Message };
         var reopened = await _designs.OpenAsync(saved.Design.DesignId);
         var message = prefix + saved.Message;
-        if (reopened is { Ok: true, Template: { } current } && Show(current)) return saved with { Message = message, Template = current };
+        if (reopened is { Ok: true, Template: { } current } && Show(current)) {
+            Carry(typed, current, document);
+            return saved with { Message = message, Template = current };
+        }
         return saved with { Message = message + " Open it again from Your designs to keep editing." };
     }
 
@@ -85,6 +108,7 @@ public sealed class GraphicsDesignWorkflow
         var row = PlaylistRow(design, template, draft, rows);
         if (!await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(rows, row)))
             return saved with { Ok = false, Message = saved.Message + " Not added to the playlist: " + _library.Status };
+        await _designs.ReleaseAsync(design.TemplateId); // the version the row pinned before is now unused
         return saved with { Message = saved.Message + $" \"{row.Name}\" is in the playlist{(row.Hotkey.Length > 0 ? " on " + row.Hotkey : "")}. Show it from Operate when you want it on air." };
     }
 
@@ -100,6 +124,25 @@ public sealed class GraphicsDesignWorkflow
         var hotkey = existing is not null ? existing.Hotkey : GraphicsBuilder.NextFreeHotkey(rows);
         return GraphicsBuilder.RowFrom(kind, template, draft, existing?.Name ?? design.Name, hotkey, existing?.PlayOutAfterMs ?? (lowerThird ? 8000 : 0),
             existing?.FollowSources ?? lowerThird, rows, existing, existing?.Motion, existing?.Variants, existing?.Clock);
+    }
+
+    /// <summary>The design the editor is on, when moving off it may uninstall it: a browse draft (not a
+    /// cue) of a design with no unsaved template edits. Unsaved edits keep their version installed.</summary>
+    private string? Leaving() =>
+        _session.SelectedId.Length == 0 && _session.Draft is { Scratch: null } draft && GraphicsDesignIds.IsDesignTemplateId(draft.TemplateId) ? draft.TemplateId : null;
+
+    private async Task ReleaseLeft(string? leaving, NativeGraphicsTemplate now)
+    {
+        if (leaving is not null && leaving != now.TemplateId) await _designs.ReleaseAsync(leaving);
+    }
+
+    /// <summary>Re-apply the pre-save values, style, placement and motion to the re-opened draft
+    /// (variables follow the saved manifest; a removed variable's value is dropped).</summary>
+    private void Carry(NativeGraphicsDraft typed, NativeGraphicsTemplate template, NativeGraphicsScratch saved)
+    {
+        if (_session.Draft is not { } fresh) return;
+        var manifest = template.Definition is { } definition ? NativeGraphicsScratch.From(definition) : saved;
+        _session.Edit(fresh with { Fields = GraphicsTemplateEditor.SyncFields(typed.Fields, manifest), Style = typed.Style, Placement = typed.Placement, Animations = typed.Animations });
     }
 
     private bool Show(NativeGraphicsTemplate template)

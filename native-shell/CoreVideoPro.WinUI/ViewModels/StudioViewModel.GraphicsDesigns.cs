@@ -46,7 +46,7 @@ public sealed partial class StudioViewModel
         return GraphicsDesigns.DuplicateAsync(design.DesignId, name.Length > GraphicsDesignIds.MaxNameLength ? name[..GraphicsDesignIds.MaxNameLength].TrimEnd() : name);
     }
 
-    public Task<GraphicsDesignResult> DeleteGraphicsDesignAsync(string designId) => GraphicsDesigns.DeleteAsync(designId);
+    public Task<GraphicsDesignResult> DeleteGraphicsDesignAsync(string designId) => GraphicsDesignWorkflow.DeleteAsync(designId);
 
     // ---- core restart -----------------------------------------------------------------------
     /// <summary>Called from the core-generation hook (OnBridgeProfileChanged, which also fires on the

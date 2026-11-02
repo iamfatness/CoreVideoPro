@@ -100,8 +100,11 @@ belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../s
   version if the core lacks it and opens it in the Advanced editor as the
   workspace's *private draft*. **Duplicate** makes a new design (new id, same
   definition, "<name> copy"). **Delete** asks first and is refused while a
-  playlist row uses the design ("Used by: <row names>"); otherwise it removes
-  the design and every installed version no saved cue or live instance uses.
+  playlist row uses the design ("Used by: <row names>") and while the design is
+  open in the editor ("Open another design or look first"); otherwise it removes
+  the design, its template pins and every installed version no saved cue or live
+  instance uses. Duplicate and Delete work while the core is down (Delete then
+  skips the native tidy; a restarted core starts without the design).
 - **New design** opens the start dialog (mockup D2): **Start blank** with one of
   four seeds (Lower third, Title, Bug or corner, Full screen; manifests in
   `contracts/graphics-seeds`), **or start from a look** (any design or installed
@@ -124,11 +127,30 @@ belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../s
   version (`design-<slug>-<6 hex>`, never a built-in id), stores it as the
   design's definition, removes superseded versions nothing references, and
   re-opens the draft on the new version. Saving a look that is not a design
-  first makes it a new design "<look> copy". **Save to playlist** saves, then
-  adds (or re-pins) one playlist row for the design on the next free F-key.
+  first makes it a new design "<look> copy". The values typed into the draft,
+  its style, position and motion carry onto the re-opened version. **Save to
+  playlist** saves, then adds (or re-pins) one playlist row for the design on
+  the next free F-key, carrying those values; the version the row pinned before
+  is uninstalled when nothing else uses it.
+- **Native library slots**: the core holds 16 definitions, 6 of them the curated
+  templates (the 3 compatibility looks `compact-solid`, `minimal-accent` and
+  `broadcast` are outside the registry), so designs share 10 slots. A design
+  version is installed when it is created or opened; moving the editor to
+  another design or look uninstalls the previous design's versions nothing
+  references (unless its draft holds unsaved template edits). When an install
+  meets a full library, every installed design version that is not referenced
+  (playlist row, saved cue, Studio lower third, live instance), not the open
+  draft and holds no unsaved edits is removed and the install retried once.
+  Only then is "The graphics library is full. Delete designs you no longer use,
+  or remove graphics from the playlist." shown.
+- **Template pins**: every graphics-document save keeps only the pins a playlist
+  row (template or image), a saved cue (draft or image) or the Studio lower
+  third still references (`GraphicsWorkspaceLibrary.ReferencedTemplates`), so
+  repeated Save to playlist never reaches the 16-pin document limit.
 - **Core restart**: designs nobody uses stay uninstalled (the native registry
-  holds 16 definitions). On a new core generation the shell reinstalls the
-  design versions that playlist rows and saved cues pin
+  holds 16 definitions incl. the 6 curated templates). On a new core generation
+  the shell reinstalls the design versions that playlist rows, saved cues and the
+  Studio lower third pin
   (`EnsureInstalledForPlaylistAsync`, armed from `OnBridgeProfileChanged` and run
   once per new core epoch when its graphics state arrives; `GraphicsDesignResync`).
   `OnBridgeProfileChanged` also fires on the first handshake, so the graphics

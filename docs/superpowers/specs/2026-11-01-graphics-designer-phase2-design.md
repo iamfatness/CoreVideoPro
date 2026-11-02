@@ -22,7 +22,7 @@ An author can restyle an installed look but cannot build one:
 - Layer editing exists only in the Advanced tool pane (flat list, no rename/drag, image layers need a
   pre-declared asset); the builder is fill-in only.
 - **Saved versions vanish on restart** unless a playlist row pins them; the native registry is in
-  memory, capped at 16 definitions (6 built-in) and 256 KiB, with no remove.
+  memory, capped at 16 definitions (incl. the 6 curated templates; the 3 compatibility looks are outside the registry) and 256 KiB, with no remove.
 - Native animation is whole-graphic only (`GraphicsTimeline`: one fade/slide in/out).
 - Only `rect`; no outline/shadow; width/height fixed (no grow-to-text); image import makes a separate
   "bug" template instead of an asset in the design; `.svg` is offered by the logo picker and then

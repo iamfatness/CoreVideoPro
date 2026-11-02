@@ -168,10 +168,39 @@ public sealed partial class GraphicsWorkspaceLibrary
         }
         Status = _session.Status; Changed?.Invoke(this, EventArgs.Empty); return restored;
     }
+    /// <summary>Every template version the document still needs pinned: playlist rows (template and
+    /// image), saved cues (draft and image) and the Studio lower-third assignment.</summary>
+    public static HashSet<(string Id, int Version)> ReferencedTemplates(GraphicsShowDocument document)
+    {
+        var referenced = new HashSet<(string, int)>();
+        foreach (var row in document.Playlist) {
+            if (row.TemplateId.Length > 0) referenced.Add((row.TemplateId, row.TemplateVersion));
+            if (row.Image is { } image) referenced.Add((image.TemplateId, image.TemplateVersion));
+        }
+        foreach (var draft in document.Cues.Select(c => c.Draft).Append(document.StudioLowerThird?.Cue.Draft)) {
+            if (draft is null) continue;
+            referenced.Add((draft.TemplateId, draft.TemplateVersion));
+            if (draft.Image is { } image) referenced.Add((image.TemplateId, image.TemplateVersion));
+        }
+        return referenced;
+    }
+    /// <summary>Drop template pins nothing references any more. Every save goes through here, so pins
+    /// never outgrow the document limit as rows are re-pinned to new design versions.</summary>
+    private static GraphicsShowDocument PruneTemplates(GraphicsShowDocument document)
+    {
+        var referenced = ReferencedTemplates(document);
+        return document.Templates.All(t => referenced.Contains((t.TemplateId, t.TemplateVersion))) ? document
+            : document with { Templates = document.Templates.Where(t => referenced.Contains((t.TemplateId, t.TemplateVersion))).ToArray() };
+    }
+    /// <summary>The operator's private draft (the design service never evicts its version).</summary>
+    internal NativeGraphicsDraft? EditorDraft => _session.Draft;
+    /// <summary>Versions holding unsaved template edits the operator moved off (never evicted).</summary>
+    internal IEnumerable<(string TemplateId, int TemplateVersion)> UnsavedTemplateEdits => _session.UnsavedTemplateEdits;
     private async Task<bool> Save(GraphicsShowDocument document, string success)
     {
         await LoadAsync(); if (ReadOnly) return Fail("This graphics library is read-only. Original retained.");
         if (Busy) return Fail("A graphics save is in progress. Wait for completion before another edit.");
+        document = PruneTemplates(document);
         Busy = true; Changed?.Invoke(this, EventArgs.Empty);
         try { await _store.SaveAsync(document); Document = document; Status = success; Changed?.Invoke(this, EventArgs.Empty); return true; }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException) { return Fail(ex.Message); }

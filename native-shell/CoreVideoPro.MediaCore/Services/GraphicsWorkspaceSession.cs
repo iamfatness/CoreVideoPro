@@ -39,6 +39,10 @@ public sealed partial class GraphicsWorkspaceSession
     public NativeGraphicsInstance? Selected => State?.Instances.FirstOrDefault(i => i.InstanceId == SelectedId);
     public NativeGraphicsTemplate? Template => State?.Templates.FirstOrDefault(t => t.TemplateId == Draft?.TemplateId && t.TemplateVersion == Draft.TemplateVersion);
     public NativeGraphicsDraft? Draft { get; private set; }
+    /// <summary>Template versions whose remembered browse draft (a look or design the operator moved
+    /// off) holds unsaved template edits. Observe drops those edits if the version is uninstalled.</summary>
+    public IEnumerable<(string TemplateId, int TemplateVersion)> UnsavedTemplateEdits =>
+        _browseEdits.Where(p => p.Value.Draft.Scratch is not null).Select(p => p.Key).ToArray();
     public NativeGraphicsDraft? Preview {
         get {
             var preview=CompareOriginal?_original:Draft;
