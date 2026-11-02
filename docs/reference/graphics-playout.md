@@ -95,7 +95,8 @@ is kept as `<name>.v2.bak` on the first v3 save). It survives restarts and
 belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../superpowers/specs/2026-11-01-graphics-designer-phase2-design.md).
 
 - **Your designs** (a bar under the builder's header) lists the show's designs
-  (at most 32). **Open design** (or double-click) installs the design's current
+  (at most 32). Click a design to select it; **Open design** (or double-click the
+  design) installs the design's current
   version if the core lacks it and opens it in the Advanced editor as the
   workspace's *private draft*. **Duplicate** makes a new design (new id, same
   definition, "<name> copy"). **Delete** asks first and is refused while a
@@ -108,8 +109,8 @@ belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../s
   in place), a **Name** (1–80 characters), then **Open in the designer**. A
   refusal (library full, too many designs, invalid name) keeps the dialog open
   with the reason.
-- **Variables** (mockup D3, in the inspector's Content tab while a design is
-  open, or for any declarative look under "Customize layout & motion"): each
+- **Variables** (mockup D3, its own inspector tab, selected when a design opens;
+  also offered for any declarative look under "Customize layout & motion"): each
   variable with its kind, limit and **Used by** (the layers bound to it); add
   (Text with max length, Number, Colour, On/off, Image), rename (every binding
   follows), delete (refused while a layer uses it), max length, sample value and
@@ -118,7 +119,8 @@ belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../s
   (the template scratch plus draft values kept in step, since the core refuses
   unknown or missing fields). The layer editor's text and image sources list the
   edited variables, so a new variable can be bound before saving.
-- **Save design** installs the edited manifest as the design's next template
+- **Save design** and **Save to playlist** sit in the workspace header beside the
+  title, with their status line; editing is paused while a save runs. **Save design** installs the edited manifest as the design's next template
   version (`design-<slug>-<6 hex>`, never a built-in id), stores it as the
   design's definition, removes superseded versions nothing references, and
   re-opens the draft on the new version. Saving a look that is not a design
@@ -128,10 +130,17 @@ belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../s
   holds 16 definitions). On a new core generation the shell reinstalls the
   design versions that playlist rows and saved cues pin
   (`EnsureInstalledForPlaylistAsync`, armed from `OnBridgeProfileChanged` and run
-  once the new core's graphics state arrives).
+  once per new core epoch when its graphics state arrives; `GraphicsDesignResync`).
+  `OnBridgeProfileChanged` also fires on the first handshake, so the graphics
+  document now loads at app launch even if the Graphics tab is never opened.
 
-One `GraphicsDesignService` (MediaCore) owns the lifecycle; the ViewModel seam is
-`StudioViewModel.GraphicsDesigns.cs`; the UI is `GraphicsBuilderControl` (Your
+One `GraphicsDesignService` (MediaCore) owns the lifecycle and one
+`GraphicsDesignWorkflow` (MediaCore, unit-tested) the operator steps: open =
+install + browse as the private draft; Save on a look creates the copy, moves the
+draft (with its edits) onto it and then saves, so a failed save is retried into
+the same copy; a stored design is reported as stored even if the editor was busy;
+`PlaylistRow` re-pins the design's existing row or takes the next free F-key. The
+ViewModel seam is `StudioViewModel.GraphicsDesigns.cs`; the UI is `GraphicsBuilderControl` (Your
 designs), `GraphicsDesignStartDialog`, `GraphicsVariablesPanel` and
 `GraphicsWorkspaceControl.Designs.cs` (Save / Save to playlist). The builder's
 logo picker offers PNG and JPEG only; SVG returns with rasterised import

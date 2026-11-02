@@ -219,12 +219,10 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         if (_studioFollowSource.Parent is Panel followParent) followParent.Children.Remove(_studioFollowSource);
         if (_studioTextHelp.Parent is Panel helpParent) helpParent.Children.Remove(_studioTextHelp);
         if (_editGuestText.Parent is Panel guestParent) guestParent.Children.Remove(_editGuestText);
-        if (_variablesDrawer.Parent is Panel variablesParent) variablesParent.Children.Remove(_variablesDrawer);
         foreach (var panel in new[] { _contentControls, _styleControls, _layoutControls, _motionControls }) panel.Children.Clear();
         _inspectorTarget = _contentControls;
         _refreshFields.Clear();
         if (_session?.Draft is not { } draft) { _inspector.Children.Add(Copy("Select a cue to edit its private fields and style.")); return; }
-        if (draft.Declarative && _activeStarter is null) _inspector.Children.Add(_variablesDrawer);
         if(Studio is not null) {var binding=new GraphicsSourceBindingControl(_session,Studio);_inspector.Children.Add(new Expander { Header="Use names from a source", Content=binding, HorizontalAlignment=HorizontalAlignment.Stretch });_refreshFields.Add(binding.Refresh);}
         _inspector.Children.Add(new TextBlock { Text = "FIELDS", FontSize = 11 });
         var fields = _session.Template?.Fields ?? [];

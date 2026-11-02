@@ -24,7 +24,7 @@ public sealed class GraphicsVariablesPanel : UserControl
     private readonly TextBlock _editorTitle = new() { FontSize = 15, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _usedBy = Body("");
     private readonly TextBox _name = new() { Header = "Name", MaxLength = 64, FontSize = 14 };
-    private readonly NumberBox _maxLength = new() { Header = "Max length (characters)", Minimum = 0, Maximum = 4096, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 14 };
+    private readonly NumberBox _maxLength = new() { Header = "Max length (characters)", Minimum = 1, Maximum = 4096, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 14 };
     private readonly TextBox _sampleText = new() { Header = "Sample value", MaxLength = 4096, FontSize = 14 };
     private readonly NumberBox _sampleNumber = new() { Header = "Sample value", SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 14 };
     private readonly ToggleSwitch _sampleOn = new() { Header = "Sample value", OnContent = "On", OffContent = "Off" };
@@ -32,7 +32,7 @@ public sealed class GraphicsVariablesPanel : UserControl
     private readonly Button _rename = StudioBrushes.GhostButton("Rename"), _apply = StudioBrushes.GhostButton("Apply"), _delete = StudioBrushes.GhostButton("Delete variable");
     private readonly TextBox _newName = new() { Header = "New variable", MaxLength = 64, PlaceholderText = "location", FontSize = 14 };
     private readonly ComboBox _newKind = new() { Header = "Kind", ItemsSource = KindChoices.Select(k => k.Label).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 14 };
-    private readonly NumberBox _newMaxLength = new() { Header = "Max length", Minimum = 0, Maximum = 4096, Value = 128, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 14 };
+    private readonly NumberBox _newMaxLength = new() { Header = "Max length", Minimum = 1, Maximum = 4096, Value = 128, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 14 };
     private readonly Button _add = StudioBrushes.AccentButton("Add variable");
 
     private GraphicsWorkspaceSession? _session;

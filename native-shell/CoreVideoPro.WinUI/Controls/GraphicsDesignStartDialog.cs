@@ -23,7 +23,7 @@ public sealed class GraphicsDesignStartDialog : ContentDialog
     private readonly StudioViewModel _studio;
     private readonly List<ToggleButton> _kinds = [];
     private readonly ComboBox _look = new() { Header = "Or start from a look", PlaceholderText = "Choose a look to copy", HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 14 };
-    private readonly TextBox _name = new() { Header = "Name", MaxLength = GraphicsDesignIds.MaxNameLength, PlaceholderText = "Guest strap", FontSize = 14 };
+    private readonly TextBox _name = new() { Header = "Name", MaxLength = GraphicsDesignIds.MaxNameLength, PlaceholderText = "e.g. Guest strap", FontSize = 14 };
     private readonly TextBlock _status = new() { FontSize = 14, TextWrapping = TextWrapping.Wrap };
     private readonly List<(string TemplateId, int Version, string Name)> _looks = [];
     private string _autoName = "";

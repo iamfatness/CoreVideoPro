@@ -55,6 +55,10 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(blankKinds.SequenceEqual(GraphicsDesignSeeds.Kinds), "Start dialog does not list the four blank kinds: " + string.Join(",", blankKinds));
             Require(Descendants(startDialog!).OfType<TextBox>().Any(t => t.Header as string == "Name"), "Start dialog has no name field");
             Require(Descendants(startDialog!).OfType<ComboBox>().Any(c => c.Header as string == "Or start from a look"), "Start dialog does not offer starting from a look");
+            Require(!startDialog!.IsPrimaryButtonEnabled, "Open in the designer is enabled before a start and a name are chosen");
+            Descendants(startDialog!).OfType<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>().First(b => b.Tag as string == "lower-third").IsChecked = true;
+            Descendants(startDialog!).OfType<TextBox>().Single(t => t.Header as string == "Name").Text = "Probe lower third";
+            await Eventually(() => startDialog!.IsPrimaryButtonEnabled, "Choosing a blank kind and a name did not enable Open in the designer");
             await ReviewImageWriter.SaveAsync(startDialog!, Path.Combine(directory, "graphics-design-start-dialog.png"));
             startDialog!.Hide(); await Task.Delay(150);
             checks.Add("Design lists Your designs (Open / Duplicate / Delete) and New design opens the start dialog with the four blank kinds, a look picker and a name");
@@ -137,7 +141,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             var seedTemplate = System.Text.Json.JsonSerializer.Deserialize<NativeGraphicsTemplate>(seedManifest.ToJsonString(),new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))! with {
                 Runtime="declarative", Definition=seedDefinition, ManifestHash=NativeGraphicsScratch.From(seedDefinition).Hash };
             studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=[..catalog,seedTemplate]});
-            studio.GraphicsWorkspace.Browse(seedTemplate); Invoke(Button(workspace,"Content")); await Task.Delay(150); page.UpdateLayout();
+            studio.GraphicsWorkspace.Browse(seedTemplate); await Task.Delay(100); Invoke(Button(workspace,"Variables")); await Task.Delay(150); page.UpdateLayout();
             var variablesPanel = Descendants(workspace).OfType<GraphicsVariablesPanel>().SingleOrDefault();
             Require(variablesPanel is { Visibility: Visibility.Visible, ActualHeight: > 0 }, "The Variables panel is not shown for an open design");
             var variableNames = Descendants(variablesPanel!).OfType<TextBlock>().Select(t => t.Text).ToHashSet(StringComparer.Ordinal);
@@ -146,6 +150,15 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(Button(workspace,"Save design").ActualHeight > 0 && Button(workspace,"Save to playlist").ActualHeight > 0, "Save design / Save to playlist are missing for an open design");
             await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,"graphics-design-variables-1080.png"));
             checks.Add("An open design shows the Variables panel with the seed's name and title (Used by) plus Save design and Save to playlist");
+            // 1360x768 shell: the Graphics page gets about 1320 x 640 (measured from graphics-full-1360x768.png).
+            page.Width = 1320; page.Height = 640; await Task.Delay(150); page.UpdateLayout();
+            var variablesScroll = Descendants(workspace).OfType<ScrollViewer>().Single(v => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(v) == "Design variables");
+            var variablesTop = variablesScroll.TransformToVisual(workspace).TransformPoint(new(0, 0)).Y;
+            var visibleVariables = Math.Min(variablesScroll.ViewportHeight, workspace.ActualHeight - variablesTop);
+            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-design-variables-1360x768.png"));
+            Require(variablesScroll.Visibility == Visibility.Visible && visibleVariables >= 200, $"Variables panel has only {visibleVariables:0} px visible at 1360x768");
+            checks.Add($"At 1360x768 an open design's Variables panel keeps {visibleVariables:0} px of visible height (>= 200)");
+            page.Width = 1840; page.Height = 820; await Task.Delay(100); page.UpdateLayout();
             studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=catalog});
             studio.GraphicsWorkspace.Browse(catalog[0]);
             var state = new NativeGraphicsState { CoreEpoch="isolated-layout", SchemaVersion=1, Templates=catalog,

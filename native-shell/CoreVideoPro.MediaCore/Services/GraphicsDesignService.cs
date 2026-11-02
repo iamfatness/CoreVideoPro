@@ -98,8 +98,10 @@ public sealed class GraphicsDesignService
         }
         // The new version is stored: a core restart during cleanup must not report the save as failed.
         try { await RemoveUnreferenced(design.TemplateId, keep: version, ct); }
-        catch (InvalidOperationException) {
-            return new(true, Status = _library.Status + " The core restarted before older versions were tidied; they are gone with the old core.", saved, template);
+        catch (InvalidOperationException ex) {
+            var note = _observe()?.CoreEpoch != _epoch ? " The core restarted before older versions were tidied; they are gone with the old core."
+                : " Older versions were kept: " + ex.Message;
+            return new(true, Status = _library.Status + note, saved, template);
         }
         return new(true, Status = _library.Status, saved, template);
     });
@@ -128,7 +130,7 @@ public sealed class GraphicsDesignService
 
     /// <summary>After a core restart: install the design versions playlist rows and saved cues pin.
     /// Designs nothing pins stay uninstalled until opened. Failures land in <see cref="Status"/>.</summary>
-    public async Task EnsureInstalledForPlaylistAsync(CancellationToken ct = default) => await Run(async () => {
+    public Task<GraphicsDesignResult> EnsureInstalledForPlaylistAsync(CancellationToken ct = default) => Run(async () => {
         var document = _library.Document; var problems = new List<string>();
         foreach (var (id, version) in Pins(document, rowsAndCuesOnly: true).Where(p => GraphicsDesignIds.IsDesignTemplateId(p.Id))) {
             JsonElement definition; var packageRoot = "";

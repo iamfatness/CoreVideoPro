@@ -663,17 +663,22 @@ public sealed class GraphicsBuilderControl : UserControl
     {
         var designs = _library?.Document.Designs ?? [];
         if (designs.All(d => d.DesignId != _selectedDesignId)) _selectedDesignId = designs.FirstOrDefault()?.DesignId ?? "";
-        var signature = _selectedDesignId + "|" + string.Join("|", designs.Select(d => d.DesignId + ":" + d.Name + ":" + d.TemplateVersion));
+        // Chips are rebuilt only when the designs change, never on selection, so a double-click lands on the same chip.
+        var signature = string.Join("|", designs.Select(d => d.DesignId + ":" + d.Name + ":" + d.TemplateVersion));
         if (signature != _designsSignature) {
             _designsSignature = signature; _designChips.Children.Clear();
             foreach (var design in designs) {
-                var chip = StudioBrushes.GhostButton(design.Name); chip.FontSize = 14;
-                if (design.DesignId == _selectedDesignId) { chip.BorderBrush = StudioBrushes.Accent; chip.BorderThickness = new Thickness(2); }
+                var chip = StudioBrushes.GhostButton(design.Name); chip.FontSize = 14; chip.Tag = design.DesignId;
+                AutomationProperties.SetName(chip, "Design " + design.Name);
                 ToolTipService.SetToolTip(chip, $"{design.Name} · {design.Family} · version {design.TemplateVersion}. Double-click or Open design to edit.");
                 chip.Click += (_, _) => { _selectedDesignId = design.DesignId; RefreshDesigns(); };
                 chip.DoubleTapped += async (_, _) => { _selectedDesignId = design.DesignId; await RunDesignAsync(async studio => await studio.OpenGraphicsDesignAsync(design.DesignId)); };
                 _designChips.Children.Add(chip);
             }
+        }
+        foreach (var chip in _designChips.Children.OfType<Button>()) {
+            var selected = chip.Tag as string == _selectedDesignId;
+            chip.BorderBrush = selected ? StudioBrushes.Accent : StudioBrushes.Border; chip.BorderThickness = new Thickness(selected ? 2 : 1);
         }
         _designsEmpty.Visibility = designs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         _openDesign.IsEnabled = _duplicateDesign.IsEnabled = _deleteDesign.IsEnabled = !_designBusy && SelectedDesign is not null;

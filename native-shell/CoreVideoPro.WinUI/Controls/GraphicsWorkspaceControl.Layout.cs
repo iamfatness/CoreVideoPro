@@ -60,7 +60,10 @@ public sealed partial class GraphicsWorkspaceControl
         var heading = new Grid { ColumnSpacing = 12 };
         heading.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         heading.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        heading.Children.Add(new TextBlock { Text = "Graphics", FontSize = 24, VerticalAlignment = VerticalAlignment.Center });
+        var titleRow = new Grid { ColumnSpacing = 12 };
+        titleRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        titleRow.Children.Add(new TextBlock { Text = "Graphics", FontSize = 24, VerticalAlignment = VerticalAlignment.Center });
+        BuildDesignActions(titleRow); heading.Children.Add(titleRow);
         var headerActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         headerActions.Children.Add(Action("Show templates", () => { OpenShowTemplates(); return Task.CompletedTask; }));
         headerActions.Children.Add(Action("Automation", () => { OpenTools("automation", "Graphics automation"); return Task.CompletedTask; }));
@@ -104,7 +107,7 @@ public sealed partial class GraphicsWorkspaceControl
 
         var inspector = new Grid { RowSpacing = 8, Padding = new Thickness(12) };
         foreach (var height in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto }) inspector.RowDefinitions.Add(new() { Height = height });
-        var selection = new StackPanel { Spacing = 4 }; selection.Children.Add(_selectionTitle); selection.Children.Add(_selectionSummary); selection.Children.Add(_customizeGraphic); BuildDesignActions(selection); inspector.Children.Add(selection);
+        var selection = new StackPanel { Spacing = 4 }; selection.Children.Add(_selectionTitle); selection.Children.Add(_selectionSummary); selection.Children.Add(_customizeGraphic); inspector.Children.Add(selection);
         _customizeGraphic.Click += (_, _) => { SetGraphicsCustomization(!_advancedGraphicsControls); };
         var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
         var panels = new[] { _contentControls, _styleControls, _layoutControls, _motionControls };
@@ -113,8 +116,11 @@ public sealed partial class GraphicsWorkspaceControl
             var scroll = new ScrollViewer { Content = panels[index], VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
             _inspectorBodies.Children.Add(scroll); _inspectorScrolls.Add(scroll);
         }
-        Grid.SetRow(tabs, 1); inspector.Children.Add(tabs); Grid.SetRow(_inspectorBodies, 2); inspector.Children.Add(_inspectorBodies); SelectInspectorTab(0);
-        var assignment = new StackPanel { Spacing = 4 };
+        AddVariablesTab(tabs);
+        // Five tabs can exceed a narrow inspector; scroll the strip rather than clip it.
+        var tabStrip = new ScrollViewer { Content = tabs, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollMode = ScrollMode.Disabled };
+        Grid.SetRow(tabStrip, 1); inspector.Children.Add(tabStrip); Grid.SetRow(_inspectorBodies, 2); inspector.Children.Add(_inspectorBodies); SelectInspectorTab(0);
+        var assignment = _assignmentPanel;
         assignment.Children.Add(_assignmentCaption);
         _useInStudioButton = Action("Use in Studio", async () => {
             if(_starterAdding || Studio is null)return;
@@ -186,7 +192,7 @@ public sealed partial class GraphicsWorkspaceControl
     {
         _advancedGraphicsControls = advanced;
         _customizeGraphic.Content = advanced ? "Use simple controls" : "Customize layout & motion";
-        for (var i = 2; i < _inspectorTabs.Count; ++i) _inspectorTabs[i].Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
+        for (var i = 2; i < Math.Min(4, _inspectorTabs.Count); ++i) _inspectorTabs[i].Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
         _layerPanelRow.Height = new GridLength(advanced ? 118 : 0);
         _layerHeading.Visibility = _layerList.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
         if (!advanced) SelectInspectorTab(0);

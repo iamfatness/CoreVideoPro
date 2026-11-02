@@ -295,5 +295,114 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.Equal(1, Assert.Single(library.Document.Designs).TemplateVersion);
     }
 
+    // ---- GraphicsDesignWorkflow (operator steps over the service and the private draft) ----
+    private (GraphicsWorkspaceLibrary Library, GraphicsDesignService Service, GraphicsDesignWorkflow Workflow) BuildWorkflow()
+    {
+        var (library, service) = Build();
+        return (library, service, new GraphicsDesignWorkflow(service, _session!, library, Observe));
+    }
+    private NativeGraphicsTemplate InstallLook(string id, string kind)
+    {
+        var look = Installed(JsonSerializer.SerializeToElement(GraphicsDesignSeeds.Manifest(kind, id, 1, "Look " + kind)));
+        _state = _state with { Templates = [.. _state.Templates, look] }; _session!.Observe(_state);
+        return look;
+    }
+    private static NativeGraphicsTemplate Template(string id, int version, string family) => new() { TemplateId = id, TemplateVersion = version, Family = family, Name = id, Runtime = "declarative" };
+    private static NativeGraphicsDraft Draft(string id, int version) => new(id, version, JsonSerializer.SerializeToElement(new { name = "Ada", title = "Host" }), LowerThirdAppearance.FromPreset(id), new());
+    private static GraphicsDesign DesignOf(string id, string family) => new(id, "Guest strap", family, id, 2, JsonSerializer.SerializeToElement(new { templateId = id }), [], DateTimeOffset.UtcNow);
+
+    [Fact] public void PlaylistRowForANewLowerThirdTakesTheNextFreeKeyFollowsSourcesAndPlaysOutAfterEightSeconds()
+    {
+        var rows = new[] { new GraphicsPlaylistRow { Id = "logo", Kind = GraphicsPlaylistRow.Logo, Name = "Logo", Hotkey = "F1", TemplateId = "corner-logo", TemplateVersion = 1 } };
+        var row = GraphicsDesignWorkflow.PlaylistRow(DesignOf("design-strap-a1b2c3", "lower-third"), Template("design-strap-a1b2c3", 2, "lower-third"), Draft("design-strap-a1b2c3", 2), rows);
+        Assert.Equal(("F2", GraphicsPlaylistRow.Guest, 8000, true, 2), (row.Hotkey, row.Kind, row.PlayOutAfterMs, row.FollowSources, row.TemplateVersion));
+        Assert.Equal("Guest strap", row.Name);
+        var fullScreen = GraphicsDesignWorkflow.PlaylistRow(DesignOf("design-slate-a1b2c3", "title"), Template("design-slate-a1b2c3", 2, "title"), Draft("design-slate-a1b2c3", 2), rows);
+        Assert.Equal((GraphicsPlaylistRow.Title, 0), (fullScreen.Kind, fullScreen.PlayOutAfterMs));
+    }
+
+    [Fact] public void PlaylistRowRepinsTheDesignsExistingRowAndKeepsItsKeyNameAndTiming()
+    {
+        var existing = new GraphicsPlaylistRow { Id = "strap", Kind = GraphicsPlaylistRow.Title, Name = "Opening strap", Hotkey = "F6", PlayOutAfterMs = 15000, TemplateId = "design-strap-a1b2c3", TemplateVersion = 1 };
+        var rows = new[] { new GraphicsPlaylistRow { Id = "logo", Kind = GraphicsPlaylistRow.Logo, Name = "Logo", Hotkey = "F1", TemplateId = "corner-logo", TemplateVersion = 1 }, existing };
+        var row = GraphicsDesignWorkflow.PlaylistRow(DesignOf("design-strap-a1b2c3", "lower-third"), Template("design-strap-a1b2c3", 2, "lower-third"), Draft("design-strap-a1b2c3", 2), rows);
+        Assert.Equal(("strap", "Opening strap", "F6", 15000, false, 2), (row.Id, row.Name, row.Hotkey, row.PlayOutAfterMs, row.FollowSources, row.TemplateVersion));
+    }
+
+    [Fact] public async Task OpenMakesTheDesignThePrivateDraftAndSaysSo()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
+        var opened = 0; workflow.Opened += (_, _) => opened++;
+        var result = await workflow.OpenAsync(design.DesignId);
+        Assert.True(result.Ok, result.Message);
+        Assert.Equal((design.TemplateId, 1), (_session!.Draft!.TemplateId, _session.Draft.TemplateVersion));
+        Assert.Equal(1, opened);
+        Assert.Same(design.DesignId, workflow.DesignFor(_session.Draft)!.DesignId);
+    }
+
+    [Fact] public async Task SaveOnALookMakesOneCopyAndARetryAfterAFailedSaveGoesIntoThatCopy()
+    {
+        var (library, _, workflow) = BuildWorkflow();
+        var look = InstallLook("look-title", "title");
+        _state = _state with { Templates = [.. _state.Templates, .. Enumerable.Range(1, 8).Select(n => Installed(JsonSerializer.SerializeToElement(new { templateId = "filler-" + n, templateVersion = 1 })))] };
+        _session!.Observe(_state); _session.Browse(look);
+        _session.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        var failed = await workflow.SaveAsync(); // the copy fills slot 16, so its first save is refused
+        Assert.False(failed.Ok);
+        Assert.StartsWith("Created Look title copy; your edits were not saved: " + LibraryFull, failed.Message);
+        var design = Assert.Single(library.Document.Designs);
+        Assert.Equal(design.TemplateId, _session.Draft!.TemplateId);
+        Assert.Contains("\"location\"", _session.Draft.Scratch!.Manifest);
+        _state = _state with { Templates = _state.Templates.Where(t => t.TemplateId != "filler-1").ToArray() }; _session.Observe(_state);
+        var saved = await workflow.SaveAsync();
+        Assert.True(saved.Ok, saved.Message);
+        Assert.Equal(2, Assert.Single(library.Document.Designs).TemplateVersion);
+        Assert.Equal((design.TemplateId, 2), (_session.Draft!.TemplateId, _session.Draft.TemplateVersion));
+        Assert.Contains(library.Document.Designs[0].Definition.GetProperty("fields").EnumerateArray(), f => f.GetProperty("id").GetString() == "location");
+    }
+
+    [Fact] public async Task SaveToPlaylistSavesThenPinsOneRowOnTheNextFreeKey()
+    {
+        var (library, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        var result = await workflow.SaveToPlaylistAsync();
+        Assert.True(result.Ok, result.Message);
+        Assert.Contains("is in the playlist on F1", result.Message);
+        var row = Assert.Single(library.Document.Playlist);
+        Assert.Equal((result.Design!.TemplateId, 2, "F1"), (row.TemplateId, row.TemplateVersion, row.Hotkey));
+        Assert.True((await workflow.SaveToPlaylistAsync()).Ok);
+        Assert.Single(library.Document.Playlist);
+    }
+
+    [Fact] public async Task CreateReportsAStoredDesignAsCreatedEvenWhenTheEditorIsBusy()
+    {
+        var (library, service) = Build();
+        var gate = new TaskCompletionSource<NativeGraphicsOperationResult>();
+        var busy = new GraphicsWorkspaceSession((_, _, _) => gate.Task, Observe); busy.Observe(_state);
+        var workflow = new GraphicsDesignWorkflow(service, busy, library, Observe);
+        var pending = busy.RefreshCatalogAsync();
+        Assert.True(busy.Busy);
+        var result = await workflow.CreateAsync("title", null, 0, "Opening title");
+        Assert.True(result.Ok, result.Message);
+        Assert.EndsWith("It is stored; open it from Your designs.", result.Message);
+        Assert.Single(library.Document.Designs);
+        gate.SetResult(new NativeGraphicsOperationResult { Accepted = true }); await pending;
+    }
+
+    [Fact] public void ResyncFiresOncePerArmedEpoch()
+    {
+        var resync = new GraphicsDesignResync();
+        NativeGraphicsState Epoch(string e) => new() { CoreEpoch = e, SchemaVersion = 1 };
+        Assert.False(resync.Observe(Epoch("a")));      // not armed
+        Assert.False(resync.Arm(null));                // armed, no graphics state yet
+        Assert.True(resync.Observe(Epoch("a")));
+        Assert.False(resync.Observe(Epoch("a")));
+        Assert.False(resync.Arm(Epoch("a")));          // re-armed while the old epoch is still reported
+        Assert.True(resync.Observe(Epoch("b")));
+        Assert.False(resync.Observe(Epoch("c")));      // a new epoch without a new generation does not fire
+    }
+
     public void Dispose() { try { Directory.Delete(_directory, true); } catch (IOException) { } }
 }
