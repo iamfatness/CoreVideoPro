@@ -15,7 +15,8 @@ snapshot under the core mutex.
 
 The base native commands are: `graphics-instance-create`, `graphics-instance-update`,
 `graphics-instance-cue`, `graphics-instance-trigger`, `graphics-instance-remove`
-`graphics-program-clear`, `graphics-template-install` and `graphics-template-list`. They work as JSON-line requests or entries in the
+`graphics-program-clear`, `graphics-template-install`, `graphics-template-list` and
+`graphics-template-remove`. They work as JSON-line requests or entries in the
 existing `media-core-sync` batch. The shell registers the corresponding dotted
 HTTP/OSC actions with one required string argument, `request`, containing the
 JSON request object. `GraphicsCommandGateway` validates bounded shape, epoch,
@@ -48,6 +49,12 @@ validates, hashes and publishes definitions. Admission reports queued; inspect
 Same ID/version with different content is refused. At most two imports are pending,
 16 immutable declarative versions and 256 KiB canonical document bytes are retained;
 the 16-entry result history is bounded. Catalog publication is an immutable lease.
+`graphics-template-remove {templateId, templateVersion}` frees an imported version's
+slot and document bytes (`template-removed`). It refuses built-ins (`template-built-in`),
+a version any instance's draft, cue or Program revision uses as its definition or image
+reference (`template-in-use`, decided by the instance owner first) and unknown versions
+(`template-not-found`); `template-library-busy` is retryable. Verified encoded assets stay
+in the content-addressed pool.
 The catalog includes the exact definition and canonical SHA-256 for lossless
 save/export; shell reconstruction of omitted defaults is not authoritative.
 

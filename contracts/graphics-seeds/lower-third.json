@@ -1,0 +1,127 @@
+{
+    "schemaVersion":  1,
+    "templateId":  "design-lower-third-000000",
+    "templateVersion":  1,
+    "name":  "Lower third",
+    "family":  "lower-third",
+    "canvas":  {
+                   "width":  1920,
+                   "height":  1080
+               },
+    "bounds":  {
+                   "width":  1060,
+                   "height":  168
+               },
+    "brandTokens":  [
+                        "brand.primary",
+                        "brand.onPrimary",
+                        "brand.accent",
+                        "brand.fontBody"
+                    ],
+    "fields":  [
+                   {
+                       "id":  "name",
+                       "type":  "string",
+                       "default":  "Name",
+                       "required":  true,
+                       "bindable":  true,
+                       "maxLength":  128
+                   },
+                   {
+                       "id":  "title",
+                       "type":  "string",
+                       "default":  "Title",
+                       "bindable":  true,
+                       "maxLength":  256
+                   }
+               ],
+    "layers":  [
+                   {
+                       "id":  "plate",
+                       "type":  "rect",
+                       "x":  0,
+                       "y":  0,
+                       "width":  1060,
+                       "height":  168,
+                       "fill":  {
+                                    "token":  "brand.primary"
+                                }
+                   },
+                   {
+                       "id":  "accent",
+                       "type":  "rect",
+                       "x":  0,
+                       "y":  0,
+                       "width":  8,
+                       "height":  168,
+                       "fill":  {
+                                    "token":  "brand.accent"
+                                }
+                   },
+                   {
+                       "id":  "name-label",
+                       "type":  "text",
+                       "text":  {
+                                    "field":  "name"
+                                },
+                       "x":  32,
+                       "y":  27,
+                       "width":  996,
+                       "height":  62,
+                       "font":  {
+                                    "token":  "brand.fontBody"
+                                },
+                       "fontWeight":  600,
+                       "fontSize":  42,
+                       "lineHeight":  1.2,
+                       "color":  {
+                                     "token":  "brand.onPrimary"
+                                 },
+                       "align":  "left",
+                       "maxLines":  1,
+                       "overflow":  "ellipsis"
+                   },
+                   {
+                       "id":  "title-label",
+                       "type":  "text",
+                       "text":  {
+                                    "field":  "title"
+                                },
+                       "x":  32,
+                       "y":  94,
+                       "width":  996,
+                       "height":  42,
+                       "font":  {
+                                    "token":  "brand.fontBody"
+                                },
+                       "fontWeight":  600,
+                       "fontSize":  28,
+                       "lineHeight":  1.2,
+                       "color":  {
+                                     "token":  "brand.onPrimary"
+                                 },
+                       "align":  "left",
+                       "maxLines":  1,
+                       "overflow":  "ellipsis",
+                       "collapseWhenEmpty":  true
+                   }
+               ],
+    "animations":  {
+                       "in":  {
+                                  "type":  "fade",
+                                  "durationMs":  250,
+                                  "easing":  "ease-out"
+                              },
+                       "out":  {
+                                   "type":  "fade",
+                                   "durationMs":  200,
+                                   "easing":  "ease-in"
+                               }
+                   },
+    "defaultPlacement":  {
+                             "anchor":  "lower-left",
+                             "x":  96,
+                             "y":  -54,
+                             "scale":  1
+                         }
+}

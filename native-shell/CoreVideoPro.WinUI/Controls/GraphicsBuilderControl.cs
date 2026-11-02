@@ -4,6 +4,7 @@ using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
@@ -86,7 +87,8 @@ public sealed class GraphicsBuilderControl : UserControl
         var headerGrid = new Grid { ColumnSpacing = 10 };
         headerGrid.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); headerGrid.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); headerGrid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); headerGrid.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         headerGrid.Children.Add(title); Grid.SetColumn(yoursLabel, 1); headerGrid.Children.Add(yoursLabel); Grid.SetColumn(yoursScroll, 2); headerGrid.Children.Add(yoursScroll); Grid.SetColumn(advanced, 3); headerGrid.Children.Add(advanced);
-        Grid.SetColumnSpan(headerGrid, 3); _root.Children.Add(headerGrid);
+        var header = new StackPanel { Spacing = 8 }; header.Children.Add(headerGrid); header.Children.Add(BuildDesignsBar());
+        Grid.SetColumnSpan(header, 3); _root.Children.Add(header);
 
         // 1 + 2: what and look
         _shelf.Children.Add(Step("1", "WHAT ARE YOU MAKING"));
@@ -212,7 +214,7 @@ public sealed class GraphicsBuilderControl : UserControl
     }
     private void OnSessionChanged(object? sender, EventArgs e) { RefreshAll(); RequestThumbnails(); UpdatePreviewLease(); }
     private void OnPreviewChanged(object? sender, EventArgs e) { RefreshForm(); UpdatePreviewLease(); }
-    private void OnLibraryChanged(object? sender, EventArgs e) => RefreshYours();
+    private void OnLibraryChanged(object? sender, EventArgs e) { RefreshYours(); RefreshDesigns(); }
     private void RequestThumbnails()
     {
         if (_suspended || _session is not { Busy: false, State.CoreEpoch: { Length: > 0 } epoch } || _thumbnailEpoch == epoch) return;
@@ -314,7 +316,7 @@ public sealed class GraphicsBuilderControl : UserControl
     }
 
     // ---- rendering -------------------------------------------------------------------------
-    private void RefreshAll() { RefreshKinds(); RefreshLooks(); RefreshForm(); RefreshYours(); RefreshSaveButton(); }
+    private void RefreshAll() { RefreshKinds(); RefreshLooks(); RefreshForm(); RefreshYours(); RefreshDesigns(); RefreshSaveButton(); }
 
     private void RefreshKinds()
     {
@@ -475,7 +477,8 @@ public sealed class GraphicsBuilderControl : UserControl
     {
         try {
             var picker = new Windows.Storage.Pickers.FileOpenPicker();
-            picker.FileTypeFilter.Add(".png"); picker.FileTypeFilter.Add(".svg"); picker.FileTypeFilter.Add(".jpg");
+            // SVG is not offered until it is rasterised at import (Graphics Designer slice 4).
+            picker.FileTypeFilter.Add(".png"); picker.FileTypeFilter.Add(".jpg"); picker.FileTypeFilter.Add(".jpeg");
             WinRT.Interop.InitializeWithWindow.Initialize(picker, App.MainWindowHandle);
             var file = await picker.PickSingleFileAsync();
             if (file is not null) await ImportLogoAsync(file.Path);
@@ -607,6 +610,101 @@ public sealed class GraphicsBuilderControl : UserControl
         _motion.SelectedIndex = Math.Max(0, GraphicsBuilder.MotionPresets.ToList().FindIndex(m => m.Id == preset));
         var speed = GraphicsBuilder.MotionSpeeds.ToList().FindIndex(m => m.Ms == ms); _speed.SelectedIndex = speed >= 0 ? speed : 1;
         _speed.IsEnabled = preset != "cut";
+    }
+
+    // ---- your designs (Graphics Designer slice 1) -------------------------------------------
+    private readonly StackPanel _designChips = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
+    private readonly TextBlock _designsEmpty = new() { Text = "No designs yet. New design starts one from blank or from a look.", FontSize = 14, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock _designStatus = new() { FontSize = 14, Foreground = StudioBrushes.Text, TextWrapping = TextWrapping.Wrap };
+    private readonly Button _newDesign = StudioBrushes.AccentButton("New design"), _openDesign = StudioBrushes.GhostButton("Open design"),
+        _duplicateDesign = StudioBrushes.GhostButton("Duplicate"), _deleteDesign = StudioBrushes.GhostButton("Delete");
+    private string _selectedDesignId = "", _designsSignature = "";
+    private bool _designBusy;
+
+    private FrameworkElement BuildDesignsBar()
+    {
+        var label = new TextBlock { Text = "YOUR DESIGNS", FontSize = 12, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center };
+        var chips = new ScrollViewer { Content = _designChips, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalAlignment = VerticalAlignment.Center };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        foreach (var button in new[] { _openDesign, _duplicateDesign, _deleteDesign, _newDesign }) { button.FontSize = 14; actions.Children.Add(button); }
+        AutomationProperties.SetName(_openDesign, "Open design"); AutomationProperties.SetName(_duplicateDesign, "Duplicate design");
+        AutomationProperties.SetName(_deleteDesign, "Delete design"); AutomationProperties.SetName(_newDesign, "New design");
+        ToolTipService.SetToolTip(_openDesign, "Open the selected design in the editor as a private draft. Program is unchanged.");
+        ToolTipService.SetToolTip(_newDesign, "Start a design from a blank lower third, title, bug or full screen, or from a look.");
+        var confirm = StudioBrushes.AccentButton("Delete design"); AutomationProperties.SetName(confirm, "Confirm delete design");
+        var confirmText = new TextBlock { FontSize = 14, TextWrapping = TextWrapping.Wrap, MaxWidth = 320, Foreground = StudioBrushes.Text };
+        var confirmBody = new StackPanel { Spacing = 10 }; confirmBody.Children.Add(confirmText); confirmBody.Children.Add(confirm);
+        var flyout = new Flyout { Content = confirmBody };
+        flyout.Opening += (_, _) => confirmText.Text = SelectedDesign is { } d ? $"Delete \"{d.Name}\"? This cannot be undone. A design the playlist uses is kept." : "Choose a design first.";
+        _deleteDesign.Flyout = flyout;
+        confirm.Click += async (_, _) => { flyout.Hide(); await RunDesignAsync(async studio => SelectedDesign is { } d ? await studio.DeleteGraphicsDesignAsync(d.DesignId) : null); };
+        _openDesign.Click += async (_, _) => await RunDesignAsync(async studio => SelectedDesign is { } d ? await studio.OpenGraphicsDesignAsync(d.DesignId) : null);
+        _duplicateDesign.Click += async (_, _) => await RunDesignAsync(async studio => {
+            if (SelectedDesign is not { } d) return null;
+            var copy = await studio.DuplicateGraphicsDesignAsync(d);
+            if (copy is { Ok: true, Design: { } made }) _selectedDesignId = made.DesignId;
+            return copy;
+        });
+        _newDesign.Click += async (_, _) => await ShowStartDialogAsync();
+
+        var grid = new Grid { ColumnSpacing = 10, RowSpacing = 4 };
+        grid.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); grid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); grid.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        grid.RowDefinitions.Add(new() { Height = GridLength.Auto }); grid.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        grid.Children.Add(label);
+        var listHost = new Grid(); listHost.Children.Add(chips); listHost.Children.Add(_designsEmpty); Grid.SetColumn(listHost, 1); grid.Children.Add(listHost);
+        Grid.SetColumn(actions, 2); grid.Children.Add(actions);
+        Grid.SetRow(_designStatus, 1); Grid.SetColumnSpan(_designStatus, 3); grid.Children.Add(_designStatus);
+        return new Border { Child = grid, Padding = new Thickness(10, 8, 10, 8), CornerRadius = new CornerRadius(8), Background = StudioBrushes.Panel, BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1) };
+    }
+
+    private GraphicsDesign? SelectedDesign => _library?.Document.Designs.FirstOrDefault(d => d.DesignId == _selectedDesignId);
+
+    private void RefreshDesigns()
+    {
+        var designs = _library?.Document.Designs ?? [];
+        if (designs.All(d => d.DesignId != _selectedDesignId)) _selectedDesignId = designs.FirstOrDefault()?.DesignId ?? "";
+        // Chips are rebuilt only when the designs change, never on selection, so a double-click lands on the same chip.
+        var signature = string.Join("|", designs.Select(d => d.DesignId + ":" + d.Name + ":" + d.TemplateVersion));
+        if (signature != _designsSignature) {
+            _designsSignature = signature; _designChips.Children.Clear();
+            foreach (var design in designs) {
+                var chip = StudioBrushes.GhostButton(design.Name); chip.FontSize = 14; chip.Tag = design.DesignId;
+                AutomationProperties.SetName(chip, "Design " + design.Name);
+                ToolTipService.SetToolTip(chip, $"{design.Name} · {design.Family} · version {design.TemplateVersion}. Double-click or Open design to edit.");
+                chip.Click += (_, _) => { _selectedDesignId = design.DesignId; RefreshDesigns(); };
+                chip.DoubleTapped += async (_, _) => { _selectedDesignId = design.DesignId; await RunDesignAsync(async studio => await studio.OpenGraphicsDesignAsync(design.DesignId)); };
+                _designChips.Children.Add(chip);
+            }
+        }
+        foreach (var chip in _designChips.Children.OfType<Button>()) {
+            var selected = chip.Tag as string == _selectedDesignId;
+            chip.BorderBrush = selected ? StudioBrushes.Accent : StudioBrushes.Border; chip.BorderThickness = new Thickness(selected ? 2 : 1);
+        }
+        _designsEmpty.Visibility = designs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _openDesign.IsEnabled = _duplicateDesign.IsEnabled = _deleteDesign.IsEnabled = !_designBusy && SelectedDesign is not null;
+        _newDesign.IsEnabled = !_designBusy && _attached is not null;
+        _designStatus.Visibility = _designStatus.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>One design operation at a time; its message (success or refusal) lands in the status line.</summary>
+    private async Task RunDesignAsync(Func<StudioViewModel, Task<GraphicsDesignResult?>> operation)
+    {
+        if (_designBusy || _attached is not { } studio) return;
+        _designBusy = true; _designStatus.Text = "Working…"; RefreshDesigns();
+        try { _designStatus.Text = (await operation(studio))?.Message ?? "Choose a design first."; }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { _designStatus.Text = "The design operation failed: " + ex.Message; }
+        finally { _designBusy = false; _designsSignature = ""; RefreshDesigns(); }
+    }
+
+    private async Task ShowStartDialogAsync()
+    {
+        if (_designBusy || _attached is not { } studio || XamlRoot is null) return;
+        try {
+            var dialog = new GraphicsDesignStartDialog(studio) { XamlRoot = XamlRoot, RequestedTheme = ActualTheme };
+            await dialog.ShowAsync();
+            if (dialog.Result is { } result) _designStatus.Text = result.Message;
+        } catch (Exception ex) when (ex is not OutOfMemoryException) { _designStatus.Text = "Could not open New design: " + ex.Message; }
+        _designsSignature = ""; RefreshDesigns();
     }
 
     // ---- bits ------------------------------------------------------------------------------

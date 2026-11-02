@@ -1,0 +1,84 @@
+{
+    "schemaVersion":  1,
+    "templateId":  "design-full-screen-000000",
+    "templateVersion":  1,
+    "name":  "Full screen",
+    "family":  "title",
+    "canvas":  {
+                   "width":  1920,
+                   "height":  1080
+               },
+    "bounds":  {
+                   "width":  1920,
+                   "height":  1080
+               },
+    "brandTokens":  [
+                        "brand.primary",
+                        "brand.onPrimary",
+                        "brand.accent",
+                        "brand.fontBody"
+                    ],
+    "fields":  [
+                   {
+                       "id":  "heading",
+                       "type":  "string",
+                       "default":  "Heading",
+                       "required":  true,
+                       "maxLength":  128
+                   }
+               ],
+    "layers":  [
+                   {
+                       "id":  "backdrop",
+                       "type":  "rect",
+                       "x":  0,
+                       "y":  0,
+                       "width":  1920,
+                       "height":  1080,
+                       "fill":  {
+                                    "token":  "brand.primary"
+                                }
+                   },
+                   {
+                       "id":  "heading-label",
+                       "type":  "text",
+                       "text":  {
+                                    "field":  "heading"
+                                },
+                       "x":  96,
+                       "y":  420,
+                       "width":  1728,
+                       "height":  240,
+                       "font":  {
+                                    "token":  "brand.fontBody"
+                                },
+                       "fontWeight":  600,
+                       "fontSize":  96,
+                       "lineHeight":  1.2,
+                       "color":  {
+                                     "token":  "brand.onPrimary"
+                                 },
+                       "align":  "center",
+                       "maxLines":  1,
+                       "overflow":  "ellipsis"
+                   }
+               ],
+    "animations":  {
+                       "in":  {
+                                  "type":  "fade",
+                                  "durationMs":  250,
+                                  "easing":  "ease-out"
+                              },
+                       "out":  {
+                                   "type":  "fade",
+                                   "durationMs":  200,
+                                   "easing":  "ease-in"
+                               }
+                   },
+    "defaultPlacement":  {
+                             "anchor":  "center",
+                             "x":  0,
+                             "y":  0,
+                             "scale":  1
+                         }
+}

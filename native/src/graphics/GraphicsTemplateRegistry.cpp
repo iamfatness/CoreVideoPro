@@ -27,6 +27,26 @@ bool GraphicsTemplateRegistry::requestThumbnails() {
   thumbnailsRequested_=thumbnailsPending_=true;
   if(!worker_.joinable()) worker_=std::thread([this]{run();});wake_.notify_one();return true;
 }
+bool GraphicsTemplateRegistry::builtIn(const std::string& templateId, int templateVersion) {
+  if (templateVersion == 1 && (templateId == "compact-solid" || templateId == "minimal-accent" || templateId == "broadcast")) return true;
+  for (const auto& builtin : GraphicsTemplate::curated())
+    if (builtin->id() == templateId && builtin->version() == templateVersion) return true;
+  return false;
+}
+std::string GraphicsTemplateRegistry::remove(const std::string& templateId, int templateVersion) {
+  if (builtIn(templateId, templateVersion)) return "template-built-in";
+  std::unique_lock lock(mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) return "template-library-busy";
+  const auto key = std::make_pair(templateId, templateVersion);
+  const auto found = definitions_.find(key);
+  if (found == definitions_.end()) return "template-not-found";
+  // Same accounting as install. Verified encoded assets stay in the
+  // content-addressed pool so a re-import by hash still resolves.
+  documentBytes_ -= found->second->document().stringify().size();
+  definitions_.erase(found); origins_.erase(key); thumbnails_.erase(key);
+  publishLocked();
+  return "template-removed";
+}
 std::string GraphicsTemplateRegistry::submit(const std::string& client, const std::string& request, const std::string& manifest, const std::string& packageRoot) {
   if (manifest.empty() || manifest.size() > 256 * 1024) return "template-manifest-size";
   if (packageRoot.size() > 2048 || packageRoot.find('\0') != std::string::npos) return "graphics-package-root-invalid";
@@ -69,7 +89,7 @@ void GraphicsTemplateRegistry::publishLocked() {
   for (const auto& job : history_) installs.emplace_back(Json::Object{
     {"clientId", job->client}, {"requestId", job->request}, {"state", job->state}, {"reason", job->reason}});
   publication->definitions = definitions_; publication->catalog = std::move(catalog); publication->installs = std::move(installs);
-  publication->encodedAssetBytes = assetBytes_;
+  publication->encodedAssetBytes = assetBytes_; publication->documentBytes = documentBytes_;
   std::atomic_store(&publication_, std::shared_ptr<const Publication>(std::move(publication)));
 }
 void GraphicsTemplateRegistry::run() {

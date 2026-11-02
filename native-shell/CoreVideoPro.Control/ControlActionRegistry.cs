@@ -187,6 +187,8 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request; explicit channel all") }),
             new("graphics.template.install", "Import graphics template", "Queue bounded native validation. Read templateInstalls for completion; admission is not installation.",
                 new[] { new ControlParam("request", s, true, "Versioned JSON request with a manifest string or a local packagePath archive") }),
+            new("graphics.template.remove", "Remove graphics template version", "Remove one installed non-built-in template version no instance uses. Built-ins and in-use versions are refused.",
+                new[] { new ControlParam("request", s, true, "Versioned JSON graphics request with templateId and templateVersion") }),
             new("graphics.template.list", "Observe graphics templates", "Read the native versioned catalog and import results without changing graphics.",
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
 

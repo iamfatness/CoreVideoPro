@@ -74,6 +74,19 @@ bool GraphicsInstances::updateTemplates() {
   templatesPublication_ = std::move(publication); return true;
 }
 
+bool GraphicsInstances::templateInUse(const std::string& templateId, int templateVersion) const {
+  const auto uses = [&](const std::shared_ptr<const Revision>& revision) {
+    if (!revision) return false;
+    if (revision->definition && revision->definition->id() == templateId && revision->definition->version() == templateVersion) return true;
+    const auto& image = revision->imageReference;
+    return image.isObject() && image.getString("templateId") == templateId && image.getNumber("templateVersion", 0) == templateVersion;
+  };
+  for (const auto& [_, instance] : instances_)
+    for (const auto* revision : {&instance.draft, &instance.cue, &instance.pendingCue, &instance.program, &instance.clockProgramPending})
+      if (uses(*revision)) return true;
+  return false;
+}
+
 bool GraphicsInstances::validId(const std::string& value) {
   if (value.empty() || value.size() > 64 || value[0] < 'a' || value[0] > 'z') return false;
   return std::all_of(value.begin(), value.end(), [](char c) {
@@ -317,7 +330,8 @@ bool GraphicsInstances::apply(const Json& command) {
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}},
       {"graphics-automation-configure", {"configuration", "expectedAutomationRevision"}}, {"graphics-automation-control", {"action", "mode", "expectedAutomationRevision", "expectedActivationRevision"}},
       {"graphics-authority-set", {"family", "authority"}},
-      {"graphics-template-install", {"manifest", "packageRoot"}}, {"graphics-template-list", {"includeThumbnails"}}};
+      {"graphics-template-install", {"manifest", "packageRoot"}}, {"graphics-template-list", {"includeThumbnails"}},
+      {"graphics-template-remove", {"templateId", "templateVersion"}}};
   const auto allowed = actionKeys.find(type);
   if (allowed == actionKeys.end()) return finish(requestId, false, "unsupported-graphics-command");
   for (const auto& [key, value] : body->asObject()) {
@@ -376,6 +390,18 @@ bool GraphicsInstances::apply(const Json& command) {
   if (type == "graphics-template-install") {
     const auto reason = templates_.submit(pendingClient_, requestId, body->getString("manifest"), body->getString("packageRoot"));
     return finish(requestId, reason == "template-install-queued", reason);
+  }
+  if (type == "graphics-template-remove") {
+    const auto templateId = body->getString("templateId");
+    const auto version = body->getNumber("templateVersion", 0);
+    if (version < 1 || version > std::numeric_limits<int>::max()) return finish(requestId, false, "template-not-found");
+    if (GraphicsTemplateRegistry::builtIn(templateId, int(version))) return finish(requestId, false, "template-built-in");
+    // In-use is decided here, where instances live: any cued, Program or hidden
+    // revision whose definition or image reference names this exact version.
+    if (templateInUse(templateId, int(version))) return finish(requestId, false, "template-in-use");
+    const auto reason = templates_.remove(templateId, int(version));
+    updateTemplates();
+    return finish(requestId, reason == "template-removed", reason);
   }
   if(type == "graphics-automation-configure") {
     const auto* config=body->get("configuration");if(!config) return finish(requestId,false,"missing-graphics-automation-configuration");

@@ -10355,6 +10355,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (_bridge.Supervisor.HostedReadOnly) return;
             ScheduleMultiviewerConfigResend();
             ReannounceCaptureShmToNewCore();
+            ArmGraphicsDesignResync();
         });
 
     // Second half of the same respawn class: register-capture-shm is announced ONLY
