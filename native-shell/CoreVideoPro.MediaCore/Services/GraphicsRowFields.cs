@@ -37,6 +37,19 @@ public static class GraphicsRowFields
             .Where(f => f.Type == "string" && f.Choices.Count == 0 && !Handled.Contains(f.Id) && f.Id != titleKey)
             .Select(f => new GraphicsRowTypeableField(f.Id, LabelOf(f), f.MaxLength)).ToArray();
 
+    /// <summary>A re-pin from the Designer (Save to playlist again): <paramref name="pinned"/>'s fields come from the draft,
+    /// which follows the new version. Text the operator typed on <paramref name="existing"/> (a non-empty string) wins for
+    /// every field the new version still has; empty values and new variables take the draft's, dropped ones are gone.</summary>
+    public static GraphicsPlaylistRow KeepTyped(GraphicsPlaylistRow pinned, GraphicsPlaylistRow? existing)
+    {
+        if (existing is null) return pinned;
+        var fields = pinned.Fields.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        foreach (var key in fields.Keys.ToArray())
+            if (fields[key].ValueKind == JsonValueKind.String && existing.Fields.TryGetValue(key, out var typed) &&
+                typed.ValueKind == JsonValueKind.String && typed.GetString() is { Length: > 0 }) fields[key] = typed.Clone();
+        return pinned with { Fields = fields };
+    }
+
     public static GraphicsPlaylistRow WithText(GraphicsPlaylistRow row, string key, string value)
     {
         var fields = row.Fields.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);

@@ -622,6 +622,29 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.Equal(2, _session.Draft.TemplateVersion);
     }
 
+    // Re-review I1: the Operate row is where the location is typed; a later Save to playlist from the Designer re-pins
+    // the row but keeps its non-empty typed text. Empty values and new variables take the draft's; dropped ones go.
+    [Fact] public async Task SaveToPlaylistAgainKeepsTheTextTypedOnTheRow()
+    {
+        var (library, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(GraphicsTemplateEditor.AddField(GraphicsTemplateEditor.AddField(d, "location", "text", 40), "venue", "text", 40), "extra", "text"));
+        Assert.True((await workflow.SaveToPlaylistAsync()).Ok);
+        var typed = GraphicsRowFields.WithText(GraphicsRowFields.WithText(Assert.Single(library.Document.Playlist), "location", "Oslo"), "extra", "gone soon");
+        Assert.True(await library.SavePlaylistAsync([typed]), library.Status);
+        // Back in the Designer: move a layer, fill venue in the draft, drop extra; Save to playlist again.
+        _session.SetLayerNumbers("name-label", new Dictionary<string, double> { ["x"] = 48 });
+        _session.SetField("venue", JsonSerializer.SerializeToElement("Main hall"));
+        _session.EditTemplate(d => GraphicsTemplateEditor.RemoveField(d, "extra"));
+        var again = await workflow.SaveToPlaylistAsync();
+        Assert.True(again.Ok, again.Message);
+        var row = Assert.Single(library.Document.Playlist);
+        Assert.Equal(3, row.TemplateVersion);
+        Assert.Equal("Oslo", row.Fields["location"].GetString());
+        Assert.Equal("Main hall", row.Fields["venue"].GetString());
+        Assert.False(row.Fields.ContainsKey("extra"));
+    }
+
     [Fact] public async Task OpeningTwelveDesignsInSequenceNeverFillsTheLibrary()
     {
         var (library, service, workflow) = BuildWorkflow();

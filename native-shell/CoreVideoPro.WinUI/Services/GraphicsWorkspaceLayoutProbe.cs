@@ -356,6 +356,12 @@ internal static class GraphicsWorkspaceLayoutProbe
         Require(Descendants(playout).OfType<TextBox>().Any(t => t.Header as string == "Title line" && t.IsReadOnly), "The Guest row's Title line is not the read-only Sources text");
         await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-operate-row-variable.png"));
         checks.Add("Operate: a Guest design row with an extra text variable shows a Location box (max 40, row value) beside the Sources title line");
+        // Re-review m1: a saved value updates the box in place; the inspector is not rebuilt (a rebuild would drop focus).
+        var saved = studio.GraphicsLibrary.Document.Playlist.Single();
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([GraphicsRowFields.WithText(saved, "location", "Bergen")]), "The probe row could not be re-saved: " + studio.GraphicsLibrary.Status);
+        await Eventually(() => box.Text == "Bergen", () => $"The Location box did not show the saved value (text='{box.Text}')");
+        Require(ReferenceEquals(Location(), box), "Saving a row value rebuilt the inspector instead of updating the box in place");
+        checks.Add("Operate: a saved row value updates the Location box in place, without rebuilding the inspector");
         Require(await studio.GraphicsLibrary.SavePlaylistAsync([]), "The probe playlist could not be cleared");
         if (before is not null) studio.GraphicsWorkspace.Observe(before);
         studio.GraphicsMode = mode; await Task.Delay(80); page.UpdateLayout();

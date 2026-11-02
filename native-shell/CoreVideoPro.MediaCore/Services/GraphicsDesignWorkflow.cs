@@ -154,15 +154,16 @@ public sealed class GraphicsDesignWorkflow
     /// <summary>The design's playlist row: its existing row re-pinned to <paramref name="template"/> (name,
     /// hotkey, timing, motion, names list and clock kept), else a new row on the next free F-key. The kind
     /// follows the template family (full screen saves as a title); a new lower third follows Sources and
-    /// plays out after 8 s.</summary>
+    /// plays out after 8 s. Non-empty text already typed on the existing row is kept.</summary>
     public static GraphicsPlaylistRow PlaylistRow(GraphicsDesign design, NativeGraphicsTemplate template, NativeGraphicsDraft draft, IReadOnlyList<GraphicsPlaylistRow> rows)
     {
         var existing = rows.FirstOrDefault(r => r.TemplateId == design.TemplateId);
         var kind = GraphicsBuilder.Kinds.FirstOrDefault(k => k.Family.Length > 0 && k.Family == template.Family) ?? GraphicsBuilder.Kind("title")!;
         var lowerThird = kind.Family == "lower-third";
         var hotkey = PlaylistHotkey(design, rows);
-        return GraphicsBuilder.RowFrom(kind, template, draft, existing?.Name ?? design.Name, hotkey, existing?.PlayOutAfterMs ?? (lowerThird ? 8000 : 0),
-            existing?.FollowSources ?? lowerThird, rows, existing, existing?.Motion, existing?.Variants, existing?.Clock);
+        // Text typed on the Operate row survives the re-pin (re-review I1); see GraphicsRowFields.KeepTyped.
+        return GraphicsRowFields.KeepTyped(GraphicsBuilder.RowFrom(kind, template, draft, existing?.Name ?? design.Name, hotkey, existing?.PlayOutAfterMs ?? (lowerThird ? 8000 : 0),
+            existing?.FollowSources ?? lowerThird, rows, existing, existing?.Motion, existing?.Variants, existing?.Clock), existing);
     }
 
     /// <summary>The design the editor is on, when moving off it may uninstall it: a browse draft (not a

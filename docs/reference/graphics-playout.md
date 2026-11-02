@@ -43,8 +43,14 @@ and Sponsor card (F5, 15 s, no image until you pick one), plus the four preset
 shot layouts below. With a playlist in place, new graphics are built in Design
 (below) and land as rows. Rows are edited in the inspector: name, title line,
 one box for each other text variable of the row's graphic (a design's
-`location`, say; header = the variable's label, limit = its max length; Enter
-or leaving the box saves it on the row and the next Show sends it), From
+`location`, say; header = the variable's label, limit = its max length, or
+512 characters, the core's limit, when it has none; Enter or leaving the box
+saves it on the row, and Show, Cue and Take first save text still being typed,
+so there is no need to press Enter before Show). Saving does not rebuild the
+inspector, so the box keeps focus. A later **Save to playlist** from the
+Designer re-pins the row but keeps every non-empty text value typed on it for
+variables the new version still has; empty values and new variables take the
+Designer draft's value, and variables the design dropped are removed. From
 Sources, hides-after and hotkey. Those boxes appear on a Guest row that follows
 Sources too: Sources fills only name and title, so a typed location goes on air
 beside the Sources text. Not offered: name, title, time and label (handled
@@ -507,8 +513,13 @@ Open in Designer; Variables tab: add `location` (Text, 40), optionally set its
 Sample value and Apply (the preview then shows it); Layer tab: Add Text, then
 Shows: Variable `location`, drag it into place; **Save to playlist · F-key**.
 In Operate select the row: the inspector has a **Location** box; type the
-location, press Enter, then Show: name and title come from Sources (Guest row)
-and the location is the typed text.
+location, then Show (no Enter needed): name and title come from Sources (Guest
+row; a source must be assigned on the Sources page for the row to offer Show)
+and the location is the typed text. The Lower third blank has no room under its
+title line (168 px tall, the title ends at 136), so place the location line on
+the title row, e.g. X 628, Y 94, W 400, H 42, Size 28, Align right; give
+`location` a Sample value first so the Designer preview shows it. Saving to the
+playlist again keeps the location typed on the row.
 
 Each from a cold open in under 3 clicks and 15 s: name a person on Program,
 edit a lower third's text, add a logo or title, see what is live versus staged
