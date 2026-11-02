@@ -89,10 +89,18 @@ source's name is refused. It uses the Program source's NDI group. It rides with 
 output: it is sent whenever NDI output is on (streaming is not required), and can be toggled
 live without touching the Program source.
 
-**A key that cannot be sent is dropped on its own.** Missing core capability, NDI
-off or an invalid name removes only `ndi-graphics` from the destination list and the
-NDI summary says why; the key is never part of stream validation, so it can never
-stop RTMP, SRT or the Program NDI source.
+**A key that cannot be sent is usually dropped on its own.** Missing core capability,
+NDI off, or a name that is too long or uses reserved characters removes only
+`ndi-graphics` from the destination list and the NDI summary says why; the key is never
+part of stream validation, so it can never stop RTMP or SRT.
+
+**One exception turns all of NDI off.** When the key is on, the core is not known to lack
+`ndi-graphics-output`, and
+its name equals the Program source's name (case-insensitive),
+`ValidateNdiOutput` fails NDI output as a whole: turning NDI on is refused, and a
+settings change that creates the collision while NDI runs turns NDI output off (Program
+source and key) with the reason "NDI graphics key name must differ from the NDI program
+name." The tile then shows `Unavailable · <reason>`.
 
 - **UI.** Production settings, NDI section: "NDI graphics key" and "Graphics key
   name" (blank = the default above). The NDI summary line names the key or says the

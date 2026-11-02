@@ -80,10 +80,20 @@ touch `ndi`).
   failures, the STREAM readout, stream summaries and the close guard ignore NDI
   (`OutputDestinationKind.IsStream`). A failure while NDI runs turns NDI off and
   records `NdiOutputStatusReason`; it never touches the stream. NDI on does not
-  prompt on close, like the virtual camera.
-- **Status strings.** `Off`, `Starting`, `Live · {name}`, `Warning · {reason}`,
-  `Unavailable · {reason}`, each with ` + key` appended when the `ndi-graphics`
-  sender is live.
+  prompt on close, like the virtual camera; stop-and-close neither stops nor waits for
+  NDI (process exit ends it). NDI alone never starts the footer ELAPSED clock and does
+  not count as streaming in telemetry.
+- **Status strings.** `Off`, `Starting`, `Live · {name}`, `Warning · {reason}` and
+  `Unavailable · {reason}`. Only `Live · {name}` gets ` + key` appended, when the
+  `ndi-graphics` sender is live.
+  - `Warning · {reason}` is the core's own `ndi` sender reporting `warning` or `failed`
+    while NDI is on, for example a core whose NDI runtime is missing. NDI stays on and
+    the tile shows the sender's reason.
+  - `Unavailable · {reason}` appears only while NDI is off, after the toggle was refused
+    or NDI was turned off automatically (an invalid setting); the reason is
+    `NdiOutputStatusReason`.
+  - A stopped or restarting media core drops the last snapshot's senders, so the tile
+    reads `Starting` (NDI on) until the new core reports, never a stale `Live`.
 - **Control API.** `transport.ndi.set` (`on`: bool, required), `transport.ndi.toggle`
   (no arguments), `transport.ndi.graphicsKey.set` (`on`, optional `name`). Control
   state: `ndiOutputOn`, `ndiOutputStatus`. OSC feedback: `/cvp/state/ndi` (0/1).
