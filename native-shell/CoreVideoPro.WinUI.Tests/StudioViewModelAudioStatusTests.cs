@@ -1047,6 +1047,60 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void TryFormatStreamingStartHealthFailure_IgnoresNdiUnavailableSessionWarning()
+    {
+        const string ndiWarning = "NDI output is selected, but no NDI sender module is available in this build.";
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                Warnings = [ndiWarning],
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender { SenderId = "ndi:program", Destination = "ndi", Status = "warning", Warning = ndiWarning }
+                ]
+            }
+        };
+
+        Assert.False(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out _));
+
+        var withRealWarning = new NativeMediaCoreStateSnapshot
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                Warnings = [ndiWarning, "Stream key rejected."],
+                Senders = snapshot.OutputSenderSession.Senders
+            }
+        };
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(withRealWarning, out var failureStatus));
+        Assert.Contains("Stream key rejected.", failureStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("NDI", failureStatus, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TryFormatStreamingStartNoSenderFailure_SenderStateCountsStreamSendersOnly()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "idle",
+                ActiveSenderCount = 2,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender { SenderId = "ndi", Destination = "ndi", Status = "live" },
+                    new NativeMediaCoreOutputSender { SenderId = "ndi-graphics", Destination = "ndi-graphics", Status = "live" }
+                ]
+            }
+        };
+
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["rtmp"], out var failureStatus));
+        Assert.Contains("Sender state idle:0.", failureStatus, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TryFormatStreamingStartHealthFailure_MapsNativeOutputWarningsToStartFailure()
     {
         var snapshot = new NativeMediaCoreStateSnapshot

@@ -81,7 +81,9 @@ public static class TransportStatusFormatter
         }
 
         var destinations = string.Join(", ", requestedDestinations.Select(destination => destination.ToUpperInvariant()));
-        var senderState = $"{snapshot.OutputSenderSession.Status}:{snapshot.OutputSenderSession.ActiveSenderCount}";
+        var ndiActive = snapshot.OutputSenderSession.Senders.Count(sender =>
+            !OutputDestinationKind.IsStream(sender.Destination) && sender.Status is "live" or "starting" or "warning");
+        var senderState = $"{snapshot.OutputSenderSession.Status}:{Math.Max(0, snapshot.OutputSenderSession.ActiveSenderCount - ndiActive)}";
         var detail = $"Selected stream destinations ({destinations}) did not arm a native output sender. Sender state {senderState}.";
         failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(detail));
         return true;
@@ -176,8 +178,14 @@ public static class TransportStatusFormatter
             .Select(item => item.Message)
             .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
 
+        // A session warning that is really an NDI sender's own warning is NDI's, not the stream's.
+        var ndiTexts = snapshot.OutputSenderSession.Senders
+            .Where(static sender => !OutputDestinationKind.IsStream(sender.Destination))
+            .SelectMany(static sender => new[] { sender.Warning, sender.LastError })
+            .Where(static text => !string.IsNullOrWhiteSpace(text))
+            .ToList();
         detail ??= snapshot.OutputSenderSession.Warnings
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
+            .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item) && !ndiTexts.Contains(item));
 
         if (string.IsNullOrWhiteSpace(detail))
         {

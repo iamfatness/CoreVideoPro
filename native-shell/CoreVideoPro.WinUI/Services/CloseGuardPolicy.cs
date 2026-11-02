@@ -168,7 +168,9 @@ internal static class CloseGuardPolicy
         var recordingActive = recordingFlag || IsLiveState(recordingState) || IsLegacyRecordingActive(recording);
         var recordingFinalizing = IsStoppingState(recordingState) && !input.RecordingRequested;
 
+        // NDI is not a stream: an NDI feed going dark on close loses nothing the operator must save.
         var liveSenderStates = (input.Snapshot?.OutputSenderSession.Senders ?? [])
+            .Where(static sender => OutputDestinationKind.IsStream(sender.Destination))
             .Select(sender => sender.Lifecycle?.State)
             .Where(IsLiveState)
             .ToList();

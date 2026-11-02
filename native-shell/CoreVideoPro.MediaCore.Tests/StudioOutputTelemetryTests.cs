@@ -118,6 +118,20 @@ public sealed class StudioOutputTelemetryTests
         TargetFolder = "isolated", FilenamePrefix = "test", Format = "mp4", Quality = "high", ProgramPath = "isolated/Program.mp4", TotalFramesWritten = frames
     };
 
-    private static NativeMediaCoreOutputSender Sender(OutputLifecycle? lifecycle, int frames) => new()
-    { SenderId = "test-sender", Destination = "rtmp", Status = "live", Lifecycle = lifecycle, FramesSent = frames, BitrateMbps = 99 };
+    [Fact]
+    public void StreamingIgnoresNdiSenders()
+    {
+        var rtmp = Sender(null, 100);
+        var ndi = Sender(null, 900, "ndi");
+
+        var both = StudioOutputTelemetry.Streaming([rtmp, ndi]);
+        Assert.Equal($"{100:N0} frames", both.Progress);
+        Assert.NotEqual("Partial", both.State);
+
+        Assert.Equal("Idle", StudioOutputTelemetry.Streaming([ndi]).State);
+        Assert.Equal("Idle", StudioOutputTelemetry.Streaming([Sender(null, 900, "ndi-graphics")]).State);
+    }
+
+    private static NativeMediaCoreOutputSender Sender(OutputLifecycle? lifecycle, int frames, string destination = "rtmp") => new()
+    { SenderId = "test-sender", Destination = destination, Status = "live", Lifecycle = lifecycle, FramesSent = frames, BitrateMbps = 99 };
 }

@@ -525,6 +525,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // Set while NDI output is flipped by code that saves and syncs on its own.
     private bool _applyingNdiOutput;
 
+    // NDI senders from the latest applied snapshot; feeds NdiOutputStatusLabel.
+    private IReadOnlyList<NativeMediaCoreOutputSender> _ndiStatusSenders = [];
+
+    /// <summary>NDI's own status (Off / Starting / Live / Warning / Unavailable), independent of Streaming.</summary>
+    public string NdiOutputStatusLabel =>
+        StudioOutputTelemetry.NdiStatus(NdiOutputEnabled, _ndiStatusSenders, StreamNdiProgramName, NdiOutputStatusReason);
+
+    partial void OnNdiOutputStatusReasonChanged(string? value) => OnPropertyChanged(nameof(NdiOutputStatusLabel));
+
     [ObservableProperty]
     private bool _streamSrtEnabled;
 
@@ -3584,6 +3593,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnNdiOutputEnabledChanged(bool value)
     {
+        OnPropertyChanged(nameof(NdiOutputStatusLabel));
         if (_applyingNdiOutput) return;
         // A direct set (a two-way binding) follows SetNdiOutput's rule: never on while invalid.
         if (value && ValidateNdiOutput() is { } refusal)
@@ -10545,7 +10555,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Name = "NDI",
                 Protocol = "ndi",
                 Enabled = NdiOutputEnabled,
-                Active = Streaming && NdiOutputEnabled,
+                Active = NdiOutputEnabled && _ndiStatusSenders.Any(sender => sender.Destination == "ndi" && sender.Status == "live"),
                 Resolution = streamProfile.Resolution,
                 Fps = streamProfile.Fps.ToString(CultureInfo.InvariantCulture),
                 Codec = streamProfile.Codec,
@@ -10605,6 +10615,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         if (_shutdownPrepared) return;
         RefreshAudioObservationClock();
+        _ndiStatusSenders = snapshot.OutputSenderSession.Senders;
+        OnPropertyChanged(nameof(NdiOutputStatusLabel));
         // P0 present-stutter-fix-spec: time each sub-op; log the breakdown only when a
         // snapshot apply is slow enough to stall the present (>10ms on the UI thread).
         var verboseDiagnostics = DiagnosticLog.VerboseEnabled;
@@ -12307,6 +12319,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         StreamRtmpEnabled = preferences.StreamRtmpEnabled;
         _ndiOutputEnabled = preferences.NdiOutputEnabled;
         OnPropertyChanged(nameof(NdiOutputEnabled));
+        OnPropertyChanged(nameof(NdiOutputStatusLabel));
         StreamSrtEnabled = preferences.StreamSrtEnabled;
         Hls.Enabled = preferences.StreamHlsEnabled;
         Hls.PlaylistUrl = preferences.StreamHlsPlaylistUrl ?? string.Empty;

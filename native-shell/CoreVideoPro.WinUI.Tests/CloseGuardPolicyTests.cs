@@ -185,7 +185,24 @@ public sealed class CloseGuardPolicyTests
 
         Assert.True(decision.RecordingActive);
         Assert.True(decision.StreamingActive);
-        Assert.Equal("Recording and streaming to 2 destinations", decision.Description);
+        Assert.Equal("Recording and streaming to 1 destination", decision.Description);
+    }
+
+    [Fact]
+    public void LiveNdiAloneDoesNotAsk()
+    {
+        var decision = CloseGuardPolicy.Evaluate(Input(Snapshot(null, Sender("ndi", "producing"), Sender("ndi-graphics", "producing"))));
+
+        Assert.False(decision.ShouldAsk);
+        Assert.Same(CloseGuardDecision.Nothing, decision);
+    }
+
+    [Fact]
+    public void LiveNdiDoesNotCountAsAStreamDestination()
+    {
+        var decision = CloseGuardPolicy.Evaluate(Input(Snapshot(null, Sender("rtmp://a", "producing"), Sender("ndi", "producing"))));
+
+        Assert.Equal("Streaming to 1 destination", decision.Description);
     }
 
     [Fact]
