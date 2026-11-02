@@ -47,6 +47,7 @@ internal static class StudioWorkspaceLayoutProbe
                 if (Math.Min(a.X + automation.ActualWidth, t.X + transport.ActualWidth) - Math.Max(a.X, t.X) > 1 &&
                     Math.Min(a.Y + automation.ActualHeight, t.Y + transport.ActualHeight) - Math.Max(a.Y, t.Y) > 1)
                     failures.Add($"{width}x{height}: automation and transport overlap");
+                if (width >= 1600 && Math.Abs(a.Y - t.Y) > 1) failures.Add($"{width}x{height}: footer wrapped to two rows (automation y={a.Y:F0}, transport y={t.Y:F0}; footer {footer.ActualWidth:F0}px, automation {automation.DesiredSize.Width:F0}px, transport {transport.DesiredSize.Width:F0}px); owner ruling 2026-11-01 requires one row");
                 ((Microsoft.UI.Xaml.Controls.TextBlock)page.FindName("AssignedLookLabel")).Text = "Panel discussion · Quarterly customer leadership summit guest introduction";
                 foreach(var name in new[] {"ProgramOutputHealth","StreamOutputHealth","RecordOutputHealth","AutomationStatusText"})
                     ((Microsoft.UI.Xaml.Controls.TextBlock)page.FindName(name)).Text="Waiting for destination connection and source readiness";
