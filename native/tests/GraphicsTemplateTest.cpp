@@ -315,3 +315,86 @@ TEST(GraphicsTemplateRegistry, ThumbnailsAreExplicitWorkerProductsWithoutInstall
 #endif
   }
 }
+
+namespace {
+// Graphics Designer slice 1: unused imported versions free their registry slot.
+Json::Object oneLayerDocument(const std::string& id, int version) {
+  return Json::Object{{"schemaVersion",1},{"templateId",id},{"templateVersion",version},{"name","Removable"},{"family","bug"},
+      {"canvas",Json::Object{{"width",1920},{"height",1080}}},{"bounds",Json::Object{{"width",100},{"height",100}}},
+      {"brandTokens",Json::Array{"brand.primary"}},{"fields",Json::Array{}},
+      {"layers",Json::Array{Json::Object{{"id","plate"},{"type","rect"},{"x",0},{"y",0},{"width",100},{"height",100},
+          {"fill",Json::Object{{"token","brand.primary"}}}}}},
+      {"animations",Json::Object{{"in",Json::Object{{"type","none"}}},{"out",Json::Object{{"type","none"}}}}}};
+}
+std::string installAndWait(corevideo::graphics::GraphicsTemplateRegistry& registry, const std::string& request, const Json::Object& document) {
+  const auto bytes=Json(document).stringify();
+  const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  std::string submitted;
+  do { submitted=registry.submit("qa",request,bytes); if(submitted!="template-import-busy") break; std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+  while(std::chrono::steady_clock::now()<limit);
+  if(submitted!="template-install-queued") return "submit-"+submitted;
+  while(std::chrono::steady_clock::now()<limit) {
+    for(const auto& row:registry.poll()->installs.asArray()) if(row.getString("requestId")==request) {
+      const auto state=row.getString("state");
+      if(state=="installed") return "installed";
+      if(state=="failed") return "failed-"+row.getString("reason");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return "timed-out";
+}
+std::string removeWhenIdle(corevideo::graphics::GraphicsTemplateRegistry& registry, const std::string& id, int version) {
+  const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  std::string result;
+  do { result=registry.remove(id,version); if(result!="template-library-busy") return result; std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+  while(std::chrono::steady_clock::now()<limit);
+  return result;
+}
+bool catalogLists(const corevideo::graphics::GraphicsTemplateRegistry& registry, const std::string& id, int version) {
+  for(const auto& row:registry.poll()->catalog.asArray()) if(row.getString("templateId")==id && row.getNumber("templateVersion")==version) return true;
+  return false;
+}
+}  // namespace
+
+TEST(GraphicsTemplateRegistry, RemoveFreesTheSlotAndBytes) {
+  corevideo::graphics::GraphicsTemplateRegistry registry;
+  const auto baseline=registry.poll();
+  const auto builtIns=baseline->definitions.size();
+  ASSERT_EQ("installed",installAndWait(registry,"remove-me",oneLayerDocument("remove-me",1)));
+  ASSERT_TRUE(catalogLists(registry,"remove-me",1));
+  EXPECT_TRUE(registry.poll()->documentBytes>baseline->documentBytes);
+  EXPECT_EQ("template-removed",removeWhenIdle(registry,"remove-me",1));
+  EXPECT_FALSE(catalogLists(registry,"remove-me",1));
+  EXPECT_FALSE(registry.poll()->definitions.contains({"remove-me",1}));
+  EXPECT_EQ(builtIns,registry.poll()->definitions.size());
+  EXPECT_EQ(baseline->documentBytes,registry.poll()->documentBytes);
+  // The freed slot is real: the library fills to its 16-definition cap again.
+  for(size_t i=0;builtIns+i<16;++i) {
+    const auto id="refill-"+std::to_string(i);
+    EXPECT_EQ("installed",installAndWait(registry,id,oneLayerDocument(id,1))) << id;
+  }
+  EXPECT_EQ(16u,registry.poll()->definitions.size());
+  EXPECT_EQ("failed-template-library-capacity",installAndWait(registry,"overflow",oneLayerDocument("overflow",1)));
+  EXPECT_EQ(10u,16-builtIns);
+}
+
+TEST(GraphicsTemplateRegistry, RemoveRefusesBuiltIns) {
+  corevideo::graphics::GraphicsTemplateRegistry registry;
+  const auto before=registry.poll();
+  EXPECT_EQ("template-built-in",removeWhenIdle(registry,"corner-logo",1));
+  EXPECT_EQ("template-built-in",removeWhenIdle(registry,"broadcast",1));
+  for(const auto& builtin:GraphicsTemplate::curated()) EXPECT_EQ("template-built-in",removeWhenIdle(registry,builtin->id(),builtin->version())) << builtin->id();
+  EXPECT_TRUE(catalogLists(registry,"corner-logo",1));
+  EXPECT_EQ(before->definitions,registry.poll()->definitions);
+}
+
+TEST(GraphicsTemplateRegistry, RemoveUnknownIsNotFound) {
+  corevideo::graphics::GraphicsTemplateRegistry registry;
+  EXPECT_EQ("template-not-found",removeWhenIdle(registry,"never-installed",1));
+  ASSERT_EQ("installed",installAndWait(registry,"only-two",oneLayerDocument("only-two",2)));
+  EXPECT_EQ("template-not-found",removeWhenIdle(registry,"only-two",1));
+  EXPECT_EQ("template-not-found",removeWhenIdle(registry,"only-two",0));
+  EXPECT_TRUE(catalogLists(registry,"only-two",2));
+  EXPECT_EQ("template-removed",removeWhenIdle(registry,"only-two",2));
+  EXPECT_EQ("template-not-found",removeWhenIdle(registry,"only-two",2));
+}

@@ -18,11 +18,17 @@ class GraphicsTemplateRegistry {
     rpc::Json catalog, installs;
     std::map<std::pair<std::string, int>, std::shared_ptr<const GraphicsTemplate>> definitions;
     uint64_t encodedAssetBytes = 0;
+    uint64_t documentBytes = 0;
   };
   std::string submit(const std::string& client, const std::string& request, const std::string& manifest, const std::string& packageRoot = {});
   // A shared immutable lease: a stalled worker cannot stall a frame.
   std::shared_ptr<const Publication> poll() const;
   bool requestThumbnails();
+  // Frees an unused imported version's slot and document bytes. The caller
+  // (the instance owner) decides in-use first; the registry refuses built-ins
+  // and unknown versions. Contention is retryable, never waited on.
+  std::string remove(const std::string& templateId, int templateVersion);
+  static bool builtIn(const std::string& templateId, int templateVersion);
  private:
   struct Job { std::string client, request, manifest, state, reason, packageRoot; };
   void run();
