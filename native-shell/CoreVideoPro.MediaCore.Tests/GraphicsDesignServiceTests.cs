@@ -323,6 +323,15 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.Equal((GraphicsPlaylistRow.Title, 0), (fullScreen.Kind, fullScreen.PlayOutAfterMs));
     }
 
+    [Fact] public void PlaylistHotkeyIsTheRowsKeyOrTheNextFree()
+    {
+        var design = DesignOf("design-strap-a1b2c3", "lower-third");
+        GraphicsPlaylistRow Row(string id, string key, string template) => new() { Id = id, Kind = GraphicsPlaylistRow.Title, Name = id, Hotkey = key, TemplateId = template, TemplateVersion = 1 };
+        Assert.Equal("F3", GraphicsDesignWorkflow.PlaylistHotkey(design, [Row("logo", "F1", "corner-logo"), Row("strap", "F3", "design-strap-a1b2c3")]));
+        Assert.Equal("F6", GraphicsDesignWorkflow.PlaylistHotkey(design, Enumerable.Range(1, 5).Select(n => Row("r" + n, "F" + n, "other-" + n)).ToArray()));
+        Assert.Equal("", GraphicsDesignWorkflow.PlaylistHotkey(design, Enumerable.Range(1, 12).Select(n => Row("r" + n, "F" + n, "other-" + n)).ToArray()));
+    }
+
     [Fact] public void PlaylistRowRepinsTheDesignsExistingRowAndKeepsItsKeyNameAndTiming()
     {
         var existing = new GraphicsPlaylistRow { Id = "strap", Kind = GraphicsPlaylistRow.Title, Name = "Opening strap", Hotkey = "F6", PlayOutAfterMs = 15000, TemplateId = "design-strap-a1b2c3", TemplateVersion = 1 };

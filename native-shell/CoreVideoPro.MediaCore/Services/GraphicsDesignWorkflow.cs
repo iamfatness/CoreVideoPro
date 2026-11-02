@@ -117,6 +117,10 @@ public sealed class GraphicsDesignWorkflow
         return saved with { Message = saved.Message + $" \"{row.Name}\" is in the playlist{(row.Hotkey.Length > 0 ? " on " + row.Hotkey : "")}. Show it from Operate when you want it on air." };
     }
 
+    /// <summary>The F-key Save to playlist will use: the design's existing row's key, else the next free one ("" when all twelve are taken).</summary>
+    public static string PlaylistHotkey(GraphicsDesign design, IReadOnlyList<GraphicsPlaylistRow> rows) =>
+        rows.FirstOrDefault(r => r.TemplateId == design.TemplateId) is { } existing ? existing.Hotkey : GraphicsBuilder.NextFreeHotkey(rows);
+
     /// <summary>The design's playlist row: its existing row re-pinned to <paramref name="template"/> (name,
     /// hotkey, timing, motion, names list and clock kept), else a new row on the next free F-key. The kind
     /// follows the template family (full screen saves as a title); a new lower third follows Sources and
@@ -126,7 +130,7 @@ public sealed class GraphicsDesignWorkflow
         var existing = rows.FirstOrDefault(r => r.TemplateId == design.TemplateId);
         var kind = GraphicsBuilder.Kinds.FirstOrDefault(k => k.Family.Length > 0 && k.Family == template.Family) ?? GraphicsBuilder.Kind("title")!;
         var lowerThird = kind.Family == "lower-third";
-        var hotkey = existing is not null ? existing.Hotkey : GraphicsBuilder.NextFreeHotkey(rows);
+        var hotkey = PlaylistHotkey(design, rows);
         return GraphicsBuilder.RowFrom(kind, template, draft, existing?.Name ?? design.Name, hotkey, existing?.PlayOutAfterMs ?? (lowerThird ? 8000 : 0),
             existing?.FollowSources ?? lowerThird, rows, existing, existing?.Motion, existing?.Variants, existing?.Clock);
     }

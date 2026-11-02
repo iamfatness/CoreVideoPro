@@ -21,14 +21,14 @@ public sealed partial class StudioViewModel
             if (_graphicsDesignWorkflow is not null) return _graphicsDesignWorkflow;
             _graphicsDesignWorkflow = new(GraphicsDesigns, GraphicsWorkspace, GraphicsLibrary, () => _bridge.LastSnapshot?.Graphics);
             _graphicsDesignWorkflow.Opened += (_, _) => {
-                GraphicsMode = GraphicsModeDesign; GraphicsDesignAdvanced = true;
+                GraphicsMode = GraphicsModeDesign; GraphicsDesignerOpen = true; GraphicsDesignAdvanced = false;
                 GraphicsDesignOpened?.Invoke(this, EventArgs.Empty);
             };
             return _graphicsDesignWorkflow;
         }
     }
 
-    /// <summary>Raised after a design became the workspace's private draft (Design → Advanced editor).</summary>
+    /// <summary>Raised after a design became the workspace's private draft (Design → the Designer).</summary>
     public event EventHandler? GraphicsDesignOpened;
 
     /// <summary>The design a draft belongs to (by template id), or null for a built-in or package look.</summary>
@@ -39,6 +39,8 @@ public sealed partial class StudioViewModel
     public Task<GraphicsDesignResult> OpenGraphicsDesignAsync(string designId) => GraphicsDesignWorkflow.OpenAsync(designId);
     public Task<GraphicsDesignResult> SaveGraphicsDesignAsync() => GraphicsDesignWorkflow.SaveAsync();
     public Task<GraphicsDesignResult> SaveGraphicsDesignToPlaylistAsync() => GraphicsDesignWorkflow.SaveToPlaylistAsync();
+    /// <summary>The F-key Save to playlist will use for <paramref name="design"/> ("" when none is free).</summary>
+    public string GraphicsDesignPlaylistHotkey(GraphicsDesign design) => GraphicsDesignWorkflow.PlaylistHotkey(design, GraphicsLibrary.Document.Playlist);
 
     public Task<GraphicsDesignResult> DuplicateGraphicsDesignAsync(GraphicsDesign design)
     {

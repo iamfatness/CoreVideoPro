@@ -70,6 +70,7 @@ public sealed class GraphicsWorkspaceSessionTests
         session.Observe(Initial); session.Select("featured");
         session.SetPreviewSample("longest-name"); Assert.Equal("longest-name", session.PreviewSample);
         session.SetPreviewSample("nope"); Assert.Equal("longest-name", session.PreviewSample);
+        foreach (var (id, _) in GraphicsPreviewSamples.All) { session.SetPreviewSample(id); Assert.Equal(id, session.PreviewSample); }
     }
     [Fact]
     public void SamplesOnlyReplaceConsumedTextAndRespectUnicodeByteLimits()

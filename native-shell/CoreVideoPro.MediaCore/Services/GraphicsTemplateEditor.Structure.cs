@@ -113,6 +113,11 @@ public static partial class GraphicsTemplateEditor
         else { if(node["visible"] is JsonValue v && v.TryGetValue<bool>(out var on) && !on) return scratch; node["visible"]=false; }
         return Commit(scratch,root);
     }
+    /// <summary>The layer's position on the design's canvas (parent origins, padding and flow steps added; a variable-bound x/y counts as 0).</summary>
+    public static (double X,double Y) CanvasPositionOf(NativeGraphicsScratch scratch,string id)
+    {
+        var places=Places(Read(scratch)); return CanvasPosition(places,Find(places,id));
+    }
     /// <summary>Moves the layer to <paramref name="parent"/> ("" = the design root) at <paramref name="frontIndex"/>
     /// (0 = frontmost; document order is back-to-front; clamped). A parent change keeps the layer where it is
     /// on the canvas (or puts it at <paramref name="absolute"/>), and a free-layout destination group grows to fit.</summary>

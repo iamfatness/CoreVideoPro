@@ -10,6 +10,12 @@ public static class GraphicsPreviewSamples
 {
     public const string LongestName = "Maximiliana Alexandra Montgomery-Wellington Fitzgerald";
 
+    /// <summary>The Designer's sample buttons (and the first entries of the workspace's sample list):
+    /// the draft as typed, the longest name, and the secondary line empty.</summary>
+    public static IReadOnlyList<(string Id, string Label)> Buttons { get; } = [("current", "Typical"), ("longest-name", "Longest name"), ("blank", "Empty title")];
+    /// <summary>Every sample the session accepts, <see cref="Buttons"/> first.</summary>
+    public static IReadOnlyList<(string Id, string Label)> All { get; } = [.. Buttons, ("short", "Short text"), ("long", "Long text"), ("unicode", "Unicode example")];
+
     public static JsonElement Apply(NativeGraphicsDraft draft, NativeGraphicsTemplate? template, string sample)
     {
         var values = draft.Fields.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());

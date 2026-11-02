@@ -81,12 +81,14 @@ public static class GraphicsDesignerModel
         return (parent,Math.Max(0,front));
     }
 
-    private static double Number(JsonElement layer,string property,JsonElement draft,double fallback)
+    // A literal number; a variable-bound one resolves to the draft's value, else the variable's own default (sample).
+    private static double Number(JsonElement layer,string property,JsonElement draft,IReadOnlyList<NativeGraphicsTemplateField> fields,double fallback)
     {
         if(layer.ValueKind!=JsonValueKind.Object || !layer.TryGetProperty(property,out var v)) return fallback;
         if(v.ValueKind==JsonValueKind.Number) return v.GetDouble();
-        if(FieldOf(layer,property) is { } field && draft.ValueKind==JsonValueKind.Object && draft.TryGetProperty(field,out var d) && d.ValueKind==JsonValueKind.Number) return d.GetDouble();
-        return fallback;
+        if(FieldOf(layer,property) is not { } field) return fallback;
+        if(draft.ValueKind==JsonValueKind.Object && draft.TryGetProperty(field,out var d) && d.ValueKind==JsonValueKind.Number) return d.GetDouble();
+        return fields.FirstOrDefault(f=>f.Id==field)?.Default is { ValueKind: JsonValueKind.Number } sample ? sample.GetDouble() : fallback;
     }
 
     public static GraphicsLayerInspection Inspect(NativeGraphicsScratch s,JsonElement draftFields,string id)
@@ -94,11 +96,30 @@ public static class GraphicsDesignerModel
         var row=Rows(s).FirstOrDefault(r=>r.Id==id) ?? throw new InvalidDataException("Layer was removed.");
         var n=GraphicsTemplateEditor.Layer(s,id);
         var gradient=n.TryGetProperty("fill",out var fill) && fill.ValueKind==JsonValueKind.Object && fill.TryGetProperty("stops",out _);
+        var fields=GraphicsTemplateEditor.TemplateFields(s);
+        double Number(string property,double fallback)=>GraphicsDesignerModel.Number(n,property,draftFields,fields,fallback);
         var image=FieldOf(n,"asset") is { } af ? "field:"+af : TokenOf(n,"asset") is { } at ? "token:"+at : Str(n,"asset") is { } a ? "asset:"+a : "";
-        return new GraphicsLayerInspection(id,row.Kind,row.Label,row.Locked,FieldOf(n,"text"),Str(n,"text") ?? "",Choice(n,"font"),Number(n,"fontSize",draftFields,0),
-            (int)Number(n,"fontWeight",draftFields,400),Choice(n,"color"),(int)Number(n,"maxLines",draftFields,1),Str(n,"overflow") ?? "ellipsis",Str(n,"align") ?? "left",
-            Number(n,"x",draftFields,0),Number(n,"y",draftFields,0),Number(n,"width",draftFields,0),Number(n,"height",draftFields,0),Number(n,"opacity",draftFields,1),
-            gradient ? "" : Choice(n,"fill"),gradient,Number(n,"cornerRadius",draftFields,0),image,Str(n,"fit") ?? "contain",Str(n,"align") ?? "center",Str(n,"verticalAlign") ?? "center");
+        return new GraphicsLayerInspection(id,row.Kind,row.Label,row.Locked,FieldOf(n,"text"),Str(n,"text") ?? "",Choice(n,"font"),Number("fontSize",0),
+            (int)Number("fontWeight",400),Choice(n,"color"),(int)Number("maxLines",1),Str(n,"overflow") ?? "ellipsis",Str(n,"align") ?? "left",
+            Number("x",0),Number("y",0),Number("width",0),Number("height",0),Number("opacity",1),
+            gradient ? "" : Choice(n,"fill"),gradient,Number("cornerRadius",0),image,Str(n,"fit") ?? "contain",Str(n,"align") ?? "center",Str(n,"verticalAlign") ?? "center");
+    }
+
+    /// <summary>The Typeface list for a layer: the brand fonts and listed families, plus the layer's own custom family
+    /// (appended) when it uses one, so the list always contains the current choice.</summary>
+    public static IReadOnlyList<(string Id,string Label)> FontChoices(string current)=>
+        string.IsNullOrEmpty(current) || GraphicsDesignerChoices.Fonts.Any(f=>f.Id==current) ? GraphicsDesignerChoices.Fonts : [.. GraphicsDesignerChoices.Fonts,(current,current)];
+
+    /// <summary><see cref="GraphicsTemplateEditor.MoveTo"/> plus whether the layer ended up somewhere else on the canvas than it was
+    /// (or than <paramref name="absolute"/>, the native node position): a padded or nested group could not take it where it stood.</summary>
+    public static (NativeGraphicsScratch Scratch,bool Shifted) MoveLayer(NativeGraphicsScratch s,string id,string parent,int frontIndex,(double X,double Y)? absolute)
+    {
+        var before=absolute ?? GraphicsTemplateEditor.CanvasPositionOf(s,id);
+        var parentBefore=GraphicsTemplateEditor.Layers(s).FirstOrDefault(l=>l.Id==id)?.Parent;
+        var moved=GraphicsTemplateEditor.MoveTo(s,id,parent,frontIndex,absolute);
+        if(parentBefore==(parent ?? "")) return (moved,false);
+        var after=GraphicsTemplateEditor.CanvasPositionOf(moved,id);
+        return (moved,Math.Abs(after.X-before.X)>0.5 || Math.Abs(after.Y-before.Y)>0.5);
     }
 
     private static JsonElement Token(string token)=>JsonSerializer.SerializeToElement(new Dictionary<string,string> { ["token"]=token });

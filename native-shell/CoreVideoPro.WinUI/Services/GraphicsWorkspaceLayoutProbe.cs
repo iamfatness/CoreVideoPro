@@ -158,6 +158,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-design-variables-1360x768.png"));
             Require(variablesScroll.Visibility == Visibility.Visible && visibleVariables >= 200, $"Variables panel has only {visibleVariables:0} px visible at 1360x768");
             checks.Add($"At 1360x768 an open design's Variables panel keeps {visibleVariables:0} px of visible height (>= 200)");
+            await CheckDesignerAsync(page, studio, seedTemplate, checks, directory);
             page.Width = 1840; page.Height = 820; await Task.Delay(100); page.UpdateLayout();
             studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=catalog});
             studio.GraphicsWorkspace.Browse(catalog[0]);
@@ -230,6 +231,54 @@ internal static class GraphicsWorkspaceLayoutProbe
             await CheckBusyTextBindingAsync(window, checks);
             await CheckAutomationEditingAsync(window, studio, checks);
         } finally { Environment.SetEnvironmentVariable("COREVIDEO_GRAPHICS_DOCUMENT_PATH",previousPath); }
+    }
+    /// <summary>Graphics Designer slice 2: the stored "Probe strap" draft open in the Designer at the 1360x768 and
+    /// 1600x900 shell budgets (page 1320x640 and 1560x772): one surface, the seed's layer rows, every fixed action
+    /// inside the designer, a canvas that is not crowded out, the Variables tab, and Add text / Undo.</summary>
+    private static async Task CheckDesignerAsync(OverlaysPage page, StudioViewModel studio, NativeGraphicsTemplate seedTemplate, List<string> checks, string directory)
+    {
+        studio.GraphicsWorkspace.Browse(seedTemplate);
+        studio.GraphicsDesignerOpen = true;
+        var designer = Descendants(page).OfType<GraphicsDesignerControl>().Single();
+        IReadOnlyList<GraphicsDesignerRow> Rows() => Descendants(designer).OfType<FrameworkElement>().Select(e => e.Tag).OfType<GraphicsDesignerRow>().ToArray();
+        foreach (var (width, height, shot, minCanvasWidth, minCanvasHeight) in new[] { (1320d, 640d, "graphics-designer-1360x768.png", 640d, 360d), (1560d, 772d, "graphics-designer-1600x900.png", 800d, 450d) }) {
+            page.Width = width; page.Height = height; await Task.Delay(150); page.UpdateLayout();
+            await Eventually(() => designer.Visibility == Visibility.Visible && Rows().Count == 4, () => $"The Designer did not open on the Probe strap draft (visible={designer.Visibility}, rows={Rows().Count})");
+            Require(Descendants(page).OfType<GraphicsBuilderControl>().Single().Visibility == Visibility.Collapsed && Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed,
+                "The builder or the advanced workspace is visible while the Designer is open");
+            var rows = Rows();
+            Require(rows.Select(r => r.Id).SequenceEqual(new[] { "title-label", "name-label", "accent", "plate" }), "Designer layer rows are not front-to-back: " + string.Join(",", rows.Select(r => r.Id)));
+            Require(rows[0].Detail == "{title}" && rows[1].Detail == "{name}", "Designer text rows do not show the variable they show");
+            Require(designer.ActualWidth <= width + 1, $"The Designer overflows the page horizontally ({designer.ActualWidth:0} > {width:0})");
+            foreach (var name in new[] { "Add text layer", "Add shape layer", "Add image layer", "Add clock layer", "Undo", "Save design", "Save to playlist", "Typical", "Longest name", "Empty title" }) {
+                var button = Button(designer, name); var point = button.TransformToVisual(designer).TransformPoint(new(0, 0));
+                Require(button.ActualHeight > 0 && point.X >= -1 && point.Y >= -1 && point.X + button.ActualWidth <= designer.ActualWidth + 1 && point.Y + button.ActualHeight <= designer.ActualHeight + 1,
+                    $"{name} is clipped or outside the Designer at {width:0}x{height:0} ({point.X:0},{point.Y:0} {button.ActualWidth:0}x{button.ActualHeight:0} in {designer.ActualWidth:0}x{designer.ActualHeight:0})");
+            }
+            var canvas = Descendants(designer).OfType<GraphicsAuthoringCanvas>().Single();
+            Require(canvas.ActualWidth >= minCanvasWidth && canvas.ActualHeight >= minCanvasHeight, $"Designer canvas is {canvas.ActualWidth:0}x{canvas.ActualHeight:0} at {width:0}x{height:0}; needs {minCanvasWidth:0}x{minCanvasHeight:0}");
+            var layerScroll = Descendants(designer).OfType<ScrollViewer>().Single(v => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(v) == "Layer properties");
+            var layerTop = layerScroll.TransformToVisual(designer).TransformPoint(new(0, 0)).Y;
+            var visibleLayer = Math.Min(layerScroll.ViewportHeight, designer.ActualHeight - layerTop);
+            if (width < 1500) Require(layerScroll.Visibility == Visibility.Visible && visibleLayer >= 300, $"The Layer tab has only {visibleLayer:0} px visible at {width:0}x{height:0}");
+            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, shot));
+            checks.Add($"Designer at page {width:0}x{height:0}: one surface, layer rows front-to-back, every header/add/sample action inside, canvas {canvas.ActualWidth:0}x{canvas.ActualHeight:0}, Layer tab {visibleLayer:0} px");
+        }
+        Invoke(Button(designer, "Variables tab")); await Task.Delay(100); designer.UpdateLayout();
+        var variables = Descendants(designer).OfType<GraphicsVariablesPanel>().Single();
+        var texts = Descendants(variables).OfType<TextBlock>().Select(t => t.Text).ToHashSet(StringComparer.Ordinal);
+        Require(variables.ActualHeight > 0 && texts.Contains("name") && texts.Contains("title") && texts.Contains("Used by: name-label"), "The Designer's Variables tab does not list name and title with Used by");
+        Invoke(Button(designer, "Layer tab")); await Task.Delay(50);
+        checks.Add("The Designer's Variables tab lists the seed's name and title variables with Used by");
+        Invoke(Button(designer, "Add text layer"));
+        await Eventually(() => Rows().Count == 5, () => $"Add text layer did not add a row (rows={Rows().Count}, status='{studio.GraphicsWorkspace.Status}')");
+        Require(studio.GraphicsWorkspace.SelectedLayerId == "text-1", $"Add text layer did not select the new layer (selected '{studio.GraphicsWorkspace.SelectedLayerId}')");
+        Require(Button(designer, "Undo").IsEnabled, "Undo is disabled after an edit");
+        Invoke(Button(designer, "Undo"));
+        await Eventually(() => Rows().Count == 4, () => $"Undo did not remove the added layer (rows={Rows().Count})");
+        checks.Add("Designer Add text layer adds and selects text-1; Undo removes it");
+        studio.GraphicsDesignerOpen = false; await Task.Delay(80); page.UpdateLayout();
+        Require(designer.Visibility == Visibility.Collapsed, "Your designs did not close the Designer");
     }
     private static async Task CheckAutomationEditingAsync(Window window, StudioViewModel studio, List<string> checks)
     {

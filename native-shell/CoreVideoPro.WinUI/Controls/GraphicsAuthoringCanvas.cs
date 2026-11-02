@@ -133,8 +133,8 @@ public sealed class GraphicsAuthoringCanvas : UserControl
             if(!_resize) {
                 var x=Math.Clamp(_localX+dx/before.Scale,0,8192);var y=Math.Clamp(_localY+dy/before.Scale,0,8192);var rect=CanvasRect(node,before);
                 if(Snapping) {
-                    var snap=GraphicsSnap.Move(new(rect.X+(x-_localX)*before.Scale,rect.Y+(y-_localY)*before.Scale,rect.Width,rect.Height));
-                    x=Math.Clamp(x+snap.Dx/before.Scale,0,8192);y=Math.Clamp(y+snap.Dy/before.Scale,0,8192);ShowSnap(snap.Guides);
+                    var snap=GraphicsSnap.MoveLayer(new(rect.X,rect.Y,rect.Width,rect.Height),_localX,_localY,x,y,before.Scale);
+                    x=snap.X;y=snap.Y;ShowSnap(snap.Guides);
                 } else ShowSnap([]);
                 _optimistic=new(rect.X+(x-_localX)*before.Scale,rect.Y+(y-_localY)*before.Scale,rect.Width,rect.Height);
                 _session.SetLayerNumbers(_dragLayer,new Dictionary<string,double> {{"x",x},{"y",y}});
@@ -143,18 +143,17 @@ public sealed class GraphicsAuthoringCanvas : UserControl
                 if(node.Type=="image" || Down(VirtualKey.Shift)) {var desired=Math.Abs(dx/_localWidth)>=Math.Abs(dy/_localHeight)?w/_localWidth:h/_localHeight;var scale=Math.Clamp(desired,1/Math.Min(_localWidth,_localHeight),8192/Math.Max(_localWidth,_localHeight));w=_localWidth*scale;h=_localHeight*scale;}
                 var rect=CanvasRect(node,before);
                 if(Snapping && node.Type!="image" && !Down(VirtualKey.Shift)) {
-                    var snap=GraphicsSnap.Resize(new(rect.X,rect.Y,w*before.Scale,h*before.Scale));
-                    w=Math.Clamp(w+snap.Dw/before.Scale,1,8192);h=Math.Clamp(h+snap.Dh/before.Scale,1,8192);ShowSnap(snap.Guides);
+                    var snap=GraphicsSnap.ResizeLayer(new(rect.X,rect.Y,rect.Width,rect.Height),w,h,before.Scale);
+                    w=snap.X;h=snap.Y;ShowSnap(snap.Guides);
                 } else ShowSnap([]);
                 _optimistic=new(rect.X,rect.Y,w*before.Scale,h*before.Scale);
                 _session.SetLayerNumbers(_dragLayer,new Dictionary<string,double> {{"width",w},{"height",h}});
             }
         } else if(!_resize) {
-            if(Snapping) {
-                var origin=Bounds(before);var snap=GraphicsSnap.Move(new(origin.X+dx,origin.Y+dy,origin.Width,origin.Height));
-                dx+=snap.Dx;dy+=snap.Dy;ShowSnap(snap.Guides);
-            } else ShowSnap([]);
-            _session.SetPlacement(before with {X=Math.Clamp(before.X+dx,-3840,3840),Y=Math.Clamp(before.Y+dy,-2160,2160)});
+            var origin=Bounds(before);
+            var snap=Snapping?GraphicsSnap.MoveGraphic(new(origin.X,origin.Y,origin.Width,origin.Height),before.X,before.Y,dx,dy):new(Math.Clamp(before.X+dx,-3840,3840),Math.Clamp(before.Y+dy,-2160,2160),[]);
+            ShowSnap(snap.Guides);
+            _session.SetPlacement(before with {X=snap.X,Y=snap.Y});
         }
         else {
             var delta=Math.Abs(dx/Math.Max(_width,1))>=Math.Abs(dy/Math.Max(_height,1))?dx/Math.Max(_width,1):dy/Math.Max(_height,1);var scale=Math.Clamp(before.Scale+delta,.1,4);var a=Anchor(before);

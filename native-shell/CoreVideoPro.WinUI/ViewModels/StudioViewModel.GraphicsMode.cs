@@ -2,6 +2,7 @@ using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.WinUI.Services;
 
 namespace CoreVideoPro.WinUI.ViewModels;
 
@@ -31,7 +32,7 @@ public sealed partial class StudioViewModel
         var next = value == GraphicsModeDesign ? GraphicsModeDesign : GraphicsModePlayout;
         if (!SetProperty(ref _graphicsMode, next, nameof(GraphicsMode))) return false;
         OnPropertyChanged(nameof(IsGraphicsPlayoutMode)); OnPropertyChanged(nameof(IsGraphicsDesignMode));
-        OnPropertyChanged(nameof(IsGraphicsBuilderVisible)); OnPropertyChanged(nameof(IsGraphicsAdvancedVisible));
+        NotifyGraphicsDesignSurface();
         return true;
     }
 
@@ -45,15 +46,26 @@ public sealed partial class StudioViewModel
     /// <summary>Playlist row the builder opens for editing ("" = start a new graphic). Set by
     /// Operate's "Open in Design"; the builder clears it after loading the row.</summary>
     [ObservableProperty] private string _graphicsDesignRowId = "";
-    public bool IsGraphicsBuilderVisible => IsGraphicsDesignMode && !GraphicsDesignAdvanced;
-    public bool IsGraphicsAdvancedVisible => IsGraphicsDesignMode && GraphicsDesignAdvanced;
-    partial void OnGraphicsDesignAdvancedChanged(bool value) { OnPropertyChanged(nameof(IsGraphicsBuilderVisible)); OnPropertyChanged(nameof(IsGraphicsAdvancedVisible)); }
+    /// <summary>Graphics Designer slice 2: a design is open in the Designer (layers, canvas, inspector). It wins over
+    /// the builder and the advanced workspace while Design mode is showing. Session-only.</summary>
+    [ObservableProperty] private bool _graphicsDesignerOpen;
+    public GraphicsDesignSurface GraphicsDesignSurface => GraphicsDesignSurfaces.For(_graphicsMode, GraphicsDesignerOpen, GraphicsDesignAdvanced);
+    public bool IsGraphicsBuilderVisible => GraphicsDesignSurface == GraphicsDesignSurface.Builder;
+    public bool IsGraphicsAdvancedVisible => GraphicsDesignSurface == GraphicsDesignSurface.Workspace;
+    public bool IsGraphicsDesignerVisible => GraphicsDesignSurface == GraphicsDesignSurface.Designer;
+    partial void OnGraphicsDesignAdvancedChanged(bool value) => NotifyGraphicsDesignSurface();
+    partial void OnGraphicsDesignerOpenChanged(bool value) => NotifyGraphicsDesignSurface();
+    private void NotifyGraphicsDesignSurface()
+    {
+        OnPropertyChanged(nameof(GraphicsDesignSurface)); OnPropertyChanged(nameof(IsGraphicsBuilderVisible));
+        OnPropertyChanged(nameof(IsGraphicsAdvancedVisible)); OnPropertyChanged(nameof(IsGraphicsDesignerVisible));
+    }
 
     /// <summary>Operate → Design for one row: the builder opens that row's look and fields.
     /// Program and Preview are unchanged.</summary>
     public void OpenGraphicInDesign(string rowId)
     {
-        GraphicsDesignRowId = rowId; GraphicsDesignAdvanced = false;
+        GraphicsDesignRowId = rowId; GraphicsDesignAdvanced = false; GraphicsDesignerOpen = false;
         GraphicsMode = GraphicsModeDesign; ActiveTab = StudioTab.Overlays;
     }
 

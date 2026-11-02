@@ -46,4 +46,32 @@ public sealed class GraphicsPreviewSamplesTests
         Assert.Equal("", v.GetProperty("location").GetString());
         Assert.Equal("", v.GetProperty("title").GetString());
     }
+
+    [Fact]
+    public void LongestNameSkipsAFirstVariableNoTextLayerShows()
+    {
+        var manifest = System.Text.Json.Nodes.JsonNode.Parse(Seed.Manifest)!.AsObject();
+        manifest["fields"]!.AsArray().Insert(0, new System.Text.Json.Nodes.JsonObject { ["id"] = "badge", ["type"] = "string", ["default"] = "", ["bindable"] = true, ["maxLength"] = 16 });
+        var scratch = NativeGraphicsScratch.From(JsonSerializer.SerializeToElement(manifest));
+        var v = GraphicsPreviewSamples.Apply(DraftOf(scratch, new { badge = "LIVE", name = "Ada", title = "Host" }), TemplateOf(scratch), "longest-name");
+        Assert.Equal("LIVE", v.GetProperty("badge").GetString());
+        Assert.Equal(GraphicsPreviewSamples.LongestName, v.GetProperty("name").GetString());
+        Assert.Equal("Host", v.GetProperty("title").GetString());
+    }
+
+    [Fact]
+    public void LongestNameKeepsTheSecondLineWithinItsOwnLimit()
+    {
+        var scratch = GraphicsTemplateEditor.SetFieldOptions(Seed, "title", 5, null, false);
+        var v = GraphicsPreviewSamples.Apply(DraftOf(scratch, new { name = "Ada", title = "Producer" }), TemplateOf(scratch), "longest-name");
+        Assert.Equal("Produ", v.GetProperty("title").GetString());
+    }
+
+    [Fact]
+    public void TheSampleButtonsAreTypicalLongestNameAndEmptyTitle()
+    {
+        Assert.Equal(new[] { ("current", "Typical"), ("longest-name", "Longest name"), ("blank", "Empty title") }, GraphicsPreviewSamples.Buttons);
+        Assert.Equal(GraphicsPreviewSamples.Buttons, GraphicsPreviewSamples.All.Take(3));
+        Assert.Equal(GraphicsPreviewSamples.All.Count, GraphicsPreviewSamples.All.Select(s => s.Id).Distinct().Count());
+    }
 }
