@@ -262,6 +262,18 @@ public static partial class GraphicsTemplateEditor
             result[field.Id]=values.TryGetValue(field.Id,out var value) && GraphicsCommandRequest.ValidField(value,field) ? value : (field.Default ?? JsonSerializer.SerializeToElement(DefaultFor(field.Type))).Clone();
         return JsonSerializer.SerializeToElement(result);
     }
+    /// <summary>The Variables panel's Sample value also sets the draft's value while that value still equals
+    /// the variable's previous sample (a just-added variable's draft value is its empty sample), so the
+    /// Typical preview shows the line and Save to playlist carries it. A value typed elsewhere is kept.</summary>
+    public static JsonElement SeedSample(JsonElement fields,NativeGraphicsScratch before,NativeGraphicsScratch after,string id)
+    {
+        if(fields.ValueKind!=JsonValueKind.Object || TemplateFields(after).FirstOrDefault(f=>f.Id==id) is not { } next) return fields;
+        var values=fields.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone(),StringComparer.Ordinal);
+        var sample=(next.Default ?? JsonSerializer.SerializeToElement(DefaultFor(next.Type))).Clone();
+        var previous=TemplateFields(before).FirstOrDefault(f=>f.Id==id) is { } old ? (old.Default ?? JsonSerializer.SerializeToElement(DefaultFor(old.Type))) : (JsonElement?)null;
+        if(!values.TryGetValue(id,out var current) || previous is null || JsonElement.DeepEquals(current,previous.Value)) values[id]=sample;
+        return JsonSerializer.SerializeToElement(values);
+    }
     private static string OperatorKind(string type)=>type switch { "number"=>"number","color"=>"colour","boolean"=>"on-off","image"=>"image",_=>"text" };
     public static IReadOnlyList<(string FieldId,IReadOnlyList<string> LayerLabels)> FieldUsage(NativeGraphicsScratch scratch)
     {

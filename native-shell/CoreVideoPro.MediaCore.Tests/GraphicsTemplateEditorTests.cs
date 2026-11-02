@@ -202,6 +202,28 @@ public sealed class GraphicsTemplateEditorTests
         Assert.Contains(ids,i=>i=="name"); Assert.Equal("lower-third",root["family"]!.GetValue<string>());
     }
 
+    [Fact]
+    public void SampleValueSeedsTheDraftWhileTheDraftStillShowsTheOldSample()
+    {
+        // Acceptance 1: a new variable's draft value is the empty default; typing its Sample value must
+        // put that text on the Typical preview (and on the row Save to playlist creates).
+        var before=GraphicsTemplateEditor.AddField(LowerThird(),"location","text",40);
+        var draft=GraphicsTemplateEditor.SyncFields(Json(new{name="Ada",title="Analyst"}),before);
+        Assert.Equal("",draft.GetProperty("location").GetString());
+        var after=GraphicsTemplateEditor.SetFieldOptions(before,"location",40,Json("Oslo"),true);
+        var seeded=GraphicsTemplateEditor.SeedSample(GraphicsTemplateEditor.SyncFields(draft,after),before,after,"location");
+        Assert.Equal("Oslo",seeded.GetProperty("location").GetString());
+        Assert.Equal("Ada",seeded.GetProperty("name").GetString()); Assert.Equal("Analyst",seeded.GetProperty("title").GetString());
+        // The next sample change follows too, because the draft still equals the previous sample.
+        var again=GraphicsTemplateEditor.SetFieldOptions(after,"location",40,Json("Bergen"),true);
+        Assert.Equal("Bergen",GraphicsTemplateEditor.SeedSample(seeded,after,again,"location").GetProperty("location").GetString());
+        // A value the author typed elsewhere (builder form, Operate) is never overwritten by a sample edit.
+        var typed=JsonSerializer.SerializeToElement(new Dictionary<string,object>{["name"]="Ada",["title"]="Analyst",["location"]="Tromsø"});
+        Assert.Equal("Tromsø",GraphicsTemplateEditor.SeedSample(typed,after,again,"location").GetProperty("location").GetString());
+        // Renaming the sample of a variable that is not in the draft yet uses the sync's value.
+        Assert.Equal("Oslo",GraphicsTemplateEditor.SeedSample(GraphicsTemplateEditor.SyncFields(Json(new{name="Ada",title="Analyst"}),after),LowerThird(),after,"location").GetProperty("location").GetString());
+    }
+
     private static NativeGraphicsScratch WithGradient(NativeGraphicsScratch s)
     {
         s=GraphicsTemplateEditor.AddField(GraphicsTemplateEditor.AddField(s,"from-colour","colour"),"to-colour","colour");

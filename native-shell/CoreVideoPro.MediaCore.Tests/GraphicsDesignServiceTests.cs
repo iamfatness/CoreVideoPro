@@ -587,6 +587,25 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.Equal(2, _session.Draft.TemplateVersion);
     }
 
+    // M1 (final review): Save re-opens the saved version; the author's selected layer stays selected.
+    [Fact] public async Task SaveKeepsTheSelectedLayer()
+    {
+        var (_, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        _session.SelectLayer("title-label");
+        Assert.Equal("title-label", _session.SelectedLayerId);
+        var saved = await workflow.SaveAsync();
+        Assert.True(saved.Ok, saved.Message);
+        Assert.Equal(2, _session.Draft!.TemplateVersion);
+        Assert.Equal("title-label", _session.SelectedLayerId);
+        // A layer the saved version no longer has is not carried.
+        _session.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "spare", "text"));
+        _session.SelectLayer("not-a-layer");
+        Assert.True((await workflow.SaveAsync()).Ok);
+        Assert.Equal("", _session.SelectedLayerId);
+    }
+
     [Fact] public async Task SaveToPlaylistKeepsTheValuesTypedIntoTheDraft()
     {
         var (library, _, workflow) = BuildWorkflow();

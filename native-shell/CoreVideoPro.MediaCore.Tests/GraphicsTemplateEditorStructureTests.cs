@@ -186,6 +186,26 @@ public sealed class GraphicsTemplateEditorStructureTests
         Assert.Contains("brand.accent",Root(tokened).GetProperty("brandTokens").EnumerateArray().Select(t=>t.GetString()));
     }
     [Fact]
+    public void ANewTextLayerLandsBelowTheLowestTextLayerWhenItFits()
+    {
+        // The lower-third seed is 168 high and its title line ends at 136: a 72-high line does not fit below it.
+        var (seeded,t1)=GraphicsTemplateEditor.AddLayer(Seed,"text");
+        Assert.Equal((40d,40d,600d,72d),Box(seeded,t1));
+        // A taller design: the new line takes the lowest text layer's x and width, 8 px under it.
+        var manifest=SeedObject(); manifest["bounds"]=new JsonObject { ["width"]=1060,["height"]=260 };
+        var (tall,t2)=GraphicsTemplateEditor.AddLayer(From(manifest),"text");
+        Assert.Equal((32d,144d,996d,72d),Box(tall,t2));
+        // The next one goes under that one, until the bounds run out.
+        var (taller,t3)=GraphicsTemplateEditor.AddLayer(tall,"text");
+        Assert.Equal((40d,40d,600d,72d),Box(taller,t3)); // 144+72+8+72 = 296 > 260
+        manifest["bounds"]=new JsonObject { ["width"]=1060,["height"]=400 };
+        var (roomy,r2)=GraphicsTemplateEditor.AddLayer(GraphicsTemplateEditor.AddLayer(From(manifest),"text").Scratch,"text");
+        Assert.Equal((32d,224d,996d,72d),Box(roomy,r2));
+        // Shapes and clocks are unchanged.
+        var (shaped,s1)=GraphicsTemplateEditor.AddLayer(From(manifest),"shape");
+        Assert.Equal((0d,0d,400d,120d),Box(shaped,s1));
+    }
+    [Fact]
     public void AddClockNeedsAClockDesign()
     {
         var ex=Assert.Throws<InvalidOperationException>(()=>GraphicsTemplateEditor.AddLayer(Seed,"clock"));

@@ -250,8 +250,21 @@ public static partial class GraphicsTemplateEditor
                 ["text"]=kind=="clock" ? new JsonObject { ["field"]="time" } : "Text",["font"]=new JsonObject { ["token"]="brand.fontBody" },
                 ["fontSize"]=42,["fontWeight"]=600,["color"]=new JsonObject { ["token"]="brand.onPrimary" },
                 ["metadata"]=new JsonObject { ["label"]=kind=="clock" ? "Clock" : "Text" } };
+        if(kind=="text" && SpotBelowText(root,72) is { } spot) { node["x"]=spot.X; node["y"]=spot.Y; node["width"]=spot.Width; }
         root["layers"]!.AsArray().Add(node); AddBrandTokens(root,node);
         return (Commit(scratch,root),id);
+    }
+    /// <summary>Where a new text line goes: 8 px under the lowest top-level text layer, at its x and width, when
+    /// that still fits inside the template bounds (else null: the caller keeps 40,40).</summary>
+    private static (double X,double Y,double Width)? SpotBelowText(JsonObject root,double height)
+    {
+        static double Num(JsonNode? value)=>value is JsonValue v && v.TryGetValue<double>(out var d) && double.IsFinite(d) ? d : 0;
+        if(root["bounds"] is not JsonObject bounds || root["layers"] is not JsonArray layers) return null;
+        var lowest=layers.OfType<JsonObject>().Where(l=>TypeOf(l)=="text")
+            .OrderByDescending(l=>Num(l["y"])+Num(l["height"])).FirstOrDefault();
+        if(lowest is null) return null;
+        var (x,width,y)=(Num(lowest["x"]),Num(lowest["width"]),Num(lowest["y"])+Num(lowest["height"])+8);
+        return width>=1 && x>=0 && x+width<=Num(bounds["width"]) && y+height<=Num(bounds["height"]) ? (x,y,width) : null;
     }
     /// <summary>Adds an image layer frontmost at the root. <paramref name="source"/> is <c>field:&lt;image variable&gt;</c>,
     /// <c>asset:&lt;declared asset&gt;</c> or <c>new-variable</c> (adds an optional image variable <c>image</c>, <c>image-2</c>, …).</summary>

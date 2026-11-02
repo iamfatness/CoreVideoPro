@@ -277,11 +277,17 @@ public sealed partial class GraphicsWorkspaceSession
         Status="Private library preview — edit this look, then Create hidden cue. Program is unchanged."; NotifyPreview();
     }
     /// <summary>Make <paramref name="value"/> the browse draft's new baseline (after a design save): the
-    /// draft and its original both become it, with no undo entry. Same template id and version only.</summary>
-    public void Rebase(NativeGraphicsDraft value)
+    /// draft and its original both become it, with no undo entry. Same template id and version only.
+    /// <paramref name="selectedLayerId"/> (the layer selected before the save) is reselected when the
+    /// rebased template still has it.</summary>
+    public void Rebase(NativeGraphicsDraft value, string? selectedLayerId = null)
     {
         if (Busy || Draft is null || value.TemplateId != Draft.TemplateId || value.TemplateVersion != Draft.TemplateVersion) return;
         Draft = _original = value; _undo.Clear(); _gesture = null; CompareOriginal = false;
+        if (selectedLayerId is { Length: > 0 } layer && TemplateDocument is { } document) {
+            try { if (GraphicsTemplateEditor.Layers(document).Any(l => l.Id == layer)) SelectedLayerId = layer; }
+            catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException or JsonException) { }
+        }
         NotifyPreview();
     }
     /// <summary>Drop remembered browse drafts of every version of <paramref name="templateId"/> except

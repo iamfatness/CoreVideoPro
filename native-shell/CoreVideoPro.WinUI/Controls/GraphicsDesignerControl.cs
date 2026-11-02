@@ -170,7 +170,10 @@ public sealed partial class GraphicsDesignerControl : UserControl
     private void SelectLayer(string id) { _pending.Flush(); _session?.SelectLayer(id); }
     private void OnDesignOpened(object? sender, EventArgs e)
     {
-        _status.Text = "Design open. Your edits stay private until you Save."; SelectTab(layerTab: true); RefreshAll();
+        // A Save re-opens the saved version of the same design: keep the author's tab and status (the
+        // selected layer is carried by the workflow). Any other open starts on the Layer tab.
+        if (!_saving) { _status.Text = "Design open. Your edits stay private until you Save."; SelectTab(layerTab: true); }
+        RefreshAll();
     }
 
     // ---- refresh ---------------------------------------------------------------------------
@@ -182,6 +185,9 @@ public sealed partial class GraphicsDesignerControl : UserControl
         if (_session is null || _loading) return;
         // Text typed for a layer that is no longer selected (picked on the canvas) lands on that layer before the rebuild.
         if (_pending.Owner.Length > 0 && _pending.Owner != _session.SelectedLayerId) _pending.Flush();
+        // Hidden (the builder or Cues & automation is the visible surface): no Rows/Inspect work per session
+        // change; IsGraphicsDesignerVisible turning on refreshes everything.
+        if (!Visible) return;
         _loading = true;
         try {
             var rows = CurrentRows();

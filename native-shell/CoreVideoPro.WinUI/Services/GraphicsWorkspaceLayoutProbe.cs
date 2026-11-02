@@ -293,8 +293,72 @@ internal static class GraphicsWorkspaceLayoutProbe
         Invoke(Button(designer, "Undo"));
         await Eventually(() => Rows().Count == 4, () => $"Undo did not remove the added layer (rows={Rows().Count})");
         checks.Add("Designer Add text layer adds and selects text-1; Undo removes it");
+        await CheckLocationVariableAsync(studio, designer, Rows, checks);
         studio.GraphicsDesignerOpen = false; await Task.Delay(80); page.UpdateLayout();
         Require(designer.Visibility == Visibility.Collapsed, "Your designs did not close the Designer");
+        await CheckOperateRowVariableAsync(page, studio, seedTemplate, checks, directory);
+    }
+    /// <summary>Acceptance 1 in the Designer (final review C1b / M5): add <c>location</c> (Text, 40), give it a Sample value
+    /// (the draft follows), add a text layer and choose Shows: Variable location in the ComboBox (the inspector rebuild is
+    /// deferred past the box's own SelectionChanged). Undo then restores the probe draft.</summary>
+    private static async Task CheckLocationVariableAsync(StudioViewModel studio, GraphicsDesignerControl designer, Func<IReadOnlyList<GraphicsDesignerRow>> rows, List<string> checks)
+    {
+        var session = studio.GraphicsWorkspace;
+        Invoke(Button(designer, "Variables tab")); await Task.Delay(80); designer.UpdateLayout();
+        var panel = Descendants(designer).OfType<GraphicsVariablesPanel>().Single();
+        Descendants(panel).OfType<TextBox>().Single(t => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(t) == "New variable name").Text = "location";
+        Descendants(panel).OfType<NumberBox>().Single(n => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(n) == "New variable max length").Value = 40;
+        Invoke(Button(panel, "Add variable"));
+        await Eventually(() => session.Draft?.Fields.TryGetProperty("location", out _) == true, () => $"Add variable did not add location (status='{session.Status}')");
+        Require(session.TemplateDocument is { } added && GraphicsTemplateEditor.TemplateFields(added).Single(f => f.Id == "location").MaxLength == 40, "location was not added as Text (40)");
+        await Task.Delay(80); panel.UpdateLayout();
+        Descendants(panel).OfType<TextBox>().Single(t => t.Header as string == "Sample value").Text = "Oslo";
+        Invoke(Button(panel, "Apply variable options"));
+        await Eventually(() => session.Draft?.Fields.GetProperty("location").GetString() == "Oslo", () => $"Sample value did not seed the draft's location (draft='{session.Draft?.Fields.GetProperty("location")}')");
+        checks.Add("Designer Variables: add location (Text, 40); its Sample value Oslo also becomes the draft's value (Typical shows it)");
+        Invoke(Button(designer, "Layer tab")); await Task.Delay(50); designer.UpdateLayout();
+        Invoke(Button(designer, "Add text layer"));
+        await Eventually(() => session.SelectedLayerId == "text-1" && Descendants(designer).OfType<ComboBox>().Any(c => c.Header as string == "Shows"), () => $"Add text layer did not select text-1 with a Shows box (selected '{session.SelectedLayerId}')");
+        var shows = Descendants(designer).OfType<ComboBox>().Single(c => c.Header as string == "Shows");
+        shows.SelectedValue = "location";
+        await Eventually(() => rows().Any(r => r.Id == "text-1" && r.Detail == "{location}"), () => $"Shows: Variable location did not bind text-1 (rows={string.Join(",", rows().Select(r => r.Id + "=" + r.Detail))}, status='{session.Status}')");
+        await Eventually(() => Descendants(designer).OfType<ComboBox>().SingleOrDefault(c => c.Header as string == "Shows") is { SelectedValue: "location" } rebuilt && !ReferenceEquals(rebuilt, shows),
+            "The inspector was not rebuilt with Shows: Variable location after the deferred edit");
+        Require(session.SelectedLayerId == "text-1", "Choosing Shows moved the layer selection");
+        checks.Add("Designer: Add text layer then Shows: Variable location binds the new layer; the inspector rebuilds after the ComboBox's own event");
+        for (var i = 0; i < 8 && session.CanUndo; i++) { Invoke(Button(designer, "Undo")); await Task.Delay(30); }
+        await Eventually(() => rows().Count == 4 && session.Draft?.Fields.TryGetProperty("location", out _) == false, () => $"Undo did not restore the probe draft (rows={rows().Count})");
+    }
+    /// <summary>Final review C1a: a Guest design row (following Sources) whose template has an extra text variable shows a
+    /// box for it in Operate's row inspector (header = the variable's label, max length = its limit).</summary>
+    private static async Task CheckOperateRowVariableAsync(OverlaysPage page, StudioViewModel studio, NativeGraphicsTemplate seedTemplate, List<string> checks, string directory)
+    {
+        var withLocation = GraphicsTemplateEditor.AddField(NativeGraphicsScratch.From(seedTemplate.Definition!.Value), "location", "text", 40);
+        var manifest = System.Text.Json.Nodes.JsonNode.Parse(withLocation.Manifest)!.AsObject(); manifest["templateVersion"] = 2;
+        var definition = System.Text.Json.JsonSerializer.SerializeToElement(manifest);
+        var v2 = System.Text.Json.JsonSerializer.Deserialize<NativeGraphicsTemplate>(manifest.ToJsonString(), new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))! with {
+            Runtime = "declarative", Definition = definition, ManifestHash = NativeGraphicsScratch.From(definition).Hash };
+        var before = studio.GraphicsWorkspace.State;
+        studio.GraphicsWorkspace.Observe((before ?? new()) with { Templates = [.. before?.Templates ?? [], v2] });
+        static System.Text.Json.JsonElement Text(string value) => System.Text.Json.JsonSerializer.SerializeToElement(value);
+        var row = new GraphicsPlaylistRow { Id = "probe-strap", Kind = GraphicsPlaylistRow.Guest, Name = "Probe strap", FollowSources = true, Hotkey = "F6", PlayOutAfterMs = 8000,
+            TemplateId = v2.TemplateId, TemplateVersion = 2, Fields = new Dictionary<string, System.Text.Json.JsonElement> { ["name"] = Text("Name"), ["title"] = Text("Title"), ["location"] = Text("Oslo") } };
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([row]), "The probe design row could not be saved: " + studio.GraphicsLibrary.Status);
+        var mode = studio.GraphicsMode;
+        studio.GraphicsMode = StudioViewModel.GraphicsModePlayout; await Task.Delay(100); page.UpdateLayout();
+        var playout = Descendants(page).OfType<GraphicsPlayoutControl>().Single();
+        Require(playout.Visibility == Visibility.Visible, "Operate did not show the playlist");
+        playout.SelectRow("probe-strap"); await Task.Delay(100); page.UpdateLayout();
+        TextBox? Location() => Descendants(playout).OfType<TextBox>().SingleOrDefault(t => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(t) == "Row variable location");
+        await Eventually(() => Location() is { ActualHeight: > 0 }, "Operate's row inspector has no box for the design's location variable");
+        var box = Location()!;
+        Require(box.Header as string == "Location" && box.MaxLength == 40 && box.Text == "Oslo", $"The location box is wrong (header='{box.Header}', max={box.MaxLength}, text='{box.Text}')");
+        Require(Descendants(playout).OfType<TextBox>().Any(t => t.Header as string == "Title line" && t.IsReadOnly), "The Guest row's Title line is not the read-only Sources text");
+        await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-operate-row-variable.png"));
+        checks.Add("Operate: a Guest design row with an extra text variable shows a Location box (max 40, row value) beside the Sources title line");
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([]), "The probe playlist could not be cleared");
+        if (before is not null) studio.GraphicsWorkspace.Observe(before);
+        studio.GraphicsMode = mode; await Task.Delay(80); page.UpdateLayout();
     }
     private static async Task CheckAutomationEditingAsync(Window window, StudioViewModel studio, List<string> checks)
     {

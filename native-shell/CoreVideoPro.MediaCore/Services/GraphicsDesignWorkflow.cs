@@ -97,6 +97,7 @@ public sealed class GraphicsDesignWorkflow
         if (_session.Busy) return new(false, "Graphics is busy. Try Save again in a moment.", null, null);
         if (_session.Draft is not { Declarative: true } draft || _session.TemplateDocument is not { } document)
             return new(false, "Open a design (or a look to copy) before saving.", null, null);
+        var selectedLayer = _session.SelectedLayerId; // the re-open below clears it; Carry restores it
         await _library.LoadAsync();
         var design = DesignFor(draft);
         var prefix = "";
@@ -124,7 +125,7 @@ public sealed class GraphicsDesignWorkflow
         // remembered the pre-save one): they must not keep an old, perhaps on-air, version from eviction.
         _session.ForgetBrowseEdits(design.TemplateId, saved.Design.TemplateVersion);
         if (current is not null) {
-            Carry(typed, current, document);
+            Carry(typed, current, document, selectedLayer);
             return saved with { Message = message, Template = current };
         }
         return saved with { Message = message + " Open it again from Your designs to keep editing." };
@@ -177,11 +178,11 @@ public sealed class GraphicsDesignWorkflow
     /// <summary>Re-apply the pre-save values, style, placement and motion to the re-opened draft
     /// (variables follow the saved manifest; a removed variable's value is dropped) as its new baseline:
     /// no undo entry, so Undo right after Save never reverts them.</summary>
-    private void Carry(NativeGraphicsDraft typed, NativeGraphicsTemplate template, NativeGraphicsScratch saved)
+    private void Carry(NativeGraphicsDraft typed, NativeGraphicsTemplate template, NativeGraphicsScratch saved, string selectedLayer)
     {
         if (_session.Draft is not { } fresh) return;
         var manifest = template.Definition is { } definition ? NativeGraphicsScratch.From(definition) : saved;
-        _session.Rebase(fresh with { Fields = GraphicsTemplateEditor.SyncFields(typed.Fields, manifest), Style = typed.Style, Placement = typed.Placement, Animations = typed.Animations });
+        _session.Rebase(fresh with { Fields = GraphicsTemplateEditor.SyncFields(typed.Fields, manifest), Style = typed.Style, Placement = typed.Placement, Animations = typed.Animations }, selectedLayer);
     }
 
     private bool Show(NativeGraphicsTemplate template)

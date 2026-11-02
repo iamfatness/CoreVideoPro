@@ -9,6 +9,16 @@ public sealed partial class GraphicsWorkspaceControl
 {
     private readonly StackPanel _assignmentPanel = new() { Spacing = 4 };
 
+    /// <summary>A design opened (in the Designer) leaves a show template being tried here, so returning to Cues &amp;
+    /// automation does not show "2. Personalize · &lt;starter&gt;" over the design draft. The starter's edits are kept.</summary>
+    private void OnDesignOpened(object? sender, EventArgs e)
+    {
+        if (_activeStarter is null && !_starterHomeOpen) return;
+        RememberStarterEdits();
+        _activeStarter = null; _starterHomeOpen = false; _starterInitialSelectionApplied = true; _tools.IsPaneOpen = false;
+        _inspectorKey = ""; RefreshStarterChrome(); Refresh();
+    }
+
     private void RefreshDesignChrome()
     {
         var draft = _session?.Draft;

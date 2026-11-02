@@ -123,15 +123,13 @@ public sealed class GraphicsPlayoutControl : UserControl
         if (!await studio.GraphicsLibrary.SavePlaylistAsync(rows)) _status.Text = studio.GraphicsLibrary.Status;
         Refresh();
     }
-    private static GraphicsPlaylistRow WithField(GraphicsPlaylistRow row, string key, string value)
-    {
-        var fields = row.Fields.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
-        fields[key] = JsonSerializer.SerializeToElement(value);
-        return row with { Fields = fields };
-    }
+    private static GraphicsPlaylistRow WithField(GraphicsPlaylistRow row, string key, string value) => GraphicsRowFields.WithText(row, key, value);
     private static string? TitleFieldKey(GraphicsPlaylistRow row) => row.Kind == GraphicsPlaylistRow.Guest ? "title" :
         new[] { "title", "subtitle", "label" }.FirstOrDefault(row.Fields.ContainsKey);
-    private static string FieldText(GraphicsPlaylistRow row, string key) => row.Fields.TryGetValue(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+    private static string FieldText(GraphicsPlaylistRow row, string key) => GraphicsRowFields.Text(row, key);
+    /// <summary>The row's extra text variables (e.g. a design's <c>location</c>) typed here, per spec §4.</summary>
+    private IReadOnlyList<GraphicsRowTypeableField> TypeableFields(GraphicsPlaylistRow row) => _attached is not { } studio ? [] :
+        GraphicsRowFields.Typeable(row, studio.GraphicsWorkspace.State, studio.GraphicsLibrary.Document.Templates, row.Kind == GraphicsPlaylistRow.Guest ? null : TitleFieldKey(row));
 
     // ---- state ---------------------------------------------------------------------------
     private enum AirState { Off, Preview, Program }
@@ -396,6 +394,8 @@ public sealed class GraphicsPlayoutControl : UserControl
     }
 
     private void Select(string key) { if (_selectedKey == key) return; _selectedKey = key; _listSignature = ""; Refresh(); }
+    /// <summary>Select a row (or <c>row|source</c> entry) as a tap on its card would; used by the layout probe.</summary>
+    internal void SelectRow(string key) => Select(key);
 
     // ---- empty state ---------------------------------------------------------------------
     private FrameworkElement EmptyState(bool busy)
@@ -437,7 +437,9 @@ public sealed class GraphicsPlayoutControl : UserControl
         var rowId = _selectedKey.Split('|')[0]; var sourceId = _selectedKey.Contains('|') ? _selectedKey[(rowId.Length + 1)..] : "";
         var row = rows.FirstOrDefault(r => r.Id == rowId);
         var entry = row is null ? null : sourceId.Length == 0 ? null : entries.FirstOrDefault(e => e.RowId == rowId && e.SourceId == sourceId);
-        var signature = row is null ? "" : $"{row.Id}:{row.Name}:{row.Hotkey}:{row.PlayOutAfterMs}:{row.FollowSources}:{TitleFieldKey(row)}:{(TitleFieldKey(row) is { } k ? FieldText(row, k) : "")}:{entry?.SourceId}:{entry?.Label}:{entry?.Title}";
+        var typeable = row is null ? [] : TypeableFields(row);
+        var signature = row is null ? "" : $"{row.Id}:{row.Name}:{row.Hotkey}:{row.PlayOutAfterMs}:{row.FollowSources}:{TitleFieldKey(row)}:{(TitleFieldKey(row) is { } k ? FieldText(row, k) : "")}:{entry?.SourceId}:{entry?.Label}:{entry?.Title}:" +
+            string.Join('\u001f', typeable.Select(f => $"{f.Id}={f.Label}={f.MaxLength}={FieldText(row, f.Id)}"));
         if (signature == _inspectorSignature) return;
         _inspectorSignature = signature; _inspector.Children.Clear(); _loading = true;
         try {
@@ -462,6 +464,17 @@ public sealed class GraphicsPlayoutControl : UserControl
                 void CommitTitle() { if (!_loading && title.Text != FieldText(row, key)) _ = SaveRowAsync(id, r => WithField(r, key, title.Text)); }
                 title.LostFocus += (_, _) => CommitTitle(); title.KeyDown += (_, e) => { if (e.Key == Windows.System.VirtualKey.Enter) CommitTitle(); };
                 _inspector.Children.Add(title);
+            }
+            // Extra variables of the row's template (a design's location, say): typed here, kept on the row,
+            // sent on Show. A Guest row following Sources still gets them: playout overlays only name/title.
+            foreach (var field in typeable) {
+                var key = field.Id;
+                var box = new TextBox { Header = field.Label, Text = FieldText(row, key), MaxLength = field.MaxLength is int cap and > 0 ? cap : 4096, PlaceholderText = "Typed for this row" };
+                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(box, "Row variable " + key);
+                ToolTipService.SetToolTip(box, $"The {key} variable of this graphic. It goes on air with the next Show.");
+                void CommitField() { if (!_loading && box.Text != FieldText(row, key)) _ = SaveRowAsync(id, r => WithField(r, key, box.Text)); }
+                box.LostFocus += (_, _) => CommitField(); box.KeyDown += (_, e) => { if (e.Key == Windows.System.VirtualKey.Enter) CommitField(); };
+                _inspector.Children.Add(box);
             }
 
             if (row.Kind == GraphicsPlaylistRow.Guest) {

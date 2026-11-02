@@ -182,6 +182,27 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.False(create.TryGetProperty("binding", out _));
     }
 
+    // Acceptance 1 (spec §4): a design with an extra variable, saved as a Guest row that follows
+    // Sources; the operator types the extra value on the row and Show sends it beside the Sources text.
+    [Fact] public async Task ShowOfAGuestDesignRowSendsTheTypedExtraVariableBesideTheSourcesText()
+    {
+        const string design = "design-lower-third-a1b2c3";
+        _state = _state with { Templates = [.. _state.Templates, Template(design, "lower-third", "declarative", "name", "title", "location")] };
+        var (library, service) = Build();
+        var row = new GraphicsPlaylistRow { Id = "guest", Kind = GraphicsPlaylistRow.Guest, Name = "Guest", FollowSources = true, TemplateId = design, TemplateVersion = 1, Hotkey = "F1",
+            Fields = new Dictionary<string, JsonElement> { ["name"] = JsonSerializer.SerializeToElement("Name"), ["title"] = JsonSerializer.SerializeToElement("Title"), ["location"] = JsonSerializer.SerializeToElement("") } };
+        Assert.True(await library.SavePlaylistAsync([row]), library.Status);
+        var saved = library.Document.Playlist.Single();
+        Assert.Equal(["location"], GraphicsRowFields.Typeable(saved, _state, library.Document.Templates).Select(f => f.Id));
+        Assert.True(await library.SavePlaylistAsync([GraphicsRowFields.WithText(saved, "location", "Oslo")]), library.Status);
+        var entries = service.GuestEntries([new(1, "zoom:7", "Ada")], (_, name) => (name, "Analyst"));
+        Assert.True((await service.PlayInAsync(entries.Single())).Accepted);
+        var fields = Bodies("graphics.instance.create").Single().GetProperty("fields");
+        Assert.Equal("Ada", fields.GetProperty("name").GetString());
+        Assert.Equal("Analyst", fields.GetProperty("title").GetString());
+        Assert.Equal("Oslo", fields.GetProperty("location").GetString());
+    }
+
     [Fact] public async Task PlayInSendsTheRowsOwnPlacementWhenItHasOne()
     {
         var (library, service) = await BuildWithDefaultPlaylist();

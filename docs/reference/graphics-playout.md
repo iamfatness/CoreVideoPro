@@ -42,7 +42,13 @@ Guest name (F1, plays out after 8 s), Show title (F2), Logo (F3), LIVE bug (F4)
 and Sponsor card (F5, 15 s, no image until you pick one), plus the four preset
 shot layouts below. With a playlist in place, new graphics are built in Design
 (below) and land as rows. Rows are edited in the inspector: name, title line,
-From Sources, hides-after and hotkey; "Open in Design" reopens that row: a
+one box for each other text variable of the row's graphic (a design's
+`location`, say; header = the variable's label, limit = its max length; Enter
+or leaving the box saves it on the row and the next Show sends it), From
+Sources, hides-after and hotkey. Those boxes appear on a Guest row that follows
+Sources too: Sources fills only name and title, so a typed location goes on air
+beside the Sources text. Not offered: name, title, time and label (handled
+elsewhere) and variables with a fixed choice list. "Open in Design" reopens that row: a
 design's row opens the design in the Designer (below), any other row opens in
 the builder with its look and fields (also the fallback when the design cannot
 be opened). Nothing is created in the core until a row is shown or cued.
@@ -130,7 +136,11 @@ belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../s
   variable with its kind, limit and **Used by** (the layers bound to it); add
   (Text with max length, Number, Colour, On/off, Image), rename (every binding
   follows), delete (refused while a layer uses it), max length, sample value and
-  **If empty: hide its layer / show the sample**. Native limits stay: 32
+  **If empty: hide its layer / show the sample**. **Apply** with a new sample
+  value also sets the draft's value while that value still equals the previous
+  sample (always true for a just-added variable, whose value starts empty), so
+  the Typical preview shows the line and Save to playlist carries it to the
+  row. A value typed elsewhere (the builder form) is kept. Native limits stay: 32
   variables, ids `[a-z][a-z0-9-]{0,63}`. Edits change the private draft only
   (the template scratch plus draft values kept in step, since the core refuses
   unknown or missing fields). The Designer's **Shows** and **Image…** lists offer
@@ -219,7 +229,8 @@ to the builder; unsaved edits stay in the draft); **Undo**; **Save** ("Save as
 new design" when the draft is a look, not a design); **Save to playlist · F6**
 (the key it will use: the design's existing row's key, else the next free one);
 and a two-line status (full text in its tooltip). Editing is paused while a save
-runs.
+runs; afterwards the inspector stays on the tab you were on, with the same layer
+selected (when the saved version still has it).
 
 **Layers panel (left).** One row per layer, front to back: "Top of the list is
 in front. Drag to reorder, double-click to rename." Each row shows the layer's
@@ -243,7 +254,12 @@ name and what it shows (`{name}` for a variable, or its kind).
   in the design, or a new image variable chosen when the graphic is used) and
   **Clock** (only in clock and countdown designs; elsewhere the button says
   "Clocks tick in clock and countdown designs. Start one from the Clock look.").
-  The new layer is selected.
+  The new layer is selected. A new text layer goes 8 px under the lowest text
+  layer (same x and width) when it fits inside the graphic's bounds; otherwise
+  (the Lower third blank: 168 px tall, its title line ends at 136) it lands at
+  40,40 over the other lines. Drag it into place (snapping helps) and shrink the
+  name and title lines to make room: the graphic is drawn at its bounds, so
+  anything below them is cut off.
 
 **Canvas (centre).** The native preview of the draft. Click a layer to select
 it, drag to move it, drag its corner to resize it. Moves and edge resizes
@@ -252,9 +268,9 @@ drawn while they hold; **hold Ctrl to place freely**. Resizes that keep the
 aspect ratio (image layers, or Shift held), scaling the whole graphic, and
 keyboard nudges do not snap.
 **Sample text** buttons under the canvas change only the preview: **Typical**
-(your draft's values; drags work on this one), **Longest name** (each text
-variable filled to its limit, to check the layout) and **Empty title** (the
-second line left blank).
+(your draft's values; drags work on this one), **Longest name** (the first
+text variable filled to its limit, to check the layout; the other variables keep
+their draft values) and **Empty title** (the second line left blank).
 
 **Inspector (right), Layer tab.** `NAME · KIND LAYER` and the selected layer's
 properties; a locked layer shows them disabled.
@@ -485,6 +501,14 @@ row or layout and moves when reassigned.
   an action id, the Companion manifest is generated from the registry.
 
 ## Acceptance (owner at the keyboard, installed build)
+
+Designer acceptance 1 (spec §4): Design → New design → Lower third blank →
+Open in Designer; Variables tab: add `location` (Text, 40), optionally set its
+Sample value and Apply (the preview then shows it); Layer tab: Add Text, then
+Shows: Variable `location`, drag it into place; **Save to playlist · F-key**.
+In Operate select the row: the inspector has a **Location** box; type the
+location, press Enter, then Show: name and title come from Sources (Guest row)
+and the location is the typed text.
 
 Each from a cold open in under 3 clicks and 15 s: name a person on Program,
 edit a lower third's text, add a logo or title, see what is live versus staged

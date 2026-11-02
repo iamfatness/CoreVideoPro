@@ -114,7 +114,7 @@ public sealed partial class GraphicsDesignerControl
             if (_loading || shows.SelectedValue is not string chosen) return;
             var variable = chosen.Length == 0 ? null : chosen;
             var text = fixedText.Text.Length > 0 ? fixedText.Text : "Text";
-            Apply(s => GraphicsDesignerModel.SetShows(s, id, variable, text));
+            AfterSelectionChanged(() => Apply(s => GraphicsDesignerModel.SetShows(s, id, variable, text)));
         };
         // Checked and written against the captured layer id, never the current selection: the commit may run after the
         // selection moved (flushed by SelectLayer / RefreshAll, or a late LostFocus from the removed box).
@@ -134,7 +134,7 @@ public sealed partial class GraphicsDesignerControl
         _layerBody.Children.Add(shows); _layerBody.Children.Add(fixedText);
 
         var typeface = Choice("Typeface", GraphicsDesignerModel.FontChoices(layer.FontChoice), layer.FontChoice);
-        typeface.SelectionChanged += (_, _) => { if (!_loading && typeface.SelectedValue is string font && font != CurrentInspection()?.FontChoice) Apply(s => GraphicsDesignerModel.SetTypeface(s, id, font)); };
+        typeface.SelectionChanged += (_, _) => { if (!_loading && typeface.SelectedValue is string font && font != CurrentInspection()?.FontChoice) AfterSelectionChanged(() => Apply(s => GraphicsDesignerModel.SetTypeface(s, id, font))); };
         var size = Number("Size", 1, 512, layer.FontSize, value => SetNumbers(id, new Dictionary<string, double> { ["fontSize"] = value }));
         _inspectorRefresh.Add(l => Show(size, l.FontSize));
         _layerBody.Children.Add(Columns([typeface, size], [2, 1]));
@@ -177,8 +177,8 @@ public sealed partial class GraphicsDesignerControl
         var source = Choice("Source", sources, layer.ImageSource);
         source.SelectionChanged += (_, _) => {
             if (_loading || source.SelectedValue is not string chosen || chosen == CurrentInspection()?.ImageSource) return;
-            if (chosen.StartsWith("field:", StringComparison.Ordinal)) Apply(s => GraphicsTemplateEditor.BindLayer(s, id, "asset", chosen["field:".Length..], null));
-            else if (chosen.StartsWith("asset:", StringComparison.Ordinal)) Apply(s => GraphicsTemplateEditor.BindLayer(s, id, "asset", null, JsonSerializer.SerializeToElement(chosen["asset:".Length..])));
+            if (chosen.StartsWith("field:", StringComparison.Ordinal)) AfterSelectionChanged(() => Apply(s => GraphicsTemplateEditor.BindLayer(s, id, "asset", chosen["field:".Length..], null)));
+            else if (chosen.StartsWith("asset:", StringComparison.Ordinal)) AfterSelectionChanged(() => Apply(s => GraphicsTemplateEditor.BindLayer(s, id, "asset", null, JsonSerializer.SerializeToElement(chosen["asset:".Length..]))));
         };
         _layerBody.Children.Add(source);
         var fit = LiteralChoice("Fit", "fit", GraphicsDesignerChoices.Fits, layer.Fit, id, l => l.Fit);
@@ -205,6 +205,10 @@ public sealed partial class GraphicsDesignerControl
         return box;
     }
     private void Select(ComboBox box, string value) { if (!Equals(box.SelectedValue, value)) box.SelectedValue = value; }
+    /// <summary>An edit chosen in a ComboBox that changes the inspector's shape (Shows, Typeface, Colour, Fill, image
+    /// Source) runs after the box's own SelectionChanged / TextSubmitted returns: the edit rebuilds the inspector, and
+    /// removing a ComboBox inside its own event is not safe in WinUI.</summary>
+    private void AfterSelectionChanged(Action edit) { if (DispatcherQueue?.TryEnqueue(() => edit()) != true) edit(); }
 
     private ComboBox LiteralChoice(string header, string property, IReadOnlyList<(string Id, string Label)> choices, string selected, string id, Func<GraphicsLayerInspection, string> read)
     {
@@ -228,14 +232,14 @@ public sealed partial class GraphicsDesignerControl
         void Reset() { var label = choices.FirstOrDefault(c => c.Id == current).Label; box.Text = label ?? ""; }
         box.SelectionChanged += (_, _) => {
             if (_loading || box.SelectedValue is not string value || value == current) return;
-            if (!Apply(s => GraphicsDesignerModel.SetColour(s, id, property, value))) Reset();
+            AfterSelectionChanged(() => { if (!Apply(s => GraphicsDesignerModel.SetColour(s, id, property, value))) Reset(); });
         };
         box.TextSubmitted += (_, e) => {
             var typed = e.Text.Trim(); var match = choices.FirstOrDefault(c => c.Label == typed || c.Id == typed);
             e.Handled = true;
-            if (match.Id is { } known) { if (known != current && !Apply(s => GraphicsDesignerModel.SetColour(s, id, property, known))) Reset(); return; }
+            if (match.Id is { } known) { if (known != current) AfterSelectionChanged(() => { if (!Apply(s => GraphicsDesignerModel.SetColour(s, id, property, known))) Reset(); }); return; }
             // A refusal ("orange") leaves the layer's colour; show that colour again rather than the rejected text.
-            if (!Apply(s => GraphicsDesignerModel.SetColour(s, id, property, typed))) Reset();
+            AfterSelectionChanged(() => { if (!Apply(s => GraphicsDesignerModel.SetColour(s, id, property, typed))) Reset(); });
         };
         return box;
     }

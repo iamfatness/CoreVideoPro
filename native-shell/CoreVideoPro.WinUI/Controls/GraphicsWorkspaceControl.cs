@@ -71,7 +71,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         if (Studio is null || !IsLoaded || _session == Studio.GraphicsWorkspace) return;
         Detach(); _session = Studio.GraphicsWorkspace; _canvas.Session=_session;
         _automation=new(Studio);_automationDrawer.Content=_automation;
-        _attachedStudio = Studio; _attachedStudio.PropertyChanged += OnStudioProperty;
+        _attachedStudio = Studio; _attachedStudio.PropertyChanged += OnStudioProperty; _attachedStudio.GraphicsDesignOpened += OnDesignOpened;
         _savedLibrary = Studio.GraphicsLibrary; _savedLibrary.Changed += OnLibraryChanged; _ = _savedLibrary.LoadAsync();
         _session.Changed += OnChanged; _session.PreviewChanged += OnPreviewChanged;
         _editor = new("preview:lower-third", "Graphics private draft", new() { Lut = "none" }) { LiveEditing = false };
@@ -83,7 +83,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         RetireTextFields(); _inspectorKey = "";
         if (_session is not null) { _session.Changed -= OnChanged; _session.PreviewChanged -= OnPreviewChanged; }
         if (_savedLibrary is not null) _savedLibrary.Changed -= OnLibraryChanged;
-        if (_attachedStudio is not null) _attachedStudio.PropertyChanged -= OnStudioProperty;
+        if (_attachedStudio is not null) { _attachedStudio.PropertyChanged -= OnStudioProperty; _attachedStudio.GraphicsDesignOpened -= OnDesignOpened; }
         _previewOwner?.Dispose(); _previewOwner = null;
         if (_editor is not null) _editor.PropertyChanged -= OnPreviewProperty;
         _canvas.Session=null;
