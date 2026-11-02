@@ -430,15 +430,86 @@ public sealed class GraphicsDesignServiceTests : IDisposable
 
     [Fact] public async Task DeletingADesignRemovesItsPins()
     {
+        // Written straight to disk so no playlist save prunes the pin first: Delete's own prune must drop it.
+        const string id = "design-guest-strap-a1b2c3";
+        var definition = JsonSerializer.SerializeToElement(GraphicsDesignSeeds.Manifest("lower-third", id, 1, "Guest strap"));
+        var design = new GraphicsDesign(id, "Guest strap", "lower-third", id, 1, definition, [], DateTimeOffset.UtcNow);
+        await new GraphicsDocumentStore(Path.Combine(_directory, "show.json")).SaveAsync(new GraphicsShowDocument {
+            Designs = [design], Templates = [new GraphicsSavedTemplate(id, 1, Hash(definition.GetRawText()), definition)] });
         var (library, service) = Build();
-        var design = (await service.CreateBlankAsync("lower-third", "Guest strap")).Design!;
-        var other = (await service.CreateBlankAsync("title", "Opening title")).Design!;
-        await PinToPlaylist(library, design);
-        var titleRow = new GraphicsPlaylistRow { Id = "title", Kind = GraphicsPlaylistRow.Title, Name = "Show title", TemplateId = other.TemplateId, TemplateVersion = 1 };
-        Assert.True(await library.SavePlaylistAsync([titleRow]), library.Status);
+        await library.LoadAsync();
+        Assert.Contains(library.Document.Templates, t => t.TemplateId == design.TemplateId); // present before Delete
         Assert.True((await service.DeleteAsync(design.DesignId)).Ok);
         Assert.DoesNotContain(library.Document.Templates, t => t.TemplateId == design.TemplateId);
-        Assert.Contains(library.Document.Templates, t => t.TemplateId == other.TemplateId);
+        var reloaded = await new GraphicsDocumentStore(Path.Combine(_directory, "show.json")).LoadAsync();
+        Assert.Empty(reloaded.Document.Templates);
+    }
+
+    [Fact] public async Task MovingOffADesignKeepsItsTypedValuesStyleAndPlacement()
+    {
+        var (_, _, workflow) = BuildWorkflow();
+        var a = (await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Design!;
+        _session!.SetField("title", JsonSerializer.SerializeToElement("London"));
+        _session.SetStyle(_session.Draft!.Style with { AccentColor = "#FF8800" });
+        var placement = new NativeGraphicsPlacement { Anchor = "lower-right", X = -120, Y = -80, Scale = 1.25 };
+        _session.SetPlacement(placement);
+        Assert.True((await workflow.CreateAsync("title", null, 0, "Opening title")).Ok);
+        Assert.Contains(_commands, c => c.Action == "graphics.template.remove" && c.Body.GetProperty("templateId").GetString() == a.TemplateId); // still released
+        Assert.False(IsInstalled(a.TemplateId, 1));
+        _session.Observe(_state); // the shell pushes every snapshot: the session sees A's version gone
+        Assert.DoesNotContain((a.TemplateId, 1), _session.UnsavedTemplateEdits); // value-only memory never pins a slot
+        Assert.True((await workflow.OpenAsync(a.DesignId)).Ok);
+        Assert.Equal("London", _session.Draft!.Fields.GetProperty("title").GetString());
+        Assert.Equal("#FF8800", _session.Draft.Style.AccentColor);
+        Assert.Equal(placement, _session.Draft.Placement);
+    }
+
+    [Fact] public async Task ACoreRestartStillClearsRememberedDesignValues()
+    {
+        var (_, _, workflow) = BuildWorkflow();
+        var a = (await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Design!;
+        _session!.SetField("title", JsonSerializer.SerializeToElement("London"));
+        Assert.True((await workflow.CreateAsync("title", null, 0, "Opening title")).Ok);
+        RestartCore(); _session.Observe(_state);
+        Assert.True((await workflow.OpenAsync(a.DesignId)).Ok);
+        Assert.False(_session.Draft!.Fields.TryGetProperty("title", out var title) && title.GetString() == "London");
+    }
+
+    [Fact] public async Task SavingWhileTheOldVersionIsOnAirDoesNotPinItAsUnsaved()
+    {
+        var (_, service, workflow) = BuildWorkflow();
+        var design = (await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Design!;
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        _state = _state with { Instances = [new() { InstanceId = "on-air", TemplateId = design.TemplateId, TemplateVersion = 1, ProgramTemplateVersion = 1, ProgramRevision = 1, Revision = 1 }] };
+        _session.Observe(_state);
+        var saved = await workflow.SaveAsync();
+        Assert.True(saved.Ok, saved.Message);
+        Assert.True(IsInstalled(design.TemplateId, 1)); // on air, so the save's tidy keeps it
+        Assert.DoesNotContain((design.TemplateId, 1), _session.UnsavedTemplateEdits);
+        _state = _state with { Instances = [] }; _session.Observe(_state);
+        // 6 built-ins + v1 + v2 + 8 bugs fill the 16 slots; the 9th bug install evicts (the editor stays on v2).
+        for (var i = 0; i < 9; i++) {
+            var created = await service.CreateBlankAsync("bug", "Bug " + i);
+            Assert.True(created.Ok, $"create {i}: {created.Message}");
+        }
+        Assert.Contains(_commands, c => c.Action == "graphics.template.remove" && c.Body.GetProperty("templateId").GetString() == design.TemplateId && c.Body.GetProperty("templateVersion").GetInt32() == 1);
+        Assert.False(IsInstalled(design.TemplateId, 1));
+        Assert.True(IsInstalled(design.TemplateId, 2));
+    }
+
+    [Fact] public async Task UndoRightAfterSaveKeepsTheCarriedValues()
+    {
+        var (_, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        _session!.SetField("title", JsonSerializer.SerializeToElement("London"));
+        _session.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        var saved = await workflow.SaveAsync();
+        Assert.True(saved.Ok, saved.Message);
+        Assert.False(_session.CanUndo);
+        Assert.False(_session.Dirty);
+        _session.Undo();
+        Assert.Equal("London", _session.Draft!.Fields.GetProperty("title").GetString());
+        Assert.Equal(2, _session.Draft.TemplateVersion);
     }
 
     [Fact] public async Task SaveToPlaylistKeepsTheValuesTypedIntoTheDraft()

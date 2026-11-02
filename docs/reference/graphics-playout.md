@@ -128,7 +128,10 @@ belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../s
   design's definition, removes superseded versions nothing references, and
   re-opens the draft on the new version. Saving a look that is not a design
   first makes it a new design "<look> copy". The values typed into the draft,
-  its style, position and motion carry onto the re-opened version. **Save to
+  its style, position and motion carry onto the re-opened version as its new
+  baseline (Undo right after Save does not revert them), and remembered drafts
+  of the design's older versions are forgotten so they never hold an old (even
+  once on-air) version against eviction. **Save to
   playlist** saves, then adds (or re-pins) one playlist row for the design on
   the next free F-key, carrying those values; the version the row pinned before
   is uninstalled when nothing else uses it.
@@ -137,12 +140,16 @@ belongs to that show. Spec: [2026-11-01-graphics-designer-phase2-design.md](../s
   `broadcast` are outside the registry), so designs share 10 slots. A design
   version is installed when it is created or opened; moving the editor to
   another design or look uninstalls the previous design's versions nothing
-  references (unless its draft holds unsaved template edits). When an install
-  meets a full library, every installed design version that is not referenced
-  (playlist row, saved cue, Studio lower third, live instance), not the open
-  draft and holds no unsaved edits is removed and the install retried once.
-  Only then is "The graphics library is full. Delete designs you no longer use,
-  or remove graphics from the playlist." shown.
+  references (unless its draft holds unsaved template edits). The draft's typed
+  values, style, position and motion are remembered without holding a slot and
+  come back when the design is opened again (a core restart clears them). When
+  an install meets a full library, every installed design version that is not
+  referenced (playlist row, saved cue, Studio lower third, live instance), not
+  the open draft and holds no unsaved edits is removed and the install retried
+  once. The design lifecycle and the playlist's pin reinstall (Show / To
+  Preview of a row whose design is not installed) share this one evictor
+  (`GraphicsDesignEviction`). Only then is "The graphics library is full.
+  Delete designs you no longer use, or remove graphics from the playlist." shown.
 - **Template pins**: every graphics-document save keeps only the pins a playlist
   row (template or image), a saved cue (draft or image) or the Studio lower
   third still references (`GraphicsWorkspaceLibrary.ReferencedTemplates`), so

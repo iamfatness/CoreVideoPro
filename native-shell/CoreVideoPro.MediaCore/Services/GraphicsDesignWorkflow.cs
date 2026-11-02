@@ -10,7 +10,8 @@ namespace CoreVideoPro.MediaCore.Services;
 /// design so a retry never makes a second copy) and Save to playlist. Every outcome is a message; a
 /// design that was stored is reported as stored even when the editor could not open it. Moving the
 /// editor off a design (open/create another) uninstalls the design's versions nothing references,
-/// unless its draft holds unsaved template edits.</summary>
+/// unless its draft holds unsaved template edits; its typed values, style and placement are remembered
+/// (without holding a slot) and come back when it is opened again.</summary>
 public sealed class GraphicsDesignWorkflow
 {
     private readonly GraphicsDesignService _designs;
@@ -89,7 +90,11 @@ public sealed class GraphicsDesignWorkflow
             return saved with { Design = design, Message = prefix.Length > 0 ? prefix + "your edits were not saved: " + saved.Message : saved.Message };
         var reopened = await _designs.OpenAsync(saved.Design.DesignId);
         var message = prefix + saved.Message;
-        if (reopened is { Ok: true, Template: { } current } && Show(current)) {
+        var current = reopened is { Ok: true, Template: { } latest } && Show(latest) ? latest : null;
+        // The saved version supersedes every remembered draft of the design's older versions (Show just
+        // remembered the pre-save one): they must not keep an old, perhaps on-air, version from eviction.
+        _session.ForgetBrowseEdits(design.TemplateId, saved.Design.TemplateVersion);
+        if (current is not null) {
             Carry(typed, current, document);
             return saved with { Message = message, Template = current };
         }
@@ -137,12 +142,13 @@ public sealed class GraphicsDesignWorkflow
     }
 
     /// <summary>Re-apply the pre-save values, style, placement and motion to the re-opened draft
-    /// (variables follow the saved manifest; a removed variable's value is dropped).</summary>
+    /// (variables follow the saved manifest; a removed variable's value is dropped) as its new baseline:
+    /// no undo entry, so Undo right after Save never reverts them.</summary>
     private void Carry(NativeGraphicsDraft typed, NativeGraphicsTemplate template, NativeGraphicsScratch saved)
     {
         if (_session.Draft is not { } fresh) return;
         var manifest = template.Definition is { } definition ? NativeGraphicsScratch.From(definition) : saved;
-        _session.Edit(fresh with { Fields = GraphicsTemplateEditor.SyncFields(typed.Fields, manifest), Style = typed.Style, Placement = typed.Placement, Animations = typed.Animations });
+        _session.Rebase(fresh with { Fields = GraphicsTemplateEditor.SyncFields(typed.Fields, manifest), Style = typed.Style, Placement = typed.Placement, Animations = typed.Animations });
     }
 
     private bool Show(NativeGraphicsTemplate template)

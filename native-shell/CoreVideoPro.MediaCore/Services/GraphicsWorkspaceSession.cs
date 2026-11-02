@@ -40,7 +40,8 @@ public sealed partial class GraphicsWorkspaceSession
     public NativeGraphicsTemplate? Template => State?.Templates.FirstOrDefault(t => t.TemplateId == Draft?.TemplateId && t.TemplateVersion == Draft.TemplateVersion);
     public NativeGraphicsDraft? Draft { get; private set; }
     /// <summary>Template versions whose remembered browse draft (a look or design the operator moved
-    /// off) holds unsaved template edits. Observe drops those edits if the version is uninstalled.</summary>
+    /// off) holds unsaved template edits. Observe drops those edits if the version is uninstalled;
+    /// value-only design drafts survive that uninstall (they hold no slot) and never appear here.</summary>
     public IEnumerable<(string TemplateId, int TemplateVersion)> UnsavedTemplateEdits =>
         _browseEdits.Where(p => p.Value.Draft.Scratch is not null).Select(p => p.Key).ToArray();
     public NativeGraphicsDraft? Preview {
@@ -115,7 +116,11 @@ public sealed partial class GraphicsWorkspaceSession
         var epochChanged = State is not null && State.CoreEpoch != state.CoreEpoch;
         var clockTextChanged = Selected?.Clock?.Text != state.Instances.FirstOrDefault(i=>i.InstanceId==SelectedId)?.Clock?.Text;
         State = state;
-        foreach(var key in _browseEdits.Keys.Where(key=>!state.Templates.Any(t=>t.TemplateId==key.Item1 && t.TemplateVersion==key.Item2)).ToArray()) _browseEdits.Remove(key);
+        // A design version uninstalled because the editor moved off it keeps its value-only memory (typed
+        // values, style, placement, motion): it pins no slot and returns when the design is opened again.
+        // Remembered template edits (Scratch) still go with their version. A core restart clears all below.
+        foreach(var key in _browseEdits.Where(p=>!(GraphicsDesignIds.IsDesignTemplateId(p.Key.Item1) && p.Value.Draft.Scratch is null) &&
+            !state.Templates.Any(t=>t.TemplateId==p.Key.Item1 && t.TemplateVersion==p.Key.Item2)).Select(p=>p.Key).ToArray()) _browseEdits.Remove(key);
         foreach (var id in _privateEdits.Keys.Where(id=>!state.Instances.Any(i=>i.InstanceId==id)).ToArray()) _privateEdits.Remove(id);
         if (epochChanged) {
             SelectedId = ""; SelectedLayerId=""; Draft = _original = null; _undo.Clear(); _gesture = null; _privateEdits.Clear(); _browseEdits.Clear();
@@ -252,6 +257,20 @@ public sealed partial class GraphicsWorkspaceSession
         Draft=_original=NewDraft(template);
         if(_browseEdits.TryGetValue((template.TemplateId,template.TemplateVersion),out var saved)) {Draft=saved.Draft;_original=saved.Original;_undo.AddRange(saved.Undo);SelectedLayerId=saved.SelectedLayer;}
         Status="Private library preview — edit this look, then Create hidden cue. Program is unchanged."; NotifyPreview();
+    }
+    /// <summary>Make <paramref name="value"/> the browse draft's new baseline (after a design save): the
+    /// draft and its original both become it, with no undo entry. Same template id and version only.</summary>
+    public void Rebase(NativeGraphicsDraft value)
+    {
+        if (Busy || Draft is null || value.TemplateId != Draft.TemplateId || value.TemplateVersion != Draft.TemplateVersion) return;
+        Draft = _original = value; _undo.Clear(); _gesture = null; CompareOriginal = false;
+        NotifyPreview();
+    }
+    /// <summary>Drop remembered browse drafts of every version of <paramref name="templateId"/> except
+    /// <paramref name="keepVersion"/>: a saved design supersedes them, so they must not pin old versions.</summary>
+    public void ForgetBrowseEdits(string templateId, int keepVersion)
+    {
+        foreach (var key in _browseEdits.Keys.Where(k => k.Item1 == templateId && k.Item2 != keepVersion).ToArray()) _browseEdits.Remove(key);
     }
     public Task<bool> CreateAsync(NativeGraphicsTemplate template, string scope = "global", string sceneId = "", CancellationToken cancellation = default) =>
         Run(async () => {
