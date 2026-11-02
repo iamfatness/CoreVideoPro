@@ -115,6 +115,13 @@ public sealed partial class GraphicsWorkspaceLibrary
         }
         if (Document.StylePresets.TryGetValue(name, out var style)) { _session.SetStyle(style); Status = "Style loaded into the private draft. Cue or Update remains explicit."; Changed?.Invoke(this, EventArgs.Empty); }
     }
+    /// <summary>Replace the show's designs (GraphicsDesignService owns their lifecycle). Every
+    /// other save rewrites the document with <c>with</c>, so designs survive those untouched.</summary>
+    public async Task<bool> SaveDesignsAsync(IReadOnlyList<GraphicsDesign> designs, string success)
+    {
+        await LoadAsync();
+        return await Save(Document with { Designs = designs.ToArray() }, success);
+    }
     public async Task<bool> RemoveSavedAsync(string id) {
         await LoadAsync();
         return await Save(Document with { Cues = Document.Cues.Where(c => c.Id != id).ToArray() }, "Removed the saved cue only. Native output is unchanged.");

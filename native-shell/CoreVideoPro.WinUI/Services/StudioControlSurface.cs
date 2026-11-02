@@ -77,7 +77,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
         "graphics.clock.control", "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
         "graphics.template.select", "graphics.cue.create", "graphics.studio.assign", "graphics.image.import", "graphics.logo.import", "graphics.cue.select", "graphics.cue.action", "graphics.cue.save", "graphics.saved.restore",
-        "graphics.template.install", "graphics.template.list", "graphics.authority.set", "graphics.automation.configure", "graphics.automation.control",
+        "graphics.template.install", "graphics.template.list", "graphics.template.remove", "graphics.authority.set", "graphics.automation.configure", "graphics.automation.control",
         // Graphics playout (#1076): the ids the Graphics tab, the F-key router and Companion share.
         "graphics.playlist.list", "graphics.playlist.clock", "graphics.playlist.row.set", "graphics.playlist.row.remove", "graphics.playlist.hotkey.set", "graphics.playlist.default",
         "graphics.playIn", "graphics.toPreview", "graphics.playOut", "graphics.preview.remove", "graphics.playOutAll", "graphics.preview.clear", "graphics.strip",
@@ -460,6 +460,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             case "graphics.instance.remove":
             case "graphics.program.clear":
             case "graphics.template.install":
+            case "graphics.template.remove":
             case "graphics.automation.configure":
             case "graphics.automation.control":
             case "graphics.authority.set":

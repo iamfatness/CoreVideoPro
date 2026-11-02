@@ -307,15 +307,10 @@ public sealed class GraphicsPlayoutService
         var pin = _library.Document.Templates.FirstOrDefault(t => t.TemplateId == templateId && t.TemplateVersion == version);
         var installed = state.Templates.FirstOrDefault(t => t.TemplateId == templateId && t.TemplateVersion == version);
         if (installed is null && pin is not null) {
-            var imported = await Send("graphics.template.install", new() { ["manifest"] = pin.Definition.GetRawText(), ["packageRoot"] = pin.PackageRoot }, cancellation);
-            if (!imported.Accepted) return imported;
-            var limit = _utcNow().AddSeconds(5);
-            do {
-                await _delay(TimeSpan.FromMilliseconds(50), cancellation);
-                var listed = await Send("graphics.template.list", [], cancellation);
-                if (!listed.Accepted) return listed;
-                installed = Current(epoch).Templates.FirstOrDefault(t => t.TemplateId == templateId && t.TemplateVersion == version);
-            } while (installed is null && _utcNow() < limit);
+            var (landed, refusal) = await GraphicsTemplateInstall.RunAsync(Send, () => Current(epoch), _delay, _utcNow,
+                pin.Definition.GetRawText(), pin.PackageRoot, templateId, version, cancellation);
+            if (refusal is not null) return refusal;
+            installed = landed;
         }
         if (installed is null) return Refuse($"{row.Name}: template {templateId} v{version} is not installed in this core. Open it in Design to import it.");
         if (pin is not null && pin.ManifestHash != installed.ManifestHash) return Refuse($"{row.Name}: the installed template differs from its saved pin. Program is unchanged.");
@@ -468,7 +463,7 @@ public sealed class GraphicsPlayoutService
     private Task<NativeGraphicsOperationResult> Send(string action, Dictionary<string, object?> body, CancellationToken cancellation)
     {
         var epoch = _epoch.Length > 0 ? _epoch : Available().CoreEpoch; Current(epoch);
-        body["schemaVersion"] = 1; body["clientId"] = ClientId; body["requestId"] = "playout-" + Guid.NewGuid().ToString("N"); body["coreEpoch"] = epoch;
+        body["schemaVersion"] = 1; body["clientId"] = ClientId; body.TryAdd("requestId", "playout-" + Guid.NewGuid().ToString("N")); body["coreEpoch"] = epoch;
         return _invoke(action, JsonSerializer.Serialize(body, Json), cancellation);
     }
     private static bool SameFields(NativeGraphicsFields existing, IReadOnlyDictionary<string, JsonElement> values)
@@ -477,4 +472,33 @@ public sealed class GraphicsPlayoutService
         return values.All(pair => current.TryGetValue(pair.Key, out var value) && JsonElement.DeepEquals(value, pair.Value));
     }
     private static NativeGraphicsOperationResult Refuse(string reason) => new() { Reason = reason };
+}
+
+/// <summary>The one install-then-poll path for a template manifest: playout's pin reinstall and
+/// the design lifecycle both use it. Sends graphics.template.install, then lists until the exact
+/// id+version appears, the native install record for this request fails, or 5 s pass.</summary>
+internal static class GraphicsTemplateInstall
+{
+    public const string LibraryFull = "The graphics library is full. Close another design or remove looks you no longer use.";
+
+    public static async Task<(NativeGraphicsTemplate? Installed, NativeGraphicsOperationResult? Refusal)> RunAsync(
+        Func<string, Dictionary<string, object?>, CancellationToken, Task<NativeGraphicsOperationResult>> send, Func<NativeGraphicsState> current,
+        Func<TimeSpan, CancellationToken, Task> delay, Func<DateTime> utcNow, string manifest, string packageRoot, string templateId, int version, CancellationToken cancellation)
+    {
+        var requestId = "install-" + Guid.NewGuid().ToString("N");
+        var imported = await send("graphics.template.install", new() { ["manifest"] = manifest, ["packageRoot"] = packageRoot, ["requestId"] = requestId }, cancellation);
+        if (!imported.Accepted) return (null, imported);
+        var limit = utcNow().AddSeconds(5);
+        NativeGraphicsTemplate? installed;
+        do {
+            await delay(TimeSpan.FromMilliseconds(50), cancellation);
+            var listed = await send("graphics.template.list", [], cancellation);
+            if (!listed.Accepted) return (null, listed);
+            var state = current();
+            installed = state.Templates.FirstOrDefault(t => t.TemplateId == templateId && t.TemplateVersion == version);
+            if (installed is null && state.TemplateInstalls.FirstOrDefault(i => i.RequestId == requestId && i.State == "failed") is { } failed)
+                return (null, new() { RequestId = requestId, Reason = failed.Reason == "template-library-capacity" ? LibraryFull : $"The template could not be installed ({failed.Reason})." });
+        } while (installed is null && utcNow() < limit);
+        return (installed, null);
+    }
 }
