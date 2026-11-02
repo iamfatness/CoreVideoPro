@@ -11,20 +11,20 @@ public sealed class NdiGraphicsKeyOutputTests
     [Fact]
     public void ControlActionIsRegisteredAndHandledByTheStudioSurface()
     {
-        Assert.True(ControlActionRegistry.TryGet("transport.stream.ndi.graphicsKey.set", out _));
-        Assert.Contains("transport.stream.ndi.graphicsKey.set", StudioControlSurface.SupportedActionIds);
+        Assert.True(ControlActionRegistry.TryGet("transport.ndi.graphicsKey.set", out _));
+        Assert.Contains("transport.ndi.graphicsKey.set", StudioControlSurface.SupportedActionIds);
     }
 
     [Fact]
     public void ControlActionBindsOnAndAnOptionalName()
     {
-        Assert.True(ControlActionRegistry.TryBind("transport.stream.ndi.graphicsKey.set", [true], out var onOnly, out _));
+        Assert.True(ControlActionRegistry.TryBind("transport.ndi.graphicsKey.set", [true], out var onOnly, out _));
         Assert.True(Assert.IsType<bool>(onOnly[0]));
         Assert.Null(onOnly[1]);
-        Assert.True(ControlActionRegistry.TryBind("transport.stream.ndi.graphicsKey.set", [0, "Studio Key"], out var named, out _));
+        Assert.True(ControlActionRegistry.TryBind("transport.ndi.graphicsKey.set", [0, "Studio Key"], out var named, out _));
         Assert.False(Assert.IsType<bool>(named[0]));
         Assert.Equal("Studio Key", named[1]);
-        Assert.False(ControlActionRegistry.TryBind("transport.stream.ndi.graphicsKey.set", [], out _, out var error));
+        Assert.False(ControlActionRegistry.TryBind("transport.ndi.graphicsKey.set", [], out _, out var error));
         Assert.Contains("on", error);
     }
 

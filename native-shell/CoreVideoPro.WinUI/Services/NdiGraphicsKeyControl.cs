@@ -2,7 +2,7 @@ using CoreVideoPro.Control;
 
 namespace CoreVideoPro.WinUI.Services;
 
-/// <summary>transport.stream.ndi.graphicsKey.set: validates the whole request before anything
+/// <summary>transport.ndi.graphicsKey.set: validates the whole request before anything
 /// changes, then applies the toggle and the name as ONE edit (the caller saves and syncs once), so
 /// a name+on request can never fire two output syncs that flap the key sender.</summary>
 internal static class NdiGraphicsKeyControl

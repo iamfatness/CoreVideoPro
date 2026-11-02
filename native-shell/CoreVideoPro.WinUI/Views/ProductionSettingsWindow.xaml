@@ -311,8 +311,6 @@
                             <StackPanel Orientation="Horizontal" Spacing="18">
                                 <CheckBox Content="RTMP / RTMPS"
                                           IsChecked="{x:Bind ViewModel.StreamRtmpEnabled, Mode=TwoWay}" />
-                                <CheckBox Content="NDI program"
-                                          IsChecked="{x:Bind ViewModel.NdiOutputEnabled, Mode=TwoWay}" />
                                 <CheckBox Content="SRT transport"
                                           IsChecked="{x:Bind ViewModel.StreamSrtEnabled, Mode=TwoWay}" />
                                 <CheckBox Content="HLS push"
@@ -453,16 +451,28 @@
                     <Border Style="{StaticResource OperatorSectionBorder}">
                         <StackPanel Spacing="12">
                             <TextBlock Text="NDI" Style="{StaticResource SettingsLabel}" />
+                            <!-- One-way + Toggled -> SetNdiOutput: a refusal leaves the switch
+                                 off and the status line shows the reason. Independent of Streaming. -->
+                            <ToggleSwitch Header="NDI output"
+                                          AutomationProperties.Name="NDI output"
+                                          IsOn="{x:Bind ViewModel.NdiOutputEnabled, Mode=OneWay}"
+                                          Toggled="OnNdiOutputSwitchToggled" />
+                            <TextBlock Text="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}"
+                                       Style="{StaticResource SettingsValue}" />
+                            <!-- Commit on LostFocus/Enter: every edit is validated, so a
+                                 per-keystroke commit could turn NDI off mid-typing. -->
                             <Grid ColumnSpacing="12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
-                                <TextBox Header="Program name"
-                                         Text="{x:Bind ViewModel.StreamNdiProgramName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBox Header="Program name" Tag="ProgramName"
+                                         Text="{x:Bind ViewModel.StreamNdiProgramName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         KeyDown="OnNdiTextBoxKeyDown" />
                                 <TextBox Grid.Column="1"
-                                         Header="Group"
-                                         Text="{x:Bind ViewModel.StreamNdiGroupName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                         Header="Group" Tag="GroupName"
+                                         Text="{x:Bind ViewModel.StreamNdiGroupName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         KeyDown="OnNdiTextBoxKeyDown" />
                             </Grid>
                             <Grid ColumnSpacing="12">
                                 <Grid.ColumnDefinitions>
@@ -474,9 +484,10 @@
                                           ToolTipService.ToolTip="A second NDI source with only the on-air graphics over transparency (fill+key), for a downstream switcher to key over its own picture."
                                           IsChecked="{x:Bind ViewModel.StreamNdiGraphicsKeyEnabled, Mode=TwoWay}" />
                                 <TextBox Grid.Column="1"
-                                         Header="Graphics key name"
+                                         Header="Graphics key name" Tag="GraphicsName"
                                          PlaceholderText="Program name + Graphics"
-                                         Text="{x:Bind ViewModel.StreamNdiGraphicsName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                         Text="{x:Bind ViewModel.StreamNdiGraphicsName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         KeyDown="OnNdiTextBoxKeyDown" />
                             </Grid>
                             <TextBlock Text="{x:Bind ViewModel.StreamNdiSummary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />

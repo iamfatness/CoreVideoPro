@@ -532,7 +532,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string NdiOutputStatusLabel =>
         StudioOutputTelemetry.NdiStatus(NdiOutputEnabled, _ndiStatusSenders, StreamNdiProgramName, NdiOutputStatusReason);
 
-    partial void OnNdiOutputStatusReasonChanged(string? value) => OnPropertyChanged(nameof(NdiOutputStatusLabel));
+    partial void OnNdiOutputStatusReasonChanged(string? value) => RefreshNdiOutputStatusLabel();
+
+    // The label text last announced; snapshot apply runs on the UI thread every tick, so the
+    // label (and the control-state publish it triggers) notifies only when its text changes.
+    private string? _ndiOutputStatusLabelAnnounced;
+
+    private void RefreshNdiOutputStatusLabel()
+    {
+        if (AdvanceNdiStatusLabel(ref _ndiOutputStatusLabelAnnounced, NdiOutputStatusLabel))
+        {
+            OnPropertyChanged(nameof(NdiOutputStatusLabel));
+        }
+    }
+
+    /// <summary>True (and <paramref name="last"/> updated) when <paramref name="next"/> differs
+    /// from the label text last announced.</summary>
+    internal static bool AdvanceNdiStatusLabel(ref string? last, string next)
+    {
+        if (string.Equals(last, next, StringComparison.Ordinal)) return false;
+        last = next;
+        return true;
+    }
 
     [ObservableProperty]
     private bool _streamSrtEnabled;
@@ -3593,7 +3614,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnNdiOutputEnabledChanged(bool value)
     {
-        OnPropertyChanged(nameof(NdiOutputStatusLabel));
+        RefreshNdiOutputStatusLabel();
         if (_applyingNdiOutput) return;
         // A direct set (a two-way binding) follows SetNdiOutput's rule: never on while invalid.
         if (value && ValidateNdiOutput() is { } refusal)
@@ -3621,7 +3642,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnStreamRtmpStreamKeyChanged(string value) => OnStreamOutputOptionChanged();
 
-    partial void OnStreamNdiProgramNameChanged(string value) => OnNdiOutputOptionChanged();
+    partial void OnStreamNdiProgramNameChanged(string value)
+    {
+        // "Live · {name}" names the program source; a rename must not wait for the next snapshot.
+        RefreshNdiOutputStatusLabel();
+        OnNdiOutputOptionChanged();
+    }
 
     partial void OnStreamNdiGroupNameChanged(string value) => OnNdiOutputOptionChanged();
 
@@ -10616,7 +10642,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (_shutdownPrepared) return;
         RefreshAudioObservationClock();
         _ndiStatusSenders = snapshot.OutputSenderSession.Senders;
-        OnPropertyChanged(nameof(NdiOutputStatusLabel));
+        RefreshNdiOutputStatusLabel();
         // P0 present-stutter-fix-spec: time each sub-op; log the breakdown only when a
         // snapshot apply is slow enough to stall the present (>10ms on the UI thread).
         var verboseDiagnostics = DiagnosticLog.VerboseEnabled;
@@ -12319,7 +12345,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         StreamRtmpEnabled = preferences.StreamRtmpEnabled;
         _ndiOutputEnabled = preferences.NdiOutputEnabled;
         OnPropertyChanged(nameof(NdiOutputEnabled));
-        OnPropertyChanged(nameof(NdiOutputStatusLabel));
+        RefreshNdiOutputStatusLabel();
         StreamSrtEnabled = preferences.StreamSrtEnabled;
         Hls.Enabled = preferences.StreamHlsEnabled;
         Hls.PlaylistUrl = preferences.StreamHlsPlaylistUrl ?? string.Empty;

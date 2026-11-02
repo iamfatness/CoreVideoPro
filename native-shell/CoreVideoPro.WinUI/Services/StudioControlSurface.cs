@@ -42,6 +42,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         nameof(StudioViewModel.AudioMonitoringEnabled), nameof(StudioViewModel.AudioMonitorVolume),
         nameof(StudioViewModel.MasterLimiterEnabled), nameof(StudioViewModel.MasteringEnabled),
         nameof(StudioViewModel.MasteringTargetIndex), nameof(StudioViewModel.VirtualCameraEnabled),
+        nameof(StudioViewModel.NdiOutputEnabled), nameof(StudioViewModel.NdiOutputStatusLabel),
         nameof(StudioViewModel.StreamNdiGraphicsKeyEnabled), nameof(StudioViewModel.StreamNdiGraphicsName),
         nameof(StudioViewModel.VstPluginHostSummary),
         nameof(StudioViewModel.ProgramLowerThirdKey),
@@ -52,6 +53,11 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         nameof(StudioViewModel.GraphicsStrip), nameof(StudioViewModel.GuestEntries), nameof(StudioViewModel.GraphicsPlayoutStatus),
     };
 
+    /// <summary>transport.ndi.set / toggle: <see cref="StudioViewModel.SetNdiOutput"/> returns the
+    /// refusal reason (NDI left as it was) or null when applied.</summary>
+    public static ControlInvokeResult NdiSetResult(string? refusal) =>
+        refusal is null ? ControlInvokeResult.Success : ControlInvokeResult.Fail(refusal);
+
     /// <summary>Every action id this adapter maps onto the ViewModel. A test asserts this covers
     /// <see cref="ControlActionRegistry"/> so a new registry action can't silently be unhandled.</summary>
     public static IReadOnlySet<string> SupportedActionIds { get; } = new HashSet<string>(StringComparer.Ordinal)
@@ -60,7 +66,8 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "transport.take", "transport.transition.set",
         "transport.record.toggle", "transport.record.set",
         "transport.stream.toggle", "transport.stream.set",
-        "transport.stream.rtmp.configure", "transport.stream.srt.configure", "transport.stream.ndi.graphicsKey.set",
+        "transport.stream.rtmp.configure", "transport.stream.srt.configure",
+        "transport.ndi.set", "transport.ndi.toggle", "transport.ndi.graphicsKey.set",
         "transport.engine.toggle", "transport.engine.set",
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
         "transport.virtualcam.name.set",
@@ -258,7 +265,12 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 return _vm.ConfigureStreamDestination(false, args);
             case "transport.stream.srt.configure":
                 return _vm.ConfigureStreamDestination(true, args);
-            case "transport.stream.ndi.graphicsKey.set":
+            // ---- NDI output (independent of streaming) -------------------------------
+            case "transport.ndi.set":
+                return NdiSetResult(_vm.SetNdiOutput(Bool(args, 0)));
+            case "transport.ndi.toggle":
+                return NdiSetResult(_vm.SetNdiOutput(!_vm.NdiOutputEnabled));
+            case "transport.ndi.graphicsKey.set":
                 // Validated first (NDI on, core capability, name), then applied as one edit with one
                 // sync; the core adds or drops only the key sender.
                 return _vm.SetNdiGraphicsKey(Bool(args, 0), args.Count > 1 ? args[1] as string : null);
@@ -1011,6 +1023,8 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             VstHostStatus = _vm.VstHostStatus,
             VstPluginCount = _vm.VstPlugins.Count,
             VstHostSummary = _vm.VstPluginHostSummary,
+            NdiOutputOn = _vm.NdiOutputEnabled,
+            NdiOutputStatus = _vm.NdiOutputStatusLabel,
             NdiGraphicsKeyOn = _vm.StreamNdiGraphicsKeyEnabled,
             NdiGraphicsKeyName = StudioStreamOutputValidation.ResolveNdiGraphicsKeyName(_vm.StreamNdiProgramName, _vm.StreamNdiGraphicsName),
             VirtualCameraOn = _vm.VirtualCameraEnabled,

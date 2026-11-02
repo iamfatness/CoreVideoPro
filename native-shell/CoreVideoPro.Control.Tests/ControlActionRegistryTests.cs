@@ -285,4 +285,35 @@ public sealed class ControlActionRegistryTests
         Assert.True(ControlActionRegistry.TryGet("scene.select", out var select));
         Assert.Contains("Unknown scene fails", select.Description);
     }
+
+    [Fact]
+    public void NdiActionsAreRegisteredAndTheOldKeyIdIsGone()
+    {
+        Assert.True(ControlActionRegistry.TryGet("transport.ndi.set", out var set));
+        var on = Assert.Single(set.Params);
+        Assert.Equal(("on", ControlParamType.Bool, true), (on.Name, on.Type, on.Required));
+
+        Assert.True(ControlActionRegistry.TryGet("transport.ndi.toggle", out var toggle));
+        Assert.Empty(toggle.Params);
+
+        Assert.True(ControlActionRegistry.TryGet("transport.ndi.graphicsKey.set", out var key));
+        Assert.Equal(
+            new[] { ("on", ControlParamType.Bool, true), ("name", ControlParamType.String, false) },
+            key.Params.Select(p => (p.Name, p.Type, p.Required)).ToArray());
+
+        Assert.False(ControlActionRegistry.Contains("transport.stream.ndi.graphicsKey.set"));
+    }
+
+    [Fact]
+    public void NdiOutputStateIsPublishedOnOscAsZeroOrOne()
+    {
+        Assert.Contains("ndi", ControlManifest.StateFields);
+        var map = new Osc.OscAddressMap();
+        foreach (var on in new[] { false, true })
+        {
+            var message = Assert.Single(Osc.OscFeedback.Encode(ControlState.Empty with { NdiOutputOn = on }, map),
+                m => m.Address == "/cvp/state/ndi");
+            Assert.Equal(on ? 1 : 0, Assert.IsType<int>(message.Args[0]));
+        }
+    }
 }

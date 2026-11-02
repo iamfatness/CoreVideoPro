@@ -74,6 +74,12 @@ public sealed partial class StudioWorkspace : UserControl
         _ = GraphicsPlayoutActions.InvokeAsync(vm, route.ActionId, route.Args.ToArray());
     }
 
+    private void OnNdiOutputTileClicked(object sender, RoutedEventArgs args) =>
+        NdiOutputControls.ToggleFromTile(ViewModel, sender);
+
+    private void OnNdiTextBoxKeyDown(object sender, KeyRoutedEventArgs args) =>
+        NdiOutputControls.CommitTextOnEnter(ViewModel, sender, args);
+
     private void OnHideGraphicsPanelClicked(object sender, RoutedEventArgs args)
     {
         if (ViewModel is not null)

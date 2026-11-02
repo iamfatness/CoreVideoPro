@@ -16,6 +16,8 @@ public static class OscFeedback
         {
             Flag("recording", state.Recording),
             Flag("streaming", state.Streaming),
+            // NDI output is its own output, not a stream destination.
+            Flag("ndi", state.NdiOutputOn),
             Flag("engineOn", state.EngineOn),
             Flag("canTake", state.CanTake),
             Flag("lowerThirdOnAir", state.LowerThirdOnAir),
