@@ -216,7 +216,9 @@ internal static class CloseGuardPolicy
         var senders = new Dictionary<string, string?>(StringComparer.Ordinal);
         foreach (var sender in input.Snapshot?.OutputSenderSession.Senders ?? [])
         {
-            if (IsSenderLive(sender))
+            // Close stops recording and streaming only. NDI keeps running through close (like
+            // the virtual camera; process exit ends it), so it is never awaited.
+            if (OutputDestinationKind.IsStream(sender.Destination) && IsSenderLive(sender))
             {
                 senders[SenderKey(sender)] = sender.Lifecycle?.SessionId;
             }
@@ -436,7 +438,7 @@ internal static class CloseGuardPolicy
         // stream started during the wait). Its old terminal states are history.
         foreach (var (key, sender) in byKey)
         {
-            if (baseline.Senders.ContainsKey(key) || !IsSenderLive(sender))
+            if (baseline.Senders.ContainsKey(key) || !OutputDestinationKind.IsStream(sender.Destination) || !IsSenderLive(sender))
             {
                 continue;
             }

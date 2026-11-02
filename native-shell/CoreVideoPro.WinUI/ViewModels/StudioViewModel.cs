@@ -534,6 +534,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnNdiOutputStatusReasonChanged(string? value) => RefreshNdiOutputStatusLabel();
 
+    private void ForgetNdiStatusSenders()
+    {
+        _ndiStatusSenders = [];
+        RefreshNdiOutputStatusLabel();
+    }
+
     // The label text last announced; snapshot apply runs on the UI thread every tick, so the
     // label (and the control-state publish it triggers) notifies only when its text changes.
     private string? _ndiOutputStatusLabelAnnounced;
@@ -9394,13 +9400,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SrtIngestSources = BuildSrtIngestSourceSettings(),
             RtmpIngestSources = _rtmpIngestCoordinator.BuildWire(),
             CanvasOutputProfile = canvasProfile,
-            StreamOutputProfile = BuildRequestedOutputProfile(
-                "stream",
-                StreamRenderResolution,
-                StreamRenderFps,
-                StreamVideoCodec,
-                NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
-                NormalizeAudioBitrateKbps(StreamAudioBitrateKbps)),
+            StreamOutputProfile = BuildStreamOutputProfile(),
             RecordingOutputProfile = BuildRequestedOutputProfile(
                 "recording",
                 RecordingRenderResolution,
@@ -10478,6 +10478,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyBridgeHealthChanged(MediaCoreHealth health)
     {
+        if (health.Stopped || health.Recovering)
+        {
+            // A stopped or respawning core sends no more snapshots; its NDI senders are gone.
+            ForgetNdiStatusSenders();
+        }
+
         if (health.Stopped)
         {
             _recordingResume.CoreStoppedDeliberately();
@@ -10518,13 +10524,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private IReadOnlyList<SupportBundleOutputDestination> BuildSupportBundleOutputDestinations()
     {
         var destinations = new List<SupportBundleOutputDestination>();
-        var streamProfile = BuildRequestedOutputProfile(
-            "stream",
-            StreamRenderResolution,
-            StreamRenderFps,
-            StreamVideoCodec,
-            NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
-            NormalizeAudioBitrateKbps(StreamAudioBitrateKbps));
+        var streamProfile = BuildStreamOutputProfile();
         var recordingProfile = BuildRequestedOutputProfile(
             "recording",
             RecordingRenderResolution,

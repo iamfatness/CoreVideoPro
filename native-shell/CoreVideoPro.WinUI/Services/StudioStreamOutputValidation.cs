@@ -348,8 +348,9 @@ public static class StudioStreamOutputValidation
     }
 
     /// <summary>Whether the key destination is sent. A key that cannot be sent is DROPPED from the
-    /// list on its own; it never fails stream validation, so it can never stop RTMP, SRT or the
-    /// Program NDI source.</summary>
+    /// list on its own; it never fails stream validation, so it can never stop RTMP or SRT. The
+    /// one exception is a key name equal to the program name, which <see cref="ValidateNdiOutput"/>
+    /// fails for all of NDI.</summary>
     public static bool IncludeNdiGraphicsKeyDestination(bool ndiEnabled, bool keyEnabled, bool? coreHasCapability,
         string? programName, string? graphicsName) =>
         keyEnabled && NdiGraphicsKeyRefusal(ndiEnabled, coreHasCapability, programName, graphicsName) is null;

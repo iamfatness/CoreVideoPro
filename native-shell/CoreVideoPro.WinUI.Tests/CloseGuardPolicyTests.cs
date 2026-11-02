@@ -267,6 +267,49 @@ public sealed class CloseGuardPolicyTests
         Assert.Equal(OutputSettleState.Settled, result.State);
     }
 
+    // Final review I1: stop-and-close stops only recording and streaming. NDI keeps running
+    // through close (like the virtual camera; process exit ends it), so a still-producing NDI
+    // sender must never hold the close open for the 15 s timeout.
+    [Fact]
+    public void StillProducingNdiDoesNotHoldTheCloseOpen()
+    {
+        var baseline = BaselineOf(Input(
+            Snapshot(Recording("producing"), Sender("rtmp://a", "producing"), Sender("ndi", "producing"), Sender("ndi-graphics", "producing")),
+            recordingRequested: true, streamingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(
+            Snapshot(Recording("completed"), Sender("rtmp://a", "completed"), Sender("ndi", "producing"), Sender("ndi-graphics", "producing")),
+            baseline, Quiet);
+
+        Assert.Equal(["rtmp://a"], baseline.Senders.Keys);
+        Assert.Equal(OutputSettleState.Settled, result.State);
+        Assert.False(result.StopNotYetLanded);
+    }
+
+    [Fact]
+    public void NdiThatStartsDuringTheWaitDoesNotHoldTheCloseOpen()
+    {
+        var baseline = BaselineOf(Input(Snapshot(Recording("producing")), recordingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(Snapshot(Recording("completed"), Sender("ndi", "producing")), baseline, Quiet);
+
+        Assert.Equal(OutputSettleState.Settled, result.State);
+    }
+
+    [Fact]
+    public void StillProducingStreamBesideNdiIsStillPending()
+    {
+        var baseline = BaselineOf(Input(
+            Snapshot(null, Sender("rtmp://a", "producing"), Sender("ndi", "producing")),
+            streamingRequested: true));
+
+        var result = CloseGuardPolicy.EvaluateSettled(
+            Snapshot(null, Sender("rtmp://a", "producing"), Sender("ndi", "producing")), baseline, Quiet);
+
+        Assert.Equal(OutputSettleState.Pending, result.State);
+        Assert.True(result.StopNotYetLanded);
+    }
+
     [Fact]
     public void FinalizingIsPendingButTheStopHasLanded()
     {
