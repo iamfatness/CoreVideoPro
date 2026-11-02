@@ -26,7 +26,7 @@ public sealed record GraphicsStudioLowerThird(GraphicsSavedCue Cue, bool FollowP
 /// preferences belong here. Runtime visibility/arming is deliberately absent.</summary>
 public sealed record GraphicsShowDocument
 {
-    public int SchemaVersion { get; init; } = 2;
+    public int SchemaVersion { get; init; } = 3;
     public string ShowId { get; init; } = "default";
     public string Authority { get; init; } = "legacy";
     public IReadOnlyList<GraphicsSavedCue> Cues { get; init; } = [];
@@ -43,6 +43,8 @@ public sealed record GraphicsShowDocument
     public IReadOnlyList<GraphicsPlaylistRow> Playlist { get; init; } = [];
     /// <summary>Shot layouts (#1076 slice 2). Additive in schema 2; older documents load it empty.</summary>
     public IReadOnlyList<ShotLayout> ShotLayouts { get; init; } = [];
+    /// <summary>Graphics-designer designs (schema 3). Additive; older documents load it empty.</summary>
+    public IReadOnlyList<GraphicsDesign> Designs { get; init; } = [];
     [JsonExtensionData] public Dictionary<string, JsonElement>? Metadata { get; init; }
 }
 
@@ -52,12 +54,12 @@ public sealed record GraphicsDocumentLoad(GraphicsShowDocument Document, bool Re
 /// enables isolated profiles/tests. Never reads or rewrites production preferences.</summary>
 public sealed class GraphicsDocumentStore
 {
-    public const int CurrentSchemaVersion=2;
+    public const int CurrentSchemaVersion=3;
     public const int ByteLimit = 2 * 1024 * 1024;
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { WriteIndented = true, MaxDepth = 32 };
     private readonly string _path;
     private readonly SemaphoreSlim _owner = new(1, 1);
-    private bool _loaded, _readOnly, _recovered;
+    private bool _loaded, _readOnly, _recovered, _olderOnDisk;
     private string _fingerprint = "";
     public GraphicsDocumentStore(string path) => _path = Path.GetFullPath(path);
 
@@ -69,7 +71,7 @@ public sealed class GraphicsDocumentStore
     }
     private GraphicsDocumentLoad Load()
     {
-        _loaded = true; _readOnly = false; _recovered = false;
+        _loaded = true; _readOnly = false; _recovered = false; _olderOnDisk = false;
         try {
             if (!File.Exists(_path) && !File.Exists(_path + ".bak")) { _fingerprint = ""; return new(new(), false, false, "New graphics workspace; automation is unarmed."); }
             var primary = Read(_path); _fingerprint = Fingerprint(primary);
@@ -94,9 +96,9 @@ public sealed class GraphicsDocumentStore
             _readOnly = true;
             return new(new(), true, backup, $"Graphics schema {version} is newer than this build. Read-only; the original document is preserved.");
         }
-        if (version is not (1 or CurrentSchemaVersion)) throw new InvalidDataException("Unsupported graphics schema.");
+        if (version is not (1 or 2 or CurrentSchemaVersion)) throw new InvalidDataException("Unsupported graphics schema.");
         var document = JsonSerializer.Deserialize<GraphicsShowDocument>(bytes, Options) ?? throw new InvalidDataException("Empty graphics document.");
-        if(version==1) document=document with {SchemaVersion=CurrentSchemaVersion};
+        if(version<CurrentSchemaVersion) { document=document with {SchemaVersion=CurrentSchemaVersion}; _olderOnDisk=!backup; }
         Validate(document);
         return new(document, false, backup, backup ? "Recovered the last complete graphics backup. Graphics remain hidden and automation unarmed." : "Graphics workspace loaded. Restore cues explicitly; automation is unarmed.");
     }
@@ -112,6 +114,8 @@ public sealed class GraphicsDocumentStore
                 if (bytes.Length > ByteLimit) throw new InvalidDataException("Graphics document exceeds the 2 MiB limit.");
                 if (Fingerprint(Read(_path)) != _fingerprint) throw new IOException("Graphics file changed outside this workspace. Reload before saving.");
                 var directory = Path.GetDirectoryName(_path)!; Directory.CreateDirectory(directory);
+                // First schema 3 write over a v1/v2 file: keep that file once, never replacing an earlier copy.
+                if (_olderOnDisk && File.Exists(_path) && !File.Exists(_path + ".v2.bak")) File.Copy(_path, _path + ".v2.bak", false);
                 var temporary = Path.Combine(directory, ".graphics-" + Guid.NewGuid().ToString("N") + ".tmp");
                 try {
                     using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { file.Write(bytes); file.Flush(true); }
@@ -119,7 +123,7 @@ public sealed class GraphicsDocumentStore
                         if (_recovered) { File.Copy(_path, _path + ".corrupt", true); File.Move(temporary, _path, true); }
                         else File.Replace(temporary, _path, _path + ".bak");
                     } else File.Move(temporary, _path);
-                    _fingerprint = Fingerprint(bytes); _recovered = false;
+                    _fingerprint = Fingerprint(bytes); _recovered = false; _olderOnDisk = false;
                 } finally { if (File.Exists(temporary)) File.Delete(temporary); }
             }, cancellation).ConfigureAwait(false);
         } finally { _owner.Release(); }
@@ -145,7 +149,7 @@ public sealed class GraphicsDocumentStore
         if (document.StudioLowerThird is { } assigned) {
             if (assigned.Cue is null || assigned.Cue.Draft?.Binding is not null)
                 throw new InvalidDataException("Studio look must not persist a live source generation.");
-            Validate(document with { StudioLowerThird = null, Cues = [assigned.Cue], AutomationRules = [], Playlist = [], ShotLayouts = [] });
+            Validate(document with { StudioLowerThird = null, Cues = [assigned.Cue], AutomationRules = [], Playlist = [], ShotLayouts = [], Designs = [] });
         }
         if (document.SchemaVersion != CurrentSchemaVersion || string.IsNullOrWhiteSpace(document.ShowId) || document.ShowId.Length > 64 ||
             document.Authority is not ("legacy" or "volt") || document.Cues is null || document.Cues.Count > 64 ||
@@ -182,6 +186,9 @@ public sealed class GraphicsDocumentStore
                 string.IsNullOrEmpty(style.TemplateId) || style.TemplateId.Length>64 || style.Fields.ValueKind!=JsonValueKind.Object ||
                 Encoding.UTF8.GetByteCount(style.Fields.GetRawText())>65536 || style.Fields.EnumerateObject().Count()>32)
                 throw new InvalidDataException("Invalid saved template style.");
+        if(document.Designs is null || document.Designs.Count>GraphicsDesignIds.MaxDesigns || document.Designs.Any(d=>!ValidDesign(d)) ||
+            document.Designs.Select(d=>d.DesignId).Distinct(StringComparer.Ordinal).Count()!=document.Designs.Count ||
+            document.Designs.Select(d=>d.TemplateId).Distinct(StringComparer.Ordinal).Count()!=document.Designs.Count) throw new InvalidDataException("Invalid saved graphics designs.");
         foreach (var template in document.Templates)
             if (template is null || string.IsNullOrEmpty(template.TemplateId) || template.TemplateId.Length > 64 || template.TemplateVersion < 1 ||
                 template.ManifestHash is not { Length: 64 } || !template.ManifestHash.All(Uri.IsHexDigit) ||
@@ -189,4 +196,14 @@ public sealed class GraphicsDocumentStore
                 template.Definition.ValueKind != JsonValueKind.Object || Encoding.UTF8.GetByteCount(template.Definition.GetRawText()) > 256 * 1024)
                 throw new InvalidDataException("Invalid saved template document.");
     }
+    private static bool ValidDesign(GraphicsDesign? d) => d is not null &&
+        d.DesignId is { Length: > 0 and <= 64 } && d.Name is { Length: > 0 and <= GraphicsDesignIds.MaxNameLength } && d.Family is { Length: > 0 and <= 32 } &&
+        d.TemplateId is not null && GraphicsDesignIds.IsDesignTemplateId(d.TemplateId) && d.TemplateVersion >= 1 &&
+        d.Definition.ValueKind == JsonValueKind.Object && Encoding.UTF8.GetByteCount(d.Definition.GetRawText()) <= 256 * 1024 &&
+        d.Assets is { Count: <= 32 } && d.Assets.All(ValidDesignAsset) && d.Assets.Select(a=>a.AssetId).Distinct(StringComparer.Ordinal).Count()==d.Assets.Count;
+    private static bool ValidDesignAsset(GraphicsDesignAsset? a) => a is not null && GraphicsDesignIds.IsNativeId(a.AssetId) &&
+        a.Sha256 is { Length: 64 } && a.Sha256.All(Uri.IsHexDigit) && a.RelativePath is { Length: > 0 and <= 260 } &&
+        !Path.IsPathRooted(a.RelativePath) && a.RelativePath.Split('/', (char)92).All(ValidPathSegment);
+    private static bool ValidPathSegment(string segment) => segment.Length > 0 && segment != ".." &&
+        segment.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && segment.IndexOfAny(Path.GetInvalidPathChars()) < 0;
 }

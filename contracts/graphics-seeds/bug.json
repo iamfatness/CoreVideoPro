@@ -1,0 +1,73 @@
+{
+    "schemaVersion":  1,
+    "templateId":  "design-bug-000000",
+    "templateVersion":  1,
+    "name":  "Bug",
+    "family":  "bug",
+    "canvas":  {
+                   "width":  1920,
+                   "height":  1080
+               },
+    "bounds":  {
+                   "width":  192,
+                   "height":  192
+               },
+    "brandTokens":  [
+                        "brand.primary",
+                        "brand.onPrimary",
+                        "brand.accent",
+                        "brand.fontBody"
+                    ],
+    "fields":  [
+                   {
+                       "id":  "logo",
+                       "type":  "image"
+                   }
+               ],
+    "layers":  [
+                   {
+                       "id":  "backing",
+                       "type":  "rect",
+                       "x":  0,
+                       "y":  0,
+                       "width":  192,
+                       "height":  192,
+                       "fill":  {
+                                    "token":  "brand.primary"
+                                }
+                   },
+                   {
+                       "id":  "logo-image",
+                       "type":  "image",
+                       "asset":  {
+                                     "field":  "logo"
+                                 },
+                       "x":  12,
+                       "y":  12,
+                       "width":  168,
+                       "height":  168,
+                       "fit":  "contain",
+                       "align":  "center",
+                       "verticalAlign":  "center",
+                       "collapseWhenEmpty":  true
+                   }
+               ],
+    "animations":  {
+                       "in":  {
+                                  "type":  "fade",
+                                  "durationMs":  250,
+                                  "easing":  "ease-out"
+                              },
+                       "out":  {
+                                   "type":  "fade",
+                                   "durationMs":  200,
+                                   "easing":  "ease-in"
+                               }
+                   },
+    "defaultPlacement":  {
+                             "anchor":  "upper-right",
+                             "x":  -64,
+                             "y":  48,
+                             "scale":  1
+                         }
+}

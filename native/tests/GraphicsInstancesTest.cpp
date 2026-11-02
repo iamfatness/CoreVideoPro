@@ -1213,3 +1213,57 @@ TEST(GraphicsInstances, RehearsalCueDoesNotRideTheTake) {
   EXPECT_EQ(2., row(state).getNumber("programRevision"));
   EXPECT_EQ(0., row(state).getNumber("cueRevision"));
 }
+
+namespace {
+bool catalogLists(const GraphicsInstances& state, const std::string& id, int version) {
+  for(const auto& item:state.snapshot().get("templates")->asArray()) if(item.getString("templateId")==id && item.getNumber("templateVersion")==version) return true;
+  return false;
+}
+bool installAndWait(GraphicsInstances& state, Json::Object document) {
+  const auto id=document["templateId"].asString();const int version=int(document["templateVersion"].asNumber());
+  if(!state.apply(request("graphics-template-install",{{"manifest",Json(std::move(document)).stringify()}}))) return false;
+  const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+  while(!catalogLists(state,id,version) && std::chrono::steady_clock::now()<until) {state.observe({});std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+  return catalogLists(state,id,version);
+}
+Json::Object curatedDocument(const std::string& id, int version) {
+  const auto& curated=corevideo::graphics::GraphicsTemplate::curated();
+  const auto found=std::find_if(curated.begin(),curated.end(),[&](const auto& d){return d->id()==id;});
+  auto document=(*found)->document().asObject();document["templateVersion"]=version;return document;
+}
+std::string lastReason(const GraphicsInstances& state) { return state.snapshot().get("lastResult")->getString("reason"); }
+}  // namespace
+
+TEST(GraphicsInstances, RemoveRefusesAVersionAnInstanceUses) {
+  GraphicsInstances state{"test-core"};
+  ASSERT_TRUE(installAndWait(state,curatedDocument("centered-title",2)));
+  ASSERT_TRUE(state.apply(request("graphics-instance-create",{{"templateId","centered-title"},{"templateVersion",2},{"scope","global"}})));
+  // A hidden instance still holds the version: removal would orphan its draft.
+  EXPECT_FALSE(state.apply(request("graphics-template-remove",{{"templateId","centered-title"},{"templateVersion",2}})));
+  EXPECT_EQ("template-in-use",lastReason(state));
+  EXPECT_TRUE(catalogLists(state,"centered-title",2));
+  // Built-ins refuse before anything else, used or not.
+  EXPECT_FALSE(state.apply(request("graphics-template-remove",{{"templateId","centered-title"},{"templateVersion",1}})));
+  EXPECT_EQ("template-built-in",lastReason(state));
+  EXPECT_FALSE(state.apply(request("graphics-template-remove",{{"templateId","broadcast"},{"templateVersion",1}})));
+  EXPECT_EQ("template-built-in",lastReason(state));
+  EXPECT_FALSE(state.apply(request("graphics-template-remove",{{"templateId","centered-title"},{"templateVersion",9}})));
+  EXPECT_EQ("template-not-found",lastReason(state));
+  ASSERT_TRUE(state.apply(request("graphics-instance-remove")));
+  EXPECT_TRUE(state.apply(request("graphics-template-remove",{{"templateId","centered-title"},{"templateVersion",2}})));
+  EXPECT_EQ("template-removed",lastReason(state));
+  EXPECT_FALSE(catalogLists(state,"centered-title",2));
+  EXPECT_TRUE(catalogLists(state,"centered-title",1));
+  EXPECT_FALSE(state.apply(request("graphics-instance-create",{{"templateId","centered-title"},{"templateVersion",2},{"scope","global"}})));
+  EXPECT_EQ("template-version-not-installed",lastReason(state));
+}
+
+TEST(GraphicsInstances, RemoveRefusesAVersionAnInstanceImageReferences) {
+  GraphicsInstances state{"test-core"};
+  ASSERT_TRUE(installAndWait(state,curatedDocument("logo-accent",2)));
+  ASSERT_TRUE(state.apply(request("graphics-instance-create",{{"templateId","corner-logo"},{"templateVersion",1},{"scope","global"},
+      {"image",Json::Object{{"templateId","logo-accent"},{"templateVersion",2},{"assetId","logo"}}}})));
+  EXPECT_FALSE(state.apply(request("graphics-template-remove",{{"templateId","logo-accent"},{"templateVersion",2}})));
+  EXPECT_EQ("template-in-use",lastReason(state));
+  EXPECT_TRUE(catalogLists(state,"logo-accent",2));
+}

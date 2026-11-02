@@ -86,6 +86,7 @@ class GraphicsInstances {
   void show(Instance& instance, bool fromCue = false);
   static void clearCue(Instance& instance);
   bool updateTemplates();
+  bool templateInUse(const std::string& templateId, int templateVersion) const;
   bool advanceAnimations();
   bool updateClocks();
   bool updateAuthoring();

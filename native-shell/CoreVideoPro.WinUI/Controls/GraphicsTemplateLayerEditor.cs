@@ -30,6 +30,15 @@ public sealed class GraphicsTemplateLayerEditor : UserControl
         set { if(_session is not null) {_session.EndGesture();_session.Changed-=Changed;} _session=value; if(_session is not null) _session.Changed+=Changed; _selected=_structure=_propertyKey=""; Refresh(); }
     }
     private readonly TextBox _templateName=new() {Header="Template name",MaxLength=128};
+    /// <summary>True when the draft is one of the show's designs: Save then goes through the design
+    /// lifecycle (<see cref="DesignSaveRequested"/>) instead of a bare template version.</summary>
+    public Func<NativeGraphicsDraft,bool>? IsDesignDraft { get; set; }
+    public event EventHandler? DesignSaveRequested;
+    private bool DesignDraft=>_session?.Draft is { } draft && IsDesignDraft?.Invoke(draft)==true;
+    // Variables come from the edited manifest, so a variable added in the Variables panel can be bound before saving.
+    private IReadOnlyList<NativeGraphicsTemplateField> DocumentFields {
+        get { try { return _session?.TemplateDocument is { } document ? GraphicsTemplateEditor.TemplateFields(document) : _session?.Template?.Fields ?? []; } catch(JsonException) { return _session?.Template?.Fields ?? []; } }
+    }
     public GraphicsTemplateLayerEditor()
     {
         _root.Children.Add(new TextBlock { Text="Template layers",FontSize=16 });
@@ -47,7 +56,7 @@ public sealed class GraphicsTemplateLayerEditor : UserControl
         commands.Children.Add(Button("Remove",()=>_session?.EditTemplate(d=>GraphicsTemplateEditor.Remove(d,_selected))));
         _layerCommands.AddRange(commands.Children.OfType<Button>());
         _root.Children.Add(commands); _root.Children.Add(_properties); _root.Children.Add(_status);
-        _save.Click+=async(_,_)=>{if(_session is not null) await _session.SaveTemplateVersionAsync();};
+        _save.Click+=async(_,_)=>{if(DesignDraft) DesignSaveRequested?.Invoke(this,EventArgs.Empty); else if(_session is not null) await _session.SaveTemplateVersionAsync();};
         _root.Children.Add(_save); Content=_root;
         _layers.SelectionChanged+=(_,_)=>{ if(!_loading && _layers.SelectedIndex>=0 && _layers.SelectedIndex<_rows.Count) { _session?.EndGesture(); _selected=_rows[_layers.SelectedIndex].Id; _session?.SelectLayer(_selected); Refresh(); } };
     }
@@ -77,11 +86,12 @@ public sealed class GraphicsTemplateLayerEditor : UserControl
             if(_selected.Length==0) return;
             _node=GraphicsTemplateEditor.Layer(document,_selected);
             var rowInfo=_rows.First(r=>r.Id==_selected);
-            var key=_session.Draft.TemplateId+":"+_session.Draft.TemplateVersion+":"+_selected+":"+rowInfo.Type+":"+string.Join('|',_rows.Where(r=>r.Type=="group").Select(r=>r.Id));
+            var key=_session.Draft.TemplateId+":"+_session.Draft.TemplateVersion+":"+_selected+":"+rowInfo.Type+":"+string.Join('|',_rows.Where(r=>r.Type=="group").Select(r=>r.Id))+":"+string.Join(',',DocumentFields.Select(f=>f.Id+"="+f.Type));
             if(key!=_propertyKey) { _propertyKey=key;BuildProperties(rowInfo); }
             foreach(var control in _properties.Children.OfType<Microsoft.UI.Xaml.Controls.Control>()) control.IsEnabled=!_session.Busy && (!rowInfo.Locked || ReferenceEquals(control,_lockControl));
             foreach(var button in _layerCommands) button.IsEnabled=!_session.Busy && !rowInfo.Locked;
             _save.IsEnabled=!_session.Busy && !_session.TemplateSaveBusy && _session.Draft.Scratch is not null;
+            _save.Content=DesignDraft?"Save design":"Save template as new version";
             foreach(var refresh in _refresh) refresh();
             _status.Text=_session.TemplateSaveBusy?"Validating and saving template version. Live controls remain available.":_session.Draft.Scratch is not null?"Unsaved template edits. Accepted Cue and Program are unchanged.":"Using an installed immutable template version.";
         } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException) {_status.Text=ex.Message;}
@@ -120,7 +130,7 @@ public sealed class GraphicsTemplateLayerEditor : UserControl
     }
     private void TextContent()
     {
-        var fields=_session?.Template?.Fields.Where(f=>f.Type=="string").ToArray() ?? [];
+        var fields=DocumentFields.Where(f=>f.Type=="string").ToArray();
         var source=new ComboBox {Header="Text source",SelectedValuePath="Tag",HorizontalAlignment=HorizontalAlignment.Stretch};
         source.Items.Add(new ComboBoxItem {Content="Custom text",Tag="custom"});foreach(var field in fields) source.Items.Add(new ComboBoxItem {Content="Field: "+field.Id,Tag="field:"+field.Id});
         var text=new TextBox {Header="Text",AcceptsReturn=true,MaxLength=4096};
@@ -140,7 +150,7 @@ public sealed class GraphicsTemplateLayerEditor : UserControl
             var id=asset.GetProperty("id").GetString()!;box.Items.Add(new ComboBoxItem {Content="Asset: "+id,Tag="asset:"+id});
         }
         box.Items.Add(new ComboBoxItem {Content="Brand logo",Tag="token:brand.logo"});
-        foreach(var field in _session?.Template?.Fields.Where(f=>f.Type=="image") ?? []) box.Items.Add(new ComboBoxItem {Content="Field: "+field.Id,Tag="field:"+field.Id});
+        foreach(var field in DocumentFields.Where(f=>f.Type=="image")) box.Items.Add(new ComboBoxItem {Content="Field: "+field.Id,Tag="field:"+field.Id});
         box.SelectionChanged+=(_,_)=>{if(_loading || box.SelectedValue is not string value) return;if(value.StartsWith("field:",StringComparison.Ordinal)) Set("asset",new {field=value[6..]});else if(value.StartsWith("token:",StringComparison.Ordinal)) Set("asset",new {token=value[6..]});else Set("asset",value[6..]);};
         _properties.Children.Add(box);_refresh.Add(()=>{if(!_node.TryGetProperty("asset",out var value)) return;box.SelectedValue=value.ValueKind==JsonValueKind.Object && value.TryGetProperty("field",out var field)?"field:"+field.GetString():value.ValueKind==JsonValueKind.Object && value.TryGetProperty("token",out var token)?"token:"+token.GetString():value.ValueKind==JsonValueKind.String?"asset:"+value.GetString():null;});
     }

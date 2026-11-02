@@ -79,7 +79,8 @@ public static class GraphicsCommandRequest
         ["graphics.instance.cue"] = ["rideTake"], ["graphics.instance.trigger"] = ["action", "target"],
         ["graphics.clock.control"] = ["action","configuration","expectedClockRevision"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"],
-        ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = ["includeThumbnails"]
+        ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = ["includeThumbnails"],
+        ["graphics.template.remove"] = ["templateId", "templateVersion"]
     };
     private static readonly HashSet<string> Common = new(StringComparer.Ordinal)
         { "schemaVersion", "requestId", "clientId", "coreEpoch", "instanceId", "expectedRevision" };
@@ -140,6 +141,8 @@ public static class GraphicsCommandRequest
                 var manifest = body.TryGetProperty("manifest", out _); var path = body.TryGetProperty("packagePath", out var archive);
                 if (manifest == path || (path && (string.IsNullOrWhiteSpace(archive.GetString()) || body.TryGetProperty("packageRoot", out _)))) return false;
             }
+            if (action == "graphics.template.remove" && (!GraphicsDesignIds.IsNativeId(Text(body, "templateId")) ||
+                !body.TryGetProperty("templateVersion", out var removeVersion) || !Integer(removeVersion, 1) || removeVersion.GetDouble() > int.MaxValue)) return false;
             if (!libraryAction && action != "graphics.program.clear" && (!body.TryGetProperty("instanceId", out var instanceId) || !Id(instanceId.GetString()!))) return false;
             if (!libraryAction && action is not ("graphics.instance.create" or "graphics.program.clear") &&
                 (!body.TryGetProperty("expectedRevision", out var revision) || !Integer(revision, 1))) return false;

@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="../CoreVideoPro.WinUI/Assets/StoreLogo.png" LogicalName="CoreVideoPro.Graphics.BuiltinLogo.png" />
+    <EmbeddedResource Include="../../contracts/graphics-seeds/*.json" LogicalName="CoreVideoPro.Graphics.Seed.%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>
