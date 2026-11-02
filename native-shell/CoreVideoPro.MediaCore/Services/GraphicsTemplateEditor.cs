@@ -12,7 +12,7 @@ public sealed record GraphicsEditorVariable(string Id,string Kind,int? MaxLength
 
 /// <summary>Bounded immutable document edits only. Native layout/rasterization
 /// validates each scratch document; this type never generates media pixels.</summary>
-public static class GraphicsTemplateEditor
+public static partial class GraphicsTemplateEditor
 {
     private const string LayerTypeKey="type"; // Document node discriminator, not an IPC request type.
     private static JsonObject Read(NativeGraphicsScratch scratch) => JsonNode.Parse(scratch.Manifest,new JsonNodeOptions { PropertyNameCaseInsensitive=false },new JsonDocumentOptions { MaxDepth=32 })?.AsObject() ?? throw new InvalidDataException("Invalid template object.");
@@ -53,7 +53,7 @@ public static class GraphicsTemplateEditor
         var root=Read(scratch); var row=Walk(root["layers"]!.AsArray()).FirstOrDefault(r=>r.Node["id"]?.GetValue<string>()==id);
         if(row.Node is null) throw new InvalidDataException("Layer was removed.");
         if(row.Locked) throw new InvalidOperationException("Unlock the layer or its parent before editing.");
-        if(property is not ("x" or "y" or "width" or "height" or "opacity" or "visible" or "fill" or "cornerRadius" or "font" or "fontSize" or "fontWeight" or "lineHeight" or "color" or "text" or "align" or "maxLines" or "overflow" or "gap" or "padding" or "fit" or "flow" or "asset"))
+        if(property is not ("x" or "y" or "width" or "height" or "opacity" or "visible" or "fill" or "cornerRadius" or "font" or "fontSize" or "fontWeight" or "lineHeight" or "color" or "text" or "align" or "maxLines" or "overflow" or "gap" or "padding" or "fit" or "flow" or "asset" or "verticalAlign"))
             throw new InvalidDataException("This layer property is not editable.");
         var replacement=JsonNode.Parse(value.GetRawText()); if(JsonNode.DeepEquals(row.Node[property],replacement)) return scratch;
         row.Node[property]=replacement;
@@ -116,14 +116,19 @@ public static class GraphicsTemplateEditor
         row.Siblings.RemoveAt(row.Index);destination.Add(row.Node);
         _=Walk(layers).Count();return Save(root);
     }
-    public static NativeGraphicsScratch Duplicate(NativeGraphicsScratch scratch,string id)
+    public static NativeGraphicsScratch Duplicate(NativeGraphicsScratch scratch,string id)=>Duplicate(scratch,id,out _);
+    /// <summary>Copies the layer (and its children) just in front of it; the copy is named "&lt;label&gt; copy".</summary>
+    public static NativeGraphicsScratch Duplicate(NativeGraphicsScratch scratch,string id,out string copyId)
     {
         var root=Read(scratch); var rows=Walk(root["layers"]!.AsArray()).ToArray(); var row=rows.FirstOrDefault(r=>r.Node["id"]?.GetValue<string>()==id);
         if(row.Node is null || row.Locked) throw new InvalidOperationException("Unlock the layer before duplicating.");
         var copy=row.Node.DeepClone().AsObject(); var children=copy["children"] is JsonArray nested ? Walk(nested).Select(r=>r.Node).ToArray() : [];
         if(rows.Length+1+children.Length>64) throw new InvalidOperationException("A template supports at most 64 layers.");
         foreach(var node in children.Prepend(copy)) node["id"]="layer-"+Guid.NewGuid().ToString("N");
-        row.Siblings.Insert(row.Index+1,copy); return Save(root);
+        var label=LabelOf(row.Node); if(label.Length>59) label=label[..59].TrimEnd();
+        if(copy["metadata"] is null) copy["metadata"]=new JsonObject();
+        if(copy["metadata"] is JsonObject metadata) metadata["label"]=label+" copy";
+        copyId=copy["id"]!.GetValue<string>(); row.Siblings.Insert(row.Index+1,copy); return Save(root);
     }
 
     // ---- Variables (template fields). Limits mirror native GraphicsTemplate.cpp validation. ----
@@ -143,7 +148,7 @@ public static class GraphicsTemplateEditor
     private static bool LayerAllows(string layerType,string property)=>property is "x" or "y" or "width" or "height" or "opacity" or "visible" || layerType switch {
         "rect"=>property is "fill" or "cornerRadius",
         "text"=>property is "text" or "font" or "fontWeight" or "fontSize" or "lineHeight" or "color" or "align" or "maxLines" or "overflow",
-        "image"=>property is "asset" or "fit" or "align",
+        "image"=>property is "asset" or "fit" or "align" or "verticalAlign",
         "group"=>property is "flow" or "gap" or "padding",
         _=>false };
     // Field references may nest (gradient stops), so look through objects and arrays.

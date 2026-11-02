@@ -175,6 +175,20 @@ designs), `GraphicsDesignStartDialog`, `GraphicsVariablesPanel` and
 logo picker offers PNG and JPEG only; SVG returns with rasterised import
 (slice 4).
 
+**Layer structure edits (slice 2, document only; the layers panel is not built yet).**
+`GraphicsTemplateEditor.Structure.cs` holds the pure edits the Designer's layers panel
+will call: `SetLabel` (layer name = `metadata.label`, 1–64 characters; allowed on locked
+layers), `SetVisible` (hide = native `"visible": false`, show removes it; allowed on locked
+layers; refused when a variable drives visibility), `MoveTo` (reorder or reparent; front
+index 0 = frontmost; a parent change keeps the canvas position and grows a free-layout
+group to fit), `Group` / `Ungroup` (positions, flow steps, opacity and hidden state carried
+over), `AddLayer` (text / shape / clock, readable ids `text-1`…, brand tokens; clocks only
+in clock and countdown designs) and `AddImage` (an image variable, a declared asset or a
+new optional image variable); `Duplicate` names the copy "… copy". Every edit keeps the
+native limits (64 layers, nesting 8) and keeps required variables on a layer. Names and
+locks are shell-only metadata; native round-trips them untouched, pinned by the
+`designer-structure` fixture (`GraphicsTemplate.HiddenGroupDrawsNoChildrenAndKeepsEditorMetadata`).
+
 ## Show vs Cue
 
 **Show** puts the graphic on Program now: the row's native instance is created

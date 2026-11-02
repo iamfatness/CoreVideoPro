@@ -7,7 +7,7 @@
 // Shapes the shell's GraphicsTemplateEditor emits (gradient-stop bindings, renamed fields, an extra bound text line
 // with a number-bound fontSize and collapseWhenEmpty) must be accepted by the native validator.
 TEST(GraphicsEditorShapes, EditorOutputShapesLoadNatively) {
-  for (const char* name : {"gradient-stop-binding", "renamed-field", "location-third-line"}) {
+  for (const char* name : {"gradient-stop-binding", "renamed-field", "location-third-line", "designer-structure"}) {
     std::ifstream in(std::filesystem::path(COREVIDEO_REPO_ROOT) / "native" / "tests" / "fixtures" / "graphics-editor" / (std::string(name) + ".json"), std::ios::binary);
     ASSERT_TRUE(in.good()) << name;
     std::ostringstream text; text << in.rdbuf();
