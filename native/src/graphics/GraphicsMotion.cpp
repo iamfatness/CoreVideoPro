@@ -187,4 +187,71 @@ GraphicsMotionState previewMotion(const std::string& mode, double elapsedMs, dou
   if (elapsedMs < outMs) return state(Phase::Out, elapsedMs);
   return state(elapsedMs < outMs + 500 ? Phase::Hidden : Phase::Settled);
 }
+void GraphicsLayerClock::configure(double inMs, double outMs) {
+  inMs_ = inMs;
+  outMs_ = outMs;
+}
+
+double GraphicsLayerClock::position(double nowMs) const {
+  return std::clamp(anchorPos_ + direction_ * (nowMs - anchorMs_), 0.,
+      mode_ == Mode::In ? inMs_ : outMs_);
+}
+
+void GraphicsLayerClock::anchor(Mode mode, int direction, double nowMs, double position) {
+  mode_ = mode;
+  direction_ = direction;
+  anchorMs_ = nowMs;
+  anchorPos_ = position;
+}
+
+bool GraphicsLayerClock::settle(double nowMs) {
+  const double elapsed = position(nowMs);
+  if (mode_ == Mode::In && (direction_ > 0 ? elapsed >= inMs_ : elapsed <= 0)) {
+    mode_ = direction_ > 0 ? Mode::OnAir : Mode::Hidden;
+    return true;
+  }
+  if (mode_ == Mode::Out && (direction_ > 0 ? elapsed >= outMs_ : elapsed <= 0)) {
+    mode_ = direction_ > 0 ? Mode::Hidden : Mode::OnAir;
+    return true;
+  }
+  return false;
+}
+
+void GraphicsLayerClock::show(double nowMs) {
+  settle(nowMs);
+  if (mode_ == Mode::Hidden) anchor(Mode::In, 1, nowMs, 0);
+  else if (mode_ == Mode::In && direction_ < 0) anchor(mode_, 1, nowMs, position(nowMs));
+  else if (mode_ == Mode::Out && direction_ > 0) anchor(mode_, -1, nowMs, position(nowMs));
+  settle(nowMs);
+}
+
+void GraphicsLayerClock::hide(double nowMs) {
+  settle(nowMs);
+  if (mode_ == Mode::OnAir) anchor(Mode::Out, 1, nowMs, 0);
+  else if (mode_ == Mode::In && direction_ > 0) anchor(mode_, -1, nowMs, position(nowMs));
+  else if (mode_ == Mode::Out && direction_ < 0) anchor(mode_, 1, nowMs, position(nowMs));
+  settle(nowMs);
+}
+
+void GraphicsLayerClock::clear() { mode_ = Mode::Hidden; }
+
+GraphicsMotionState GraphicsLayerClock::state(double nowMs) const {
+  auto current = *this;
+  current.settle(nowMs);
+  using Phase = GraphicsMotionPhase;
+  switch (current.mode_) {
+    case Mode::In: return {Phase::In, position(nowMs), {}, {}};
+    case Mode::Out: return {Phase::Out, position(nowMs), {}, {}};
+    case Mode::OnAir: return {};
+    case Mode::Hidden: return {Phase::Hidden, 0, {}, {}};
+  }
+  return {};
+}
+
+std::string GraphicsLayerClock::visibility(double nowMs) const {
+  const auto phase = state(nowMs).phase;
+  if (phase == GraphicsMotionPhase::Hidden) return "hidden";
+  if (phase == GraphicsMotionPhase::Settled) return "on-air";
+  return (phase == GraphicsMotionPhase::In) == (direction_ > 0) ? "entering" : "exiting";
+}
 } // namespace corevideo::graphics

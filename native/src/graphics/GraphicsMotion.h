@@ -7,8 +7,8 @@
 namespace corevideo::graphics {
 struct GraphicsBox { double x = 0, y = 0, width = 0, height = 0; };
 inline GraphicsBox intersect(GraphicsBox a, GraphicsBox b) {
-  const auto right = std::min(a.x + a.width, b.x + b.width), bottom = std::min(a.y + a.height, b.y + b.height);
-  a.x = std::max(a.x, b.x); a.y = std::max(a.y, b.y); a.width = std::max(0., right - a.x); a.height = std::max(0., bottom - a.y); return a;
+  const auto right = (std::min)(a.x + a.width, b.x + b.width), bottom = (std::min)(a.y + a.height, b.y + b.height);
+  a.x = (std::max)(a.x, b.x); a.y = (std::max)(a.y, b.y); a.width = (std::max)(0., right - a.x); a.height = (std::max)(0., bottom - a.y); return a;
 }
 enum class GraphicsMotionPhase { Settled, In, Out, Hidden };
 
@@ -65,4 +65,21 @@ bool packAtlas(const std::vector<GraphicsRun>&, double scale, std::vector<Graphi
 GraphicsMotionState previewMotion(const std::string& mode, double elapsedMs, double inMs, double outMs,
     const GraphicsTransition& graphicIn, const GraphicsTransition& graphicOut);
 
+class GraphicsLayerClock {
+ public:
+  void configure(double inMs, double outMs);
+  void show(double nowMs);
+  void hide(double nowMs);
+  void clear();
+  std::string visibility(double nowMs) const;
+  GraphicsMotionState state(double nowMs) const;
+  bool settle(double nowMs);
+ private:
+  enum class Mode { Hidden, In, OnAir, Out };
+  Mode mode_ = Mode::Hidden;
+  int direction_ = 1;
+  double anchorMs_ = 0, anchorPos_ = 0, inMs_ = 0, outMs_ = 0;
+  double position(double nowMs) const;
+  void anchor(Mode mode, int direction, double nowMs, double position);
+};
 } // namespace corevideo::graphics

@@ -1,3 +1,4 @@
+#include "GraphicsMotionFixture.h"
 #include "graphics/GraphicsInstances.h"
 #include "graphics/GraphicsTemplate.h"
 #include "core/CaptureDeviceSource.h"
@@ -1266,4 +1267,95 @@ TEST(GraphicsInstances, RemoveRefusesAVersionAnInstanceImageReferences) {
   EXPECT_FALSE(state.apply(request("graphics-template-remove",{{"templateId","logo-accent"},{"templateVersion",2}})));
   EXPECT_EQ("template-in-use",lastReason(state));
   EXPECT_TRUE(catalogLists(state,"logo-accent",2));
+}
+
+TEST(GraphicsInstances, LayeredMotionUsesCompositionClockAndReversesWithoutAJump) {
+  double now = 0;
+  GraphicsInstances state{"test-core", [&] { return now; }};
+  const auto fixture = Json::parse(corevideo::graphics::test::motionFixture("bar-first.json"));
+  ASSERT_TRUE(fixture);
+  ASSERT_TRUE(installAndWait(state, fixture->asObject()));
+  ASSERT_TRUE(state.apply(request("graphics-instance-create", {
+      {"templateId","motion-bar-first"}, {"templateVersion",1}, {"scope","global"},
+      {"fields",Json::Object{{"name","Ada"},{"title","Engineer"}}}})));
+  ready(state, 1);
+  const auto trigger = [&](const char* action) {
+    return state.apply(request("graphics-instance-trigger", {{"action",action}}));
+  };
+  ASSERT_TRUE(trigger("show"));
+  EXPECT_EQ("awaiting-composition", row(state).getString("visibility"));
+  now = 1000;
+  ProgramFrame eligible;
+  eligible.graphicsFacts.push_back({"featured",1,"composition-eligible",""});
+  state.observe(eligible);
+  now = 1100;
+  ASSERT_TRUE(trigger("hide"));
+  CompositorRenderPlan plan;
+  state.append(plan, false);
+  ASSERT_EQ(1u, plan.layers.size());
+  ASSERT_TRUE(plan.layers[0].overlay.graphicsMotion);
+  EXPECT_EQ(100., plan.layers[0].overlay.graphicsMotion->elapsedMs);
+  EXPECT_EQ("exiting", row(state).getString("visibility"));
+  now = 1150;
+  ASSERT_TRUE(trigger("show"));
+  plan = {};
+  state.append(plan, false);
+  ASSERT_EQ(1u, plan.layers.size());
+  ASSERT_TRUE(plan.layers[0].overlay.graphicsMotion);
+  EXPECT_EQ(50., plan.layers[0].overlay.graphicsMotion->elapsedMs);
+  now = 1600;
+  ProgramFrame drawn;
+  drawn.frameNumber = 1;
+  drawn.graphicsFacts.push_back({"featured",1,"draw-submitted",""});
+  state.observe(drawn);
+  EXPECT_EQ("on-air", row(state).getString("visibility")) << row(state).getString("visibility");
+  EXPECT_EQ("own", row(state).get("animations")->getString("layers"));
+  ASSERT_TRUE(trigger("hide"));
+  now = 1700;
+  ASSERT_TRUE(trigger("show"));
+  plan = {};
+  state.append(plan, false);
+  ASSERT_EQ(1u, plan.layers.size());
+  ASSERT_TRUE(plan.layers[0].overlay.graphicsMotion);
+  EXPECT_EQ(corevideo::graphics::GraphicsMotionPhase::Out, plan.layers[0].overlay.graphicsMotion->phase);
+  EXPECT_EQ(100., plan.layers[0].overlay.graphicsMotion->elapsedMs);
+  now = 1800;
+  state.observe({});
+  EXPECT_EQ("on-air", row(state).getString("visibility"));
+  ASSERT_TRUE(trigger("hide"));
+  now = 2299;
+  state.observe({});
+  EXPECT_EQ("exiting", row(state).getString("visibility"));
+  now = 2300;
+  state.observe({});
+  EXPECT_EQ("hidden", row(state).getString("visibility"));
+  EXPECT_EQ(0., row(state).getNumber("programRevision"));
+}
+
+TEST(GraphicsInstances, WholeModeAndPlainTemplatesKeepTheGraphicsTimeline) {
+  double now = 0;
+  GraphicsInstances state{"test-core", [&] { return now; }};
+  const auto fixture = Json::parse(corevideo::graphics::test::motionFixture("bar-first.json"));
+  ASSERT_TRUE(fixture);
+  ASSERT_TRUE(installAndWait(state, fixture->asObject()));
+  ASSERT_TRUE(state.apply(request("graphics-instance-create", {
+      {"templateId","motion-bar-first"}, {"templateVersion",1}, {"scope","global"},
+      {"fields",Json::Object{{"name","Ada"},{"title","Engineer"}}},
+      {"animations",Json::Object{{"layers","whole"},
+          {"in",Json::Object{{"type","fade"},{"durationMs",1000}}}}}})));
+  ready(state, 1);
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action","show"}})));
+  ProgramFrame eligible;
+  eligible.graphicsFacts.push_back({"featured",1,"composition-eligible",""});
+  state.observe(eligible);
+  now = 500;
+  CompositorRenderPlan plan;
+  state.append(plan, false);
+  ASSERT_EQ(1u, plan.layers.size());
+  EXPECT_EQ(.5f, plan.layers[0].opacity);
+  EXPECT_FALSE(plan.layers[0].overlay.graphicsMotion);
+  EXPECT_EQ("whole", row(state).get("animations")->getString("layers"));
+  EXPECT_FALSE(state.apply(request("graphics-instance-update", {{"target","cue"},
+      {"animations",Json::Object{{"layers","sideways"}}}})));
+  EXPECT_EQ("invalid-animations", lastReason(state));
 }
