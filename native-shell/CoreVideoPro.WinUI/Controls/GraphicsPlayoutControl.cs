@@ -17,7 +17,7 @@ namespace CoreVideoPro.WinUI.Controls;
 /// Remove per item. Full form adds the inspector; <see cref="Compact"/> (Studio right panel)
 /// shows rows and entries with Show / Hide only. Row state comes from the native strip,
 /// never from the button that was pressed.</summary>
-public sealed class GraphicsPlayoutControl : UserControl
+public sealed partial class GraphicsPlayoutControl : UserControl
 {
     public static readonly DependencyProperty StudioProperty = DependencyProperty.Register(nameof(Studio), typeof(StudioViewModel),
         typeof(GraphicsPlayoutControl), new PropertyMetadata(null, (d, _) => ((GraphicsPlayoutControl)d).Attach()));
@@ -444,8 +444,15 @@ public sealed class GraphicsPlayoutControl : UserControl
         var row = rows.FirstOrDefault(r => r.Id == rowId);
         var entry = row is null ? null : sourceId.Length == 0 ? null : entries.FirstOrDefault(e => e.RowId == rowId && e.SourceId == sourceId);
         var typeable = row is null ? [] : TypeableFields(row);
-        var signature = row is null ? "" : $"{row.Id}:{row.Name}:{row.Hotkey}:{row.PlayOutAfterMs}:{row.FollowSources}:{TitleFieldKey(row)}:{(TitleFieldKey(row) is { } k ? FieldText(row, k) : "")}:{entry?.SourceId}:{entry?.Label}:{entry?.Title}:" +
+        var columns = _library?.Document.SourceColumns ?? [];
+        var mappedFields = row is not null && _attached is { } studio
+            ? GraphicsRowFields.TemplateFieldsOf(row, studio.GraphicsWorkspace.State, studio.GraphicsLibrary.Document.Templates).Where(GraphicsMappedValues.Eligible).ToArray()
+            : [];
+        var signature = row is null ? "" : $"{row.Id}:{row.Kind}:{row.TemplateId}:{row.TemplateVersion}:{row.Name}:{row.Hotkey}:{row.PlayOutAfterMs}:{row.FollowSources}:{row.HasVariants}:{TitleFieldKey(row)}:{(TitleFieldKey(row) is { } k ? FieldText(row, k) : "")}:{entry?.SourceId}:{entry?.Label}:{entry?.Title}:" +
             string.Join('\u001f', typeable.Select(f => $"{f.Id}={f.Label}={f.MaxLength}"));
+        if (row is not null && mappedFields.Length > 0)
+            signature += string.Join('|', columns.Select(c => $"{c.Id}:{c.Label}")) +
+                string.Join('|', mappedFields.Select(f => $"{f.Id}:{row.SourceMappings.GetValueOrDefault(f.Id)}"));
         // Variable values are not in the signature: a commit (Enter / LostFocus) must not rebuild the inspector under the
         // box being typed in. Boxes without focus show the row's current value instead.
         if (signature == _inspectorSignature) {
@@ -499,6 +506,39 @@ public sealed class GraphicsPlayoutControl : UserControl
                 follow.Toggled += (_, _) => { if (!_loading && follow.IsOn != row.FollowSources) _ = SaveRowAsync(id, r => r with { FollowSources = follow.IsOn }); };
                 _inspector.Children.Add(follow);
             }
+
+            if (columns.Count > 0 && row.FollowSources && !row.HasVariants)
+                foreach (var field in mappedFields)
+                {
+                    var ids = new[] { "" }.Concat(columns.Select(column => column.Id)).ToArray();
+                    var picker = new ComboBox
+                    {
+                        Header = $"{GraphicsTemplateEditor.HumanizeId(field.Id)} source",
+                        HorizontalAlignment = HorizontalAlignment.Stretch,
+                        ItemsSource = new[] { "Use row value" }.Concat(columns.Select(column => column.Label)).ToArray(),
+                        SelectedIndex = Math.Max(0, Array.IndexOf(ids, row.SourceMappings.GetValueOrDefault(field.Id, "")))
+                    };
+                    picker.SelectionChanged += async (_, _) =>
+                    {
+                        if (_loading || picker.SelectedIndex < 0) return;
+                        var column = ids[picker.SelectedIndex];
+                        try
+                        {
+                            await SaveRowAsync(id, current =>
+                            {
+                                var mappings = current.SourceMappings.ToDictionary(StringComparer.Ordinal);
+                                if (column.Length == 0) mappings.Remove(field.Id);
+                                else mappings[field.Id] = column;
+                                return current with { SourceMappings = mappings };
+                            });
+                        }
+                        catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = ex.Message; }
+                    };
+                    _inspector.Children.Add(picker);
+                }
+
+            if (row.Kind == GraphicsPlaylistRow.Guest || row.HasVariants)
+                _inspector.Children.Add(NamesListEditor(row, mappedFields.Select(field => field.Id).ToArray()));
 
             var playOut = new ComboBox { Header = "Hides after", ItemsSource = PlayOutChoices.Select(c => c.Label).ToArray(), SelectedIndex = Math.Max(0, Array.FindIndex(PlayOutChoices, c => c.Ms == row.PlayOutAfterMs)), HorizontalAlignment = HorizontalAlignment.Stretch };
             playOut.SelectionChanged += (_, _) => { if (!_loading && playOut.SelectedIndex >= 0 && PlayOutChoices[playOut.SelectedIndex].Ms != row.PlayOutAfterMs) _ = SaveRowAsync(id, r => r with { PlayOutAfterMs = PlayOutChoices[playOut.SelectedIndex].Ms }); };

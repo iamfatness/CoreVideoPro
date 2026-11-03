@@ -32,6 +32,7 @@ public sealed record GraphicsPlaylistRow
     public NativeGraphicsImageReference? Image { get; init; }
     /// <summary>Guest rows: name/title come from the Sources page text of the entry's source.</summary>
     public bool FollowSources { get; init; }
+    public IReadOnlyDictionary<string, string> SourceMappings { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
     public bool ShowClock { get; init; }
     /// <summary>In/out motion sent with the instance (titler spec Phase 1 "in/out transitions").
     /// Null = the playout default (fade 250/200 ms). Values follow the core's whitelist.</summary>
@@ -56,13 +57,15 @@ public sealed record GraphicsPlaylistRow
         t.Easing is "linear" or "ease-in" or "ease-out" or "ease-in-out" && double.IsFinite(t.DurationMs) && t.DurationMs is >= 0 and <= 3000;
     public static bool ValidMotion(NativeGraphicsAnimations? motion) => motion is null || (ValidTransition(motion.In) && ValidTransition(motion.Out));
 
-    public static bool ValidId(string value) => value.Length is > 0 and <= 48 && value[0] is >= 'a' and <= 'z' &&
+    public static bool ValidId(string value) => value.Length <= 48 && ValidVariableId(value);
+    public static bool ValidVariableId(string value) => value.Length is > 0 and <= 64 && value[0] is >= 'a' and <= 'z' &&
         value.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
     public static bool ValidHotkey(string value) => value.Length == 0 || HotkeyPattern.IsMatch(value);
 
     [JsonIgnore] public bool IsValid => ValidId(Id) && Kinds.Contains(Kind, StringComparer.Ordinal) && Name is { Length: > 0 and <= 128 } &&
         Hotkey is not null && ValidHotkey(Hotkey) && PlayOutAfterChoices.Contains(PlayOutAfterMs) &&
         TemplateId is not null && TemplateId.Length <= 64 && TemplateVersion >= 0 && (TemplateId.Length == 0) == (TemplateVersion == 0) &&
+        SourceMappings is { Count: <= 30 } && SourceMappings.All(mapping => ValidVariableId(mapping.Key) && mapping.Value is not null && ValidVariableId(mapping.Value)) &&
         Fields is not null && Fields.Count <= 32 && Fields.Keys.All(k => k.Length is > 0 and <= 64) && Style is { IsValid: true } &&
         (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) && ValidMotion(Motion) && ValidVariants(Variants) && (Placement is null || Placement.IsValid) && (Clock is null || Clock.IsValid) &&
         (Image is null || (Image.TemplateId.Length is > 0 and <= 64 && Image.TemplateVersion >= 1 && Image.AssetId.Length is > 0 and <= 64));
@@ -75,7 +78,9 @@ public sealed record GraphicsPlaylistVariant
     public string Id { get; init; } = "";
     public string Name { get; init; } = "";
     public string Title { get; init; } = "";
-    [JsonIgnore] public bool IsValid => GraphicsPlaylistRow.ValidId(Id) && Name is { Length: > 0 and <= 128 } && Title is { Length: <= 256 };
+    public IReadOnlyDictionary<string, string> Cells { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    [JsonIgnore] public bool IsValid => GraphicsPlaylistRow.ValidId(Id) && Name is { Length: > 0 and <= 128 } && Title is { Length: <= 256 } &&
+        Cells is { Count: <= 30 } && Cells.All(cell => GraphicsPlaylistRow.ValidVariableId(cell.Key) && cell.Value is { Length: <= 4096 });
 }
 
 /// <summary>A playable item: a single row (SourceId ""), one guest of a guest row, or one
@@ -93,11 +98,12 @@ public sealed record GraphicsPlaylistEntry
     public GraphicsPlaylistEntry(string rowId, string sourceId, string label, string title)
         : this(rowId, sourceId, new Dictionary<string, string>(StringComparer.Ordinal) { [NameVariable] = label, [TitleVariable] = title }) { }
     public string RowId { get; init; } = "";
+    [JsonIgnore] public int? SlotNumber { get; init; }
     public string SourceId { get; init; } = "";
     public IReadOnlyDictionary<string, string> Bindings { get; init; } = None;
     [JsonIgnore] public string Label => Bindings.GetValueOrDefault(NameVariable, "");
     [JsonIgnore] public string Title => Bindings.GetValueOrDefault(TitleVariable, "");
-    public bool Equals(GraphicsPlaylistEntry? other) => other is not null && RowId == other.RowId && SourceId == other.SourceId &&
+    public bool Equals(GraphicsPlaylistEntry? other) => other is not null && RowId == other.RowId && SourceId == other.SourceId && SlotNumber == other.SlotNumber &&
         Bindings.Count == other.Bindings.Count && Bindings.All(p => other.Bindings.TryGetValue(p.Key, out var v) && v == p.Value);
     public override int GetHashCode() => HashCode.Combine(RowId, SourceId, Bindings.Count);
 }

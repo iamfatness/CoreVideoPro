@@ -122,6 +122,30 @@ public sealed partial class GraphicsWorkspaceLibrary
         await LoadAsync();
         return await Save(Document with { Designs = designs.ToArray() }, success);
     }
+    public async Task<bool> AddSourceColumnAsync(string id)
+    {
+        await LoadAsync();
+        if (Document.SourceColumns.Any(column => column.Id == id)) return true;
+        var column = new GraphicsSourceColumn(id, GraphicsTemplateEditor.HumanizeId(id), new Dictionary<int, string>());
+        if (!column.IsValid() || Document.SourceColumns.Count >= GraphicsSourceColumn.MaxColumns)
+            return Fail("The Sources column name is unavailable or the column limit was reached.");
+        return await Save(Document with { SourceColumns = [.. Document.SourceColumns, column] }, $"Added {column.Label} to Sources.");
+    }
+
+    public async Task<bool> SaveSourceValuesAsync(int slot, IReadOnlyDictionary<string, string> cells)
+    {
+        await LoadAsync();
+        var columns = Document.SourceColumns.Select(column =>
+        {
+            if (!cells.TryGetValue(column.Id, out var value)) return column;
+            var values = column.SlotValues.ToDictionary();
+            if (value.Length == 0) values.Remove(slot);
+            else values[slot] = value;
+            return column with { SlotValues = values };
+        }).ToArray();
+        return await Save(Document with { SourceColumns = columns }, "Sources values saved for the next Show.");
+    }
+
     public async Task<bool> RemoveSavedAsync(string id) {
         await LoadAsync();
         return await Save(Document with { Cues = Document.Cues.Where(c => c.Id != id).ToArray() }, "Removed the saved cue only. Native output is unchanged.");

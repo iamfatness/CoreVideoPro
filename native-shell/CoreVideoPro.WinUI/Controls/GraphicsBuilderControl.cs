@@ -311,7 +311,7 @@ public sealed class GraphicsBuilderControl : UserControl
                 if (ok && _sponsorPath.Length > 0 && _sponsorPath != existing?.ImagePath) ok = await _library.AssignPlaylistImageAsync(row.Id, _sponsorPath);
             } else {
                 if (_session?.Draft is not { } draft || _session.Template is not { } template) { _status.Text = "Pick a look first."; return; }
-                var variants = Kind.Family == "lower-third" ? GraphicsBuilder.ParseNamesList(_names.Text, existing?.Variants) : [];
+                var variants = Kind.Family == "lower-third" ? GraphicsBuilder.ParseNamesList(_names.Text, existing?.Variants, NamesVariableIds()) : [];
                 row = GraphicsBuilder.RowFrom(Kind, template, draft, _name.Text, hotkey, playOut, _follow.IsOn, rows, existing, SelectedMotion, variants, Kind.Family == "clock" ? SelectedClock : null);
                 ok = await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(rows, row));
             }
@@ -538,9 +538,11 @@ public sealed class GraphicsBuilderControl : UserControl
         }
     }
 
+    private string[] NamesVariableIds() => _session?.Template?.Fields.Where(GraphicsMappedValues.Eligible).Select(field => field.Id).ToArray() ?? [];
+
     private void RefreshNamesNote()
     {
-        var parsed = GraphicsBuilder.ParseNamesList(_names.Text);
+        var parsed = GraphicsBuilder.ParseNamesList(_names.Text, variableIds: NamesVariableIds());
         if (parsed.Count == 0) { _namesNote.Text = "Empty: this row is one graphic. Add lines to play several people from one hotkey."; _follow.IsEnabled = true; return; }
         _namesNote.Text = $"{parsed.Count} name{(parsed.Count == 1 ? "" : "s")}. Each line is its own lower third under this row; {(_hotkey.SelectedIndex > 0 ? HotkeyChoices[_hotkey.SelectedIndex] : "the hotkey")} steps to the next one. Names from Sources is off for a list.";
         _follow.IsOn = false; _follow.IsEnabled = false;
@@ -554,8 +556,8 @@ public sealed class GraphicsBuilderControl : UserControl
             var file = await picker.PickSingleFileAsync();
             if (file is null) return;
             var text = await System.IO.File.ReadAllTextAsync(file.Path);
-            var parsed = GraphicsBuilder.ParseNamesList(text);
-            if (parsed.Count == 0) { _status.Text = "No names found. Expected one per line: Name, Title."; return; }
+            var parsed = GraphicsBuilder.ParseNamesList(text, variableIds: NamesVariableIds());
+            if (parsed.Count == 0) { _status.Text = "No names found. Expected Name, Title and optional columns headed by variable IDs."; return; }
             _names.Text = GraphicsBuilder.NamesListText(parsed); _dirty = true; RefreshNamesNote(); RefreshSaveButton();
             _status.Text = $"Imported {parsed.Count} name{(parsed.Count == 1 ? "" : "s")} from {System.IO.Path.GetFileName(file.Path)}.";
         } catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = "Could not read that file: " + ex.Message; }

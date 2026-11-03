@@ -89,7 +89,7 @@ public sealed partial class SourcesWorkspaceControl : UserControl
         var tableNote = Text("Observed source format/FPS. A stale source is not advancing video. ISO selection is separate from writer state.", 11); tableNote.TextWrapping = TextWrapping.Wrap; _table.Children.Add(tableNote);
         _workspace.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); _workspace.ColumnDefinitions.Add(new() { Width = new(0) });
         _workspace.RowDefinitions.Add(new() { Height = GridLength.Auto }); _workspace.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        _workspace.Children.Add(_table); _inspector.Child = BuildInspector(); _workspace.Children.Add(_inspector); _body.Children.Add(_workspace);
+        _workspace.Children.Add(_table); _inspector.Child = BuildInspector(); _workspace.Children.Add(_inspector); _body.Children.Add(_workspace); _body.Children.Add(BuildGraphicsColumns());
         _table.SizeChanged += (_, _) => ApplyColumns();
         _status.TextWrapping = TextWrapping.Wrap; _body.Children.Add(_status);
         State.PropertyChanged += OnStateChanged;
@@ -107,11 +107,17 @@ public sealed partial class SourcesWorkspaceControl : UserControl
         Detach(); _owner = Studio;
         if (_owner is null) { State.SelectedInput = null; State.InspectorOpen = false; ApplyState(); return; }
         _owner.ShowInputEditors.CollectionChanged += OnEditorsChanged;
+        _graphicsColumnsLibrary = _owner.GraphicsLibrary;
+        _graphicsColumnsLibrary.Changed += GraphicsColumnsChanged;
+        _ = LoadGraphicsColumnsAsync(_graphicsColumnsLibrary);
         ReconcileRows();
     }
     private void Detach()
     {
         if (_owner is not null) _owner.ShowInputEditors.CollectionChanged -= OnEditorsChanged;
+        if (_graphicsColumnsLibrary is not null) _graphicsColumnsLibrary.Changed -= GraphicsColumnsChanged;
+        _graphicsColumnsLibrary = null;
+        RefreshGraphicsColumns();
         foreach (var row in _rows.Values) row.Dispose(); _rows.Clear(); _rowsPanel.Children.Clear(); _owner = null;
     }
     private void OnEditorsChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -145,7 +151,7 @@ public sealed partial class SourcesWorkspaceControl : UserControl
         _grade.IsEnabled = State.SelectedInput?.IsAssigned == true;
         _toggleInspector.Content = State.InspectorOpen ? "Close inspector" : "Open inspector";
         _inspector.Visibility = State.InspectorOpen ? Visibility.Visible : Visibility.Collapsed;
-        _picker.Tag = State.SelectedInput; ApplyColumns();
+        _picker.Tag = State.SelectedInput; ApplyColumns(); RefreshGraphicsColumns();
     }
     private void LayoutWorkspace()
     {

@@ -79,6 +79,44 @@ public sealed partial class SourcesWorkspaceControl
         lowerThird.Name = "InspectorLowerThirdText"; Bind(lowerThird, Microsoft.UI.Xaml.Controls.Control.IsEnabledProperty, State, "SelectedInput.CanEditLowerThirdText");
         // Bind Tag, not only the click snapshot: existing flyout guards reject a later selected input.
         Bind(lowerThird, FrameworkElement.TagProperty, State, "SelectedInput"); panel.Children.Add(lowerThird);
+        var graphicsFields = new DropDownButton { Content = "Graphics columns…", Name = "InspectorGraphicsColumns" };
+        Bind(graphicsFields, Microsoft.UI.Xaml.Controls.Control.IsEnabledProperty, State, "SelectedInput.IsAssigned");
+        var graphicsFlyout = new Flyout();
+        graphicsFlyout.Opening += async (_, _) =>
+        {
+            if (Studio is not { } studio || State.SelectedInput is not { } input) return;
+            var editors = new StackPanel { Spacing = 8, Width = 280 };
+            graphicsFlyout.Content = new ScrollViewer { Content = editors, MaxHeight = 380 };
+            var library = studio.GraphicsLibrary;
+            try
+            {
+                await library.LoadAsync();
+                var boxes = library.Document.SourceColumns.ToDictionary(column => column.Id, column => new TextBox
+                {
+                    Header = column.Label, MaxLength = 4096, Text = column.SlotValues.GetValueOrDefault(input.SlotNumber, "")
+                });
+                if (boxes.Count == 0) { editors.Children.Add(Text("Add a column from the Graphics Designer Variables tab.", 12).Wrapped()); return; }
+                foreach (var box in boxes.Values) editors.Children.Add(box);
+                var status = Text("", 12).Wrapped();
+                var save = new Button { Content = "Save values" };
+                save.Click += async (_, _) =>
+                {
+                    if (!ReferenceEquals(State.SelectedInput, input)) { graphicsFlyout.Hide(); return; }
+                    save.IsEnabled = false;
+                    try
+                    {
+                        if (await library.SaveSourceValuesAsync(input.SlotNumber, boxes.ToDictionary(pair => pair.Key, pair => pair.Value.Text)))
+                            graphicsFlyout.Hide();
+                        else status.Text = library.Status;
+                    }
+                    catch (Exception ex) when (ex is not OutOfMemoryException) { status.Text = ex.Message; }
+                    finally { save.IsEnabled = true; }
+                };
+                editors.Children.Add(save); editors.Children.Add(status);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { editors.Children.Add(Text(ex.Message, 12).Wrapped()); }
+        };
+        graphicsFields.Flyout = graphicsFlyout; panel.Children.Add(graphicsFields);
         var options = Button("Guest role / dropout policy…", () => OpenSourceOptions(panel)); options.Name = "InspectorSourceOptions";
         Bind(options, Microsoft.UI.Xaml.Controls.Control.IsEnabledProperty, State, "SelectedInput.ShowSourcePolicies"); Bind(options, FrameworkElement.TagProperty, State, "SelectedInput"); panel.Children.Add(options);
         var unassign = Button("Unassign this input", () => { if (State.SelectedInput is { } input) Studio?.UnassignShowInputCommand.Execute(input); });

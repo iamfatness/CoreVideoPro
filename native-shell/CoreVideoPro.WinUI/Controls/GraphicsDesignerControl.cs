@@ -127,7 +127,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
         if (Studio is null || !IsLoaded || ReferenceEquals(_attached, Studio)) return;
         Detach();
         _attached = Studio; _session = Studio.GraphicsWorkspace;
-        _canvas.Session = _session; _variables.Session = _session;
+        _canvas.Session = _session; _variables.Library = Studio.GraphicsLibrary; _variables.Session = _session;
         _session.Changed += OnSessionChanged; _session.PreviewChanged += OnPreviewChanged; _session.EditRefused += OnEditRefused;
         _attached.PropertyChanged += OnStudioProperty; _attached.GraphicsDesignOpened += OnDesignOpened;
         _attached.GraphicsLibrary.Changed += OnLibraryChanged;
@@ -143,7 +143,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
         _motionSignature = _motionPanelSignature = "";
         if (_attached is not null) { _attached.PropertyChanged -= OnStudioProperty; _attached.GraphicsDesignOpened -= OnDesignOpened; _attached.GraphicsLibrary.Changed -= OnLibraryChanged; }
         if (_editor is not null) _editor.PropertyChanged -= OnEditorProperty;
-        _previewOwner?.Dispose(); _previewOwner = null; _lastPreview = null; _canvas.Session = null; _variables.Session = null;
+        _previewOwner?.Dispose(); _previewOwner = null; _lastPreview = null; _canvas.Session = null; _variables.Session = null; _variables.Library = null;
         _session = null; _attached = null; _editor = null; _rowsSignature = _inspectorSignature = "";
     }
     /// <summary>The page holds the private preview only while this is the visible Design surface.</summary>

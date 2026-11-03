@@ -20,6 +20,15 @@ public sealed record GraphicsSavedCue
 
 public sealed record GraphicsSavedTemplate(string TemplateId, int TemplateVersion, string ManifestHash, JsonElement Definition, string PackageRoot = "");
 
+public sealed record GraphicsSourceColumn(string Id, string Label, IReadOnlyDictionary<int, string> SlotValues)
+{
+    public const int MaxColumns = 30;
+
+    public bool IsValid() => Id is not null && GraphicsPlaylistRow.ValidVariableId(Id) && !GraphicsRowFields.Handled.Contains(Id) &&
+        Label is { Length: > 0 and <= 128 } && SlotValues is { Count: <= 128 } &&
+        SlotValues.All(cell => cell.Key is >= 1 and <= 128 && cell.Value is { Length: <= 4096 });
+}
+
 public sealed record GraphicsStudioLowerThird(GraphicsSavedCue Cue, bool FollowProgramSource);
 
 /// <summary>Separate graphics document. No stream, recording, camera or media
@@ -45,6 +54,7 @@ public sealed record GraphicsShowDocument
     public IReadOnlyList<ShotLayout> ShotLayouts { get; init; } = [];
     /// <summary>Graphics-designer designs (schema 3). Additive; older documents load it empty.</summary>
     public IReadOnlyList<GraphicsDesign> Designs { get; init; } = [];
+    public IReadOnlyList<GraphicsSourceColumn> SourceColumns { get; init; } = [];
     [JsonExtensionData] public Dictionary<string, JsonElement>? Metadata { get; init; }
 }
 
@@ -186,6 +196,10 @@ public sealed class GraphicsDocumentStore
                 string.IsNullOrEmpty(style.TemplateId) || style.TemplateId.Length>64 || style.Fields.ValueKind!=JsonValueKind.Object ||
                 Encoding.UTF8.GetByteCount(style.Fields.GetRawText())>65536 || style.Fields.EnumerateObject().Count()>32)
                 throw new InvalidDataException("Invalid saved template style.");
+        if (document.SourceColumns is not { Count: <= GraphicsSourceColumn.MaxColumns } ||
+            document.SourceColumns.Any(column => column is null || !column.IsValid()) ||
+            document.SourceColumns.Select(column => column.Id).Distinct(StringComparer.Ordinal).Count() != document.SourceColumns.Count)
+            throw new InvalidDataException("Invalid graphics Sources columns.");
         if(document.Designs is null || document.Designs.Count>GraphicsDesignIds.MaxDesigns || document.Designs.Any(d=>!ValidDesign(d)) ||
             document.Designs.Select(d=>d.DesignId).Distinct(StringComparer.Ordinal).Count()!=document.Designs.Count ||
             document.Designs.Select(d=>d.TemplateId).Distinct(StringComparer.Ordinal).Count()!=document.Designs.Count) throw new InvalidDataException("Invalid saved graphics designs.");
