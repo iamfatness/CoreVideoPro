@@ -98,11 +98,23 @@ public static class GraphicsBuilder
     /// the sponsor placeholder (if any) so F-key order reads top to bottom.</summary>
     public static IReadOnlyList<GraphicsPlaylistRow> Upsert(IReadOnlyList<GraphicsPlaylistRow> rows, GraphicsPlaylistRow row)
     {
-        var list = rows.ToList(); var index = list.FindIndex(r => r.Id == row.Id);
+        // The saved row's F-key moves to it from any other row (as graphics.playlist.hotkey.set does): two rows on one
+        // key made the Builder's hotkey list throw and crash the app (2026-11-02).
+        var list = rows.Select(r => r.Id != row.Id && row.Hotkey.Length > 0 && r.Hotkey == row.Hotkey ? r with { Hotkey = "" } : r).ToList();
+        var index = list.FindIndex(r => r.Id == row.Id);
         if (index >= 0) { list[index] = row; return list; }
         var sponsor = list.FindIndex(r => r.Kind == GraphicsPlaylistRow.Sponsor && r.TemplateId.Length == 0 && r.Image is null);
         if (sponsor >= 0) list.Insert(sponsor, row); else list.Add(row);
         return list;
+    }
+
+    /// <summary>Who owns each F-key, for the hotkey picker's labels. First row wins, so an older show file holding a
+    /// duplicate key still renders instead of throwing.</summary>
+    public static IReadOnlyDictionary<string, string> HotkeyOwners(IEnumerable<GraphicsPlaylistRow> rows, string? exceptRowId = null)
+    {
+        var owners = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var row in rows) if (row.Hotkey.Length > 0 && row.Id != exceptRowId) owners.TryAdd(row.Hotkey, row.Name);
+        return owners;
     }
 
     public static bool PlacementEquals(NativeGraphicsPlacement? a, NativeGraphicsPlacement? b) =>

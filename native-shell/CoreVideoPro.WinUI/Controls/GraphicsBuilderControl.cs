@@ -512,7 +512,7 @@ public sealed class GraphicsBuilderControl : UserControl
         }
         var fresh = StudioBrushes.ChipButton("＋ New"); fresh.Click += (_, _) => StartNew(); _yours.Children.Add(fresh);
         // Hotkey labels say who already owns a key.
-        var owners = Rows.Where(r => r.Hotkey.Length > 0 && r.Id != _editingRowId).ToDictionary(r => r.Hotkey, r => r.Name, StringComparer.Ordinal);
+        var owners = GraphicsBuilder.HotkeyOwners(Rows, _editingRowId);
         var index = _hotkey.SelectedIndex; _loading = true;
         try { _hotkey.ItemsSource = HotkeyChoices.Select(k => owners.TryGetValue(k, out var who) ? $"{k} · {who}" : k).ToArray(); _hotkey.SelectedIndex = index; } finally { _loading = false; }
     }

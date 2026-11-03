@@ -240,4 +240,25 @@ public sealed class GraphicsBuilderClockTests
         Assert.Null(GraphicsBuilder.RowFrom(GraphicsBuilder.Kind("title")!, title, draft, "T", "", 0, false, [], clock: countdown).Clock);
         Assert.False((row with { Clock = countdown with { DurationSeconds = 0 } }).IsValid);
     }
+
+    [Fact] // 2026-11-02 live crash: the Builder saved a second row on F3; the hotkey list then threw on the duplicate key
+    public void UpsertMovesATakenHotkeyToTheSavedRow()
+    {
+        GraphicsPlaylistRow Row(string id, string key) => new() { Id = id, Kind = GraphicsPlaylistRow.Logo, Name = id, Hotkey = key, TemplateId = "corner-logo", TemplateVersion = 1 };
+        var rows = new[] { Row("logo", "F3"), Row("bug", "F4") };
+        var added = GraphicsBuilder.Upsert(rows, Row("logo-2", "F3"));
+        Assert.Equal(new[] { ("logo", ""), ("bug", "F4"), ("logo-2", "F3") }, added.Select(r => (r.Id, r.Hotkey)));
+        var edited = GraphicsBuilder.Upsert(rows, Row("bug", "F3"));
+        Assert.Equal(new[] { ("logo", ""), ("bug", "F3") }, edited.Select(r => (r.Id, r.Hotkey)));
+        Assert.Equal(new[] { "F3", "F4" }, GraphicsBuilder.Upsert(rows, Row("logo-3", "")).Select(r => r.Hotkey).Where(k => k.Length > 0));
+    }
+
+    [Fact] // a show file that already holds a duplicate must not crash the hotkey labels
+    public void HotkeyOwnersToleratesDuplicates()
+    {
+        GraphicsPlaylistRow Row(string id, string key) => new() { Id = id, Kind = GraphicsPlaylistRow.Logo, Name = id, Hotkey = key, TemplateId = "corner-logo", TemplateVersion = 1 };
+        var owners = GraphicsBuilder.HotkeyOwners([Row("logo", "F3"), Row("logo-2", "F3"), Row("bug", "F4")], exceptRowId: "bug");
+        Assert.Equal("logo", owners["F3"]);
+        Assert.False(owners.ContainsKey("F4"));
+    }
 }
