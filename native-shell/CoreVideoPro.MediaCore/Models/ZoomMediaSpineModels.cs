@@ -46,6 +46,7 @@ public sealed class ZoomMediaSpineNativeSnapshot
 {
     public bool? RawMediaActive { get; init; }
     public string? RosterEpoch { get; init; }
+    public string? CaptureGeneration { get; init; }
     public long RosterRevision { get; init; }
     public string MeetingState { get; init; } = "idle";
     public string SdkVersion { get; init; } = string.Empty;

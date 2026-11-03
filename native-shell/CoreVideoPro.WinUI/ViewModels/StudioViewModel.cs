@@ -9040,7 +9040,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 syncContext.MultiviewSources)
             : null;
 
-        var payload = ZoomMediaSpinePayloadBuilder.Build(
+        var input =
             new ZoomMediaSpinePayloadBuilder.BuildInput
             {
                 Participants = participants,
@@ -9069,7 +9069,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     syncContext.PreviewTilesLayer,
                     participants.Select(participant => participant.Id)),
                 Multiview = multiview
-            });
+            };
+        var payload = ZoomMediaSpinePayloadBuilder.Build(input);
+        if (_bridge.Supervisor.Hosted && EngineHostSpineIntent.From(input, nativeSnapshot) is { } intent)
+            payload[EngineHostSpineIntent.CommandKey] = intent;
+
         if (payload.TryGetValue("sourceParticipantIds", out var rawIds) && rawIds is IEnumerable<string> sourceIds)
         {
             _zoomAudioSourceIds = sourceIds.ToHashSet(StringComparer.Ordinal);

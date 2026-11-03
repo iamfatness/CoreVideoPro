@@ -21,7 +21,7 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
         };
         var projected = ZoomMediaSpinePayloadBuilder.ProjectNativeRoster(snapshot, "main", "Main");
         Assert.Equal(new MediaCoreParticipantWire("1", "Ada", "guest", "main", "Main", false, false, false, "video-off"), projected[0]);
-        Assert.Equal("2", Assert.Single(projected.Where(participant => participant.IsActiveSpeaker)).Id);
+        Assert.Equal("2", Assert.Single(projected, participant => participant.IsActiveSpeaker).Id);
         Assert.Empty(ZoomMediaSpinePayloadBuilder.ProjectNativeRoster(null, "main", "Main"));
     }
 

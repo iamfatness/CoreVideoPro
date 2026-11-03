@@ -790,7 +790,7 @@ rpc::Json MediaCore::sessionState() const {
 rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) {
   applyZoomSpineCoreState(payload);
   if (auto engine = syncZoomEngineSpineUnlocked(payload, elapsedMs)) return std::move(*engine);
-  return syncStubZoomSpine(payload, elapsedMs);
+  return payload.get("captureRefresh") ? rpc::Json(nullptr) : syncStubZoomSpine(payload, elapsedMs);
 }
 
 std::optional<rpc::Json> MediaCore::syncZoomEngineSpineUnlocked(const rpc::Json& payload, double elapsedMs) {
@@ -804,6 +804,7 @@ std::optional<rpc::Json> MediaCore::zoomEngineSnapshotUnlocked() const {
 }
 
 void MediaCore::applyZoomSpineCoreState(const rpc::Json& payload) {
+  if (payload.get("captureRefresh")) return;
   // Deliver the GPU multiview layout on this frequent, reliable channel. The production sync's
   // set-multiview-layout fires only on user actions (and sends an EMPTY layout at startup), so
   // the multiview never gets the live Show Input roster from it. applyMultiviewLayout dedups by

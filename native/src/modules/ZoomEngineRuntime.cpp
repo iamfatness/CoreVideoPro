@@ -404,6 +404,7 @@ rpc::Json ZoomEngineRuntime::stopCapture() {
   // Operator no longer wants raw capture; a later spine sync with
   // startCapture=true (or a Joined event) re-arms via ensureMediaStartedLocked.
   captureRequested_ = false;
+  ++captureGeneration_;
   if (process_ && process_->running()) {
     enqueueEngineSendLocked("stop_media", buildZoomEngineStopMediaCommand());
   }
@@ -435,8 +436,23 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
   // explicit operator action — the Studio "Engine On" toggle sets startCapture.
   // Previously this started unconditionally on the first spine sync after join,
   // which fired the Zoom recording-rights request the moment the meeting joined.
-  const rpc::Json* startCapture = payload.get("startCapture");
-  captureRequested_ = startCapture != nullptr && startCapture->asBool(false);
+  if (const auto* refresh = payload.get("captureRefresh")) {
+    // The refresh never acquires authority to start raw capture. A Stop, new
+    // capture, or changed roster invalidates an already queued host refresh.
+    const auto epoch = std::to_string(processGeneration_) + ":" +
+                       std::to_string(state_.meetingGeneration()) + ":" + instanceToken_;
+    if (!captureRequested_ || !refresh->isObject() ||
+        refresh->getString("rosterEpoch") != epoch ||
+        refresh->getString("captureGeneration") != std::to_string(captureGeneration_) ||
+        refresh->getNumber("rosterRevision", -1) != static_cast<double>(state_.rosterRevision())) {
+      return nullptr;
+    }
+  } else {
+    const auto* startCapture = payload.get("startCapture");
+    const bool requested = startCapture && startCapture->asBool(false);
+    if (requested != captureRequested_) ++captureGeneration_;
+    captureRequested_ = requested;
+  }
   if (captureRequested_) {
     (void)ensureMediaStartedLocked();
   }
@@ -1370,6 +1386,7 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
       {"rosterEpoch", std::to_string(processGeneration_) + ":" +
                           std::to_string(snapshot.meetingGeneration) + ":" + instanceToken_},
       {"rosterRevision", static_cast<double>(snapshot.rosterRevision)},
+      {"captureGeneration", captureRequested_ ? std::to_string(captureGeneration_) : ""},
       {"tick", fallbackTick_},
       // Engine-reported truth (raw_media_status events), NOT the last command
       // sent: the shell's Capture state/status reads this.
@@ -1433,6 +1450,7 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
       {"rosterEpoch", std::to_string(processGeneration_) + ":" +
                           std::to_string(runtime.meetingGeneration) + ":" + instanceToken_},
       {"rosterRevision", static_cast<double>(runtime.rosterRevision)},
+      {"captureGeneration", captureRequested_ ? std::to_string(captureGeneration_) : ""},
       {"subscriptions", subscriptions},
       {"recording",
        rpc::Json::Object{

@@ -696,15 +696,21 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
         double elapsedMs,
         CancellationToken cancellationToken = default)
     {
-        var response = await SendAsync(
-            new Dictionary<string, object?>
-            {
-                ["id"] = NextId(),
-                ["type"] = "zoom-media-spine-sync",
-                ["spinePayload"] = spinePayload,
-                ["elapsedMs"] = elapsedMs
-            },
-            cancellationToken).ConfigureAwait(false);
+        var command = new Dictionary<string, object?>
+        {
+            ["id"] = NextId(),
+            ["type"] = "zoom-media-spine-sync",
+            ["spinePayload"] = spinePayload,
+            ["elapsedMs"] = elapsedMs
+        };
+        if (spinePayload.TryGetValue(EngineHostSpineIntent.CommandKey, out var intent))
+        {
+            var nativePayload = new Dictionary<string, object?>(spinePayload);
+            nativePayload.Remove(EngineHostSpineIntent.CommandKey);
+            command["spinePayload"] = nativePayload;
+            if (Hosted) command[EngineHostSpineIntent.CommandKey] = intent;
+        }
+        var response = await SendAsync(command, cancellationToken).ConfigureAwait(false);
 
         using (response)
         {

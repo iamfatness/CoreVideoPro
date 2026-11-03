@@ -16,3 +16,11 @@ Build on the opt-in EngineHost from #960 and the authority contract in `docs/ref
 2. Test accepted routing, assignment and audio edits across lost ACK and reattach. Assert that the returning console first adopts native and host revisions without replaying stored preferences.
 3. Exercise the production control surface and supported automation while the UI is absent. Verify guest join, leave, mute and ID reuse with the native incarnation contract.
 4. Test core restart and explicit Stop ordering. Assert applied output state, not only a sent command or living process. Verify a controlled meeting before claiming #961 acceptance.
+
+## Initial subscription handoff
+
+While the console is sending spine updates, the existing producer remains active. After it goes quiet, EngineHost can refresh subscriptions from the last input that native accepted for the same roster. The host reads a fresh roster and sends an engine-only refresh. It cannot apply Preview or multiview layouts, re-arm stopped capture, or adopt a replacement guest under a reused SDK ID.
+
+A different core process, meeting epoch or capture generation invalidates the input. Any newly admitted production mutation clears the pending continuation until another spine input is accepted. The native check also compares the observed roster revision to the current revision, so a queued refresh cannot apply obsolete roster facts after a join or leave. The urgent command lane remains available.
+
+This change covers the existing opted-in host. Reattached Studio remains read-only. Full host ownership of committed intent, control ingress, automation and core restart handling still requires the subsequent work above.

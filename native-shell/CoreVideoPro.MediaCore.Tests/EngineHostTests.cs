@@ -73,11 +73,20 @@ public class EngineHostTests
         await File.WriteAllTextAsync(fixture, """
             const readline = require('node:readline');
             const profile = {name:'host-test',renderer:'software',maxProgramResolution:'1920x1080'};
-            let mutations=0;
+            let mutations=0, refreshes=0;
+            const roster={meetingState:'in_meeting',rosterEpoch:'roster-a',rosterRevision:2,captureGeneration:'capture-a',
+              participants:[{userId:'7',displayName:'Guest',sourceGeneration:1,videoOn:true}]};
             console.log(JSON.stringify({id:'handshake',ok:true,type:'handshake',protocolVersion:{major:1,minor:0},profile}));
             readline.createInterface({input:process.stdin}).on('line', line => {
               const m=JSON.parse(line); if(m.type==='increment') mutations++;
-              console.log(JSON.stringify({id:m.id,ok:true,type:m.type,profile,pid:process.pid,mutations,echo:m.payload}));
+              if(m.type==='zoom-snapshot') {
+                console.log(JSON.stringify({id:m.id,ok:true,type:m.type,snapshot:roster})); return;
+              }
+              if(m.type==='zoom-media-spine-sync') {
+                if(m.spinePayload?.captureRefresh?.captureGeneration==='capture-a' && !('startCapture' in m.spinePayload)) refreshes++;
+                console.log(JSON.stringify({id:m.id,ok:!('hostSpineIntent' in m),type:m.type,spineSnapshot:roster})); return;
+              }
+              console.log(JSON.stringify({id:m.id,ok:true,type:m.type,profile,pid:process.pid,mutations,refreshes,echo:m.payload}));
             }).on('close',()=>process.exit(0));
             """);
         var node = Environment.GetEnvironmentVariable("NODE_EXE") ??
@@ -102,7 +111,21 @@ public class EngineHostTests
             Assert.True(second.ReadOnly);
             await Assert.ThrowsAsync<InvalidOperationException>(() => second.SendAsync(new() { ["type"] = "increment" }, deadline.Token));
             Assert.Equal(pid, second.CorePid);
+            using var committed = await first.SendAsync(new()
+            {
+                ["type"] = "zoom-media-spine-sync", ["spinePayload"] = new { startCapture = true },
+                [EngineHostSpineIntent.CommandKey] = new EngineHostSpineIntent(
+                    new() { EngineRunning = true, StartCapture = true }, "roster-a", 2,
+                    new Dictionary<string, long> { ["7"] = 1 })
+            }, deadline.Token);
+            Assert.True(committed.RootElement.GetProperty("ok").GetBoolean());
             await first.DisposeAsync();
+            while (true)
+            {
+                using var poll = await second.SendAsync(new() { ["type"] = "ping" }, deadline.Token);
+                if (poll.RootElement.GetProperty("refreshes").GetInt32() > 0) break;
+                await Task.Delay(50, deadline.Token);
+            }
             using var observation = await second.SendAsync(new() { ["type"] = "ping" }, deadline.Token);
             Assert.Equal(1, observation.RootElement.GetProperty("mutations").GetInt32());
             Assert.Equal(pid, observation.RootElement.GetProperty("pid").GetInt32());

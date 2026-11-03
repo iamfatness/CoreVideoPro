@@ -245,6 +245,7 @@ class ZoomEngineRuntime {
   // recording-rights request only starts once this is set, so it no longer
   // fires automatically on meeting join.
   bool captureRequested_ = false;
+  std::uint64_t captureGeneration_ = 0;
   // Last subscription set sent to the engine (sourceUuid -> resolution), so the
   // per-tick spine sync only sends a subscribe/unsubscribe command when the set
   // actually CHANGES. Previously it re-sent every subscription on every spine
