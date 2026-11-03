@@ -54,6 +54,7 @@ public sealed record GraphicsShowDocument
     public IReadOnlyList<ShotLayout> ShotLayouts { get; init; } = [];
     /// <summary>Graphics-designer designs (schema 3). Additive; older documents load it empty.</summary>
     public IReadOnlyList<GraphicsDesign> Designs { get; init; } = [];
+    public IReadOnlyList<GraphicsDataSource> DataSources { get; init; } = [];
     public IReadOnlyList<GraphicsSourceColumn> SourceColumns { get; init; } = [];
     [JsonExtensionData] public Dictionary<string, JsonElement>? Metadata { get; init; }
 }
@@ -196,6 +197,10 @@ public sealed class GraphicsDocumentStore
                 string.IsNullOrEmpty(style.TemplateId) || style.TemplateId.Length>64 || style.Fields.ValueKind!=JsonValueKind.Object ||
                 Encoding.UTF8.GetByteCount(style.Fields.GetRawText())>65536 || style.Fields.EnumerateObject().Count()>32)
                 throw new InvalidDataException("Invalid saved template style.");
+        if (document.DataSources is not { Count: <= 32 } ||
+            document.DataSources.Any(source => source is null || !source.Valid()) ||
+            document.DataSources.Select(source => source.Id).Distinct(StringComparer.Ordinal).Count() != document.DataSources.Count)
+            throw new InvalidDataException("Invalid graphics datasets.");
         if (document.SourceColumns is not { Count: <= GraphicsSourceColumn.MaxColumns } ||
             document.SourceColumns.Any(column => column is null || !column.IsValid()) ||
             document.SourceColumns.Select(column => column.Id).Distinct(StringComparer.Ordinal).Count() != document.SourceColumns.Count)
