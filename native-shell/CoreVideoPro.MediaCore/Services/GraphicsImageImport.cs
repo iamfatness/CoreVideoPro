@@ -10,15 +10,19 @@ public sealed record GraphicsImportedImage(GraphicsPackageInput Package,NativeGr
 /// verifies hash/header/dimensions before any image can be previewed or aired.</summary>
 public static class GraphicsImageImport
 {
-    public static Task<GraphicsImportedImage> StageAsync(string path,string root,CancellationToken cancellation=default,bool fullCanvas=false)=>Task.Run(()=> {
+    public static Task<GraphicsImportedImage> StageAsync(string path,string root,CancellationToken cancellation=default,bool fullCanvas=false,int layerWidth=192,int layerHeight=192)=>Task.Run(()=> {
         root=Path.GetFullPath(root);path=Path.GetFullPath(path);GraphicsPackageReader.NoReparse(root);GraphicsPackageReader.NoReparse(path);
-        var extension=Path.GetExtension(path).ToLowerInvariant();if(extension is not (".png" or ".jpg" or ".jpeg")) throw new InvalidDataException("Choose a local PNG or JPEG image.");
+        var extension=Path.GetExtension(path).ToLowerInvariant();if(extension is not (".png" or ".jpg" or ".jpeg" or ".svg")) throw new InvalidDataException("Choose a local PNG, JPEG or SVG image.");
         if(extension==".jpeg") extension=".jpg";
         using var input=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);
         if(input.Length is <16 or >16*1024*1024) throw new InvalidDataException("Graphics images must be no larger than 16 MiB.");
         using var memory=new MemoryStream();var buffer=new byte[65536];int read;
         while((read=input.Read(buffer))>0) {cancellation.ThrowIfCancellationRequested();if(memory.Length+read>16*1024*1024) throw new InvalidDataException("Graphics image grew beyond its byte limit.");memory.Write(buffer,0,read);}
-        var bytes=memory.ToArray();var hash=Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var width=fullCanvas?1920:Math.Clamp(layerWidth,1,1920);var height=fullCanvas?1080:Math.Clamp(layerHeight,1,1080);
+        var bytes=memory.ToArray();
+        if(extension==".svg") { bytes=GraphicsSvgRaster.ToPng(bytes,width,height); extension=".png"; }
+        if(bytes.Length>16*1024*1024) throw new InvalidDataException("The rasterised image exceeds 16 MiB.");
+        var hash=Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         var directory=Path.Combine(root,"assets");GraphicsPackageReader.NoReparse(directory);Directory.CreateDirectory(directory);
         var files=Directory.EnumerateFiles(directory).Select(f=>new FileInfo(f)).ToArray();foreach(var file in files) GraphicsPackageReader.NoReparse(file.FullName);
         var fileName="assets/"+hash+extension;var destination=Path.Combine(root,fileName);GraphicsPackageReader.NoReparse(destination);
@@ -30,7 +34,6 @@ public static class GraphicsImageImport
             finally {if(File.Exists(temporary)) File.Delete(temporary);}
         }
         var id=(fullCanvas?"graphic-":"image-")+hash[..32];
-        var width=fullCanvas?1920:192;var height=fullCanvas?1080:192;
         // A real bug consumer makes the image package independently reusable;
         // compatibility lower thirds reference these same verified asset bytes.
         const string nodeType="type";

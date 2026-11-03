@@ -612,3 +612,35 @@ TEST(GraphicsTemplate, TextShrinksToItsMinimumBeforeEllipsis) {
   EXPECT_EQ(20., drawing.primitives.back().fontSize);
   EXPECT_EQ("ellipsis", drawing.primitives.back().overflow);
 }
+
+TEST(GraphicsTemplate, PrivateDraftLoadsNewVerifiedPackageAssets) {
+  using M = Json::Object;
+  std::string error;
+  const auto asset = corevideo::graphics::graphicsAssetFromBytes("draft-logo", graphicsTest::png(), error);
+  ASSERT_TRUE(asset) << error;
+  graphicsTest::Package package(asset);
+  const auto parent = GraphicsTemplate::corporateLowerThird();
+  auto document = parent->document().asObject();
+  auto layers = document.at("layers").asArray();
+  layers.emplace_back(M{{"id","imported-logo"},{"type","image"},{"asset",asset->id},
+      {"x",0},{"y",0},{"width",80},{"height",40},{"fit","contain"}});
+  document["layers"] = std::move(layers);
+  document["assets"] = Json::Array{M{{"id",asset->id},{"file","assets/" + asset->sha256 + ".png"},{"sha256",asset->sha256}}};
+  const auto bytes = Json(document).stringify();
+  const auto hash = corevideo::modules::hashing::sha256(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+  std::string hex;
+  for (const auto byte : hash) { hex += "0123456789abcdef"[byte >> 4]; hex += "0123456789abcdef"[byte & 15]; }
+  corevideo::graphics::GraphicsTemplateDraft draft;
+  std::string key;
+  ASSERT_TRUE(draft.submit(bytes, hex, parent, key, M{{"name","Ada"},{"title","Engineer"}}, brand(), package.root.string()));
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  auto published = draft.poll();
+  while ((!published || published->key != key) && std::chrono::steady_clock::now() < until) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    published = draft.poll();
+  }
+  ASSERT_TRUE(published);
+  ASSERT_TRUE(published->definition) << published->error;
+  EXPECT_EQ(asset->sha256, published->definition->assets().at(asset->id)->sha256);
+  EXPECT_FALSE(parent->assets().contains(asset->id));
+}

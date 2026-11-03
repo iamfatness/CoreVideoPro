@@ -13,6 +13,23 @@ public sealed class GraphicsPackageReaderTests : IDisposable
     private static readonly byte[] Image = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==");
     private static string Hash => Convert.ToHexString(SHA256.HashData(Image)).ToLowerInvariant();
     [Fact]
+    public async Task SvgStagesATwiceSizePngAndRejectsExternalImages()
+    {
+        Directory.CreateDirectory(_directory);
+        var path = Path.Combine(_directory, "logo.svg");
+        await File.WriteAllTextAsync(path, """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="3" fill="red"/></svg>""");
+        var staged = await GraphicsImageImport.StageAsync(path, Cache);
+        using var manifest = JsonDocument.Parse(staged.Package.Manifest);
+        var file = manifest.RootElement.GetProperty("assets")[0].GetProperty("file").GetString()!;
+        Assert.EndsWith(".png", file);
+        var png = await File.ReadAllBytesAsync(Path.Combine(Cache, file));
+        Assert.Equal(384, System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(16, 4)));
+        Assert.Equal(384, System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(20, 4)));
+        await File.WriteAllTextAsync(path, """<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.invalid/logo.png"/></svg>""");
+        await Assert.ThrowsAsync<InvalidDataException>(() => GraphicsImageImport.StageAsync(path, Cache));
+    }
+
+    [Fact]
     public async Task FullCanvasPngImportKeepsExactAlphaBytesAndExportsPinnedPackage()
     {
         Directory.CreateDirectory(_directory);
