@@ -616,6 +616,27 @@ inspect it on the private canvas. Save to playlist, reopen the design, then
 show the row from Operate. Check the logo's size and transparent edges at
 1080p on Program.
 
+## Sources columns and names lists
+
+In the Designer's **Variables** tab, select an extra variable such as
+`location` and choose **Add Sources column**. In Sources, expand **Graphics
+columns** to see the values by slot. Inspect an assigned slot, choose
+**Graphics columns…**, enter its values and select **Save values**. Values
+stay with the slot when its source changes.
+
+Save the design to the playlist. In Operate, enable **From Sources** on the
+Guest row and choose the column under **Location source**. The typed Location
+on the row remains the fallback for a missing or invalid slot value. Show
+uses the value for the selected guest. The next Show picks up saved changes.
+
+In Operate, open **Names list…** on the Guest row to enter or import its list.
+A names list can use a CSV header such as `name,title,location`. Use the
+variable ID for each extra column. Quote cells containing commas and double
+any quotes inside a quoted cell. A missing or bare empty cell falls back to
+the row value. A quoted empty string clears a text variable. Supported
+extra values are text, numbers, colours and on/off. Enter `true` or `false`
+for on/off. The old one- and two-column lists still work.
+
 ## Later (the spec's phases)
 
 Per-tile names in Tiles (#1073, native placement per tile rect), clocks and
