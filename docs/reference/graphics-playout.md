@@ -238,6 +238,13 @@ and a two-line status (full text in its tooltip). Editing is paused while a save
 runs; afterwards the inspector stays on the tab you were on, with the same layer
 selected (when the saved version still has it).
 
+**Use for Zoom lower thirds** (lower-third designs only) saves the design and puts
+it on the playlist's **first Guest row**, the row the footer LT button, the
+lower-third hotkeys and automation always use (a later Guest row is never used
+for them). The row keeps its name, hotkey, "Hides after" and Sources link; a
+Guest row is added when the playlist has none. After further edits, **Save to
+playlist** re-pins that same row, so the Zoom lower thirds follow the design.
+
 **Layers panel (left).** One row per layer, front to back: "Top of the list is
 in front. Drag to reorder, double-click to rename." Each row shows the layer's
 name and what it shows (`{name}` for a variable, or its kind).

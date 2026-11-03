@@ -46,6 +46,8 @@ public sealed partial class StudioViewModel
     [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private string _graphicsDesignNotice = "";
     public Task<GraphicsDesignResult> SaveGraphicsDesignAsync() => GraphicsDesignWorkflow.SaveAsync();
     public Task<GraphicsDesignResult> SaveGraphicsDesignToPlaylistAsync() => GraphicsDesignWorkflow.SaveToPlaylistAsync();
+    /// <summary>Save the open design and put it on the first Guest row: the Zoom lower third (LT, lower-third hotkeys, automation).</summary>
+    public Task<GraphicsDesignResult> UseGraphicsDesignForZoomLowerThirdsAsync() => GraphicsDesignWorkflow.UseForZoomLowerThirdsAsync();
     /// <summary>The F-key Save to playlist will use for <paramref name="design"/> ("" when none is free).</summary>
     public string GraphicsDesignPlaylistHotkey(GraphicsDesign design) => GraphicsDesignWorkflow.PlaylistHotkey(design, GraphicsLibrary.Document.Playlist);
 

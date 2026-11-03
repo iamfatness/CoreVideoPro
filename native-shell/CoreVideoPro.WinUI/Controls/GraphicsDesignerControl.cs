@@ -28,7 +28,8 @@ public sealed partial class GraphicsDesignerControl : UserControl
         _designName = new() { FontSize = 18, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = StudioBrushes.Text, TextTrimming = TextTrimming.CharacterEllipsis },
         _status = new() { FontSize = 13, Foreground = StudioBrushes.Text, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     private readonly Button _back = StudioBrushes.GhostButton("← Your designs"), _undo = StudioBrushes.GhostButton("Undo"),
-        _save = StudioBrushes.GhostButton("Save"), _saveToPlaylist = StudioBrushes.AccentButton("Save to playlist");
+        _save = StudioBrushes.GhostButton("Save"), _saveToPlaylist = StudioBrushes.AccentButton("Save to playlist"),
+        _useForZoom = StudioBrushes.GhostButton("Use for Zoom lower thirds");
     private readonly StackPanel _samples = new() { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
     private readonly List<(string Id, Button Button)> _sampleButtons = [];
 
@@ -66,14 +67,16 @@ public sealed partial class GraphicsDesignerControl : UserControl
         AutomationProperties.SetName(_status, "Design status"); Grid.SetColumn(_status, 2); header.Children.Add(_status);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         _save.Foreground = StudioBrushes.Accent; _save.BorderBrush = StudioBrushes.Accent;
-        foreach (var button in new[] { _undo, _save, _saveToPlaylist }) { button.FontSize = 14; button.MinHeight = 36; actions.Children.Add(button); }
-        AutomationProperties.SetName(_undo, "Undo"); AutomationProperties.SetName(_save, "Save design"); AutomationProperties.SetName(_saveToPlaylist, "Save to playlist");
+        foreach (var button in new[] { _undo, _save, _useForZoom, _saveToPlaylist }) { button.FontSize = 14; button.MinHeight = 36; actions.Children.Add(button); }
+        AutomationProperties.SetName(_undo, "Undo"); AutomationProperties.SetName(_save, "Save design"); AutomationProperties.SetName(_saveToPlaylist, "Save to playlist"); AutomationProperties.SetName(_useForZoom, "Use for Zoom lower thirds");
         ToolTipService.SetToolTip(_undo, "Undo the last change to this draft.");
         ToolTipService.SetToolTip(_save, "Store your edits as the design's next version. Program and Preview are unchanged.");
         ToolTipService.SetToolTip(_saveToPlaylist, "Save, then put this design in the playlist on the F-key shown. Show it from Operate.");
+        ToolTipService.SetToolTip(_useForZoom, "Save, then use this design for every Zoom lower third: the LT button, lower-third hotkeys and automation.");
         _undo.Click += (_, _) => { if (!_saving) _session?.Undo(); };
         _save.Click += async (_, _) => await SaveAsync(toPlaylist: false);
         _saveToPlaylist.Click += async (_, _) => await SaveAsync(toPlaylist: true);
+        _useForZoom.Click += async (_, _) => await SaveAsync(toPlaylist: true, zoomLowerThirds: true);
         Grid.SetColumn(actions, 3); header.Children.Add(actions);
         return header;
     }
@@ -212,7 +215,8 @@ public sealed partial class GraphicsDesignerControl : UserControl
         var hotkey = design is not null && _attached is { } studio ? studio.GraphicsDesignPlaylistHotkey(design) : "";
         _saveToPlaylist.Content = _saving ? "Saving…" : hotkey.Length > 0 ? "Save to playlist · " + hotkey : "Save to playlist";
         _save.Content = design is null ? "Save as new design" : "Save";
-        _save.IsEnabled = _saveToPlaylist.IsEnabled = !_saving && _session is { Busy: false, Draft.Declarative: true };
+        _save.IsEnabled = _saveToPlaylist.IsEnabled = _useForZoom.IsEnabled = !_saving && _session is { Busy: false, Draft.Declarative: true };
+        _useForZoom.Visibility = family == "lower-third" ? Visibility.Visible : Visibility.Collapsed;
         _undo.IsEnabled = !_saving && _session is { Busy: false, CanUndo: true };
         _back.IsEnabled = !_saving;
         ToolTipService.SetToolTip(_status, _status.Text.Length == 0 ? null : _status.Text);
@@ -253,15 +257,15 @@ public sealed partial class GraphicsDesignerControl : UserControl
         session.SetLayerNumbers(id, values); // a refusal reaches the status line through EditRefused
     }
 
-    private async Task SaveAsync(bool toPlaylist)
+    private async Task SaveAsync(bool toPlaylist, bool zoomLowerThirds = false)
     {
         if (_attached is not { } studio || _saving) return;
         CommitPendingText();
         _saving = true;
-        Say((toPlaylist ? "Saving the design and adding it to the playlist…" : "Saving the design…") + " Editing is paused until it finishes.");
+        Say((zoomLowerThirds ? "Saving the design and making it the Zoom lower third…" : toPlaylist ? "Saving the design and adding it to the playlist…" : "Saving the design…") + " Editing is paused until it finishes.");
         RefreshAll();
         try {
-            var result = toPlaylist ? await studio.SaveGraphicsDesignToPlaylistAsync() : await studio.SaveGraphicsDesignAsync();
+            var result = zoomLowerThirds ? await studio.UseGraphicsDesignForZoomLowerThirdsAsync() : toPlaylist ? await studio.SaveGraphicsDesignToPlaylistAsync() : await studio.SaveGraphicsDesignAsync();
             Say(result.Message);
         } catch (Exception ex) when (ex is not OutOfMemoryException) { Say("The design was not saved: " + ex.Message); }
         finally { _saving = false; _rowsSignature = _inspectorSignature = ""; RefreshAll(); }
