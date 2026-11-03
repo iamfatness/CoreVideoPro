@@ -9022,29 +9022,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private Dictionary<string, object?> BuildSpinePayload()
     {
         var syncContext = BuildProductionSyncContext();
-        var participants = syncContext.Participants;
         var nativeSnapshot = _bridge.LastSnapshot;
-        if (nativeSnapshot?.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true &&
-            nativeSnapshot.Participants is { Count: > 0 } liveParticipants)
-        {
-            var directedSpeakerId = nativeSnapshot.ActiveSpeakerId;
-            participants = liveParticipants
-                .Select(participant => new MediaCoreParticipantWire(
-                    participant.UserId,
-                    participant.DisplayName,
-                    participant.Role ?? "guest",
-                    participant.BreakoutRoomId ?? _currentRoomId,
-                    participant.BreakoutRoomName ?? _currentRoomName,
-                    !string.IsNullOrWhiteSpace(directedSpeakerId)
-                        ? string.Equals(participant.UserId, directedSpeakerId, StringComparison.Ordinal)
-                        : participant.Talking == true,
-                    participant.Muted == true,
-                    participant.SharingScreen == true,
-                    // #478: VideoOn must reach the spine, or a camera-off guest reads as live
-                    // and spends a capped video subscription on no frames.
-                    LiveProductionSync.NormalizeFeedHealthLabel(participant)))
-                .ToList();
-        }
+        var nativeParticipants = ZoomMediaSpinePayloadBuilder.ProjectNativeRoster(nativeSnapshot, _currentRoomId, _currentRoomName);
+        var participants = nativeParticipants.Count > 0 ? nativeParticipants : syncContext.Participants;
 
         // Carry the multiview layout on this frequent, reliable channel. The production sync
         // (BuildSyncCommands → set-multiview-layout) only fires on user actions (Take, scene
