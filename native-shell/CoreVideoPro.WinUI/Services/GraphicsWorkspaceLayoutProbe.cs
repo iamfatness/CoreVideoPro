@@ -451,6 +451,10 @@ internal static class GraphicsWorkspaceLayoutProbe
         await Eventually(() => session.Draft?.Fields.TryGetProperty("location", out _) == true, () => $"Add variable did not add location (status='{session.Status}')");
         Require(session.TemplateDocument is { } added && GraphicsTemplateEditor.TemplateFields(added).Single(f => f.Id == "location").MaxLength == 40, "location was not added as Text (40)");
         await Task.Delay(80); panel.UpdateLayout();
+        Invoke(Button(panel, "Add Sources column"));
+        await Eventually(() => studio.GraphicsLibrary.Document.SourceColumns.Any(column => column.Id == "location"),
+            "The Designer did not add Location to Sources.");
+        checks.Add("Designer Variables offers a Sources column for an extra variable and saves its stable id.");
         Descendants(panel).OfType<TextBox>().Single(t => t.Header as string == "Sample value").Text = "Oslo";
         Invoke(Button(panel, "Apply variable options"));
         await Eventually(() => session.Draft?.Fields.GetProperty("location").GetString() == "Oslo", () => $"Sample value did not seed the draft's location (draft='{session.Draft?.Fields.GetProperty("location")}')");
@@ -501,6 +505,24 @@ internal static class GraphicsWorkspaceLayoutProbe
         await Eventually(() => box.Text == "Bergen", () => $"The Location box did not show the saved value (text='{box.Text}')");
         Require(ReferenceEquals(Location(), box), "Saving a row value rebuilt the inspector instead of updating the box in place");
         checks.Add("Operate: a saved row value updates the Location box in place, without rebuilding the inspector");
+        Require(await studio.GraphicsLibrary.AddSourceColumnAsync("office"), "The probe could not add Office.");
+        await Eventually(() => Descendants(playout).OfType<ComboBox>().Any(c => c.Header as string == "Location source"),
+            "Operate did not offer a Sources column for Location.");
+        Require(Descendants(playout).OfType<DropDownButton>().Any(button => button.Content as string == "Names list…"),
+            "A design row could not open the names-list editor from Operate.");
+        var source = Descendants(playout).OfType<ComboBox>().Single(c => c.Header as string == "Location source");
+        source.SelectedItem = "Office";
+        await Eventually(() => studio.GraphicsLibrary.Document.Playlist.Single().SourceMappings.GetValueOrDefault("location") == "office",
+            "Operate did not save the Location mapping.");
+        foreach (var (width, height, label) in new[] { (1320d, 640d, "1360x768"), (1560d, 772d, "1600x900") })
+        {
+            page.Width = width; page.Height = height;
+            await Task.Delay(80); page.UpdateLayout();
+            Require(Descendants(playout).OfType<ComboBox>().Any(c => c.Header as string == "Location source" && c.ActualHeight > 0),
+                "The Location mapping control did not lay out.");
+            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-operate-source-mapping-{label}.png"));
+        }
+        checks.Add("Operate saves the selected Sources column for the pinned Location variable.");
         Require(await studio.GraphicsLibrary.SavePlaylistAsync([]), "The probe playlist could not be cleared");
         if (before is not null) studio.GraphicsWorkspace.Observe(before);
         studio.GraphicsMode = mode; await Task.Delay(80); page.UpdateLayout();

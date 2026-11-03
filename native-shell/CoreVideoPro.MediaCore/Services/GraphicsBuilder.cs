@@ -88,6 +88,7 @@ public static partial class GraphicsBuilder
             PlayOutAfterMs = GraphicsPlaylistRow.PlayOutAfterChoices.Contains(playOutAfterMs) ? playOutAfterMs : 0,
             TemplateId = template.TemplateId, TemplateVersion = template.TemplateVersion,
             Fields = fields, Style = draft.Style, Image = draft.Image, ImagePath = existing?.ImagePath,
+            SourceMappings = existing?.SourceMappings.Where(mapping => template.Fields.Any(field => field.Id == mapping.Key && GraphicsMappedValues.Eligible(field))).ToDictionary(StringComparer.Ordinal) ?? new(StringComparer.Ordinal),
             FollowSources = rowKind == GraphicsPlaylistRow.Guest, ShowClock = hasClock, Motion = motion, Variants = list,
             Placement = draft.Placement is { IsValid: true } p && !PlacementEquals(p, template.DefaultPlacement) ? p : null,
             Clock = hasClock && clock is { IsValid: true } ? clock : null,

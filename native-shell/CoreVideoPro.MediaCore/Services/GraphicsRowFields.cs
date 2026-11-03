@@ -50,7 +50,7 @@ public static class GraphicsRowFields
         foreach (var key in fields.Keys.ToArray())
             if (!NotTypedOnTheRow.Contains(key) && fields[key].ValueKind == JsonValueKind.String && existing.Fields.TryGetValue(key, out var typed) &&
                 typed.ValueKind == JsonValueKind.String && typed.GetString() is { Length: > 0 }) fields[key] = typed.Clone();
-        return pinned with { Fields = fields, SourceMappings = existing.SourceMappings.Where(mapping => fields.ContainsKey(mapping.Key)).ToDictionary(StringComparer.Ordinal) };
+        return pinned with { Fields = fields };
     }
 
     public static GraphicsPlaylistRow WithText(GraphicsPlaylistRow row, string key, string value)

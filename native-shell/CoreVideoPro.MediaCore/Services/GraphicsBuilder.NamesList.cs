@@ -18,7 +18,7 @@ public static partial class GraphicsBuilder
         for (var i = 2; i < cells.Count && used.Count < 32; i++)
         {
             var id = cells[i].Value.ToLowerInvariant();
-            if (GraphicsPlaylistRow.ValidId(id) && (allowed is null || allowed.Contains(id)) && used.Add(id))
+            if (GraphicsPlaylistRow.ValidVariableId(id) && (allowed is null || allowed.Contains(id)) && used.Add(id))
                 columns[i] = id;
         }
         return columns;
@@ -58,7 +58,7 @@ public static partial class GraphicsBuilder
     {
         var columns = variants.SelectMany(variant => variant.Cells.Keys).Distinct(StringComparer.Ordinal).ToArray();
         static string Quote(string value) => "\"" + value.Replace("\"", "\"\"") + "\"";
-        static string Escape(string value) => value.Contains(',') || value.Contains('"') ? Quote(value) : value;
+        static string Escape(string value) => value.IndexOfAny([',', ';', '\t']) >= 0 || value.Contains('"') ? Quote(value) : value;
         if (columns.Length == 0)
             return string.Join(Environment.NewLine, variants.Select(variant =>
                 variant.Title.Length == 0 ? Escape(variant.Name) : $"{Escape(variant.Name)}, {Escape(variant.Title)}"));

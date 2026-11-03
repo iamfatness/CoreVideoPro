@@ -94,7 +94,7 @@ public sealed partial class StudioViewModel
         if (service is null) return;
         var slots = ShowInputEditors.Select(e => new GraphicsRosterSlot(e.SlotNumber, e.SourceId, e.DefaultDisplayName)).ToArray();
         var entries = service.GuestEntries(slots, GraphicsSourceText);
-        var signature = string.Join('|', entries.Select(e => $"{e.RowId}:{e.SourceId}:{e.Label}:{e.Title}"));
+        var signature = string.Join('|', entries.Select(e => $"{e.RowId}:{e.SourceId}:{e.SlotNumber}:{e.Label}:{e.Title}"));
         if (signature == _guestEntriesSignature) return;
         _guestEntriesSignature = signature; GuestEntries = entries;
         OnPropertyChanged(nameof(GuestEntries));

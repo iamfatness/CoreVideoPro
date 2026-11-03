@@ -206,6 +206,32 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Equal("Oslo", fields.GetProperty("location").GetString());
     }
 
+
+    [Fact]
+    public async Task ShowAfterReloadUsesEachGuestsColumnAndNamesListCell()
+    {
+        const string design = "design-lower-third-a1b2c3";
+        _state = _state with { Templates = [.. _state.Templates, Template(design, "lower-third", "declarative", "name", "title", "location")] };
+        var (library, _) = Build();
+        Assert.True(await library.AddSourceColumnAsync("office"));
+        Assert.True(await library.SaveSourceValuesAsync(1, new Dictionary<string, string> { ["office"] = "Boston" }));
+        Assert.True(await library.SaveSourceValuesAsync(2, new Dictionary<string, string> { ["office"] = "London" }));
+        var guest = new GraphicsPlaylistRow { Id = "guest", Kind = GraphicsPlaylistRow.Guest, Name = "Guest",
+            FollowSources = true, TemplateId = design, TemplateVersion = 1,
+            SourceMappings = new Dictionary<string, string> { ["location"] = "office" } };
+        var list = guest with { Id = "names", Kind = GraphicsPlaylistRow.Title, FollowSources = false,
+            Variants = GraphicsBuilder.ParseNamesList("name,title,location\nAda,Analyst,\"Paris, France\"\nAlan,Engineer,Tokyo") };
+        Assert.True(await library.SavePlaylistAsync([guest, list]), library.Status);
+
+        var (reopened, service) = Build();
+        await reopened.LoadAsync();
+        var entries = service.GuestEntries([new(1, "zoom:7", "Ada"), new(2, "capture:camera", "Alan")], (_, name) => (name, ""));
+        foreach (var entry in entries)
+            Assert.True((await service.PlayInAsync(entry)).Accepted);
+        Assert.Equal(["Boston", "London", "Paris, France", "Tokyo"],
+            Bodies("graphics.instance.create").Select(body => body.GetProperty("fields").GetProperty("location").GetString()));
+    }
+
     [Fact] public async Task PlayInSendsTheRowsOwnPlacementWhenItHasOne()
     {
         var (library, service) = await BuildWithDefaultPlaylist();

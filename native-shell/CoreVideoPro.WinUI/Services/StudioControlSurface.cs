@@ -792,16 +792,17 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         if (row.HasVariants)
         {
             // Names list: a named variant, else the next one after whatever is on Program.
-            entry = sourceId.Length > 0 ? _vm.GuestEntryFor(sourceId) : GraphicsPlayoutService.NextVariant(row, _vm.GraphicsStrip.OnProgram.Where(i => i.RowId == rowId).Select(i => i.SourceId));
+            entry = sourceId.Length > 0 ? GraphicsPlayoutService.VariantEntries(row).FirstOrDefault(e => e.SourceId == sourceId) : GraphicsPlayoutService.NextVariant(row, _vm.GraphicsStrip.OnProgram.Where(i => i.RowId == rowId).Select(i => i.SourceId));
             return entry is null ? ControlInvokeResult.Fail($"'{sourceId}' is not a line of {row.Name}'s names list.") : null;
         }
         if (row.Kind != GraphicsPlaylistRow.Guest) { entry = GraphicsPlayoutService.EntryFor(row); return null; }
         if (sourceId.Length > 0)
         {
-            entry = _vm.GuestEntryFor(sourceId);
+            entry = _vm.GuestEntries.FirstOrDefault(e => e.RowId == rowId && e.SourceId == sourceId);
             return entry is null ? ControlInvokeResult.Fail($"'{sourceId}' is not bound to a Show Input, so it has no guest entry.") : null;
         }
-        entry = _vm.ProgramSubjectGuestEntry;
+        var subject = _vm.ProgramSubjectGuestEntry?.SourceId;
+        entry = _vm.GuestEntries.FirstOrDefault(e => e.RowId == rowId && e.SourceId == subject);
         return entry is null ? ControlInvokeResult.Fail("No Program subject is bound to a Show Input. Pass sourceId to choose a guest.") : null;
     }
 

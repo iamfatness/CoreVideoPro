@@ -30,12 +30,12 @@ public static class GraphicsMappedValues
     {
         JsonElement? value = field.Type switch
         {
-            "string" when Encoding.UTF8.GetByteCount(cell) <= (field.MaxLength ?? 4096) => JsonSerializer.SerializeToElement(cell),
+            "string" when (!field.Required || cell.Length > 0) && Encoding.UTF8.GetByteCount(cell) <= (field.MaxLength ?? 512) => JsonSerializer.SerializeToElement(cell),
             "boolean" when bool.TryParse(cell, out var enabled) => JsonSerializer.SerializeToElement(enabled),
             "number" when double.TryParse(cell, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) &&
-                double.IsFinite(number) && number >= (field.Minimum ?? double.MinValue) &&
-                number <= (field.Maximum ?? double.MaxValue) => JsonSerializer.SerializeToElement(number),
-            "color" when cell.Length is 7 or 9 && cell[0] == '#' && cell.AsSpan(1).ToArray().All(Uri.IsHexDigit) =>
+                double.IsFinite(number) && number >= (field.Minimum ?? -1e9) &&
+                number <= (field.Maximum ?? 1e9) => JsonSerializer.SerializeToElement(number),
+            "color" when cell.Length is 7 or 9 && cell.Length <= (field.MaxLength ?? 128) && cell[0] == '#' && cell.Skip(1).All(Uri.IsHexDigit) =>
                 JsonSerializer.SerializeToElement(cell),
             _ => null
         };

@@ -35,6 +35,8 @@ public sealed class GraphicsVariablesPanel : UserControl
     private readonly NumberBox _newMaxLength = new() { Header = "Max length", Minimum = 1, Maximum = 4096, Value = 128, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 14 };
     private readonly Button _add = StudioBrushes.AccentButton("Add variable");
 
+    private readonly Button _addColumn = StudioBrushes.GhostButton("Add Sources column");
+    public GraphicsWorkspaceLibrary? Library { get; set; }
     private GraphicsWorkspaceSession? _session;
     private IReadOnlyList<GraphicsEditorVariable> _variables = [];
     private string _selected = "", _signature = "";
@@ -55,7 +57,7 @@ public sealed class GraphicsVariablesPanel : UserControl
         _editor.Children.Add(renameRow);
         foreach (var control in new FrameworkElement[] { _maxLength, _sampleText, _sampleNumber, _sampleOn, _ifEmpty }) { control.HorizontalAlignment = HorizontalAlignment.Stretch; _editor.Children.Add(control); }
         var editActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; editActions.Children.Add(_apply); editActions.Children.Add(_delete);
-        _editor.Children.Add(editActions);
+        _editor.Children.Add(editActions); _editor.Children.Add(_addColumn);
         _content.Children.Add(_editor);
 
         var addRow = new Grid { ColumnSpacing = 8, RowSpacing = 6 };
@@ -76,6 +78,19 @@ public sealed class GraphicsVariablesPanel : UserControl
         ToolTipService.SetToolTip(_ifEmpty, "Hide its layer: the line disappears when the value is blank. Show the sample: the sample stays visible.");
 
         _newKind.SelectionChanged += (_, _) => _newMaxLength.Visibility = _newKind.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _addColumn.Click += async (_, _) =>
+        {
+            if (Library is not { } library || _selected.Length == 0) return;
+            var id = _selected;
+            _addColumn.IsEnabled = false;
+            try
+            {
+                _status.Text = await library.AddSourceColumnAsync(id)
+                    ? $"Added {id} to Sources. Map the variable on the Operate playlist row." : library.Status;
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = ex.Message; }
+            finally { _addColumn.IsEnabled = true; }
+        };
         _add.Click += (_, _) => AddVariable();
         _rename.Click += (_, _) => RenameVariable();
         _apply.Click += (_, _) => ApplyOptions();
@@ -126,6 +141,7 @@ public sealed class GraphicsVariablesPanel : UserControl
     {
         _editor.Visibility = variable is null ? Visibility.Collapsed : Visibility.Visible;
         if (variable is null) return;
+        _addColumn.Visibility = Library is not null && variable.Kind != "image" && !GraphicsRowFields.Handled.Contains(variable.Id) ? Visibility.Visible : Visibility.Collapsed;
         _editorTitle.Text = $"{variable.Id} · {KindLabel(variable)}";
         _usedBy.Text = UsedBy(variable);
         _name.Text = variable.Id;

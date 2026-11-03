@@ -24,7 +24,7 @@ public sealed record GraphicsSourceColumn(string Id, string Label, IReadOnlyDict
 {
     public const int MaxColumns = 30;
 
-    public bool IsValid() => Id is not null && GraphicsPlaylistRow.ValidId(Id) && !GraphicsRowFields.Handled.Contains(Id) &&
+    public bool IsValid() => Id is not null && GraphicsPlaylistRow.ValidVariableId(Id) && !GraphicsRowFields.Handled.Contains(Id) &&
         Label is { Length: > 0 and <= 128 } && SlotValues is { Count: <= 128 } &&
         SlotValues.All(cell => cell.Key is >= 1 and <= 128 && cell.Value is { Length: <= 4096 });
 }
