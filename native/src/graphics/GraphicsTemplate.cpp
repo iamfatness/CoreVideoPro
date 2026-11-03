@@ -139,10 +139,6 @@ Json typedValue(const Json& field, const Json& value) {
   }
   return value;
 }
-GraphicsBox intersect(GraphicsBox a, GraphicsBox b) {
-  const auto right = std::min(a.x + a.width, b.x + b.width), bottom = std::min(a.y + a.height, b.y + b.height);
-  a.x = std::max(a.x, b.x); a.y = std::max(a.y, b.y); a.width = std::max(0., right - a.x); a.height = std::max(0., bottom - a.y); return a;
-}
 class Layout {
  public:
   Layout(const Json& document, const Json& fields, const Json& brand, const GraphicsAssets& assets, bool validate = false, std::shared_ptr<const GraphicsAsset> logo = {})

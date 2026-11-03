@@ -4,6 +4,7 @@
 #include "modules/Sha256.h"
 #include "gtest/gtest.h"
 #include "GraphicsAssetFixture.h"
+#include "GraphicsMotionFixture.h"
 #include <chrono>
 #include <thread>
 #include <fstream>
@@ -74,7 +75,7 @@ TEST(GraphicsTemplateRegistry, WorkerInstallsImmutableVersionsAndRefusesReserved
 TEST(GraphicsTemplate, BuiltinResolvesTypedFieldsBrandAlphaAndCollapsedOptionalText) {
   const auto definition = GraphicsTemplate::corporateLowerThird(); ASSERT_NE(definition, nullptr);
   std::string error; GraphicsDrawing drawing;
-  EXPECT_FALSE(definition->resolve(Json::Object{{"name", "Ada Lovelace"}, {"title", "Engineer"}}, brand(), drawing, error));
+  EXPECT_FALSE(definition->resolve(definition->defaultFields(), brand(), drawing, error));
   EXPECT_EQ("required-template-field-empty", error);
   const Json fields = Json::Object{{"name", "Presenter — العربية 日本語"}, {"title", ""}};
   ASSERT_TRUE(definition->resolve(fields, brand(), drawing, error));
@@ -437,11 +438,7 @@ TEST(GraphicsTemplate, TemplatesWithoutLayerMotionHaveNoUnits) {
 }
 
 namespace {
-std::string motionFixture(const char* name) {
-  std::ifstream file(std::filesystem::path(COREVIDEO_REPO_ROOT) /
-      "native/tests/fixtures/graphics-motion" / name, std::ios::binary);
-  return std::string(std::istreambuf_iterator<char>(file), {});
-}
+using corevideo::graphics::test::motionFixture;
 
 TEST(GraphicsTemplate, LayerMotionLoadsIntoUnitsAndSummarisesTotals) {
   std::string error;
