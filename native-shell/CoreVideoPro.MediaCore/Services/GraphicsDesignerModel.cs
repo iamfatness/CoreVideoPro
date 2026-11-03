@@ -50,6 +50,8 @@ public static class GraphicsDesignerModel
                 var (kind,detail)=l.Type switch {
                     "group"=>("Group",$"group · {layers.Count(x=>x.Parent==l.Id)} layers"),
                     "rect"=>("Shape","shape"),
+                    "ellipse"=>("Ellipse","shape"),
+                    "line"=>("Line","shape"),
                     "image"=>("Image",asset is null ? "image" : "{"+asset+"}"),
                     _=>shows is null ? ("Text",Cut(Str(node,"text") ?? "")) : (shows=="time" ? "Clock" : "Text","{"+shows+"}") };
                 var bound=node.ValueKind==JsonValueKind.Object && node.TryGetProperty("visible",out var v) && v.ValueKind==JsonValueKind.Object;

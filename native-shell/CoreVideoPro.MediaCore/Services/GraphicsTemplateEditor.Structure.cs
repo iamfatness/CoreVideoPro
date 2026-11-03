@@ -234,7 +234,7 @@ public static partial class GraphicsTemplateEditor
     /// (<c>text-1</c>, <c>shape-1</c>, <c>clock-1</c>) and brand-token styling.</summary>
     public static (NativeGraphicsScratch Scratch,string Id) AddLayer(NativeGraphicsScratch scratch,string kind)
     {
-        if(kind is not ("text" or "shape" or "clock")) throw new InvalidDataException("Choose a layer kind: text, shape or clock.");
+        if(kind is not ("text" or "shape" or "ellipse" or "line" or "clock")) throw new InvalidDataException("Choose a layer kind: text, shape or clock.");
         var root=Read(scratch); var places=Places(root);
         if(kind=="clock") {
             if(root["family"] is not JsonValue family || !family.TryGetValue<string>(out var name) || name is not ("clock" or "countdown"))
@@ -247,13 +247,19 @@ public static partial class GraphicsTemplateEditor
             }
         }
         var id=NextId(places.Keys,kind);
-        var node=kind=="shape"
-            ? new JsonObject { ["id"]=id,[LayerTypeKey]="rect",["x"]=0,["y"]=0,["width"]=400,["height"]=120,
+        var node=kind is "shape" or "ellipse" or "line"
+            ? new JsonObject { ["id"]=id,[LayerTypeKey]=kind == "shape" ? "rect" : kind,["x"]=0,["y"]=0,["width"]=400,["height"]=120,
                 ["fill"]=new JsonObject { ["token"]="brand.accent" },["cornerRadius"]=0,["metadata"]=new JsonObject { ["label"]="Shape" } }
             : new JsonObject { ["id"]=id,[LayerTypeKey]="text",["x"]=40,["y"]=40,["width"]=kind=="clock" ? 320 : 600,["height"]=72,
                 ["text"]=kind=="clock" ? new JsonObject { ["field"]="time" } : "Text",["font"]=new JsonObject { ["token"]="brand.fontBody" },
                 ["fontSize"]=42,["fontWeight"]=600,["color"]=new JsonObject { ["token"]="brand.onPrimary" },
                 ["metadata"]=new JsonObject { ["label"]=kind=="clock" ? "Clock" : "Text" } };
+        if (kind == "ellipse") { node.Remove("cornerRadius"); node["metadata"] = new JsonObject { ["label"] = "Ellipse" }; }
+        if (kind == "line") {
+            node.Remove("cornerRadius"); node.Remove("fill"); node["height"] = 40;
+            node["stroke"] = new JsonObject { ["token"] = "brand.accent" }; node["strokeWidth"] = 4;
+            node["diagonal"] = "down"; node["metadata"] = new JsonObject { ["label"] = "Line" };
+        }
         if(kind=="text" && SpotBelowText(root,72) is { } spot) { node["x"]=spot.X; node["y"]=spot.Y; node["width"]=spot.Width; }
         root["layers"]!.AsArray().Add(node); AddBrandTokens(root,node);
         return (Commit(scratch,root),id);

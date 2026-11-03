@@ -298,10 +298,77 @@ internal static class GraphicsWorkspaceLayoutProbe
         checks.Add("Designer Add text layer adds and selects text-1; Undo removes it");
         await CheckLocationVariableAsync(studio, designer, Rows, checks);
         await CheckMotionAsync(page, studio, designer, checks, directory);
+        await CheckContentAsync(page, studio, designer, checks, directory);
         studio.GraphicsDesignerOpen = false; await Task.Delay(80); page.UpdateLayout();
         Require(designer.Visibility == Visibility.Collapsed, "Your designs did not close the Designer");
         await CheckOperateRowVariableAsync(page, studio, seedTemplate, checks, directory);
     }
+    private static async Task CheckContentAsync(OverlaysPage page, StudioViewModel studio, GraphicsDesignerControl designer,
+        List<string> checks, string directory)
+    {
+        var session = studio.GraphicsWorkspace;
+        Invoke(Button(designer, "Layer tab"));
+        var shapes = (MenuFlyout)Button(designer, "Add shape layer").Flyout;
+        void AddShape(string label)
+        {
+            var item = shapes.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == label);
+            ((IInvokeProvider)new MenuFlyoutItemAutomationPeer(item).GetPattern(PatternInterface.Invoke)).Invoke();
+        }
+        AddShape("Ellipse");
+        await Eventually(() => session.SelectedLayerId == "ellipse-1", () => "The Shape menu did not add and select an ellipse.");
+        AddShape("Line");
+        await Eventually(() => session.SelectedLayerId == "line-1", () => "The Shape menu did not add and select a line.");
+        session.SelectLayer("ellipse-1");
+        var stroke = Descendants(designer).OfType<Expander>().Single(item => item.Header as string == "Shape stroke");
+        stroke.IsExpanded = true;
+        designer.UpdateLayout();
+        Descendants(stroke).OfType<NumberBox>().Single(item => item.Header as string == "Stroke width").Value = 3;
+        Invoke(Button(stroke, "Apply stroke"));
+        await Eventually(() => GraphicsTemplateEditor.Layer(session.TemplateDocument!, "ellipse-1").TryGetProperty("strokeWidth", out var width) &&
+            width.GetDouble() == 3, () => "The ellipse stroke did not enter the private draft.");
+        session.SelectLayer("plate");
+        var sizing = Descendants(designer).OfType<Expander>().Single(item => item.Header as string == "Content width");
+        sizing.IsExpanded = true;
+        designer.UpdateLayout();
+        Descendants(sizing).OfType<CheckBox>().Single(item => item.Content as string == "Size to content").IsChecked = true;
+        Invoke(Button(sizing, "Apply width"));
+        await Eventually(() => GraphicsTemplateEditor.Layer(session.TemplateDocument!, "plate").GetProperty("width").ValueKind ==
+            System.Text.Json.JsonValueKind.String, () => "The plate did not switch to size to content.");
+        session.SelectLayer("name-label");
+        var effects = Descendants(designer).OfType<Expander>().Single(item => item.Header as string == "Text effects");
+        effects.IsExpanded = true;
+        designer.UpdateLayout();
+        Descendants(effects).OfType<NumberBox>().Single(item => item.Header as string == "Outline width").Value = 2;
+        Invoke(Button(effects, "Apply text effects"));
+        await Eventually(() => GraphicsTemplateEditor.Layer(session.TemplateDocument!, "name-label").TryGetProperty("outline", out _),
+            () => "The name did not gain an outline.");
+
+        var svg = Path.Combine(directory, "synthetic-transparent-logo.svg");
+        await File.WriteAllTextAsync(svg, """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="3" fill="#00FF00"/></svg>""");
+        var previousRoot = Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_ASSET_ROOT");
+        var cache = Path.Combine(directory, "isolated-assets");
+        Environment.SetEnvironmentVariable("COREVIDEO_GRAPHICS_ASSET_ROOT", cache);
+        try
+        {
+            Require(await session.ImportDesignImageAsync(svg), "The synthetic SVG could not be staged. " + session.ImportStatus);
+            Require(session.Draft?.Scratch?.PackageRoot == cache && session.SelectedLayerId == "image-1",
+                "Import did not retain the asset root and select the new image layer.");
+        }
+        finally { Environment.SetEnvironmentVariable("COREVIDEO_GRAPHICS_ASSET_ROOT", previousRoot); }
+        foreach (var (width, height, screenshot) in new[] {
+            (1320d, 640d, "graphics-designer-content-1360x768.png"), (1560d, 772d, "graphics-designer-content-1600x900.png") })
+        {
+            page.Width = width; page.Height = height;
+            await Task.Delay(80); page.UpdateLayout();
+            Require(designer.ActualWidth <= width + 1 && Button(designer, "Add image layer").ActualHeight > 0,
+                "Content controls overflow the Designer.");
+            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, screenshot));
+        }
+        Require(session.CanUndo, "Content edits must be undoable.");
+        while (session.CanUndo) session.Undo();
+        checks.Add("Designer content adds ellipse, line and SVG image, edits stroke, outline and content width, and keeps the edits undoable.");
+    }
+
     private static async Task CheckMotionAsync(OverlaysPage page, StudioViewModel studio, GraphicsDesignerControl designer,
         List<string> checks, string directory)
     {

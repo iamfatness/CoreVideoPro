@@ -188,7 +188,7 @@ public static partial class GraphicsTemplateEditor
         }
         else
         {
-            static bool Shape(JsonObject node) => node[LayerTypeKey]?.GetValue<string>() is "rect" or "image";
+            static bool Shape(JsonObject node) => node[LayerTypeKey]?.GetValue<string>() is "rect" or "ellipse" or "line" or "image";
             foreach (var node in roots.Where(Shape)) WriteMotion(node, "in", GraphicsMotionModel.DefaultFor("wipe"));
             var index = 0;
             foreach (var node in roots.Where(node => !Shape(node)).OrderBy(node => Position(node, "y")))
