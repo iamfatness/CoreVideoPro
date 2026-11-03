@@ -23,4 +23,3 @@ public sealed class GraphicsNamesListColumnsTests
         Assert.Empty(roundTrip[1].Cells);
     }
 }
-
