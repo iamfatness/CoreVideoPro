@@ -202,7 +202,7 @@ public sealed class GraphicsDesignWorkflow
     {
         if (_session.Draft is not { } fresh) return;
         var manifest = template.Definition is { } definition ? NativeGraphicsScratch.From(definition) : saved;
-        _session.Rebase(fresh with { Fields = GraphicsTemplateEditor.SyncFields(typed.Fields, manifest), Style = typed.Style, Placement = typed.Placement, Animations = typed.Animations }, selectedLayer);
+        _session.Rebase(fresh with { Fields = GraphicsTemplateEditor.SyncFields(typed.Fields, manifest), Style = typed.Style, Placement = typed.Placement, Animations = template.Animations }, selectedLayer);
     }
 
     private bool Show(NativeGraphicsTemplate template)

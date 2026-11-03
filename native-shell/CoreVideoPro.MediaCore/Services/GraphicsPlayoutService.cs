@@ -330,7 +330,9 @@ public sealed class GraphicsPlayoutService
         var identity = entry.SourceId.Length == 0 ? null : state.Sources.FirstOrDefault(s => s.VideoOn && s.Identity?.SourceId == entry.SourceId)?.Identity;
         var fields = JsonSerializer.SerializeToElement(values, Json);
         var id = InstanceIdFor(entry);
-        var motion = row.Motion ?? Motion; var placement = row.Placement ?? installed.DefaultPlacement;
+        var motion = row.Motion is { } rowMotion ? rowMotion with { Layers = "whole" } :
+            GraphicsDesignIds.IsDesignTemplateId(templateId) ? installed.Animations with { Layers = "own" } : Motion;
+        var placement = row.Placement ?? installed.DefaultPlacement;
         var draft = new NativeGraphicsDraft(templateId, version, fields, row.Style, motion, placement, Image: row.Image);
         if (state.Instances.FirstOrDefault(i => i.InstanceId == id) is not { } existing) {
             var body = new Dictionary<string, object?> {
@@ -345,9 +347,14 @@ public sealed class GraphicsPlayoutService
         }
         await ConfigureClock(row, existing, cancellation);
         // Only the cue copy is refreshed; a Program copy changes on the next Show, never here.
-        if (SameFields(existing.Fields, values) && (identity is null || existing.Binding == identity))
+        var designChanged = existing.TemplateVersion != version || existing.Animations != motion;
+        if (!designChanged && SameFields(existing.Fields, values) && (identity is null || existing.Binding == identity))
             return new() { Accepted = true, InstanceId = id, CurrentRevision = existing.Revision, Reason = "Ready." };
         var update = new Dictionary<string, object?> { ["instanceId"] = id, ["expectedRevision"] = existing.Revision, ["target"] = "cue", ["fields"] = fields };
+        if (designChanged) {
+            update["templateVersion"] = version;
+            update["animations"] = motion;
+        }
         if (identity is not null) update["binding"] = identity;
         var updated = await Send("graphics.instance.update", update, cancellation);
         if (!updated.Accepted) return updated;

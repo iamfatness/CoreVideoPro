@@ -19,6 +19,7 @@ class GradePreviewController {
   static constexpr size_t EventCapacity = 16, EventByteBudget = 512 * 1024;
   static constexpr auto Lease = std::chrono::seconds(3);
   static constexpr auto Interval = std::chrono::milliseconds(100);
+  static constexpr auto PlayInterval = std::chrono::milliseconds(33);
   bool renew(const rpc::Json& command, Clock::time_point now = Clock::now()) {
     const auto found = active_.find(command.getString("instanceId"));
     if (found == active_.end() || found->second.demand.sourceId != command.getString("sourceId") ||
@@ -39,6 +40,10 @@ class GradePreviewController {
       if (source!="preview:lower-third" || !style || (!style->isObject() && !style->isNull())) return false;
       modules::CompositorOverlayContent overlay;
       if (const auto* graphics = preview->get("graphics"); graphics && !graphics->isNull() && !graphicsDraft) return false;
+      if (const auto* graphics = preview->get("graphics")) {
+        if (const auto* play = graphics->get("play"); play && !play->isNull())
+          demand.playMode = play->getString("mode");
+      }
       if (graphicsDraft) overlay = std::move(*graphicsDraft);
       else {
       if (!style->isNull()) {overlay.appearance=compositor::LowerThirdAppearance::parse(*style);if (!overlay.appearance.valid()) return false;}
@@ -81,7 +86,7 @@ class GradePreviewController {
       if (active_.size() >= Capacity) {
         return emit({demand, 0, 0, 0, {}, "unavailable", "grade-preview-capacity"});
       }
-      active_.emplace(id, Entry{std::move(demand), now});
+      active_.emplace(id, Entry{std::move(demand), now, now});
     } else {
       if (demand.revision < found->second.demand.revision) return true;
       // Equal revision is a lease refresh, never permission to replace a draft.
@@ -91,7 +96,10 @@ class GradePreviewController {
           !modules::colorGradesEqual(demand.grade, found->second.demand.grade) ||
           demand.scopesEnabled != found->second.demand.scopesEnabled || demand.scopesOriginal != found->second.demand.scopesOriginal || demand.compareOriginal != found->second.demand.compareOriginal ||
           !(demand.scopeRoi == found->second.demand.scopeRoi) || demand.histogramMode != found->second.demand.histogramMode || demand.waveformMode != found->second.demand.waveformMode || demand.scopeView != found->second.demand.scopeView)) return false;
-      if (demand.revision > found->second.demand.revision) found->second.demand = std::move(demand);
+      if (demand.revision > found->second.demand.revision) {
+        found->second.demand = std::move(demand);
+        found->second.playStarted = now;
+      }
       found->second.renewed = now;
     }
     return true;
@@ -99,7 +107,10 @@ class GradePreviewController {
 
   void tick(const std::vector<modules::VideoFrame>& frames, modules::ICompositor& compositor,
             int64_t sequence, Clock::time_point now = Clock::now()) {
-    if (now - lastTick_ < Interval) return;
+    const bool playing = std::any_of(active_.begin(), active_.end(), [](const auto& entry) {
+      return !entry.second.demand.playMode.empty();
+    });
+    if (now - lastTick_ < (playing ? PlayInterval : Interval)) return;
     lastTick_ = now;
     for (auto it = active_.begin(); it != active_.end();) {
       if (now - it->second.renewed >= Lease) it = active_.erase(it); else ++it;
@@ -107,7 +118,11 @@ class GradePreviewController {
     if (active_.empty() && !submitted_) return;
     modules::MonitorRenderRequest request;
     request.sequence = sequence;
-    for (const auto& [id, entry] : active_) request.gradePreviews.push_back(entry.demand);
+    for (const auto& [id, entry] : active_) {
+      auto& demand = request.gradePreviews.emplace_back(entry.demand);
+      if (!demand.playMode.empty())
+        demand.playElapsedMs = std::chrono::duration<double, std::milli>(now - entry.playStarted).count();
+    }
     for (const auto& frame : frames) {
       if (std::any_of(request.gradePreviews.begin(), request.gradePreviews.end(),
           [&](const auto& demand) { return demand.sourceId == frame.participantId; })) request.frames.push_back(frame);
@@ -129,6 +144,8 @@ class GradePreviewController {
         continue;
       }
       auto surface = *match;
+      if (surface.status == "ready" && surface.demand.playMode.empty())
+        entry.demand.playMode.clear();
       if (surface.scopes.texture.width > 0) {
         if (entry.scopeExport != surface.scopes.texture.frameNumber) {
           entry.scopeExport = surface.scopes.texture.frameNumber;
@@ -161,7 +178,7 @@ class GradePreviewController {
     const auto worker = compositor.gradePreviewDiagnostics();
     return rpc::Json::Object{{"observationVersion", "grade-preview-v1"},
       {"supported", compositor.supportsGradePreview()}, {"activeEditors", double(editors)},
-      {"editorCapacity", double(Capacity)}, {"leaseMs", 3000}, {"requestedIntervalMs", 100},
+      {"editorCapacity", double(Capacity)}, {"leaseMs", 3000}, {"requestedIntervalMs", 100}, {"playIntervalMs", 33},
       {"eventCapacity", double(EventCapacity)}, {"eventByteCapacity", double(EventByteBudget)},
       {"eventOwnedByteBound", double(eventBytes)}, {"eventsRefused", double(eventsRefused)},
       {"submitted", double(worker.submitted)}, {"completed", double(worker.completed)},
@@ -174,7 +191,7 @@ class GradePreviewController {
  private:
   struct Entry {
     modules::GradePreviewDemand demand;
-    Clock::time_point renewed, advanced{};
+    Clock::time_point renewed, playStarted{}, advanced{};
     uint64_t epoch = 0;
     int64_t frame = 0;
     bool observed = false;

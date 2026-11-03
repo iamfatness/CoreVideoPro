@@ -300,7 +300,13 @@ public static class GraphicsCommandRequest
         var phases = new HashSet<string>(StringComparer.Ordinal);
         foreach (var phase in animations.EnumerateObject())
         {
-            if (phase.Name is not ("in" or "out") || !phases.Add(phase.Name) || phase.Value.ValueKind != JsonValueKind.Object) return false;
+            if (!phases.Add(phase.Name)) return false;
+            if (phase.Name == "layers")
+            {
+                if (phase.Value.ValueKind != JsonValueKind.String || phase.Value.GetString() is not ("own" or "whole")) return false;
+                continue;
+            }
+            if (phase.Name is not ("in" or "out") || phase.Value.ValueKind != JsonValueKind.Object) return false;
             var names = new HashSet<string>(StringComparer.Ordinal);
             foreach (var item in phase.Value.EnumerateObject())
             {

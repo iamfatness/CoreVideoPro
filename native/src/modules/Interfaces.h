@@ -3,6 +3,7 @@
 #include "compositor/ScopeRoi.h"
 #include "compositor/LowerThirdAppearance.h"
 #include "graphics/GraphicsPreparedResource.h"
+#include "graphics/GraphicsMotion.h"
 
 #include "contracts/Lifecycle.h"
 #include "modules/ProgramAacEncoder.h"
@@ -512,6 +513,7 @@ struct CompositorOverlayContent {
   bool hasGraphicsContentHash = false;
   std::optional<CompositorLayerRect> graphicsAuthoringRect;
   std::shared_ptr<const graphics::GraphicsTemplateInput> graphicsTemplate;
+  std::optional<graphics::GraphicsMotionState> graphicsMotion;
   std::shared_ptr<const graphics::GraphicsAsset> graphicsImage;
 };
 
@@ -1229,6 +1231,8 @@ struct GradePreviewDemand {
   compositor::ScopeRoi scopeRoi;
   std::optional<CompositorOverlayContent> lowerThirdPreview;
   std::string lowerThirdPreviewSignature;
+  std::string playMode;
+  double playElapsedMs = 0;
 };
 struct GradePreviewSurface {
   GradePreviewDemand demand;

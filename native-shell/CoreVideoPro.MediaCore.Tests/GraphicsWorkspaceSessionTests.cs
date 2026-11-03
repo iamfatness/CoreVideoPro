@@ -221,4 +221,49 @@ public sealed class GraphicsWorkspaceSessionTests
         Assert.DoesNotContain(sent,s=>s.Action=="graphics.instance.trigger");
     }
 
+
+    [Fact]
+    public void MotionEditsKeepTheDraftsGraphicMotionInStep()
+    {
+        const string id = "design-test-a1b2c3";
+        var definition = JsonSerializer.SerializeToElement(GraphicsDesignSeeds.Manifest("lower-third", id, 1, "Test"));
+        var scratch = NativeGraphicsScratch.From(definition);
+        var template = new NativeGraphicsTemplate { TemplateId = id, TemplateVersion = 1, Runtime = "declarative",
+            Definition = definition, ManifestHash = scratch.Hash, Animations = GraphicsTemplateEditor.GraphicMotion(scratch) };
+        var state = Initial with { Templates = [template] };
+        var workspace = new GraphicsWorkspaceSession((_,_,_) => throw new InvalidOperationException(), () => state);
+        workspace.Observe(state);
+        workspace.Browse(template);
+        var original = workspace.Draft;
+        Assert.Equal("", workspace.EditTemplateSynced(document => GraphicsTemplateEditor.ApplyMotionPreset(document, "bar-first")));
+        Assert.Equal(250, workspace.Draft!.Animations.Out.DurationMs);
+        Assert.Equal("ease-in", workspace.Draft.Animations.Out.Easing);
+        workspace.Undo();
+        Assert.Equal(original, workspace.Draft);
+    }
+
+    [Fact]
+    public void PlayPreviewIsPrivateAndOneShotsStopOnEdit()
+    {
+        var template = new NativeGraphicsTemplate { TemplateId = "design-test-a1b2c3", TemplateVersion = 1, Runtime = "declarative",
+            Fields = [new() { Id = "title", Type = "string", Default = Value("Title") }] };
+        var state = Initial with { Templates = [template] };
+        var workspace = new GraphicsWorkspaceSession((_,_,_) => throw new InvalidOperationException("Play is private."), () => state);
+        workspace.Observe(state);
+        workspace.Browse(template);
+        workspace.PlayPreview("in");
+        var first = Assert.IsType<NativeGraphicsPreviewPlay>(workspace.PreviewPlay);
+        workspace.PlayPreview("in");
+        Assert.Equal(first.Token + 1, workspace.PreviewPlay!.Token);
+        Assert.Equal(workspace.PreviewPlay, workspace.Draft!.ForPreview(workspace.PreviewPlay).Play);
+        workspace.SetField("title", Value("Host"));
+        Assert.Null(workspace.PreviewPlay);
+        workspace.PlayPreview("loop");
+        workspace.SetField("title", Value("Guest"));
+        Assert.Equal("loop", workspace.PreviewPlay!.Mode);
+        workspace.SetPreviewSample("blank");
+        Assert.Equal("loop", workspace.PreviewPlay!.Mode);
+        workspace.StopPreviewPlay();
+        Assert.Null(workspace.PreviewPlay);
+    }
 }

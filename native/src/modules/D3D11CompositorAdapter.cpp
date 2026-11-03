@@ -979,8 +979,34 @@ class D3D11Compositor final : public ICompositor {
           key.rect.width*=float(p.scale); key.rect.height*=float(p.scale);
           key.rect.x=ax*(1-key.rect.width)+float(p.x/1920.); key.rect.y=ay*(1-key.rect.height)+float(p.y/1080.);
         }
-        preview.layers.push_back(key);
-        observation.sourceEpoch=1; observation.sourceFrameId=demand.revision; observation.status="ready";
+        bool hidden = false;
+        if (!demand.playMode.empty()) {
+          const auto base = key.overlay.graphicsMotion.value_or(graphics::GraphicsMotionState{});
+          const auto summary = definition && !definition->wholeGraphicMotion ?
+              definition->definition->motionSummary() : graphics::GraphicsMotionSummary{};
+          const double inMs = graphics::motionTotal(summary, base.graphicIn, true);
+          const double outMs = graphics::motionTotal(summary, base.graphicOut, false);
+          const auto motion = graphics::previewMotion(demand.playMode, demand.playElapsedMs,
+              inMs, outMs, base.graphicIn, base.graphicOut);
+          hidden = motion.phase == graphics::GraphicsMotionPhase::Hidden;
+          if (summary.layered) {
+            key.overlay.graphicsMotion = motion;
+          } else if (motion.phase == graphics::GraphicsMotionPhase::In || motion.phase == graphics::GraphicsMotionPhase::Out) {
+            graphics::GraphicsDrawing drawing;
+            drawing.width = drawing.height = 1;
+            const auto sample = graphics::sampleRun(drawing, -1, motion);
+            key.rect.x += float(sample.transform.tx) * key.rect.width;
+            key.rect.y += float(sample.transform.ty) * key.rect.height;
+            key.opacity *= float(sample.opacity);
+          }
+          const double endMs = demand.playMode == "in" ? inMs :
+              demand.playMode == "out" ? outMs + 500 : inMs + 1000 + outMs + 500;
+          if (demand.playMode != "loop" && demand.playElapsedMs >= endMs) observation.demand.playMode.clear();
+        }
+        if (!hidden) preview.layers.push_back(key);
+        observation.sourceEpoch = 1;
+        observation.sourceFrameId = demand.playMode.empty() ? demand.revision : request.sequence;
+        observation.status = "ready";
         const auto image=renderPreview(preview,{});
         if (overlayRaster_.failedThisFrame()) { observation.status="unavailable"; observation.reason=overlayRaster_.lastWarning(); }
         else if (overlayRaster_.pendingThisFrame()) { observation.status="preparing"; observation.reason="awaiting-native-appearance"; }
@@ -2098,22 +2124,56 @@ class D3D11Compositor final : public ICompositor {
     // every frame of the key transition.
     if (overlayView) {
       context_->RSSetState(scissorRasterizerState_.get());
-      setScissorFromRect(clip);
-      setViewportFromRect(animated);
-      if (writeLayerConstants(layer, renderPlan, 0xffffffffu, alpha, 1.f, 1.f, 0.f, 0.f)) {
-        context_->OMSetBlendState(premultipliedBlendState_.get(), nullptr, 0xffffffffu);
-        context_->PSSetShader(overlayPixelShader_.get(), nullptr, 0);
-        ID3D11ShaderResourceView* views[] = {overlayView};
-        ID3D11SamplerState* samplers[] = {samplerState_.get()};
-        context_->PSSetShaderResources(0, 1, views);
-        context_->PSSetSamplers(0, 1, samplers);
-        context_->Draw(3, 0);
-        composited = true;
-        ID3D11ShaderResourceView* nullViews[] = {nullptr};
-        context_->PSSetShaderResources(0, 1, nullViews);
-        context_->PSSetShader(pixelShader_.get(), nullptr, 0);
-        context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
+      context_->OMSetBlendState(premultipliedBlendState_.get(), nullptr, 0xffffffffu);
+      context_->PSSetShader(overlayPixelShader_.get(), nullptr, 0);
+      ID3D11ShaderResourceView* views[] = {overlayView};
+      ID3D11SamplerState* samplers[] = {samplerState_.get()};
+      context_->PSSetShaderResources(0, 1, views);
+      context_->PSSetSamplers(0, 1, samplers);
+      const auto draw = [&](const compositor::LayerRect& destination, const compositor::LayerRect& scissor,
+                            float opacity, float u, float v, float x, float y) {
+        setScissorFromRect(scissor);
+        setViewportFromRect(destination);
+        if (writeLayerConstants(layer, renderPlan, 0xffffffffu, opacity, u, v, x, y)) {
+          context_->Draw(3, 0);
+          composited = true;
+        }
+      };
+      if (const auto layout = overlayRaster_.activeRuns()) {
+        const auto state = overlay.graphicsMotion.value_or(graphics::GraphicsMotionState{});
+        const auto toRect = [&](const graphics::GraphicsBox& box) {
+          return compositor::LayerRect{animated.x + float(box.x / layout->width) * animated.width,
+              animated.y + float(box.y / layout->height) * animated.height,
+              float(box.width / layout->width) * animated.width,
+              float(box.height / layout->height) * animated.height};
+        };
+        for (size_t i = 0; i < layout->runs.size(); ++i) {
+          const auto& run = layout->runs[i];
+          const auto& slice = layout->slices[i];
+          if (slice.width <= 0 || slice.height <= 0) continue;
+          const auto sample = graphics::sampleRun(*layout->drawing, run.unit, state);
+          if (sample.opacity <= 0) continue;
+          const auto destination = toRect(sample.transform.apply(run.source));
+          if (destination.width <= 0 || destination.height <= 0) continue;
+          auto scissor = clip;
+          if (sample.clip) {
+            const auto mask = toRect(*sample.clip);
+            const float x = std::max(clip.x, mask.x), y = std::max(clip.y, mask.y);
+            scissor = {x, y, std::min(clip.x + clip.width, mask.x + mask.width) - x,
+                std::min(clip.y + clip.height, mask.y + mask.height) - y};
+          }
+          if (scissor.width <= 0 || scissor.height <= 0) continue;
+          draw(destination, scissor, alpha * float(sample.opacity),
+              float(slice.width) / layout->atlasWidth, float(slice.height) / layout->atlasHeight,
+              float(slice.x) / layout->atlasWidth, float(slice.y) / layout->atlasHeight);
+        }
+      } else {
+        draw(animated, clip, alpha, 1.f, 1.f, 0.f, 0.f);
       }
+      ID3D11ShaderResourceView* nullViews[] = {nullptr};
+      context_->PSSetShaderResources(0, 1, nullViews);
+      context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+      context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
     } else {
       context_->RSSetState(scissorRasterizerState_.get());
       setScissorFromRect(clip);

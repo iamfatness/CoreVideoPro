@@ -128,6 +128,7 @@ add_library(corevideo_native
   src/graphics/GraphicsAssets.cpp
   src/graphics/GraphicsCuratedTemplates.cpp
   src/graphics/GraphicsTemplateDraft.cpp
+  src/graphics/GraphicsMotion.cpp
   src/graphics/GraphicsThumbnail.cpp
   src/graphics/GraphicsAutomation.cpp
   src/graphics/GraphicsClock.cpp
@@ -780,6 +781,7 @@ if(BUILD_TESTING)
     tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
     tests/GraphicsTemplateTest.cpp
+    tests/GraphicsMotionTest.cpp
     tests/GraphicsDesignSeedsTest.cpp
     tests/GraphicsEditorShapesTest.cpp
     tests/GraphicsKeyPixelsTest.cpp
@@ -980,6 +982,7 @@ if(BUILD_TESTING)
     tests/TestMain.cpp tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp tests/GraphicsRpcPixelTest.cpp
     tests/GraphicsTemplateTest.cpp
+    tests/GraphicsMotionTest.cpp
     tests/GraphicsDesignSeedsTest.cpp
     tests/GraphicsEditorShapesTest.cpp
     tests/GradePreviewTest.cpp tests/IsolatedMonitorPixelTest.cpp

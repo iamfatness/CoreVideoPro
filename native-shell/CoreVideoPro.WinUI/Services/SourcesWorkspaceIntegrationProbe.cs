@@ -84,11 +84,11 @@ internal static class SourcesWorkspaceIntegrationProbe
                 Require(slots[0].SourceId is null && !slots[0].InShow, "Unassign did not detach the source");
                 Require(quickPicker.IsEnabled, $"Unassign made input 1's unified picker dead ({sourceId}, cycle {cycle})");
                 Require(ReferenceEquals(rows[0], Descendants(workspace).OfType<SourcesTableRowControl>().Single(row => row.Input.SlotNumber == 1)), "Unassign recreated the input row");
-                quickPicker.SourceMenu.ShowAt(quickPicker); await Task.Delay(30);
+                // Build the same menu the picker opens without requiring an offscreen popup to show.
+                quickPicker.PrepareMenu();
                 var label = slots[0].UnifiedSourceOptions.Single(option => option.Value == sourceId).Label;
                 InvokeChoice(Choices(quickPicker).Single(item => item.Text == label));
-                quickPicker.SourceMenu.Hide(); await Task.Delay(30);
-                Require(slots[0].SourceId == sourceId && slots[0].IsAssigned, "Source could not be reassigned through the retained picker");
+                await Eventually(() => slots[0].SourceId == sourceId && slots[0].IsAssigned);
                 Require(!slots[0].InShow && !slots[0].IsoEnabled, "Reassign silently enabled Multiview or ISO");
                 Require(Descendants(rows[0]).OfType<CheckBox>().Single(box => AutomationProperties.GetName(box) == "Input 1 in Multiview").IsEnabled, "Reassign did not restore the row's source controls");
                 Require(untouched.SequenceEqual(slots.Skip(1).Select(input => (input.SourceId, input.InShow, input.IsoEnabled))) && studio.ActiveSceneId == sceneBeforePatch, "Input reuse changed another input or Program");

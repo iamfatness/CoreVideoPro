@@ -173,6 +173,7 @@ public sealed record NativeGraphicsResource
 
 public sealed record NativeGraphicsAnimations
 {
+    public string Layers { get; init; } = "own";
     public NativeGraphicsTransition In { get; init; } = new();
     public NativeGraphicsTransition Out { get; init; } = new();
 }

@@ -62,12 +62,15 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         switch (action) {
             case "graphics.instance.create":
                 var binding = input.TryGetProperty("binding", out var b) && b.ValueKind == JsonValueKind.Object ? JsonSerializer.Deserialize<SourceInstanceIdentity>(b, Json) : null;
-                _state = _state with { Instances = [.. _state.Instances, new() { InstanceId = id, Revision = 1, TemplateId = input.GetProperty("templateId").GetString()!, TemplateVersion = 1, Scope = "global",
+                _state = _state with { Instances = [.. _state.Instances, new() { InstanceId = id, Revision = 1, TemplateId = input.GetProperty("templateId").GetString()!, TemplateVersion = input.GetProperty("templateVersion").GetInt32(), Scope = "global",
+                    Animations = JsonSerializer.Deserialize<NativeGraphicsAnimations>(input.GetProperty("animations"), Json)!,
                     Fields = JsonSerializer.Deserialize<NativeGraphicsFields>(input.GetProperty("fields"), Json)!, Binding = binding, SourceId = binding?.SourceId ?? "" }] };
                 break;
             case "graphics.instance.update":
                 revision = _state.Instances.Single(i => i.InstanceId == id).Revision + 1;
-                _state = _state with { Instances = Map(i => i with { Revision = revision, Fields = JsonSerializer.Deserialize<NativeGraphicsFields>(input.GetProperty("fields"), Json)! }) };
+                _state = _state with { Instances = Map(i => i with { Revision = revision, Fields = JsonSerializer.Deserialize<NativeGraphicsFields>(input.GetProperty("fields"), Json)!,
+                    TemplateVersion = input.TryGetProperty("templateVersion", out var version) ? version.GetInt32() : i.TemplateVersion,
+                    Animations = input.TryGetProperty("animations", out var animations) ? JsonSerializer.Deserialize<NativeGraphicsAnimations>(animations, Json)! : i.Animations }) };
                 break;
             case "graphics.instance.cue":
                 var expected = input.GetProperty("expectedRevision").GetInt64();
@@ -577,4 +580,77 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
     }
 
     public void Dispose() { if (Directory.Exists(_directory)) Directory.Delete(_directory, true); }
+
+    [Fact]
+    public async Task ShowAfterSavingANewVersionAdoptsItAndTheDesignsMotion()
+    {
+        const string design = "design-guest-a1b2c3";
+        var firstDefinition = JsonSerializer.SerializeToElement(GraphicsDesignSeeds.Manifest("lower-third", design, 1, "Guest"));
+        var first = NativeGraphicsScratch.From(firstDefinition);
+        var edited = GraphicsTemplateEditor.SetLayerMotion(first, "plate", "in", new("wipe", 0, 350, Direction: "left"));
+        edited = GraphicsTemplateEditor.SetLayerMotion(edited, "name-label", "in", new("rise", 200, 300, Distance: 24));
+        var secondManifest = System.Text.Json.Nodes.JsonNode.Parse(edited.Manifest)!.AsObject();
+        secondManifest["templateVersion"] = 2;
+        var secondDefinition = JsonSerializer.SerializeToElement(secondManifest);
+        var second = NativeGraphicsScratch.From(secondDefinition);
+        var template = Template(design, "lower-third", "declarative", "name", "title") with
+            { Definition = firstDefinition, ManifestHash = first.Hash, Animations = GraphicsTemplateEditor.GraphicMotion(first) };
+        _state = _state with { Templates = [.. _state.Templates, template, template with { TemplateVersion = 2,
+            Definition = secondDefinition, ManifestHash = second.Hash, Animations = GraphicsTemplateEditor.GraphicMotion(second) }] };
+        var (library, service) = Build();
+        var row = new GraphicsPlaylistRow { Id = "guest-motion", Kind = GraphicsPlaylistRow.Guest, Name = "Guest",
+            TemplateId = design, TemplateVersion = 1, Hotkey = "F6",
+            Fields = new Dictionary<string, JsonElement> { ["name"] = JsonSerializer.SerializeToElement("Ada"),
+                ["title"] = JsonSerializer.SerializeToElement("Engineer") } };
+        Assert.True(await library.SavePlaylistAsync([row]), library.Status);
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(row))).Accepted);
+        ClearCommands();
+        Assert.True(await library.SavePlaylistAsync([row with { TemplateVersion = 2 }]), library.Status);
+        Assert.Null(library.Document.Playlist.Single().Motion);
+        Assert.Contains(library.Document.Templates, pin => pin.TemplateId == design && pin.TemplateVersion == 2);
+        var shown = await service.PlayInAsync(GraphicsPlayoutService.EntryFor(library.Document.Playlist.Single()));
+        Assert.True(shown.Accepted, shown.Reason);
+        var update = Assert.Single(Bodies("graphics.instance.update"));
+        Assert.Equal(2, update.GetProperty("templateVersion").GetInt32());
+        Assert.Equal("cue", update.GetProperty("target").GetString());
+        Assert.Equal("own", update.GetProperty("animations").GetProperty("layers").GetString());
+        Assert.Equal(250, update.GetProperty("animations").GetProperty("out").GetProperty("durationMs").GetDouble());
+        Assert.Equal(new[] { "graphics.instance.update", "graphics.instance.cue", "graphics.instance.trigger" }, Actions);
+    }
+
+    [Fact]
+    public async Task RowMotionMakesTheWholeGraphicMoveAsOne()
+    {
+        const string design = "design-guest-a1b2c3";
+        _state = _state with { Templates = [.. _state.Templates, Template(design, "lower-third", "declarative", "name")] };
+        var (library, service) = Build();
+        var row = new GraphicsPlaylistRow { Id = "guest-motion", Kind = GraphicsPlaylistRow.Guest, Name = "Guest",
+            TemplateId = design, TemplateVersion = 1, Motion = GraphicsBuilder.MotionFor("slide-left", 300) };
+        Assert.True(await library.SavePlaylistAsync([row]), library.Status);
+        var shown = await service.PlayInAsync(GraphicsPlayoutService.EntryFor(row));
+        Assert.True(shown.Accepted, shown.Reason);
+        var animations = Assert.Single(Bodies("graphics.instance.create")).GetProperty("animations");
+        Assert.Equal("whole", animations.GetProperty("layers").GetString());
+        Assert.Equal("slide", animations.GetProperty("in").GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task BuiltInRowsKeepTheDefaultFadeAndAnUnchangedRowSkipsTheUpdate()
+    {
+        const string id = "corporate-lower-third";
+        _state = _state with { Templates = [.. _state.Templates, Template(id, "lower-third", "declarative", "name", "title")] };
+        var (library, service) = Build();
+        var row = new GraphicsPlaylistRow { Id = "guest-motion", Kind = GraphicsPlaylistRow.Guest, Name = "Guest",
+            TemplateId = id, TemplateVersion = 1 };
+        Assert.True(await library.SavePlaylistAsync([row]), library.Status);
+        var entry = GraphicsPlayoutService.EntryFor(row);
+        Assert.True((await service.PlayInAsync(entry)).Accepted);
+        var animations = Assert.Single(Bodies("graphics.instance.create")).GetProperty("animations");
+        Assert.Equal("own", animations.GetProperty("layers").GetString());
+        Assert.Equal(250, animations.GetProperty("in").GetProperty("durationMs").GetDouble());
+        Assert.Equal(200, animations.GetProperty("out").GetProperty("durationMs").GetDouble());
+        ClearCommands();
+        Assert.True((await service.PlayInAsync(entry)).Accepted);
+        Assert.Empty(Bodies("graphics.instance.update"));
+    }
 }

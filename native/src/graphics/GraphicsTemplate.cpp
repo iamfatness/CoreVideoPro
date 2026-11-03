@@ -139,10 +139,6 @@ Json typedValue(const Json& field, const Json& value) {
   }
   return value;
 }
-GraphicsBox intersect(GraphicsBox a, GraphicsBox b) {
-  const auto right = std::min(a.x + a.width, b.x + b.width), bottom = std::min(a.y + a.height, b.y + b.height);
-  a.x = std::max(a.x, b.x); a.y = std::max(a.y, b.y); a.width = std::max(0., right - a.x); a.height = std::max(0., bottom - a.y); return a;
-}
 class Layout {
  public:
   Layout(const Json& document, const Json& fields, const Json& brand, const GraphicsAssets& assets, bool validate = false, std::shared_ptr<const GraphicsAsset> logo = {})
@@ -155,6 +151,7 @@ class Layout {
     for (const auto& node : document_.get("layers")->asArray()) visit(node, 0, 0, root, 1, 0, false);
     return result;
   }
+  bool hasUnanimatedLayer() const { return hasUnanimatedLayer_; }
  private:
   Json resolve(const Json* value, const std::string& type) {
     need(value != nullptr, "template-property-required");
@@ -180,10 +177,10 @@ class Layout {
     need(scalar.isNumber() && std::isfinite(scalar.asNumber()) && scalar.asNumber() >= minimum && scalar.asNumber() <= maximum, "template-geometry-or-number");
     return scalar.asNumber();
   }
-  bool visit(const Json& node, double originX, double originY, GraphicsBox clip, double opacity, int depth, bool flowChild, bool parentVisible = true, const std::string& parentId = {}) {
+  bool visit(const Json& node, double originX, double originY, GraphicsBox clip, double opacity, int depth, bool flowChild, bool parentVisible = true, const std::string& parentId = {}, int unit = -1) {
     need(depth <= 8 && ++nodes_ <= 64, "template-layer-limit");
     const auto nodeId = node.getString("id"), type = node.getString("type"); need(validTemplateId(nodeId) && ids_.insert(nodeId).second, "template-layer-id");
-    std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata"};
+    std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata", "animations"};
     if (type == "group") allowed.insert({"children", "flow", "gap", "padding"});
     else if (type == "rect") allowed.insert({"fill", "cornerRadius"});
     else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty"});
@@ -199,6 +196,19 @@ class Layout {
     p.box = {originX + quantity(node, "x", 0, 8192, flowChild ? 0 : -1), originY + quantity(node, "y", 0, 8192, flowChild ? 0 : -1),
         quantity(node, "width", 1, 8192), quantity(node, "height", 1, 8192)};
     p.clip = intersect(clip, p.box); p.opacity = opacity * quantity(node, "opacity", 0, 1, 1);
+    if (const auto* animations = node.get("animations")) {
+      need(animations->isObject() && !animations->asObject().empty(), "template-layer-motion");
+      GraphicsMotionUnit motion{nodeId, unit, unit < 0 && depth == 0, {}, {}, p.box, clip};
+      for (const auto& [phase, value] : animations->asObject()) {
+        need(phase == "in" || phase == "out", "template-layer-motion");
+        (phase == "in" ? motion.in : motion.out) = GraphicsLayerMotion::read(value);
+      }
+      need(draw_->units.size() < 16, "template-motion-layer-limit");
+      unit = static_cast<int>(draw_->units.size());
+      draw_->units.push_back(std::move(motion));
+    }
+    p.unit = unit;
+    if (unit < 0 && type != "group") hasUnanimatedLayer_ = true;
     draw_->nodes.push_back({nodeId,parentId,type,p.box,p.clip,visible && p.opacity>0});
     if (type == "group") {
       const auto flow = stringProperty(node, "flow", "none"); need(flow == "none" || flow == "vertical" || flow == "horizontal", "template-flow");
@@ -209,7 +219,7 @@ class Layout {
         const auto before = draw_->primitives.size();
         const double step = offset + (populated && flow != "none" ? gap : 0);
         if (visit(child, p.box.x + padding + (flow == "horizontal" ? step : 0), p.box.y + padding + (flow == "vertical" ? step : 0),
-            intersect(p.clip, {p.box.x + padding, p.box.y + padding, std::max(0., p.box.width - padding * 2), std::max(0., p.box.height - padding * 2)}), p.opacity, depth + 1, flow != "none", visible, nodeId)) {
+            intersect(p.clip, {p.box.x + padding, p.box.y + padding, std::max(0., p.box.width - padding * 2), std::max(0., p.box.height - padding * 2)}), p.opacity, depth + 1, flow != "none", visible, nodeId, unit)) {
           if (flow != "none") offset = step + quantity(child, flow == "vertical" ? "height" : "width", 1, 8192);
           populated = populated || draw_->primitives.size() > before;
         }
@@ -260,9 +270,58 @@ class Layout {
   }
   const Json& document_; const Json& fields_; const Json& brand_; const GraphicsAssets& assets_; bool validate_;
   std::shared_ptr<const GraphicsAsset> logo_;
+  bool hasUnanimatedLayer_ = false;
   std::set<std::string> declared_, ids_; size_t nodes_ = 0; GraphicsDrawing* draw_ = nullptr;
 };
 } // namespace
+
+GraphicsLayerMotion GraphicsLayerMotion::read(const Json& value) {
+  constexpr auto error = "template-layer-motion";
+  need(value.isObject(), error);
+  for (const auto& [key, item] : value.asObject()) {
+    need(key == "type" || key == "startMs" || key == "durationMs" ||
+        key == "easing" || key == "direction" || key == "distance", error);
+  }
+  const auto string = [&](const char* key, const char* fallback) {
+    const auto* property = value.get(key);
+    need(!property || property->isString(), error);
+    return property ? property->asString() : std::string(fallback);
+  };
+  const auto number = [&](const char* key, double fallback, double minimum, double maximum) {
+    const auto* property = value.get(key);
+    need(!property || property->isNumber(), error);
+    const double result = property ? property->asNumber() : fallback;
+    need(std::isfinite(result) && result >= minimum && result <= maximum, error);
+    return result;
+  };
+  GraphicsLayerMotion motion;
+  motion.type = string("type", "");
+  const bool slide = motion.type == "slide", grow = motion.type == "grow", rise = motion.type == "rise";
+  const bool cut = motion.type == "cut";
+  need(cut || slide || grow || rise || motion.type == "fade" || motion.type == "wipe" || motion.type == "pop", error);
+  motion.easing = string("easing", "ease-out");
+  need(motion.easing == "linear" || motion.easing == "ease-in" ||
+      motion.easing == "ease-out" || motion.easing == "ease-in-out", error);
+  motion.startMs = number("startMs", 0, 0, 3000);
+  motion.durationMs = number("durationMs", 0, cut ? 0 : 1, cut ? 0 : 3000);
+  need(motion.startMs + motion.durationMs <= 3000, "template-motion-too-long");
+  need(!value.get("direction") || slide || grow || motion.type == "wipe", error);
+  motion.direction = string("direction", grow ? "down" : "left");
+  need(motion.direction == "left" || motion.direction == "right" ||
+      motion.direction == "up" || motion.direction == "down", error);
+  const auto* distance = value.get("distance");
+  need(!distance || slide || rise, error);
+  motion.distanceEdge = distance ? distance->isString() && distance->asString() == "edge" : slide;
+  if (!motion.distanceEdge) motion.distance = number("distance", 24, 1, 4096);
+  return motion;
+}
+
+Json GraphicsLayerMotion::json() const {
+  Json::Object value{{"type", type}, {"startMs", startMs}, {"durationMs", durationMs}, {"easing", easing}};
+  if (type == "slide" || type == "wipe" || type == "grow") value["direction"] = direction;
+  if (type == "slide" || type == "rise") value["distance"] = distanceEdge ? Json("edge") : Json(distance);
+  return value;
+}
 
 Json GraphicsTemplate::defaultFields() const {
   Json::Object values; for (const auto& field : document_.get("fields")->asArray()) {
@@ -339,7 +398,21 @@ std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::load(const std::string
     definition->assets_ = std::move(assets);
     const auto* animations = d.get("animations"); need(animations, "template-animations"); keys(*animations, {"in", "out"});
     for (const auto& [_, transition] : animations->asObject()) { GraphicsTransition parsed; need(GraphicsTransition::read(transition, parsed), "template-animation"); }
-    const auto analysis = Layout(d, definition->defaultFields(), Json::Object{}, definition->assets_, true).run();
+    const auto defaults = definition->defaultFields();
+    const Json brand = Json::Object{};
+    Layout layout(d, defaults, brand, definition->assets_, true);
+    const auto analysis = layout.run();
+    auto& motion = definition->motion_;
+    motion.units = analysis.units.size();
+    motion.layered = motion.units != 0;
+    motion.inFollows = motion.outFollows = !motion.layered || layout.hasUnanimatedLayer();
+    for (const auto& unit : analysis.units) {
+      if (unit.in) motion.inMs = std::max(motion.inMs, unit.in->startMs + unit.in->durationMs);
+      if (unit.out) motion.outMs = std::max(motion.outMs, unit.out->startMs + unit.out->durationMs);
+      if (unit.root && !unit.in) motion.inFollows = true;
+      if (unit.root && !unit.out) motion.outFollows = true;
+    }
+    motion.anyFollows = motion.inFollows || motion.outFollows;
     for (const auto& field : fields->asArray()) if (boolean(field,"required"))
       need(analysis.usedFields.count(field.getString("id")) != 0,"required-template-field-unused");
     const auto canonical = d.stringify(); definition->hash_ = modules::hashing::sha256(reinterpret_cast<const uint8_t*>(canonical.data()), canonical.size());

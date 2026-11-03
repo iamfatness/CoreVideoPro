@@ -2,7 +2,7 @@
 
 #include "modules/Interfaces.h"
 #include "rpc/Json.h"
-#include "graphics/GraphicsTimeline.h"
+#include "graphics/GraphicsMotion.h"
 #include "graphics/GraphicsSourceCatalog.h"
 #include "graphics/GraphicsTemplateRegistry.h"
 #include "graphics/GraphicsPlacement.h"
@@ -45,6 +45,7 @@ class GraphicsInstances {
     std::string name, title, sourceId;
     compositor::LowerThirdAppearance appearance;
     GraphicsTransition entrance, exit;
+    std::string layerMotion = "own";
     std::optional<contracts::SourceInstanceIdentity> binding;
     std::array<uint8_t, 32> contentHash{};
     std::shared_ptr<const GraphicsTemplate> definition;
@@ -72,12 +73,17 @@ class GraphicsInstances {
     int64_t firstDrawSubmittedFrame = 0;
     std::string preparation = "unprepared", warning;
     GraphicsTimeline timeline;
+    GraphicsLayerClock layered;
     std::string visibility = "hidden";
   };
   static bool validId(const std::string& value);
   std::vector<const Instance*> orderedInstances() const;
   bool revisionCapacity(const std::string& instanceId,const Revision&) const;
   bool nodeCapacity(const std::string& instanceId,const Revision&) const;
+  static bool readAnimations(const rpc::Json&, Revision&);
+  static bool layered(const Revision&);
+  void setProgramRevision(Instance&, const std::shared_ptr<const Revision>&);
+  static void startEntrance(Instance&, double now);
   bool readRevision(const rpc::Json& request, Revision& revision);
   static void hashRevision(const std::string& templateId, Revision& revision);
   modules::CompositorRenderPlanLayer layer(const Instance&, const Revision&, int width, int height) const;

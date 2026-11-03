@@ -312,4 +312,15 @@ public sealed class GraphicsCommandGatewayTests
         Assert.Equal(preset,draft.ForPreview().Style.GetProperty("preset").GetString());
     }
 
+
+    [Theory]
+    [InlineData("\"own\"", true)]
+    [InlineData("\"whole\"", true)]
+    [InlineData("\"sideways\"", false)]
+    [InlineData("1", false)]
+    public void AnimationsAcceptLayersOwnOrWholeOnly(string mode, bool valid)
+    {
+        var request = Request($"\"target\":\"cue\",\"animations\":{{\"layers\":{mode}}}");
+        Assert.Equal(valid, GraphicsCommandRequest.TryBuild("graphics.instance.update", request, Observed, out _, out _, out _));
+    }
 }

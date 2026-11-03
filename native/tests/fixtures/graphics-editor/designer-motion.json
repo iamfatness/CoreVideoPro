@@ -1,0 +1,329 @@
+{
+  "schemaVersion": 1,
+  "templateId": "design-fixture-motion",
+  "templateVersion": 1,
+  "name": "Motion fixture",
+  "family": "lower-third",
+  "canvas": {
+    "width": 1920,
+    "height": 1080
+  },
+  "bounds": {
+    "width": 1060,
+    "height": 168
+  },
+  "brandTokens": [
+    "brand.primary",
+    "brand.onPrimary",
+    "brand.accent",
+    "brand.fontBody"
+  ],
+  "fields": [
+    {
+      "id": "name",
+      "type": "string",
+      "default": "Name",
+      "required": true,
+      "bindable": true,
+      "maxLength": 128
+    },
+    {
+      "id": "title",
+      "type": "string",
+      "default": "Title",
+      "bindable": true,
+      "maxLength": 256
+    }
+  ],
+  "layers": [
+    {
+      "id": "plate",
+      "metadata": {
+        "label": "Plate"
+      },
+      "type": "rect",
+      "x": 0,
+      "y": 0,
+      "width": 1060,
+      "height": 168,
+      "fill": {
+        "token": "brand.primary"
+      },
+      "animations": {
+        "in": {
+          "type": "wipe",
+          "startMs": 0,
+          "durationMs": 350,
+          "easing": "ease-out",
+          "direction": "left"
+        },
+        "out": {
+          "type": "wipe",
+          "startMs": 250,
+          "durationMs": 350,
+          "easing": "ease-in",
+          "direction": "left"
+        }
+      }
+    },
+    {
+      "id": "accent",
+      "metadata": {
+        "label": "Accent bar"
+      },
+      "type": "rect",
+      "x": 0,
+      "y": 0,
+      "width": 8,
+      "height": 168,
+      "fill": {
+        "token": "brand.accent"
+      },
+      "animations": {
+        "in": {
+          "type": "grow",
+          "startMs": 0,
+          "durationMs": 300,
+          "easing": "ease-out",
+          "direction": "down"
+        },
+        "out": {
+          "type": "grow",
+          "startMs": 300,
+          "durationMs": 300,
+          "easing": "ease-in",
+          "direction": "down"
+        }
+      }
+    },
+    {
+      "id": "name-label",
+      "metadata": {
+        "label": "Name"
+      },
+      "type": "text",
+      "text": {
+        "field": "name"
+      },
+      "x": 32,
+      "y": 27,
+      "width": 996,
+      "height": 62,
+      "font": {
+        "token": "brand.fontBody"
+      },
+      "fontWeight": 600,
+      "fontSize": 42,
+      "lineHeight": 1.2,
+      "color": {
+        "token": "brand.onPrimary"
+      },
+      "align": "left",
+      "maxLines": 1,
+      "overflow": "ellipsis",
+      "animations": {
+        "in": {
+          "type": "rise",
+          "startMs": 200,
+          "durationMs": 300,
+          "easing": "ease-out",
+          "distance": 24
+        },
+        "out": {
+          "type": "rise",
+          "startMs": 100,
+          "durationMs": 300,
+          "easing": "ease-in",
+          "distance": 24
+        }
+      }
+    },
+    {
+      "id": "group-1",
+      "type": "group",
+      "x": 32,
+      "y": 94,
+      "width": 996,
+      "height": 42,
+      "flow": "none",
+      "metadata": {
+        "label": "Group"
+      },
+      "children": [
+        {
+          "id": "title-label",
+          "metadata": {
+            "label": "Title"
+          },
+          "type": "text",
+          "text": {
+            "field": "title"
+          },
+          "x": 0,
+          "y": 0,
+          "width": 996,
+          "height": 42,
+          "font": {
+            "token": "brand.fontBody"
+          },
+          "fontWeight": 600,
+          "fontSize": 28,
+          "lineHeight": 1.2,
+          "color": {
+            "token": "brand.onPrimary"
+          },
+          "align": "left",
+          "maxLines": 1,
+          "overflow": "ellipsis",
+          "collapseWhenEmpty": true,
+          "animations": {
+            "in": {
+              "type": "rise",
+              "startMs": 300,
+              "durationMs": 300,
+              "easing": "ease-out",
+              "distance": 24
+            },
+            "out": {
+              "type": "rise",
+              "startMs": 0,
+              "durationMs": 300,
+              "easing": "ease-in",
+              "distance": 24
+            }
+          }
+        }
+      ],
+      "animations": {
+        "in": {
+          "type": "slide",
+          "startMs": 0,
+          "durationMs": 400,
+          "easing": "ease-in-out",
+          "direction": "left",
+          "distance": "edge"
+        },
+        "out": {
+          "type": "slide",
+          "startMs": 200,
+          "durationMs": 400,
+          "easing": "ease-in-out",
+          "direction": "left",
+          "distance": "edge"
+        }
+      }
+    },
+    {
+      "id": "shape-1",
+      "type": "rect",
+      "x": 0,
+      "y": 0,
+      "width": 400,
+      "height": 120,
+      "fill": {
+        "token": "brand.accent"
+      },
+      "cornerRadius": 0,
+      "metadata": {
+        "label": "Shape"
+      },
+      "animations": {
+        "in": {
+          "type": "pop",
+          "startMs": 400,
+          "durationMs": 200,
+          "easing": "linear"
+        },
+        "out": {
+          "type": "pop",
+          "startMs": 0,
+          "durationMs": 200,
+          "easing": "linear"
+        }
+      }
+    },
+    {
+      "id": "shape-2",
+      "type": "rect",
+      "x": 0,
+      "y": 0,
+      "width": 400,
+      "height": 120,
+      "fill": {
+        "token": "brand.accent"
+      },
+      "cornerRadius": 0,
+      "metadata": {
+        "label": "Shape"
+      },
+      "animations": {
+        "in": {
+          "type": "cut",
+          "startMs": 450,
+          "durationMs": 0,
+          "easing": "ease-out"
+        },
+        "out": {
+          "type": "cut",
+          "startMs": 150,
+          "durationMs": 0,
+          "easing": "ease-in"
+        }
+      }
+    },
+    {
+      "id": "text-1",
+      "type": "text",
+      "x": 40,
+      "y": 40,
+      "width": 600,
+      "height": 72,
+      "text": "Text",
+      "font": {
+        "token": "brand.fontBody"
+      },
+      "fontSize": 42,
+      "fontWeight": 600,
+      "color": {
+        "token": "brand.onPrimary"
+      },
+      "metadata": {
+        "label": "Text"
+      },
+      "animations": {
+        "in": {
+          "type": "fade",
+          "startMs": 100,
+          "durationMs": 250,
+          "easing": "ease-out"
+        },
+        "out": {
+          "type": "fade",
+          "startMs": 250,
+          "durationMs": 250,
+          "easing": "ease-in"
+        }
+      }
+    }
+  ],
+  "animations": {
+    "in": {
+      "type": "fade",
+      "direction": "left",
+      "durationMs": 250,
+      "easing": "ease-out"
+    },
+    "out": {
+      "type": "fade",
+      "direction": "left",
+      "durationMs": 250,
+      "easing": "ease-in"
+    }
+  },
+  "defaultPlacement": {
+    "anchor": "lower-left",
+    "x": 96,
+    "y": -54,
+    "scale": 1
+  }
+}

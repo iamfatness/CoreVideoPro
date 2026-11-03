@@ -52,6 +52,7 @@ class CompositorOverlayRaster {
   const char* preparationState() const {
     return lastState_;
   }
+  std::shared_ptr<const graphics::GraphicsRunLayout> activeRuns() const;
   std::shared_ptr<const void> lease() const { return activeLease_; }
   std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource();
   void refuseGpuLease() { failedThisFrame_ = true; lastWarning_ = "Graphics GPU retirement capacity unavailable."; }
@@ -109,8 +110,9 @@ class CompositorOverlayRaster {
       DWRITE_FONT_WEIGHT weight,
       const D2D1_RECT_F& box,
       const D2D1_COLOR_F& color, float explicitFontSize = 0.f);
-  bool drawTemplate(ID2D1RenderTarget* target, const graphics::GraphicsDrawing& drawing, int height,
-                    const std::map<std::string, ImageInput>& images);
+  bool drawTemplate(ID2D1RenderTarget* target, const graphics::GraphicsDrawing& drawing, float scale,
+                    const std::map<std::string, ImageInput>& images, size_t first, size_t count,
+                    float offsetX = 0, float offsetY = 0);
 
   // DirectWrite/D2D overlay raster cache: overlayContentSignature (FNV-1a over
   // text/brand/font/size, deliberately excluding animation state) -> rendered
@@ -118,6 +120,7 @@ class CompositorOverlayRaster {
   // SRV.
   struct OverlayRasterTex {
     std::vector<uint8_t> thumbnail;
+    std::shared_ptr<const graphics::GraphicsRunLayout> runs;
     // Declared first so the texture/view release before their budget charge.
     std::shared_ptr<graphics::GraphicsResourceBudget::Lease> budget;
     ComPtrLite<ID3D11Texture2D> texture;

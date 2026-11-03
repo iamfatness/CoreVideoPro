@@ -183,14 +183,16 @@ CompositorOverlayRaster::CompositorOverlayRaster()
 CompositorOverlayRaster::~CompositorOverlayRaster() = default;
 
 bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
-    const graphics::GraphicsDrawing& drawing, int height, const std::map<std::string, ImageInput>& images) {
+    const graphics::GraphicsDrawing& drawing, float scale, const std::map<std::string, ImageInput>& images,
+    size_t first, size_t count, float offsetX, float offsetY) {
   ComPtrLite<IDWriteFontCollection> fonts;
   if (FAILED(dwriteFactory_->GetSystemFontCollection(fonts.put())) || !fonts) return false;
-  const float scale = float(height / drawing.height);
-  target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
+  target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) *
+      D2D1::Matrix3x2F::Translation(offsetX, offsetY));
   bool complete = true;
   std::map<std::string, ComPtrLite<ID2D1Bitmap>> bitmaps;
-  for (const auto& p : drawing.primitives) {
+  for (size_t i = first; i < first + count; ++i) {
+    const auto& p = drawing.primitives[i];
     const auto& b = p.box; const auto& c = p.clip;
     target->PushAxisAlignedClip(D2D1::RectF(float(c.x), float(c.y), float(c.x + c.width), float(c.y + c.height)), D2D1_ANTIALIAS_MODE_ALIASED);
     if (p.type == "image") {
@@ -311,8 +313,21 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   if (!activeLease_) {
     device->AddRef();
     Request request{std::shared_ptr<ID3D11Device>(device, [](ID3D11Device* value) { value->Release(); }), overlay, width, height, strictResources};
+    uint64_t admissionBytes = uint64_t(width) * height * 8;
+    if (overlay.graphicsTemplate && overlay.graphicsTemplate->definition) {
+      const auto& definition = *overlay.graphicsTemplate->definition;
+      const auto& motion = definition.motionSummary();
+      if (motion.layered && !overlay.graphicsTemplate->wholeGraphicMotion) {
+        // Each animated subtree can split its surrounding paint run twice.
+        // The worker charges the actual atlas dimensions after layout.
+        const auto maxRuns = 2 * motion.units + 1;
+        const auto maxHeight = std::min<uint64_t>(16384, maxRuns * (height + 3) - 2);
+        const auto maxWidth = uint64_t(std::min(16384., 1 + std::ceil(height * definition.width() / definition.height())));
+        admissionBytes = std::min<uint64_t>(256ull * 1024 * 1024, maxWidth * maxHeight * 4);
+      }
+    }
     activeLease_ = cache_.findOrRequest(key, std::move(request),
-        uint64_t(width) * height * 8 + (overlay.imageUri.empty() ? 0 : 128ull * 1024 * 1024), preparationSlot);
+        admissionBytes + (overlay.imageUri.empty() ? 0 : 128ull * 1024 * 1024), preparationSlot);
   }
   const bool failedScale = activeLease_ && !activeLease_->asset && compatible;
   const std::string scaleWarning = failedScale ? activeLease_->warning : "";
@@ -334,6 +349,10 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   pendingThisFrame_ = pendingThisFrame_ || (retainingScale && !failedScale) || !activeLease_;
   failedThisFrame_ = failedThisFrame_ || failedScale || (activeLease_ && !activeLease_->asset);
   return activeLease_ && activeLease_->asset ? activeLease_->asset->view.get() : nullptr;
+}
+
+std::shared_ptr<const graphics::GraphicsRunLayout> CompositorOverlayRaster::activeRuns() const {
+  return activeLease_ && activeLease_->asset ? activeLease_->asset->runs : nullptr;
 }
 
 std::shared_ptr<const graphics::GraphicsPreparedResource> CompositorOverlayRaster::preparedResource() {
@@ -379,7 +398,21 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   }
   auto layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
   auto imageInput = layout.hasImage && !overlay.graphicsTemplate ? (overlay.graphicsImage ? openPackagedImage(*overlay.graphicsImage) : openOverlayImage(overlay.imageUri)) : ImageInput{};
-  const auto textureBytes = uint64_t(widthPx) * heightPx * 4;
+  int textureWidth = widthPx, textureHeight = heightPx;
+  const float scale = drawing.height > 0 ? float(heightPx / drawing.height) : 1.f;
+  std::shared_ptr<graphics::GraphicsRunLayout> runs;
+  if (overlay.graphicsTemplate && overlay.graphicsTemplate->definition->motionSummary().layered &&
+      !overlay.graphicsTemplate->wholeGraphicMotion && !request.thumbnail) {
+    runs = std::make_shared<graphics::GraphicsRunLayout>();
+    runs->width = drawing.width;
+    runs->height = drawing.height;
+    runs->runs = graphics::planRuns(drawing);
+    if (!graphics::packAtlas(runs->runs, scale, runs->slices, runs->atlasWidth, runs->atlasHeight))
+      return {{}, 0, "Graphics motion needs more texture space than one graphic allows; give fewer layers their own motion."};
+    textureWidth = std::max(1, runs->atlasWidth);
+    textureHeight = std::max(1, runs->atlasHeight);
+  }
+  const auto textureBytes = uint64_t(textureWidth) * textureHeight * 4;
   auto& sharedBudget = graphics::GraphicsResourceBudget::process();
   if (textureBytes + imageInput.cpuBytes + packagedImageBytes > sharedBudget.counters().cpuLimit)
     return {{}, 0, "Graphics assets exceed the shared CPU preparation capacity."};
@@ -391,7 +424,7 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   auto entry = std::make_shared<OverlayRasterTex>();
   entry->budget = budget;
   ComPtrLite<IWICBitmap> bitmap;
-  if (FAILED(wicFactory_->CreateBitmap(widthPx, heightPx, GUID_WICPixelFormat32bppPBGRA,
+  if (FAILED(wicFactory_->CreateBitmap(textureWidth, textureHeight, GUID_WICPixelFormat32bppPBGRA,
       WICBitmapCacheOnLoad, bitmap.put()))) return {{}, 0, "Graphics bitmap allocation failed."};
   const auto targetProperties = D2D1::RenderTargetProperties(
       D2D1_RENDER_TARGET_TYPE_SOFTWARE,
@@ -421,7 +454,19 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   d2dTarget->Clear(D2D1::ColorF(0.f, 0.f, 0.f, 0.f));
   bool resourcesComplete = true;
   if (overlay.graphicsTemplate) {
-    resourcesComplete = drawTemplate(d2dTarget.get(), drawing, heightPx, images);
+    if (runs) {
+      for (size_t i = 0; i < runs->runs.size(); ++i) {
+        const auto& run = runs->runs[i];
+        const auto& slice = runs->slices[i];
+        if (slice.width <= 0 || slice.height <= 0) continue;
+        resourcesComplete = drawTemplate(d2dTarget.get(), drawing, scale, images, run.first, run.count,
+            float(slice.x - run.source.x * scale), float(slice.y - run.source.y * scale)) && resourcesComplete;
+      }
+      runs->drawing = std::make_shared<const graphics::GraphicsDrawing>(std::move(drawing));
+      entry->runs = std::move(runs);
+    } else {
+      resourcesComplete = drawTemplate(d2dTarget.get(), drawing, scale, images, 0, drawing.primitives.size());
+    }
   } else {
   ComPtrLite<ID2D1RoundedRectangleGeometry> rounded;
   bool clipped=false;
@@ -513,14 +558,14 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
     bitmap={};images.clear();imageInput.frame={};budget->finishPreparation();
     return {std::move(entry),0,workerWarning_};
   }
-  WICRect lockRect{0, 0, widthPx, heightPx};
+  WICRect lockRect{0, 0, textureWidth, textureHeight};
   ComPtrLite<IWICBitmapLock> pixels;
   UINT stride = 0, length = 0; BYTE* data = nullptr;
   if (FAILED(bitmap->Lock(&lockRect, WICBitmapLockRead, pixels.put())) ||
       FAILED(pixels->GetStride(&stride)) || FAILED(pixels->GetDataPointer(&length, &data)))
     return {{}, 0, "Graphics pixels unavailable."};
   D3D11_TEXTURE2D_DESC desc{};
-  desc.Width = widthPx; desc.Height = heightPx; desc.MipLevels = desc.ArraySize = 1;
+  desc.Width = textureWidth; desc.Height = textureHeight; desc.MipLevels = desc.ArraySize = 1;
   desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
   desc.Usage = D3D11_USAGE_IMMUTABLE; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
   D3D11_SUBRESOURCE_DATA initial{data, stride, 0};
