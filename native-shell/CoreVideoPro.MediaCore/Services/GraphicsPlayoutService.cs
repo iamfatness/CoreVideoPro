@@ -105,7 +105,7 @@ public sealed class GraphicsPlayoutService
         foreach (var slot in slots.OrderBy(s => s.SlotNumber)) {
             if (slot.SourceId is not { Length: > 0 } sourceId || !seen.Add(sourceId)) continue;
             var copy = text(sourceId, slot.DerivedName);
-            entries.Add(new(row.Id, sourceId, copy.Name, copy.Title));
+            entries.Add(new(row.Id, sourceId, copy.Name, copy.Title) { SlotNumber = slot.SlotNumber });
         }
         return entries;
     }
@@ -325,6 +325,7 @@ public sealed class GraphicsPlayoutService
             foreach (var binding in entry.Bindings)
                 if (declarative ? installed.Fields.Any(f => f.Id == binding.Key && f.Type == "string") : binding.Key is "name" or "title")
                     values[binding.Key] = JsonSerializer.SerializeToElement(binding.Value);
+        if (declarative) GraphicsMappedValues.Apply(row, entry, installed.Fields, _library.Document.SourceColumns, values);
         if (declarative) foreach (var key in values.Keys.Where(k => installed.Fields.All(f => f.Id != k)).ToArray()) values.Remove(key);
         else foreach (var key in values.Keys.Where(k => k is not ("name" or "title")).ToArray()) values.Remove(key);
         var identity = entry.SourceId.Length == 0 ? null : state.Sources.FirstOrDefault(s => s.VideoOn && s.Identity?.SourceId == entry.SourceId)?.Identity;

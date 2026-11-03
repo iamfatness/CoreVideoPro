@@ -32,6 +32,7 @@ public sealed record GraphicsPlaylistRow
     public NativeGraphicsImageReference? Image { get; init; }
     /// <summary>Guest rows: name/title come from the Sources page text of the entry's source.</summary>
     public bool FollowSources { get; init; }
+    public IReadOnlyDictionary<string, string> SourceMappings { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
     public bool ShowClock { get; init; }
     /// <summary>In/out motion sent with the instance (titler spec Phase 1 "in/out transitions").
     /// Null = the playout default (fade 250/200 ms). Values follow the core's whitelist.</summary>
@@ -63,6 +64,7 @@ public sealed record GraphicsPlaylistRow
     [JsonIgnore] public bool IsValid => ValidId(Id) && Kinds.Contains(Kind, StringComparer.Ordinal) && Name is { Length: > 0 and <= 128 } &&
         Hotkey is not null && ValidHotkey(Hotkey) && PlayOutAfterChoices.Contains(PlayOutAfterMs) &&
         TemplateId is not null && TemplateId.Length <= 64 && TemplateVersion >= 0 && (TemplateId.Length == 0) == (TemplateVersion == 0) &&
+        SourceMappings is { Count: <= 30 } && SourceMappings.All(mapping => ValidId(mapping.Key) && mapping.Value is not null && ValidId(mapping.Value)) &&
         Fields is not null && Fields.Count <= 32 && Fields.Keys.All(k => k.Length is > 0 and <= 64) && Style is { IsValid: true } &&
         (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) && ValidMotion(Motion) && ValidVariants(Variants) && (Placement is null || Placement.IsValid) && (Clock is null || Clock.IsValid) &&
         (Image is null || (Image.TemplateId.Length is > 0 and <= 64 && Image.TemplateVersion >= 1 && Image.AssetId.Length is > 0 and <= 64));
@@ -95,11 +97,12 @@ public sealed record GraphicsPlaylistEntry
     public GraphicsPlaylistEntry(string rowId, string sourceId, string label, string title)
         : this(rowId, sourceId, new Dictionary<string, string>(StringComparer.Ordinal) { [NameVariable] = label, [TitleVariable] = title }) { }
     public string RowId { get; init; } = "";
+    [JsonIgnore] public int? SlotNumber { get; init; }
     public string SourceId { get; init; } = "";
     public IReadOnlyDictionary<string, string> Bindings { get; init; } = None;
     [JsonIgnore] public string Label => Bindings.GetValueOrDefault(NameVariable, "");
     [JsonIgnore] public string Title => Bindings.GetValueOrDefault(TitleVariable, "");
-    public bool Equals(GraphicsPlaylistEntry? other) => other is not null && RowId == other.RowId && SourceId == other.SourceId &&
+    public bool Equals(GraphicsPlaylistEntry? other) => other is not null && RowId == other.RowId && SourceId == other.SourceId && SlotNumber == other.SlotNumber &&
         Bindings.Count == other.Bindings.Count && Bindings.All(p => other.Bindings.TryGetValue(p.Key, out var v) && v == p.Value);
     public override int GetHashCode() => HashCode.Combine(RowId, SourceId, Bindings.Count);
 }
