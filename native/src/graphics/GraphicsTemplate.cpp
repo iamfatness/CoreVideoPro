@@ -399,13 +399,15 @@ std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::load(const std::string
     auto& motion = definition->motion_;
     motion.units = analysis.units.size();
     motion.layered = motion.units != 0;
-    motion.anyFollows = !motion.layered || std::any_of(analysis.primitives.begin(), analysis.primitives.end(),
+    motion.inFollows = motion.outFollows = !motion.layered || std::any_of(analysis.primitives.begin(), analysis.primitives.end(),
         [](const auto& primitive) { return primitive.unit < 0; });
     for (const auto& unit : analysis.units) {
       if (unit.in) motion.inMs = std::max(motion.inMs, unit.in->startMs + unit.in->durationMs);
       if (unit.out) motion.outMs = std::max(motion.outMs, unit.out->startMs + unit.out->durationMs);
-      if (unit.parent < 0 && (!unit.in || !unit.out)) motion.anyFollows = true;
+      if (unit.root && !unit.in) motion.inFollows = true;
+      if (unit.root && !unit.out) motion.outFollows = true;
     }
+    motion.anyFollows = motion.inFollows || motion.outFollows;
     for (const auto& field : fields->asArray()) if (boolean(field,"required"))
       need(analysis.usedFields.count(field.getString("id")) != 0,"required-template-field-unused");
     const auto canonical = d.stringify(); definition->hash_ = modules::hashing::sha256(reinterpret_cast<const uint8_t*>(canonical.data()), canonical.size());

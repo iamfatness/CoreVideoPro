@@ -191,7 +191,7 @@ public sealed partial class GraphicsWorkspaceSession
         if(Draft is not { Declarative:true } draft || TemplateDocument is not { } document) return Refuse("Open a design to edit it.");
         try {
             var edited=change(document);
-            Edit(draft with { Scratch=edited.Hash==Template?.ManifestHash ? null : edited, Fields=GraphicsTemplateEditor.SyncFields(draft.Fields,edited) });
+            Edit(draft with { Scratch=edited.Hash==Template?.ManifestHash ? null : edited, Fields=GraphicsTemplateEditor.SyncFields(draft.Fields,edited), Animations=GraphicsTemplateEditor.GraphicMotion(edited) });
             return "";
         } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) { return Refuse(ex.Message); }
     }

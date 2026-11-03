@@ -124,6 +124,8 @@ public static partial class GraphicsTemplateEditor
         if(row.Node is null || row.Locked) throw new InvalidOperationException("Unlock the layer before duplicating.");
         var copy=row.Node.DeepClone().AsObject(); var children=copy["children"] is JsonArray nested ? Walk(nested).Select(r=>r.Node).ToArray() : [];
         if(rows.Length+1+children.Length>64) throw new InvalidOperationException("A template supports at most 64 layers.");
+        if (rows.Count(r => r.Node["animations"] is JsonObject) + children.Prepend(copy).Count(node => node["animations"] is JsonObject) > MotionLayerLimit)
+            throw new InvalidOperationException(MotionLimitMessage);
         foreach(var node in children.Prepend(copy)) node["id"]="layer-"+Guid.NewGuid().ToString("N");
         var label=LabelOf(row.Node); if(label.Length>59) label=label[..(char.IsHighSurrogate(label[58]) ? 58 : 59)].TrimEnd();
         if(copy["metadata"] is null) copy["metadata"]=new JsonObject();

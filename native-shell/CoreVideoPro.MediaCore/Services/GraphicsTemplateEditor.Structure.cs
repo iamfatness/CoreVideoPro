@@ -57,7 +57,9 @@ public static partial class GraphicsTemplateEditor
     }
     private static NativeGraphicsScratch Commit(NativeGraphicsScratch before,JsonObject root)
     {
-        CheckStructure(root); CheckPositions(root["layers"]!.AsArray()); KeepRequiredFieldsUsed(Read(before),root); return Save(root);
+        CheckStructure(root); CheckPositions(root["layers"]!.AsArray()); KeepRequiredFieldsUsed(Read(before),root);
+        if (Mirrors(root) && Walk(root["layers"]!.AsArray()).Any(row => row.Node["animations"] is JsonObject)) MirrorOut(root);
+        return Save(root);
     }
     // Native quantity(node,"x"/"y",0,8192): never emit a literal position native would refuse to load.
     private static void CheckPositions(JsonArray layers)

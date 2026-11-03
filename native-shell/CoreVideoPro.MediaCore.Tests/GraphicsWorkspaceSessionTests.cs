@@ -221,4 +221,24 @@ public sealed class GraphicsWorkspaceSessionTests
         Assert.DoesNotContain(sent,s=>s.Action=="graphics.instance.trigger");
     }
 
+
+    [Fact]
+    public void MotionEditsKeepTheDraftsGraphicMotionInStep()
+    {
+        const string id = "design-test-a1b2c3";
+        var definition = JsonSerializer.SerializeToElement(GraphicsDesignSeeds.Manifest("lower-third", id, 1, "Test"));
+        var scratch = NativeGraphicsScratch.From(definition);
+        var template = new NativeGraphicsTemplate { TemplateId = id, TemplateVersion = 1, Runtime = "declarative",
+            Definition = definition, ManifestHash = scratch.Hash, Animations = GraphicsTemplateEditor.GraphicMotion(scratch) };
+        var state = Initial with { Templates = [template] };
+        var workspace = new GraphicsWorkspaceSession((_,_,_) => throw new InvalidOperationException(), () => state);
+        workspace.Observe(state);
+        workspace.Browse(template);
+        var original = workspace.Draft;
+        Assert.Equal("", workspace.EditTemplateSynced(document => GraphicsTemplateEditor.ApplyMotionPreset(document, "bar-first")));
+        Assert.Equal(250, workspace.Draft!.Animations.Out.DurationMs);
+        Assert.Equal("ease-in", workspace.Draft.Animations.Out.Easing);
+        workspace.Undo();
+        Assert.Equal(original, workspace.Draft);
+    }
 }

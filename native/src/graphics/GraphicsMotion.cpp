@@ -128,7 +128,8 @@ GraphicsMotionSample sampleRun(const GraphicsDrawing& drawing, int unit, const G
 }
 
 double motionTotal(const GraphicsMotionSummary& summary, const GraphicsTransition& graphic, bool in) {
-  return std::max(in ? summary.inMs : summary.outMs, summary.anyFollows ? graphic.durationMs : 0.);
+  const bool follows = in ? summary.inFollows : summary.outFollows;
+  return std::max(in ? summary.inMs : summary.outMs, follows && graphic.type != "none" ? graphic.durationMs : 0.);
 }
 
 std::vector<GraphicsRun> planRuns(const GraphicsDrawing& drawing) {

@@ -33,6 +33,7 @@ struct GraphicsMotionSummary {
   bool layered = false, anyFollows = true;
   size_t units = 0;
   double inMs = 0, outMs = 0;
+  bool inFollows = true, outFollows = true;
 };
 
 struct GraphicsMotionState {
