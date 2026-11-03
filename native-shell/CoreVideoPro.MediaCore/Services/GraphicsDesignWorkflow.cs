@@ -132,7 +132,19 @@ public sealed class GraphicsDesignWorkflow
     }
 
     /// <summary>Save, then add (or re-pin) the design's playlist row.</summary>
-    public async Task<GraphicsDesignResult> SaveToPlaylistAsync()
+    public Task<GraphicsDesignResult> SaveToPlaylistAsync() => SaveToRowAsync(zoomLowerThirds: false);
+
+    /// <summary>Save, then make the design the Zoom lower third: it goes on the first Guest row, the row the
+    /// LT button, the lower-third hotkeys and automation use (a Guest row is added when there is none). The
+    /// row keeps its name, hotkey, timing and Sources link. Later, Save to playlist re-pins that same row.</summary>
+    public async Task<GraphicsDesignResult> UseForZoomLowerThirdsAsync()
+    {
+        if (_session.Template is { Family: var family } && family != "lower-third")
+            return new(false, "Only a lower-third design can be the Zoom lower third.", null, null);
+        return await SaveToRowAsync(zoomLowerThirds: true);
+    }
+
+    private async Task<GraphicsDesignResult> SaveToRowAsync(bool zoomLowerThirds)
     {
         var saved = await SaveAsync();
         if (!saved.Ok || saved.Design is not { } design) return saved;
@@ -140,10 +152,14 @@ public sealed class GraphicsDesignWorkflow
             || _session.Draft is not { } draft || draft.TemplateId != template.TemplateId || draft.TemplateVersion != template.TemplateVersion)
             return saved with { Ok = false, Message = saved.Message + " Not added to the playlist: open the design again, then Save to playlist." };
         var rows = _library.Document.Playlist;
-        var row = PlaylistRow(design, template, draft, rows);
+        var target = zoomLowerThirds ? rows.FirstOrDefault(r => r.Kind == GraphicsPlaylistRow.Guest) : rows.FirstOrDefault(r => r.TemplateId == design.TemplateId);
+        var row = PlaylistRow(design, template, draft, rows, target);
+        if (zoomLowerThirds && row.Kind != GraphicsPlaylistRow.Guest) row = row with { Kind = GraphicsPlaylistRow.Guest, FollowSources = true };
         if (!await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(rows, row)))
             return saved with { Ok = false, Message = saved.Message + " Not added to the playlist: " + _library.Status };
         await _designs.ReleaseAsync(design.TemplateId); // the version the row pinned before is now unused
+        if (zoomLowerThirds)
+            return saved with { Message = saved.Message + $" \"{design.Name}\" is now the Zoom lower third: LT, the lower-third hotkeys and automation use it (playlist row \"{row.Name}\"). After more edits, Save to playlist updates it." };
         return saved with { Message = saved.Message + $" \"{row.Name}\" is in the playlist{(row.Hotkey.Length > 0 ? " on " + row.Hotkey : "")}. Show it from Operate when you want it on air." };
     }
 
@@ -155,12 +171,15 @@ public sealed class GraphicsDesignWorkflow
     /// hotkey, timing, motion, names list and clock kept), else a new row on the next free F-key. The kind
     /// follows the template family (full screen saves as a title); a new lower third follows Sources and
     /// plays out after 8 s. Non-empty text already typed on the existing row is kept.</summary>
-    public static GraphicsPlaylistRow PlaylistRow(GraphicsDesign design, NativeGraphicsTemplate template, NativeGraphicsDraft draft, IReadOnlyList<GraphicsPlaylistRow> rows)
+    public static GraphicsPlaylistRow PlaylistRow(GraphicsDesign design, NativeGraphicsTemplate template, NativeGraphicsDraft draft, IReadOnlyList<GraphicsPlaylistRow> rows) =>
+        PlaylistRow(design, template, draft, rows, rows.FirstOrDefault(r => r.TemplateId == design.TemplateId));
+
+    /// <summary>As above, re-pinning <paramref name="existing"/> (any row, e.g. the first Guest row) instead of the design's own row.</summary>
+    public static GraphicsPlaylistRow PlaylistRow(GraphicsDesign design, NativeGraphicsTemplate template, NativeGraphicsDraft draft, IReadOnlyList<GraphicsPlaylistRow> rows, GraphicsPlaylistRow? existing)
     {
-        var existing = rows.FirstOrDefault(r => r.TemplateId == design.TemplateId);
         var kind = GraphicsBuilder.Kinds.FirstOrDefault(k => k.Family.Length > 0 && k.Family == template.Family) ?? GraphicsBuilder.Kind("title")!;
         var lowerThird = kind.Family == "lower-third";
-        var hotkey = PlaylistHotkey(design, rows);
+        var hotkey = existing is not null ? existing.Hotkey : GraphicsBuilder.NextFreeHotkey(rows);
         // Text typed on the Operate row survives the re-pin (re-review I1); see GraphicsRowFields.KeepTyped.
         return GraphicsRowFields.KeepTyped(GraphicsBuilder.RowFrom(kind, template, draft, existing?.Name ?? design.Name, hotkey, existing?.PlayOutAfterMs ?? (lowerThird ? 8000 : 0),
             existing?.FollowSources ?? lowerThird, rows, existing, existing?.Motion, existing?.Variants, existing?.Clock), existing);
