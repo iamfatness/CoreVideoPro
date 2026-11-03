@@ -182,7 +182,9 @@ class Layout {
     const auto nodeId = node.getString("id"), type = node.getString("type"); need(validTemplateId(nodeId) && ids_.insert(nodeId).second, "template-layer-id");
     std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata", "animations"};
     if (type == "group") allowed.insert({"children", "flow", "gap", "padding"});
-    else if (type == "rect") allowed.insert({"fill", "cornerRadius"});
+    else if (type == "rect") allowed.insert({"fill", "cornerRadius", "stroke", "strokeWidth"});
+    else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth"});
+    else if (type == "line") allowed.insert({"diagonal", "stroke", "strokeWidth"});
     else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty"});
     else if (type == "image") allowed.insert({"asset", "fit", "align", "verticalAlign", "collapseWhenEmpty", "missing"});
     else need(false, "unsupported-template-node-type");
@@ -226,7 +228,21 @@ class Layout {
       }
       return populated;
     }
-    if (type == "rect") {
+    if (type == "rect" || type == "ellipse" || type == "line") {
+      const auto* stroke = node.get("stroke");
+      need(stroke || (type != "line" && !node.get("strokeWidth")), "template-stroke-required");
+      if (stroke) {
+        p.strokeColor = color(resolve(stroke, "color").asString());
+        p.strokeWidth = std::min(quantity(node, "strokeWidth", 0, 4096, 1), std::min(p.box.width, p.box.height));
+      }
+      if (type == "line") {
+        const auto diagonal = stringProperty(node, "diagonal", "down");
+        need(diagonal == "up" || diagonal == "down", "template-line-diagonal");
+        p.lineRises = diagonal == "up";
+        if (!visible) return false;
+        draw_->primitives.push_back(std::move(p));
+        return true;
+      }
       const auto* fill = node.get("fill"); need(fill, "template-fill-required");
       if (fill->isObject() && fill->get("stops")) {
         keys(*fill, {"stops", "direction"}); const auto& stops = fill->get("stops")->asArray(); need(fill->get("stops")->isArray() && stops.size() == 2, "template-gradient-stops");

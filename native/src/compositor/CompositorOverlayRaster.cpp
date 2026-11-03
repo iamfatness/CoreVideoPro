@@ -218,6 +218,21 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
       }
       target->PopAxisAlignedClip(); continue;
     }
+    ComPtrLite<ID2D1SolidColorBrush> stroke;
+    if (p.strokeWidth > 0) {
+      if (SUCCEEDED(target->CreateSolidColorBrush(d2dColorFromArgb(p.strokeColor), stroke.put())))
+        stroke->SetOpacity(float(p.opacity));
+      else complete = false;
+    }
+    const auto inset = p.strokeWidth / 2;
+    if (p.type == "line") {
+      if (stroke) target->DrawLine(
+          D2D1::Point2F(float(b.x + inset), float(p.lineRises ? b.y + b.height - inset : b.y + inset)),
+          D2D1::Point2F(float(b.x + b.width - inset), float(p.lineRises ? b.y + inset : b.y + b.height - inset)),
+          stroke.get(), float(p.strokeWidth));
+      target->PopAxisAlignedClip();
+      continue;
+    }
     ComPtrLite<ID2D1SolidColorBrush> solid;
     ComPtrLite<ID2D1LinearGradientBrush> gradient;
     ID2D1Brush* brush = nullptr;
@@ -232,8 +247,21 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
     if (!brush) complete = false;
     else {
       brush->SetOpacity(float(p.opacity));
-      if (p.type == "rect") target->FillRoundedRectangle(D2D1::RoundedRect(
-          D2D1::RectF(float(b.x), float(b.y), float(b.x + b.width), float(b.y + b.height)), float(p.cornerRadius), float(p.cornerRadius)), brush);
+      if (p.type == "rect") {
+        target->FillRoundedRectangle(D2D1::RoundedRect(
+            D2D1::RectF(float(b.x), float(b.y), float(b.x + b.width), float(b.y + b.height)), float(p.cornerRadius), float(p.cornerRadius)), brush);
+        if (stroke) {
+          const auto radius = float(std::max(0., p.cornerRadius - inset));
+          target->DrawRoundedRectangle(D2D1::RoundedRect(
+              D2D1::RectF(float(b.x + inset), float(b.y + inset), float(b.x + b.width - inset), float(b.y + b.height - inset)),
+              radius, radius), stroke.get(), float(p.strokeWidth));
+        }
+      } else if (p.type == "ellipse") {
+        const auto centre = D2D1::Point2F(float(b.x + b.width / 2), float(b.y + b.height / 2));
+        target->FillEllipse(D2D1::Ellipse(centre, float(b.width / 2), float(b.height / 2)), brush);
+        if (stroke) target->DrawEllipse(D2D1::Ellipse(centre, float(b.width / 2 - inset), float(b.height / 2 - inset)),
+            stroke.get(), float(p.strokeWidth));
+      }
       else if (p.type == "text" && !p.text.empty()) {
         const auto family = widenUtf8(p.font), text = widenUtf8(p.text);
         UINT32 fontIndex = 0; BOOL exists = FALSE;

@@ -532,6 +532,55 @@ TEST(GraphicsCompositionPixel, NativeFadeAndReversalReachActualGpuPixels) {
   EXPECT_EQ(blank, render());
 }
 
+TEST(GraphicsCompositionPixel, NewShapesDrawCoverageAndInsetStrokes) {
+  using namespace corevideo;
+  auto compositor = modules::createD3D11Compositor();
+  ASSERT_TRUE(compositor);
+  modules::CompositorRenderPlan plan;
+  plan.width = 320;
+  plan.height = 180;
+  const auto blank = compositor->render(plan, {}).preview.bgra;
+  ASSERT_EQ(320u * 180 * 4, blank.size());
+  const auto input = std::make_shared<graphics::GraphicsTemplateInput>();
+  std::string error;
+  input->definition = graphics::GraphicsTemplate::load(R"({
+    "schemaVersion":1,"templateId":"slice4-shapes","templateVersion":1,"name":"Shapes","family":"title",
+    "canvas":{"width":1920,"height":1080},"bounds":{"width":320,"height":180},"brandTokens":[],"fields":[],"animations":{"in":{"type":"none"},"out":{"type":"none"}},
+    "layers":[
+      {"id":"oval","type":"ellipse","x":20,"y":20,"width":80,"height":60,"fill":"#FF0000","stroke":"#00FF00","strokeWidth":4},
+      {"id":"rule","type":"line","x":120,"y":20,"width":60,"height":60,"diagonal":"up","stroke":"#FFFFFF","strokeWidth":4},
+      {"id":"plate","type":"rect","x":200,"y":20,"width":60,"height":60,"cornerRadius":8,"fill":"#FF0000","stroke":"#00FF00","strokeWidth":4}
+    ]})", error);
+  ASSERT_TRUE(input->definition) << error;
+  input->fields = rpc::Json::Object{};
+  input->brand = rpc::Json::Object{};
+  modules::CompositorRenderPlanLayer layer;
+  layer.layerId = "shapes";
+  layer.kind = "overlay";
+  layer.rect = {0,0,1,1};
+  layer.hasOverlayContent = true;
+  layer.overlay.appearance.enabled = true;
+  layer.overlay.graphicsTemplate = input;
+  plan.layers.push_back(std::move(layer));
+  auto pixels = blank;
+  const auto ready = [&] { return pixels.size() == blank.size() && pixels[(320 * 50 + 60) * 4 + 2] > 200; };
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!ready() && std::chrono::steady_clock::now() < until) {
+    pixels = compositor->render(plan, {}).preview.bgra;
+    if (!ready()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_EQ(blank.size(), pixels.size());
+  const auto channel = [](const auto& frame, int x, int y, int component) {
+    return frame[(320 * y + x) * 4 + component];
+  };
+  EXPECT_GT(channel(pixels, 60, 50, 2), 200);
+  EXPECT_GT(channel(pixels, 60, 22, 1), 200);
+  EXPECT_EQ(channel(blank, 22, 22, 2), channel(pixels, 22, 22, 2));
+  EXPECT_GT(channel(pixels, 150, 50, 2), 200);
+  EXPECT_EQ(channel(blank, 125, 25, 2), channel(pixels, 125, 25, 2));
+  EXPECT_GT(channel(pixels, 230, 22, 1), 200);
+}
+
 TEST(GraphicsCompositionPixel, BarLeadsTheWordsOnProgramPixels) {
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_NE(compositor, nullptr);

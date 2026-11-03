@@ -518,3 +518,27 @@ TEST(GraphicsTemplate, LayerMotionValidationRefusesBadShapesWithExactReasons) {
   EXPECT_EQ("template-motion-layer-limit", error);
 }
 } // namespace
+
+TEST(GraphicsTemplate, EllipseAndLineResolveIntoMotionAwarePrimitives) {
+  using M = Json::Object;
+  auto document = manifest();
+  auto layers = document.at("layers").asArray();
+  layers.emplace_back(M{{"id","badge"},{"type","ellipse"},{"x",12},{"y",12},{"width",30},{"height",20},
+      {"fill","#FFFFFF"},{"stroke","#0080FF"},{"strokeWidth",2},
+      {"animations",M{{"in",M{{"type","fade"},{"durationMs",150}}}}}});
+  layers.emplace_back(M{{"id","rule"},{"type","line"},{"x",48},{"y",12},{"width",30},{"height",8},
+      {"diagonal","up"},{"stroke","#FFFFFF"},{"strokeWidth",2}});
+  document["layers"] = std::move(layers);
+  std::string error;
+  const auto definition = load(document, error);
+  ASSERT_TRUE(definition) << error;
+  GraphicsDrawing drawing;
+  ASSERT_TRUE(definition->resolve(M{{"name","Ada"},{"title","Engineer"}}, brand(), drawing, error)) << error;
+  ASSERT_GE(drawing.primitives.size(), 2u);
+  const auto& ellipse = drawing.primitives[drawing.primitives.size()-2];
+  const auto& line = drawing.primitives.back();
+  EXPECT_EQ("ellipse", ellipse.type);
+  EXPECT_EQ(0, ellipse.unit);
+  EXPECT_EQ("line", line.type);
+  EXPECT_EQ(8., line.box.height);
+}
