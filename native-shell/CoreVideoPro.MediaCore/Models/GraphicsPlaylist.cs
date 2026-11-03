@@ -75,7 +75,9 @@ public sealed record GraphicsPlaylistVariant
     public string Id { get; init; } = "";
     public string Name { get; init; } = "";
     public string Title { get; init; } = "";
-    [JsonIgnore] public bool IsValid => GraphicsPlaylistRow.ValidId(Id) && Name is { Length: > 0 and <= 128 } && Title is { Length: <= 256 };
+    public IReadOnlyDictionary<string, string> Cells { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    [JsonIgnore] public bool IsValid => GraphicsPlaylistRow.ValidId(Id) && Name is { Length: > 0 and <= 128 } && Title is { Length: <= 256 } &&
+        Cells is { Count: <= 30 } && Cells.All(cell => cell.Key.Length is > 0 and <= 64 && cell.Value is { Length: <= 4096 });
 }
 
 /// <summary>A playable item: a single row (SourceId ""), one guest of a guest row, or one

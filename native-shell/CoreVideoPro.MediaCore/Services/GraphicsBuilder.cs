@@ -11,7 +11,7 @@ public sealed record GraphicsBuilderKind(string Id, string Label, string Family,
 /// <summary>Pure decisions behind the template-first graphic builder (Design mode, #1076 slice 3).
 /// No UI, no native calls: the builder control feeds it the workspace draft and the current playlist
 /// and saves what comes back through <see cref="GraphicsWorkspaceLibrary.SavePlaylistAsync"/>.</summary>
-public static class GraphicsBuilder
+public static partial class GraphicsBuilder
 {
     public const string SponsorKindId = "sponsor";
 
@@ -162,14 +162,28 @@ public static class GraphicsBuilder
     /// "name,title" (any case) is a header and skipped. Quotes around a cell are stripped.
     /// Ids are slugs of the name, made unique; <paramref name="existing"/> keeps ids for names
     /// already in the list so an on-air variant survives a re-save.</summary>
-    public static IReadOnlyList<GraphicsPlaylistVariant> ParseNamesList(string text, IReadOnlyList<GraphicsPlaylistVariant>? existing = null)
+    public static IReadOnlyList<GraphicsPlaylistVariant> ParseNamesList(string text, IReadOnlyList<GraphicsPlaylistVariant>? existing = null, IReadOnlyCollection<string>? variableIds = null)
     {
         var result = new List<GraphicsPlaylistVariant>(); var used = new HashSet<string>(StringComparer.Ordinal);
         var lines = (text ?? "").Replace("\r\n", "\n").Split('\n');
+        var columns = NameListColumns(lines, variableIds);
         var first = true;
         foreach (var raw in lines) {
             var line = raw.Trim(); if (line.Length == 0) continue;
+            if (first && columns is not null) { first = false; continue; }
             string name, title;
+            var cells = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (columns is not null) {
+                var values = ReadNameListCells(line);
+                if (values is null) continue;
+                name = values[0].Value;
+                title = values.Count > 1 ? values[1].Value : "";
+                for (var i = 2; i < Math.Min(columns.Length, values.Count); i++) {
+                    var cell = values[i];
+                    if (columns[i] is { } key && (cell.Quoted || cell.Value.Length > 0))
+                        cells[key] = cell.Value.Length <= 4096 ? cell.Value : cell.Value[..4096];
+                }
+            } else
             if (line[0] == '"' && ClosingQuote(line) is > 0 and var close) {
                 // A quoted first cell may itself contain the separator ("Lovelace, Ada", Analyst).
                 name = line[1..close].Replace("\"\"", "\"").Trim();
@@ -185,7 +199,7 @@ public static class GraphicsBuilder
             if (name.Length > 128) name = name[..128]; if (title.Length > 256) title = title[..256];
             var id = existing?.FirstOrDefault(v => v.Name == name && !used.Contains(v.Id))?.Id ?? NewRowId(name, []);
             var baseId = id; for (var n = 2; used.Contains(id); n++) id = $"{baseId}-{n}";
-            used.Add(id); result.Add(new() { Id = id, Name = name, Title = title });
+            used.Add(id); result.Add(new() { Id = id, Name = name, Title = title, Cells = cells });
             if (result.Count == 64) break;
         }
         return result;
@@ -203,7 +217,7 @@ public static class GraphicsBuilder
 
     /// <summary>Variants → the text the builder shows (round trip of <see cref="ParseNamesList"/>).</summary>
     public static string NamesListText(IReadOnlyList<GraphicsPlaylistVariant> variants) =>
-        string.Join(Environment.NewLine, variants.Select(v => v.Title.Length > 0 ? v.Name + ", " + v.Title : v.Name));
+        WriteNameListCells(variants);
 
     /// <summary>A row's saved fields as the object element the workspace draft expects.</summary>
     public static JsonElement FieldsElement(GraphicsPlaylistRow row) => JsonSerializer.SerializeToElement(row.Fields);
