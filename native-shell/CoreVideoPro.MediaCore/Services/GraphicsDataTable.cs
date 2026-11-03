@@ -22,6 +22,7 @@ public static class GraphicsDataTable
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions CellsJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+    private const string ManifestTypeKey = "type";
     public const string RowPrefix = "table-row-";
     public static string FieldId(int index) => RowPrefix + (index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
@@ -49,13 +50,13 @@ public static class GraphicsDataTable
         seed["bounds"] = new JsonObject { ["width"] = 1440, ["height"] = (binding.Limit + 1) * 56 };
         seed["fields"] = new JsonArray(fields.Select(field => (JsonNode)new JsonObject
         {
-            ["id"] = field.Key, ["type"] = "string", ["maxLength"] = 4096,
+            ["id"] = field.Key, [ManifestTypeKey] = "string", ["maxLength"] = 4096,
             ["default"] = field.Value.GetString()
         }).ToArray());
         var columns = binding.SortColumn is null ? binding.Columns : ["Rank", .. binding.Columns];
         seed["layers"] = new JsonArray(new JsonObject
         {
-            ["id"] = "data-table", ["type"] = "table", ["x"] = 0, ["y"] = 0, ["width"] = 1440,
+            ["id"] = "data-table", [ManifestTypeKey] = "table", ["x"] = 0, ["y"] = 0, ["width"] = 1440,
             ["height"] = (binding.Limit + 1) * 56, ["rowHeight"] = 56, ["fontSize"] = 29,
             ["font"] = new JsonObject { ["token"] = "brand.fontBody" },
             ["color"] = new JsonObject { ["token"] = "brand.onPrimary" },
