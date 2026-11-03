@@ -277,6 +277,80 @@ class Layout {
     }
     return extent;
   }
+  bool table(const Json& node, const GraphicsPrimitive& base, bool visible) {
+    need(!hasTable_, "template-table-limit");
+    hasTable_ = true;
+    const auto* columns = node.get("columns");
+    const auto* rows = node.get("rows");
+    need(columns && columns->isArray() && !columns->asArray().empty() && columns->asArray().size() <= 8 &&
+        rows && rows->isArray() && !rows->asArray().empty() && rows->asArray().size() <= 12, "template-table-dimensions");
+    const double rowHeight = quantity(node, "rowHeight", 8, 512);
+    need(rowHeight * (rows->asArray().size() + 1) <= base.box.height, "template-table-height");
+    const auto font = resolve(node.get("font"), "string");
+    need(font.isString() && !font.asString().empty() && font.asString().size() <= 128 && utf8(font.asString()), "template-table-font");
+    const double fontSize = quantity(node, "fontSize", 1, rowHeight);
+    const auto textColor = color(resolve(node.get("color"), "color").asString());
+    const auto headerFill = color(resolve(node.get("headerFill"), "color").asString());
+    const auto rowFill = color(resolve(node.get("rowFill"), "color").asString());
+    const auto alternateFill = node.get("alternateFill") ? color(resolve(node.get("alternateFill"), "color").asString()) : rowFill;
+    struct Column { std::string heading, align; double weight; };
+    std::vector<Column> layout;
+    double totalWeight = 0;
+    for (const auto& column : columns->asArray()) {
+      keys(column, {"heading", "align", "weight"});
+      const auto heading = column.getString("heading");
+      const auto align = stringProperty(column, "align", "left");
+      need(!heading.empty() && heading.size() <= 512 && utf8(heading) &&
+          (align == "left" || align == "center" || align == "right"), "template-table-column");
+      const auto weight = quantity(column, "weight", .1, 100, 1);
+      totalWeight += weight;
+      layout.push_back({heading, align, weight});
+    }
+    auto appendRow = [&](size_t index, uint32_t fill, const Json::Array* cells) {
+      if (!visible) return;
+      auto background = base;
+      background.type = "rect";
+      background.box.y += rowHeight * index;
+      background.box.height = rowHeight;
+      background.clip = intersect(base.clip, background.box);
+      background.color = fill;
+      draw_->primitives.push_back(background);
+      double x = base.box.x;
+      for (size_t column = 0; column < layout.size(); ++column) {
+        const auto width = base.box.width * layout[column].weight / totalWeight;
+        const auto padding = std::min(12., width * .08);
+        auto cell = background;
+        cell.type = "text";
+        cell.box.x = x + padding;
+        cell.box.width = width - 2 * padding;
+        cell.clip = intersect(background.clip, cell.box);
+        cell.text = cells ? (*cells)[column].asString() : layout[column].heading;
+        cell.font = font.asString();
+        cell.fontSize = fontSize;
+        cell.fontWeight = cells ? 400 : 600;
+        cell.align = layout[column].align;
+        cell.overflow = "ellipsis";
+        cell.color = textColor;
+        draw_->primitives.push_back(std::move(cell));
+        x += width;
+      }
+    };
+    appendRow(0, headerFill, nullptr);
+    size_t index = 1;
+    for (const auto& row : rows->asArray()) {
+      need(row.isObject() && row.get("field"), "template-table-row-field");
+      const auto value = resolve(&row, "string");
+      need(value.isString() && value.asString().size() <= 4096, "template-table-row");
+      if (value.asString().empty()) continue;
+      const auto cells = Json::parse(value.asString());
+      need(cells && cells->isArray() && cells->asArray().size() == layout.size(), "template-table-row");
+      for (const auto& cell : cells->asArray())
+        need(cell.isString() && utf8(cell.asString()), "template-table-cell");
+      appendRow(index, index % 2 ? rowFill : alternateFill, &cells->asArray());
+      ++index;
+    }
+    return visible;
+  }
   bool visit(const Json& node, double originX, double originY, GraphicsBox clip, double opacity, int depth, bool flowChild, bool parentVisible = true, const std::string& parentId = {}, int unit = -1, double plateWidth = 0, bool fitChildren = false) {
     need(depth <= 8 && ++nodes_ <= 64, "template-layer-limit");
     const auto nodeId = node.getString("id"), type = node.getString("type"); need(validTemplateId(nodeId) && ids_.insert(nodeId).second, "template-layer-id");
@@ -286,6 +360,7 @@ class Layout {
     else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth"});
     else if (type == "line") allowed.insert({"diagonal", "stroke", "strokeWidth"});
     else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty", "outline", "shadow", "minFontSize"});
+    else if (type == "table") allowed.insert({"columns", "rows", "rowHeight", "font", "fontSize", "color", "headerFill", "rowFill", "alternateFill"});
     else if (type == "image") allowed.insert({"asset", "fit", "align", "verticalAlign", "collapseWhenEmpty", "missing"});
     else need(false, "unsupported-template-node-type");
     keys(node, allowed);
@@ -332,6 +407,7 @@ class Layout {
       }
       return populated;
     }
+    if (type == "table") return table(node, p, visible);
     if (type == "rect" || type == "ellipse" || type == "line") {
       const auto* stroke = node.get("stroke");
       need(stroke || (type != "line" && !node.get("strokeWidth")), "template-stroke-required");
@@ -421,6 +497,7 @@ class Layout {
   std::map<const Json*, double> autoWidths_;
   std::set<const Json*> measuredNodes_;
   bool hasUnanimatedLayer_ = false;
+  bool hasTable_ = false;
   std::set<std::string> declared_, ids_; size_t nodes_ = 0; GraphicsDrawing* draw_ = nullptr;
 };
 } // namespace
