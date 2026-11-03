@@ -1,3 +1,4 @@
+#include "GraphicsMotionFixture.h"
 #include "core/MediaCore.h"
 #include "core/CaptureDeviceSource.h"
 #include "rpc/JsonRpcServer.h"
@@ -530,6 +531,126 @@ TEST(GraphicsCompositionPixel, NativeFadeAndReversalReachActualGpuPixels) {
   ASSERT_TRUE(command("graphics-program-clear", {{"channel", "all"}}));
   EXPECT_EQ(blank, render());
 }
+
+TEST(GraphicsCompositionPixel, BarLeadsTheWordsOnProgramPixels) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  using corevideo::rpc::Json;
+  double now = 0;
+  corevideo::graphics::GraphicsInstances graphics{"test-core", [&] { return now; }};
+  int sequence = 0;
+  const auto command = [&](const std::string& type, Json::Object payload) {
+    payload["schemaVersion"] = 1;
+    payload["requestId"] = "motion-operation-" + std::to_string(++sequence);
+    payload["clientId"] = "motion-gpu-qa";
+    payload["coreEpoch"] = "test-core";
+    payload["instanceId"] = "featured";
+    payload["expectedRevision"] = 1;
+    return graphics.apply(Json::Object{{"type", type}, {"graphics", std::move(payload)}});
+  };
+  const auto render = [&](bool preview = false) {
+    corevideo::modules::CompositorRenderPlan plan;
+    plan.width = 320;
+    plan.height = 180;
+    graphics.append(plan, preview);
+    auto frame = compositor->render(plan, {});
+    graphics.observe(frame);
+    return frame.preview.bgra;
+  };
+  const auto blank = render();
+  ASSERT_EQ(320u * 180 * 4, blank.size());
+  ASSERT_TRUE(command("graphics-template-install", {
+      {"manifest",corevideo::graphics::test::motionFixture("bar-first.json")}}));
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  const auto installed = [&] {
+    const auto* result = graphics.snapshot().get("templateInstalls");
+    if (!result) return false;
+    for (const auto& row : result->asArray()) if (row.getString("state") == "installed") return true;
+    return false;
+  };
+  while (!installed() && std::chrono::steady_clock::now() < until) {
+    render();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(installed());
+  ASSERT_TRUE(command("graphics-instance-create", {{"templateId","motion-bar-first"}, {"templateVersion",1},
+      {"scope","global"}, {"style",Json::Object{{"backgroundColor","#203040"}}}, {"fields",Json::Object{{"name","Ada Lovelace"},{"title","Engineer"}}}}));
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"action","show"}}));
+  const auto row = [&]() -> const Json& { return graphics.snapshot().get("instances")->asArray().front(); };
+  const auto readyUntil = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (row().getString("visibility") != "entering" && std::chrono::steady_clock::now() < readyUntil) {
+    render();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_EQ("entering", row().getString("visibility")) << row().stringify();
+  const auto pixel = [](const auto& frame, int x, int y) {
+    const auto begin = frame.begin() + (320 * y + x) * 4;
+    return std::vector<uint8_t>(begin, begin + 4);
+  };
+  now = 100;
+  const auto early = render();
+  ASSERT_EQ(blank.size(), early.size());
+  EXPECT_NE(pixel(blank, 33, 168), pixel(early, 33, 168));
+  EXPECT_EQ(pixel(blank, 148, 168), pixel(early, 148, 168));
+  now = 150;
+  const auto beforeName = render();
+  ASSERT_EQ(blank.size(), beforeName.size());
+  const auto countNamePixels = [&](const auto& frame) {
+    const auto plate = pixel(frame, 33, 168);
+    int count = 0;
+    for (int y = 149; y < 157; ++y) {
+      for (int x = 24; x < 100; ++x) {
+        if (pixel(frame, x, y) != plate) ++count;
+      }
+    }
+    return count;
+  };
+  EXPECT_EQ(0, countNamePixels(beforeName));
+  now = 600;
+  const auto settled = render();
+  ASSERT_EQ(blank.size(), settled.size());
+  EXPECT_NE(pixel(blank, 148, 168), pixel(settled, 148, 168));
+  EXPECT_GE(countNamePixels(settled), 20);
+  EXPECT_EQ("on-air", row().getString("visibility"));
+  ASSERT_TRUE(command("graphics-instance-cue", {{"rideTake",false}}));
+  now = 700;
+  const auto preview = render(true);
+  EXPECT_EQ(settled, preview);
+  now = 1200;
+  EXPECT_EQ(preview, render(true));
+}
+
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
+TEST(GraphicsCompositionPixel, ThumbnailForALayeredTemplateMatchesItsSettledDesign) {
+  using namespace corevideo;
+  const auto manifest = graphics::test::motionFixture("bar-first.json");
+  const auto parsed = rpc::Json::parse(manifest);
+  ASSERT_TRUE(parsed);
+  auto plain = parsed->asObject();
+  auto layers = plain.at("layers").asArray();
+  for (auto& node : layers) {
+    auto layer = node.asObject();
+    layer.erase("animations");
+    node = std::move(layer);
+  }
+  plain["layers"] = std::move(layers);
+  modules::CompositorOverlayRaster raster;
+  std::string error;
+  const auto thumbnail = [&](const std::string& json) {
+    auto input = std::make_shared<graphics::GraphicsTemplateInput>();
+    input->definition = graphics::GraphicsTemplate::load(json, error);
+    if (!input->definition) return std::vector<uint8_t>{};
+    input->fields = input->definition->defaultFields();
+    input->brand = graphics::test::motionBrand();
+    modules::CompositorOverlayContent overlay;
+    overlay.graphicsTemplate = std::move(input);
+    return raster.thumbnailPng(overlay, 320, 51, error);
+  };
+  const auto layered = thumbnail(manifest);
+  ASSERT_GT(layered.size(), 100u) << error;
+  EXPECT_EQ(layered, thumbnail(rpc::Json(std::move(plain)).stringify())) << error;
+}
+#endif
 
 TEST(GraphicsCompositionPixel, AutomaticIntroductionUsesActualSourceDrawAndClearPreventsReplay) {
   using corevideo::rpc::Json;

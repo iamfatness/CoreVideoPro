@@ -61,6 +61,13 @@ double motionTotal(const GraphicsMotionSummary&, const GraphicsTransition&, bool
 struct GraphicsRun { int unit = -1; size_t first = 0, count = 0; GraphicsBox source; };
 std::vector<GraphicsRun> planRuns(const GraphicsDrawing&);
 struct GraphicsAtlasSlice { int x = 0, y = 0, width = 0, height = 0; };
+struct GraphicsRunLayout {
+  double width = 0, height = 0;
+  std::vector<GraphicsRun> runs;
+  std::vector<GraphicsAtlasSlice> slices;
+  int atlasWidth = 0, atlasHeight = 0;
+  std::shared_ptr<const GraphicsDrawing> drawing;
+};
 bool packAtlas(const std::vector<GraphicsRun>&, double scale, std::vector<GraphicsAtlasSlice>&, int& width, int& height);
 GraphicsMotionState previewMotion(const std::string& mode, double elapsedMs, double inMs, double outMs,
     const GraphicsTransition& graphicIn, const GraphicsTransition& graphicOut);
