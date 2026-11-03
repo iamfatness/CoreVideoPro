@@ -1,3 +1,4 @@
+#include "GraphicsMotionFixture.h"
 #include "modules/Sha256.h"
 #include "modules/Interfaces.h"
 #include "modules/DeliveryCounterPattern.h"
@@ -417,6 +418,47 @@ TEST(GradePreviewPixels, ScratchLayerEditsProducePrivateNativePixelsWithoutInsta
   const auto red=sample("#FF0000",1),green=sample("#00FF00",2);
   EXPECT_GT((red>>16)&255,220u);EXPECT_LT((red>>8)&255,30u);EXPECT_GT((green>>8)&255,220u);EXPECT_LT((green>>16)&255,30u);
   EXPECT_EQ(before,previewCenter(compositor->render(request.programPlan,request.frames)));EXPECT_EQ(unchanged,graphics.snapshot().stringify());compositor->submitGradePreviews({});
+}
+
+TEST(GradePreviewPixels, PrivatePreviewPlaysLayerMotionWithoutTouchingProgram) {
+  using namespace corevideo;
+  auto compositor = isolatedCompositor();
+  ASSERT_TRUE(compositor);
+  auto request = requestAtSize(64);
+  request.programPlan.skipCpuReadback = false;
+  const auto before = previewCenter(compositor->render(request.programPlan, request.frames));
+  graphics::GraphicsInstances instances{"private-motion"};
+  const auto unchanged = instances.snapshot().stringify();
+  auto input = std::make_shared<graphics::GraphicsTemplateInput>();
+  std::string error;
+  input->definition = graphics::GraphicsTemplate::load(graphics::test::motionFixture("bar-first.json"), error);
+  ASSERT_TRUE(input->definition) << error;
+  input->fields = input->definition->defaultFields();
+  input->brand = graphics::test::motionBrand();
+  input->placement = input->definition->defaultPlacement();
+  CompositorOverlayContent overlay;
+  overlay.appearance.enabled = true;
+  overlay.graphicsTemplate = std::move(input);
+  overlay.graphicsMotion = graphics::GraphicsMotionState{graphics::GraphicsMotionPhase::Settled, 0,
+      {"fade","left","ease-out",250},{"fade","left","ease-in",200}};
+  const auto sample = [&](const char* mode, double elapsed, int revision) {
+    GradePreviewDemand demand{"private-motion", "preview:lower-third", revision, {}};
+    demand.lowerThirdPreview = overlay;
+    demand.playMode = mode;
+    demand.playElapsedMs = elapsed;
+    request.gradePreviews = {demand};
+    const auto surface = awaitGrade(*compositor, request, demand.instanceId, revision);
+    ASSERT_FALSE(surface.texture.sharedHandleHex.empty());
+    const auto pixels = consumeSamples(surface.texture, {{.46f,.94f}});
+    ASSERT_EQ(1u, pixels.size());
+    return pixels[0];
+  };
+  const auto early = sample("in", 100, 1);
+  EXPECT_NE(early, sample("in", 600, 2));
+  EXPECT_EQ(early, sample("out", 700, 3));
+  EXPECT_EQ(before, previewCenter(compositor->render(request.programPlan, request.frames)));
+  EXPECT_EQ(unchanged, instances.snapshot().stringify());
+  compositor->submitGradePreviews({});
 }
 
 TEST(AdvancedGradePixels, ExposurePrimariesStackOrderLutDomainAndGlobalIntensityHaveIndependentExpectedValues) {

@@ -1359,3 +1359,21 @@ TEST(GraphicsInstances, WholeModeAndPlainTemplatesKeepTheGraphicsTimeline) {
       {"animations",Json::Object{{"layers","sideways"}}}})));
   EXPECT_EQ("invalid-animations", lastReason(state));
 }
+
+TEST(GraphicsInstances, AuthoringPreviewAcceptsPlayAndCarriesTheGraphicMotion) {
+  GraphicsInstances state{"test-core"};
+  const auto fixture = Json::parse(corevideo::graphics::test::motionFixture("bar-first.json"));
+  ASSERT_TRUE(fixture);
+  ASSERT_TRUE(installAndWait(state, fixture->asObject()));
+  Json::Object draft{{"templateId","motion-bar-first"},{"templateVersion",1},
+      {"play",Json::Object{{"mode","cycle"},{"token",4}}}};
+  const auto overlay = state.authoringPreview(draft);
+  ASSERT_TRUE(overlay && overlay->graphicsMotion);
+  EXPECT_EQ(250., overlay->graphicsMotion->graphicIn.durationMs);
+  EXPECT_EQ(200., overlay->graphicsMotion->graphicOut.durationMs);
+  draft["play"] = Json::Object{{"mode","spin"},{"token",1}};
+  EXPECT_FALSE(state.authoringPreview(draft));
+  draft["play"] = Json::Object{{"mode","in"}};
+  EXPECT_FALSE(state.authoringPreview(draft));
+  EXPECT_TRUE(state.snapshot().get("instances")->asArray().empty());
+}

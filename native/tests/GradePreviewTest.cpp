@@ -170,3 +170,35 @@ TEST(GradePreviewControl, InputCacheHoldsTrueIdentityAndReleasesOnClose) {
   request = {}; result = {}; cache.prepare(request, result);
   EXPECT_EQ(result.retainedInputs, 0u);
 }
+
+TEST(GradePreviewControl, PlayingDemandUsesTheTickClockAndThirtyHertzCadence) {
+  using namespace std::chrono_literals;
+  using J = rpc::Json;
+  core::GradePreviewController control;
+  PreviewCompositor compositor;
+  const auto t0 = core::GradePreviewController::Clock::time_point{} + 1s;
+  const auto canvas = [](int revision, const J& play) {
+    return J::Object{{"instanceId","designer"},{"sourceId","preview:lower-third"},{"revision",revision},
+        {"lowerThirdPreview",J::Object{{"appearance",J{}},{"graphics",J::Object{{"play",play}}}}}};
+  };
+  const J play = J::Object{{"mode","in"},{"token",1}};
+  ASSERT_TRUE(control.configure(canvas(1, play), {}, true, t0, modules::CompositorOverlayContent{}));
+  for (int i = 1; i <= 30; ++i) {
+    control.tick({}, compositor, i, t0 + 34ms * i);
+    EXPECT_EQ(1u, control.drain().size());
+  }
+  EXPECT_EQ(30, compositor.submissions);
+  EXPECT_EQ(0u, control.eventsRefused());
+  ASSERT_EQ(1u, compositor.request.gradePreviews.size());
+  EXPECT_EQ("in", compositor.request.gradePreviews[0].playMode);
+  EXPECT_EQ(1020., compositor.request.gradePreviews[0].playElapsedMs);
+  ASSERT_TRUE(control.configure(canvas(2, play), {}, true, t0 + 1100ms, modules::CompositorOverlayContent{}));
+  control.tick({}, compositor, 31, t0 + 1200ms);
+  EXPECT_EQ(100., compositor.request.gradePreviews[0].playElapsedMs);
+  ASSERT_TRUE(control.configure(canvas(3, J{}), {}, true, t0 + 1200ms, modules::CompositorOverlayContent{}));
+  for (int i = 1; i <= 9; ++i) {
+    control.tick({}, compositor, 31 + i, t0 + 1200ms + 34ms * i);
+    control.drain();
+  }
+  EXPECT_EQ(34, compositor.submissions);
+}

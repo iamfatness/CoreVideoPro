@@ -979,8 +979,33 @@ class D3D11Compositor final : public ICompositor {
           key.rect.width*=float(p.scale); key.rect.height*=float(p.scale);
           key.rect.x=ax*(1-key.rect.width)+float(p.x/1920.); key.rect.y=ay*(1-key.rect.height)+float(p.y/1080.);
         }
-        preview.layers.push_back(key);
-        observation.sourceEpoch=1; observation.sourceFrameId=demand.revision; observation.status="ready";
+        bool hidden = false;
+        if (!demand.playMode.empty()) {
+          const auto base = key.overlay.graphicsMotion.value_or(graphics::GraphicsMotionState{});
+          const auto summary = definition ? definition->definition->motionSummary() : graphics::GraphicsMotionSummary{};
+          const double inMs = graphics::motionTotal(summary, base.graphicIn, true);
+          const double outMs = graphics::motionTotal(summary, base.graphicOut, false);
+          const auto motion = graphics::previewMotion(demand.playMode, demand.playElapsedMs,
+              inMs, outMs, base.graphicIn, base.graphicOut);
+          hidden = motion.phase == graphics::GraphicsMotionPhase::Hidden;
+          if (summary.layered) {
+            key.overlay.graphicsMotion = motion;
+          } else if (motion.phase == graphics::GraphicsMotionPhase::In || motion.phase == graphics::GraphicsMotionPhase::Out) {
+            graphics::GraphicsDrawing drawing;
+            drawing.width = drawing.height = 1;
+            const auto sample = graphics::sampleRun(drawing, -1, motion);
+            key.rect.x += float(sample.transform.tx) * key.rect.width;
+            key.rect.y += float(sample.transform.ty) * key.rect.height;
+            key.opacity *= float(sample.opacity);
+          }
+          const double endMs = demand.playMode == "in" ? inMs :
+              demand.playMode == "out" ? outMs + 500 : inMs + 1000 + outMs + 500;
+          if (demand.playMode != "loop" && demand.playElapsedMs >= endMs) observation.demand.playMode.clear();
+        }
+        if (!hidden) preview.layers.push_back(key);
+        observation.sourceEpoch = 1;
+        observation.sourceFrameId = demand.playMode.empty() ? demand.revision : request.sequence;
+        observation.status = "ready";
         const auto image=renderPreview(preview,{});
         if (overlayRaster_.failedThisFrame()) { observation.status="unavailable"; observation.reason=overlayRaster_.lastWarning(); }
         else if (overlayRaster_.pendingThisFrame()) { observation.status="preparing"; observation.reason="awaiting-native-appearance"; }

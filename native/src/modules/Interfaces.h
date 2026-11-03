@@ -1231,6 +1231,8 @@ struct GradePreviewDemand {
   compositor::ScopeRoi scopeRoi;
   std::optional<CompositorOverlayContent> lowerThirdPreview;
   std::string lowerThirdPreviewSignature;
+  std::string playMode;
+  double playElapsedMs = 0;
 };
 struct GradePreviewSurface {
   GradePreviewDemand demand;

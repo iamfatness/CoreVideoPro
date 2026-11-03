@@ -96,9 +96,16 @@ bool GraphicsInstances::validId(const std::string& value) {
 
 std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPreview(const Json& draft) {
   updateTemplates();
-  if (!draft.isObject() || draft.asObject().size() > 8) return {};
+  if (!draft.isObject() || draft.asObject().size() > 9) return {};
   for (const auto& [key, _] : draft.asObject())
-    if (key != "templateId" && key != "templateVersion" && key != "fields" && key != "style" && key != "animations" && key != "placement" && key != "scratch" && key != "image") return {};
+    if (key != "templateId" && key != "templateVersion" && key != "fields" && key != "style" && key != "animations" && key != "placement" && key != "scratch" && key != "image" && key != "play") return {};
+  if (const auto* play = draft.get("play"); play && !play->isNull()) {
+    if (!play->isObject() || play->asObject().size() != 2) return {};
+    const auto mode = play->getString("mode");
+    const auto token = play->getNumber("token", -1);
+    if ((mode != "in" && mode != "out" && mode != "cycle" && mode != "loop") ||
+        !std::isfinite(token) || token < 0 || token > 2147483647 || token != std::floor(token)) return {};
+  }
   const auto templateId = draft.getString("templateId");
   const auto version = draft.getNumber("templateVersion", 0);
   if (!std::isfinite(version) || std::floor(version) != version || version < 1 || version > 2147483647.) return {};
@@ -109,6 +116,8 @@ std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPre
   if (!compatibility) {
     revision.definition = found->second; revision.templateFields = revision.definition->defaultFields(); revision.placement = revision.definition->defaultPlacement(); revision.placement = revision.definition->defaultPlacement();
     revision.appearance.backgroundOpacity = 1;
+    if (const auto* animations = revision.definition->document().get("animations"))
+      if (!readAnimations(*animations, revision)) return {};
   }
   if (!readRevision(draft, revision) || !revision.fieldsReady) return {};
   hashRevision(templateId, revision);
@@ -138,6 +147,7 @@ std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPre
   Instance placeholder; placeholder.id = "authoring";
   auto result = layer(placeholder, revision, 1920, 1080);
   result.overlay.graphicsAuthoringRect = result.rect;
+  result.overlay.graphicsMotion = GraphicsMotionState{GraphicsMotionPhase::Settled, 0, revision.entrance, revision.exit};
   return result.overlay;
 }
 
