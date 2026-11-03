@@ -32,14 +32,14 @@ public static class StudioStreamOutputValidation
         return $"{NormalizeRtmpProtocol(protocol)}://{normalizedUrl}";
     }
 
+    /// <summary>Validates the stream's own destinations (RTMP, SRT, HLS). NDI is a separate output
+    /// with its own validation (<see cref="ValidateNdiOutput"/>) and is never a stream destination.</summary>
     public static string? ValidateSelectedDestinations(
         bool rtmpEnabled,
-        bool ndiEnabled,
         bool srtEnabled,
         string? rtmpProtocol,
         string? rtmpServerUrl,
         string? rtmpStreamKey,
-        string? ndiProgramName,
         string? srtMode,
         string? srtHost,
         string? srtPort,
@@ -51,7 +51,7 @@ public static class StudioStreamOutputValidation
         bool hlsEnabled = false,
         string? hlsPlaylistUrl = null)
     {
-        if (!rtmpEnabled && !ndiEnabled && !srtEnabled && !hlsEnabled)
+        if (!rtmpEnabled && !srtEnabled && !hlsEnabled)
         {
             return "Select at least one stream destination.";
         }
@@ -64,11 +64,6 @@ public static class StudioStreamOutputValidation
         if (rtmpEnabled && ValidateFfmpegRuntime(ffmpegBinDirectory) is { Length: > 0 } ffmpegError)
         {
             return ffmpegError;
-        }
-
-        if (ndiEnabled && string.IsNullOrWhiteSpace(ndiProgramName))
-        {
-            return "Configure an NDI program name before streaming.";
         }
 
         if (srtEnabled &&
@@ -258,8 +253,107 @@ public static class StudioStreamOutputValidation
         return null;
     }
 
+    /// <summary>NDI output's own validation, or null when NDI can run. A reason refuses the NDI
+    /// toggle, or turns a running NDI output off; it never touches the stream. The program name
+    /// must be serialisable, the running core must carry ndi-output (null = core not up yet: defer
+    /// to the core's own sender status), and a graphics key that will actually be sent must not
+    /// advertise the program's own name. Any other key problem drops the key alone
+    /// (<see cref="IncludeNdiGraphicsKeyDestination"/>), so it never fails NDI.</summary>
+    public static string? ValidateNdiOutput(string? programName, string? graphicsName, bool graphicsKeyOn,
+        bool? coreHasNdiOutput, bool? coreHasGraphicsKey)
+    {
+        if (!CanSerializeNdiSettings(programName))
+            return "Configure an NDI program name before turning on NDI output.";
+        if (coreHasNdiOutput == false)
+            return "NDI output is not available in this core build (missing ndi-output).";
+        if (graphicsKeyOn && coreHasGraphicsKey != false &&
+            string.Equals(ResolveNdiGraphicsKeyName(programName, graphicsName),
+                NormalizeText(programName, string.Empty), StringComparison.OrdinalIgnoreCase))
+            return "NDI graphics key name must differ from the NDI program name.";
+        return null;
+    }
+
+    /// <summary>What an output settings change stops. The stream and NDI are validated apart, and
+    /// only while each is on: a stream failure stops the stream only, an NDI failure turns NDI off
+    /// only.</summary>
+    public static (string? StreamStopReason, string? NdiOffReason) ResolveOutputValidation(
+        bool streamingRequested, Func<string?> validateStream, bool ndiOutputEnabled, Func<string?> validateNdi) =>
+        (streamingRequested ? validateStream() : null, ndiOutputEnabled ? validateNdi() : null);
+
+    /// <summary>NDI destination ids for the NDI output flag. The key is decided by the caller
+    /// (<see cref="IncludeNdiGraphicsKeyDestination"/>) and rides with the program source only.</summary>
+    public static IReadOnlyList<string> SelectNdiDestinations(
+        bool ndiOn, string? programName, bool keyIncluded, bool validatedOnly)
+    {
+        var destinations = new List<string>(2);
+        if (ndiOn && (!validatedOnly || CanSerializeNdiSettings(programName)))
+        {
+            destinations.Add("ndi");
+            if (keyIncluded) destinations.Add(NdiGraphicsKeyDestination);
+        }
+
+        return destinations;
+    }
+
     public static bool CanSerializeNdiSettings(string? programName) =>
         !string.IsNullOrWhiteSpace(programName);
+
+    /// <summary>The core's destination id for the NDI graphics key (fill+key) sender.</summary>
+    public const string NdiGraphicsKeyDestination = "ndi-graphics";
+
+    /// <summary>NDI's source-name limit (native NdiSourceName.h kNdiMaxSourceNameLength).</summary>
+    public const int NdiMaxSourceNameLength = 64;
+
+    private const string NdiGraphicsKeySuffix = " Graphics";
+
+    /// <summary>The NDI source name the graphics key advertises: the operator's own name when
+    /// set, otherwise "&lt;NDI program name&gt; Graphics" so the two sources sort together on a
+    /// receiver. The default trims the program part so the whole name fits NDI's 64 characters
+    /// (an over-long default used to leave the sender stuck in source-name-invalid).</summary>
+    public static string ResolveNdiGraphicsKeyName(string? programName, string? graphicsName)
+    {
+        var explicitName = NormalizeText(graphicsName, string.Empty);
+        if (explicitName.Length > 0) return explicitName;
+        var program = NormalizeText(programName, "CoreVideo Pro Program");
+        var room = NdiMaxSourceNameLength - NdiGraphicsKeySuffix.Length;
+        if (program.Length > room) program = program[..room].TrimEnd();
+        return program + NdiGraphicsKeySuffix;
+    }
+
+    /// <summary>Validates the name the key would advertise, with the native sender's rules: at most
+    /// 64 characters, none of NDI's reserved characters, and never the Program source's own name
+    /// (two senders with one name collide on the network).</summary>
+    public static string? ValidateNdiGraphicsKeyName(string? programName, string? graphicsName)
+    {
+        var resolved = ResolveNdiGraphicsKeyName(programName, graphicsName);
+        if (resolved.Length > NdiMaxSourceNameLength)
+            return $"NDI graphics key name must be {NdiMaxSourceNameLength} characters or fewer.";
+        if (resolved.Any(ch => ch <= '\u001f' || "<>:\"/\\|?*".Contains(ch)))
+            return "NDI graphics key name contains characters NDI does not allow (< > : \" / \\ | ? *).";
+        if (string.Equals(resolved, NormalizeText(programName, "CoreVideo Pro Program"), StringComparison.OrdinalIgnoreCase))
+            return "NDI graphics key name must differ from the NDI program name.";
+        return null;
+    }
+
+    /// <summary>Why the graphics key cannot be turned on now, or null. One rule for the control
+    /// action and the stream destination list. NDI must be on (the key rides with it), the running
+    /// core must carry ndi-graphics-output (null = no profile yet: defer to the core's own sender
+    /// warning), and the advertised name must be valid.</summary>
+    public static string? NdiGraphicsKeyRefusal(bool ndiEnabled, bool? coreHasCapability, string? programName, string? graphicsName)
+    {
+        if (!ndiEnabled) return "Turn on NDI output first; the graphics key is a second NDI source that rides with it.";
+        if (coreHasCapability == false)
+            return "NDI graphics key is not available in this native core build (missing ndi-graphics-output).";
+        return ValidateNdiGraphicsKeyName(programName, graphicsName);
+    }
+
+    /// <summary>Whether the key destination is sent. A key that cannot be sent is DROPPED from the
+    /// list on its own; it never fails stream validation, so it can never stop RTMP or SRT. The
+    /// one exception is a key name equal to the program name, which <see cref="ValidateNdiOutput"/>
+    /// fails for all of NDI.</summary>
+    public static bool IncludeNdiGraphicsKeyDestination(bool ndiEnabled, bool keyEnabled, bool? coreHasCapability,
+        string? programName, string? graphicsName) =>
+        keyEnabled && NdiGraphicsKeyRefusal(ndiEnabled, coreHasCapability, programName, graphicsName) is null;
 
     public static bool CanSerializeSrtSettings(
         string? mode,

@@ -14,18 +14,27 @@ renderers before stopping raw data with a callback in flight. Hard rules:
 - **Callback vs teardown must serialize.** `~ParticipantSubscription` sets
   `m_stopping` first, drains `m_targets_mtx` (acquire+release), THEN
   `unSubscribe()`/`destroyRenderer()` — do not hold a mutex across those SDK
-  calls (they may wait on a callback that takes the same mutex). EngineShare's
-  single-mutex callback/teardown pattern is the other accepted shape.
+  calls (they may wait on a callback that takes the same mutex). EngineShare now
+  uses `RendererCallbackGate` (`native/zoom-engine/shared/renderer-callback-gate.h`):
+  every SDK call runs suspended with `m_mtx` unlocked, and a renderer callback that
+  lands while suspended gets no lock (PR #791 for #790; pinned by
+  `EngineShareLifecycleTest`). Audited 2026-10-30:
+  `docs/qa/engine-off-teardown-audit-2026-10-30.md` (#445).
 - **EngineVideo's subscription maps are guarded by `m_mtx`**, but
   `ParticipantSubscription` build/destroy makes SDK calls
   (`createRenderer`/`destroyRenderer`) and so runs OUTSIDE the map lock — move
   unique_ptrs out of the map under the lock, construct/destroy after release.
   Lock order: `m_mtx` → `m_targets_mtx` (leaf, never reversed).
-- **Shell: stop off the UI thread.** Every core stop rides `Task.Run`. Leave-meeting
-  (`SettingsViewModel`), respawn and the post-failure `ForceStopMediaCoreAsync` use
-  `_bridge.Stop()`: a kill-tree + `WaitForExit(1500)` under the supervisor gate. App exit
-  (`StudioViewModel.DisposeAsync`) uses `_bridge.StopForAppExit(2 s)` instead (T1.8, below):
-  worst case 2 s grace + 1.5 s kill wait = 3.5 s inside the 5 s `ShutdownTimeout`.
+- **Shell: stop off the UI thread.** The post-failure `ForceStopMediaCoreAsync` rides
+  `Task.Run` and uses `_bridge.Stop()` (close stdin, kill-tree, `WaitForExit(1500)`; only the
+  state retirement is under the supervisor gate). App exit (`StudioViewModel.DisposeAsync`,
+  also on `Task.Run`) uses `_bridge.StopForAppExit(2 s)` instead (T1.8, below): worst case
+  2 s grace + 1.5 s kill wait = 3.5 s inside the 5 s `ShutdownTimeout`. Leave-meeting no
+  longer stops the core (`SettingsViewModel` calls `LeaveZoomAsync`; the engine stays alive
+  until the next join) and respawn does not call `Stop()` (the child has already exited).
+  One `Stop()` still runs synchronously on the UI thread, from the bridge health change
+  (`StudioViewModel.OnBridgeHealthChanged` -> `StopMediaCoreSession`): cheap in-process,
+  a blocking `ControlAsync("shutdown")` wait in hosted mode (audit 2026-10-30, #445).
 - **App close never cuts a recording off unasked (T1.8, #461, 2026-09-10; fix round 1).** Closing
   used to kill-tree the core with no stop sent, so the Program moov atom, every ISO writer and any
   RTMP/SRT egress died mid-write (unplayable show file). Now, in order:
@@ -88,8 +97,12 @@ renderers before stopping raw data with a callback in flight. Hard rules:
      `ShutdownBudgetTests` pins the budget; the disposal after the core stop is logged with its
      duration. Leave-meeting, respawn and the post-failure `ForceStopMediaCoreAsync` keep the
      immediate kill.
-  **Remaining gaps:** the Zoom engine still does not get the Leave → `stop_raw_media` order on app
-  close — `~ZoomEngineRuntime` terminates it (same as the kill-tree did). And NONE of this has run
+  **Remaining gaps:** on a graceful app close `~ZoomEngineRuntime` -> `terminate()` closes the
+  engine's IPC pipe first, so the engine runs Leave → `stop_raw_media` → drain → `CleanUPSDK`
+  through its EOF path, but only inside a 1 s wait before `TerminateProcess`; every kill path
+  (plain `Stop()`, the app-exit kill fallback, a core crash) skips the order entirely. On the
+  core's own stdin-EOF teardown the encoder sinks finalize AFTER `zoomEngineRuntime_` destroys
+  (reverse member order), inside the same 2 s grace (audit 2026-10-30, #445). And NONE of this has run
   against the real app yet: the pre-merge live checklist is in the T1.8 fix-round-1 report (idle
   close, Keep running via mouse/Esc/Enter, Stop and close + ffprobe of Program and every ISO,
   repeated closes, minimized close, a stream stop, zero new WinUI dumps).

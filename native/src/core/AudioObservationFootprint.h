@@ -13,8 +13,8 @@ inline std::size_t observationExtraBytes(const contracts::OutputLifecycle& value
 inline std::size_t observationExtraBytes(const modules::IsoStreamStatus& value) {
   return observationExtraBytes(value.sourceId) + observationExtraBytes(value.displayName) +
       observationExtraBytes(value.path) + observationExtraBytes(value.kind) +
-      observationExtraBytes(value.encoderPath) + observationExtraBytes(value.fallbackReason) +
-      observationExtraBytes(value.warning);
+      observationExtraBytes(value.encoderPath) + observationExtraBytes(value.plannedEncoderPath) +
+      observationExtraBytes(value.fallbackReason) + observationExtraBytes(value.warning);
 }
 inline std::size_t observationExtraBytes(const modules::AudioParticipantMixMetrics& value) {
   return observationExtraBytes(value.participantId) + observationExtraBytes(value.status);
@@ -47,7 +47,12 @@ inline std::size_t audioObservationBytes(const AudioOutputObservation& value) {
       &e.codec, &e.recordingSessionId, &e.recordingStatus, &e.recordingTargetFolder,
       &e.recordingFilenamePrefix, &e.recordingFormat, &e.recordingQuality, &e.recordingArtifactPath,
       &e.recordingContainerFormat, &e.recordingVideoCodec, &e.recordingAudioCodec,
-      &e.recordingWarning, &e.recordingError}) bytes += observationExtraBytes(*field);
+      &e.recordingWarning, &e.recordingError, &e.programEncoderPath}) bytes += observationExtraBytes(*field);
+  if (e.isoAdmission) {
+    for (const auto* field : {&e.isoAdmission->decision, &e.isoAdmission->code, &e.isoAdmission->message,
+        &e.isoAdmission->probeStatus, &e.isoAdmission->capacity, &e.isoAdmission->workload})
+      bytes += observationExtraBytes(*field);
+  }
   bytes += observationExtraBytes(e.destinations) + observationExtraBytes(e.isoParticipantIds) + observationExtraBytes(e.isoStreams);
   if (e.lifecycle) bytes += observationExtraBytes(*e.lifecycle);
   bytes += observationExtraBytes(value.sender.status) + observationExtraBytes(value.sender.senders) + observationExtraBytes(value.sender.warnings);

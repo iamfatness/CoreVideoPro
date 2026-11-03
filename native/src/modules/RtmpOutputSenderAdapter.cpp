@@ -2,6 +2,7 @@
 #include "core/StreamBackpressurePolicy.h"
 #include "core/StreamAudioAlignmentPolicy.h"
 #include "modules/Interfaces.h"
+#include "modules/BitstreamQueueTestAccess.h"
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
 #include "modules/GpuVideoEncoder.h"
@@ -622,7 +623,7 @@ std::string selectFfmpegVideoEncoder(
   return candidates.empty() ? preferredEncoderFor(normalizedCodec, normalizedMode) : candidates.front();
 }
 
-class RtmpOutputSender final : public IOutputSender {
+class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestAccess {
  public:
   RtmpOutputSender(RuntimeProbe runtimeProbe, FfmpegSenderProtocol protocol = rtmpProtocol())
       : protocol_(std::move(protocol)),
@@ -1120,7 +1121,7 @@ class RtmpOutputSender final : public IOutputSender {
   OutputSenderSession session() const override { return snapshot(); }
   bool runtimeAvailableAtConstruction() const override { return runtimeAvailable_; }
 
-  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  // TEST-ONLY (see IBitstreamQueueTestAccess for the structural guard).
   bool wouldRestartForEncodePathForTest(const ProgramFrame& frame) override {
     const bool desiredGpuDirect =
         resolveGpuEncodePath(frame, videoWidth(frame), videoHeight(frame)) == GpuEncodePath::GpuDirect;
@@ -1129,13 +1130,13 @@ class RtmpOutputSender final : public IOutputSender {
     return gpuPathChanged;
   }
 
-  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  // TEST-ONLY (see IBitstreamQueueTestAccess for the structural guard).
   void setBackpressureObservationForTest(std::int64_t bufferedMs, bool keyframeInQueue) override {
     backpressureBufferedMsForTest_.store(bufferedMs, std::memory_order_relaxed);
     backpressureKeyframeForTest_.store(keyframeInQueue, std::memory_order_relaxed);
   }
 
-  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  // TEST-ONLY (see IBitstreamQueueTestAccess for the structural guard).
   // #597 Lever B seam: pushes straight onto bitstreamQueue_ so discard
   // correctness can be exercised with no hardware encoder.
   void enqueueBitstreamChunkForTest(std::size_t bytes, bool keyframe) override {
@@ -1153,7 +1154,7 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
   }
 
-  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  // TEST-ONLY (see IBitstreamQueueTestAccess for the structural guard).
   // #597 Task 8b seam: offers a chunk through the REAL enqueueBitstream(), so
   // the overflow path (and the GOP-tail discard that now guards it) can be
   // exercised with no hardware encoder. bitstreamWriterStop_ defaults to true
@@ -1177,7 +1178,7 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
   }
 
-  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  // TEST-ONLY (see IBitstreamQueueTestAccess for the structural guard).
   // ONE read of the queue's true state - depth, keyframe presence, and the
   // real bitstreamBufferedMs() - so a call-site test needs one call instead
   // of three, and none of them go through the setBackpressureObservationForTest
@@ -3587,6 +3588,17 @@ std::unique_ptr<IOutputSender> createRtmpOutputSender() {
   return std::make_unique<RtmpOutputSender>(probeFfmpegRuntime(""), rtmpProtocol());
 #else
   return nullptr;
+#endif
+}
+
+// #611: the concrete sender together with its test-only bitstream-queue access.
+RtmpOutputSenderForTest createRtmpOutputSenderForTest() {
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
+  auto sender = std::make_unique<RtmpOutputSender>(probeFfmpegRuntime(""), rtmpProtocol());
+  IBitstreamQueueTestAccess* const queue = sender.get();
+  return RtmpOutputSenderForTest{std::move(sender), queue};
+#else
+  return RtmpOutputSenderForTest{};
 #endif
 }
 

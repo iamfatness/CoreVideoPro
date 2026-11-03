@@ -195,7 +195,40 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(IsoArmedSummary));
         OnPropertyChanged(nameof(IsoHealthWarning));
         OnPropertyChanged(nameof(IsoHealthWarningVisibility));
+        RefreshIsoEncoderPlacement();
     }
+
+    // #935: which ISO is on the CPU software encoder and its measured per-frame cost. The logic is the
+    // pure IsoEncoderPlacementReadout; this is only the scalar bound projection. Notified only when
+    // the text/severity changes so a steady snapshot stream raises nothing.
+    private PlacementReadout _isoEncoderPlacement = PlacementReadout.Empty;
+
+    private void RefreshIsoEncoderPlacement()
+    {
+        var recording = _bridge.LastSnapshot?.Recording;
+        var next = IsoEncoderPlacementReadout.Describe(recording, recording?.Encoder.HardwareAccelerated ?? true);
+        if (next.Severity == _isoEncoderPlacement.Severity && next.Lines.SequenceEqual(_isoEncoderPlacement.Lines))
+        {
+            return;
+        }
+
+        _isoEncoderPlacement = next;
+        OnPropertyChanged(nameof(IsoEncoderPlacementMessage));
+        OnPropertyChanged(nameof(IsoEncoderPlacementSeverity));
+        OnPropertyChanged(nameof(IsoEncoderPlacementVisibility));
+    }
+
+    public string IsoEncoderPlacementMessage => string.Join(Environment.NewLine, _isoEncoderPlacement.Lines);
+
+    public Microsoft.UI.Xaml.Controls.InfoBarSeverity IsoEncoderPlacementSeverity =>
+        _isoEncoderPlacement.Severity == PlacementSeverity.Warning
+            ? Microsoft.UI.Xaml.Controls.InfoBarSeverity.Warning
+            : Microsoft.UI.Xaml.Controls.InfoBarSeverity.Informational;
+
+    public Microsoft.UI.Xaml.Visibility IsoEncoderPlacementVisibility =>
+        _isoEncoderPlacement.Severity == PlacementSeverity.None
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
 
     /// <summary>"Program only" / "Program + N ISO(s)" readout for the transport/record area.
     /// While recording, counts the live ISO streams from the snapshot; otherwise the armed
@@ -482,7 +515,51 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _streamRtmpEnabled = true;
 
     [ObservableProperty]
-    private bool _streamNdiEnabled;
+    private bool _ndiOutputEnabled;
+
+    /// <summary>The last reason NDI output was refused or turned off; cleared when NDI turns on.
+    /// Not persisted.</summary>
+    [ObservableProperty]
+    private string? _ndiOutputStatusReason;
+
+    // Set while NDI output is flipped by code that saves and syncs on its own.
+    private bool _applyingNdiOutput;
+
+    // NDI senders from the latest applied snapshot; feeds NdiOutputStatusLabel.
+    private IReadOnlyList<NativeMediaCoreOutputSender> _ndiStatusSenders = [];
+
+    /// <summary>NDI's own status (Off / Starting / Live / Warning / Unavailable), independent of Streaming.</summary>
+    public string NdiOutputStatusLabel =>
+        StudioOutputTelemetry.NdiStatus(NdiOutputEnabled, _ndiStatusSenders, StreamNdiProgramName, NdiOutputStatusReason);
+
+    partial void OnNdiOutputStatusReasonChanged(string? value) => RefreshNdiOutputStatusLabel();
+
+    private void ForgetNdiStatusSenders()
+    {
+        _ndiStatusSenders = [];
+        RefreshNdiOutputStatusLabel();
+    }
+
+    // The label text last announced; snapshot apply runs on the UI thread every tick, so the
+    // label (and the control-state publish it triggers) notifies only when its text changes.
+    private string? _ndiOutputStatusLabelAnnounced;
+
+    private void RefreshNdiOutputStatusLabel()
+    {
+        if (AdvanceNdiStatusLabel(ref _ndiOutputStatusLabelAnnounced, NdiOutputStatusLabel))
+        {
+            OnPropertyChanged(nameof(NdiOutputStatusLabel));
+        }
+    }
+
+    /// <summary>True (and <paramref name="last"/> updated) when <paramref name="next"/> differs
+    /// from the label text last announced.</summary>
+    internal static bool AdvanceNdiStatusLabel(ref string? last, string next)
+    {
+        if (string.Equals(last, next, StringComparison.Ordinal)) return false;
+        last = next;
+        return true;
+    }
 
     [ObservableProperty]
     private bool _streamSrtEnabled;
@@ -503,6 +580,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private string _streamNdiGroupName = "public";
+
+    // NDI graphics key (titler spec Phase 1): a second NDI source carrying only
+    // the on-air graphics, BGRA with straight alpha. Rides with NDI output.
+    [ObservableProperty]
+    private bool _streamNdiGraphicsKeyEnabled;
+
+    // Blank = "<NDI program name> Graphics" (StudioStreamOutputValidation.ResolveNdiGraphicsKeyName).
+    [ObservableProperty]
+    private string _streamNdiGraphicsName = string.Empty;
 
     [ObservableProperty]
     private string _streamSrtMode = "caller";
@@ -1648,6 +1734,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public double GalleryGlowSoftness { get => PreviewScene.DynamicGallery?.GlowSoftness ?? 0; set => UpdateGallery(s => s.GlowSoftness = Math.Clamp(value, 0, 100)); }
     public bool GalleryAnimateLayout { get => PreviewScene.DynamicGallery?.AnimateLayout ?? false; set => UpdateGallery(s => s.AnimateLayout = value); }
     public double GalleryAnimationDurationMs { get => PreviewScene.DynamicGallery?.AnimationDurationMs ?? 350; set => UpdateGallery(s => s.AnimationDurationMs = (int)Math.Clamp(Math.Round(value), 100, 2000)); }
+    // #1073: per-tile name line, the Tiles option "Name each tile". Same
+    // UpdateGallery path as every other wall option (persisted with the scene,
+    // re-sent to the core on the next sync as style.nameEachTile).
+    public bool GalleryNameEachTile { get => PreviewScene.DynamicGallery?.NameEachTile ?? false; set => UpdateGallery(s => s.NameEachTile = value); }
 
     public IReadOnlyList<Participant> RoomVideoParticipants { get; private set; }
 
@@ -1844,13 +1934,130 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : "RTMP disabled";
 
     public string StreamNdiSummary =>
-        StreamNdiEnabled
+        NdiOutputEnabled
             ? _bridge.Profile is not null && !HasNativeOutputCapability(_bridge.Profile, "ndi-output")
                 ? "NDI unavailable in this native core build"
                 : IsNdiConfigured()
-                ? $"NDI ready - {NormalizeOutputText(StreamNdiProgramName, string.Empty)}"
+                ? $"NDI ready - {NormalizeOutputText(StreamNdiProgramName, string.Empty)}" + StreamNdiGraphicsKeySuffix
                 : "NDI needs a program name"
             : "NDI disabled";
+
+    private string StreamNdiGraphicsKeySuffix =>
+        !StreamNdiGraphicsKeyEnabled
+            ? string.Empty
+            : StudioStreamOutputValidation.NdiGraphicsKeyRefusal(true, CoreHasNdiGraphicsKey(), StreamNdiProgramName, StreamNdiGraphicsName) is { } refusal
+                ? $" (graphics key not sent: {refusal})"
+                : $" + graphics key - {StudioStreamOutputValidation.ResolveNdiGraphicsKeyName(StreamNdiProgramName, StreamNdiGraphicsName)}";
+
+    /// <summary>Null until the core's profile is known (the core's own sender then reports).</summary>
+    private bool? CoreHasNdiGraphicsKey() =>
+        _bridge.Profile is null ? null : HasNativeOutputCapability(_bridge.Profile, "ndi-graphics-output");
+
+    private bool IncludeNdiGraphicsKeyDestination() =>
+        StudioStreamOutputValidation.IncludeNdiGraphicsKeyDestination(
+            NdiOutputEnabled, StreamNdiGraphicsKeyEnabled, CoreHasNdiGraphicsKey(), StreamNdiProgramName, StreamNdiGraphicsName);
+
+    /// <summary>Control action: one validated edit, one save, one output sync.</summary>
+    internal ControlInvokeResult SetNdiGraphicsKey(bool on, string? name) =>
+        NdiGraphicsKeyControl.Set(on, name, NdiOutputEnabled, CoreHasNdiGraphicsKey(), StreamNdiProgramName,
+            StreamNdiGraphicsName, (nextOn, nextName) =>
+            {
+                _applyingStreamDestination = true;
+                try
+                {
+                    if (nextName is not null) StreamNdiGraphicsName = nextName;
+                    StreamNdiGraphicsKeyEnabled = nextOn;
+                }
+                finally
+                {
+                    _applyingStreamDestination = false;
+                }
+                OnNdiOutputOptionChanged();
+            });
+
+    private string? ValidateNdiOutput() =>
+        StudioStreamOutputValidation.ValidateNdiOutput(
+            StreamNdiProgramName,
+            StreamNdiGraphicsName,
+            StreamNdiGraphicsKeyEnabled,
+            _bridge.Profile is null ? null : HasNativeOutputCapability(_bridge.Profile, "ndi-output"),
+            CoreHasNdiGraphicsKey());
+
+    /// <summary>The NDI toggle (UI and control API). Validates first: a refusal returns the reason
+    /// and changes nothing but <see cref="NdiOutputStatusReason"/>. Otherwise sets
+    /// <see cref="NdiOutputEnabled"/>, which saves and runs one output sync. Never touches Stream
+    /// or Record.</summary>
+    internal string? SetNdiOutput(bool on)
+    {
+        if (on && ValidateNdiOutput() is { } refusal)
+        {
+            LaunchLog.Write($"ndi: on refused ({refusal})");
+            NdiOutputStatusReason = refusal;
+            return refusal;
+        }
+
+        if (on) NdiOutputStatusReason = null;
+        NdiOutputEnabled = on;
+        return null;
+    }
+
+    /// <summary>Turns NDI output off with the reason and saves; the caller runs the one sync.
+    /// Never touches Stream or Record.</summary>
+    private void TurnNdiOutputOff(string reason)
+    {
+        LaunchLog.Write($"ndi: turned off ({reason})");
+        NdiOutputStatusReason = reason;
+        _applyingNdiOutput = true;
+        try
+        {
+            NdiOutputEnabled = false;
+        }
+        finally
+        {
+            _applyingNdiOutput = false;
+        }
+
+        OnPropertyChanged(nameof(StreamNdiSummary));
+        SaveProductionOutputPreferences();
+    }
+
+    /// <summary>NDI settings (name, group, key, key name) changed: save; while NDI is on, an
+    /// invalid setting turns NDI off alone, otherwise one sync re-applies the NDI senders. Stream
+    /// validation is never consulted.</summary>
+    private void OnNdiOutputOptionChanged()
+    {
+        if (_applyingStreamDestination) return;
+        OnPropertyChanged(nameof(StreamNdiSummary));
+        SaveProductionOutputPreferences();
+        if (!NdiOutputEnabled) return;
+
+        if (ValidateNdiOutput() is { } reason)
+        {
+            TurnNdiOutputOff(reason);
+            RunNdiOutputSync("ndi-off");
+            return;
+        }
+
+        RunNdiOutputSync("ndi-settings");
+    }
+
+    private async void RunNdiOutputSync(string reason)
+    {
+        if (!_bridge.Running) return;
+        try
+        {
+            await SyncActiveSceneAsync(reason).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"ndi: sync {reason} failed ({ex.Message})");
+            RunOnUiThread(() =>
+            {
+                OutputStatus = $"NDI output update failed: {ex.Message}";
+                OutputSessionStatus = OutputStatus;
+            });
+        }
+    }
 
     public string StreamSrtSummary =>
         StreamSrtEnabled
@@ -2809,6 +3016,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnMultiviewTileCountChanged(int value)
     {
+        OnPropertyChanged(nameof(MultiviewTileMaximum));
         var clamped = ClampMultiviewTileCount(value);
         if (clamped != value)
         {
@@ -3410,7 +3618,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnStreamRtmpEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
-    partial void OnStreamNdiEnabledChanged(bool value) => OnStreamOutputOptionChanged();
+    partial void OnNdiOutputEnabledChanged(bool value)
+    {
+        RefreshNdiOutputStatusLabel();
+        if (_applyingNdiOutput) return;
+        // A direct set (a two-way binding) follows SetNdiOutput's rule: never on while invalid.
+        if (value && ValidateNdiOutput() is { } refusal)
+        {
+            TurnNdiOutputOff(refusal);
+            return;
+        }
+
+        if (value) NdiOutputStatusReason = null;
+        OnPropertyChanged(nameof(StreamNdiSummary));
+        SaveProductionOutputPreferences();
+        RunNdiOutputSync(value ? "ndi-on" : "ndi-off");
+    }
 
     partial void OnStreamSrtEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
@@ -3425,9 +3648,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnStreamRtmpStreamKeyChanged(string value) => OnStreamOutputOptionChanged();
 
-    partial void OnStreamNdiProgramNameChanged(string value) => OnStreamOutputOptionChanged();
+    partial void OnStreamNdiProgramNameChanged(string value)
+    {
+        // "Live · {name}" names the program source; a rename must not wait for the next snapshot.
+        RefreshNdiOutputStatusLabel();
+        OnNdiOutputOptionChanged();
+    }
 
-    partial void OnStreamNdiGroupNameChanged(string value) => OnStreamOutputOptionChanged();
+    partial void OnStreamNdiGroupNameChanged(string value) => OnNdiOutputOptionChanged();
+
+    partial void OnStreamNdiGraphicsKeyEnabledChanged(bool value)
+    {
+        // A core that cannot carry the key: revert ONLY the key toggle and say why. The key is
+        // never part of stream validation, so this can never stop the running stream.
+        if (value && !_applyingStreamDestination && CoreHasNdiGraphicsKey() == false)
+        {
+            OutputStatus = "NDI graphics key is not available in this native core build (missing ndi-graphics-output).";
+            StreamNdiGraphicsKeyEnabled = false;
+            return;
+        }
+        OnNdiOutputOptionChanged();
+    }
+
+    partial void OnStreamNdiGraphicsNameChanged(string value) => OnNdiOutputOptionChanged();
 
     partial void OnStreamSrtModeChanged(string value) => OnStreamOutputOptionChanged();
 
@@ -3451,7 +3694,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(OutputStatusDetailsVisibility));
     }
 
-    partial void OnCanvasResolutionChanged(string value) => OnOutputProfileChanged();
+    partial void OnCanvasResolutionChanged(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            // A ComboBox re-bind can write null; never let it reach the profile.
+            // Backing field, not the setter: no save, scene sync or log for an identical profile.
+            _canvasResolution = _lastGoodCanvasResolution;
+            OnPropertyChanged(nameof(CanvasResolution));
+            return;
+        }
+
+        _lastGoodCanvasResolution = value;
+        if (!_applyingGpuTierDefaults && GpuTierPolicy.FormatCanvasChangeLog(value) is { } line) LaunchLog.Write(line);
+        OnOutputProfileChanged();
+    }
 
     partial void OnCanvasFpsChanged(string value) => OnOutputProfileChanged();
 
@@ -3840,9 +4097,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void RemoveScene(string sceneId)
     {
-        if (!CanRemoveScene(sceneId))
+        // #1070: catalog and custom scenes alike; only the on-air scene and the
+        // last visible scene are protected.
+        if (SceneRemovalRefusal(sceneId) is { } refusal)
         {
-            CommandStatus = "Only idle custom scenes can be removed";
+            CommandStatus = refusal;
             return;
         }
 
@@ -3852,17 +4111,98 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        if (string.Equals(PreviewSceneId, sceneId, StringComparison.Ordinal))
-        {
-            PreviewSceneId = ActiveSceneId;
-        }
+        PreviewSceneId = SceneCatalogPolicy.PreviewAfterRemoval(sceneId, PreviewSceneId, ActiveSceneId);
 
         _scenes.Remove(scene);
         _sceneRoutes.Remove(sceneId);
-        CommandStatus = $"{scene.Name} removed";
+        CommandStatus = SceneCatalogPolicy.IsCatalogScene(sceneId)
+            ? $"{scene.Name} removed - New scene or Restore starter scenes brings it back"
+            : $"{scene.Name} removed";
         RefreshSceneItems();
         RefreshProductionReadouts();
         SaveProductionOutputPreferences();
+    }
+
+    /// <summary>
+    /// #1070: re-seed any catalog scene (Intro through Closing) the operator removed. Each
+    /// comes back at its catalog position with fresh starter routes; existing scenes, Program
+    /// and Preview are untouched. Clears the persisted removal set on save.
+    /// </summary>
+    [RelayCommand]
+    private void RestoreStarterScenes()
+    {
+        var missing = SceneCatalogPolicy.MissingCatalogScenes(_scenes);
+        if (missing.Count == 0)
+        {
+            CommandStatus = "All starter scenes are already present";
+            return;
+        }
+
+        foreach (var (catalogScene, insertIndex) in missing)
+        {
+            _scenes.Insert(Math.Min(insertIndex, _scenes.Count), catalogScene);
+            _sceneRoutes[catalogScene.Id] = SceneRoutingService
+                .GetStarterRoutes(catalogScene)
+                .Select(route => route.Clone())
+                .ToList();
+        }
+
+        CommandStatus = missing.Count == 1
+            ? $"{missing[0].Scene.Name} restored"
+            : $"{missing.Count} starter scenes restored";
+        RefreshSceneItems();
+        RefreshProductionReadouts();
+        SaveProductionOutputPreferences();
+    }
+
+    /// <summary>
+    /// Launch-time half of #1070: drop the catalog scenes the operator removed in an earlier
+    /// session. Runs from ApplyProductionOutputPreferences, before the core is up, so Program
+    /// and Preview still sit on their construction defaults; when one of those defaults is in
+    /// the removed set it is moved to the first surviving scene through the backing fields
+    /// (the O1 vcam pattern: the setters would schedule core syncs the bridge cannot take yet).
+    /// </summary>
+    private void ApplyPersistedCatalogSceneRemovals(IReadOnlyList<string> removedCatalogSceneIds)
+    {
+        var removals = SceneCatalogPolicy.RemovalsToApply(_scenes, removedCatalogSceneIds, IsInternalMultiviewSoloScene);
+        if (removals.Count == 0)
+        {
+            return;
+        }
+
+        var survivor = SceneCatalogPolicy.SurvivorAfterRemovals(_scenes, removals, IsInternalMultiviewSoloScene);
+        if (survivor is null)
+        {
+            return;
+        }
+
+        var relocation = SceneCatalogPolicy.RelocateAfterRemovals(removals, _activeSceneId, _previewSceneId, survivor);
+        if (!string.Equals(relocation.ActiveSceneId, _activeSceneId, StringComparison.Ordinal))
+        {
+            _activeSceneId = relocation.ActiveSceneId;
+            OnPropertyChanged(nameof(ActiveSceneId));
+        }
+
+        if (!string.Equals(relocation.PreviewSceneId, _previewSceneId, StringComparison.Ordinal))
+        {
+            _previewSceneId = relocation.PreviewSceneId;
+            _lastValidPreviewSceneId = relocation.PreviewSceneId;
+            OnPropertyChanged(nameof(PreviewSceneId));
+        }
+
+        foreach (var sceneId in removals)
+        {
+            var scene = _scenes.FirstOrDefault(item => string.Equals(item.Id, sceneId, StringComparison.Ordinal));
+            if (scene is not null)
+            {
+                _scenes.Remove(scene);
+            }
+
+            _sceneRoutes.Remove(sceneId);
+        }
+
+        LaunchLog.Write($"scenes: {removals.Count} removed catalog scene(s) stay removed ({string.Join(",", removals)})");
+        RefreshSceneItems();
     }
 
     [RelayCommand]
@@ -5647,6 +5987,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
         OnPropertyChanged(nameof(MediaBinGroups));
+        OnPropertyChanged(nameof(GalleryMemberChoices));  // #1071: keep the Tiles picker current with the bin (Media members are a follow-up)
         OnPropertyChanged(nameof(HasMediaBinAssets));
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
@@ -9051,17 +9392,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Recording = RecordingRequested,
             Streaming = StreamingRequested,
             StreamDestinations = BuildSelectedStreamDestinations(validatedOnly: true),
-            StreamDestinationSettings = BuildStreamDestinationSettings(),
+            NdiOutput = NdiOutputEnabled,
+            NdiDestinations = BuildNdiDestinations(validatedOnly: true),
+            StreamDestinationSettings = BuildStreamDestinationSettings()
+                .Concat(BuildNdiDestinationSettings())
+                .ToArray(),
             SrtIngestSources = BuildSrtIngestSourceSettings(),
             RtmpIngestSources = _rtmpIngestCoordinator.BuildWire(),
             CanvasOutputProfile = canvasProfile,
-            StreamOutputProfile = BuildRequestedOutputProfile(
-                "stream",
-                StreamRenderResolution,
-                StreamRenderFps,
-                StreamVideoCodec,
-                NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
-                NormalizeAudioBitrateKbps(StreamAudioBitrateKbps)),
+            StreamOutputProfile = BuildStreamOutputProfile(),
             RecordingOutputProfile = BuildRequestedOutputProfile(
                 "recording",
                 RecordingRenderResolution,
@@ -9540,11 +9879,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             destinations.Add(IsRtmpConfigured() ? "RTMP configured" : "RTMP missing");
         }
 
-        if (StreamNdiEnabled)
-        {
-            destinations.Add(IsNdiConfigured() ? "NDI configured" : "NDI missing");
-        }
-
         if (StreamSrtEnabled)
         {
             destinations.Add(ValidateSrtSettings() is null ? "SRT configured" : "SRT missing");
@@ -9563,12 +9897,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var settingsError = StudioStreamOutputValidation.ValidateSelectedDestinations(
             StreamRtmpEnabled,
-            StreamNdiEnabled,
             StreamSrtEnabled,
             StreamRtmpProtocol,
             StreamRtmpServerUrl,
             StreamRtmpStreamKey,
-            StreamNdiProgramName,
             StreamSrtMode,
             StreamSrtHost,
             StreamSrtPort,
@@ -9586,14 +9918,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         return settingsError ?? ValidateStreamDestinationCapabilities(
             StreamRtmpEnabled,
-            StreamNdiEnabled,
             StreamSrtEnabled,
             _bridge.Profile,
             Hls.Enabled);
+        // NDI (and its graphics key) is deliberately NOT validated here: NDI is its own output
+        // with its own validation (ValidateNdiOutput), so it can never stop RTMP/SRT/HLS and a
+        // stream failure can never stop NDI.
     }
 
-    private static string? ValidateStreamDestinationCapabilities(bool streamRtmpEnabled, bool streamNdiEnabled, bool streamSrtEnabled, NativeMediaCoreProfile? profile, bool hlsEnabled = false) =>
-        TransportStatusFormatter.ValidateStreamDestinationCapabilities(streamRtmpEnabled, streamNdiEnabled, streamSrtEnabled, profile, hlsEnabled);
+    private static string? ValidateStreamDestinationCapabilities(bool streamRtmpEnabled, bool streamSrtEnabled, NativeMediaCoreProfile? profile, bool hlsEnabled = false) =>
+        TransportStatusFormatter.ValidateStreamDestinationCapabilities(streamRtmpEnabled, streamSrtEnabled, profile, hlsEnabled);
 
     private static bool HasNativeOutputCapability(NativeMediaCoreProfile profile, string capability) =>
         TransportStatusFormatter.HasNativeOutputCapability(profile, capability);
@@ -9836,36 +10170,56 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task SyncOutputProfileChangeAsync()
     {
-        if (StreamingRequested && ValidateStreamDestinations() is { Length: > 0 } validationError)
+        // The stream and NDI are validated apart: a stream failure stops the stream only, an NDI
+        // failure turns NDI off only. A valid NDI output is resynced at the new profile.
+        var (streamError, ndiOffReason) = StudioStreamOutputValidation.ResolveOutputValidation(
+            StreamingRequested, ValidateStreamDestinations, NdiOutputEnabled, ValidateNdiOutput);
+        if (string.IsNullOrEmpty(streamError) && ndiOffReason is null)
         {
-            LaunchLog.Write($"stream: profile change blocked invalid destination ({validationError})");
-            var failureStatus = FormatStreamingFailureStatus("settings", new InvalidOperationException(validationError));
-            RunOnUiThread(() =>
+            await SyncActiveSceneAsync().ConfigureAwait(false);
+            return;
+        }
+
+        var streamStopping = !string.IsNullOrEmpty(streamError);
+        if (streamStopping)
+        {
+            LaunchLog.Write($"stream: profile change blocked invalid destination ({streamError})");
+        }
+
+        var failureStatus = streamStopping
+            ? FormatStreamingFailureStatus("settings", new InvalidOperationException(streamError))
+            : null;
+        RunOnUiThread(() =>
+        {
+            if (ndiOffReason is not null)
+            {
+                TurnNdiOutputOff(ndiOffReason);
+            }
+
+            if (failureStatus is not null)
             {
                 StreamingRequested = false;
                 RefreshOutputStatus();
                 OutputStatus = $"{failureStatus} Streaming stopping.";
                 OutputSessionStatus = OutputStatus;
-            });
-
-            try
-            {
-                await SyncActiveSceneAsync().ConfigureAwait(false);
             }
-            catch (Exception ex)
-            {
-                var cleanupStatus = FormatStreamingFailureStatus("stop", ex);
-                RunOnUiThread(() =>
-                {
-                    OutputStatus = $"Streaming settings cleanup failed: {cleanupStatus}";
-                    OutputSessionStatus = OutputStatus;
-                });
-            }
+        });
 
-            return;
+        try
+        {
+            await SyncActiveSceneAsync().ConfigureAwait(false);
         }
-
-        await SyncActiveSceneAsync().ConfigureAwait(false);
+        catch (Exception ex)
+        {
+            var cleanupStatus = streamStopping
+                ? $"Streaming settings cleanup failed: {FormatStreamingFailureStatus("stop", ex)}"
+                : $"NDI output update failed: {ex.Message}";
+            RunOnUiThread(() =>
+            {
+                OutputStatus = cleanupStatus;
+                OutputSessionStatus = OutputStatus;
+            });
+        }
     }
 
     private async void OnStreamOutputOptionChanged()
@@ -9874,17 +10228,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StreamDestinationSummary));
         OnPropertyChanged(nameof(StreamConfigurationSummary));
         OnPropertyChanged(nameof(StreamRtmpSummary));
-        OnPropertyChanged(nameof(StreamNdiSummary));
         OnPropertyChanged(nameof(StreamSrtSummary));
         OnPropertyChanged(nameof(Hls));
         SaveProductionOutputPreferences();
 
-        if (!StreamingRequested || !_bridge.Running)
+        if (!_bridge.Running)
         {
             return;
         }
 
-        if (ValidateStreamDestinations() is { Length: > 0 } validationError)
+        // The stream and NDI are validated apart: a stream failure stops the stream only, an NDI
+        // failure turns NDI off only.
+        var (streamError, ndiOffReason) = StudioStreamOutputValidation.ResolveOutputValidation(
+            StreamingRequested, ValidateStreamDestinations, NdiOutputEnabled, ValidateNdiOutput);
+        if (ndiOffReason is not null)
+        {
+            TurnNdiOutputOff(ndiOffReason);
+        }
+
+        if (!StreamingRequested && ndiOffReason is null)
+        {
+            return;
+        }
+
+        if (streamError is { Length: > 0 } validationError)
         {
             var failureStatus = FormatStreamingFailureStatus("settings", new InvalidOperationException(validationError));
             StreamingRequested = false;
@@ -9988,6 +10355,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (_bridge.Supervisor.HostedReadOnly) return;
             ScheduleMultiviewerConfigResend();
             ReannounceCaptureShmToNewCore();
+            ArmGraphicsDesignResync();
         });
 
     // Second half of the same respawn class: register-capture-shm is announced ONLY
@@ -10111,6 +10479,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyBridgeHealthChanged(MediaCoreHealth health)
     {
+        if (health.Stopped || health.Recovering)
+        {
+            // A stopped or respawning core sends no more snapshots; its NDI senders are gone.
+            ForgetNdiStatusSenders();
+        }
+
         if (health.Stopped)
         {
             _recordingResume.CoreStoppedDeliberately();
@@ -10151,13 +10525,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private IReadOnlyList<SupportBundleOutputDestination> BuildSupportBundleOutputDestinations()
     {
         var destinations = new List<SupportBundleOutputDestination>();
-        var streamProfile = BuildRequestedOutputProfile(
-            "stream",
-            StreamRenderResolution,
-            StreamRenderFps,
-            StreamVideoCodec,
-            NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
-            NormalizeAudioBitrateKbps(StreamAudioBitrateKbps));
+        var streamProfile = BuildStreamOutputProfile();
         var recordingProfile = BuildRequestedOutputProfile(
             "recording",
             RecordingRenderResolution,
@@ -10206,15 +10574,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             });
         }
 
-        if (StreamNdiEnabled)
+        if (NdiOutputEnabled)
         {
             destinations.Add(new SupportBundleOutputDestination
             {
                 Id = "ndi",
                 Name = "NDI",
                 Protocol = "ndi",
-                Enabled = StreamNdiEnabled,
-                Active = Streaming && StreamNdiEnabled,
+                Enabled = NdiOutputEnabled,
+                Active = NdiOutputEnabled && _ndiStatusSenders.Any(sender => sender.Destination == "ndi" && sender.Status == "live"),
                 Resolution = streamProfile.Resolution,
                 Fps = streamProfile.Fps.ToString(CultureInfo.InvariantCulture),
                 Codec = streamProfile.Codec,
@@ -10274,6 +10642,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         if (_shutdownPrepared) return;
         RefreshAudioObservationClock();
+        _ndiStatusSenders = snapshot.OutputSenderSession.Senders;
+        RefreshNdiOutputStatusLabel();
         // P0 present-stutter-fix-spec: time each sub-op; log the breakdown only when a
         // snapshot apply is slow enough to stall the present (>10ms on the UI thread).
         var verboseDiagnostics = DiagnosticLog.VerboseEnabled;
@@ -11680,6 +12050,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ProductionPreferencesWarning = ProductionPreferencesNotice.For(loaded.Status);
             if (_startupBootstrap.LoadError is { } loadError) LaunchLog.WriteException("prefs: startup load failed", loadError);
             _startupBootstrap.Restore(ApplyProductionOutputPreferences);
+            if (loaded.Preferences is null) ApplyGpuTierDefaults(null);
         }
         catch (Exception ex)
         {
@@ -11759,7 +12130,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OhgShowEnabled = OhgShowEnabled,
             FfmpegBinDirectory = FfmpegBinDirectory,
             StreamRtmpEnabled = StreamRtmpEnabled,
-            StreamNdiEnabled = StreamNdiEnabled,
+            NdiOutputEnabled = NdiOutputEnabled,
             StreamSrtEnabled = StreamSrtEnabled,
             StreamHlsEnabled = Hls.Enabled,
             StreamHlsPlaylistUrl = Hls.PlaylistUrl,
@@ -11768,6 +12139,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamRtmpStreamKey = StreamRtmpStreamKey,
             StreamNdiProgramName = StreamNdiProgramName,
             StreamNdiGroupName = StreamNdiGroupName,
+            StreamNdiGraphicsKeyEnabled = StreamNdiGraphicsKeyEnabled,
+            StreamNdiGraphicsName = StreamNdiGraphicsName,
             StreamSrtMode = StreamSrtMode,
             StreamSrtHost = StreamSrtHost,
             StreamSrtPort = StreamSrtPort,
@@ -11776,6 +12149,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamSrtKeyLength = StreamSrtKeyLength,
             StreamSrtPassphrase = StreamSrtPassphrase,
             CanvasResolution = CanvasResolution,
+            GpuTierLimitsOverride = AllowAboveGpuTier,
             CanvasFps = CanvasFps,
             ProgramBufferFrames = ProgramBufferFrames,
             LocalAudioSourceEnabled = LocalAudioSourceEnabled,
@@ -11823,6 +12197,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MultiviewShowTally = MultiviewShowTally,
             MultiviewShowMeters = MultiviewShowMeters,
             MultiviewShowClock = MultiviewShowClock,
+            GraphicsMode = GraphicsMode,
             SceneBackgroundAssetIds = CaptureWorkspaceSavedBackgrounds(),
             SourceDisplayNames = _sourceDisplayNames.ToDictionary(
                 pair => pair.Key,
@@ -11856,6 +12231,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     _sceneRoutes.TryGetValue(scene.Id, out var routes) ? routes : []))
                 .Select(saved=>_workspaceSavedScenes.TryGetValue(saved.Id,out var draft)?draft:saved)
                 .ToList(),
+            // v15 (#1070): catalog scenes the operator removed stay removed across launches.
+            RemovedCatalogSceneIds = SceneCatalogPolicy.RemovedCatalogSceneIds(_scenes),
             // B2 (v6): the whole master rack — live settings, both A/B slots,
             // the active slot, and the operator's saved presets. The ACTIVE
             // slot's stored copy is refreshed from the live controls first so
@@ -11871,6 +12248,94 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 .ToList()
         };
 
+    // ---- #439 GPU-tier defaults -------------------------------------------------
+    // Test seam: the probe is a DXGI call, so tests substitute a band string.
+    // The policy (and so the probe result) is cached: adapters are enumerated once.
+    internal static Func<string?> GpuTierBandProvider { get; set; } = GpuTierProbe.TryProbe;
+
+    private GpuTierPolicy? _gpuTierPolicy;
+    public GpuTierPolicy GpuTierPolicy => _gpuTierPolicy ??= GpuTierPolicy.ForBand(SafeGpuBand());
+
+    private static string? SafeGpuBand()
+    {
+        try { return GpuTierBandProvider(); } catch { return null; }
+    }
+
+    [ObservableProperty]
+    private bool _allowAboveGpuTier;
+
+    private bool _applyingGpuTierDefaults;
+    private string _lastGoodCanvasResolution = MediaCoreProductionSyncContext.DefaultCanvasOutputProfile.Resolution;
+    private IReadOnlyList<RouteSelectOption>? _canvasResolutionOptions;
+
+    public string GpuTierNotice => GpuTierPolicy.Notice ?? string.Empty;
+    public bool HasGpuTierNotice => GpuTierPolicy.Notice is not null;
+    public string GpuTierStatusLine => GpuTierPolicy.StatusLine(AllowAboveGpuTier);
+
+    // Never below the current value: a NumberBox coerces Value to Maximum, and the
+    // TwoWay binding would otherwise rewrite (and persist) a saved tile count.
+    public int MultiviewTileMaximum => GpuTierPolicy.TileMaximum(AllowAboveGpuTier, MultiviewTileCount);
+
+    // Cached: ItemsSource churn on a TwoWay SelectedValue combo can write null back.
+    public IReadOnlyList<RouteSelectOption> CanvasResolutionOptions =>
+        _canvasResolutionOptions ??= BuildCanvasResolutionOptions();
+
+    private IReadOnlyList<RouteSelectOption> BuildCanvasResolutionOptions()
+    {
+        var offered = GpuTierPolicy.OfferedCanvases(
+            OutputResolutionOptions.Select(o => o.Value), CanvasResolution, AllowAboveGpuTier);
+        return OutputResolutionOptions.Where(o => offered.Contains(o.Value)).ToList();
+    }
+
+    private void RefreshCanvasResolutionOptions()
+    {
+        var next = BuildCanvasResolutionOptions();
+        var current = _canvasResolutionOptions;
+        if (current is not null && current.Select(o => o.Value).SequenceEqual(next.Select(o => o.Value)))
+        {
+            return; // unchanged contents: do not touch ItemsSource
+        }
+
+        var keep = CanvasResolution;
+        _canvasResolutionOptions = next;
+        OnPropertyChanged(nameof(CanvasResolutionOptions));
+        if (!string.Equals(CanvasResolution, keep, StringComparison.Ordinal)) CanvasResolution = keep;
+    }
+
+    partial void OnAllowAboveGpuTierChanged(bool value)
+    {
+        LaunchLog.Write(GpuTierPolicy.FormatSwitchLog(value));
+        OnPropertyChanged(nameof(MultiviewTileMaximum));
+        OnPropertyChanged(nameof(GpuTierStatusLine));
+        RefreshCanvasResolutionOptions();
+        SaveProductionOutputPreferences();
+    }
+
+    /// <summary>
+    /// Applies the tier policy to a loaded (or, when null, fresh) profile.
+    /// Saved canvas and tile values are kept verbatim; only a never-saved
+    /// canvas / absent profile receives tier defaults. See GpuTierPolicy.Resolve.
+    /// </summary>
+    private void ApplyGpuTierDefaults(ProductionOutputPreferences? preferences)
+    {
+        var policy = GpuTierPolicy;
+        var r = policy.Resolve(preferences);
+        _allowAboveGpuTier = r.SwitchOn;
+        OnPropertyChanged(nameof(AllowAboveGpuTier));
+
+        _applyingGpuTierDefaults = true;
+        try { CanvasResolution = r.Canvas; }
+        finally { _applyingGpuTierDefaults = false; }
+        MultiviewTileCount = ClampMultiviewTileCount(r.TileCount);
+
+        LaunchLog.Write(policy.FormatStartupLog(r));
+        RefreshCanvasResolutionOptions();
+        OnPropertyChanged(nameof(MultiviewTileMaximum));
+        OnPropertyChanged(nameof(GpuTierNotice));
+        OnPropertyChanged(nameof(HasGpuTierNotice));
+        OnPropertyChanged(nameof(GpuTierStatusLine));
+    }
+
     private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)
     {
         Overlays.RestoreAppearance(preferences.LowerThirdAppearance,preferences.LowerThirdPresets);
@@ -11879,7 +12344,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RestoreScopePreferences(preferences.ScopeRegions);
         FfmpegBinDirectory = preferences.FfmpegBinDirectory ?? FfmpegBinDirectory;
         StreamRtmpEnabled = preferences.StreamRtmpEnabled;
-        StreamNdiEnabled = preferences.StreamNdiEnabled;
+        _ndiOutputEnabled = preferences.NdiOutputEnabled;
+        OnPropertyChanged(nameof(NdiOutputEnabled));
+        RefreshNdiOutputStatusLabel();
         StreamSrtEnabled = preferences.StreamSrtEnabled;
         Hls.Enabled = preferences.StreamHlsEnabled;
         Hls.PlaylistUrl = preferences.StreamHlsPlaylistUrl ?? string.Empty;
@@ -11888,6 +12355,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         StreamRtmpStreamKey = preferences.StreamRtmpStreamKey ?? StreamRtmpStreamKey;
         StreamNdiProgramName = preferences.StreamNdiProgramName ?? StreamNdiProgramName;
         StreamNdiGroupName = preferences.StreamNdiGroupName ?? StreamNdiGroupName;
+        StreamNdiGraphicsKeyEnabled = preferences.StreamNdiGraphicsKeyEnabled;
+        StreamNdiGraphicsName = preferences.StreamNdiGraphicsName ?? string.Empty;
         StreamSrtMode = preferences.StreamSrtMode ?? StreamSrtMode;
         StreamSrtHost = preferences.StreamSrtHost ?? StreamSrtHost;
         StreamSrtPort = preferences.StreamSrtPort ?? StreamSrtPort;
@@ -11895,7 +12364,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         StreamSrtStreamId = preferences.StreamSrtStreamId ?? StreamSrtStreamId;
         StreamSrtKeyLength = preferences.StreamSrtKeyLength ?? StreamSrtKeyLength;
         StreamSrtPassphrase = preferences.StreamSrtPassphrase ?? StreamSrtPassphrase;
-        CanvasResolution = preferences.CanvasResolution ?? CanvasResolution;
+        ApplyGpuTierDefaults(preferences);
         CanvasFps = preferences.CanvasFps ?? CanvasFps;
         ProgramBufferFrames = preferences.ProgramBufferFrames;
         _localAudioSourceEnabled = preferences.LocalAudioSourceEnabled;
@@ -12029,11 +12498,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RestoreMasteringFromPreferences(preferences);
 
         MultiviewLayoutMode = NormalizeMultiviewLayoutMode(preferences.MultiviewLayoutMode);
-        MultiviewTileCount = ClampMultiviewTileCount(preferences.MultiviewTileCount);
+        // Tile count is applied by ApplyGpuTierDefaults (saved value wins; tier default only for a never-saved profile).
         MultiviewShowLabels = preferences.MultiviewShowLabels;
         MultiviewShowTally = preferences.MultiviewShowTally;
         MultiviewShowMeters = preferences.MultiviewShowMeters;
         MultiviewShowClock = preferences.MultiviewShowClock;
+        RestoreGraphicsMode(preferences.GraphicsMode);
 
         _sceneBackgroundAssetIds.Clear();
         foreach (var pair in preferences.SceneBackgroundAssetIds)
@@ -12107,6 +12577,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             RefreshSceneItems();
         }
+
+        // #1070: after the custom scenes are back (so the last-scene guard counts them),
+        // drop the catalog scenes removed in an earlier session.
+        ApplyPersistedCatalogSceneRemovals(preferences.RemovedCatalogSceneIds);
 
         RefreshAudioMonitorBindings();
         RefreshSceneBackgroundSelection();
@@ -12263,6 +12737,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SchedulePreviewRoutingRefresh();
         QueueSelectedCaptureDevicesOnline();
         SaveShowInputRoster();
+        // #1071: a slot binding is a Tiles member candidate (local sources), so the
+        // member picker and its summary follow every roster edit, not only gallery edits.
+        OnPropertyChanged(nameof(GalleryMemberChoices));
+        OnPropertyChanged(nameof(GalleryMembershipSummary));
         var inShowCount = ShowInputs.Count(slot => slot.InShow);
         CommandStatus = $"Show input roster updated — {inShowCount} of {ShowInputRosterService.MaxShowInputs} sources on the multiviewer";
     }
@@ -12847,13 +13325,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         string.Equals(sceneId, MultiviewSoloSceneAId, StringComparison.Ordinal) ||
         string.Equals(sceneId, MultiviewSoloSceneBId, StringComparison.Ordinal);
 
-    private bool CanRemoveScene(string sceneId) =>
-        IsUserRemovableScene(sceneId) &&
-        !string.Equals(sceneId, ActiveSceneId, StringComparison.Ordinal);
+    // #1070: catalog scenes are removable like custom ones. The on-air scene and the
+    // last visible scene are the only protected ones (SceneCatalogPolicy).
+    private bool CanRemoveScene(string sceneId) => SceneRemovalRefusal(sceneId) is null;
 
-    private static bool IsUserRemovableScene(string sceneId) =>
-        sceneId.StartsWith("custom-", StringComparison.Ordinal) ||
-        sceneId.StartsWith("multiview-solo-", StringComparison.Ordinal);
+    private string? SceneRemovalRefusal(string sceneId) =>
+        SceneCatalogPolicy.RemovalRefusal(
+            sceneId,
+            ActiveSceneId,
+            VisibleScenes.Count,
+            IsInternalMultiviewSoloScene(sceneId));
 
     private string ResolveOnAirSceneLabel(string sceneId)
     {
@@ -13103,14 +13584,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     /// </summary>
     private MediaCoreTilesLayerWire? BuildTilesLayerWire(Scene scene)
     {
-        var routedSourceIds = ShowInputs
-            .Where(slot => slot.InShow)
-            .Select(ShowInputRosterService.SlotSourceId)
-            .Where(sourceId => !string.IsNullOrWhiteSpace(sourceId))
-            .Select(sourceId => sourceId!)
-            .ToHashSet(StringComparer.Ordinal);
+        var routedSourceIds = TilesLocalSourcePolicy.RoutedSourceIds(ShowInputs);
         var payload = TilesLayerPayloadBuilder.Build(
-            scene, RoomVideoParticipants, routedSourceIds, RoomParticipantsForInputs, CurrentTilesMeetingId());
+            scene, RoomVideoParticipants, routedSourceIds, RoomParticipantsForInputs, CurrentTilesMeetingId(),
+            // #1071: in-show slots bound to a local source with video are eligible too.
+            localVideoSourceIds: TilesLocalVideoSources().Select(source => source.Id).ToList());
         if (payload is null)
         {
             return null;
@@ -13133,7 +13611,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 p.Value.Rect is { } r ? new MediaCoreTilesRectWire(r.X, r.Y, r.Width, r.Height) : null,
                 p.Value.CropLeftPercent, p.Value.CropRightPercent, p.Value.Z)),
             payload.Rect is { } wallRect ? new MediaCoreTilesRectWire(wallRect.X, wallRect.Y, wallRect.Width, wallRect.Height) : null,
-            payload.Opacity, payload.TransparentBackground);
+            payload.Opacity, payload.TransparentBackground,
+            NameEachTile: payload.Style.NameEachTile);
     }
 
     // RE-ENTRANCY GUARD — without it this recurses until the stack dies (crash
@@ -13217,6 +13696,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(GalleryGlowSoftness));
             OnPropertyChanged(nameof(GalleryAnimateLayout));
             OnPropertyChanged(nameof(GalleryAnimationDurationMs));
+            OnPropertyChanged(nameof(GalleryNameEachTile));
         });
     }
 
@@ -13493,11 +13973,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (source is null) return null;
         if (source.SourceId.StartsWith("capture:", StringComparison.Ordinal))
         {
-            var device = CaptureDevices.First(item => "capture:" + item.Id == source.SourceId);
+            var device = CaptureDevices.FirstOrDefault(item => "capture:" + item.Id == source.SourceId);
+            if (device is null) return null;
             return SourceWithOperatorText(source.SourceId,
                 device.Name, string.Empty, string.Empty, false, false);
         }
-        var participant = RoomVideoParticipants.First(item => item.Id == source.ParticipantId);
+        if (source.SourceId.StartsWith("media:", StringComparison.Ordinal))
+        {
+            // A media clip on Program (media-only test shows, stingers): its operator text is the
+            // per-source name/title from Sources, like any other guest entry (owner, 2026-10-31).
+            var (mediaName, mediaTitle) = GraphicsSourceText(source.SourceId, "Media");
+            return SourceWithOperatorText(source.SourceId, mediaName, mediaTitle, string.Empty, false, false);
+        }
+        var participant = RoomVideoParticipants.FirstOrDefault(item => item.Id == source.ParticipantId);
+        if (participant is null) return null;
         var isScreenShare = source.Kind == "screen-share";
         return SourceWithOperatorText(source.SourceId,
             participant.Name,

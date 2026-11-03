@@ -16,6 +16,8 @@ public static class OscFeedback
         {
             Flag("recording", state.Recording),
             Flag("streaming", state.Streaming),
+            // NDI output is its own output, not a stream destination.
+            Flag("ndi", state.NdiOutputOn),
             Flag("engineOn", state.EngineOn),
             Flag("canTake", state.CanTake),
             Flag("lowerThirdOnAir", state.LowerThirdOnAir),
@@ -24,6 +26,7 @@ public static class OscFeedback
             Str("commandStatus", state.CommandStatus),
             Str("activeSceneId", state.ActiveSceneId),
             Str("previewSceneId", state.PreviewSceneId),
+            Flag("previewTilesNamesOn", state.PreviewTilesNamesOn),
             Str("viewMode", state.ViewMode),
             Str("multiviewLayoutMode", state.MultiviewLayoutMode),
             new(addressMap.StateAddress("multiviewTileCount"), state.MultiviewTileCount),
@@ -43,6 +46,27 @@ public static class OscFeedback
             messages.Add(new OscMessage(addressMap.StateAddress($"input/{input.Slot}/kind"), input.Kind ?? string.Empty));
             messages.Add(new OscMessage(addressMap.StateAddress($"input/{input.Slot}/source"), input.SourceId ?? string.Empty));
             messages.Add(new OscMessage(addressMap.StateAddress($"input/{input.Slot}/name"), input.Name ?? string.Empty));
+        }
+
+        // Graphics playout (issue #1076): per-row lighting plus strip counts.
+        var strip = state.GraphicsStrip ?? ControlGraphicsStrip.Empty;
+        messages.Add(new OscMessage(addressMap.StateAddress("graphics/onProgramCount"), strip.OnProgram.Count));
+        messages.Add(new OscMessage(addressMap.StateAddress("graphics/onPreviewCount"), strip.OnPreview.Count));
+        messages.Add(Str("graphics/automationMode", strip.AutomationMode));
+        messages.Add(Flag("graphics/automationArmed", strip.AutomationArmed));
+        foreach (var row in state.GraphicsPlaylist ?? [])
+        {
+            messages.Add(Flag($"graphics/row/{row.Id}/onProgram", strip.OnProgram.Any(i => i.RowId == row.Id)));
+            messages.Add(Flag($"graphics/row/{row.Id}/onPreview", strip.OnPreview.Any(i => i.RowId == row.Id)));
+            messages.Add(Str($"graphics/row/{row.Id}/hotkey", row.Hotkey));
+            messages.Add(Str($"graphics/row/{row.Id}/name", row.Name));
+        }
+        foreach (var layout in state.GraphicsLayouts ?? [])
+        {
+            messages.Add(Str($"graphics/layout/{layout.Id}/name", layout.Name));
+            messages.Add(Str($"graphics/layout/{layout.Id}/scene", layout.SceneId));
+            messages.Add(Str($"graphics/layout/{layout.Id}/hotkey", layout.Hotkey));
+            messages.Add(Flag($"graphics/layout/{layout.Id}/onPreview", layout.SceneId.Length > 0 && string.Equals(layout.SceneId, state.PreviewSceneId, StringComparison.Ordinal)));
         }
 
         messages.Add(Str("ohg/health/engine", state.OhgEngineHealth));

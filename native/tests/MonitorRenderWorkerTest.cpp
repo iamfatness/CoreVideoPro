@@ -3,6 +3,7 @@
 #include "modules/MonitorInputEvidence.h"
 #include "modules/BoundedResourceRetirement.h"
 #include "modules/ProgramMonitorDispatch.h"
+#include "modules/LogHeartbeatPolicy.h"
 #include <gtest/gtest.h>
 #include <future>
 #include <atomic>
@@ -424,4 +425,19 @@ TEST(MonitorRenderWorker, FailedWorkDoesNotPublishSuccessfulMetadataAndLaterWork
   ASSERT_TRUE(worker.latest() != nullptr);
   EXPECT_EQ(worker.latest()->sequence, 2);
   EXPECT_EQ(worker.latest()->preview.height, 720);
+}
+
+// #1064: idle status lines must not evict a show's evidence from the bounded log.
+TEST(LogHeartbeatPolicy, FirstLineAndStateChangesGoOutAtOnceOtherwiseOncePerKeepalive) {
+  using namespace std::chrono_literals;
+  EXPECT_TRUE(LogHeartbeatPolicy::due(false, 0s, false));            // first line
+  EXPECT_FALSE(LogHeartbeatPolicy::due(true, 2s, false));            // the old 2 s cadence is silent
+  EXPECT_FALSE(LogHeartbeatPolicy::due(true, 59s, false));
+  EXPECT_TRUE(LogHeartbeatPolicy::due(true, 60s, false));            // keepalive
+  EXPECT_TRUE(LogHeartbeatPolicy::due(true, 0s, true));              // a failure or readiness change
+  EXPECT_EQ(LogHeartbeatPolicy::kKeepalive, 60s);
+  // Retained 4 MB at ~150 bytes/line: 2 s cadence covered ~15 h of lines for ONE source
+  // (observed 4.9 h with two heartbeats); at 60 s the same budget covers > 18 days.
+  constexpr double retainedLines = 4.0 * 1024 * 1024 / 150.0;
+  EXPECT_GT(retainedLines * 60.0 / 3600.0 / 24.0, 18.0);
 }

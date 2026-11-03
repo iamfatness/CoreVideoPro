@@ -17,7 +17,7 @@ $required = @('CoreVideoPro.WinUI.exe','coreclr.dll','hostfxr.dll','Microsoft.UI
     'StartCoreVideo.cmd','Install-MediaRuntime.ps1',
     'corevideo-virtualcam.dll','corevideo-monitor-presenter.dll','Install-VirtualCamera.ps1','VirtualCameraRegistration.psm1','CameraUserSession.ps1',
     'Register-VirtualCamera.cmd','Unregister-VirtualCamera.cmd','Remove-OwnedShortcuts.ps1',
-    'Remove-PreviousInstallations.ps1','PreviousInstallations.psm1',
+    'Remove-PreviousInstallations.ps1','PreviousInstallations.psm1','Install-CrashDumps.ps1','Refresh-FrameServer.ps1',
     'msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.dll','vcruntime140_1.dll',
     'show-engine/dist/host/main.js','show-engine/package.json',"notices/$($pin.license)",'App.xbf','Assets/Fonts/Test.ttf')
 $cases = @(
@@ -29,7 +29,8 @@ $cases = @(
     @{ name='wrong-node'; error='Node executable does not match' },
     @{ name='private-provenance'; error='Invalid or private Node runtime provenance' },
     @{ name='test-fixture'; extra='show-engine/dist/fixtures/private.js'; error='Development or unexpected show-engine payload' },
-    @{ name='source-map'; extra='show-engine/dist/host/main.js.map'; error='Development or unexpected show-engine payload' }
+    @{ name='source-map'; extra='show-engine/dist/host/main.js.map'; error='Development or unexpected show-engine payload' },
+    @{ name='backslash-entry'; backslash='node/node.exe'; error='Archive entry uses backslash separators' }
 )
 try {
     foreach ($case in $cases) {
@@ -56,7 +57,9 @@ try {
         $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Create)
         try {
             foreach ($name in $files.Keys) {
-                $entry = $zip.CreateEntry('CoreVideoPro-Alpha/' + $name, [IO.Compression.CompressionLevel]::NoCompression)
+                $entryName = 'CoreVideoPro-Alpha/' + $name
+                if ($case.backslash -eq $name) { $entryName = $entryName.Replace('/', '\') }
+                $entry = $zip.CreateEntry($entryName, [IO.Compression.CompressionLevel]::NoCompression)
                 $stream = $entry.Open()
                 try { $stream.Write($files[$name], 0, $files[$name].Length) } finally { $stream.Dispose() }
             }

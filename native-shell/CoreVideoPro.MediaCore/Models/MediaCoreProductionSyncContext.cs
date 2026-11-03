@@ -81,7 +81,8 @@ public sealed record MediaCoreTilesLayerWire(
     string BorderShape = "square", string BorderColor = "#000000", double BorderThickness = 0,
     double CornerRadius = 16, string GlowColor = "#FFFFFF", double GlowSize = 0,
     double GlowIntensity = 100, double GlowSoftness = 0, bool AnimateLayout = false, int AnimationDurationMs = 350, string FillMode = "auto",
-    string BackgroundSourceId = "", IReadOnlyDictionary<string, MediaCoreTilesOverrideWire>? Overrides = null, MediaCoreTilesRectWire? Rect = null, double Opacity = 1, bool TransparentBackground = false);
+    string BackgroundSourceId = "", IReadOnlyDictionary<string, MediaCoreTilesOverrideWire>? Overrides = null, MediaCoreTilesRectWire? Rect = null, double Opacity = 1, bool TransparentBackground = false,
+    bool NameEachTile = false);
 
 public sealed record MediaCoreTilesRectWire(double X, double Y, double Width, double Height);
 public sealed record MediaCoreTilesOverrideWire(MediaCoreTilesRectWire? Rect, double CropLeftPercent, double CropRightPercent, int? Z);
@@ -321,6 +322,9 @@ public sealed record MediaCoreProductionSyncContext
     public IReadOnlyList<MediaCoreParticipantWire> Participants { get; init; } = [];
     public bool Recording { get; init; }
     public bool Streaming { get; init; }
+    /// <summary>NDI output is independent of Stream and Record; true sends <see cref="NdiDestinations"/>.</summary>
+    public bool NdiOutput { get; init; }
+    public IReadOnlyList<string> NdiDestinations { get; init; } = [];
     public IReadOnlyList<string> StreamDestinations { get; init; } = ["rtmp"];
     public IReadOnlyList<MediaCoreStreamDestinationWire> StreamDestinationSettings { get; init; } = [];
     public IReadOnlyList<MediaCoreSrtIngestSourceWire> SrtIngestSources { get; init; } = [];

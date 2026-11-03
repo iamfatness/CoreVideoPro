@@ -8,6 +8,30 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **NDI output independent of streaming.** NDI has its own on/off (`NdiOutputEnabled`, preferences
+  v16; the old stream NDI tick does not carry over), a Studio footer tile and a Settings switch,
+  and runs without Stream or Record. Stream validation, start proof, readout and the close guard
+  ignore NDI. Control actions `transport.ndi.set`, `transport.ndi.toggle`,
+  `transport.ndi.graphicsKey.set` (replaces `transport.stream.ndi.graphicsKey.set`); state
+  `ndiOutputOn`, `ndiOutputStatus`; OSC `/cvp/state/ndi`. See
+  `docs/reference/stream-destination-control.md`.
+- **Catalog scenes are deletable and restorable (#1070).** Intro, Interview, Speaker + Slides,
+  Panel and Closing can be removed like custom scenes; only the on-air scene and the last
+  scene are protected, and a removal survives relaunch (`RemovedCatalogSceneIds`, preferences
+  v15). New scene gains Panel grid and Closing starters plus "Restore starter scenes"; the
+  control API gains `scene.list` (read) and `scene.restoreStarters`. Magic Scene presets fall
+  back to the first scene when their catalog scene is gone, holding instead of cutting, and the outputs drill verifies
+  its scene exists before cueing it. See `docs/reference/scenes.md`.
+- **NDI graphics key (fill+key) output (titler spec Phase 1).** A second NDI source,
+  `<NDI program name> Graphics`, carries only the native graphics on Program over
+  transparency as BGRA with straight alpha, so a downstream switcher, vMix or OBS can
+  key CoreVideo's graphics over its own picture. Toggle in Production settings, NDI;
+  control action `transport.ndi.graphicsKey.set` (renamed); persisted with the output
+  preferences. The key is matched to the delayed Program frame when a Program buffer is on,
+  turns transparent and reports `key-stale` when no fresh graphics readback arrives for
+  250 ms, and a key that cannot be sent is dropped on its own without stopping the stream.
+  Program output is unchanged. Not yet verified on a live receiver. See
+  `docs/reference/ndi-graphics-key.md`.
 - **Control API `scene.cueWithRoutes` / `scene.route.set` (#861).** A controller can cue a
   scene to Preview and point named routes at Show Input slots over `POST /invoke` (JSON
   `{routeId: slot|null}`, or one `sceneId, routeId, slot` triple). Unknown scene, route or

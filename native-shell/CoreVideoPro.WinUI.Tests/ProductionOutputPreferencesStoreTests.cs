@@ -13,13 +13,35 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.Equal(10, preferences!.RecordingWriteQueueDepth);
     }
     [Fact]
+    public void V15WithStreamNdiTickedLoadsWithNdiOutputOff()
+    {
+        var loaded = ProductionOutputPreferencesSerializer.Deserialize(
+            "{\"Version\":15,\"StreamNdiEnabled\":true,\"StreamNdiProgramName\":\"Studio A\"}", out var migrated);
+
+        Assert.NotNull(loaded);
+        Assert.True(migrated);
+        Assert.Equal(16, loaded!.Version);
+        Assert.False(loaded.NdiOutputEnabled);
+        Assert.Equal("Studio A", loaded.StreamNdiProgramName);
+    }
+
+    [Fact]
+    public void NdiOutputEnabledRoundTrips()
+    {
+        var json = ProductionOutputPreferencesSerializer.Serialize(new ProductionOutputPreferences { NdiOutputEnabled = true });
+        var loaded = ProductionOutputPreferencesSerializer.Deserialize(json, out _);
+
+        Assert.True(loaded!.NdiOutputEnabled);
+    }
+
+    [Fact]
     public void Serializer_RoundTripsStreamAndRecordingOutputControls()
     {
         var preferences = new ProductionOutputPreferences
         {
             FfmpegBinDirectory = "C:\\ffmpeg\\bin",
             StreamRtmpEnabled = true,
-            StreamNdiEnabled = true,
+            NdiOutputEnabled = true,
             StreamSrtEnabled = false,
             StreamHlsEnabled = true,
             StreamHlsPlaylistUrl = "https://origin.example/live/program.m3u8",
@@ -83,7 +105,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(roundTripped);
         Assert.Equal("C:\\ffmpeg\\bin", roundTripped.FfmpegBinDirectory);
-        Assert.True(roundTripped.StreamNdiEnabled);
+        Assert.True(roundTripped.NdiOutputEnabled);
         Assert.True(roundTripped.StreamHlsEnabled);
         Assert.Equal("https://origin.example/live/program.m3u8", roundTripped.StreamHlsPlaylistUrl);
         Assert.Equal(9.5, roundTripped.StreamTargetBitrateMbps);
@@ -224,7 +246,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(14, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(16, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Empty(migrated.VstInsertStates);
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
@@ -248,7 +270,7 @@ public sealed class ProductionOutputPreferencesStoreTests
             ProductionOutputPreferencesSerializer.Serialize(preferences));
 
         Assert.NotNull(roundTripped);
-        Assert.Equal(14, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(16, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal("black", roundTripped.SourceDropoutPolicies["zoom:16778240"]);
         Assert.Equal("hold", roundTripped.SourceDropoutPolicies["capture:cam0"]);
     }
@@ -269,7 +291,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(14, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(16, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Empty(migrated.SourceDropoutPolicies);
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
@@ -309,7 +331,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(14, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(16, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.False(migrated.IsoRecordingEnabled);
         Assert.Empty(migrated.IsoRecordingSourceIds);
@@ -350,7 +372,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(14, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(16, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Equal(ZoomAudioModePreference.PerGuestIsoValue, migrated.ZoomAudioMode);
         Assert.Equal(ZoomAudioMode.PerGuestIso, ZoomAudioModePreference.Parse(migrated.ZoomAudioMode));
@@ -866,5 +888,24 @@ public sealed class ProductionOutputPreferencesStoreTests
         var raw = File.ReadAllText(Path.Combine(folder, FileProductionOutputPreferencesStore.DefaultFileName));
         Assert.Contains("plain-key", raw, StringComparison.Ordinal);
         Assert.Equal("plain-key", store.Load()?.StreamRtmpStreamKey);
+    }
+
+    // v15 (#1070): removed catalog scenes persist by id; older files read as "nothing removed".
+    [Fact]
+    public void Serializer_RoundTripsRemovedCatalogSceneIds()
+    {
+        var preferences = new ProductionOutputPreferences { RemovedCatalogSceneIds = ["intro", "closing"] };
+
+        var roundTripped = ProductionOutputPreferencesSerializer.Deserialize(
+            ProductionOutputPreferencesSerializer.Serialize(preferences));
+
+        Assert.NotNull(roundTripped);
+        Assert.Equal(["intro", "closing"], roundTripped.RemovedCatalogSceneIds);
+
+        var v14 = ProductionOutputPreferencesSerializer.Deserialize("""{"Version":14,"VirtualCameraEnabled":true}""", out var migrated);
+        Assert.NotNull(v14);
+        Assert.True(migrated);
+        Assert.Empty(v14.RemovedCatalogSceneIds);
+        Assert.Equal(16, v14.Version);
     }
 }

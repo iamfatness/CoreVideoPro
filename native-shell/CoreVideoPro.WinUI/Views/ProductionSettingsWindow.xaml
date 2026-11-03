@@ -142,7 +142,7 @@
                                     <ColumnDefinition Width="160" />
                                 </Grid.ColumnDefinitions>
                                 <ComboBox Header="Canvas size"
-                                          ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
+                                          ItemsSource="{x:Bind ViewModel.CanvasResolutionOptions, Mode=OneWay}"
                                           SelectedValue="{x:Bind ViewModel.CanvasResolution, Mode=TwoWay}"
                                           SelectedValuePath="Value"
                                           DisplayMemberPath="Label"
@@ -155,6 +155,13 @@
                                           DisplayMemberPath="Label"
                                           HorizontalAlignment="Stretch" />
                             </Grid>
+                            <ToggleSwitch Header="Allow settings above this GPU's recommended limits"
+                                          IsOn="{x:Bind ViewModel.AllowAboveGpuTier, Mode=TwoWay}" />
+                            <TextBlock Text="{x:Bind ViewModel.GpuTierStatusLine, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                            <TextBlock Text="{x:Bind ViewModel.GpuTierNotice, Mode=OneWay}"
+                                       Visibility="{x:Bind ViewModel.HasGpuTierNotice, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
                             <TextBlock Text="{x:Bind ViewModel.CanvasProfileSummary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
@@ -304,8 +311,6 @@
                             <StackPanel Orientation="Horizontal" Spacing="18">
                                 <CheckBox Content="RTMP / RTMPS"
                                           IsChecked="{x:Bind ViewModel.StreamRtmpEnabled, Mode=TwoWay}" />
-                                <CheckBox Content="NDI program"
-                                          IsChecked="{x:Bind ViewModel.StreamNdiEnabled, Mode=TwoWay}" />
                                 <CheckBox Content="SRT transport"
                                           IsChecked="{x:Bind ViewModel.StreamSrtEnabled, Mode=TwoWay}" />
                                 <CheckBox Content="HLS push"
@@ -446,16 +451,43 @@
                     <Border Style="{StaticResource OperatorSectionBorder}">
                         <StackPanel Spacing="12">
                             <TextBlock Text="NDI" Style="{StaticResource SettingsLabel}" />
+                            <!-- One-way + Toggled -> SetNdiOutput: a refusal leaves the switch
+                                 off and the status line shows the reason. Independent of Streaming. -->
+                            <ToggleSwitch Header="NDI output"
+                                          AutomationProperties.Name="NDI output"
+                                          IsOn="{x:Bind ViewModel.NdiOutputEnabled, Mode=OneWay}"
+                                          Toggled="OnNdiOutputSwitchToggled" />
+                            <TextBlock Text="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}"
+                                       Style="{StaticResource SettingsValue}" />
+                            <!-- Commit on LostFocus/Enter: every edit is validated, so a
+                                 per-keystroke commit could turn NDI off mid-typing. -->
                             <Grid ColumnSpacing="12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
-                                <TextBox Header="Program name"
-                                         Text="{x:Bind ViewModel.StreamNdiProgramName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBox Header="Program name" Tag="ProgramName"
+                                         Text="{x:Bind ViewModel.StreamNdiProgramName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         KeyDown="OnNdiTextBoxKeyDown" />
                                 <TextBox Grid.Column="1"
-                                         Header="Group"
-                                         Text="{x:Bind ViewModel.StreamNdiGroupName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                         Header="Group" Tag="GroupName"
+                                         Text="{x:Bind ViewModel.StreamNdiGroupName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         KeyDown="OnNdiTextBoxKeyDown" />
+                            </Grid>
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <CheckBox Content="NDI graphics key"
+                                          VerticalAlignment="Bottom"
+                                          ToolTipService.ToolTip="A second NDI source with only the on-air graphics over transparency (fill+key), for a downstream switcher to key over its own picture."
+                                          IsChecked="{x:Bind ViewModel.StreamNdiGraphicsKeyEnabled, Mode=TwoWay}" />
+                                <TextBox Grid.Column="1"
+                                         Header="Graphics key name" Tag="GraphicsName"
+                                         PlaceholderText="Program name + Graphics"
+                                         Text="{x:Bind ViewModel.StreamNdiGraphicsName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         KeyDown="OnNdiTextBoxKeyDown" />
                             </Grid>
                             <TextBlock Text="{x:Bind ViewModel.StreamNdiSummary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
@@ -805,7 +837,7 @@
                                            Header="Tile count"
                                            Value="{x:Bind ViewModel.MultiviewTileCount, Mode=TwoWay}"
                                            Minimum="1"
-                                           Maximum="8"
+                                           Maximum="{x:Bind ViewModel.MultiviewTileMaximum, Mode=OneWay}"
                                            SmallChange="1"
                                            LargeChange="1"
                                            SpinButtonPlacementMode="Inline" />

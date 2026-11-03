@@ -111,4 +111,38 @@ public sealed class OutputSessionClockTests
         time.Advance(10000);
         Assert.Equal(20, clock.Observe(recording));
     }
+    private static NativeMediaCoreStateSnapshot Sender(string destination, string state) => new()
+    {
+        OutputSenderSession = new()
+        {
+            Status = state,
+            Senders = [new()
+            {
+                SenderId = destination, Destination = destination, Status = "live", FramesSent = 100,
+                Lifecycle = new() { SessionId = destination, State = state, Health = "healthy", DesiredActive = true, Finalized = false }
+            }]
+        }
+    };
+
+    // Final review I2: NDI is a persisted, all-day output. It is not an output session, so a
+    // producing NDI sender alone must never start the footer ELAPSED clock.
+    [Theory]
+    [InlineData("ndi")]
+    [InlineData("ndi-graphics")]
+    public void NdiAloneDoesNotStartTheClock(string destination)
+    {
+        var time = new Clock(); var clock = new OutputSessionClock(time);
+        Assert.Equal(0, clock.Observe(Sender(destination, "producing")));
+        time.Advance(60000);
+        Assert.Equal(0, clock.Observe(Sender(destination, "producing")));
+    }
+
+    [Fact]
+    public void StreamSenderStillStartsTheClock()
+    {
+        var time = new Clock(); var clock = new OutputSessionClock(time);
+        clock.Observe(Sender("rtmp://a", "producing"));
+        time.Advance(60000);
+        Assert.Equal(60, clock.Observe(Sender("rtmp://a", "producing")));
+    }
 }

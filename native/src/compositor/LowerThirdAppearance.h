@@ -9,6 +9,7 @@ struct LowerThirdAppearance {
   std::string preset="compact-solid",anchor="lower-left",fontFamily="Segoe UI",nameColor="#F4F7FA",titleColor="#44C1A1";
   std::string backgroundColor="#0C1118",accentColor="#44C1A1";
   double nameSize=42,titleSize=28,backgroundOpacity=.9,padding=20,width=.6,cornerRadius=8,safeOffsetX=.05,safeOffsetY=.06,logoScale=1;
+  bool operator==(const LowerThirdAppearance&) const = default;
   static bool range(double n,double a,double b) { return std::isfinite(n) && n>=a && n<=b; }
   static bool color(const std::string& s) {
     if (s.size()!=7 || s[0]!='#') return false;

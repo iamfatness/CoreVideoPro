@@ -780,6 +780,9 @@ if(BUILD_TESTING)
     tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
     tests/GraphicsTemplateTest.cpp
+    tests/GraphicsDesignSeedsTest.cpp
+    tests/GraphicsEditorShapesTest.cpp
+    tests/GraphicsKeyPixelsTest.cpp
     tests/GraphicsRpcPixelTest.cpp
     tests/DeliveryTraceTest.cpp
     tests/RenderWorkDistributionTest.cpp
@@ -878,6 +881,7 @@ if(BUILD_TESTING)
     tests/D3DProgramBufferTest.cpp
     tests/D3DDecoupledExportTest.cpp
     tests/MediaCoreCommandTest.cpp
+    tests/RenderEngineMutexChurnQaTest.cpp
     tests/MediaCoreBatchSnapshotTest.cpp
     tests/PublishedObservationStoreTest.cpp
     tests/ResourceEventLaneTest.cpp
@@ -910,6 +914,7 @@ if(BUILD_TESTING)
     tests/TilesLayerTest.cpp
     tests/TilesMembershipTest.cpp
     tests/TilesWallSourceTest.cpp
+    tests/TilesNameLineTest.cpp
     tests/TilesRenderPlanTest.cpp
     tests/UvcCaptureSupportTest.cpp
     tests/PeriodicDeviceDiscoveryTest.cpp
@@ -975,6 +980,8 @@ if(BUILD_TESTING)
     tests/TestMain.cpp tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp tests/GraphicsRpcPixelTest.cpp
     tests/GraphicsTemplateTest.cpp
+    tests/GraphicsDesignSeedsTest.cpp
+    tests/GraphicsEditorShapesTest.cpp
     tests/GradePreviewTest.cpp tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp tests/OverlayTileRasterTest.cpp tests/ContractParityTest.cpp)
   target_link_libraries(corevideo-graphics-tests PRIVATE corevideo_native)

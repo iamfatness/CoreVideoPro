@@ -101,13 +101,16 @@ public class TilesLayerPayloadBuilderTests
             {
                 TileAspect = "1:1",
                 GutterPercent = 2.5,
-                MarginPercent = 3.0
+                MarginPercent = 3.0,
+                NameEachTile = true
             }),
             [Guest("1")]);
 
         Assert.Equal("1:1", payload!.Style.TileAspect);
         Assert.Equal(2.5, payload.Style.GutterPercent);
         Assert.Equal(3.0, payload.Style.MarginPercent);
+        Assert.True(payload.Style.NameEachTile);  // #1073
+        Assert.False(TilesLayerPayloadBuilder.Build(GalleryScene(new DynamicGallerySettings()), [Guest("1")])!.Style.NameEachTile);
     }
 
     // The shell must NOT pre-filter on its own idea of liveness beyond video-off.
@@ -146,5 +149,53 @@ public class TilesLayerPayloadBuilderTests
         var payload = TilesLayerPayloadBuilder.Build(GalleryScene(), [Guest("capture:cam-1")]);
 
         Assert.Equal(["capture:cam-1"], payload!.Members);
+    }
+
+    // #1071: an IN-SHOW slot bound to a local source (webcam, screen) is eligible beside the
+    // video-on Zoom participants. The local ids come from
+    // TilesLocalSourcePolicy.LocalVideoSources, already canonical; the builder appends them
+    // after the roster so an operator's slot order decides local seating. A bound slot that
+    // is not in the show is not seated (review finding 3: a Zoom-only wall must not change
+    // on upgrade because a Camera scene's slot exists).
+    [Fact]
+    public void Build_SeatsInShowCaptureSlotsAfterTheZoomParticipants()
+    {
+        var slots = new[]
+        {
+            new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.ZoomParticipant, ParticipantId = "1", InShow = true },
+            new ShowInputSlot { SlotNumber = 2, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-1", InShow = true },
+            new ShowInputSlot { SlotNumber = 3, Kind = ShowInputKind.Screen, CaptureDeviceId = "screen:1", InShow = true },
+            new ShowInputSlot { SlotNumber = 4, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-offshow", InShow = false },
+        };
+        var local = TilesLocalSourcePolicy.LocalVideoSources(slots, []).Select(s => s.Id).ToList();
+
+        var payload = TilesLayerPayloadBuilder.Build(
+            GalleryScene(), [Guest("1"), Guest("p-2", FeedHealth.VideoOff)],
+            routedSourceIds: TilesLocalSourcePolicy.RoutedSourceIds(slots), localVideoSourceIds: local);
+
+        Assert.Equal(["zoom:1", "capture:cam-1", "capture:screen:1"], payload!.Members);
+    }
+
+    [Fact]
+    public void Build_RoutedModeFiltersLocalMembersLikeZoomOnes()
+    {
+        var payload = TilesLayerPayloadBuilder.Build(
+            GalleryScene(new DynamicGallerySettings { MembershipMode = "routed" }),
+            [Guest("1"), Guest("2")],
+            routedSourceIds: ["zoom:2", "capture:cam-1"],
+            localVideoSourceIds: ["capture:cam-1", "media:clip-7"]);
+
+        Assert.Equal(["zoom:2", "capture:cam-1"], payload!.Members);
+    }
+
+    // A local id must arrive canonical. A bare device id would be qualified "zoom:<id>" and
+    // match no frame, so the builder refuses it rather than seating a tile that never draws.
+    [Fact]
+    public void Build_IgnoresANonCanonicalLocalIdAndDeduplicatesACanonicalOne()
+    {
+        var payload = TilesLayerPayloadBuilder.Build(
+            GalleryScene(), [Guest("1")], localVideoSourceIds: ["cam-1", "zoom:1", "capture:cam-1", "capture:cam-1"]);
+
+        Assert.Equal(["zoom:1", "capture:cam-1"], payload!.Members);
     }
 }

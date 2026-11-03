@@ -39,6 +39,8 @@ frame exactly once with bounded latency, judged per frame by pixel identity
 30-minute full workload. Zero tolerance. These are what a viewer, a file, or a
 downstream app can see, and they are what "beat vMix" means.
 
+**Amendment, owner ruling 2026-10-23 23:27 EDT (#1030, #1038):** a held frame passes the per-frame identity gate as a labelled, counted, source-caused repeat. A held frame is the last picture that an ISO writer re-submits while that source's video is stalled. It passes only when all three conditions hold: (1) it repeats the immediately preceding picture; (2) it lies at least 1 s, minus one frame period, after that picture; (3) the number of such repeats in the file equals the writer's `heldFrames` in the finalized recording snapshot. The close-time tail hold is excused the same way, only as the file's last frame when `tailFrames` is 1. Zero tolerance remains for anything the pipeline itself loses or duplicates: a missing arrival, any other repeat, a reorder, an invalid picture, or a hold count that disagrees with the writer still fails. A passing row with holds must read `held=N, source stalled`, so the stall is never a silent pass.
+
 **The on-screen Studio cells (Preview, Program monitor, input tiles) are a UX
 metric with a tolerance, not a release gate.** They are windowed surfaces
 composed by the Desktop Window Manager. On a multi-monitor desk with mixed
@@ -98,9 +100,10 @@ Process boundaries + where spine features (ISO/NDI/SRT/browser) plug in: `docs/a
 ## Production endpoints
 
 The shell bakes `https://telemetry.corevideo.io` (telemetry + crash upload) and the OAuth broker
-`https://auth.corevideo.io`; `COREVIDEO_TELEMETRY_ENDPOINT` / `COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`
+`https://corevideo.iamfatness.us` (owner ruling 2026-10-25: the Zoom app's registered redirect is
+`https://corevideo.iamfatness.us/oauth/callback`; never move the broker host without the owner); `COREVIDEO_TELEMETRY_ENDPOINT` / `COREVIDEO_ZOOM_OAUTH_BROKER_START_URL`
 override for staging (`scripts/load-staging-env.ps1`). The telemetry API key is never baked.
-**Do not ship a build until owner checklist steps 1-3 are done**: none of the three hostnames resolve yet, so Sign in with Zoom opens a dead host. Details and the checklist: `docs/reference/production-endpoints.md`.
+**Telemetry and ops hostnames do not resolve yet** (owner checklist steps 1 and 5); uploads stay disabled until they do. beta-2026-10-25-ebc974d shipped with a dead `auth.corevideo.io` broker and Sign in with Zoom failed with `No such host is known`; the default is back on the live host. Details and the checklist: `docs/reference/production-endpoints.md`.
 
 ## Build & run (Windows)
 
@@ -139,8 +142,8 @@ the output, check which binary you ran before suspecting CMake.
 Logs: `%LOCALAPPDATA%\CoreVideoPro\launch.log` (WinUI) and `media-core.log` (core).
 Support bundle (Diagnostics → "Export support bundle"): writes redacted JSON **and a
 zip** to `%LOCALAPPDATA%\CoreVideoPro\support-bundles\` — the zip packs ~2MB
-secret-filtered tails of launch/media-core/perf/vcam-serve logs + a CrashDumps
-listing + manifest (`SupportBundleArchiveBuilder`/`SupportBundleLogRedactor`,
+secret-filtered tails of launch/media-core/perf/vcam-serve logs + a crash-dump
+listing + manifest (the listing covers `%LOCALAPPDATA%\CrashDumps` AND the installer's WER LocalDumps folder, `%LOCALAPPDATA%\CoreVideoPro\crashes`, read from the 64-bit HKLM view via `CrashDumpScanner.ResolveDumpDirectories`, #1039; the shell crash offer scans the same set) (`SupportBundleArchiveBuilder`/`SupportBundleLogRedactor`,
 beta spec S2); missing logs become manifest skip notes, never a failed export.
 
 MSIX signing (beta D2, 2026-07-18): `scripts/sign-native-msix.ps1 -Mode dev|production`.
@@ -200,13 +203,14 @@ phrase they quote.
 | [`docs/reference/destination-lifecycle.md`](docs/reference/destination-lifecycle.md) | destination start/stop state and what the UI may claim |
 | [`docs/reference/encoder-capacity-probe.md`](docs/reference/encoder-capacity-probe.md) | encoder session limits, software spill |
 | [`docs/reference/engine-teardown-order.md`](docs/reference/engine-teardown-order.md) | stop/teardown/shutdown paths (the ZoomISO deadlock class) |
+| [`docs/reference/graphics-playout.md`](docs/reference/graphics-playout.md) | the Graphics tab's playout top level: playlist, Play In / To Preview / Play Out, the On Air strip (one truth with the buses, #1072), Playout vs Design, Shot Layouts (scene + graphics on one Take, Shift+F1..F11, `graphics.layout.*`), control-API ids, hotkeys (#1076); Design opens on the template-first builder (`GraphicsBuilder` + `GraphicsBuilderControl`) with Open in Designer and Cues & automation (the old workspace, minus its layer pane and design actions); **Designs** (Graphics Designer slice 1): Your designs (open / duplicate / delete), New design (four blank seeds or from a look), Variables panel, Save design / Save to playlist, one `GraphicsDesignService`, one library-full evictor shared with playout reinstall (`GraphicsDesignEviction`), reinstall on core restart; **The Designer** (slice 2, `GraphicsDesignerControl`): layers panel (rename, hide = hidden on air, lock, drag, group/ungroup, add; `GraphicsTemplateEditor.Structure.cs`, `GraphicsDesignerModel`), canvas snapping (`GraphicsSnap`, Ctrl = free), sample buttons (`GraphicsPreviewSamples`), inspector; one Design surface at a time (`GraphicsDesignSurfaces`); a design's row opens in the Designer (`GraphicsDesignWorkflow.DesignForRow`); Operate's row inspector types a row's extra text variables (`GraphicsRowFields`) |
 | [`docs/reference/fault-injection-seams.md`](docs/reference/fault-injection-seams.md) | proving stability work; writing a drill or soak |
 | [`docs/reference/frame-alloc-failure.md`](docs/reference/frame-alloc-failure.md) | frame allocation, out-of-memory handling |
 | [`docs/reference/gotchas.md`](docs/reference/gotchas.md) | **before any non-trivial change** — the long list of traps, grep it for your area |
 | [`docs/reference/gpu-direct-encode.md`](docs/reference/gpu-direct-encode.md) | streaming encode, MF encoders, HEVC/AV1, bitrate/rate control |
 | [`docs/reference/honest-reporting.md`](docs/reference/honest-reporting.md) | **any value, control or diagnostic the operator sees** — measured or removed, never invented |
-| [`docs/reference/installer.md`](docs/reference/installer.md) | touching the installer, MSIX, uninstall or first-run |
-| [`docs/reference/iso-recording.md`](docs/reference/iso-recording.md) | ISO recording — video, audio stems, capture sources, dispatch/throttle, pre-flight |
+| [`docs/reference/installer.md`](docs/reference/installer.md) | touching the installer, MSIX, uninstall or first-run; the Frame Server refresh after a camera DLL upgrade (#781) |
+| [`docs/reference/iso-recording.md`](docs/reference/iso-recording.md) | ISO recording — video, audio stems, capture sources, dispatch/throttle, pre-flight, departed participants, bounded writer teardown (#1030) |
 | [`docs/reference/live-meeting-qa-2026-08-09.md`](docs/reference/live-meeting-qa-2026-08-09.md) | shell UI defects seen in real meetings (eight worked examples) |
 | [`docs/reference/media-no-decoder.md`](docs/reference/media-no-decoder.md) | media decode failures |
 | [`docs/reference/monitor-input-admission.md`](docs/reference/monitor-input-admission.md) | isolated monitor holds, input identity and bounded cache retirement |
@@ -215,16 +219,18 @@ phrase they quote.
 | [`docs/reference/ohg-show-engine-host.md`](docs/reference/ohg-show-engine-host.md) | the OHG show engine, `show-engine/`, its host process |
 | [`docs/reference/operator-stutter-snapshot-apply.md`](docs/reference/operator-stutter-snapshot-apply.md) | shell lag/stutter, snapshot apply cost |
 | [`docs/reference/output-supervisor.md`](docs/reference/output-supervisor.md) | stream/record destinations, restarts, the output supervisor |
+| [`docs/reference/ndi-graphics-key.md`](docs/reference/ndi-graphics-key.md) | the NDI graphics key (fill+key): graphics-only composite, straight alpha, `ndi-graphics` sender, `transport.ndi.graphicsKey.set`; NDI output is its own on/off (`transport.ndi.set`/`toggle`), independent of Streaming; see [`stream-destination-control.md`](docs/reference/stream-destination-control.md) |
 | [`docs/reference/performance-profiling.md`](docs/reference/performance-profiling.md) | measuring lag/stutter/crash: PresentMon, perf.log, dumps |
 | [`docs/reference/redesign-video-delivery-audit.md`](docs/reference/redesign-video-delivery-audit.md) | UI-independent video, blocked-UI probes and combined workload qualification |
 | [`docs/reference/persistent-media-source.md`](docs/reference/persistent-media-source.md) | media/clip/still sources, cue/live/pause transport |
 | [`docs/reference/cpu-source-preparation.md`](docs/reference/cpu-source-preparation.md) | bounded CPU arrival preparation, GPU identity and held-frame refresh |
 | [`docs/reference/recording-output-location.md`](docs/reference/recording-output-location.md) | recording output paths |
+| [`docs/reference/scenes.md`](docs/reference/scenes.md) | the scene rail: catalog vs custom scenes, removal rules (on-air + last-scene guards only, #1070), `RemovedCatalogSceneIds` persistence, New scene starters, Restore starter scenes, `scene.list` / `scene.restoreStarters`, consumers that cue catalog ids (Magic Scene, shot layouts, the outputs drill) |
 | [`docs/reference/secrets-and-oauth.md`](docs/reference/secrets-and-oauth.md) | secrets storage, OAuth return URI |
 | [`docs/reference/shared-texture-export-cost.md`](docs/reference/shared-texture-export-cost.md) | creating D3D exports / anything new on the render thread |
 | [`docs/reference/source-bus.md`](docs/reference/source-bus.md) | the source bus, ingests, bus health, slates, hold/black |
 | [`docs/reference/status-snapshot-isolation-spec.md`](docs/reference/status-snapshot-isolation-spec.md) | proposed #870 status ownership, off-lock assembly, freshness and delivery acceptance; [implementation sequence](docs/reference/status-snapshot-isolation-plan.md) |
-| [`docs/reference/realtime-isolation-audit.md`](docs/reference/realtime-isolation-audit.md) | cross-subsystem evidence, owner/command/observer isolation contract, lock budgets and integrated fault qualification under #517/#870 |
+| [`docs/reference/realtime-isolation-audit.md`](docs/reference/realtime-isolation-audit.md) | cross-subsystem evidence, owner/command/observer isolation contract, lock budgets, the engine mutex under coreMutex (#1037/#1048/#1049), reading `[lock-hold-attribution]` phase lines (#1056) and integrated fault qualification under #517/#870 |
 | [`docs/reference/source-thumbnail-isolation.md`](docs/reference/source-thumbnail-isolation.md) | Sources input thumbnails, per-source GPU export identity and source-epoch publication |
 | [`docs/reference/source-grading-spec.md`](docs/reference/source-grading-spec.md) | per-source grade compatibility, expanded editor, native preview and scopes |
 | [`docs/reference/volt-graphics-spec.md`](docs/reference/volt-graphics-spec.md) | approved first graphics milestone; [reconciliation](docs/reference/volt-graphics-reconciliation.md), [implementation dependencies](docs/reference/volt-graphics-implementation-plan.md) and [native compatibility instance API](docs/reference/volt-native-instances.md) |
@@ -233,7 +239,7 @@ phrase they quote.
 | [`docs/reference/studioviewmodel-strangler.md`](docs/reference/studioviewmodel-strangler.md) | adding anything to `StudioViewModel.cs` or extracting from it |
 | [`docs/reference/take-tracing.md`](docs/reference/take-tracing.md) | Take, Program/Preview routing, "what did Program render" |
 | [`docs/reference/the-law-slots.md`](docs/reference/the-law-slots.md) | slot/participant assignment writes (THE LAW) |
-| [`docs/reference/tiles-composed-source.md`](docs/reference/tiles-composed-source.md) | Tiles, composed sources, source erase vs tombstone |
+| [`docs/reference/tiles-composed-source.md`](docs/reference/tiles-composed-source.md) | Tiles, composed sources, source erase vs tombstone; the per-tile name line (#1073, `TilesNameLine.h`, `scene.tiles.names.set`) |
 | [`docs/reference/trustworthy-gates.md`](docs/reference/trustworthy-gates.md) | QA gates you rely on: drill latency budget, GPU-encode path evidence, the meter gate |
 | [`docs/reference/virtual-camera.md`](docs/reference/virtual-camera.md) | the virtual camera DLL, vcam SHM, Frame Server |
 | [`docs/reference/winui-crash-class-0xc000027b.md`](docs/reference/winui-crash-class-0xc000027b.md) | **any WinUI/XAML change** — bound collections, selectors, UI-thread callbacks |

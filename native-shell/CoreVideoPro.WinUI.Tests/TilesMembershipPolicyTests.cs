@@ -83,6 +83,75 @@ public class TilesMembershipPolicyTests
                 ["zoom:a", "zoom:b", "zoom:c"],
                 ["zoom:a", "zoom:c", "capture:cam"]));
     }
+    // #1071: local sources (capture:/media:) are members like anyone else. Mixed-id cases
+    // run WITH a roster so the identity path (ResolveLiveSourceId) is exercised, not the
+    // roster-less shortcut — a local id must survive resolution unchanged.
+    private static readonly TilesIdentityPolicy.Person[] MixedRoster =
+    [
+        new("zoom:a", "Guest A", "pid-a"),
+        new("zoom:b", "Guest B", "pid-b"),
+    ];
+
+    [Fact]
+    public void Local1071_EligibleModeSeatsZoomAndLocalMembersInEligibleOrder()
+    {
+        var settings = new DynamicGallerySettings { BoundMeetingId = "111" };
+        var members = TilesMembershipPolicy.Resolve(
+            settings, ["zoom:a", "capture:cam-1", "zoom:b", "media:clip-7"], roster: MixedRoster, currentMeetingId: "111");
+
+        Assert.Equal(["zoom:a", "capture:cam-1", "zoom:b", "media:clip-7"], members);
+    }
+
+    [Fact]
+    public void Local1071_ManualSlotsHoldCanonicalLocalIdsWithoutRosterResolution()
+    {
+        var settings = new DynamicGallerySettings
+        {
+            MembershipMode = "manual",
+            ManualSlots = ["capture:screen:1", "zoom-pid:pid-a", "media:clip-7"],
+            BoundMeetingId = "111"
+        };
+
+        var members = TilesMembershipPolicy.Resolve(
+            settings, ["zoom:a", "capture:screen:1"], roster: MixedRoster, currentMeetingId: "222");
+
+        // The Zoom pid resolves through the roster; the local ids pass straight through,
+        // and a local member that is not eligible this tick still keeps its slot (manual
+        // layout reserves the cell; the core draws it only when frames arrive).
+        Assert.Equal(["capture:screen:1", "zoom:a", "media:clip-7"], members);
+    }
+
+    [Fact]
+    public void Local1071_NeverShowAcceptsALocalIdAndKeepsItOffEveryMode()
+    {
+        var settings = new DynamicGallerySettings { ExcludedSourceIds = ["capture:cam-1"], ManualSlots = ["capture:cam-1"], BoundMeetingId = "111" };
+        var eligible = new[] { "zoom:a", "capture:cam-1", "media:clip-7" };
+
+        Assert.Equal(["zoom:a", "media:clip-7"],
+            TilesMembershipPolicy.Resolve(settings, eligible, roster: MixedRoster, currentMeetingId: "111"));
+        settings.MembershipMode = "manual";
+        Assert.Equal([""],
+            TilesMembershipPolicy.Resolve(settings, eligible, roster: MixedRoster, currentMeetingId: "111"));
+        settings.MembershipMode = "routed";
+        Assert.Equal(["media:clip-7"],
+            TilesMembershipPolicy.Resolve(settings, eligible, ["capture:cam-1", "media:clip-7"], MixedRoster, "111"));
+    }
+
+    [Fact]
+    public void Local1071_RoutedModeKeepsFilteringMixedIdsToTheRoutedSet()
+    {
+        var settings = new DynamicGallerySettings { MembershipMode = "routed" };
+
+        var members = TilesMembershipPolicy.Resolve(
+            settings,
+            ["zoom:a", "capture:cam-1", "media:clip-7", "capture:screen:1"],
+            ["capture:screen:1", "zoom:a"],
+            MixedRoster,
+            "111");
+
+        Assert.Equal(["zoom:a", "capture:screen:1"], members);
+    }
+
     [Fact]
     public void AutomaticFillRespectsPriorityAssignmentsExclusionsAndLimit()
     {

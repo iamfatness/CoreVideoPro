@@ -26,6 +26,7 @@ AsyncOutputSender::~AsyncOutputSender() {
   interrupt("srt");
   interrupt("hls");
   interrupt("ndi");
+  interrupt("ndi-graphics");
   {
     std::lock_guard<std::mutex> lock(state_->queueMutex);
     state_->stop = true;
@@ -169,7 +170,7 @@ OutputSenderSession AsyncOutputSender::sync(
   // normal state cleanup remains serialized on the writer below.
   // Every network destination, HLS included (#708): an HLS FFmpeg whose origin
   // stalls blocks exactly like RTMP/SRT and must be released the same way.
-  for (const char* destination : {"rtmp", "srt", "hls", "ndi"}) {
+  for (const char* destination : {"rtmp", "srt", "hls", "ndi", "ndi-graphics"}) {
     if (std::find(destinations.begin(), destinations.end(), destination) == destinations.end()) {
       interrupt(destination);
     }

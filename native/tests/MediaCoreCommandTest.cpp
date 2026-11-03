@@ -1,8 +1,10 @@
 ﻿#include "compositor/CompositorLayout.h"
 #include "core/AudioControlSourcePolicy.h"
 #include "core/BoundedAsyncLog.h"
+#include "core/CoreStateCapture.h"
 #include "core/StreamBackpressurePolicy.h"
 #include "core/MediaCore.h"
+#include "core/RenderTickPhases.h"
 #include "core/ZoomParticipantSource.h"
 
 #include "EncoderCapacityProbeTestSupport.h"
@@ -10,9 +12,13 @@
 #include "MonitorTestMode.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
+#include "modules/BitstreamQueueTestAccess.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
 #include "modules/ZoomMeetingSdkAdapter.h"
+#include "modules/EngineMutexGuardrail.h"
+#include "modules/ZoomEngineClient.h"
+#include "modules/ZoomEngineRuntime.h"
 #include "core/TestPatternSource.h"
 #include "rpc/Json.h"
 
@@ -5771,7 +5777,9 @@ TEST(RtmpOutputSenderBackpressure, DestinationPressureNeverThrottlesSharedCompos
   // --- Half one: the SENDER observes its own bitstream queue and publishes. ---
 #if COREVIDEO_WITH_RTMP_OUTPUT
   if (senderAdmissionFfmpegPresent("TheSendersDivisorReachesTheCompositor")) {
-    auto sender = corevideo::modules::createRtmpOutputSender();
+    auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+    auto& sender = rig.sender;
+    auto* const queue = rig.queue;
     ASSERT_NE(sender, nullptr);
     auto frame = startableProgramFrame("rtmp-backpressure");
     // H.265 without the enhanced-RTMP checkbox is refused BEFORE FFmpeg is
@@ -5790,7 +5798,7 @@ TEST(RtmpOutputSenderBackpressure, DestinationPressureNeverThrottlesSharedCompos
     }
 
     // A healthy queue never throttles, however long the stream runs.
-    sender->setBackpressureObservationForTest(0, false);
+    queue->setBackpressureObservationForTest(0, false);
     for (int i = 0; i < 120; ++i) {
       (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
     }
@@ -5803,7 +5811,7 @@ TEST(RtmpOutputSenderBackpressure, DestinationPressureNeverThrottlesSharedCompos
     }
 
     // Now hold it above the throttle threshold for longer than the enter streak.
-    sender->setBackpressureObservationForTest(
+    queue->setBackpressureObservationForTest(
         corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10, false);
     const int ticks =
         static_cast<int>(corevideo::core::StreamBackpressurePolicy::kEnterAfterOverWaterTicks) + 2;
@@ -5822,7 +5830,7 @@ TEST(RtmpOutputSenderBackpressure, DestinationPressureNeverThrottlesSharedCompos
     // Without this the stopped record keeps publishing divisor 4 forever, the
     // compositor stays throttled with nothing streaming, and the NEXT stream
     // opens at 15 fps on an empty queue.
-    sender->setBackpressureObservationForTest(-1, false);  // stop injecting
+    queue->setBackpressureObservationForTest(-1, false);  // stop injecting
     (void)sender->sync({}, &frame, 9000.0, {settings});
     {
       const auto session = sender->session();
@@ -5833,7 +5841,7 @@ TEST(RtmpOutputSenderBackpressure, DestinationPressureNeverThrottlesSharedCompos
     }
     // ...and the policy itself is reset, so the next run starts at 1 rather
     // than resuming the ladder it left off at.
-    sender->setBackpressureObservationForTest(0, false);
+    queue->setBackpressureObservationForTest(0, false);
     for (int i = 0; i < 3; ++i) {
       (void)sender->sync({"rtmp"}, &frame, 10000.0 + 33.0 * i, {settings});
     }
@@ -5993,7 +6001,9 @@ TEST(RtmpOutputSenderBackpressure, AShedFrameNeverRestartsTheSendersEncodePath) 
   if (!senderAdmissionFfmpegPresent("AShedFrameNeverRestartsTheSendersEncodePath")) return;
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_NE(compositor, nullptr);
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
 
   corevideo::modules::CompositorRenderPlan plan;
@@ -6014,7 +6024,7 @@ TEST(RtmpOutputSenderBackpressure, AShedFrameNeverRestartsTheSendersEncodePath) 
   // the ordinary one-time start rather than an artefact of the initial state.
   compositor->setEncoderExportDivisor(1);
   auto warm = compositor->render(plan, {});
-  const bool warmIsGpuDirect = sender->wouldRestartForEncodePathForTest(warm);
+  const bool warmIsGpuDirect = queue->wouldRestartForEncodePathForTest(warm);
   if (!warmIsGpuDirect) {
     // Already on the GPU path, or this machine has no hardware encoder at all.
     // The latter would make the whole test vacuous, so say so and stop.
@@ -6032,7 +6042,7 @@ TEST(RtmpOutputSenderBackpressure, AShedFrameNeverRestartsTheSendersEncodePath) 
   for (int i = 0; i < 40; ++i) {
     auto frame = compositor->render(plan, {});
     if (frame.encoderSharedTexture.frameNumber != frame.frameNumber) ++shed;
-    if (sender->wouldRestartForEncodePathForTest(frame)) ++restarts;
+    if (queue->wouldRestartForEncodePathForTest(frame)) ++restarts;
   }
 
   EXPECT_GT(shed, 0) << "the compositor shed nothing, so this proves nothing";
@@ -6065,7 +6075,9 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
 #if COREVIDEO_WITH_RTMP_OUTPUT
   if (senderAdmissionFfmpegPresent(
           "DiscardBacklogReachesTheQueueThroughSyncAndObserveStreamBackpressure")) {
-    auto sender = corevideo::modules::createRtmpOutputSender();
+    auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+    auto& sender = rig.sender;
+    auto* const queue = rig.queue;
     ASSERT_NE(sender, nullptr);
     auto frame = startableProgramFrame("rtmp-backpressure-discard");
     // H.265 without the enhanced-RTMP checkbox is refused BEFORE FFmpeg is
@@ -6075,7 +6087,7 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
 
     // Lever B only ever fires once the divisor is already above 1 - get there
     // first, the same way TheSendersDivisorReachesTheCompositor does.
-    sender->setBackpressureObservationForTest(
+    queue->setBackpressureObservationForTest(
         corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
         /*keyframeInQueue=*/true);
     const int enterTicks =
@@ -6098,23 +6110,23 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
     // fires: bufferedMs must fall once the stale head is discarded, or
     // bitstreamBufferedMs() would keep reporting the age of a chunk that no
     // longer exists (the risk named in the original brief).
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
-    sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-    const auto before = sender->bitstreamQueueSnapshotForTest();
+    queue->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    const auto before = queue->bitstreamQueueSnapshotForTest();
     ASSERT_EQ(before.depth, 4u);
     EXPECT_GE(before.bufferedMs, 50) << "the head is the STALE chunk before the discard";
 
     // Push the injected OBSERVATION (not the queue) above the discard
     // threshold and tick once more.
-    sender->setBackpressureObservationForTest(
+    queue->setBackpressureObservationForTest(
         corevideo::core::StreamBackpressurePolicy::kDiscardAboveBufferedMs + 10,
         /*keyframeInQueue=*/true);
     (void)sender->sync({"rtmp"}, &frame, 5000.0, {settings});
 
-    const auto after = sender->bitstreamQueueSnapshotForTest();
+    const auto after = queue->bitstreamQueueSnapshotForTest();
     EXPECT_EQ(after.depth, 2u)
         << "decision.discardBacklog must have reached discardBacklogToNextKeyframe() "
            "through observeStreamBackpressure()/sync() and dropped the two stale chunks "
@@ -6150,7 +6162,9 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
 // see this at all.
 TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailInsteadOfFailingTheSender) {
 #if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
 
   // Fill the real queue to its hard cap with a keyframe 30 chunks in - the
@@ -6158,17 +6172,17 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailI
   constexpr std::size_t kCap = 60;
   constexpr std::size_t kKeyframeIndex = 30;
   for (std::size_t i = 0; i < kCap; ++i) {
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == kKeyframeIndex);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == kKeyframeIndex);
   }
-  const auto before = sender->bitstreamQueueSnapshotForTest();
+  const auto before = queue->bitstreamQueueSnapshotForTest();
   ASSERT_EQ(before.depth, kCap) << "the queue must actually be AT the cap, or this proves nothing";
   ASSERT_TRUE(before.hasKeyframe);
   ASSERT_FALSE(before.overflowFailed);
 
   // One more chunk arrives from the encoder with the queue already full.
-  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+  queue->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
 
-  const auto after = sender->bitstreamQueueSnapshotForTest();
+  const auto after = queue->bitstreamQueueSnapshotForTest();
   EXPECT_FALSE(after.overflowFailed)
       << "the overflow path failed the sender while a keyframe was queued: its supervisor "
          "will restart it and rebuild the encoder, which is #597 itself";
@@ -6196,7 +6210,9 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailI
 // room freed, and nothing about which preceding chunks are headers.
 TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesRoomInsteadOfFailing) {
 #if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
 
   // The cap, with a keyframe at the HEAD and one more mid-queue - the ordinary
@@ -6204,15 +6220,15 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesR
   constexpr std::size_t kCap = 60;
   constexpr std::size_t kSecondKeyframeIndex = 45;
   for (std::size_t i = 0; i < kCap; ++i) {
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == 0 || i == kSecondKeyframeIndex);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == 0 || i == kSecondKeyframeIndex);
   }
-  const auto before = sender->bitstreamQueueSnapshotForTest();
+  const auto before = queue->bitstreamQueueSnapshotForTest();
   ASSERT_EQ(before.depth, kCap);
   ASSERT_TRUE(before.hasKeyframe);
 
-  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+  queue->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
 
-  const auto after = sender->bitstreamQueueSnapshotForTest();
+  const auto after = queue->bitstreamQueueSnapshotForTest();
   EXPECT_FALSE(after.overflowFailed)
       << "cutting to the FIRST keyframe frees 0 here and fails the sender - which restarts it "
          "and rebuilds the encoder, #597 itself";
@@ -6236,20 +6252,22 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesR
 // fails; the decoder can resume at the ARRIVING IDR, so the whole backlog goes.
 TEST(RtmpOutputSenderBackpressure, AKeyframeArrivingAtAFullAllReferenceQueueReplacesTheWholeBacklog) {
 #if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
 
   constexpr std::size_t kCap = 60;
   for (std::size_t i = 0; i < kCap; ++i) {
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
   }
-  const auto before = sender->bitstreamQueueSnapshotForTest();
+  const auto before = queue->bitstreamQueueSnapshotForTest();
   ASSERT_EQ(before.depth, kCap);
   ASSERT_FALSE(before.hasKeyframe) << "the measured shape: 60 queued chunks, no keyframe among them";
 
-  sender->offerBitstreamChunkForTest(2000, /*keyframe=*/true);
+  queue->offerBitstreamChunkForTest(2000, /*keyframe=*/true);
 
-  const auto after = sender->bitstreamQueueSnapshotForTest();
+  const auto after = queue->bitstreamQueueSnapshotForTest();
   EXPECT_FALSE(after.overflowFailed)
       << "the sender failed with a usable cut point at the door - that restarts it and rebuilds "
          "the encoder, which is #597 itself";
@@ -6268,27 +6286,29 @@ TEST(RtmpOutputSenderBackpressure, AKeyframeArrivingAtAFullAllReferenceQueueRepl
 // recover from one blocked network socket.
 TEST(RtmpOutputSenderBackpressure, AFullQueueWithoutKeyframeWaitsForFreshIdr) {
 #if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
 
   constexpr std::size_t kCap = 60;
   for (std::size_t i = 0; i < kCap; ++i) {
-    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
   }
-  const auto before = sender->bitstreamQueueSnapshotForTest();
+  const auto before = queue->bitstreamQueueSnapshotForTest();
   ASSERT_EQ(before.depth, kCap);
   ASSERT_FALSE(before.hasKeyframe) << "this case is defined by there being nothing safe to drop";
 
-  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+  queue->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
 
-  const auto after = sender->bitstreamQueueSnapshotForTest();
+  const auto after = queue->bitstreamQueueSnapshotForTest();
   EXPECT_FALSE(after.overflowFailed) << "destination congestion rebuilt the shared encoder";
   EXPECT_EQ(after.depth, 0u) << "the undecodable GOP must leave the bounded queue";
-  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
-  EXPECT_EQ(sender->bitstreamQueueSnapshotForTest().depth, 0u)
+  queue->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+  EXPECT_EQ(queue->bitstreamQueueSnapshotForTest().depth, 0u)
       << "P-frames before a new IDR would corrupt the receiver";
-  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/true);
-  const auto recovered = sender->bitstreamQueueSnapshotForTest();
+  queue->offerBitstreamChunkForTest(1000, /*keyframe=*/true);
+  const auto recovered = queue->bitstreamQueueSnapshotForTest();
   EXPECT_FALSE(recovered.overflowFailed);
   EXPECT_EQ(recovered.depth, 1u);
   EXPECT_TRUE(recovered.hasKeyframe);
@@ -6311,7 +6331,9 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWithoutKeyframeWaitsForFreshIdr) {
 TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRun) {
 #if COREVIDEO_WITH_RTMP_OUTPUT
   if (!senderAdmissionFfmpegPresent("ADiscardedChunkCounterResetsOnTheNextStreamRun")) return;
-  auto sender = corevideo::modules::createRtmpOutputSender();
+  auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+  auto& sender = rig.sender;
+  auto* const queue = rig.queue;
   ASSERT_NE(sender, nullptr);
   auto frame = startableProgramFrame("rtmp-backpressure-discard-reset");
   // H.265 without the enhanced-RTMP checkbox is refused before FFmpeg is
@@ -6320,7 +6342,7 @@ TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRu
   const auto settings = rtmpAdmissionSettings("h265", false);
 
   // --- Run 1: drive the divisor above 1, then force a real discard. ---
-  sender->setBackpressureObservationForTest(
+  queue->setBackpressureObservationForTest(
       corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
       /*keyframeInQueue=*/true);
   const int enterTicks =
@@ -6328,10 +6350,10 @@ TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRu
   for (int i = 0; i < enterTicks; ++i) {
     (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
   }
-  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-  sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
-  sender->setBackpressureObservationForTest(
+  queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  queue->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  queue->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+  queue->setBackpressureObservationForTest(
       corevideo::core::StreamBackpressurePolicy::kDiscardAboveBufferedMs + 10,
       /*keyframeInQueue=*/true);
   (void)sender->sync({"rtmp"}, &frame, 5000.0, {settings});
@@ -6355,7 +6377,7 @@ TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRu
 
   // --- Stop the destination: the same `!wantsRtmp` path that resets
   // backpressure_ and backpressureDiscardedChunks_ together. ---
-  sender->setBackpressureObservationForTest(-1, false);  // stop injecting
+  queue->setBackpressureObservationForTest(-1, false);  // stop injecting
   (void)sender->sync({}, &frame, 9000.0, {settings});
   {
     const auto session = sender->session();
@@ -6366,7 +6388,7 @@ TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRu
   }
 
   // --- Run 2: a fresh stream, never throttled, no discard fired. ---
-  sender->setBackpressureObservationForTest(0, false);
+  queue->setBackpressureObservationForTest(0, false);
   for (int i = 0; i < 3; ++i) {
     (void)sender->sync({"rtmp"}, &frame, 10000.0 + 33.0 * i, {settings});
   }
@@ -6429,12 +6451,14 @@ TEST(RtmpOutputSenderBackpressure, AReopenedTransportStartsUnthrottledNotAtItsPr
   // drives the other.
   for (int door = 0; door < 2; ++door) {
     const bool viaSupervisor = door == 0;
-    auto sender = corevideo::modules::createRtmpOutputSender();
+    auto rig = corevideo::modules::createRtmpOutputSenderForTest();
+    auto& sender = rig.sender;
+    auto* const queue = rig.queue;
     ASSERT_NE(sender, nullptr);
     auto frame = startableProgramFrame("rtmp-backpressure-reopen");
 
     // --- Climb to the floor of the ladder on a congested link. ---
-    sender->setBackpressureObservationForTest(
+    queue->setBackpressureObservationForTest(
         corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
         /*keyframeInQueue=*/true);
     double t = 0.0;
@@ -6465,7 +6489,7 @@ TEST(RtmpOutputSenderBackpressure, AReopenedTransportStartsUnthrottledNotAtItsPr
     }
 
     // --- The first observation after the reopen sees a healthy, empty queue. ---
-    sender->setBackpressureObservationForTest(0, /*keyframeInQueue=*/false);
+    queue->setBackpressureObservationForTest(0, /*keyframeInQueue=*/false);
     t += 33.0;
     (void)sender->sync({"rtmp"}, &frame, t, {settings});
 
@@ -9540,5 +9564,596 @@ TEST(MediaCoreCommand, ATransportOnABackgroundOnlyAssetIsRefusedAndNamesTheLoop)
   EXPECT_TRUE(std::any_of(warnings.begin(), warnings.end(), [](const std::string& warning) {
     return warning.find("no-such-asset") != std::string::npos;
   })) << "a transport command for an unknown asset must say so";
-  EXPECT_EQ(CountingDecoder::created.load(), 1);
+  // #867: this counter is process-global. If it ever reads 2 again, say WHICH source
+  // restarted (loop restart vs a decoder opened outside this core) instead of a bare 2 vs 1.
+  EXPECT_EQ(CountingDecoder::created.load(), 1)
+      << "background:bg decoder restarts=" << CountingDecoder::restartsFor("background:bg")
+      << " first-frame-id-after-restart=" << CountingDecoder::firstFrameIdAfterRestartFor("background:bg")
+      << " last-frame-id=" << CountingDecoder::lastFrameIdFor("background:bg");
+}
+
+// #1030 (review blockers 1 + nit 3). A roster drop reaches the ISO audio
+// submit as `departed` through the REAL audio gather, and that gather never
+// takes the Zoom engine mutex (it runs under coreMutex on a sub-ms budget; the
+// roster is read before the lock, like pollZoomAudioUnlocked).
+namespace {
+class DepartureCapturingEncoder final : public corevideo::modules::IEncoderSink {
+ public:
+  void configureRecording(const corevideo::modules::RecordingSessionRequest&) override {}
+  corevideo::modules::OutputSession start(const std::vector<std::string>& destinations,
+                                          const std::vector<std::string>&) override {
+    if (std::find(destinations.begin(), destinations.end(), "recording") != destinations.end())
+      session_.recordingStatus = "recording";
+    session_.active = true;
+    session_.destinations = destinations;
+    return session_;
+  }
+  void submit(const corevideo::modules::ProgramFrame&) override {}
+  void submitIsoAudio(const std::vector<corevideo::modules::IsoSourceAudio>& sources) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    lastDeparted.clear();
+    for (const auto& source : sources) lastDeparted[source.sourceId] = source.departed;
+    ++isoAudioSubmits;
+  }
+  corevideo::modules::OutputSession session() const override { return session_; }
+  std::mutex mutex;
+  std::map<std::string, bool> lastDeparted;
+  int isoAudioSubmits = 0;
+
+ private:
+  corevideo::modules::OutputSession session_;
+};
+
+void setTestEnv(const char* name, const char* value) {
+#if defined(_WIN32)
+  _putenv_s(name, value ? value : "");
+#else
+  if (value) setenv(name, value, 1); else unsetenv(name);
+#endif
+}
+}  // namespace
+
+TEST(MediaCoreIsoDeparture, RosterDropMarksTheIsoDepartedThroughTheGatherWithoutTheEngineMutex) {
+  // A configured engine (no process is ever started) so the roster is real.
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto modules = corevideo::modules::createStubModules();
+  auto encoder = std::make_unique<DepartureCapturingEncoder>();
+  auto* capture = encoder.get();
+  modules.encoder = std::move(encoder);
+  auto core = std::make_unique<corevideo::core::MediaCore>(std::move(modules));
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_NE(runtime, nullptr);
+  ASSERT_TRUE(runtime->configured());
+
+  const auto roster = [&](const char* json) {
+    const auto event = corevideo::modules::parseZoomEngineEvent(json);
+    ASSERT_TRUE(event.has_value());
+    runtime->applyEngineEventForTest(*event);
+  };
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Stays"},{"id":2,"name":"Leaves"}]})");
+
+  const corevideo::rpc::Json isoIds = corevideo::rpc::Json::Array{std::string("zoom:1"), std::string("zoom:2")};
+  (void)core->applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-recording-targets"}, {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+      {"filenamePrefix", "iso-departure"}, {"format", "mp4"}, {"isoSourceIds", isoIds}});
+  (void)core->applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-recording-session"}, {"sessionId", "iso-departure"}, {"isoSourceIds", isoIds}});
+  (void)core->applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{std::string("recording")}}, {"isoSourceIds", isoIds}});
+
+  std::mutex coreMutex;
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  core->renderAudioOutputTick(coreMutex);
+  {
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    ASSERT_GT(capture->isoAudioSubmits, 0) << "recording with ISO selected must submit ISO audio";
+    EXPECT_FALSE(capture->lastDeparted["zoom:1"]);
+    EXPECT_FALSE(capture->lastDeparted["zoom:2"]);
+  }
+
+  // Participant 2 leaves the meeting (the shell logs this as roster-drop).
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":2,"participants":[{"id":1,"name":"Stays"}]})");
+  core->renderAudioOutputTick(coreMutex);
+  {
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    EXPECT_FALSE(capture->lastDeparted["zoom:1"]);
+    EXPECT_TRUE(capture->lastDeparted["zoom:2"]) << "a roster drop must reach the ISO stem as departed";
+  }
+
+  // They come back: no longer departed.
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":3,"participants":[{"id":1,"name":"Stays"},{"id":2,"name":"Leaves"}]})");
+  core->renderAudioOutputTick(coreMutex);
+  {
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    EXPECT_FALSE(capture->lastDeparted["zoom:2"]);
+  }
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
+      << "the audio gather (under coreMutex) took the Zoom engine mutex";
+
+  // The guardrail itself is live: an engine call inside a forbidden scope counts.
+  {
+    corevideo::modules::ForbidEngineMutexScope forbidden("test");
+    (void)runtime->floorParticipants();
+  }
+  EXPECT_GT(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore);
+  core.reset();
+}
+
+// #1037: a sanctioned exception inside a forbidden scope is NOT counted, and
+// the forbidden scope is restored on exit.
+TEST(EngineMutexGuardrail, AllowScopeSanctionsOneSiteAndRestoresTheForbiddenScope) {
+  corevideo::modules::EngineMutex mutex;
+  const auto before = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  {
+    corevideo::modules::ForbidEngineMutexScope forbidden("test.outer");
+    {
+      corevideo::modules::AllowEngineMutexScope allowed("test.sanctioned");
+      std::lock_guard<corevideo::modules::EngineMutex> lock(mutex);
+    }
+    EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before);
+    EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenDepth(), 1);
+    EXPECT_EQ(std::string(corevideo::modules::EngineMutexGuardrail::forbiddenSite()), "test.outer");
+    std::lock_guard<corevideo::modules::EngineMutex> lock(mutex);  // forbidden again
+  }
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before + 1);
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenDepth(), 0);
+}
+
+// #1037: the production render tick reads the roster and the directed speaker
+// through a pre-read made BEFORE coreMutex; nothing inside it takes the Zoom
+// engine mutex except the three sanctioned frame-group calls.
+namespace {
+// The SourcePreviewRequestProbe pattern (MediaCoreBatchSnapshotTest.cpp): the
+// stub compositor plus isolated monitors, so the monitor request path runs.
+class RenderGatherMonitorProbe final : public corevideo::modules::ICompositor {
+ public:
+  explicit RenderGatherMonitorProbe(std::unique_ptr<corevideo::modules::ICompositor> inner)
+      : inner_(std::move(inner)) {}
+  std::string rendererName() const override { return inner_->rendererName(); }
+  corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    return inner_->render(plan, frames);
+  }
+  bool hasIsolatedMonitors() const override { return true; }
+  void submitMonitors(corevideo::modules::MonitorRenderRequest request) override {
+    lastTiles = request.tiles.size();
+    ++monitorCalls;
+  }
+  int monitorCalls = 0;
+  size_t lastTiles = 0;
+
+ private:
+  std::unique_ptr<corevideo::modules::ICompositor> inner_;
+};
+
+std::uint64_t runRenderGatherRosterChurn(bool isolatedMonitors) {
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto modules = corevideo::modules::createStubModules();
+  RenderGatherMonitorProbe* monitors = nullptr;
+  if (isolatedMonitors) {
+    auto probe = std::make_unique<RenderGatherMonitorProbe>(std::move(modules.compositor));
+    monitors = probe.get();
+    modules.compositor = std::move(probe);
+  }
+  auto core = std::make_unique<corevideo::core::MediaCore>(std::move(modules));
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  EXPECT_TRUE(runtime && runtime->configured());
+  if (!runtime || !runtime->configured()) return 0;
+  const auto roster = [&](const char* json) {
+    const auto event = corevideo::modules::parseZoomEngineEvent(json);
+    ASSERT_TRUE(event.has_value());
+    runtime->applyEngineEventForTest(*event);
+  };
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Stays"},{"id":2,"name":"Leaves"}]})");
+
+  // Multiview (plan + tiles), a follow-speaker route with frames in the gather
+  // (followSpeakerForRoutes is skipped with no frames), and a guest A/V trim
+  // for participant 2 (the observable roster consumer).
+  corevideo::rpc::Json::Array tiles;
+  for (int i = 0; i < 2; ++i)
+    tiles.emplace_back(corevideo::rpc::Json::Object{{"sourceId", "zoom:" + std::to_string(i + 1)},
+        {"kind", "participant"}, {"participantId", std::to_string(i + 1)}, {"slot", i},
+        {"label", "Tile " + std::to_string(i + 1)}});
+  (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "set-multiview-layout"},
+      {"canvasWidth", 1920}, {"canvasHeight", 1080}, {"sources", tiles}});
+  (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "load-scene-graph"},
+      {"sceneId", "speaker"}, {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"routeId", "follow"}, {"mode", "active-speaker"}}}}});
+  core->addSourceForTest(std::make_shared<corevideo::core::TestPatternSource>("test:gather", 16, 16));
+  (void)core->setZoomGuestAvSyncOffset("2", 120);
+
+  const auto tick = [&] {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();  // BEFORE the lock
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  };
+  const auto trimmed = [&](const std::string& id) {
+    const auto state = core->sessionState();
+    const auto* sync = state.get("zoomGuestAvSync");
+    if (!sync || !sync->isArray()) return false;
+    return std::any_of(sync->asArray().begin(), sync->asArray().end(),
+        [&](const auto& row) { return row.getString("participantId") == id; });
+  };
+
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  tick();
+  EXPECT_TRUE(trimmed("2")) << "participant 2 is present: the trim must survive the gather";
+  if (monitors) EXPECT_GT(monitors->monitorCalls, 0) << "the isolated-monitor path must have run";
+
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":2,"participants":[{"id":1,"name":"Stays"}]})");
+  tick();
+  EXPECT_FALSE(trimmed("2")) << "a roster drop must reach the render gather (guest A/V prune)";
+  const auto delta = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load() - guardBefore;
+  core.reset();
+  return delta;
+}
+}  // namespace
+
+TEST(MediaCoreRenderGather, RosterChurnReachesTheRenderGatherWithoutTheEngineMutex) {
+  for (const bool isolated : {false, true}) {
+    const auto delta = runRenderGatherRosterChurn(isolated);
+    EXPECT_EQ(delta, 0u) << "the render tick (under coreMutex) took the Zoom engine mutex "
+                         << delta << " time(s) outside the frame group (isolatedMonitors="
+                         << (isolated ? "true" : "false") << ")";
+  }
+  // The guardrail itself is live on this thread: an engine call inside a
+  // forbidden scope counts, and the frame-group sanction does not leak.
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  const auto before = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  {
+    corevideo::modules::ForbidEngineMutexScope forbidden("test");
+    (void)core->zoomEngineRuntimeForTest()->floorParticipants();
+  }
+  EXPECT_GT(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), before);
+}
+
+// #1056: the production display tick attributes its hold phase by phase,
+// including the three frame-group engine calls, to the recorder the render
+// loop installs; a tick with no recorder installed records nothing.
+TEST(MediaCoreRenderGather, DisplayTickAttributesItsHoldToPhasesAndTheFrameGroup) {
+  using corevideo::core::RenderTickPhases;
+  using Phase = RenderTickPhases::Phase;
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_TRUE(runtime && runtime->configured());
+  runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})"));
+
+  for (const bool beforeLock : {false, true}) {
+    core->setRenderFrameFetchBeforeLockForTest(beforeLock);
+    RenderTickPhases phases;
+    {
+      std::mutex coreMutex;
+      auto inputs = core->prepareRenderEngineInputsUnlocked();
+      std::lock_guard<std::mutex> lock(coreMutex);
+      phases.begin();
+      RenderTickPhases::Scope scope(phases);
+      core->renderDisplayTick(-1, 0, std::move(inputs));
+    }
+    for (const auto phase : {Phase::Setup, Phase::BusTap, Phase::CapturePoll, Phase::Gather, Phase::StillsFloor,
+                             Phase::IsoIngress, Phase::Plan, Phase::Program, Phase::Monitors, Phase::Emit})
+      EXPECT_TRUE(phases.visited(phase)) << RenderTickPhases::name(phase);
+    // #1049: the frame group is inside the hold only in the under-lock order.
+    for (const auto phase : {Phase::R1Poll, Phase::R2Decoded, Phase::R5CpuArrival})
+      EXPECT_EQ(phases.visited(phase), !beforeLock) << RenderTickPhases::name(phase)
+          << (beforeLock ? " ran inside the hold in the before-lock order" : " missing in the under-lock order");
+    EXPECT_GT(phases.attributedNs(), 0);
+  }
+
+  // Without a recorder installed (command-lane/test ticks), nothing is marked.
+  RenderTickPhases untouched;
+  untouched.begin();
+  core->renderDisplayTick(-1, 0);
+  EXPECT_FALSE(untouched.visited(Phase::Program));
+  core.reset();
+}
+
+// #1048 D17 (owner ruling 2026-10-23: the fix rides with the command lane):
+// the render tick prunes guest A/V trims against a roster read BEFORE its
+// coreMutex wait. A trim set during that wait (the shell saw the participant
+// join after the pre-read) must survive this tick; it is pruned only against
+// a roster read after the trim was applied.
+TEST(MediaCoreRenderGather, GuestAvTrimSetAfterThePreReadSurvivesThatTick) {
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_TRUE(runtime && runtime->configured());
+  runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Host"}]})"));
+  const auto trimmed = [&](const std::string& id) {
+    const auto state = core->sessionState();
+    const auto* sync = state.get("zoomGuestAvSync");
+    if (!sync || !sync->isArray()) return false;
+    return std::any_of(sync->asArray().begin(), sync->asArray().end(),
+        [&](const auto& row) { return row.getString("participantId") == id; });
+  };
+  {
+    std::mutex coreMutex;
+    auto staleInputs = core->prepareRenderEngineInputsUnlocked();  // participant 2 not in it
+    // The render thread now waits for coreMutex; meanwhile participant 2
+    // joins and the operator's trim command lands first.
+    runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+        R"({"cmd":"participants","meeting_generation":1,"roster_revision":2,"participants":[{"id":1,"name":"Host"},{"id":2,"name":"Guest"}]})"));
+    (void)core->setZoomGuestAvSyncOffset("2", 120);
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(staleInputs));
+  }
+  EXPECT_TRUE(trimmed("2")) << "a trim set after the pre-read was pruned against the stale roster";
+
+  // A roster read AFTER the trim, without participant 2 (they left), prunes it.
+  runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":3,"participants":[{"id":1,"name":"Host"}]})"));
+  {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  }
+  EXPECT_FALSE(trimmed("2")) << "a departed participant's trim must still be pruned";
+  core.reset();
+}
+
+// #1049: both frame-group fetch orders deliver a due Zoom frame to the tick's
+// consume point; the before-lock order takes no engine mutex inside the tick
+// at all (no sanctioned exception is needed), and its frames come from the
+// pre-read.
+namespace {
+struct FrameFetchHarness {
+  std::unique_ptr<corevideo::core::MediaCore> core;
+  corevideo::modules::ZoomEngineRuntime* runtime = nullptr;
+  std::shared_ptr<const std::vector<std::uint8_t>> i420 =
+      std::make_shared<const std::vector<std::uint8_t>>(16 * 16 * 3 / 2, 128);
+  FrameFetchHarness() {
+    setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+    core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+    setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+    runtime = core->zoomEngineRuntimeForTest();
+    runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+        R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})"));
+    core->setZoomFrameAgeSamplingForTest(true);
+  }
+  // Observed well past the frame-sync reserve, so it is due now in either order.
+  void publishDue(std::int64_t frameId) {
+    runtime->publishDecodedVideoFrameForTest("1", frameId, i420, 16, 16,
+        std::chrono::steady_clock::now() - std::chrono::milliseconds(200));
+  }
+  void tick(corevideo::core::MediaCore::RenderEngineInputs inputs) {
+    std::mutex coreMutex;
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  }
+};
+}  // namespace
+
+// #1049 review: the frame-age sampler costs the production tick nothing when
+// neither verbose diagnostics nor the QA switch is on, and its per-participant
+// map is scoped to one engine session.
+TEST(MediaCoreRenderGather, FrameAgeSamplingIsOffByDefaultAndScopedToTheSession) {
+  FrameFetchHarness h;
+  ASSERT_TRUE(h.runtime && h.runtime->configured());
+  // Production default: verbose off (an earlier test in the process may have
+  // turned it on), QA switch off.
+  const bool verboseWas = corevideo::core::nativeVerboseLoggingEnabled();
+  corevideo::core::setNativeVerboseLoggingEnabled(false);
+  h.core->setZoomFrameAgeSamplingForTest(false);
+  h.publishDue(1);
+  h.tick(h.core->prepareRenderEngineInputsUnlocked());
+  EXPECT_TRUE(h.core->takeZoomFrameAgeSamplesNsForTest().empty()) << "default path sampled";
+  EXPECT_EQ(h.core->zoomFrameAgeTrackedParticipantsForTest(), 0u) << "default path touched the map";
+
+  h.core->setZoomFrameAgeSamplingForTest(true);
+  h.publishDue(2);
+  h.tick(h.core->prepareRenderEngineInputsUnlocked());
+  EXPECT_EQ(h.core->takeZoomFrameAgeSamplesNsForTest().size(), 1u);
+  EXPECT_EQ(h.core->zoomFrameAgeTrackedParticipantsForTest(), 1u);
+  // A new session (leave moves speakerEpoch) starts the map over.
+  (void)h.core->leaveZoom();
+  h.tick(h.core->prepareRenderEngineInputsUnlocked());
+  EXPECT_EQ(h.core->zoomFrameAgeTrackedParticipantsForTest(), 0u) << "the last-id map outlived its session";
+  corevideo::core::setNativeVerboseLoggingEnabled(verboseWas);
+  h.core.reset();
+}
+
+TEST(MediaCoreRenderGather, BothFetchOrdersDeliverADueZoomFrameToTheTick) {
+  for (const bool beforeLock : {false, true}) {
+    FrameFetchHarness h;
+    ASSERT_TRUE(h.runtime && h.runtime->configured());
+    h.core->setRenderFrameFetchBeforeLockForTest(beforeLock);
+    h.publishDue(7);
+    auto inputs = h.core->prepareRenderEngineInputsUnlocked();
+    EXPECT_EQ(inputs.framesPrefetched, beforeLock);
+    if (beforeLock) {
+      ASSERT_EQ(inputs.decodedFrames.size(), 1u) << "the pre-read must carry the due frame";
+      EXPECT_EQ(inputs.decodedFrames[0].frameId, 7);
+    }
+    const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+    h.tick(std::move(inputs));
+    EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore);
+    const auto ages = h.core->takeZoomFrameAgeSamplesNsForTest();
+    ASSERT_EQ(ages.size(), 1u) << "the frame must reach the consume point (beforeLock=" << beforeLock << ")";
+    EXPECT_GE(ages[0], 200'000'000) << "age is measured from the ingest observation";
+    // The same frame re-served on the next tick is not a new sample.
+    h.tick(h.core->prepareRenderEngineInputsUnlocked());
+    EXPECT_TRUE(h.core->takeZoomFrameAgeSamplesNsForTest().empty());
+    h.core.reset();
+  }
+}
+
+TEST(MediaCoreRenderGather, BeforeLockOrderNeedsNoEngineMutexInsideTheTick) {
+  FrameFetchHarness h;
+  ASSERT_TRUE(h.runtime && h.runtime->configured());
+  h.core->setRenderFrameFetchBeforeLockForTest(true);
+  h.publishDue(3);
+  auto inputs = h.core->prepareRenderEngineInputsUnlocked();
+  // Every engine mutex acquisition this thread makes counts here, including
+  // the sanctioned ones an AllowEngineMutexScope hides from the guardrail.
+  auto& acquisitions = corevideo::modules::EngineMutexGuardrail::threadAcquisitions();
+  const auto before = acquisitions;
+  h.tick(std::move(inputs));
+  EXPECT_EQ(acquisitions, before) << "the before-lock tick took the Zoom engine mutex "
+                                  << (acquisitions - before) << " time(s)";
+  EXPECT_EQ(h.core->takeZoomFrameAgeSamplesNsForTest().size(), 1u);
+  // Control: the under-lock order does take it inside the tick (R1/R2/R5).
+  h.core->setRenderFrameFetchBeforeLockForTest(false);
+  auto underLock = h.core->prepareRenderEngineInputsUnlocked();
+  const auto beforeUnderLock = acquisitions;
+  h.tick(std::move(underLock));
+  EXPECT_GE(acquisitions - beforeUnderLock, 3u) << "the control must see the frame group";
+  h.core.reset();
+}
+
+TEST(MediaCoreRenderGather, PrefetchedFramesFromAnEndedSessionAreDropped) {
+  FrameFetchHarness h;
+  ASSERT_TRUE(h.runtime && h.runtime->configured());
+  h.core->setRenderFrameFetchBeforeLockForTest(true);
+  h.publishDue(5);
+  auto inputs = h.core->prepareRenderEngineInputsUnlocked();
+  ASSERT_EQ(inputs.decodedFrames.size(), 1u);
+  // The operator leaves while the render thread waits for coreMutex.
+  (void)h.core->leaveZoom();
+  h.tick(std::move(inputs));
+  EXPECT_TRUE(h.core->takeZoomFrameAgeSamplesNsForTest().empty())
+      << "a frame fetched before a leave must not reach the tick after it";
+  h.core.reset();
+}
+
+// #1037 R3: the ISO video demand the render tick computes reaches the engine
+// through the NEXT tick's pre-read (coreMutex free), re-arms after a leave, and
+// the render tick itself never takes the engine mutex for it.
+TEST(MediaCoreRenderGather, IsoVideoDemandReachesTheEngineFromBeforeTheLock) {
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto core = std::make_unique<corevideo::core::MediaCore>(corevideo::modules::createStubModules());
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_TRUE(runtime && runtime->configured());
+  const auto event = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})");
+  ASSERT_TRUE(event.has_value());
+  runtime->applyEngineEventForTest(*event);
+
+  const auto tick = [&] {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();  // BEFORE the lock
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  };
+  const corevideo::rpc::Json isoIds = corevideo::rpc::Json::Array{std::string("zoom:1")};
+  const auto startRecording = [&] {
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "set-recording-targets"}, {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+        {"filenamePrefix", "iso-demand"}, {"format", "mp4"}, {"isoSourceIds", isoIds}});
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "start-recording-session"}, {"sessionId", "iso-demand"}, {"isoSourceIds", isoIds}});
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "start-program-output"},
+        {"destinations", corevideo::rpc::Json::Array{std::string("recording")}}, {"isoSourceIds", isoIds}});
+  };
+  const auto stopRecording = [&] {
+    (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "stop-recording-session"}});
+    (void)core->applyCommand(corevideo::rpc::Json::Object{{"type", "stop-program-output"}});
+  };
+  const bool supported = corevideo::modules::ZoomEngineRuntime::independentIsoVideoSupported();
+  const std::vector<std::string> demanded = supported ? std::vector<std::string>{"1"} : std::vector<std::string>{};
+
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  startRecording();
+  tick();
+  tick();
+  EXPECT_EQ(runtime->isoArrivalDemandIdsForTest(), demanded)
+      << "a recording's Zoom ISO demand must reach the engine";
+
+  stopRecording();
+  tick();
+  tick();
+  EXPECT_TRUE(runtime->isoArrivalDemandIdsForTest().empty()) << "stopping must retire the demand";
+
+  // leave() clears the engine's arrival queues; the next recording must re-arm.
+  (void)core->leaveZoom();
+  runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":2,"roster_revision":1,"participants":[{"id":1,"name":"Guest"}]})"));
+  startRecording();
+  tick();
+  tick();
+  EXPECT_EQ(runtime->isoArrivalDemandIdsForTest(), demanded) << "the demand must re-arm after a leave";
+  stopRecording();
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
+      << "the render tick took the Zoom engine mutex outside the frame group";
+  core.reset();
+}
+
+// #1037 C3: ISO display names come from the render tick's pre-read roster, so
+// starting a recording (a command, under coreMutex) never builds a full
+// engine snapshot under the engine mutex.
+namespace {
+class IsoNameCapturingEncoder final : public corevideo::modules::IEncoderSink {
+ public:
+  void configureRecording(const corevideo::modules::RecordingSessionRequest& request) override {
+    names.clear();
+    for (const auto& source : request.isoSources) names[source.sourceId] = source.displayName;
+  }
+  corevideo::modules::OutputSession start(const std::vector<std::string>& destinations,
+                                          const std::vector<std::string>&) override {
+    session_.active = true;
+    session_.destinations = destinations;
+    return session_;
+  }
+  void submit(const corevideo::modules::ProgramFrame&) override {}
+  corevideo::modules::OutputSession session() const override { return session_; }
+  std::map<std::string, std::string> names;
+
+ private:
+  corevideo::modules::OutputSession session_;
+};
+}  // namespace
+
+TEST(MediaCoreRenderGather, IsoDisplayNamesComeFromTheTickRosterNotAnEngineSnapshot) {
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto modules = corevideo::modules::createStubModules();
+  auto encoder = std::make_unique<IsoNameCapturingEncoder>();
+  auto* capture = encoder.get();
+  modules.encoder = std::move(encoder);
+  auto core = std::make_unique<corevideo::core::MediaCore>(std::move(modules));
+  setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  // With the audio worker active, commands never render inline (N10), so the
+  // forbidden scope below covers only the command's own work.
+  core->enableAudioOutputWorker();
+  // As in production (cmd.handle), the response snapshot is assembled after
+  // coreMutex is released (N7): defer it so the scope covers the command only.
+  core->setSnapshotDeferrer([](std::unique_ptr<corevideo::core::CoreStateCapture>,
+                               corevideo::core::SnapshotProjection) { return corevideo::rpc::Json(); });
+  auto* runtime = core->zoomEngineRuntimeForTest();
+  ASSERT_TRUE(runtime && runtime->configured());
+  const auto event = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Alice"},{"id":2,"name":""}]})");
+  ASSERT_TRUE(event.has_value());
+  runtime->applyEngineEventForTest(*event);
+  {
+    std::mutex coreMutex;
+    auto inputs = core->prepareRenderEngineInputsUnlocked();
+    std::lock_guard<std::mutex> lock(coreMutex);
+    core->renderDisplayTick(-1, 0, std::move(inputs));
+  }
+  const corevideo::rpc::Json isoIds = corevideo::rpc::Json::Array{
+      std::string("zoom:1"), std::string("zoom:2"), std::string("zoom:3")};
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  {
+    corevideo::modules::ForbidEngineMutexScope forbid("test.cmd");
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "start-recording-session"}, {"sessionId", "iso-names"}, {"isoSourceIds", isoIds}});
+  }
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
+      << "start-recording-session took the Zoom engine mutex to resolve ISO names";
+  EXPECT_EQ(capture->names["zoom:1"], "Alice");
+  EXPECT_EQ(capture->names["zoom:2"], "Zoom User 2") << "the snapshot's exact empty-name fallback";
+  EXPECT_EQ(capture->names["zoom:3"], "3") << "not in the roster: the bare id, as before";
+  core.reset();
 }

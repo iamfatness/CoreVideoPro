@@ -76,10 +76,11 @@ public static class GraphicsCommandRequest
         ["graphics.authority.set"] = ["family", "authority"],
         ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement", "image"],
         ["graphics.instance.update"] = ["label","rackOrder","templateVersion", "target", "sourceId", "fields", "style", "animations", "binding", "placement", "image"],
-        ["graphics.instance.cue"] = [], ["graphics.instance.trigger"] = ["action", "target"],
+        ["graphics.instance.cue"] = ["rideTake"], ["graphics.instance.trigger"] = ["action", "target"],
         ["graphics.clock.control"] = ["action","configuration","expectedClockRevision"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"],
-        ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = ["includeThumbnails"]
+        ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = ["includeThumbnails"],
+        ["graphics.template.remove"] = ["templateId", "templateVersion"]
     };
     private static readonly HashSet<string> Common = new(StringComparer.Ordinal)
         { "schemaVersion", "requestId", "clientId", "coreEpoch", "instanceId", "expectedRevision" };
@@ -111,7 +112,7 @@ public static class GraphicsCommandRequest
             {
                 if (!names.Add(property.Name) || (!Common.Contains(property.Name) && !specific.Contains(property.Name, StringComparer.Ordinal)))
                 { error = "unsupported-or-duplicate-request-field"; return false; }
-                if(property.Name=="includeThumbnails") {if(property.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return false;continue;}
+                if(property.Name is "includeThumbnails" or "rideTake") {if(property.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return false;continue;}
                 if (property.Name is "fields" or "style" or "animations" or "binding" or "placement" or "configuration" or "image") continue;
                 if (property.Name == "manifest")
                 {
@@ -140,6 +141,8 @@ public static class GraphicsCommandRequest
                 var manifest = body.TryGetProperty("manifest", out _); var path = body.TryGetProperty("packagePath", out var archive);
                 if (manifest == path || (path && (string.IsNullOrWhiteSpace(archive.GetString()) || body.TryGetProperty("packageRoot", out _)))) return false;
             }
+            if (action == "graphics.template.remove" && (!GraphicsDesignIds.IsNativeId(Text(body, "templateId")) ||
+                !body.TryGetProperty("templateVersion", out var removeVersion) || !Integer(removeVersion, 1) || removeVersion.GetDouble() > int.MaxValue)) return false;
             if (!libraryAction && action != "graphics.program.clear" && (!body.TryGetProperty("instanceId", out var instanceId) || !Id(instanceId.GetString()!))) return false;
             if (!libraryAction && action is not ("graphics.instance.create" or "graphics.program.clear") &&
                 (!body.TryGetProperty("expectedRevision", out var revision) || !Integer(revision, 1))) return false;
@@ -151,7 +154,7 @@ public static class GraphicsCommandRequest
                 if ((scope != "global" && scope != "scene") || (scope == "scene" && scene.Length == 0) || (scope == "global" && scene.Length != 0)) return false;
             }
             if (action == "graphics.instance.update" && Text(body, "target") is not ("cue" or "program")) return false;
-            if (action == "graphics.instance.trigger" && Text(body, "action") is not ("show" or "hide" or "clear")) return false;
+            if (action == "graphics.instance.trigger" && Text(body, "action") is not ("show" or "hide" or "clear" or "uncue")) return false;
             if (action == "graphics.instance.trigger" && body.TryGetProperty("target", out _) &&
                 (Text(body, "target") != "cue" || Text(body, "action") != "show")) return false;
             if (action == "graphics.program.clear" && Text(body, "channel") != "all") return false;

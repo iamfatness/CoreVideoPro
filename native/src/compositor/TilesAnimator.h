@@ -9,7 +9,10 @@
 namespace corevideo::compositor {
 
 struct TilesAnimationTarget { std::string id; LayerRect rect; };
-struct AnimatedTile { std::string id; LayerRect rect; float alpha = 1; bool atRest = true; };
+// `target` is the SETTLED rect the tile is flying toward (equal to `rect` at
+// rest). Per-tile name lines (#1073, TilesNameLine.h) ride the tile by the
+// offset they hold from its target corner, so the follower needs both.
+struct AnimatedTile { std::string id; LayerRect rect; float alpha = 1; bool atRest = true; LayerRect target; };
 
 // Render-thread owned. Each bus/wall owns its own instance; repeated scene sync
 // must not reset it. No timers, retained departing pixels, or per-frame clock drift.
@@ -39,7 +42,7 @@ class TilesAnimator {
       const std::array<double, 4> goal{target.rect.x, target.rect.y, target.rect.width, target.rect.height};
       if (target.id.empty() || !std::all_of(goal.begin(), goal.end(), [](double v) { return std::isfinite(v); }) ||
           goal[2] <= 0 || goal[3] <= 0 || !live.insert(target.id).second) continue;
-      if (!enabled) { result.push_back({target.id, target.rect, 1, true}); continue; }
+      if (!enabled) { result.push_back({target.id, target.rect, 1, true, target.rect}); continue; }
       auto [it, added] = states_.try_emplace(target.id);
       auto& state = it->second;
       if (added) {
@@ -58,7 +61,7 @@ class TilesAnimator {
       LayerRect rect{static_cast<float>(state.position[0]), static_cast<float>(state.position[1]),
           static_cast<float>(state.position[2]), static_cast<float>(state.position[3])};
       if (rest) { state.position = goal; state.velocity = {}; rect = target.rect; }
-      result.push_back({target.id, rect, alpha, rest});
+      result.push_back({target.id, rect, alpha, rest, target.rect});
     }
     for (auto it = states_.begin(); it != states_.end(); ) {
       if (!live.contains(it->first)) it = states_.erase(it); else ++it;

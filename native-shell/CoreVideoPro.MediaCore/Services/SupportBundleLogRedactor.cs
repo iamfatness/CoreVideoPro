@@ -38,13 +38,19 @@ public static class SupportBundleLogRedactor
 
     // streamKey=..., access_token=..., pwd=..., srtPassphrase=... in query strings,
     // key=value logs, or command lines. The value stops at common delimiters.
+    //
+    // #998: no leading \w*. It bought nothing (the prefix is not part of the replacement) and made
+    // the scan quadratic: on a long run of word characters every start position ran to the end of
+    // the run and backed up looking for a keyword.
     private static readonly Regex SecretAssignment = new(
-        @"(\w*(?:key|token|passphrase|password|secret|pwd|zak|jwt))=([^&\s""',}\]]+)",
+        @"((?:key|token|passphrase|password|secret|pwd|zak|jwt))=([^&\s""',}\]]+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // "streamKey":"...", "sdkJwt": "...", "userZak":"..." JSON fields echoed raw.
     private static readonly Regex SecretJsonField = new(
-        @"""(\w*(?:key|token|passphrase|password|secret|pwd|zak|jwt)\w*)""\s*:\s*""([^""]*)""",
+        // #998: the keyword test is a lookahead and the name is an atomic run, so each opening quote
+        // costs one pass over its own word run instead of nested backtracking.
+        @"""(?=\w*(?:key|token|passphrase|password|secret|pwd|zak|jwt))((?>\w+))""\s*:\s*""([^""]*)""",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex BearerToken = new(
@@ -52,9 +58,14 @@ public static class SupportBundleLogRedactor
         RegexOptions.Compiled);
 
     // Bare JWTs (three dot-joined base64url segments starting with eyJ).
+    //
+    // #998 follow-on: many "eyJ" starts inside one long run of class characters each rescan the
+    // run, and the trailing {4,}\b backtracks over it (measured 4x per doubling). Atomic groups
+    // cannot fix that: the rescans happen at DIFFERENT start positions. NonBacktracking runs in
+    // time linear in the input, with the same matches for this alternation-free pattern.
     private static readonly Regex JwtShaped = new(
         @"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{4,}\b",
-        RegexOptions.Compiled);
+        RegexOptions.NonBacktracking);
 
     /// <summary>Redacts secret-shaped content in a chunk of log text.</summary>
     public static string Redact(string text)

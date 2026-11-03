@@ -2,8 +2,18 @@
 
 #include <chrono>
 #include <cstdint>
+#include <string>
 
 namespace corevideo::core {
+
+// #1056: optional attribution for an over-budget hold (the render tick's
+// per-phase breakdown). describe() is called only when the guardrail decides
+// to log the hold, never for an in-budget or rate-suppressed one.
+class LockHoldDetail {
+ public:
+  virtual ~LockHoldDetail() = default;
+  [[nodiscard]] virtual std::string describe(long long heldUs) const = 0;
+};
 
 // Phase 2 increment 6 guardrail (docs/phase2-threading-plan.md §2/§3.6).
 //
@@ -33,6 +43,11 @@ class LockHoldGuardrail {
     std::uint64_t overBudget = 0;
     std::uint64_t warningsLogged = 0;
     long long worstHeldUs = 0;
+    // #1056: over-budget holds that carried a detail and were attributed in a
+    // `[lock-hold-attribution]` line (rate-capped at one per second per site),
+    // and the last such line's text (tests and diagnostics).
+    std::uint64_t attributionsLogged = 0;
+    std::string lastAttribution;
   };
 
   // The threading contract: un-sanctioned coreMutex holds stay under 1ms.
@@ -48,8 +63,21 @@ class LockHoldGuardrail {
   static constexpr long long kFramePumpBudgetUs = kDefaultBudgetUs;
 
   // Records one completed hold of `heldUs` at `site` against `budgetUs`.
-  // Returns true when the hold exceeded the budget.
-  static bool recordHold(const char* site, long long heldUs, long long budgetUs);
+  // Returns true when the hold exceeded the budget. With a `detail`, an
+  // over-budget hold also logs `[lock-hold-attribution]` with the detail's
+  // text, at most once per second per site (the one-minute warning cap would
+  // hide most of the ~1/min render-tick overruns a soak sees, #1056), and the
+  // rate-capped warning line carries the same text.
+  static bool recordHold(const char* site, long long heldUs, long long budgetUs,
+                         const LockHoldDetail* detail = nullptr);
+
+  // #1056 review: attributes a late render tick whose HOLD was in budget (its
+  // time went to the pre-read or the coreMutex wait). Logs
+  // `[lock-hold-attribution] site=<site> reason=<reason> tick_us=N held_us=N ...`
+  // at most once per second per site; counts in statsForSite(site).
+  // Returns true when a line was logged.
+  static bool recordLateTick(const char* site, const char* reason, long long tickUs, long long heldUs,
+                             long long framePeriodUs, const LockHoldDetail& detail);
 
   [[nodiscard]] static SiteStats statsForSite(const char* site);
   static void resetForTest();
@@ -61,14 +89,15 @@ class LockHoldGuardrail {
 // while coreMutex is held and never takes any other lock, so it cannot invert.
 class ScopedLockHoldTimer {
  public:
-  ScopedLockHoldTimer(const char* site, long long budgetUs)
-      : site_(site), budgetUs_(budgetUs), start_(std::chrono::steady_clock::now()) {}
+  ScopedLockHoldTimer(const char* site, long long budgetUs, const LockHoldDetail* detail = nullptr)
+      : site_(site), budgetUs_(budgetUs), detail_(detail), start_(std::chrono::steady_clock::now()) {}
   ~ScopedLockHoldTimer() {
     const auto heldUs = std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - start_)
                             .count();
-    LockHoldGuardrail::recordHold(site_, static_cast<long long>(heldUs), budgetUs_);
+    LockHoldGuardrail::recordHold(site_, static_cast<long long>(heldUs), budgetUs_, detail_);
   }
+  [[nodiscard]] std::chrono::steady_clock::time_point startedAt() const { return start_; }
 
   ScopedLockHoldTimer(const ScopedLockHoldTimer&) = delete;
   ScopedLockHoldTimer& operator=(const ScopedLockHoldTimer&) = delete;
@@ -76,6 +105,7 @@ class ScopedLockHoldTimer {
  private:
   const char* site_;
   long long budgetUs_;
+  const LockHoldDetail* detail_;
   std::chrono::steady_clock::time_point start_;
 };
 

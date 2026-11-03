@@ -1,6 +1,10 @@
 #include "modules/RecordingTrackWorker.h"
 #include <gtest/gtest.h>
+#include <atomic>
+#include <chrono>
 #include <future>
+#include <memory>
+#include <thread>
 #include <vector>
 #include "modules/RecordingQueuePolicy.h"
 #include "modules/RecordingAudioContinuity.h"
@@ -200,4 +204,83 @@ TEST(RecordingTrackWorker, FirstVideoCommitDoesNotAbruptlyShrinkStartupAudioBack
   worker.close(); release.set_value(); worker.join();
   EXPECT_EQ(worker.evidence().completedAudio, 9u);
   EXPECT_EQ(worker.evidence().droppedAudio, 0u);
+}
+
+// #1030: a writer that exits normally is joined inside the bound and has run
+// its finalize. The bounded join changes nothing for a healthy file.
+TEST(RecordingTrackWorker, BoundedJoinOfAHealthyWriterFinalizesAndJoins) {
+  std::atomic<bool> finalized{false};
+  int written = 0;
+  RecordingTrackWorker worker([] {}, [&] { finalized = true; });
+  worker.post(RecordingTrackWorker::Kind::Audio, [&] { ++written; });
+  worker.close();
+  EXPECT_TRUE(worker.joinFor(std::chrono::seconds(5)));
+  EXPECT_TRUE(finalized.load());
+  EXPECT_TRUE(worker.exited());
+  EXPECT_FALSE(worker.abandoned());
+  EXPECT_EQ(written, 1);
+}
+
+// #1030: the live wedge. One writer is blocked inside a write that never
+// returns on its own (Media Foundation's ThrottleStream). The owner's bounded
+// join must give up in time, abandon the worker without blocking, and discard
+// its queued work (which may reference the owner). If the write ever returns,
+// the finalize still runs (a late finalize) and the thread exits; queued work
+// discarded at abandonment never runs.
+TEST(RecordingTrackWorker, BoundedJoinAbandonsABlockedWriterWithoutBlockingTheOwner) {
+  std::promise<void> entered, release;
+  auto gate = release.get_future().share();
+  std::atomic<bool> finalized{false};
+  std::atomic<int> lateItems{0};
+  auto worker = std::make_unique<RecordingTrackWorker>([] {}, [&] { finalized = true; });
+  worker->post(RecordingTrackWorker::Kind::Audio, [&] { entered.set_value(); gate.wait(); });
+  entered.get_future().wait();
+  for (int i = 0; i < 3; ++i) worker->post(RecordingTrackWorker::Kind::Audio, [&] { ++lateItems; });
+  worker->close();
+
+  const auto begin = std::chrono::steady_clock::now();
+  EXPECT_FALSE(worker->joinFor(std::chrono::milliseconds(100)));
+  worker->abandon();
+  const auto ownerWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - begin).count();
+  EXPECT_LT(ownerWaitMs, 2000) << "the owner must not wait on a blocked writer";
+  const auto evidence = worker->evidence();
+  EXPECT_TRUE(evidence.abandoned);
+  EXPECT_EQ(evidence.abandonedItems, 3u);
+  EXPECT_EQ(evidence.queuedAudio, 0u);
+  EXPECT_TRUE(worker->abandoned());
+  EXPECT_FALSE(worker->exited());
+  EXPECT_FALSE(finalized.load());
+
+  // The blocked write returns long after the owner moved on.
+  release.set_value();
+  for (int i = 0; i < 500 && !worker->exited(); ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  ASSERT_TRUE(worker->exited());
+  EXPECT_TRUE(finalized.load()) << "a write that returns late still finalizes its file";
+  EXPECT_EQ(lateItems.load(), 0) << "work discarded at abandonment must never run";
+  EXPECT_FALSE(worker->post(RecordingTrackWorker::Kind::Audio, [] {}));
+  worker.reset();  // safe only once exited(): the lifetime contract
+}
+
+// #1030: a worker that is still finalizing when the bound expires is abandoned
+// too; the finalize already in progress completes on its own thread.
+TEST(RecordingTrackWorker, BoundedJoinAbandonsAWriterStuckInFinalize) {
+  std::promise<void> entered, release;
+  auto gate = release.get_future().share();
+  std::atomic<bool> finalizeReturned{false};
+  auto worker = std::make_unique<RecordingTrackWorker>([] {}, [&] {
+    entered.set_value(); gate.wait(); finalizeReturned = true;
+  });
+  worker->close();
+  entered.get_future().wait();
+  EXPECT_FALSE(worker->joinFor(std::chrono::milliseconds(50)));
+  worker->abandon();
+  EXPECT_EQ(worker->evidence().abandonedItems, 0u);
+  release.set_value();
+  for (int i = 0; i < 500 && !worker->exited(); ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  ASSERT_TRUE(worker->exited());
+  EXPECT_TRUE(finalizeReturned.load());
+  worker.reset();
 }

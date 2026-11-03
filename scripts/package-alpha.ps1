@@ -104,7 +104,7 @@ foreach ($required in @('msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.
 Get-ChildItem -LiteralPath $crtDirectory -File -Filter '*.dll' |
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $app -Force }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'alpha/Install-MediaRuntime.ps1') -Destination $app
-foreach ($helper in @('Install-VirtualCamera.ps1','VirtualCameraRegistration.psm1','CameraUserSession.ps1','Remove-OwnedShortcuts.ps1','Install-CrashDumps.ps1','Remove-PreviousInstallations.ps1','PreviousInstallations.psm1')) {
+foreach ($helper in @('Install-VirtualCamera.ps1','VirtualCameraRegistration.psm1','CameraUserSession.ps1','Remove-OwnedShortcuts.ps1','Install-CrashDumps.ps1','Refresh-FrameServer.ps1','Remove-PreviousInstallations.ps1','PreviousInstallations.psm1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "alpha/$helper") -Destination $app
 }
 $testerGuide = if ($channel -eq 'beta') { 'docs/beta-tester-guide.md' } else { 'docs/alpha-tester-guide.md' }
@@ -173,8 +173,18 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $app 'build-manifest.json') -Encoding UTF8
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression
 $zipPath = Join-Path $output "CoreVideoPro-win-x64-$ReleaseId.zip"
-[IO.Compression.ZipFile]::CreateFromDirectory($app, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $true)
+# Write entries one by one with '/' separators. CreateFromDirectory under Windows PowerShell 5.1
+# (.NET Framework) emits backslash entry names, which GetEntry('a/b') on any .NET runtime cannot find (#1047).
+$zipRoot = [IO.Path]::GetFileName($app)
+$zipArchive = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Create)
+try {
+    foreach ($file in (Get-ChildItem -LiteralPath $app -Recurse -File | Sort-Object FullName)) {
+        $entryName = $zipRoot + '/' + $file.FullName.Substring($app.Length + 1).Replace('\', '/')
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zipArchive, $file.FullName, $entryName, [IO.Compression.CompressionLevel]::Optimal) | Out-Null
+    }
+} finally { $zipArchive.Dispose() }
 $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  $([IO.Path]::GetFileName($zipPath))" | Set-Content -LiteralPath ($zipPath + '.sha256') -Encoding ASCII
 [pscustomobject]@{ package=$zipPath; sha256=$hash; sourceCommit=$commit } | ConvertTo-Json

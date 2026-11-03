@@ -3,6 +3,7 @@
 #include "modules/Interfaces.h"
 #include "modules/MonitorInputCache.h"
 #include "modules/MonitorCaptureCadence.h"
+#include "modules/LogHeartbeatPolicy.h"
 #include "core/BoundedAsyncLog.h"
 #include "core/ComApartmentLifetime.h"
 #include "core/ScopedVideoScheduling.h"
@@ -145,7 +146,13 @@ class MonitorRenderWorker {
       scheduling.emplace(deadlineRole == DeadlineRole::ProgramCopy ? "program-monitor-copy" : "monitor-presentation");
     { std::lock_guard<std::mutex> lock(mutex_); initializationComplete_ = true; }
     initialized_.notify_all();
+    // #1064: the status line goes out on a failure or readiness change, else
+    // once per LogHeartbeatPolicy::kKeepalive. Every 2 s it was 94 % of the
+    // bounded core log and evicted a show's evidence within hours.
     auto lastLog = std::chrono::steady_clock::now();
+    bool everLogged = false;
+    uint64_t loggedFailed = 0;
+    std::string loggedReadiness;
     MonitorInputCache inputs;
     MonitorCaptureCadence captureCadence;
     bool retirementPending = false;
@@ -198,19 +205,25 @@ class MonitorRenderWorker {
       }
       retirementPending = maintain(maintenance);
       const auto now = std::chrono::steady_clock::now();
-      if (now - lastLog >= std::chrono::seconds(2)) {
+      {
         uint64_t submitted, superseded, completed, failed;
         double workMs;
+        std::string readiness;
         {
           std::lock_guard<std::mutex> lock(mutex_);
           submitted = submitted_; superseded = superseded_; completed = completed_;
           failed = failed_;
           workMs = result_ ? result_->workMs : 0;
+          readiness = readiness_;
         }
-        core::nativeLogf("[monitor-worker] submitted=%llu completed=%llu superseded=%llu failed=%llu last_work_ms=%.3f capacity=1 presentationVerified=0\n",
-            static_cast<unsigned long long>(submitted), static_cast<unsigned long long>(completed),
-            static_cast<unsigned long long>(superseded), static_cast<unsigned long long>(failed), workMs);
-        lastLog = now;
+        const bool changed = failed != loggedFailed || readiness != loggedReadiness;
+        if (LogHeartbeatPolicy::due(everLogged, now - lastLog, changed)) {
+          core::nativeLogf("[monitor-worker] submitted=%llu completed=%llu superseded=%llu failed=%llu last_work_ms=%.3f readiness=%s capacity=1 presentationVerified=0\n",
+              static_cast<unsigned long long>(submitted), static_cast<unsigned long long>(completed),
+              static_cast<unsigned long long>(superseded), static_cast<unsigned long long>(failed), workMs,
+              readiness.c_str());
+          lastLog = now; everLogged = true; loggedFailed = failed; loggedReadiness = readiness;
+        }
       }
     }
   }

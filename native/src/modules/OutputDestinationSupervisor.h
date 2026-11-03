@@ -100,8 +100,9 @@ struct DestinationIsolationTraits {
 };
 
 [[nodiscard]] inline DestinationIsolationTraits destinationIsolationTraits(const std::string& destination) {
-  if (destination == "ndi") {
-    // In-process libNDI, no interrupt() override. PR 20/28.
+  if (destination == "ndi" || destination == "ndi-graphics") {
+    // In-process libNDI (Program and the graphics key alike), no interrupt()
+    // override. PR 20/28.
     return DestinationIsolationTraits{true, false};
   }
   if (destination == "rtmp" || destination == "srt") {

@@ -86,6 +86,16 @@ class ZoomEngineRuntimeState {
 
   [[nodiscard]] ZoomEngineRuntimeSnapshot snapshot() const;
   [[nodiscard]] std::vector<ZoomEngineParticipant> floorParticipants() const;
+  // #1037: O(1) roster-change detection (snapshot() copies these verbatim).
+  [[nodiscard]] std::uint64_t meetingGeneration() const { return meetingGeneration_; }
+  [[nodiscard]] std::uint64_t rosterRevision() const { return rosterRevision_; }
+  // #1030: the roster's SDK ids only (no participant copies).
+  [[nodiscard]] std::vector<std::uint32_t> participantIds() const {
+    std::vector<std::uint32_t> ids;
+    ids.reserve(participants_.size());
+    for (const auto& entry : participants_) ids.push_back(entry.first);
+    return ids;
+  }
   [[nodiscard]] bool sdkAuthenticated() const { return sdkAuthenticated_; }
   // The DIRECTED speaker (the director's choice, not Zoom's raw event), "" when none.
   [[nodiscard]] std::string directedSpeakerIdString() const {

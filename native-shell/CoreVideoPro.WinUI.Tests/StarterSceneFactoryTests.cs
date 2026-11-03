@@ -65,4 +65,19 @@ public sealed class StarterSceneFactoryTests
         Assert.DoesNotContain(SceneRoutingService.GetRouteWarnings(new() { Layout = "two-up" }, [route], []),
             warning => warning.Contains("fixed participant is unavailable"));
     }
+
+    // #1070: the catalog-only layouts have starters so a removed Panel / Closing can be rebuilt.
+    [Theory]
+    [InlineData("panel-grid", "smart-grid", 6, "Panel grid")]
+    [InlineData("closing", "outro", 1, "Closing")]
+    public void CatalogOnlyLayoutsHaveStartersBoundToDistinctInputs(string template, string layout, int count, string name)
+    {
+        var (scene, routes) = StarterSceneFactory.Create("custom-test", template, []);
+        Assert.Equal(layout, scene.Layout);
+        Assert.Equal(name, scene.Name);
+        Assert.Equal(count, routes.Count);
+        Assert.All(routes, route => Assert.NotNull(route.CanvasRect));
+        Assert.Equal(Enumerable.Range(1, count).Select(n => (int?)n), routes.Select(route => route.ShowInputSlotNumber));
+        Assert.DoesNotContain(routes, route => route.Mode == SourceRouteMode.ActiveSpeaker);
+    }
 }

@@ -20,6 +20,8 @@ public sealed class OutputSessionClock(TimeProvider? timeProvider = null)
         var producing = OutputLifecycleReadModel.IsRecordingLive(recording);
         foreach (var sender in snapshot.OutputSenderSession.Senders)
         {
+            // NDI is a persisted, all-day output, not an output session.
+            if (OutputDestinationKind.IsNdi(sender.Destination)) continue;
             requested |= sender.Lifecycle is { } senderLifecycle
                 ? IsOpen(senderLifecycle.State)
                 : sender.Status is "starting" or "live" or "warning" or "retrying";

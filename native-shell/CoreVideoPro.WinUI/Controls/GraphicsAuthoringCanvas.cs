@@ -27,6 +27,11 @@ public sealed class GraphicsAuthoringCanvas : UserControl
     private readonly TextBlock _hint=new() {HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Bottom,Margin=new Thickness(8),FontSize=11,IsHitTestVisible=false};
     private readonly Line _vertical=new() {Stroke=new SolidColorBrush(Windows.UI.Color.FromArgb(90,180,190,205)),StrokeThickness=1,IsHitTestVisible=false,StrokeDashArray=new DoubleCollection {3,5}};
     private readonly Line _horizontal=new() {Stroke=new SolidColorBrush(Windows.UI.Color.FromArgb(90,180,190,205)),StrokeThickness=1,IsHitTestVisible=false,StrokeDashArray=new DoubleCollection {3,5}};
+    private static readonly SolidColorBrush SnapBrush=new(Windows.UI.Color.FromArgb(255,0x44,0xC1,0xA1));
+    private readonly Line _snapX=new() {Stroke=SnapBrush,StrokeThickness=1,IsHitTestVisible=false,Visibility=Visibility.Collapsed};
+    private readonly Line _snapY=new() {Stroke=SnapBrush,StrokeThickness=1,IsHitTestVisible=false,Visibility=Visibility.Collapsed};
+    /// <summary>The Designer turns this on; Ctrl held while dragging suspends snapping.</summary>
+    public bool SnapToGuides {get;set;}
     private Point _start;private NativeGraphicsPlacement? _before;
     private NativeGraphicsNodeGeometry? _nodeBefore;private Rect? _optimistic;
     private double _localX,_localY,_localWidth,_localHeight,_width=1050,_height=176;
@@ -43,7 +48,7 @@ public sealed class GraphicsAuthoringCanvas : UserControl
     {
         IsTabStop=true;_viewport.HorizontalAlignment=HorizontalAlignment.Center;_viewport.VerticalAlignment=VerticalAlignment.Center;
         _viewport.Children.Add(_video);_viewport.Children.Add(_guides);_viewport.Children.Add(_hint);_root.Children.Add(_viewport);Content=_root;
-        _guides.Children.Add(_safe);_guides.Children.Add(_vertical);_guides.Children.Add(_horizontal);_guides.Children.Add(_selection);_guides.Children.Add(_handle);
+        _guides.Children.Add(_safe);_guides.Children.Add(_vertical);_guides.Children.Add(_horizontal);_guides.Children.Add(_selection);_guides.Children.Add(_handle);_guides.Children.Add(_snapX);_guides.Children.Add(_snapY);
         SizeChanged+=(_,_)=>Draw();_guides.PointerPressed+=Pressed;_guides.PointerMoved+=Moved;
         _guides.PointerReleased+=Released;_guides.PointerCaptureLost+=(_,_)=>Cancel();KeyDown+=Key;
         AutomationProperties.SetName(this,"Graphics native canvas. Click a layer; drag to move; drag its corner to resize. Alt drags the whole graphic. Arrows nudge; Shift nudges ten pixels; Escape cancels.");
@@ -111,6 +116,15 @@ public sealed class GraphicsAuthoringCanvas : UserControl
         }
         _start=reference;_before=p;_session.BeginGesture();if(!_guides.CapturePointer(e.Pointer)) Cancel();e.Handled=true;
     }
+    private bool Snapping=>SnapToGuides && !Down(VirtualKey.Control);
+    private void ShowSnap(IReadOnlyList<GraphicsGuide> guides)
+    {
+        var fit=_viewport.Width/1920;_snapX.Visibility=_snapY.Visibility=Visibility.Collapsed;if(fit<=0 || !double.IsFinite(fit)) return;
+        foreach(var g in guides) {
+            if(g.Axis=='x') {_snapX.X1=_snapX.X2=g.Position*fit;_snapX.Y1=0;_snapX.Y2=1080*fit;_snapX.Visibility=Visibility.Visible;}
+            else {_snapY.Y1=_snapY.Y2=g.Position*fit;_snapY.X1=0;_snapY.X2=1920*fit;_snapY.Visibility=Visibility.Visible;}
+        }
+    }
     private void Moved(object sender,PointerRoutedEventArgs e)
     {
         if(_before is not { } before || _session is null) return;var fit=_viewport.Width/1920;if(fit<=0) return;
@@ -118,23 +132,37 @@ public sealed class GraphicsAuthoringCanvas : UserControl
         if(_nodeBefore is { } node) {
             if(!_resize) {
                 var x=Math.Clamp(_localX+dx/before.Scale,0,8192);var y=Math.Clamp(_localY+dy/before.Scale,0,8192);var rect=CanvasRect(node,before);
+                if(Snapping) {
+                    var snap=GraphicsSnap.MoveLayer(new(rect.X,rect.Y,rect.Width,rect.Height),_localX,_localY,x,y,before.Scale);
+                    x=snap.X;y=snap.Y;ShowSnap(snap.Guides);
+                } else ShowSnap([]);
                 _optimistic=new(rect.X+(x-_localX)*before.Scale,rect.Y+(y-_localY)*before.Scale,rect.Width,rect.Height);
                 _session.SetLayerNumbers(_dragLayer,new Dictionary<string,double> {{"x",x},{"y",y}});
             } else {
                 var w=Math.Clamp(_localWidth+dx/before.Scale,1,8192);var h=Math.Clamp(_localHeight+dy/before.Scale,1,8192);
                 if(node.Type=="image" || Down(VirtualKey.Shift)) {var desired=Math.Abs(dx/_localWidth)>=Math.Abs(dy/_localHeight)?w/_localWidth:h/_localHeight;var scale=Math.Clamp(desired,1/Math.Min(_localWidth,_localHeight),8192/Math.Max(_localWidth,_localHeight));w=_localWidth*scale;h=_localHeight*scale;}
-                var rect=CanvasRect(node,before);_optimistic=new(rect.X,rect.Y,w*before.Scale,h*before.Scale);
+                var rect=CanvasRect(node,before);
+                if(Snapping && node.Type!="image" && !Down(VirtualKey.Shift)) {
+                    var snap=GraphicsSnap.ResizeLayer(new(rect.X,rect.Y,rect.Width,rect.Height),w,h,before.Scale);
+                    w=snap.X;h=snap.Y;ShowSnap(snap.Guides);
+                } else ShowSnap([]);
+                _optimistic=new(rect.X,rect.Y,w*before.Scale,h*before.Scale);
                 _session.SetLayerNumbers(_dragLayer,new Dictionary<string,double> {{"width",w},{"height",h}});
             }
-        } else if(!_resize) _session.SetPlacement(before with {X=Math.Clamp(before.X+dx,-3840,3840),Y=Math.Clamp(before.Y+dy,-2160,2160)});
+        } else if(!_resize) {
+            var origin=Bounds(before);
+            var snap=Snapping?GraphicsSnap.MoveGraphic(new(origin.X,origin.Y,origin.Width,origin.Height),before.X,before.Y,dx,dy):new(Math.Clamp(before.X+dx,-3840,3840),Math.Clamp(before.Y+dy,-2160,2160),[]);
+            ShowSnap(snap.Guides);
+            _session.SetPlacement(before with {X=snap.X,Y=snap.Y});
+        }
         else {
             var delta=Math.Abs(dx/Math.Max(_width,1))>=Math.Abs(dy/Math.Max(_height,1))?dx/Math.Max(_width,1):dy/Math.Max(_height,1);var scale=Math.Clamp(before.Scale+delta,.1,4);var a=Anchor(before);
             _session.SetPlacement(before with {Scale=scale,X=Math.Clamp(before.X+a.X*_width*(scale-before.Scale),-3840,3840),Y=Math.Clamp(before.Y+a.Y*_height*(scale-before.Scale),-2160,2160)});
         }
         Draw();e.Handled=true;
     }
-    private void Released(object sender,PointerRoutedEventArgs e) {if(_before is null) return;_before=null;_nodeBefore=null;_session?.EndGesture();_guides.ReleasePointerCapture(e.Pointer);e.Handled=true;}
-    private void Cancel() {if(_before is null) return;_before=null;_nodeBefore=null;_optimistic=null;_session?.CancelGesture();Draw();}
+    private void Released(object sender,PointerRoutedEventArgs e) {if(_before is null) return;_before=null;_nodeBefore=null;ShowSnap([]);_session?.EndGesture();_guides.ReleasePointerCapture(e.Pointer);e.Handled=true;}
+    private void Cancel() {if(_before is null) return;_before=null;_nodeBefore=null;ShowSnap([]);_optimistic=null;_session?.CancelGesture();Draw();}
     private void Key(object sender,KeyRoutedEventArgs e)
     {
         if(_session?.Draft is null || _session.Busy || _session.CompareOriginal || _session.PreviewSample!="current") return;

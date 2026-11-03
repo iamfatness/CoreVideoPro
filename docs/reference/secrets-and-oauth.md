@@ -11,7 +11,7 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   secret plaintext, and give every new secret-bearing bundle field a redaction test
   (`SupportBundleExportTests` is the template).
 - **The OAuth app-return URI is `corevideo://oauth/callback` and is broker-pinned**:
-  the deployed broker (`auth.corevideo.io`, formerly `corevideo.iamfatness.us`, `site-worker.js handleOauthStart` in
+  the deployed broker (`corevideo.iamfatness.us`, `site-worker.js handleOauthStart` in
   the external CoreVideo repo) 400-rejects any other `return_uri`. `corevideopro` is a
   legacy protocol alias only. Don't change the scheme without updating the broker
   allowlist first; `ZoomOAuthManifestTests`/`ZoomOAuthProtocolTests` pin it.

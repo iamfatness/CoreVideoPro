@@ -74,6 +74,19 @@ bool GraphicsInstances::updateTemplates() {
   templatesPublication_ = std::move(publication); return true;
 }
 
+bool GraphicsInstances::templateInUse(const std::string& templateId, int templateVersion) const {
+  const auto uses = [&](const std::shared_ptr<const Revision>& revision) {
+    if (!revision) return false;
+    if (revision->definition && revision->definition->id() == templateId && revision->definition->version() == templateVersion) return true;
+    const auto& image = revision->imageReference;
+    return image.isObject() && image.getString("templateId") == templateId && image.getNumber("templateVersion", 0) == templateVersion;
+  };
+  for (const auto& [_, instance] : instances_)
+    for (const auto* revision : {&instance.draft, &instance.cue, &instance.pendingCue, &instance.program, &instance.clockProgramPending})
+      if (uses(*revision)) return true;
+  return false;
+}
+
 bool GraphicsInstances::validId(const std::string& value) {
   if (value.empty() || value.size() > 64 || value[0] < 'a' || value[0] > 'z') return false;
   return std::all_of(value.begin(), value.end(), [](char c) {
@@ -312,17 +325,19 @@ bool GraphicsInstances::apply(const Json& command) {
   static const std::map<std::string, std::set<std::string>> actionKeys{
       {"graphics-instance-create", {"templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement", "image"}},
       {"graphics-instance-update", {"label", "rackOrder", "templateVersion", "sourceId", "fields", "style", "target", "animations", "binding", "placement", "image"}},
-      {"graphics-instance-cue", {}}, {"graphics-instance-trigger", {"action", "target"}},
+      {"graphics-instance-cue", {"rideTake"}}, {"graphics-instance-trigger", {"action", "target"}},
       {"graphics-clock-control", {"action","configuration","expectedClockRevision"}},
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}},
       {"graphics-automation-configure", {"configuration", "expectedAutomationRevision"}}, {"graphics-automation-control", {"action", "mode", "expectedAutomationRevision", "expectedActivationRevision"}},
       {"graphics-authority-set", {"family", "authority"}},
-      {"graphics-template-install", {"manifest", "packageRoot"}}, {"graphics-template-list", {"includeThumbnails"}}};
+      {"graphics-template-install", {"manifest", "packageRoot"}}, {"graphics-template-list", {"includeThumbnails"}},
+      {"graphics-template-remove", {"templateId", "templateVersion"}}};
   const auto allowed = actionKeys.find(type);
   if (allowed == actionKeys.end()) return finish(requestId, false, "unsupported-graphics-command");
   for (const auto& [key, value] : body->asObject()) {
     if (!common.count(key) && !allowed->second.count(key)) return finish(requestId, false, "unsupported-request-field");
     if(key=="includeThumbnails") {if(!value.isBool()) return finish(requestId,false,"invalid-thumbnail-demand");}
+    else if(key=="rideTake") {if(!value.isBool()) return finish(requestId,false,"invalid-ride-take");}
     else if (key == "manifest") {
       if (!value.isString() || value.asString().empty() || value.asString().size() > 256 * 1024)
         return finish(requestId, false, "template-manifest-size");
@@ -375,6 +390,18 @@ bool GraphicsInstances::apply(const Json& command) {
   if (type == "graphics-template-install") {
     const auto reason = templates_.submit(pendingClient_, requestId, body->getString("manifest"), body->getString("packageRoot"));
     return finish(requestId, reason == "template-install-queued", reason);
+  }
+  if (type == "graphics-template-remove") {
+    const auto templateId = body->getString("templateId");
+    const auto version = body->getNumber("templateVersion", 0);
+    if (version < 1 || version > std::numeric_limits<int>::max()) return finish(requestId, false, "template-not-found");
+    if (GraphicsTemplateRegistry::builtIn(templateId, int(version))) return finish(requestId, false, "template-built-in");
+    // In-use is decided here, where instances live: any cued, Program or hidden
+    // revision whose definition or image reference names this exact version.
+    if (templateInUse(templateId, int(version))) return finish(requestId, false, "template-in-use");
+    const auto reason = templates_.remove(templateId, int(version));
+    updateTemplates();
+    return finish(requestId, reason == "template-removed", reason);
   }
   if(type == "graphics-automation-configure") {
     const auto* config=body->get("configuration");if(!config) return finish(requestId,false,"missing-graphics-automation-configuration");
@@ -592,6 +619,7 @@ bool GraphicsInstances::apply(const Json& command) {
     if (!instance.draft->fieldsReady) return finish(requestId, false, "required-field-empty");
     if (instance.preparation == "failed") return finish(requestId, false, "graphics-preparation-failed");
     instance.cued = true;
+    instance.rideTake = body->get("rideTake") ? body->get("rideTake")->asBool() : true;  // operators ride the Take unless they opt out
     instance.cueRequestedRevision = instance.draft->number;
     instance.cueWarning.clear();
     if (instance.readyRevision == instance.draft->number && instance.draftResource) {
@@ -609,6 +637,7 @@ bool GraphicsInstances::apply(const Json& command) {
         if (instance.cue->binding && !sources_->contains(*instance.cue->binding)) return finish(requestId, false, "source-identity-changed");
         if (!resourceMatches(instance.cueResource, instance.cue->contentHash)) return finish(requestId, false, "cue-not-ready");
         show(instance, true);
+        clearCue(instance);  // Play In from Preview empties Preview; it does not ride the next Take.
         return finish(requestId, true, "cue-show-accepted");
       }
       if (instance.draft->binding && !sources_->contains(*instance.draft->binding)) return finish(requestId, false, "source-identity-changed");
@@ -619,6 +648,12 @@ bool GraphicsInstances::apply(const Json& command) {
         show(instance);
       } else instance.showPending = true;
       return finish(requestId, true, "show-accepted");
+    }
+    if (action == "uncue") {
+      // Preview only: Program and any pending show are untouched.
+      const bool wasCued = instance.cued || instance.cue || instance.pendingCue;
+      clearCue(instance);
+      return finish(requestId, true, wasCued ? "uncued" : "not-cued");
     }
     if (action != "hide" && action != "clear") return finish(requestId, false, "invalid-trigger");
     instance.showPending = instance.updatePending = false;
@@ -921,7 +956,7 @@ bool GraphicsInstances::applyAutomation(const modules::ProgramFrame& frame) {
         if(!fields.count("name")) {automation_.result(decision,false,"graphics-automation-name-field-not-bindable",target->second.draft->number,monotonicMs_());continue;}
       }
       accepted=send("graphics-instance-update",{{"target",decision.action=="update"?"program":"cue"},{"fields",fields},{"binding",decision.binding?contracts::toJson(*decision.binding):Json{}}});
-      if(accepted && decision.action=="cue") accepted=send("graphics-instance-cue",{});
+      if(accepted && decision.action=="cue") accepted=send("graphics-instance-cue",{{"rideTake",false}});  // rehearsal never rides the Take
       else if(accepted && decision.action=="show") accepted=send("graphics-instance-trigger",{{"action","show"}});
     }
     automation_.result(decision,accepted,lastResult_.getString("reason"),target->second.draft->number,monotonicMs_());
@@ -944,6 +979,24 @@ void GraphicsInstances::show(Instance& instance, bool fromCue) {
   if (!instance.awaitingEntrance) instance.timeline.show(instance.program->entrance, monotonicMs_());
   instance.visibility = instance.awaitingEntrance ? "awaiting-composition" : instance.timeline.phase(monotonicMs_());
   instance.showPending = instance.updatePending = false;
+}
+
+void GraphicsInstances::clearCue(Instance& instance) {
+  instance.cue.reset(); instance.cueResource.reset(); instance.pendingCue.reset();
+  instance.cued = false; instance.cuePreparation = "unprepared"; instance.cueWarning.clear();
+}
+
+void GraphicsInstances::promoteCuedForTake() {
+  bool changed = false;
+  for (auto& [_, instance] : instances_) {
+    if (!instance.cued || !instance.rideTake || !instance.cue) continue;
+    if (instance.cue->binding && !sources_->contains(*instance.cue->binding)) continue;
+    if (!resourceMatches(instance.cueResource, instance.cue->contentHash)) continue;
+    show(instance, true);
+    clearCue(instance);
+    changed = true;
+  }
+  if (changed) publish();
 }
 
 bool GraphicsInstances::updateAuthoring() {
@@ -1033,7 +1086,7 @@ void GraphicsInstances::publish() {
       {"cueBinding", instance.cue && instance.cue->binding ? contracts::toJson(*instance.cue->binding) : Json{}},
       {"cueAnimations", instance.cue ? Json{Json::Object{{"in", instance.cue->entrance.json()}, {"out", instance.cue->exit.json()}}} : Json{}},
       {"cueResource", resourceState(instance.cueResource)},
-      {"preparation", instance.preparation}, {"cued", instance.cued}, {"showPending", instance.showPending},
+      {"preparation", instance.preparation}, {"cued", instance.cued}, {"rideTake", instance.rideTake}, {"showPending", instance.showPending},
       {"preparedResource", resourceState(instance.draftResource)}, {"programResource", resourceState(instance.programResource)},
       {"visibility", instance.program ? (instance.visibility == "on-air" && instance.firstDrawSubmittedFrame == 0 ? "entering" : instance.visibility) : "hidden"},
       {"firstDrawSubmittedFrame", double(instance.firstDrawSubmittedFrame)},

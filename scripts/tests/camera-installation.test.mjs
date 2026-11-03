@@ -15,7 +15,7 @@ test('camera setup hashes without Get-FileHash and preserves ownership, ACLs and
   { encoding: 'utf8', timeout: 30000, env });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /24 ownership\/path cases passed/);
+  assert.match(result.stdout, /55 ownership\/path cases passed/);
 });
 
 test('camera setup validates and repairs the desktop user view, not the caller view', {

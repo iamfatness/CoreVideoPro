@@ -89,6 +89,16 @@ struct IsoAdmissionVerdict {
   bool shouldWarn() const { return decision != IsoAdmissionDecision::Admit; }
 };
 
+// #935: the stable id published as recording.isoAdmission.decision.
+inline const char* isoAdmissionDecisionId(IsoAdmissionDecision decision) {
+  switch (decision) {
+    case IsoAdmissionDecision::Admit: return "admit";
+    case IsoAdmissionDecision::AdmitWithWarning: return "admit-with-warning";
+    case IsoAdmissionDecision::RefuseIso: return "refuse-iso";
+  }
+  return "admit";
+}
+
 namespace detail {
 
 inline std::string isoCountLabel(int count) {

@@ -59,7 +59,13 @@ public sealed class ProductionOutputPreferences
     // secret-bearing.
     // v14 (#681): a global Zoom camera request ceiling. Absent/unknown means
     // 1080p, preserving the shipped behavior for existing installs.
-    public const int CurrentVersion = 14;
+    // v15 (#1070): RemovedCatalogSceneIds — the catalog scenes (intro, interview,
+    // speaker-slides, panel, closing) the operator removed. They are re-seeded
+    // from ProductionCatalog.Scenes on every launch, so the removal is kept by
+    // id and applied after the custom scenes are restored. Absent = nothing
+    // removed (byte-identical behavior for older files). Downgrade is safe: an
+    // older build drops the field and the catalog scenes simply reappear.
+    public const int CurrentVersion = 16;
 
     private int _programBufferFrames = ProgramBufferPreference.DefaultFrames;
     public int ProgramBufferFrames
@@ -74,6 +80,11 @@ public sealed class ProductionOutputPreferences
     public bool OhgShowEnabled { get; set; }
     public string? FfmpegBinDirectory { get; set; }
     public bool StreamRtmpEnabled { get; set; } = true;
+    /// <summary>NDI is its own output (v16), independent of Streaming.</summary>
+    public bool NdiOutputEnabled { get; set; }
+    /// <summary>Pre-v16 NDI-as-a-stream-destination tick. Read on load only so the
+    /// migration can discard it; never written by the view model.</summary>
+    [Obsolete("Superseded by NdiOutputEnabled (v16); read only for migration.")]
     public bool StreamNdiEnabled { get; set; }
     public bool StreamSrtEnabled { get; set; }
     public bool StreamHlsEnabled { get; set; }
@@ -83,6 +94,10 @@ public sealed class ProductionOutputPreferences
     public string? StreamRtmpStreamKey { get; set; }
     public string? StreamNdiProgramName { get; set; }
     public string? StreamNdiGroupName { get; set; }
+    // NDI graphics key (titler spec Phase 1). Additive, no version bump: a file
+    // without these fields loads with the key off and the default name.
+    public bool StreamNdiGraphicsKeyEnabled { get; set; }
+    public string? StreamNdiGraphicsName { get; set; }
     public string? StreamSrtMode { get; set; }
     public string? StreamSrtHost { get; set; }
     public string? StreamSrtPort { get; set; }
@@ -91,6 +106,9 @@ public sealed class ProductionOutputPreferences
     public string? StreamSrtKeyLength { get; set; }
     public string? StreamSrtPassphrase { get; set; }
     public string? CanvasResolution { get; set; }
+    // #439: operator opted past the GPU-tier recommended canvas/tile ceiling.
+    // Additive; absent = false. No version bump needed (absent deserializes to the default).
+    public bool GpuTierLimitsOverride { get; set; }
     public string? CanvasFps { get; set; }
     // Opening a capture endpoint can affect multi-endpoint USB interfaces such
     // as GoXLR. Capture must therefore be an explicit operator action, not a
@@ -142,6 +160,8 @@ public sealed class ProductionOutputPreferences
     public bool MultiviewShowTally { get; set; } = true;
     public bool MultiviewShowMeters { get; set; } = true;
     public bool MultiviewShowClock { get; set; }
+    // #1076: Graphics tab mode, "playout" (default) or "design". UI preference only.
+    public string? GraphicsMode { get; set; }
     public Dictionary<string, string> SceneBackgroundAssetIds { get; set; } = new(StringComparer.Ordinal);
 
     // Operator-overridden display names, keyed by canonical source id
@@ -192,6 +212,8 @@ public sealed class ProductionOutputPreferences
     // Zoom participant ids inside routes are per-meeting and go stale across
     // sessions; show-input-slot assignments (the primary path) survive.
     public List<PersistedScene> CustomScenes { get; set; } = [];
+    // #1070 (v15): catalog scene ids the operator removed; see SceneCatalogPolicy.
+    public List<string> RemovedCatalogSceneIds { get; set; } = [];
     public Dictionary<string, ColorGrade> SourceGrades { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, GradeScopeRoi> ScopeRegions { get; set; } = new(StringComparer.Ordinal);
 
@@ -284,6 +306,7 @@ public sealed class PersistedDynamicGallerySettings
     public double GlowSoftness { get; set; }
     public bool AnimateLayout { get; set; }
     public int AnimationDurationMs { get; set; } = 350;
+    public bool NameEachTile { get; set; }
 }
 
 public sealed class PersistedSceneRoute
@@ -409,6 +432,17 @@ public static class ProductionOutputPreferencesSerializer
             if (preferences.Version < 12 && preferences.MultiviewTileCount == 8)
             {
                 preferences.MultiviewTileCount = 10;
+            }
+
+            if (preferences.Version < 16)
+            {
+                // v16: NDI left the stream destinations. A ticked stream-NDI is
+                // deliberately NOT carried over (it would start emitting NDI the
+                // operator never switched on); the program name is kept.
+#pragma warning disable CS0618
+                preferences.StreamNdiEnabled = false;
+#pragma warning restore CS0618
+                preferences.NdiOutputEnabled = false;
             }
 
             if (preferences.Version < ProductionOutputPreferences.CurrentVersion)

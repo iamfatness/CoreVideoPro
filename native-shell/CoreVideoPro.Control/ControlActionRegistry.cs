@@ -66,6 +66,11 @@ public static class ControlActionRegistry
             new("transport.stream.srt.configure", "Configure SRT destination", "Save SRT settings without starting streaming. Refused while streaming or transitioning; omitted passphrase retains it, empty clears it.",
                 new[] { new ControlParam("enabled", b), new ControlParam("mode", s), new ControlParam("host", s), new ControlParam("port", s),
                     new ControlParam("latencyMs", s), new ControlParam("streamId", s), new ControlParam("keyLength", s), new ControlParam("passphrase", s, false) }),
+            new("transport.ndi.toggle", "NDI toggle", "Toggle NDI output. Independent of streaming; refused (and left off) when the NDI settings are invalid."),
+            new("transport.ndi.set", "NDI set", "Turn NDI output on or off explicitly. Independent of streaming; turning on is refused (and NDI left off) when the NDI settings are invalid.",
+                new[] { new ControlParam("on", b, true) }),
+            new("transport.ndi.graphicsKey.set", "NDI graphics key", "Turn the NDI graphics key (fill+key: on-air graphics only, BGRA with straight alpha) on or off. It rides with NDI output; omitted name keeps the current one, empty uses \"<NDI program name> Graphics\".",
+                new[] { new ControlParam("on", b, true), new ControlParam("name", s, false, "NDI source name for the key") }),
             new("transport.engine.toggle", "Engine toggle", "Toggle the capture engine on/off."),
             new("transport.engine.set", "Engine set", "Turn the capture engine on or off explicitly.",
                 new[] { new ControlParam("on", b, true) }),
@@ -78,7 +83,7 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("name", s, false) }),
 
             // ---- Scenes / view ----------------------------------------------------------
-            new("scene.select", "Select scene", "Cue a scene to Preview by id.",
+            new("scene.select", "Select scene", "Cue a scene to Preview by id. Unknown scene fails and changes nothing; reply includes previewSceneId when applied.",
                 new[] { new ControlParam("sceneId", s, true) }),
             new("scene.cueWithRoutes", "Cue scene with routes",
                 "Cue a scene to Preview and point named routes at Show Input slots. JSON object: routeId → slot number or null (empty box). Unknown scene, route or slot fails and changes nothing. Reply includes previewSceneId when applied.",
@@ -95,6 +100,10 @@ public static class ControlActionRegistry
                     new ControlParam("routeId", s, true, "Route id on that scene (for example ohg-host)"),
                     new ControlParam("slot", i, true, "Show Input slot 1-10")
                 }),
+            new("scene.list", "List scenes",
+                "Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id."),
+            new("scene.restoreStarters", "Restore starter scenes",
+                "Re-add any removed catalog scene (intro, interview, speaker-slides, panel, closing) at its catalog position with fresh starter routes. Existing scenes, Program and Preview are untouched."),
             new("scene.dynamicGallery.create", "Create CoreVideo Tiles",
                 "Create a dynamic CoreVideo Tiles scene and cue it to Preview."),
             new("scene.tiles.autofill.set", "Tiles automatic fill", "Set automatic roster fill for the Tiles scene in Preview.",
@@ -111,6 +120,8 @@ public static class ControlActionRegistry
                     new ControlParam("cropRight", d, true), new ControlParam("order", d, true) }),
             new("scene.tiles.override.clear", "Clear tile override", "Return a Preview tile to automatic grid positioning and crop.",
                 new[] { new ControlParam("sourceId", s, true) }),
+            new("scene.tiles.names.set", "Tiles name each tile", "Show one name line (the source's lower-third name, top line only) inside each Preview Tiles member tile, in the scene's lower-third style. Tiles too small for a readable line stay unlabelled.",
+                new[] { new ControlParam("enabled", b, true) }),
             new("view.setMode", "Set view mode", "Set the operator view (program/preview/program-preview/multiview); programPreview is accepted as a legacy alias.",
                 new[] { new ControlParam("mode", s, true, ViewModeContract.SupportedModes) }),
 
@@ -176,6 +187,8 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request; explicit channel all") }),
             new("graphics.template.install", "Import graphics template", "Queue bounded native validation. Read templateInstalls for completion; admission is not installation.",
                 new[] { new ControlParam("request", s, true, "Versioned JSON request with a manifest string or a local packagePath archive") }),
+            new("graphics.template.remove", "Remove graphics template version", "Remove one installed non-built-in template version no instance uses. Built-ins and in-use versions are refused.",
+                new[] { new ControlParam("request", s, true, "Versioned JSON graphics request with templateId and templateVersion") }),
             new("graphics.template.list", "Observe graphics templates", "Read the native versioned catalog and import results without changing graphics.",
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
 
@@ -199,6 +212,42 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("name", s, true) }),
             new("graphics.saved.restore", "Restore saved graphics cue", "Restore an unbound saved cue hidden; Cue and Show remain explicit.",
                 new[] { new ControlParam("savedId", s, true) }),
+
+            // ---- Graphics playout (issue #1076). Ids are the contract shared by the Graphics tab
+            // buttons, the F-key router and Companion; never rename. Play In = take the graphic to
+            // Program, To Preview = cue it (rides the next Take), Play Out = hide. --------------
+            new("graphics.playlist.list", "List graphics playlist", "Read the playlist rows and the guest entries bound to Show Inputs. Changes nothing; reply carries data."),
+            new("graphics.playlist.row.set", "Save graphics playlist row", "Add or replace one playlist row from its JSON (id, kind, name, hotkey, playOutAfterMs, templateId, templateVersion, fields, style, followSources, showClock). Program and Preview are unchanged.",
+                new[] { new ControlParam("rowJson", s, true, "JSON object of one playlist row") }),
+            new("graphics.playlist.clock", "Playlist clock transport", "Start, pause, resume or reset the countdown of a clock playlist row's instance without showing or hiding it. Refused until the row is cued or shown.",
+                new[] { new ControlParam("rowId", s, true), new ControlParam("action", s, true, "start | pause | resume | reset") }),
+            new("graphics.playlist.row.remove", "Remove graphics playlist row", "Remove one playlist row by id. An instance it already put on air stays until Play Out.",
+                new[] { new ControlParam("rowId", s, true) }),
+            new("graphics.playlist.hotkey.set", "Set graphics hotkey", "Assign F1..F12 to a playlist row (blank clears). A key already on another row moves to this one.",
+                new[] { new ControlParam("rowId", s, true), new ControlParam("key", s, false, "F1..F12 or blank") }),
+            new("graphics.playlist.default", "Install default graphics playlist", "Install the five starter rows (guest, title, logo, LIVE bug, sponsor) when no playlist exists. Refused when one exists.",
+                new[] { new ControlParam("starterId", s, false, "Show starter id; default is the first starter") }),
+            new("graphics.playIn", "Play In graphic", "Take a playlist row to Program: create or refresh its native instance, cue it, show from the cue. Guest rows take sourceId (zoom:/capture:/media:) or default to the current Program subject.",
+                new[] { new ControlParam("rowId", s, true), new ControlParam("sourceId", s, false, "Guest rows: bound source id; blank = current Program subject") }),
+            new("graphics.toPreview", "Graphic to Preview", "Cue a playlist row to Preview; it rides the next Take. Guest rows take sourceId or default to the current Program subject.",
+                new[] { new ControlParam("rowId", s, true), new ControlParam("sourceId", s, false, "Guest rows: bound source id; blank = current Program subject") }),
+            new("graphics.playOut", "Play Out graphic", "Hide one graphic on Program: by rowId (+sourceId for a guest entry) or by instanceId. Refused when it is not on Program.",
+                new[] { new ControlParam("rowId", s, false), new ControlParam("sourceId", s, false), new ControlParam("instanceId", s, false, "Takes precedence over rowId") }),
+            new("graphics.preview.remove", "Remove graphic from Preview", "Drop one cued graphic from Preview without touching Program.",
+                new[] { new ControlParam("instanceId", s, true) }),
+            new("graphics.playOutAll", "Play Out all graphics", "Hide every native graphic instance on Program (playlist, design and automatic alike)."),
+            new("graphics.preview.clear", "Clear graphics Preview", "Drop every cued graphic from Preview; Program is unchanged."),
+            new("graphics.strip", "Read graphics strip", "Read the on-air strip (onProgram, onPreview, auto, automationMode, automationArmed) from native instance truth. Changes nothing; reply carries data."),
+            // Shot layouts (#1076 slice 2): one button = a scene on Preview plus its graphics, so one Take carries both.
+            new("graphics.layout.list", "List shot layouts", "Read the shot layouts (id, name, sceneId, rowIds, hotkey, playOutOthers) and the scenes they may use. Changes nothing; reply carries data."),
+            new("graphics.layout.set", "Save shot layout", "Add or replace one shot layout from its JSON (id, name, sceneId or blank, rowIds, hotkey Shift+F1..Shift+F11 or blank, playOutOthers). Refused when its scene or a row does not exist. A hotkey held by another layout moves here. Program and Preview are unchanged.",
+                new[] { new ControlParam("layoutJson", s, true, "JSON object of one shot layout") }),
+            new("graphics.layout.remove", "Remove shot layout", "Remove one shot layout by id. Program and Preview are unchanged.",
+                new[] { new ControlParam("layoutId", s, true) }),
+            new("graphics.layout.cue", "Cue shot layout", "Select the layout's scene to Preview and cue its playlist rows to Preview, so the next Take carries the picture and the graphics. PlayOutOthers layouts also play out Program graphics the layout does not carry. Refused whole when the scene or a row is missing.",
+                new[] { new ControlParam("layoutId", s, true) }),
+            new("graphics.layout.take", "Cue and Take shot layout", "graphics.layout.cue followed by the ordinary Take. A layout with no scene and no rows (Clean) only plays out.",
+                new[] { new ControlParam("layoutId", s, true) }),
 
             // ---- Audio ------------------------------------------------------------------
             new("audio.zoomMode.set", "Zoom audio mode", "Choose independently routed ISO stems or Zoom's combined fallback mix.",

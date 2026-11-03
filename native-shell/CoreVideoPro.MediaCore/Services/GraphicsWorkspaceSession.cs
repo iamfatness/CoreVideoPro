@@ -32,6 +32,10 @@ public sealed partial class GraphicsWorkspaceSession
 
     public event EventHandler? Changed;
     public event EventHandler? PreviewChanged;
+    /// <summary>A draft edit was refused (the message is also the <see cref="Status"/>): raised for template and layer-number
+    /// edits whichever surface started them, so the Designer can show a canvas drag's refusal in its status line.</summary>
+    public event EventHandler<string>? EditRefused;
+    private void RefuseEdit(string message) { Status=message; Changed?.Invoke(this,EventArgs.Empty); EditRefused?.Invoke(this,message); }
     public NativeGraphicsState? State { get; private set; }
     public string SelectedId { get; private set; } = "";
     public string SelectedLayerId { get; private set; } = "";
@@ -39,6 +43,11 @@ public sealed partial class GraphicsWorkspaceSession
     public NativeGraphicsInstance? Selected => State?.Instances.FirstOrDefault(i => i.InstanceId == SelectedId);
     public NativeGraphicsTemplate? Template => State?.Templates.FirstOrDefault(t => t.TemplateId == Draft?.TemplateId && t.TemplateVersion == Draft.TemplateVersion);
     public NativeGraphicsDraft? Draft { get; private set; }
+    /// <summary>Template versions whose remembered browse draft (a look or design the operator moved
+    /// off) holds unsaved template edits. Observe drops those edits if the version is uninstalled;
+    /// value-only design drafts survive that uninstall (they hold no slot) and never appear here.</summary>
+    public IEnumerable<(string TemplateId, int TemplateVersion)> UnsavedTemplateEdits =>
+        _browseEdits.Where(p => p.Value.Draft.Scratch is not null).Select(p => p.Key).ToArray();
     public NativeGraphicsDraft? Preview {
         get {
             var preview=CompareOriginal?_original:Draft;
@@ -68,7 +77,7 @@ public sealed partial class GraphicsWorkspaceSession
         }
     }
     public string PreviewSample { get; private set; }="current";
-    public void SetPreviewSample(string sample) {if(sample is not ("current" or "short" or "long" or "blank" or "unicode")) return;PreviewSample=sample;NotifyPreview();}
+    public void SetPreviewSample(string sample) {if(!GraphicsPreviewSamples.All.Any(s=>s.Id==sample)) return;PreviewSample=sample;NotifyPreview();}
     public bool CompareOriginal { get; private set; }
     public bool Busy { get; private set; }
     public bool ImportBusy { get; private set; }
@@ -84,7 +93,7 @@ public sealed partial class GraphicsWorkspaceSession
             var template = State?.Templates.FirstOrDefault(t => t.TemplateId == draft.TemplateId && t.TemplateVersion == draft.TemplateVersion);
             if (draft.Declarative && template is null) return "This template version is unavailable. Re-import its exact version before previewing.";
             if (template?.Runtime == "declarative") {
-                foreach (var field in template.Fields) {
+                foreach (var field in draft.Scratch is { } scratch ? ScratchFields(scratch) : template.Fields) {
                     if (!draft.Fields.TryGetProperty(field.Id, out var value) || !GraphicsCommandRequest.ValidField(value,field))
                         return $"{field.Id}: enter a value within this template's type and range.";
                     if (field.Required && value.ValueKind == JsonValueKind.String && value.GetString() == "") return $"{field.Id} is required before previewing or cueing.";
@@ -95,13 +104,27 @@ public sealed partial class GraphicsWorkspaceSession
         }
     }
 
+    private (string Hash,IReadOnlyList<NativeGraphicsTemplateField> Fields) _scratchFields=("",[]);
+    // Private template edits may add, rename or remove variables; validate against the edited manifest.
+    private IReadOnlyList<NativeGraphicsTemplateField> ScratchFields(NativeGraphicsScratch scratch)
+    {
+        if(_scratchFields.Hash!=scratch.Hash) {
+            try { _scratchFields=(scratch.Hash,GraphicsTemplateEditor.TemplateFields(scratch)); }
+            catch(JsonException) { _scratchFields=(scratch.Hash,[]); }
+        }
+        return _scratchFields.Fields;
+    }
     public void Observe(NativeGraphicsState? state)
     {
         if (state is null) return;
         var epochChanged = State is not null && State.CoreEpoch != state.CoreEpoch;
         var clockTextChanged = Selected?.Clock?.Text != state.Instances.FirstOrDefault(i=>i.InstanceId==SelectedId)?.Clock?.Text;
         State = state;
-        foreach(var key in _browseEdits.Keys.Where(key=>!state.Templates.Any(t=>t.TemplateId==key.Item1 && t.TemplateVersion==key.Item2)).ToArray()) _browseEdits.Remove(key);
+        // A design version uninstalled because the editor moved off it keeps its value-only memory (typed
+        // values, style, placement, motion): it pins no slot and returns when the design is opened again.
+        // Remembered template edits (Scratch) still go with their version. A core restart clears all below.
+        foreach(var key in _browseEdits.Where(p=>!(GraphicsDesignIds.IsDesignTemplateId(p.Key.Item1) && p.Value.Draft.Scratch is null) &&
+            !state.Templates.Any(t=>t.TemplateId==p.Key.Item1 && t.TemplateVersion==p.Key.Item2)).Select(p=>p.Key).ToArray()) _browseEdits.Remove(key);
         foreach (var id in _privateEdits.Keys.Where(id=>!state.Instances.Any(i=>i.InstanceId==id)).ToArray()) _privateEdits.Remove(id);
         if (epochChanged) {
             SelectedId = ""; SelectedLayerId=""; Draft = _original = null; _undo.Clear(); _gesture = null; _privateEdits.Clear(); _browseEdits.Clear();
@@ -155,14 +178,28 @@ public sealed partial class GraphicsWorkspaceSession
             var edited=change(document);
             Edit(draft with { Scratch=edited.Hash==Template?.ManifestHash ? null : edited });
         } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) {
-            Status=ex.Message; Changed?.Invoke(this,EventArgs.Empty);
+            RefuseEdit(ex.Message);
         }
+    }
+    /// <summary>Like <see cref="EditTemplate"/>, and the draft's values follow the edited variables (an added variable gets
+    /// its default, a removed one is dropped) in the same undo step. Returns "" when applied (or unchanged), else the
+    /// refusal, which is also the <see cref="Status"/>.</summary>
+    public string EditTemplateSynced(Func<NativeGraphicsScratch,NativeGraphicsScratch> change)
+    {
+        string Refuse(string message) { RefuseEdit(message); return message; }
+        if(Busy) return Refuse("Graphics is busy. Try again in a moment.");
+        if(Draft is not { Declarative:true } draft || TemplateDocument is not { } document) return Refuse("Open a design to edit it.");
+        try {
+            var edited=change(document);
+            Edit(draft with { Scratch=edited.Hash==Template?.ManifestHash ? null : edited, Fields=GraphicsTemplateEditor.SyncFields(draft.Fields,edited) });
+            return "";
+        } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) { return Refuse(ex.Message); }
     }
     public void SetLayerNumber(string id,string property,double value)=>SetLayerNumbers(id,new Dictionary<string,double> {[property]=value});
     public void SetLayerNumbers(string id,IReadOnlyDictionary<string,double> values)
     {
         if(Busy || Draft is not { } draft || TemplateDocument is not { } document) return;
-        if(GraphicsTemplateEditor.Layers(document).FirstOrDefault(l=>l.Id==id)?.Locked==true) {Status="Unlock the layer or its parent before editing.";Changed?.Invoke(this,EventArgs.Empty);return;}
+        if(GraphicsTemplateEditor.Layers(document).FirstOrDefault(l=>l.Id==id)?.Locked==true) {RefuseEdit("Unlock the layer or its parent before editing.");return;}
         try {
             var layer=GraphicsTemplateEditor.Layer(document,id);
             var fields=draft.Fields.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone());
@@ -175,7 +212,7 @@ public sealed partial class GraphicsWorkspaceSession
                 } else document=GraphicsTemplateEditor.Set(document,id,pair.Key,JsonSerializer.SerializeToElement(pair.Value));
             }
             Edit(draft with {Fields=JsonSerializer.SerializeToElement(fields,Json),Scratch=document.Hash==Template?.ManifestHash?null:document});
-        } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) {Status=ex.Message;Changed?.Invoke(this,EventArgs.Empty);}
+        } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) {RefuseEdit(ex.Message);}
     }
     public void SetField(string field, JsonElement value)
     {
@@ -238,6 +275,26 @@ public sealed partial class GraphicsWorkspaceSession
         Draft=_original=NewDraft(template);
         if(_browseEdits.TryGetValue((template.TemplateId,template.TemplateVersion),out var saved)) {Draft=saved.Draft;_original=saved.Original;_undo.AddRange(saved.Undo);SelectedLayerId=saved.SelectedLayer;}
         Status="Private library preview — edit this look, then Create hidden cue. Program is unchanged."; NotifyPreview();
+    }
+    /// <summary>Make <paramref name="value"/> the browse draft's new baseline (after a design save): the
+    /// draft and its original both become it, with no undo entry. Same template id and version only.
+    /// <paramref name="selectedLayerId"/> (the layer selected before the save) is reselected when the
+    /// rebased template still has it.</summary>
+    public void Rebase(NativeGraphicsDraft value, string? selectedLayerId = null)
+    {
+        if (Busy || Draft is null || value.TemplateId != Draft.TemplateId || value.TemplateVersion != Draft.TemplateVersion) return;
+        Draft = _original = value; _undo.Clear(); _gesture = null; CompareOriginal = false;
+        if (selectedLayerId is { Length: > 0 } layer && TemplateDocument is { } document) {
+            try { if (GraphicsTemplateEditor.Layers(document).Any(l => l.Id == layer)) SelectedLayerId = layer; }
+            catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException or JsonException) { }
+        }
+        NotifyPreview();
+    }
+    /// <summary>Drop remembered browse drafts of every version of <paramref name="templateId"/> except
+    /// <paramref name="keepVersion"/>: a saved design supersedes them, so they must not pin old versions.</summary>
+    public void ForgetBrowseEdits(string templateId, int keepVersion)
+    {
+        foreach (var key in _browseEdits.Keys.Where(k => k.Item1 == templateId && k.Item2 != keepVersion).ToArray()) _browseEdits.Remove(key);
     }
     public Task<bool> CreateAsync(NativeGraphicsTemplate template, string scope = "global", string sceneId = "", CancellationToken cancellation = default) =>
         Run(async () => {

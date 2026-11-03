@@ -652,6 +652,12 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
     modules::CompositorRenderPlanLayer item;
     item.kind = layer.kind; item.layerId = layer.layerId; item.sourceId = layer.sourceId;
     item.participantId = layer.participantId; item.rect = layer.rect;
+    item.tilesHeld = layer.tilesHeld;
+    // #1074 review: what the compositor actually paints in the slot is
+    // derived from these two (compositor::blackOnStalled), so the snapshot
+    // can say `showing: black` instead of claiming a held picture.
+    item.sourceHealth = layer.sourceHealth;
+    item.dropoutPolicy = layer.dropoutPolicy;
     lastRenderPlan_.layers.push_back(std::move(item));
   }
 
@@ -1077,12 +1083,28 @@ rpc::Json CoreStateCapture::sessionState() const {
   // "multiviewer node that only appears once configured" mistake again.
   if (tilesLayer_.present) {
     rpc::Json::Array memberNodes;
+    int heldCount = 0;
+    int blackCount = 0;
     for (const auto& layer : lastRenderPlan_.layers) {
       if (layer.kind != "participant-video" || layer.layerId.rfind("tile:", 0) != 0) {
         continue;
       }
+      heldCount += layer.tilesHeld ? 1 : 0;
+      // #1074 review: `held` says the SLOT is kept; `showing` says what is IN
+      // it. Under the `black` dropout policy a Zoom source reads "stalled" on
+      // air from 1.5 s and the compositor paints black (blackOnStalled, the
+      // exact predicate D3D11CompositorAdapter uses), while the slot stays
+      // held until 4 s. A held frame passes #1038 only when labelled
+      // truthfully, and black is a different fact from a held picture.
+      const bool black = compositor::blackOnStalled(layer.sourceHealth, layer.dropoutPolicy);
+      blackCount += black ? 1 : 0;
       memberNodes.push_back(rpc::Json{rpc::Json::Object{
           {"sourceId", rpc::Json{layer.sourceId}},
+          // #1074: this slot is kept through a stall (Zoom member stale past
+          // kTilesStaleFrameMs, inside kTilesHoldWindowMs). A drawn member
+          // that is held is counted, never a silent pass.
+          {"held", rpc::Json{layer.tilesHeld}},
+          {"showing", rpc::Json{black ? "black" : "picture"}},
           {"rect", rpc::Json{rpc::Json::Object{
               {"x", rpc::Json{static_cast<double>(layer.rect.x)}},
               {"y", rpc::Json{static_cast<double>(layer.rect.y)}},
@@ -1094,6 +1116,10 @@ rpc::Json CoreStateCapture::sessionState() const {
     state.emplace("tiles", rpc::Json::Object{
                                {"layerId", tilesLayer_.layerId},
                                {"members", rpc::Json{memberNodes}},
+                               {"heldCount", heldCount},
+                               {"blackCount", blackCount},
+                               {"staleAfterMs", static_cast<double>(compositor::kTilesStaleFrameMs)},
+                               {"holdWindowMs", static_cast<double>(compositor::kTilesHoldWindowMs)},
                            });
   }
   // The multiviewer config the core is ACTUALLY running — always published, even
@@ -1172,7 +1198,7 @@ rpc::Json CoreStateCapture::health(const AudioOutputObservation& observation) co
   if (modules_.compositor->rendererName() != "software") {
     messages.emplace_back("GPU compositor active: " + modules_.compositor->rendererName());
   }
-  if (session.hardwareAccelerated) {
+  if (session.programEncoderPath == "hardware") {
     messages.emplace_back("Hardware encoder active: " + session.encoderName);
   }
   for (const auto& warning : lastProgramFrame_.warnings) {
@@ -1901,13 +1927,13 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
                                       ? session.recordingArtifactPath
                                       : recordingTargetFolder_ + "/" + recordingFilenamePrefix_ +
                                             "-program-0." + recordingFormat_;
-  rpc::Json::Array streams{
-      rpc::Json::Object{
+  rpc::Json::Object programStream{
           {"kind", "program"},
           {"path", programPath},
           {"status", publishedWriterStatus},
           {"expectedFrames", static_cast<double>(programFramesWritten + session.recordingProgramMissingFrames)},
           {"framesWritten", static_cast<double>(programFramesWritten)},
+          {"heldFrames", static_cast<double>(session.recordingVideoHeldFrameCount)},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},
           {"hasAudio", audioPresent},
@@ -1918,8 +1944,15 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
           {"writeQueue", recordingWriteQueueJson(session.programWriteQueue)},
           {"bytesWritten", static_cast<double>(programBytesWritten)},
           {"metadataValid", metadataValid},
-      },
   };
+  // #935: the MEASURED Program encoder and its work, so a readout or gate
+  // never infers placement from the hardware request.
+  if (!session.programEncoderPath.empty()) programStream.emplace("encoderPath", session.programEncoderPath);
+  if (session.programVideoWorkUs) {
+    programStream.emplace("videoWorkUs", static_cast<double>(*session.programVideoWorkUs));
+    programStream.emplace("muxVideoFrameCount", static_cast<double>(session.recordingMuxVideoFrameCount));
+  }
+  rpc::Json::Array streams{std::move(programStream)};
   if (!session.isoStreams.empty()) {
     // ISO-1: real per-writer health from the Media Foundation sink — one node per
     // selected ISO source with its own path, frame count, open state and warning.
@@ -1936,6 +1969,13 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
           {"status", iso.warning.empty() ? publishedWriterStatus : std::string("warning")},
           {"readiness", iso.trackOpen ? "ready" : "missing"},
           {"framesWritten", static_cast<double>(iso.videoFrameCount)},
+          // #1030: held pictures while the source's video was stalled; the
+          // outputs drill excuses exactly this many hold-pattern repeats.
+          {"heldFrames", static_cast<double>(iso.heldVideoFrameCount)},
+          {"framesPlacedAtHold", static_cast<double>(iso.videoFramesPlacedAtHold)},
+          // The close-time tail hold: a final repeat the drill judge excuses
+          // only as the file's last frame.
+          {"tailFrames", static_cast<double>(iso.tailVideoFrameCount)},
           {"muxVideoFrameCount", iso.muxVideoFrameCount ? rpc::Json(static_cast<double>(*iso.muxVideoFrameCount)) : rpc::Json(nullptr)},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},
@@ -1946,7 +1986,7 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
           {"audioSamples", static_cast<double>(iso.audioSampleCount)},
           {"bytesWritten", static_cast<double>(iso.bytesWritten)},
           {"metadataValid", iso.trackOpen},
-          {"encoderPath", iso.encoderPath},
+          {"encoderPath", iso.encoderPath.empty() ? rpc::Json(nullptr) : rpc::Json(iso.encoderPath)},
           {"fallbackReason", iso.fallbackReason},
           {"droppedFrames", static_cast<double>(iso.droppedVideoFrames)},
           {"droppedAudioPackets", static_cast<double>(iso.droppedAudioPackets)},
@@ -1959,6 +1999,10 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
       };
       if (!iso.warning.empty()) {
         node.emplace("warning", iso.warning);
+      }
+      if (!iso.plannedEncoderPath.empty()) node.emplace("plannedEncoderPath", iso.plannedEncoderPath);
+      if (iso.isoIndex > 0) {
+        node.emplace("isoIndex", static_cast<double>(iso.isoIndex));  // #935: the NN in ISO-NN-<name>.mp4
       }
       streams.emplace_back(std::move(node));
     }
@@ -2000,7 +2044,11 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
       {"encoder",
        rpc::Json::Object{
            {"codec", session.codec},
-           {"hardwareAccelerated", session.hardwareAccelerated},
+           // #935: MEASURED. True only when the Program writer's instantiated
+           // encoder MFT is a hardware MFT; hardwareRequested is the request.
+           {"hardwareAccelerated", session.programEncoderPath == "hardware"},
+           {"hardwareRequested", session.hardwareAccelerated},
+           {"encoderPath", session.programEncoderPath.empty() ? rpc::Json(nullptr) : rpc::Json(session.programEncoderPath)},
            {"targetBitrateMbps", session.targetBitrateMbps},
            {"audioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
        }},
@@ -2052,6 +2100,30 @@ rpc::Json CoreStateCapture::recordingState(const modules::OutputSession& session
   };
   if (session.lifecycle) {
     recording.emplace("lifecycle", contracts::toJson(*session.lifecycle));
+  }
+  if (session.isoAdmission) {
+    // #935: the arm-time verdict, structured. Readers use this, not the text of
+    // recording.warning (which a later ISO note may overwrite).
+    const auto& adm = *session.isoAdmission;
+    recording.emplace("isoAdmission", rpc::Json::Object{
+        {"decision", adm.decision},
+        {"code", adm.code},
+        {"message", adm.message},
+        {"hardwareCount", static_cast<double>(adm.hardwareCount)},
+        {"softwareCount", static_cast<double>(adm.softwareCount)},
+        {"unplacedCount", static_cast<double>(adm.unplacedCount)},
+        {"admissibleIsoCount", adm.admissibleIsoCount < 0 ? rpc::Json(nullptr)
+                                                          : rpc::Json(static_cast<double>(adm.admissibleIsoCount))},
+        {"probed", adm.probed},
+        {"probeStatus", adm.probeStatus},
+        {"capacity", adm.capacity},
+        {"workload", adm.workload},
+        {"armWaitMs", static_cast<double>(adm.armWaitMs)},
+        {"armWaitOutcome", adm.armWaitOutcome},
+    });
+  }
+  if (session.isoArmWaitingForProbe) {
+    recording.emplace("detail", std::string("waiting for encoder capacity probe"));
   }
   if (!session.recordingArtifactPath.empty()) {
     recording.emplace("artifactPath", session.recordingArtifactPath);

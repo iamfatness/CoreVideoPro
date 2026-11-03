@@ -130,7 +130,7 @@ public sealed partial class SceneWorkspaceViewModel : ObservableObject, IDisposa
         {
             var item=Members.FirstOrDefault(m=>m.Id==choice.Id);
             if(item is null){item=new(choice.Id);Members.Add(item);}
-            item.Name=choice.Name;
+            item.Name=choice.Label;  // "Camera · Elgato" for a local source (#1071), the bare name for a Zoom guest
             item.IsAvailable=true;
             var state=states.GetValueOrDefault(choice.Id);
             item.Excluded=state?.Excluded==true;item.Included=state?.Selected==true;item.CanInclude=state?.CanSelect==true;

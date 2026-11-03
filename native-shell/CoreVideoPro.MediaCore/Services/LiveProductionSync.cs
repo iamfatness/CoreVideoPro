@@ -271,14 +271,15 @@ public static class LiveProductionSync
     {
         if (snapshot.OutputSenderSession.Status is "live" or "warning" &&
             snapshot.OutputSenderSession.Senders.Any(sender =>
-                sender.Status is "live" ||
-                sender.Status == "warning" && sender.FramesSent > 0 && !IsUnavailableOutputSenderWarning(sender)))
+                OutputDestinationKind.IsStream(sender.Destination) &&
+                (sender.Status is "live" ||
+                sender.Status == "warning" && sender.FramesSent > 0 && !IsUnavailableOutputSenderWarning(sender))))
         {
             return snapshot.OutputSenderSession.ActiveSenderCount > 0;
         }
 
         return snapshot.OutputHealth.Any(item =>
-            item.Destination is not "recording" &&
+            OutputDestinationKind.IsStream(item.Destination) &&
             item.Status == "live" &&
             // Prefer concrete sender observations over a stale aggregate label.
             !snapshot.OutputSenderSession.Senders.Any(sender =>
@@ -368,13 +369,14 @@ public static class LiveProductionSync
 
         var liveOutputs = snapshot.OutputHealth
             .Where(item =>
-                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase) &&
+                OutputDestinationKind.IsStream(item.Destination) &&
                 item.Status is "live" or "warning")
             .ToList();
 
         if (liveOutputs.Count == 0)
         {
             var liveSender = snapshot.OutputSenderSession.Senders.FirstOrDefault(sender =>
+                OutputDestinationKind.IsStream(sender.Destination) &&
                 sender.Status is "live" or "warning" or "starting");
             if (liveSender is null)
             {
@@ -422,19 +424,19 @@ public static class LiveProductionSync
         // A healthy-looking queue sample does not undo an applied feed reduction.
         // Preserve an explicit failure over a degraded-stream warning.
         if (snapshot.OutputHealth.Any(item =>
-                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase) && item.Status == "failed") ||
-            snapshot.OutputSenderSession.Senders.Any(sender => sender.Status == "failed"))
+                OutputDestinationKind.IsStream(item.Destination) && item.Status == "failed") ||
+            snapshot.OutputSenderSession.Senders.Any(sender =>
+                OutputDestinationKind.IsStream(sender.Destination) && sender.Status == "failed"))
             return "failed";
         if (StreamDegradationReadout.Format(snapshot) is not null)
             return "warning";
 
         var health = snapshot.OutputHealth.FirstOrDefault(item =>
-            !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase) &&
+            OutputDestinationKind.IsStream(item.Destination) &&
             (item.Destination.Equals("rtmp", StringComparison.OrdinalIgnoreCase) ||
              item.Destination.Equals("program", StringComparison.OrdinalIgnoreCase)));
 
-        health ??= snapshot.OutputHealth.FirstOrDefault(item =>
-            !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase));
+        health ??= snapshot.OutputHealth.FirstOrDefault(item => OutputDestinationKind.IsStream(item.Destination));
 
         return health?.Status ?? (streaming || IsStreamingLive(snapshot) ? "live" : "idle");
     }
@@ -472,14 +474,14 @@ public static class LiveProductionSync
         }
 
         var liveOutputs = snapshot.OutputHealth
-            .Where(item => item.Status is "live" or "warning")
+            .Where(item => !OutputDestinationKind.IsNdi(item.Destination) && item.Status is "live" or "warning")
             .Select(item => item.Destination.ToUpperInvariant())
             .Distinct()
             .ToList();
 
         var warningOutput = snapshot.OutputHealth
             .FirstOrDefault(item =>
-                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase) &&
+                OutputDestinationKind.IsStream(item.Destination) &&
                 item.Status is "failed" or "warning");
         if (warningOutput is not null)
         {

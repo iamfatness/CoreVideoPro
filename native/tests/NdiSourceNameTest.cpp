@@ -76,3 +76,20 @@ TEST(NdiOutputSenderFactory, ReturnsNullptrWhenRuntimeAbsentInStubBuild) {
   EXPECT_EQ(sender, nullptr);
 #endif
 }
+
+// Review item 5: a sender re-resolves its name on every sync. A rejection is
+// not sticky: once the operator fixes the name, the next sync carries no error.
+TEST(NdiSourceName, SenderNameResolutionNeverLatchesAnEarlierRejection) {
+  const std::string tooLong(65, 'k');
+  const auto rejected = resolveNdiSenderName(tooLong, "Program Graphics");
+  EXPECT_FALSE(rejected.error.empty());
+  EXPECT_TRUE(rejected.canonical.empty());
+  const auto fixed = resolveNdiSenderName("Studio Key", "Program Graphics");
+  EXPECT_TRUE(fixed.error.empty());
+  EXPECT_EQ("COREVIDEO (Studio Key)", fixed.canonical);
+  EXPECT_EQ("Studio Key", fixed.programName);
+  const auto fallback = resolveNdiSenderName("   ", "Program Graphics");
+  EXPECT_TRUE(fallback.error.empty());
+  EXPECT_EQ("Program Graphics", fallback.programName);
+  EXPECT_FALSE(resolveNdiSenderName("Key:One", "Program Graphics").error.empty());
+}

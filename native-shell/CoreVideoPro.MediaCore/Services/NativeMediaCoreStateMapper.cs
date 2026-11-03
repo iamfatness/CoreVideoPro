@@ -225,7 +225,7 @@ public static class NativeMediaCoreStateMapper
     }
 
     private static string? AsDestination(string value) =>
-        value is "rtmp" or "ndi" or "srt" or "webrtc" or "recording" ? value : null;
+        value is "rtmp" or "ndi" or "ndi-graphics" or "srt" or "webrtc" or "recording" ? value : null;
 
     private static string NormalizeProgramFrameHealth(string? health) =>
         health switch

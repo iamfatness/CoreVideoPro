@@ -488,12 +488,12 @@ public sealed class LiveProductionSyncTests
                 [
                     new NativeMediaCoreOutputSender
                     {
-                        SenderId = "ndi:program",
-                        Destination = "ndi",
+                        SenderId = "srt:program",
+                        Destination = "srt",
                         Status = "warning",
-                        LastResultCode = "ndi-output-unavailable",
-                        Warning = "NDI output is selected, but no NDI sender module is available in this build.",
-                        RuntimeDetail = "NDI output sender is not available in this build."
+                        LastResultCode = "srt-output-unavailable",
+                        Warning = "SRT output is selected, but no SRT sender module is available in this build.",
+                        RuntimeDetail = "SRT output sender is not available in this build."
                     }
                 ]
             }
@@ -504,6 +504,55 @@ public sealed class LiveProductionSyncTests
         var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, Context);
 
         Assert.False(patch.Streaming);
+    }
+
+    [Fact]
+    public void IsStreamingLiveIgnoresNdiSenders()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputHealth = [new NativeMediaCoreOutputHealth { Destination = "ndi", Status = "live", Message = "" }],
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "live",
+                ActiveSenderCount = 2,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender { SenderId = "ndi", Destination = "ndi", Status = "live", FramesSent = 50 },
+                    new NativeMediaCoreOutputSender { SenderId = "ndi-graphics", Destination = "ndi-graphics", Status = "live", FramesSent = 50 }
+                ]
+            }
+        };
+
+        Assert.False(LiveProductionSync.IsStreamingLive(snapshot));
+        Assert.False(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, Context).Streaming);
+    }
+
+    [Fact]
+    public void SummarizeStreamStatListsOnlyStreamOutputsWhenNdiIsAlsoLive()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth { Destination = "rtmp", Status = "live", Message = "" },
+                new NativeMediaCoreOutputHealth { Destination = "ndi", Status = "live", Message = "" }
+            ],
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "live",
+                ActiveSenderCount = 2,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender { SenderId = "rtmp", Destination = "rtmp", Status = "live", FramesSent = 10 },
+                    new NativeMediaCoreOutputSender { SenderId = "ndi", Destination = "ndi", Status = "live", FramesSent = 10 }
+                ]
+            }
+        };
+
+        var stat = LiveProductionSync.SummarizeStreamStat(snapshot, true, "1080p");
+        Assert.DoesNotContain("NDI", stat, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("RTMP", stat, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

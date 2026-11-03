@@ -11,7 +11,7 @@ internal static class StreamDestinationIntegrationProbe
 {
     private sealed class Store : IProductionOutputPreferencesStore
     {
-        internal ProductionOutputPreferences Value = new() { StreamNdiEnabled = true };
+        internal ProductionOutputPreferences Value = new() { NdiOutputEnabled = true };
         internal int Saves;
         internal bool Fail;
         public ProductionOutputPreferences? Load() => Value;
@@ -37,7 +37,7 @@ internal static class StreamDestinationIntegrationProbe
         var result = await Invoke(false, rtmp);
         Require(result.Status == 200 && store.Saves == before + 1, "RTMP did not commit exactly once through the real adapter");
         Require(vm.StreamRtmpServerUrl == "rtmps://example.test/live" && vm.StreamRtmpStreamKey == "synthetic-key-sentinel", "RTMP did not apply immediately to the VM");
-        Require(!vm.StreamingRequested && !vm.Streaming && vm.StreamNdiEnabled, "Configuration changed streaming intent or another destination");
+        Require(!vm.StreamingRequested && !vm.Streaming && vm.NdiOutputEnabled, "Configuration changed streaming intent or another destination");
         checks.Add("HTTP router -> real UI-dispatched adapter -> VM commits RTMP exactly once, updates live settings, preserves other destinations and does not start streaming");
 
         store.Fail = true;

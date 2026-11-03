@@ -36,6 +36,8 @@ jobs:
           python -m unittest discover -s scripts/qa -p test_source_pictures.py -v
           python -m unittest discover -s scripts/qa -p test_desktop_picture_cadence.py -v
           python -m unittest discover -s scripts/qa -p test_render_work_evidence.py -v
+          python -m unittest discover -s scripts/qa -p test_iso_pixels.py -v
+          python -m unittest discover -s scripts/qa -p test_outputs_drill.py -v
       - name: Frame and recording QA harness tests
         run: npm run test:qa-harness
 
@@ -250,6 +252,29 @@ jobs:
         run: ./native/build-metal/corevideo-native-tests --gtest_filter='MacCapture*'
       - name: Full native tests (Metal configuration)
         run: ctest --test-dir native/build-metal --output-on-failure
+      # #933: a segfault on the paravirtual runner left no stack. Keep the macOS
+      # crash reports for the test binary so the next occurrence is attributable
+      # (test code vs AVFoundation/VideoToolbox vs runner) instead of a bare exit 139.
+      - name: Retain macOS crash reports
+        if: failure()
+        run: |
+          sleep 5  # ReportCrash writes the report asynchronously
+          mkdir -p native/build-metal/crash-reports
+          for dir in ~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports; do
+            ls -la "$dir" 2>/dev/null || true
+            find "$dir" -maxdepth 1 -name 'corevideo-native-tests*' -exec cp {} native/build-metal/crash-reports/ \; 2>/dev/null || true
+          done
+          for report in native/build-metal/crash-reports/*; do
+            [ -f "$report" ] && { echo "=== $report"; head -c 40000 "$report"; }
+          done
+          true
+      - name: Upload macOS crash reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-metal-macos-crash-reports
+          path: native/build-metal/crash-reports
+          if-no-files-found: ignore
 
   # ThreadSanitizer over the stub build: the Phase 2 audio/output worker decouple
   # relies on a strict coreMutex/audioOutputMutex_ two-lock discipline, and a single
@@ -278,8 +303,28 @@ jobs:
       - uses: actions/checkout@v4
       - name: Installer upgrade retirement safety tests
         run: powershell.exe -NoProfile -File scripts/alpha/Test-PreviousInstallations.ps1
+      - name: Installer residual version-folder sweep tests (#883)
+        run: powershell.exe -NoProfile -File scripts/alpha/Test-ResidualInstallations.ps1
+      - name: Installer cleanup helper environment tests, 64-bit and 32-bit hosts (#883)
+        run: powershell.exe -NoProfile -File scripts/alpha/Test-CleanupEnvironment.ps1
       - name: Installer crash-dump (WER LocalDumps) tests
         run: powershell.exe -NoProfile -File scripts/alpha/Test-CrashDumps.ps1
+      - name: Installer Frame Server refresh tests (#781; fake service, 64-bit and SysWOW64 hosts)
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/alpha/Test-FrameServerRefresh.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:WINDIR/SysWOW64/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File scripts/alpha/Test-FrameServerRefresh.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:WINDIR/SysWOW64/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File scripts/alpha/Test-VirtualCameraOwnership.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Alpha Node packaging validator (synthetic package)
+        shell: pwsh
+        run: |
+          $pin = Get-Content scripts/alpha/node-runtime.json -Raw | ConvertFrom-Json
+          $node = Join-Path $env:RUNNER_TEMP 'pinned-node.exe'
+          Invoke-WebRequest $pin.url -OutFile $node
+          powershell.exe -NoProfile -File scripts/alpha/Test-AlphaNodePackaging.ps1 -NodeExe $node
+          if ($LASTEXITCODE -ne 0) { throw "Test-AlphaNodePackaging failed ($LASTEXITCODE)" }
       - uses: actions/setup-node@v4
         with:
           node-version: 22

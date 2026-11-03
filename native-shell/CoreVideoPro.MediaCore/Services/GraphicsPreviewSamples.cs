@@ -8,6 +8,14 @@ namespace CoreVideoPro.MediaCore.Services;
 /// replaced; fonts, image IDs, clocks and accepted instance values remain intact.</summary>
 public static class GraphicsPreviewSamples
 {
+    public const string LongestName = "Maximiliana Alexandra Montgomery-Wellington Fitzgerald";
+
+    /// <summary>The Designer's sample buttons (and the first entries of the workspace's sample list):
+    /// the draft as typed, the longest name, and the secondary line empty.</summary>
+    public static IReadOnlyList<(string Id, string Label)> Buttons { get; } = [("current", "Typical"), ("longest-name", "Longest name"), ("blank", "Empty title")];
+    /// <summary>Every sample the session accepts, <see cref="Buttons"/> first.</summary>
+    public static IReadOnlyList<(string Id, string Label)> All { get; } = [.. Buttons, ("short", "Short text"), ("long", "Long text"), ("unicode", "Unicode example")];
+
     public static JsonElement Apply(NativeGraphicsDraft draft, NativeGraphicsTemplate? template, string sample)
     {
         var values = draft.Fields.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
@@ -28,6 +36,8 @@ public static class GraphicsPreviewSamples
             fields = [new() { Id = "name", Type = "string", MaxLength = 256 }, new() { Id = "title", Type = "string", MaxLength = 512 }];
             textIds.UnionWith(["name", "title"]);
         } else if (draft.Scratch is { } scratch) {
+            // The draft's own variables win over the installed template's: the draft may add, rename or drop some.
+            fields = GraphicsTemplateEditor.TemplateFields(scratch);
             using var document = JsonDocument.Parse(scratch.Manifest);
             if (document.RootElement.TryGetProperty("layers", out var layers)) Visit(layers);
         } else if (template?.Layers is { } layers) Visit(layers);
@@ -38,6 +48,7 @@ public static class GraphicsPreviewSamples
             var text = sample switch {
                 "short" => index == 0 ? "Ada" : "Host",
                 "long" => index == 0 ? "Dr. Alexandra Montgomery-Williams — International Research Director" : "A longer secondary line to check wrapping, alignment and clipping",
+                "longest-name" => index == 0 ? LongestName : values.GetValueOrDefault(field.Id) is { ValueKind: JsonValueKind.String } kept ? kept.GetString()! : "",
                 "unicode" => index == 0 ? "Zoë · José · 日本語" : "العربية · Français · Español",
                 "blank" => index == 0 ? values.GetValueOrDefault(field.Id) is { ValueKind: JsonValueKind.String } current ? current.GetString()! : "Ada" : "",
                 _ => values.GetValueOrDefault(field.Id) is { ValueKind: JsonValueKind.String } current ? current.GetString()! : ""

@@ -1,4 +1,5 @@
 #include "core/IsoVideoIngress.h"
+#include "core/IsoDeparture.h"
 #include <gtest/gtest.h>
 
 namespace {
@@ -93,4 +94,18 @@ TEST(IsoVideoIngress, HoldsCompletedCpuViewBetweenArrivalsAndReleasesDisconnecte
   EXPECT_TRUE(ingress.drain(std::chrono::milliseconds(0)).empty());
   ingress.observe({"capture:screen"}, {}, {}, 3);
   EXPECT_TRUE(ingress.latest({"capture:screen"}).empty());
+}
+
+// #1030: the roster is the departure signal for Zoom ISO stems. Only a Zoom
+// participant missing from a KNOWN roster has departed; capture/media sources
+// never depart, and an empty roster (not joined, engine between processes) is
+// unknown, not "everyone left".
+TEST(IsoDeparture, OnlyZoomSourcesMissingFromAKnownRosterHaveDeparted) {
+  using corevideo::core::departedIsoSources;
+  const std::vector<std::string> selected{"zoom:16778240", "zoom:33559552", "capture:cam-1", "media:clip"};
+  const auto departed = departedIsoSources(selected, {"16778240", "99"});
+  EXPECT_EQ(departed.size(), 1u);
+  EXPECT_TRUE(departed.count("zoom:33559552"));
+  EXPECT_TRUE(departedIsoSources(selected, {}).empty());
+  EXPECT_TRUE(departedIsoSources(selected, {"16778240", "33559552"}).empty());
 }

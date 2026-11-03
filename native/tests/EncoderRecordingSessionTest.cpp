@@ -15,6 +15,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1159,6 +1161,8 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWritersProduceIndependentPlayabl
 // ISO files to %TEMP% — it raises recording.warning and refuses ISO, while the
 // program keeps recording (priority-1).
 TEST(EncoderRecordingSession, MediaFoundationIsoRefusesBadFolderLoudly) {
+  // #1042: arm now waits for an in-flight probe; pin the answer so this test never does.
+  const corevideo::testing::ForcedEncoderCapacity capacity;
   auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
   if (!encoder) {
     return;
@@ -1543,13 +1547,39 @@ TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCa
     EXPECT_TRUE(iso.warning.empty()) << iso.sourceId << ": " << iso.warning;
     EXPECT_GT(iso.videoFrameCount, 0) << iso.sourceId;
     EXPECT_GT(iso.audioSampleCount, 0) << iso.sourceId;
-    hardwareIsoCount += iso.encoderPath == "hardware" ? 1 : 0;
-    softwareIsoCount += iso.encoderPath == "software" ? 1 : 0;
+    hardwareIsoCount += iso.plannedEncoderPath == "hardware" ? 1 : 0;
+    softwareIsoCount += iso.plannedEncoderPath == "software" ? 1 : 0;
+    // #935: encoderPath is MEASURED from the instantiated MFT once the writer began.
+    EXPECT_TRUE(iso.encoderPath == "hardware" || iso.encoderPath == "software") << iso.sourceId << ": '" << iso.encoderPath << "'";
+    if (iso.plannedEncoderPath == "software") EXPECT_EQ(iso.encoderPath, "software") << iso.sourceId;
+    // On a machine whose Program got a hardware MFT, every planned-hardware ISO must too.
+    if (session.programEncoderPath == "hardware" && iso.plannedEncoderPath == "hardware")
+      EXPECT_EQ(iso.encoderPath, "hardware") << iso.sourceId;
   }
   EXPECT_EQ(hardwareIsoCount, 7);
   EXPECT_EQ(softwareIsoCount, 1);
+  EXPECT_TRUE(session.programEncoderPath == "hardware" || session.programEncoderPath == "software")
+      << "Program encoder was not read back: '" << session.programEncoderPath << "'";
+  std::printf("[iso935] measured program=%s\n", session.programEncoderPath.c_str());
+  // #935: the same verdict, structured, so no reader parses recording.warning.
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->decision, "admit-with-warning");
+  EXPECT_EQ(session.isoAdmission->code.rfind("iso-encoder-software-spill", 0), 0u) << session.isoAdmission->code;
+  EXPECT_EQ(session.isoAdmission->hardwareCount, 7);
+  EXPECT_EQ(session.isoAdmission->softwareCount, 1);
+  EXPECT_EQ(session.isoAdmission->unplacedCount, 0);
+  EXPECT_EQ(session.isoAdmission->message.rfind("1 ISO source will record on the CPU software encoder", 0), 0u);
+  EXPECT_EQ(session.isoAdmission->message, session.recordingWarning);
+  EXPECT_FALSE(session.isoAdmission->workload.empty());
+  EXPECT_FALSE(session.isoAdmission->probeStatus.empty());
+  for (size_t i = 0; i < session.isoStreams.size(); ++i) {
+    const auto& iso = session.isoStreams[i];
+    EXPECT_EQ(iso.isoIndex, static_cast<int>(i + 1)) << iso.sourceId;  // matches ISO-NN in the file name
+    if (iso.encoderPath == "software") EXPECT_EQ(iso.isoIndex, 8) << iso.sourceId;  // the overflow is the last placed
+  }
 
   encoder->stopRecording();
+  EXPECT_TRUE(encoder->session().isoAdmission.has_value()) << "the finished take keeps its admission";
   ASSERT_FALSE(session.recordingSessionDir.empty());
   const fs::path dir(session.recordingSessionDir);
   for (int source = 0; source < 8; ++source) {
@@ -1562,6 +1592,304 @@ TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCa
     }
   }
 
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
+namespace {
+
+// #1042: a slow fake probe, installed BEFORE the sink exists so the construction
+// prewarm and the configureRecording prewarm both use it. Restores the platform
+// probe and the default arm wait on scope exit.
+class SlowProbeScope {
+ public:
+  SlowProbeScope(std::chrono::milliseconds probeDuration, std::chrono::milliseconds armWait) {
+    auto& cache = corevideo::modules::EncoderCapacityCache::instance();
+    cache.setArmWaitForTesting(armWait);
+    cache.setProbeFunctionForTesting(
+        [probeDuration](const corevideo::modules::EncoderProbeKey& key) {
+          std::this_thread::sleep_for(probeDuration);
+          corevideo::modules::ProbedEncoderCapacity capacity;
+          capacity.key = key;
+          capacity.status = corevideo::modules::EncoderProbeStatus::Ready;
+          capacity.adapterDescription = "Slow Test GPU";
+          capacity.hardwareAvailable = true;
+          capacity.hardwareSessionCeiling = 9;
+          capacity.probeSessionCap = 32;
+          capacity.softwareAvailable = true;
+          capacity.logicalProcessors = 28;
+          return capacity;
+        });
+  }
+  ~SlowProbeScope() {
+    auto& cache = corevideo::modules::EncoderCapacityCache::instance();
+    cache.setArmWaitForTesting(std::chrono::milliseconds(5000));
+    cache.setProbeFunctionForTesting(nullptr);
+    cache.invalidate();
+  }
+  SlowProbeScope(const SlowProbeScope&) = delete;
+  SlowProbeScope& operator=(const SlowProbeScope&) = delete;
+};
+
+corevideo::modules::RecordingSessionRequest makeRaceRequest(const char* id) {
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = id;
+  request.targetFolder = (std::filesystem::temp_directory_path() / id).string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 60;  // a workload the construction prewarm (1080p30) does not cover
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 8;
+  for (int source = 0; source < 8; ++source) {
+    request.isoSources.push_back(
+        {"zoom:" + std::to_string(source + 1), "Guest " + std::to_string(source + 1), true});
+  }
+  return request;
+}
+
+}  // namespace
+
+TEST(EncoderRecordingSession, MediaFoundationIsoArmWaitsForInFlightProbeInsteadOfDecidingUnprobed) {
+  // #1042: configure kicks the probe for the take's workload, Record follows
+  // immediately, the probe finishes 700 ms later. Arm must wait for it, so the
+  // 9-session GPU admits all eight ISOs on hardware with NO spill warning.
+  SlowProbeScope slowProbe(std::chrono::milliseconds(700), std::chrono::milliseconds(5000));
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable.
+  }
+  namespace fs = std::filesystem;
+  const auto request = makeRaceRequest("iso-arm-probe-race");
+  std::error_code ec;
+  fs::remove_all(request.targetFolder, ec);
+
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});  // immediately: the probe is still running
+
+  const auto session = encoder->session();
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->probeStatus, "ready") << session.isoAdmission->capacity;
+  EXPECT_TRUE(session.isoAdmission->probed);
+  EXPECT_EQ(session.isoAdmission->decision, "admit") << session.isoAdmission->message;
+  EXPECT_EQ(session.isoAdmission->hardwareCount, 8);
+  EXPECT_EQ(session.isoAdmission->softwareCount, 0);
+  EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
+  EXPECT_NE(session.isoAdmission->capacity.find("arm-waited="), std::string::npos)
+      << "the snapshot must say that arm waited: " << session.isoAdmission->capacity;
+  EXPECT_EQ(session.isoAdmission->armWaitOutcome, "cached");
+  EXPECT_GT(session.isoAdmission->armWaitMs, 100) << "arm really blocked for the 700 ms probe";
+
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(request.targetFolder, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationIsoArmWaitIsBoundedAndTheUnprobedDecisionStaysHonest) {
+  // #1042: the wait is bounded. A probe slower than the bound must not hang
+  // Record; the verdict is the old loud unprobed one, and says arm waited.
+  SlowProbeScope slowProbe(std::chrono::milliseconds(1500), std::chrono::milliseconds(150));
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;
+  }
+  namespace fs = std::filesystem;
+  const auto request = makeRaceRequest("iso-arm-probe-timeout");
+  std::error_code ec;
+  fs::remove_all(request.targetFolder, ec);
+
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  const auto session = encoder->session();
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->probeStatus, "pending");
+  EXPECT_FALSE(session.isoAdmission->probed);
+  EXPECT_EQ(session.isoAdmission->code, "iso-encoder-software-spill-unprobed");
+  EXPECT_NE(session.isoAdmission->capacity.find("had still not finished"), std::string::npos)
+      << session.isoAdmission->capacity;
+  // The bound is asserted on the structured wait, not on wall time around nine MF opens.
+  EXPECT_EQ(session.isoAdmission->armWaitOutcome, "timed-out");
+  EXPECT_GE(session.isoAdmission->armWaitMs, 100);
+  EXPECT_LT(session.isoAdmission->armWaitMs, 1400) << "arm must not wait for the whole slow probe";
+
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(request.targetFolder, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationIsoArmNeverStartsAProbeOnAColdCache) {
+  // #1042: arm only waits for a probe configureRecording already launched. A cold
+  // cache with nothing in flight returns at once with the honest unprobed verdict.
+  SlowProbeScope slowProbe(std::chrono::milliseconds(3000), std::chrono::milliseconds(5000));
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;
+  }
+  namespace fs = std::filesystem;
+  const auto request = makeRaceRequest("iso-arm-cold-cache");
+  std::error_code ec;
+  fs::remove_all(request.targetFolder, ec);
+
+  encoder->configureRecording(request);
+  corevideo::modules::EncoderCapacityCache::instance().invalidate();  // nothing in flight now
+  encoder->start({"recording"}, {});
+
+  const auto session = encoder->session();
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->armWaitOutcome, "not-started");
+  EXPECT_EQ(session.isoAdmission->armWaitMs, 0);
+  EXPECT_EQ(session.isoAdmission->probeStatus, "pending");
+  EXPECT_EQ(session.isoAdmission->code, "iso-encoder-software-spill-unprobed");
+  EXPECT_EQ(session.isoAdmission->capacity.find("arm-waited="), std::string::npos);
+
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(request.targetFolder, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationSlowProbeWaitDoesNotMakeTheAsyncSinkAccuseTheWriter) {
+  // #1042 B1: in production the wait blocks the AsyncEncoderSink WRITER thread
+  // while Program audio keeps arriving behind the Start barrier. A 96-packet
+  // audio budget overflows in under 2 s; that head-of-show shedding must be
+  // counted as STARTUP loss, never as a blocked writer / mediaLost / degraded.
+  SlowProbeScope slowProbe(std::chrono::milliseconds(2500), std::chrono::milliseconds(5000));
+  auto inner = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!inner) {
+    return;
+  }
+  corevideo::modules::AsyncEncoderSink sink(std::move(inner));
+  namespace fs = std::filesystem;
+  const auto request = makeRaceRequest("iso-arm-async-audio");
+  std::error_code ec;
+  fs::remove_all(request.targetFolder, ec);
+
+  sink.configureRecording(request);
+  sink.start({"recording"}, {});
+  std::vector<float> programPcm(static_cast<size_t>(960) * 2, 0.2f);
+  for (int packet = 0; packet < 150; ++packet) {
+    sink.submitAudio(programPcm.data(), 960, 2, 48000);  // 20 ms packets, faster than real time
+  }
+  // The writer is still inside awaitProbe: the wait must be visible while it happens.
+  const auto waitSeen = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  bool sawWaiting = false;
+  while (std::chrono::steady_clock::now() < waitSeen) {
+    if (sink.session().isoArmWaitingForProbe) { sawWaiting = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(sawWaiting) << "the probe wait must be published while it happens";
+
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(20)));
+  const auto session = sink.session();
+  EXPECT_FALSE(session.isoArmWaitingForProbe);
+  EXPECT_EQ(session.encoderQueueDroppedAudioPackets, 0)
+      << "audio shed behind a slow Start is startup loss, not a blocked writer";
+  EXPECT_GT(session.recordingStartupDroppedAudioPackets, 0);
+  EXPECT_EQ(session.recordingWarning.find("queue was full"), std::string::npos) << session.recordingWarning;
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->armWaitOutcome, "cached");
+
+  sink.stopRecording();
+  fs::remove_all(request.targetFolder, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationProgramOnlyTakeAfterSpillClearsIsoAdmission) {
+  // #935 review focus: a Program-only take must not show the previous take's spill.
+  const corevideo::testing::ForcedEncoderCapacity eightSessionMachine(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable.
+  }
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso935-admission-reset";
+  fs::remove_all(targetDir, ec);
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso935-spill";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 8;
+  for (int source = 0; source < 8; ++source) {
+    request.isoSources.push_back(
+        {"zoom:" + std::to_string(source + 1), "Guest " + std::to_string(source + 1), true});
+  }
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+  ASSERT_TRUE(encoder->session().isoAdmission.has_value());
+  EXPECT_EQ(encoder->session().isoAdmission->decision, "admit-with-warning");
+  encoder->stopRecording();
+
+  request.sessionId = "iso935-program-only";
+  request.isoSources.clear();
+  request.isoParticipantIds.clear();
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+  const auto session = encoder->session();
+  EXPECT_FALSE(session.isoAdmission.has_value()) << "stale admission from the previous take";
+  EXPECT_TRUE(session.isoStreams.empty());
+  encoder->stopRecording();
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationProgramForcedOntoSoftwareMftIsMeasuredSoftware) {
+  // #935 B1: requesting hardware is not evidence of hardware. With the hardware
+  // request withheld, the Program writer gets the OS software H.264 MFT, and the
+  // MEASURED path must say so while the request flag is unchanged.
+  struct ScopedEnv {
+    ScopedEnv() { _putenv_s("COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER", "1"); }
+    ~ScopedEnv() { _putenv_s("COREVIDEO_QA_PROGRAM_SOFTWARE_ENCODER", ""); }
+  } forceSoftware;
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  ASSERT_TRUE(encoder);
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso935-program-software";
+  fs::remove_all(targetDir, ec);
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso935-program-software";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 8;
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 640;
+  frame.height = 360;
+  frame.preview.width = 640;
+  frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  std::vector<float> pcm(static_cast<size_t>(960) * 2, 0.2f);
+  for (int tick = 0; tick < 6; ++tick) {
+    frame.frameNumber = tick + 1;
+    encoder->submit(frame);
+    encoder->submitAudio(pcm.data(), 960, 2, 48000);
+  }
+  const auto session = encoder->session();
+  EXPECT_EQ(session.programEncoderPath, "software");
+  EXPECT_TRUE(session.hardwareAccelerated) << "the request flag is unchanged; only the measurement moved";
+  encoder->stopRecording();
   encoder.reset();
   fs::remove_all(targetDir, ec);
 }
@@ -1998,6 +2326,509 @@ TEST(EncoderRecordingSession, MediaFoundationIndependentIsoStatusAdvancesMidReco
   fs::remove_all(targetDir, ec);
 }
 
+// #1030 (live show 2026-10-23): a Zoom ISO participant left mid-recording. His
+// ISO video stopped, the writer kept muxing audio silence, Media Foundation's
+// CMFSinkWriter::ThrottleStream blocked that WriteSample forever (no sibling
+// video), and the next Start's closeWriters() joined that worker without a
+// bound — the recording file-control lane never completed another call.
+namespace {
+int64_t steady100ns() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+}
+
+corevideo::modules::RecordingSessionRequest departureRequest(const std::filesystem::path& dir,
+                                                             const std::string& id) {
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = id;
+  request.targetFolder = dir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4"; request.quality = "high";
+  request.width = 640; request.height = 360; request.fps = 30;
+  request.videoCodec = "h264"; request.audioCodec = "aac";
+  request.audioBitrateKbps = 128; request.targetBitrateMbps = 8;
+  request.isoSources = {{"zoom:1", "Leaver", true}};
+  return request;
+}
+
+// Opens the take (ISO prepared, then the shared epoch selected from a Program
+// frame stamped after writer readiness; that stamp is returned in `base`).
+// Returns false when the environment cannot open the writers.
+bool openDepartureTake(corevideo::modules::IEncoderSink& encoder, int64_t& base,
+                       corevideo::modules::ProgramFrame& frame) {
+  encoder.start({"recording"}, {});
+  auto first = makeIsoI420("zoom:1", 640, 360, 0, 40);
+  first.timelineTimestamp100ns = steady100ns();
+  encoder.submitIsoVideo({first});
+  bool prepared = false;
+  for (int i = 0; i < 500 && !prepared; ++i) {
+    const auto s = encoder.session();
+    prepared = s.isoStreams.size() == 1 && s.isoStreams[0].trackOpen;
+    if (!prepared) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (!prepared) return false;
+  frame.width = frame.preview.width = 640; frame.height = frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  frame.frameNumber = 1;
+  base = steady100ns();
+  frame.timelineTimestamp100ns = base;
+  encoder.submit(frame);
+  for (int i = 0; i < 500; ++i) {
+    if (encoder.session().recordingMuxEpoch100ns > 0) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return false;
+}
+
+// Program's mix for one 20 ms tick. Without it the Program file's audio track
+// stays empty and its Finalize drain legitimately waits out its own 2 s bound.
+void submitProgramTick(corevideo::modules::IEncoderSink& encoder, int64_t at) {
+  static const std::vector<float> pcm(static_cast<size_t>(960) * 2, 0.05f);
+  encoder.submitAudioAt(pcm.data(), 960, 2, 48000, at);
+}
+
+// One second of a live participant (video + tone every 20 ms tick), then
+// `silentTicks` audio-only ticks with NO video: the participant has left. The
+// timeline runs ahead of the wall clock so 30 s of departure costs ~1.5 s.
+void driveDeparture(corevideo::modules::IEncoderSink& encoder, int64_t base,
+                    corevideo::modules::ProgramFrame& frame, int silentTicks, bool markDeparted,
+                    const std::function<void()>& afterLivePhase = {}) {
+  constexpr int kLiveTicks = 50;
+  constexpr int64_t kTick100ns = 200'000;  // 20 ms
+  int64_t sourceFrames = 0;
+  for (int tick = 1; tick <= kLiveTicks; ++tick) {
+    const int64_t at = base + tick * kTick100ns;
+    frame.frameNumber = tick + 1;
+    frame.timelineTimestamp100ns = at;
+    encoder.submit(frame);
+    submitProgramTick(encoder, at);
+    auto video = makeIsoI420("zoom:1", 640, 360, tick, 40);
+    video.timelineTimestamp100ns = at;
+    encoder.submitIsoVideo({video});
+    auto tone = makeIsoTone("zoom:1", 960, 1, 220.0, sourceFrames);
+    tone.timelineTimestamp100ns = at;
+    encoder.submitIsoAudio({tone});
+    sourceFrames += 960;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  if (afterLivePhase) afterLivePhase();
+  for (int tick = kLiveTicks + 1; tick <= kLiveTicks + silentTicks; ++tick) {
+    corevideo::modules::IsoSourceAudio silent;  // the core's empty tick: no PCM
+    silent.sourceId = "zoom:1";
+    silent.sampleRate = 48000;
+    silent.timelineTimestamp100ns = base + tick * kTick100ns;
+    silent.departed = markDeparted;
+    encoder.submitIsoAudio({silent});
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
+// Waits until the ISO's file worker has drained, then returns the on-disk
+// size of its fragmented MP4 (fragments are written as the sink emits them).
+uint64_t drainedIsoFileBytes(corevideo::modules::IEncoderSink& encoder) {
+  std::string path;
+  for (int i = 0; i < 500; ++i) {
+    const auto s = encoder.session();
+    if (s.isoStreams.size() == 1 && s.isoStreams[0].queuedAudioPackets == 0 &&
+        s.isoStreams[0].queuedVideoFrames == 0) { path = s.isoStreams[0].path; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  // Give the fragment writer (>= 1 s fragments of media time) its moment.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::error_code ec;
+  const auto size = path.empty() ? 0 : std::filesystem::file_size(path, ec);
+  return ec ? 0 : static_cast<uint64_t>(size);
+}
+
+int64_t elapsedMs(std::chrono::steady_clock::time_point begin) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
+}
+}  // namespace
+
+// Part 1 (MF_SINK_WRITER_DISABLE_THROTTLING) + part 3 (bounded close): an ISO
+// whose video stops while its audio keeps arriving must still close and
+// finalize promptly, never by abandonment. Red before the fix: the silence
+// writes blocked in ThrottleStream and Stop hung (or, with only the bounded
+// join, the writer was abandoned and the file never finalized).
+TEST(EncoderRecordingSession, MediaFoundationIsoWhoseVideoStopsWhileAudioContinuesClosesWithinBound) {
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) return;  // Media Foundation unavailable.
+  encoder->enableIndependentIsoWriters();
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() /
+      ("corevideo-iso-video-stops-" + std::to_string(GetCurrentProcessId()));
+  fs::remove_all(targetDir, ec);
+  encoder->configureRecording(departureRequest(targetDir, "iso-video-stops"));
+  corevideo::modules::ProgramFrame frame;
+  int64_t base = 0;
+  ASSERT_TRUE(openDepartureTake(*encoder, base, frame));
+
+  uint64_t bytesAtDeparture = 0;
+  driveDeparture(*encoder, base, frame, 1500, /*markDeparted=*/false,
+                 [&] { bytesAtDeparture = drainedIsoFileBytes(*encoder); });
+  // Let the file worker reach the silence; a throttled writer stops here.
+  const uint64_t bytesAfterSilence = drainedIsoFileBytes(*encoder);
+  // Blocker 2 of the #1030 review: with throttling off nothing blocks audio
+  // that runs ahead of stopped video, so prove it is not merely accumulating
+  // inside the sink writer: 30 s of AAC (128 kbps nominal) must reach disk as
+  // audio-only fragments BEFORE Stop, not appear only at Finalize.
+  std::printf("[iso-departure-growth] bytes_at_departure=%llu bytes_after_30s_silence=%llu growth=%llu\n",
+              static_cast<unsigned long long>(bytesAtDeparture),
+              static_cast<unsigned long long>(bytesAfterSilence),
+              static_cast<unsigned long long>(bytesAfterSilence - (std::min)(bytesAfterSilence, bytesAtDeparture)));
+  EXPECT_GT(bytesAtDeparture, 0u);
+  EXPECT_GT(bytesAfterSilence, bytesAtDeparture + 100'000)
+      << "audio after the video stopped did not reach disk; the sink writer is holding it";
+
+  // The camera comes back after the gap: frames stamped after the held
+  // frames are accepted (no dropped-video warning) and muxed.
+  constexpr int64_t kTick = 200'000;
+  for (int tick = 1551; tick <= 1560; ++tick) {
+    const int64_t at = base + tick * kTick;
+    auto video = makeIsoI420("zoom:1", 640, 360, tick, 40);
+    video.timelineTimestamp100ns = at;
+    encoder->submitIsoVideo({video});
+    auto tone = makeIsoTone("zoom:1", 960, 1, 220.0, tick * 960LL);
+    tone.timelineTimestamp100ns = at;
+    encoder->submitIsoAudio({tone});
+  }
+  (void)drainedIsoFileBytes(*encoder);
+
+  const auto stopBegin = std::chrono::steady_clock::now();
+  encoder->stopRecording();
+  const auto stopMs = elapsedMs(stopBegin);
+  EXPECT_LT(stopMs, 3500) << "closing a session whose ISO video stopped must not wait out the join bound";
+
+  const auto s = encoder->session();
+  ASSERT_EQ(s.isoStreams.size(), 1u);
+  EXPECT_EQ(s.isoStreams[0].warning.find("abandoned"), std::string::npos) << s.isoStreams[0].warning;
+  EXPECT_EQ(s.recordingError.find("abandoned"), std::string::npos) << s.recordingError;
+  EXPECT_GT(s.isoStreams[0].bytesWritten, 0);
+  // The scenario really reached the writer: ~30 s of silence after one second
+  // of real audio was muxed, ahead of a video track that had stopped.
+  EXPECT_GT(s.isoStreams[0].audioSampleCount, 48000LL * 20);
+  EXPECT_EQ(s.isoStreams[0].warning.find("dropped video"), std::string::npos) << s.isoStreams[0].warning;
+  EXPECT_GE(s.isoStreams[0].videoFrameCount, 60) << "resumed camera frames must be muxed after the stall";
+  // The stall is visible in the snapshot: about one held picture per second.
+  EXPECT_GE(s.isoStreams[0].heldVideoFrameCount, 25);
+  EXPECT_LE(s.isoStreams[0].heldVideoFrameCount, 31);
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
+// #1030 re-review: the camera returns with a frame stamped BEHIND the last
+// held video frame. While video is stalled the writer holds the last picture
+// about once per second of media (triggered 1.5 s behind, placed 0.5 s
+// behind the audio), so after a silent run ending at A the last hold lies
+// within [A - 1.56 s, A - 0.5 s]; a frame at A - 1.8 s is therefore at least
+// 0.24 s behind it (and after the last real
+// frame at ~1 s). Pinned behaviour: the late frame is muxed just after that
+// hold (never dropped, PTS strictly monotonic) and the resumed camera lands on
+// its own capture times, so A/V sync holds. This test is what rejected the
+// first design (IMFSinkWriter::SendStreamTick): the fMP4 sink lays video out
+// by accumulated sample durations and the tick collapsed the 28 s gap, so the
+// resumed frames muxed at ~2.8 s against audio at 31 s (monotonic, wrong).
+TEST(EncoderRecordingSession, MediaFoundationIsoFrameStampedBehindTheLastHeldFrame) {
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) return;  // Media Foundation unavailable.
+  encoder->enableIndependentIsoWriters();
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() /
+      ("corevideo-iso-behind-tick-" + std::to_string(GetCurrentProcessId()));
+  fs::remove_all(targetDir, ec);
+  encoder->configureRecording(departureRequest(targetDir, "iso-behind-tick"));
+  corevideo::modules::ProgramFrame frame;
+  int64_t base = 0;
+  ASSERT_TRUE(openDepartureTake(*encoder, base, frame));
+
+  driveDeparture(*encoder, base, frame, 1500, /*markDeparted=*/false);
+  (void)drainedIsoFileBytes(*encoder);  // the holds have been written by now
+  constexpr int64_t kTick = 200'000;
+  const int64_t audioEnd = base + 1550 * kTick;  // A = 31.0 s of media
+  // The returning camera's first frame, behind the last held frame.
+  auto late = makeIsoI420("zoom:1", 640, 360, 5000, 40);
+  late.timelineTimestamp100ns = audioEnd - 18'000'000;
+  encoder->submitIsoVideo({late});
+  // Then the camera runs normally again with its audio.
+  for (int i = 1; i <= 10; ++i) {
+    const int64_t at = audioEnd + i * kTick;
+    auto video = makeIsoI420("zoom:1", 640, 360, 5000 + i, 40);
+    video.timelineTimestamp100ns = at;
+    encoder->submitIsoVideo({video});
+    auto tone = makeIsoTone("zoom:1", 960, 1, 220.0, (1550 + i) * 960LL);
+    tone.timelineTimestamp100ns = at;
+    encoder->submitIsoAudio({tone});
+  }
+  (void)drainedIsoFileBytes(*encoder);
+  encoder->stopRecording();
+
+  const auto s = encoder->session();
+  ASSERT_EQ(s.isoStreams.size(), 1u);
+  const auto& iso = s.isoStreams[0];
+  const fs::path path = iso.path;
+  Microsoft::WRL::ComPtr<IMFSourceReader> reader;
+  ASSERT_TRUE(SUCCEEDED(MFCreateSourceReaderFromURL(path.wstring().c_str(), nullptr, &reader)));
+  std::vector<LONGLONG> pts;
+  for (;;) {
+    DWORD flags = 0; LONGLONG at = 0;
+    Microsoft::WRL::ComPtr<IMFSample> sample;
+    ASSERT_TRUE(SUCCEEDED(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &at, &sample)));
+    if (sample) pts.push_back(at);
+    if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+  }
+  PROPVARIANT duration; PropVariantInit(&duration);
+  ASSERT_TRUE(SUCCEEDED(reader->GetPresentationAttribute(
+      static_cast<DWORD>(MF_SOURCE_READER_MEDIASOURCE), MF_PD_DURATION, &duration)));
+  const auto fileDuration100ns = static_cast<int64_t>(duration.uhVal.QuadPart);
+  PropVariantClear(&duration);
+  bool monotonic = true;
+  for (size_t i = 1; i < pts.size(); ++i) {
+    if (pts[i] <= pts[i - 1]) {
+      monotonic = false;
+      std::printf("[iso-behind-tick] non-monotonic at %zu: %lld then %lld%c", i,
+                  static_cast<long long>(pts[i - 1]), static_cast<long long>(pts[i]), 10);
+    }
+  }
+  const auto latePts = audioEnd - 18'000'000 - base;
+  // The last hold lies in [A - 1.56 s, A - 0.5 s]; the late frame takes its slot.
+  const bool lateMuxed = std::any_of(pts.begin(), pts.end(),
+      [&](LONGLONG at) { return at >= latePts && at <= latePts + 13'200'000; });
+  std::printf("[iso-behind-tick] samples=%zu framesWritten=%lld late_muxed=%d monotonic=%d last_pts=%.3f "
+              "file_duration=%.3f warning='%s'\n",
+              pts.size(), static_cast<long long>(iso.videoFrameCount), lateMuxed ? 1 : 0, monotonic ? 1 : 0,
+              pts.empty() ? -1.0 : pts.back() / 1e7, fileDuration100ns / 1e7, iso.warning.c_str());
+
+  // Pinned behaviour (measured on the dev box, see iso-recording.md #1030):
+  EXPECT_TRUE(monotonic) << "video PTS in the file went backwards";
+  EXPECT_TRUE(lateMuxed) << "the frame stamped behind the held frame was not muxed after it";
+  // A/V sync after the gap: the resumed frames sit on their capture times.
+  const auto nearest = [&](int64_t want) {
+    int64_t best = (std::numeric_limits<int64_t>::max)();
+    for (const auto at : pts) best = (std::min)(best, std::abs(static_cast<int64_t>(at) - want));
+    return best;
+  };
+  // Within one 30 fps frame (the VFR writer's existing placement is 20 ms
+  // early here with or without a stall); the defect this guards was 28 s.
+  EXPECT_LE(nearest(audioEnd - base + kTick), 333'333) << "the first resumed frame is not at its capture time";
+  EXPECT_LE(nearest(audioEnd - base + 10 * kTick), 333'333) << "the last resumed frame is not at its capture time";
+  EXPECT_NEAR(static_cast<double>(pts.back()), static_cast<double>(audioEnd - base + 10 * kTick), 333'333.0)
+      << "the timeline after the gap is wrong (gap collapsed?)";
+  // The stall itself was filled by held pictures, about one per second, and
+  // the snapshot counts exactly the held pictures that are in the file (the
+  // one the late frame replaced is not counted) for the outputs-drill judge.
+  EXPECT_GE(pts.size(), 61u + 25u) << "no held frames bridged the 30 s video stall";
+  EXPECT_EQ(static_cast<size_t>(iso.heldVideoFrameCount), pts.size() - 61u);
+  EXPECT_EQ(iso.videoFramesPlacedAtHold, 1);
+  EXPECT_EQ(iso.warning.find("dropped video"), std::string::npos) << iso.warning;
+  EXPECT_EQ(iso.videoFrameCount, 61) << "50 live + the late frame + 10 resumed";
+  // The file still finalizes to its real end: A + 0.2 s of resumed media.
+  EXPECT_GE(fileDuration100ns, audioEnd - base + 1'900'000);
+  EXPECT_LE(fileDuration100ns, audioEnd - base + 3'000'000);
+  reader.Reset(); encoder.reset();
+  if (monotonic && lateMuxed) fs::remove_all(targetDir, ec);
+}
+
+// Part 2: once the core marks the participant departed, the stem is no
+// longer silence-filled, so the file ends at the departure (its real
+// duration) instead of growing with silence until Stop.
+TEST(EncoderRecordingSession, MediaFoundationDepartedIsoParticipantIsNotSilenceFilled) {
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) return;  // Media Foundation unavailable.
+  encoder->enableIndependentIsoWriters();
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() /
+      ("corevideo-iso-departed-" + std::to_string(GetCurrentProcessId()));
+  fs::remove_all(targetDir, ec);
+  encoder->configureRecording(departureRequest(targetDir, "iso-departed"));
+  corevideo::modules::ProgramFrame frame;
+  int64_t base = 0;
+  ASSERT_TRUE(openDepartureTake(*encoder, base, frame));
+
+  driveDeparture(*encoder, base, frame, 1500, /*markDeparted=*/true);
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  const auto stopBegin = std::chrono::steady_clock::now();
+  encoder->stopRecording();
+  EXPECT_LT(elapsedMs(stopBegin), 3500);
+
+  const auto s = encoder->session();
+  ASSERT_EQ(s.isoStreams.size(), 1u);
+  EXPECT_EQ(s.isoStreams[0].warning.find("abandoned"), std::string::npos) << s.isoStreams[0].warning;
+  EXPECT_GT(s.isoStreams[0].audioSampleCount, 0);
+  // One second of real audio (plus the close-time tail reconcile to the last
+  // video frame), never the 30 s of post-departure silence.
+  EXPECT_LT(s.isoStreams[0].audioSampleCount, 48000LL * 3) << "departed stem kept growing with silence";
+  EXPECT_EQ(s.isoStreams[0].heldVideoFrameCount, 0) << "no audio after departure, so nothing to hold for";
+  EXPECT_GT(s.isoStreams[0].bytesWritten, 0);
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
+// Part 3 through the real sink: an ISO writer that does not return within the
+// join bound is abandoned, Stop returns inside the bound, the operator is told
+// which file, the lane serves the next take, and the late writer finalizes
+// and is released without crashing. The stall is the existing headless QA
+// seam (RecordingWriteStallQa), held longer than the test's join bound.
+TEST(EncoderRecordingSession, MediaFoundationStopAbandonsAnIsoWriterThatMissesTheJoinBound) {
+  struct ScopedEnv {
+    const char* name;
+    ScopedEnv(const char* n, const char* v) : name(n) { ::SetEnvironmentVariableA(n, v); _putenv_s(n, v); }
+    ~ScopedEnv() { ::SetEnvironmentVariableA(name, nullptr); _putenv_s(name, ""); }
+  };
+  // Long enough for Program's own finalize (its encoder drain may take its
+  // full 2 s), far shorter than the ISO stall.
+  const ScopedEnv bound("COREVIDEO_RECORDING_TRACK_JOIN_BOUND_MS", "3000");
+  const ScopedEnv source("COREVIDEO_QA_RECORDING_STALL_SOURCE", "zoom:1");
+  const ScopedEnv stall("COREVIDEO_QA_RECORDING_STALL_MS", "8000");
+  const ScopedEnv after("COREVIDEO_QA_RECORDING_STALL_AFTER_FRAMES", "30");
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) return;  // Media Foundation unavailable.
+  encoder->enableIndependentIsoWriters();
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() /
+      ("corevideo-iso-abandon-" + std::to_string(GetCurrentProcessId()));
+  fs::remove_all(targetDir, ec);
+  encoder->configureRecording(departureRequest(targetDir, "iso-abandon"));
+  corevideo::modules::ProgramFrame frame;
+  int64_t base = 0;
+  ASSERT_TRUE(openDepartureTake(*encoder, base, frame));
+
+  int64_t sourceFrames = 0;
+  for (int tick = 1; tick <= 45; ++tick) {
+    frame.frameNumber = tick + 1;
+    frame.timelineTimestamp100ns = steady100ns();
+    encoder->submit(frame);
+    submitProgramTick(*encoder, frame.timelineTimestamp100ns);
+    auto video = makeIsoI420("zoom:1", 640, 360, tick, 40);
+    video.timelineTimestamp100ns = frame.timelineTimestamp100ns;
+    encoder->submitIsoVideo({video});
+    auto tone = makeIsoTone("zoom:1", 960, 1, 220.0, sourceFrames);
+    tone.timelineTimestamp100ns = frame.timelineTimestamp100ns;
+    encoder->submitIsoAudio({tone});
+    sourceFrames += 960;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  // The ISO writer is now inside its 2 s stall (it began at written frame 30).
+  const auto stopBegin = std::chrono::steady_clock::now();
+  encoder->stopRecording();
+  const auto stopMs = elapsedMs(stopBegin);
+  EXPECT_LT(stopMs, 4500) << "Stop must return at the join bound, not wait out the blocked writer";
+  const auto stopped = encoder->session();
+  ASSERT_EQ(stopped.isoStreams.size(), 1u);
+  EXPECT_NE(stopped.isoStreams[0].warning.find("abandoned"), std::string::npos) << stopped.isoStreams[0].warning;
+  EXPECT_NE(stopped.recordingError.find("Leaver"), std::string::npos) << stopped.recordingError;
+
+  // The file-control lane is free: a Program-only take starts and stops.
+  auto next = departureRequest(targetDir, "after-abandon");
+  next.isoSources.clear();
+  encoder->configureRecording(next);
+  const auto nextBegin = std::chrono::steady_clock::now();
+  bool started = true;
+  try { encoder->start({"recording"}, {}); } catch (...) { started = false; }
+  ASSERT_TRUE(started) << "only the ISO was abandoned; Program must accept the next take";
+  for (int tick = 0; tick < 10; ++tick) {
+    frame.frameNumber = 100 + tick;
+    frame.timelineTimestamp100ns = steady100ns();
+    encoder->submit(frame);
+    submitProgramTick(*encoder, frame.timelineTimestamp100ns);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  encoder->stopRecording();
+  EXPECT_LT(elapsedMs(nextBegin), 5000);
+  EXPECT_TRUE(encoder->session().isoStreams.empty());
+
+  // The stalled write returns; the abandoned worker finalizes late and exits.
+  std::this_thread::sleep_for(std::chrono::milliseconds(8000));
+  encoder.reset();  // reaps the exited writer; must not crash or hang
+  fs::remove_all(targetDir, ec);
+}
+
+// Part 3, Program side: a Program writer that misses the join bound is
+// abandoned too. Its state still belongs to that thread, so the next Start is
+// refused with a named error (never a hang, never a reopen under the live
+// thread); once the late write returns and Program finalizes, recording works
+// again without a core restart.
+TEST(EncoderRecordingSession, MediaFoundationAbandonedProgramWriterRefusesThenRecovers) {
+  struct ScopedEnv {
+    const char* name;
+    ScopedEnv(const char* n, const char* v) : name(n) { ::SetEnvironmentVariableA(n, v); _putenv_s(n, v); }
+    ~ScopedEnv() { ::SetEnvironmentVariableA(name, nullptr); _putenv_s(name, ""); }
+  };
+  // Above Program's normal finalize (encoder drain up to 2 s), below the stall.
+  const ScopedEnv bound("COREVIDEO_RECORDING_TRACK_JOIN_BOUND_MS", "3000");
+  const ScopedEnv source("COREVIDEO_QA_RECORDING_STALL_SOURCE", "program");
+  const ScopedEnv stall("COREVIDEO_QA_RECORDING_STALL_MS", "6000");
+  const ScopedEnv after("COREVIDEO_QA_RECORDING_STALL_AFTER_FRAMES", "30");
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) return;  // Media Foundation unavailable.
+  encoder->enableIndependentIsoWriters();
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() /
+      ("corevideo-program-abandon-" + std::to_string(GetCurrentProcessId()));
+  fs::remove_all(targetDir, ec);
+  auto request = departureRequest(targetDir, "program-abandon");
+  request.isoSources.clear();
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+  corevideo::modules::ProgramFrame frame;
+  frame.width = frame.preview.width = 640; frame.height = frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  for (int tick = 1; tick <= 40; ++tick) {
+    frame.frameNumber = tick;
+    frame.timelineTimestamp100ns = steady100ns();
+    encoder->submit(frame);
+    submitProgramTick(*encoder, frame.timelineTimestamp100ns);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  // Program's worker is now inside its 2 s stall (it began at frame 30).
+  const auto stopBegin = std::chrono::steady_clock::now();
+  encoder->stopRecording();
+  EXPECT_LT(elapsedMs(stopBegin), 4000) << "Stop must return at the join bound";
+  EXPECT_NE(encoder->session().recordingError.find("abandoned"), std::string::npos)
+      << encoder->session().recordingError;
+
+  bool refused = false;
+  try { encoder->start({"recording"}, {}); }
+  catch (const std::exception& ex) {
+    refused = std::string(ex.what()).find("restart the media core") != std::string::npos;
+  }
+  EXPECT_TRUE(refused) << "a new take must be refused while the abandoned Program writer still runs";
+
+  // The stall ends; Program finalizes late and the sink recovers on its own.
+  std::this_thread::sleep_for(std::chrono::milliseconds(7000));
+  // The late finalize settles the take: "stopped", and it says what happened.
+  const auto settled = encoder->session();
+  EXPECT_EQ(settled.recordingStatus, "stopped");
+  EXPECT_NE(settled.recordingWarning.find("finalized late"), std::string::npos) << settled.recordingWarning;
+  bool recovered = true;
+  try { encoder->start({"recording"}, {}); } catch (...) { recovered = false; }
+  ASSERT_TRUE(recovered) << "recording must recover once the abandoned writer has exited";
+  for (int tick = 0; tick < 10; ++tick) {
+    frame.frameNumber = 200 + tick;
+    frame.timelineTimestamp100ns = steady100ns();
+    encoder->submit(frame);
+    submitProgramTick(*encoder, frame.timelineTimestamp100ns);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  encoder->stopRecording();
+  const auto recoveredError = encoder->session().recordingError;
+  EXPECT_EQ(recoveredError.find("abandoned"), std::string::npos) << recoveredError;
+  // A direct (unwrapped) sink must not be destroyed under a still-running
+  // abandoned Program thread; AsyncEncoderSink leaks it in that case.
+  if (encoder->mustOutliveTeardown()) { (void)encoder.release(); return; }
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
 #endif  // !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 
 namespace {
@@ -2295,6 +3126,169 @@ TEST(EncoderRecordingSession, EncoderRecordingWarningSurfacesInSnapshotRecording
   ASSERT_NE(recording, nullptr);
   EXPECT_EQ(recording->getString("warning"), dropWarning);
   EXPECT_EQ(recording->getString("status"), "recording");  // still recording; warning, not failure
+}
+
+namespace {
+// #935: a sink whose session carries the structured admission + an ISO index.
+class AdmissionEncoderSink final : public corevideo::modules::IEncoderSink {
+ public:
+  void configureRecording(const corevideo::modules::RecordingSessionRequest& request) override {
+    session_.recordingSessionId = request.sessionId;
+  }
+  corevideo::modules::OutputSession start(const std::vector<std::string>& destinations,
+                                          const std::vector<std::string>&) override {
+    session_.active = true;
+    session_.destinations = destinations;
+    session_.recordingStatus = "recording";
+    return session_;
+  }
+  void submit(const corevideo::modules::ProgramFrame&) override { ++session_.encodedFrameCount; }
+  corevideo::modules::OutputSession session() const override { return session_; }
+  corevideo::modules::OutputSession session_;
+};
+}  // namespace
+
+TEST(EncoderRecordingSession, IsoAdmissionAndIsoIndexSurfaceInSnapshotRecordingSection) {
+  auto modules = corevideo::modules::createStubModules();
+  auto owned = std::make_unique<AdmissionEncoderSink>();
+  auto* sink = owned.get();
+  modules.encoder = std::move(owned);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-recording-session"}, {"sessionId", "adm-1"},
+      {"isoParticipantIds", corevideo::rpc::Json::Array{}}});
+
+  const std::string note =
+      "1 ISO source will record on the CPU software encoder, not the GPU (7 on hardware): x.";
+  corevideo::modules::IsoAdmissionStatus adm;
+  adm.decision = "admit-with-warning";
+  adm.code = "iso-encoder-software-spill";
+  adm.message = note;
+  adm.hardwareCount = 7;
+  adm.softwareCount = 1;
+  adm.admissibleIsoCount = -1;
+  adm.probed = true;
+  adm.probeStatus = "ready";
+  adm.capacity = "hw=yes sessions<=8";
+  adm.workload = "h264 1920x1080@60";
+  sink->session_.isoAdmission = adm;
+  sink->session_.recordingWarning = note;
+  corevideo::modules::IsoStreamStatus iso;
+  iso.sourceId = "zoom:8";
+  iso.displayName = "Guest 8";
+  iso.path = "ISO-08-Guest-8.mp4";
+  iso.encoderPath = "software";
+  iso.fallbackReason = "hardware-capacity-exhausted";
+  iso.isoIndex = 8;
+  sink->session_.isoStreams.push_back(iso);
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 16.0);
+  const auto* recording = state.get("recording");
+  ASSERT_NE(recording, nullptr);
+  const auto* node = recording->get("isoAdmission");
+  ASSERT_NE(node, nullptr);
+  EXPECT_EQ(node->getString("decision"), "admit-with-warning");
+  EXPECT_EQ(node->getString("code"), "iso-encoder-software-spill");
+  EXPECT_EQ(node->getString("message"), note);
+  EXPECT_EQ(node->getNumber("hardwareCount"), 7);
+  EXPECT_EQ(node->getNumber("softwareCount"), 1);
+  EXPECT_EQ(node->getNumber("unplacedCount"), 0);
+  ASSERT_NE(node->get("admissibleIsoCount"), nullptr);
+  EXPECT_TRUE(node->get("admissibleIsoCount")->isNull()) << "unknown must be null, never -1 or 0";
+  ASSERT_NE(node->get("probed"), nullptr);
+  EXPECT_TRUE(node->get("probed")->asBool(false));
+  EXPECT_EQ(node->getString("probeStatus"), "ready");
+  EXPECT_EQ(node->getString("capacity"), "hw=yes sessions<=8");
+  EXPECT_EQ(node->getString("workload"), "h264 1920x1080@60");
+  EXPECT_EQ(recording->getString("warning"), note);        // text unchanged
+  EXPECT_EQ(recording->getString("status"), "recording");  // a notice, not a failure
+
+  const auto* streams = recording->get("streams");
+  ASSERT_NE(streams, nullptr);
+  bool foundIso = false;
+  for (const auto& stream : streams->asArray()) {
+    if (stream.getString("kind") != "iso") {
+      EXPECT_EQ(stream.get("isoIndex"), nullptr) << "only ISO streams carry an index";
+      continue;
+    }
+    foundIso = true;
+    EXPECT_EQ(stream.getNumber("isoIndex"), 8);
+    EXPECT_EQ(stream.getString("encoderPath"), "software");
+  }
+  EXPECT_TRUE(foundIso);
+
+  // #935 B1: hardwareAccelerated is the MEASURED path, hardwareRequested the request.
+  sink->session_.hardwareAccelerated = true;
+  sink->session_.programEncoderPath = "software";
+  sink->session_.programVideoWorkUs = 6000;
+  sink->session_.recordingMuxVideoFrameCount = 3;
+  {
+    const auto measured = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 16.0);
+    const auto* rec = measured.get("recording");
+    ASSERT_NE(rec, nullptr);
+    const auto* enc = rec->get("encoder");
+    ASSERT_NE(enc, nullptr);
+    EXPECT_FALSE(enc->get("hardwareAccelerated")->asBool(true)) << "software MFT reported as hardware";
+    EXPECT_TRUE(enc->get("hardwareRequested")->asBool(false));
+    EXPECT_EQ(enc->getString("encoderPath"), "software");
+    const auto& program = rec->get("streams")->asArray().front();
+    EXPECT_EQ(program.getString("kind"), "program");
+    EXPECT_EQ(program.getString("encoderPath"), "software");
+    EXPECT_EQ(program.getNumber("videoWorkUs"), 6000);
+    EXPECT_EQ(program.getNumber("muxVideoFrameCount"), 3);
+  }
+  sink->session_.programEncoderPath.clear();
+  sink->session_.programVideoWorkUs.reset();
+  {
+    const auto unmeasured = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 16.0);
+    const auto* enc = unmeasured.get("recording")->get("encoder");
+    EXPECT_FALSE(enc->get("hardwareAccelerated")->asBool(true)) << "an unmeasured path must not read as hardware";
+    ASSERT_NE(enc->get("encoderPath"), nullptr);
+    EXPECT_TRUE(enc->get("encoderPath")->isNull());
+    const auto& program = unmeasured.get("recording")->get("streams")->asArray().front();
+    EXPECT_EQ(program.get("encoderPath"), nullptr);
+    EXPECT_EQ(program.get("videoWorkUs"), nullptr);
+  }
+
+  // Program-only: the node is absent, never an empty object.
+  sink->session_.isoAdmission.reset();
+  sink->session_.isoStreams.clear();
+  const auto programOnly = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 16.0);
+  ASSERT_NE(programOnly.get("recording"), nullptr);
+  EXPECT_EQ(programOnly.get("recording")->get("isoAdmission"), nullptr);
+}
+
+TEST(AsyncEncoderSink, CarriesIsoAdmissionAndIsoIndexFromTheWrappedSink) {
+  // #935 review focus: the product wraps the MF sink in AsyncEncoderSink, so the
+  // node must survive its snapshot copy, not only the direct-sink path.
+  auto inner = std::make_unique<AdmissionEncoderSink>();
+  auto* sink = inner.get();
+  corevideo::modules::IsoAdmissionStatus adm;
+  adm.decision = "admit-with-warning";
+  adm.code = "iso-encoder-software-spill";
+  adm.softwareCount = 1;
+  sink->session_.isoAdmission = adm;
+  corevideo::modules::IsoStreamStatus iso;
+  iso.sourceId = "zoom:8";
+  iso.isoIndex = 8;
+  iso.encoderPath = "software";
+  sink->session_.isoStreams.push_back(iso);
+  auto wrapped = std::make_unique<corevideo::modules::AsyncEncoderSink>(std::move(inner));
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "async-935";
+  wrapped->configureRecording(request);
+  (void)wrapped->start({"recording"}, {});
+  corevideo::modules::OutputSession session;
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    session = wrapped->session();
+    if (session.isoAdmission) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(session.isoAdmission.has_value());
+  EXPECT_EQ(session.isoAdmission->decision, "admit-with-warning");
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  EXPECT_EQ(session.isoStreams[0].isoIndex, 8);
+  wrapped->stopRecording();
 }
 
 TEST(RecordingPtsClock, SessionBoundaryRejectsPreEpochVideoWithoutConsumingIdentity) {

@@ -312,6 +312,8 @@
                 <ColumnDefinition Width="*" MinWidth="360" />
                 <!-- Auto so the room panel collapses to zero width when hidden. -->
                 <ColumnDefinition Width="Auto" />
+                <!-- #1076: graphics playlist column (spec: right panel of the console); Auto so it collapses. -->
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <Border Style="{StaticResource StudioPanelBorder}" Padding="10">
@@ -487,6 +489,8 @@
             <Grid Grid.Column="1" x:Name="DirectorLayout" RowSpacing="4">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
+                    <!-- #1076: graphics On Air strip above the program/preview area -->
+                    <RowDefinition Height="Auto" />
                     <RowDefinition x:Name="MultiviewRow" Height="*" MinHeight="200" />
                 </Grid.RowDefinitions>
 
@@ -496,6 +500,7 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
@@ -582,10 +587,10 @@
                                                   ContentTemplate="{StaticResource LowerThirdIconTemplate}"
                                                   VerticalAlignment="Center"
                                                   IsHitTestVisible="False" />
-                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
+                                <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdLabel, Mode=OneWay}"
                                            FontSize="11"
                                            FontWeight="Bold" />
-                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactStatus, Mode=OneWay}"
+                                <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdStatus, Mode=OneWay}"
                                            FontSize="10"
                                            Foreground="{StaticResource StudioMutedBrush}" />
                             </StackPanel>
@@ -600,10 +605,22 @@
                                 <TextBlock Text="Room" />
                             </StackPanel>
                         </ToggleButton>
+                        <!-- #1076: show/hide the graphics playlist column. -->
+                        <ToggleButton Grid.Column="8"
+                                      Padding="10,4" FontSize="10" VerticalAlignment="Center"
+                                      IsChecked="{x:Bind ViewModel.ShowGraphicsPanel, Mode=TwoWay}"
+                                      ToolTipService.ToolTip="Show or hide the graphics playlist (Show / Hide, F1–F12)">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE8A1;" FontSize="11" />
+                                <TextBlock Text="Graphics" />
+                            </StackPanel>
+                        </ToggleButton>
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="1" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
+                <cvcontrols:GraphicsOnAirStripControl Grid.Row="1" Studio="{x:Bind ViewModel, Mode=OneWay}" />
+
+                <Border Grid.Row="2" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
                     <Grid>
                         <!-- Surface is null while popped out (single-consumer keyed-mutex texture),
                              so only the pop-out window presents it. -->
@@ -774,6 +791,32 @@
                             HorizontalAlignment="Stretch" />
                 </Grid>
             </Border>
+
+            <!-- #1076: compact graphics playlist (spec: the console's right panel). Rows + Play In /
+                 Play Out only; the inspector lives in the Graphics tab. Collapsible, default expanded. -->
+            <Border Grid.Column="3" Style="{StaticResource StudioPanelBorder}" Padding="10" Width="320"
+                    Visibility="{x:Bind ViewModel.ShowGraphicsPanel, Mode=OneWay}">
+                <Grid RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Graphics" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center"
+                                   Foreground="{StaticResource StudioTextBrush}" />
+                        <Button Grid.Column="1" Content="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                Padding="6,2" Background="Transparent" BorderThickness="0"
+                                Foreground="{StaticResource StudioMutedBrush}"
+                                ToolTipService.ToolTip="Hide the graphics playlist (the Graphics button above brings it back)"
+                                Click="OnHideGraphicsPanelClicked" />
+                    </Grid>
+                    <cvcontrols:GraphicsPlayoutControl Grid.Row="1" Compact="True" Studio="{x:Bind ViewModel, Mode=OneWay}" />
+                </Grid>
+            </Border>
         </Grid>
 
         <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
@@ -878,9 +921,9 @@
                                                   VerticalAlignment="Center"
                                                   IsHitTestVisible="False" />
                                 <StackPanel Spacing="1">
-                                    <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
+                                    <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdLabel, Mode=OneWay}"
                                                FontWeight="Bold" FontSize="12" />
-                                    <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactStatus, Mode=OneWay}"
+                                    <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdStatus, Mode=OneWay}"
                                                FontSize="10" FontWeight="Bold"
                                                Foreground="{StaticResource StudioMutedBrush}"
                                                TextTrimming="CharacterEllipsis"
@@ -951,7 +994,7 @@
                         </Button>
                     </StackPanel>
 
-                    <Border Padding="10,6" Width="150" CornerRadius="6"
+                    <Border Padding="10,6" Width="96" CornerRadius="6"
                             BorderThickness="1" BorderBrush="{StaticResource StudioBorderBrush}"
                             ToolTipService.ToolTip="{x:Bind ViewModel.StudioAssignedLowerThirdDetail, Mode=OneWay}">
                         <StackPanel Spacing="3">
@@ -999,7 +1042,7 @@
                 </StackPanel>
 
                 <!-- Keep all production actions on the same row and baseline. -->
-                <Grid x:Name="FooterTransport" Width="718" HorizontalAlignment="Center" VerticalAlignment="Top">
+                <Grid x:Name="FooterTransport" Width="770" HorizontalAlignment="Center" VerticalAlignment="Top">
                     <StackPanel x:Name="FooterOutputActions" Orientation="Horizontal" Spacing="8">
                     <StackPanel Orientation="Horizontal" Spacing="0">
                         <Button Style="{StaticResource TakeButton}" Width="122" MinHeight="48"
@@ -1042,7 +1085,7 @@
                         </Button>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <Button Width="144" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button Width="132" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             AutomationProperties.Name="Record"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
@@ -1160,6 +1203,11 @@
                                             <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
                                                      Message="{x:Bind ViewModel.IsoHealthWarning, Mode=OneWay}"
                                                      Visibility="{x:Bind ViewModel.IsoHealthWarningVisibility, Mode=OneWay}" />
+                                            <InfoBar IsOpen="True" IsClosable="False"
+                                                     Severity="{x:Bind ViewModel.IsoEncoderPlacementSeverity, Mode=OneWay}"
+                                                     Message="{x:Bind ViewModel.IsoEncoderPlacementMessage, Mode=OneWay}"
+                                                     Visibility="{x:Bind ViewModel.IsoEncoderPlacementVisibility, Mode=OneWay}"
+                                                     AutomationProperties.Name="ISO encoder placement" />
                                             <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
                                                      Message="{x:Bind ViewModel.RecordingDiskWarning, Mode=OneWay}"
                                                      Visibility="{x:Bind ViewModel.RecordingDiskWarningVisibility, Mode=OneWay}" />
@@ -1199,7 +1247,7 @@
                     </Button>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <Button Width="144" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button Width="132" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="13" AutomationProperties.Name="Stream" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
@@ -1286,8 +1334,6 @@
                                             <StackPanel Orientation="Horizontal" Spacing="10">
                                                 <CheckBox Content="RTMP"
                                                           IsChecked="{x:Bind ViewModel.StreamRtmpEnabled, Mode=TwoWay}" />
-                                                <CheckBox Content="NDI"
-                                                          IsChecked="{x:Bind ViewModel.StreamNdiEnabled, Mode=TwoWay}" />
                                                 <CheckBox Content="SRT"
                                                           IsChecked="{x:Bind ViewModel.StreamSrtEnabled, Mode=TwoWay}" />
                                                 <CheckBox Content="HLS"
@@ -1318,7 +1364,7 @@
                     <!-- Virtual camera (virtual-camera-spec V4): output the program as a
                          system webcam Zoom/Teams/Meet can select. -->
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <ToggleButton Width="160" MinHeight="48" CornerRadius="8,0,0,8" Padding="12,4"
+                    <ToggleButton Width="106" MinHeight="48" CornerRadius="8,0,0,8" Padding="8,4"
                                   AutomationProperties.Name="Virtual camera"
                                   IsChecked="{x:Bind ViewModel.VirtualCameraEnabled, Mode=TwoWay}"
                                   ToolTipService.ToolTip="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}">
@@ -1328,7 +1374,7 @@
                                 <TextBlock Text="Virtual Cam" FontSize="11" FontWeight="Bold" />
                                 <TextBlock Text="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}"
                                            Style="{StaticResource StudioMonoLabel}" FontSize="9"
-                                           TextTrimming="CharacterEllipsis" MaxWidth="140" />
+                                           TextTrimming="CharacterEllipsis" MaxWidth="70" />
                             </StackPanel>
                         </StackPanel>
                     </ToggleButton>
@@ -1357,6 +1403,58 @@
                                              Text="{x:Bind ViewModel.VirtualCameraDeviceName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
                                              PlaceholderText="CoreVideo Pro Camera" />
                                     <TextBlock Text="The name apps show in their camera list. Takes effect next time you enable the camera."
+                                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                               TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                            </Flyout>
+                        </Button.Flyout>
+                    </Button>
+                    </StackPanel>
+                    <!-- NDI output (spec 2026-11-01): its own output, independent of Streaming.
+                         IsChecked is one-way; Click asks the ViewModel, so a refusal leaves the
+                         tile off with the reason in its subtitle. -->
+                    <StackPanel Orientation="Horizontal" Spacing="0">
+                    <ToggleButton Width="92" MinHeight="48" CornerRadius="8,0,0,8" Padding="8,4"
+                                  AutomationProperties.Name="NDI output"
+                                  IsChecked="{x:Bind ViewModel.NdiOutputEnabled, Mode=OneWay}"
+                                  Click="OnNdiOutputTileClicked"
+                                  ToolTipService.ToolTip="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}">
+                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+                            <FontIcon Glyph="&#xE968;" FontSize="14" />
+                            <StackPanel Spacing="1">
+                                <TextBlock Text="NDI" FontSize="11" FontWeight="Bold" />
+                                <TextBlock Text="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}"
+                                           Style="{StaticResource StudioMonoLabel}" FontSize="9"
+                                           TextTrimming="CharacterEllipsis" MaxWidth="56" />
+                            </StackPanel>
+                        </StackPanel>
+                    </ToggleButton>
+                    <Button MinHeight="48" Width="30" CornerRadius="0,8,8,0" Padding="0" BorderThickness="1"
+                             AutomationProperties.Name="NDI options"
+                             ToolTipService.ToolTip="NDI options">
+                        <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
+                        <Button.Flyout>
+                            <Flyout Placement="Top">
+                                <StackPanel Spacing="10" MinWidth="230" MaxWidth="300">
+                                    <TextBlock Text="NDI output" FontWeight="Bold" FontSize="13" />
+                                    <TextBlock Text="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}"
+                                               FontSize="11" TextWrapping="WrapWholeWords" />
+                                    <!-- Commit on LostFocus/Enter: every edit is validated, so a
+                                         per-keystroke commit could turn NDI off mid-typing. -->
+                                    <TextBox Header="Program name" Tag="ProgramName"
+                                             Text="{x:Bind ViewModel.StreamNdiProgramName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                             KeyDown="OnNdiTextBoxKeyDown" />
+                                    <TextBox Header="Group" Tag="GroupName"
+                                             Text="{x:Bind ViewModel.StreamNdiGroupName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                             KeyDown="OnNdiTextBoxKeyDown" />
+                                    <ToggleSwitch Header="Graphics key (fill+key)"
+                                                  ToolTipService.ToolTip="A second NDI source with only the on-air graphics over transparency (fill+key), for a downstream switcher to key over its own picture."
+                                                  IsOn="{x:Bind ViewModel.StreamNdiGraphicsKeyEnabled, Mode=TwoWay}" />
+                                    <TextBox Header="Graphics key name" Tag="GraphicsName"
+                                             PlaceholderText="Program name + Graphics"
+                                             Text="{x:Bind ViewModel.StreamNdiGraphicsName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                             KeyDown="OnNdiTextBoxKeyDown" />
+                                    <TextBlock Text="Sends Program at the stream output size and frame rate. Runs with or without streaming."
                                                FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
                                                TextWrapping="WrapWholeWords" />
                                 </StackPanel>
@@ -1413,6 +1511,20 @@
                                        TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind ViewModel.Transport.StreamStatHealthLabel, Mode=OneWay}"
                                        FontSize="10" FontWeight="ExtraBold"
                                        Foreground="{x:Bind ViewModel.Transport.StreamStatHealthBrush, Mode=OneWay}" />
+                        </StackPanel>
+
+                        <!-- #1074: collapsed unless the stream is in backpressure AND two or more
+                             Zoom feeds are stalled (1.5 s on-air rule) at once. Zero width in the
+                             normal footer. States the two facts; it does not claim a cause. -->
+                        <StackPanel Spacing="2" MaxWidth="236"
+                                    Visibility="{x:Bind ViewModel.Transport.StalledFeedsVisibility, Mode=OneWay}"
+                                    ToolTipService.ToolTip="{x:Bind ViewModel.Transport.StalledFeedsLabel, Mode=OneWay}">
+                            <TextBlock Text="FEEDS" Style="{StaticResource OutputStatLabel}" />
+                            <TextBlock x:Name="StalledFeedsStatus"
+                                       Text="{x:Bind ViewModel.Transport.StalledFeedsLabel, Mode=OneWay}"
+                                       TextWrapping="WrapWholeWords" MaxLines="2"
+                                       FontSize="10" FontWeight="ExtraBold"
+                                       Foreground="#F0A85C" />
                         </StackPanel>
 
                         <StackPanel Spacing="2" Width="110" ToolTipService.ToolTip="Frames written in the current or most recent recording session.">

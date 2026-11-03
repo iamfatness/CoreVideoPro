@@ -142,6 +142,12 @@ struct IsoSourceAudio {
   // makes ISO files longer than Program under multi-encoder load. Zero is
   // accepted for direct/test callers and makes the sink sample its clock.
   int64_t timelineTimestamp100ns = 0;
+  // #1030: the source has LEFT (a Zoom participant no longer in the meeting
+  // roster). The sink must not silence-fill a departed source's stem: that
+  // grew the file forever and, with no sibling video, wedged the writer. Real
+  // PCM is still written if any arrives; a source that returns resumes its
+  // stem and the clock bridges the gap with silence at that point.
+  bool departed = false;
 };
 
 struct AudioFrame {
@@ -302,6 +308,24 @@ struct GraphicsFrameFact {
   bool hasRequestedContentHash=false;
 };
 
+// NDI graphics key: one straight-alpha BGRA readback of the graphics-only
+// composite, tagged with the compositor frame number that produced it and the
+// steady-clock millisecond it was published (GraphicsKeyRing, GraphicsKeyPixels.h).
+struct GraphicsKeyFrame {
+  std::shared_ptr<const std::vector<uint8_t>> bgra;
+  int width = 0;
+  int height = 0;
+  int64_t frameNumber = -1;
+  int64_t publishedMs = 0;
+};
+// The key chosen for one Program frame. `stale` = no fresh readback within
+// kGraphicsKeyStaleAfterMs: send a transparent key, never the last graphic.
+struct GraphicsKeySelection {
+  GraphicsKeyFrame frame;
+  bool stale = false;
+  bool exact = false;
+};
+
 struct ProgramFrame {
   int width = 1920;
   int height = 1080;
@@ -338,6 +362,20 @@ struct ProgramFrame {
   [[nodiscard]] const std::vector<uint8_t>& programNv12Bytes() const noexcept {
     return programNv12Shared ? *programNv12Shared : programNv12;
   }
+  // NDI graphics key (titler spec Phase 1, "NDI fill+key"): the on-air native
+  // graphics layer ALONE, composited over transparency at Program size and
+  // read back as packed BGRA with STRAIGHT (non-premultiplied) alpha, which is
+  // how an NDI BGRA frame carries key+fill in one stream. Populated by the
+  // output worker from ICompositor::selectGraphicsKey only while the
+  // "ndi-graphics" destination is active; empty otherwise. Program pixels never
+  // appear in it (see GraphicsKeyPixels.h for the layer rule and the unpremultiply).
+  int graphicsKeyWidth = 0;
+  int graphicsKeyHeight = 0;
+  std::shared_ptr<const std::vector<uint8_t>> graphicsKeyBgraShared;
+  // The compositor frame that produced the key (-1 for a transparent stand-in)
+  // and whether it IS a transparent stand-in because no fresh key arrived.
+  int64_t graphicsKeyFrameNumber = -1;
+  bool graphicsKeyStale = false;
   ProgramFrameSharedTexture sharedTexture;
   // Dedicated GPU keyed-mutex DXGI shared texture for hardware H.264 encode.
   // Separate from sharedTexture so sender encode does not contend with WinUI frame
@@ -460,6 +498,11 @@ struct CompositorOverlayContent {
   // by the compositor's animation clock. 0 = phase just entered, 1 = settled.
   float keyProgress = 1.f;
   bool isCaption = false;   // True for caption layers (lower band styling).
+  // #1073: a Tiles per-tile name line. While its DirectWrite raster is still
+  // preparing the compositor draws the layer's PREVIOUS raster (scaled
+  // through the viewport) or nothing at all, never the legacy bare accent
+  // bar, and keeps the last ready raster per layer (OverlayRasterRetention).
+  bool holdLastRaster = false;
   // BrandKit styling resolved at plan-build time (#RRGGBB / #RRGGBBAA).
   std::string brandColor = "#44c1a1";
   std::string brandAccentColor = "#f0a85c";
@@ -542,6 +585,10 @@ struct CompositorRenderPlanLayer {
   std::string sourceHealth;
   std::string dropoutPolicy = "hold";
   std::string sourceDisplayName;
+  // #1074: a Tiles member whose newest frame is past kTilesStaleFrameMs but
+  // inside kTilesHoldWindowMs. The slot keeps its last picture; the snapshot
+  // `tiles.members[].held` labels it so a stall is never a silent pass.
+  bool tilesHeld = false;
   std::string graphicsInstanceId;
   uint64_t graphicsRevision = 0;
   bool graphicsAwaitingEntrance = false;
@@ -573,6 +620,13 @@ struct CompositorRenderPlan {
   // thumbnail. Independent of skipCpuReadback (which only gates the small
   // preview + pixel signature).
   bool fullProgramReadback = false;
+  // When true, the GPU compositor ALSO composites the native graphics
+  // instances on this plan (layers with a graphicsInstanceId) into their own
+  // transparent BGRA target and publishes it, straight-alpha, through
+  // ICompositor::selectGraphicsKey for the NDI graphics-key sender.
+  // Set by MediaCore only while the "ndi-graphics" destination is active; the
+  // Program target is untouched either way.
+  bool graphicsKeyReadback = false;
 };
 
 // Per-ISO-writer health (ISO-1). One node per selected ISO source, surfaced in
@@ -590,6 +644,13 @@ struct RecordingWriteQueueEvidence {
 
 struct IsoStreamStatus {
   std::optional<int64_t> muxVideoFrameCount; // committed samples, including A/V tail padding
+  // #1030: pictures re-submitted while this file's video was stalled (part of
+  // muxVideoFrameCount, never of videoFrameCount), and real frames placed onto
+  // a held slot. The ISO pixel judge excuses exactly heldVideoFrameCount repeats.
+  int64_t heldVideoFrameCount = 0;
+  int64_t videoFramesPlacedAtHold = 0;
+  // Close-time A/V tail hold (one repeat of the last picture at Finalize).
+  int64_t tailVideoFrameCount = 0;
   RecordingWriteQueueEvidence writeQueue;
   uint64_t droppedVideoFrames = 0, droppedAudioPackets = 0;
   uint64_t queuedVideoFrames = 0, queuedAudioPackets = 0;
@@ -602,9 +663,36 @@ struct IsoStreamStatus {
   int64_t audioSampleCount = 0;  // 0 until ISO-2 muxes per-source audio
   int64_t bytesWritten = 0;
   bool trackOpen = false;        // the writer opened + began writing its video track
-  std::string encoderPath;       // "hardware" or "software" placement for this ISO
+  // #935: MEASURED from the encoder MFT the sink writer actually instantiated
+  // (Mp4Writer readback at BeginWriting): "hardware" | "software"; empty until
+  // the writer has begun. plannedEncoderPath is what arm-time placement asked for.
+  std::string encoderPath;
+  std::string plannedEncoderPath;
   std::string fallbackReason;    // e.g. hardware-capacity-exhausted
   std::string warning;           // per-source open/write failure (empty = healthy)
+  int isoIndex = 0;              // #935: 1-based, matches ISO-NN in the file name; 0 = not an ISO
+};
+
+// #935: the arm-time ISO admission verdict, structured, so no reader has to
+// parse recording.warning. Every field is copied from IsoAdmissionVerdict /
+// IsoCapacitySource / the probe summary; nothing is derived.
+struct IsoAdmissionStatus {
+  std::string decision;          // "admit" | "admit-with-warning" | "refuse-iso"
+  std::string code;              // verdict.code, e.g. "iso-encoder-software-spill"
+  std::string message;           // verdict.message, verbatim (same text as recording.warning)
+  int hardwareCount = 0;
+  int softwareCount = 0;
+  int unplacedCount = 0;
+  int admissibleIsoCount = -1;   // -1 = unknown, published as null
+  bool probed = false;
+  std::string probeStatus;       // IsoCapacitySource::status
+  std::string capacity;          // probe.describe()
+  std::string workload;          // probeKey.describe()
+  // #1042: how long arm blocked for an in-flight probe and why it stopped:
+  // "not-started" | "cached" | "timed-out" | "discarded". Readers use these,
+  // never the capacity text.
+  int64_t armWaitMs = 0;
+  std::string armWaitOutcome = "not-started";
 };
 
 struct OutputSession {
@@ -612,6 +700,8 @@ struct OutputSession {
   bool active = false;
   // Present only when the sink reports observed writer lifecycle.
   std::optional<contracts::OutputLifecycle> lifecycle;
+  // #1042: true only WHILE arm is blocked waiting for the encoder-capacity probe.
+  bool isoArmWaitingForProbe = false;
   std::vector<std::string> destinations;
   std::vector<std::string> isoParticipantIds;
   // Per-session subfolder + manifest (ISO-1 folder scheme, spec §5). Empty for
@@ -621,11 +711,20 @@ struct OutputSession {
   // Real per-ISO-writer health from the Media Foundation sink (empty on the
   // stub, where the snapshot synthesizes ISO nodes from the selected ids).
   std::vector<IsoStreamStatus> isoStreams;
+  // #935: absent when no ISO was selected (or ISO was refused before placement).
+  std::optional<IsoAdmissionStatus> isoAdmission;
   int64_t encodedFrameCount = 0;
   std::string encoderName = "software-counting";
   std::string codec = "h264";
   int targetBitrateMbps = 10;
+  // A real hardware-capable encoder is configured and hardware MFTs are
+  // REQUESTED. Not evidence of what Program uses: see programEncoderPath.
   bool hardwareAccelerated = false;
+  // #935: MEASURED Program encoder ("hardware" | "software"), read back from the
+  // MFT the Program sink writer instantiated; empty until Program began writing.
+  std::string programEncoderPath;
+  // Cumulative Program video write work (independent writer lane only).
+  std::optional<uint64_t> programVideoWorkUs;
   std::string recordingSessionId;
   std::string recordingStatus = "idle";
   std::string recordingTargetFolder;
@@ -643,6 +742,7 @@ struct OutputSession {
   bool recordingProgramContinuityObserved = false;
   int64_t recordingVideoPrerollFrameCount = 0;
   int64_t recordingVideoTailFrameCount = 0;
+  int64_t recordingVideoHeldFrameCount = 0;  // #1030 Program held pictures
   int64_t recordingMuxVideoFrameCount = 0;
   int64_t recordingRequestedAt100ns = 0;
   int64_t recordingWriterReadyAt100ns = 0;
@@ -852,21 +952,6 @@ struct OutputBackpressureState {
   // struct - observedAtMs is what lets a consumer tell that a freeze happened,
   // the "a peek is not an observation" rule applied here.
   double observedAtMs = 0;
-};
-
-// TEST-ONLY (see IOutputSender::bitstreamQueueSnapshotForTest). A single
-// struct so a test needs ONE call to read the queue back, not three.
-struct BitstreamQueueSnapshotForTest {
-  std::size_t depth = 0;
-  bool hasKeyframe = false;
-  std::int64_t bufferedMs = 0;
-  // #597 Task 8b. True once the queue's overflow path has FAILED the sender
-  // (BitstreamFailure::QueueOverflow). The sender-level symptom - status
-  // "failed", lastResultCode "bitstream-queue-overflow" - only appears on a
-  // sync() tick that actually reaches submitFrameToGpuEncoder(), i.e. with a
-  // real hardware encoder and a launched FFmpeg, so a test that drives the
-  // queue alone needs to read the failure where it is RECORDED.
-  bool overflowFailed = false;
 };
 
 struct OutputSender {
@@ -1326,6 +1411,23 @@ class ICompositor {
     outNv12 = std::make_shared<const std::vector<uint8_t>>(std::move(copy));
     return true;
   }
+  // NDI graphics key. Does this compositor produce the graphics-only key at
+  // all (plan flag graphicsKeyReadback)? Only the D3D11 adapter does; module
+  // composition reports ndi-graphics-output as omitted everywhere else, so the
+  // shell never offers a key that would only ever send nothing.
+  [[nodiscard]] virtual bool supportsGraphicsKey() const { return false; }
+  // The straight-alpha BGRA key for Program frame `programFrameNumber` (the
+  // newest readback produced at or before it, so a buffered/delayed Program
+  // gets the graphics that were on air WITH it), from a dedicated
+  // device+thread readback. False while the key is warming or not requested;
+  // a selection with `stale` set means "no fresh readback for 250 ms: send a
+  // transparent key". See GraphicsKeyRing in GraphicsKeyPixels.h.
+  virtual bool selectGraphicsKey(int64_t /*programFrameNumber*/, int64_t /*nowMs*/, GraphicsKeySelection& /*out*/) {
+    return false;
+  }
+  // Is the key's GPU target / reader rig currently alive? Test and diagnostics
+  // seam: it must read false once a plan stops asking for the key.
+  [[nodiscard]] virtual bool graphicsKeyActive() const { return false; }
   // Composites the multiview grid into a second keyed-mutex DXGI shared texture
   // (the whole grid in one texture, the OBS/broadcast-multiviewer model) and
   // returns its handle/dimensions. Defaulted to an empty texture so the
@@ -1574,6 +1676,10 @@ class IEncoderSink {
   // Source-local dispatch budgets are safe only with independent file workers.
   // Other platform adapters retain their existing dispatch capacity until wired.
   [[nodiscard]] virtual bool supportsIndependentRecordingQueues() const { return false; }
+  // #1030: true when the sink abandoned a file writer thread that is still
+  // running and still references the sink. Its owner must then leak the sink
+  // at teardown instead of destroying it under that thread.
+  [[nodiscard]] virtual bool mustOutliveTeardown() const { return false; }
   virtual ~IEncoderSink() = default;
   // Cheap progress, called once per queue item by the async writer thread.
   // The DEFAULT derives it from session(), so every existing sink stays correct
@@ -1719,90 +1825,9 @@ class IOutputSender {
   // release a sender stuck in pipe/network I/O. Implementations should only
   // interrupt the transport here; normal state cleanup remains in sync().
   virtual void interrupt(const std::string&) {}
-  // THE WRAPPER LAW APPLIES TO EVERY TEST-ONLY VIRTUAL BELOW, and none of them
-  // is forwarded by AsyncOutputSender / SupervisedOutputSender /
-  // CompositeOutputSender / the NDI sender. A test must therefore hold the
-  // CONCRETE sender, never a wrapped one. That is survivable only because each
-  // read seam's default is a ZERO/false value that makes a test's precondition
-  // ASSERT fail loudly (e.g. ASSERT_EQ(before.depth, 4u)) rather than pass with
-  // nothing under test - the silent-swallow shape that cost this codebase the
-  // 1-arg connect() pink tiles and SRT's dropped pollAudioFrames.
-  //
-  // FINAL-REVIEW FINDING 10. This block used to end "If a THIRD seam is ever
-  // wanted here, do not add it: move these behind a narrow
-  // IBitstreamQueueTestAccess in its own header, reached by a
-  // createRtmpOutputSenderForTest()." THERE ARE NOW FIVE. Tasks 5, 6 and 8b
-  // each added one past that line without amending it, which is the same
-  // failure mode as a disarmed assertion: an unamended rule nobody obeys stops
-  // being a rule and becomes noise a reader learns to skip.
-  //
-  // THE RULE IS CORRECTED RATHER THAN OBEYED, and that choice is stated here
-  // so the next reader can disagree with it knowingly. The extraction is the
-  // right end state and is deliberately NOT done here: it moves five virtuals,
-  // every call site in MediaCoreCommandTest.cpp and
-  // OutputDestinationSupervisorTest.cpp, and the wrapper-law reasoning above -
-  // a pure-refactor risk taken at merge time, on a branch whose whole subject
-  // is an on-air regression, for no behavioural gain. Filed as
-  // https://github.com/iamfatness/CoreVideoPro/issues/611.
-  //
-  // WHAT HOLDS UNTIL THEN: the guarantee above is PER-SEAM, not per-count.
-  // Every one of the five defaults to a ZERO/false value that makes a test's
-  // precondition ASSERT fail loudly rather than pass with nothing under test,
-  // so five is no less safe than two. DO NOT ADD A SIXTH to this interface:
-  // the next seam that is wanted is the trigger to do the extraction, and the
-  // extraction is IBitstreamQueueTestAccess in its own header, reached by a
-  // createRtmpOutputSenderForTest() that returns the concrete type.
-  //
-  // TEST-ONLY seam, structural guard only - the same guarantee
-  // MediaCore::setStillImageDecoderForTest relies on: no env var, no command,
-  // no config key and no wire field reaches it, and nothing outside
-  // native/tests calls it. (A compile-time gate is impossible here:
-  // corevideo-native-tests links the same corevideo_native library the product
-  // does, so gating the seam out would delete it from the tests too.)
-  //
-  // Overrides the bitstream-queue measurement #597's Lever A observes, so the
-  // backpressure decision can be driven without a hardware encoder and a real
-  // congested network. A NEGATIVE bufferedMs clears the override and restores
-  // the real measurement.
-  virtual void setBackpressureObservationForTest(std::int64_t /*bufferedMs*/,
-                                                 bool /*keyframeInQueue*/) {}
-  // TEST-ONLY (same structural guard). Answers "would THIS program frame make
-  // the sender flip its encode path?" - i.e. tear down FFmpeg AND the hardware
-  // encoder and relaunch both. It evaluates the exact comparison
-  // ensureFfmpegProcess makes (`resolveGpuEncodePath(frame) != activeUseGpuDirect_`)
-  // and then ADOPTS the result the way a restart would, so a test can walk a
-  // frame sequence the way the live sender walks it and count the restarts.
-  //
-  // This exists because #597's whole subject is encoder restarts, and the one
-  // combination no test covered was a real sender looking at a frame the
-  // compositor's Lever A had shed.
-  virtual bool wouldRestartForEncodePathForTest(const ProgramFrame& /*frame*/) { return false; }
-
-  // TEST-ONLY (same structural guard). #597 Lever B fix round 1 (review
-  // finding 2): this is the ONLY seam the discard needed after the decision
-  // logic moved out to the pure core::discardableGopTailLength() (see
-  // StreamBackpressurePolicy.h) - boundary-condition coverage lives there,
-  // with NO sender and NO seam at all. What is left to prove is that
-  // observeStreamBackpressure()/sync() actually REACH the discard on a real
-  // sender, which needs some way to put a real chunk in the real queue.
-  // Pushes a chunk directly onto the bitstream queue, bypassing the real GPU
-  // encoder, so that one call-site test can run without a hardware encoder
-  // and a real congested network.
-  virtual void enqueueBitstreamChunkForTest(std::size_t /*bytes*/, bool /*keyframe*/) {}
-  // TEST-ONLY (same structural guard). #597 Task 8b. The seam above pushes
-  // STRAIGHT onto the queue so a discard test can build a backlog; this one
-  // offers a chunk through the REAL enqueueBitstream(), which is where the
-  // 60-chunk / 2 MiB bound - and, since Task 8b, the last-resort GOP-tail
-  // discard that replaced failing the sender - actually lives. Nothing else
-  // can drive that path without a hardware encoder and a congested network.
-  virtual void offerBitstreamChunkForTest(std::size_t /*bytes*/, bool /*keyframe*/) {}
-  // TEST-ONLY (same structural guard). One read of the queue's true state -
-  // depth, whether a keyframe is queued, and the real bitstreamBufferedMs()
-  // measurement - unaffected by setBackpressureObservationForTest()'s
-  // override, so a call-site test can confirm the queue actually shrank.
-  virtual BitstreamQueueSnapshotForTest bitstreamQueueSnapshotForTest() const {
-    return BitstreamQueueSnapshotForTest{};
-  }
+  // Test-only queue/encode-path seams are NOT on this interface: they live on
+  // IBitstreamQueueTestAccess (BitstreamQueueTestAccess.h), reached through
+  // createRtmpOutputSenderForTest() (#611).
 };
 
 // Session control for a capture adapter (#535 lifecycle slice). ISource stays
@@ -2025,6 +2050,11 @@ std::unique_ptr<IOutputSender> createSrtOutputSender();
 std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender();
 std::unique_ptr<IOutputSender> createHlsOutputSender();
 std::unique_ptr<IOutputSender> createNdiOutputSender();
+// The NDI graphics-key sender: destination "ndi-graphics", a second libNDI
+// source carrying ProgramFrame::graphicsKeyBgraShared as BGRA with straight
+// alpha (fill+key in one stream) and no audio. Same runtime probe and build
+// gate as createNdiOutputSender; nullptr when NDI output is not built.
+std::unique_ptr<IOutputSender> createNdiGraphicsKeyOutputSender();
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
 std::unique_ptr<ICaptureDevice> createRtmpIngestCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
 std::unique_ptr<ICaptureDevice> createNdiReceiveCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});

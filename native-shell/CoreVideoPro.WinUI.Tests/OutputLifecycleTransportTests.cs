@@ -30,18 +30,35 @@ public sealed class OutputLifecycleTransportTests
     [Fact]
     public void PartialFailureDoesNotStopHealthyDestinationOrProveAllLive()
     {
-        var snapshot = Snapshot(("rtmp", "live"), ("ndi", "failed"));
-        Assert.False(TransportStatusFormatter.IsStreamingStartProven(snapshot, ["rtmp", "ndi"]));
+        var snapshot = Snapshot(("rtmp", "live"), ("srt", "failed"));
+        Assert.False(TransportStatusFormatter.IsStreamingStartProven(snapshot, ["rtmp", "srt"]));
         Assert.False(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out _));
-        Assert.False(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["rtmp", "ndi"], out _));
+        Assert.False(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["rtmp", "srt"], out _));
     }
 
     [Fact]
     public void EveryRequestedDestinationMustBeLive()
     {
-        var snapshot = Snapshot(("rtmp", "live"), ("ndi", "live"));
-        Assert.True(TransportStatusFormatter.IsStreamingStartProven(snapshot, ["rtmp", "ndi"]));
-        Assert.False(TransportStatusFormatter.IsStreamingStartProven(snapshot, ["rtmp", "srt"]));
+        var snapshot = Snapshot(("rtmp", "live"), ("srt", "live"));
+        Assert.True(TransportStatusFormatter.IsStreamingStartProven(snapshot, ["rtmp", "srt"]));
+        Assert.False(TransportStatusFormatter.IsStreamingStartProven(snapshot, ["rtmp", "hls"]));
         Assert.True(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(Snapshot(("rtmp", "failed")), out _));
+    }
+
+    // NDI is its own output: its senders never prove, fail or hold a stream start.
+    [Fact]
+    public void StreamStartProofIgnoresNdiSenders()
+    {
+        var snapshot = Snapshot(("rtmp", "live"), ("ndi", "failed"));
+        Assert.True(TransportStatusFormatter.IsStreamingStartProven(snapshot, ["rtmp"]));
+        Assert.True(TransportStatusFormatter.IsStreamingStartProven(snapshot, ["rtmp", "ndi", "ndi-graphics"]));
+        Assert.False(TransportStatusFormatter.IsStreamingStartProven(Snapshot(("ndi", "live")), ["ndi"]));
+        Assert.False(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out _));
+
+        // A live NDI sender must not mask a failed platform, and a failed NDI sender is not a stream failure.
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(
+            Snapshot(("rtmp", "failed"), ("ndi", "live")), out var failure));
+        Assert.Contains("Network unavailable", failure);
+        Assert.False(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(Snapshot(("ndi", "failed")), out _));
     }
 }

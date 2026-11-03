@@ -1,13 +1,18 @@
 namespace CoreVideoPro.Control;
 
 /// <summary>Outcome of a control action invocation.</summary>
-public sealed record ControlInvokeResult(bool Ok, string? Error = null, string? PreviewSceneId = null)
+/// <summary>Outcome of a control action invocation. <paramref name="Data"/> is the JSON text a
+/// read action (graphics.playlist.list, graphics.strip) answers with; transports pass it through
+/// verbatim under "data" and never parse it.</summary>
+public sealed record ControlInvokeResult(bool Ok, string? Error = null, string? PreviewSceneId = null, string? Data = null)
 {
     public static ControlInvokeResult Success { get; } = new(true);
 
     public static ControlInvokeResult Fail(string error) => new(false, error);
 
     public static ControlInvokeResult AppliedPreview(string previewSceneId) => new(true, null, previewSceneId);
+
+    public static ControlInvokeResult WithData(string json) => new(true, null, null, json);
 }
 
 /// <summary>The seam between the transport-agnostic control layer (registry + OSC/HTTP) and the

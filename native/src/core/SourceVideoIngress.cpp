@@ -110,6 +110,12 @@ rpc::Json sourceHealthState(const std::vector<SourceBus::SourceStatus>& statuses
           {"audioPacketsIngested", static_cast<double>(source.counters.audioPacketsIngested)},
           {"audioSamplesIngested", static_cast<double>(source.counters.audioSamplesIngested)},
           {"health", sourceHealthName(source.health)},
+          // #1074 review: the bus's own age of the last NEW frame (ms), or
+          // null before the first frame. `health` turns "stalled" at 200 ms
+          // (diagnostic); on air a Zoom source stalls at kOnAirStallNs.
+          {"sinceLastNewFrameMs", source.sinceLastNewFrameNs < 0
+               ? rpc::Json{nullptr}
+               : rpc::Json{static_cast<double>(source.sinceLastNewFrameNs / 1'000'000)}},
           {"dropoutPolicy", policy.dropoutPolicy},
           {"displayName", policy.displayName},
       });

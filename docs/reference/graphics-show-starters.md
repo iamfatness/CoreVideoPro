@@ -23,10 +23,10 @@ validates a local PNG/JPEG through the existing immutable image-package loader,
 uses it for the logo graphic and references its verified bytes in the compatible
 lower third. No Program, output or automation command is sent by browsing.
 
-**Customize layout & motion** exposes Layout, Motion and the existing layer
-list. Simple controls keep Content and Style available. Individual templates,
-saved cues, styles, packages, the layer editor, automation and existing overlays
-remain reachable through their existing drawers. Source-name binding is an
+**Customize layout & motion** exposes Layout and Motion (layers are edited in
+the Designer since Graphics Designer slice 2). Simple controls keep Content and
+Style available. Individual templates, saved cues, styles, packages, automation
+and existing overlays remain reachable through their existing drawers. Source-name binding is an
 optional expander rather than the first expanded control.
 
 **Use this look in Studio** is the primary action while trying a show look.

@@ -29,7 +29,7 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "CoreVideo Pro"
 ; fix. Beta testers will do exactly the same. The version-named shortcut stays,
 ; but only in the Start menu.
 !define STABLE_SHORTCUT_NAME "CoreVideo Pro"
-!define MUI_WELCOMEPAGE_TEXT "Install this Windows ${CHANNEL} for your account.$\r$\n$\r$\nThe app is unsigned. Use it for rehearsals and testing before an irreplaceable production.$\r$\n$\r$\nSetup requests administrator approval for the virtual camera, for Windows crash-dump settings (so crashes can be diagnosed) and, if needed, Microsoft's VC runtime. You may be asked more than once. First app launch downloads its verified media runtime. Close this version before uninstalling."
+!define MUI_WELCOMEPAGE_TEXT "Install this Windows ${CHANNEL} for your account.$\r$\n$\r$\nThe app is unsigned. Use it for rehearsals and testing before an irreplaceable production.$\r$\n$\r$\nSetup requests administrator approval for the virtual camera, for Windows crash-dump settings (so crashes can be diagnosed) and, if needed, Microsoft's VC runtime. You may be asked more than once. To load the new camera, Setup may restart the Windows camera service: close apps that use a camera first. First app launch downloads its verified media runtime. Close this version before uninstalling."
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_TEXT "CoreVideo Pro is installed. Open its desktop or Start menu shortcut to begin.$\r$\n$\r$\nFirst launch requires internet access to download the verified media runtime. This ${CHANNEL} is for testing and feedback.$\r$\n$\r$\nUninstall removes delivered files and shortcuts, while preserving settings, recordings, and downloaded media."
@@ -151,7 +151,22 @@ Section "CoreVideo Pro" SEC_APP
     DetailPrint "$2"
     camera_result:
     IfErrors camera_failed
-    ${If} $1 != 0
+    ${If} $1 == 3
+        ; #781: registered and verified, but a Frame Server instance still
+        ; serving another CoreVideo camera DLL could not be refreshed. Keep the
+        ; correct registration (no rollback) and warn loudly.
+        DetailPrint "WARNING: the camera is registered, but the Windows Frame Server could not be refreshed. Close camera apps or restart Windows before using the camera. Details: $LOCALAPPDATA\CoreVideoPro\installer-logs\${RELEASE_ID}-frameserver.log"
+        CreateDirectory "$LOCALAPPDATA\CoreVideoPro\installer-logs"
+        FileOpen $R8 "$LOCALAPPDATA\CoreVideoPro\installer-logs\${RELEASE_ID}-setup.log" a
+        FileSeek $R8 0 END
+        FileWrite $R8 "Camera installed; Frame Server refresh failed (exit 3). Camera apps may still load the previous camera DLL until they close or Windows restarts.$\r$\n$2$\r$\n"
+        FileClose $R8
+        ; A failed log write must not fail a verified install: the error flag set by
+        ; CreateDirectory/FileOpen/FileWrite above would otherwise reach the later
+        ; "IfErrors install_failed" and roll back a correctly registered camera.
+        ClearErrors
+        MessageBox MB_OK|MB_ICONEXCLAMATION "CoreVideo Pro is installed, but Windows is still running the previous virtual camera. Close every app that uses a camera (Zoom, Teams, the Camera app), or restart Windows, before using or testing the CoreVideo camera.$\r$\n$\r$\nDetails: $LOCALAPPDATA\CoreVideoPro\installer-logs\${RELEASE_ID}-frameserver.log" /SD IDOK
+    ${ElseIf} $1 != 0
         Goto camera_failed
     ${EndIf}
     StrCpy $CameraChanged 1
@@ -213,7 +228,9 @@ Section "CoreVideo Pro" SEC_APP
             Pop $2
             DetailPrint "$2"
             rollback_result:
+            ; Exit 3 (#781): registration restored, Frame Server refresh failed. Not a rollback failure.
             ${If} $1 != 0
+            ${AndIf} $1 != 3
                 MessageBox MB_OK|MB_ICONSTOP "Setup failed and camera rollback could not complete. Files are retained in $INSTDIR. Run Install-VirtualCamera.ps1 -Action Rollback before removing this folder." /SD IDOK
                 SetErrorLevel 1603
                 Abort
@@ -233,6 +250,7 @@ Section "CoreVideo Pro" SEC_APP
         DeleteRegKey HKCU "${UNINSTALL_KEY}"
         Delete "$INSTDIR\.camera-registration-before.json"
         Delete "$INSTDIR\.camera-desktop-registration-before.json"
+        Delete "$INSTDIR\.camera-frameserver-refresh.json"
         Delete "$INSTDIR\.corevideo-prerelease-install"
         Delete "$INSTDIR\Uninstall.exe"
         RMDir "$INSTDIR"
@@ -264,12 +282,18 @@ Section "CoreVideo Pro" SEC_APP
         ${EndIf}
         ; New payload, camera and shortcuts are committed before retirement.
         ; Never run old uninstallers: legacy camera removal can undo the new owner.
-        nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Remove-PreviousInstallations.ps1" -AppDirectory "$INSTDIR"'
+        nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Remove-PreviousInstallations.ps1" -AppDirectory "$INSTDIR" -ReleaseId "${RELEASE_ID}"'
         Pop $1
         Pop $2
         DetailPrint "$2"
-        ${If} $1 != 0
-            MessageBox MB_OK|MB_ICONEXCLAMATION "The new version is installed, but some older versions could not be retired. Close any older CoreVideo sessions and run Remove-PreviousInstallations.ps1 from the new installation. Details: $INSTDIR\previous-installations-cleanup.json" /SD IDOK
+        ; #883: exit 0 = clean, 2 = clean but operator files (e.g. Recordings) were MOVED to a
+        ; dated backup folder (owner ruling D4: say where, loudly), anything else = some old
+        ; version folders were retained. $2 holds the helper's summary, which counts folders
+        ; (not uninstall entries) and names the backup folder.
+        ${If} $1 == 2
+            MessageBox MB_OK|MB_ICONINFORMATION "The new version is installed and older versions were retired. Files you had stored inside old version folders were moved, not deleted:$\r$\n$\r$\n$2$\r$\nDetails: $INSTDIR\previous-installations-cleanup.json" /SD IDOK
+        ${ElseIf} $1 != 0
+            MessageBox MB_OK|MB_ICONEXCLAMATION "The new version is installed, but some older version folders could not be retired:$\r$\n$\r$\n$2$\r$\nClose any older CoreVideo sessions and run Remove-PreviousInstallations.ps1 from the new installation. Details: $INSTDIR\previous-installations-cleanup.json and $LOCALAPPDATA\CoreVideoPro\installer-logs\${RELEASE_ID}-retire.log" /SD IDOK
         ${EndIf}
 SectionEnd
 
@@ -361,7 +385,12 @@ Section "Uninstall"
     DetailPrint "$2"
     un.camera_result:
     IfErrors un.camera_failed
-    ${If} $1 != 0
+    ${If} $1 == 3
+        ; #781: keys removed; a Frame Server instance still holding this
+        ; version's camera DLL could not be refreshed, so the protected runtime
+        ; copy may be retained until camera apps close or Windows restarts.
+        DetailPrint "WARNING: camera keys were removed, but the Windows Frame Server could not be refreshed; the old camera DLL may stay loaded and its files retained until camera apps close or Windows restarts."
+    ${ElseIf} $1 != 0
         Goto un.camera_failed
     ${EndIf}
     Goto un.camera_removed
@@ -401,6 +430,7 @@ Section "Uninstall"
     Delete "$INSTDIR\.camera-registration-before.json"
     Delete "$INSTDIR\.camera-desktop-registration-before.json"
     Delete "$INSTDIR\previous-installations-cleanup.json"
+    Delete "$INSTDIR\.camera-frameserver-refresh.json"
     Delete "$INSTDIR\.corevideo-prerelease-install"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir "$INSTDIR"

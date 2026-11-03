@@ -366,7 +366,8 @@ class StubAudioCaptureSource final : public IAudioCaptureSource {
 };
 
 bool isNetworkDestination(const std::string& destination) {
-  return destination == "rtmp" || destination == "ndi" || destination == "srt" || destination == "webrtc";
+  return destination == "rtmp" || destination == "ndi" || destination == "srt" || destination == "webrtc" ||
+         destination == "ndi-graphics";
 }
 
 double bitrateFor(const std::string& destination) {

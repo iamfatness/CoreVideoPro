@@ -26,7 +26,8 @@ public static class TilesLayerPayloadBuilder
         IReadOnlyList<Participant> roomVideoParticipants,
         IReadOnlyCollection<string>? routedSourceIds = null,
         IReadOnlyList<Participant>? identityRoster = null,
-        string? meetingId = null)
+        string? meetingId = null,
+        IReadOnlyList<string>? localVideoSourceIds = null)
     {
         if (scene.DynamicGallery is not { } settings)
         {
@@ -36,9 +37,16 @@ public static class TilesLayerPayloadBuilder
         // MEMBERSHIP POLICY ONLY. Whether a member actually has frames is the core's
         // decision (compositor::admitTilesMembers) — it is the process receiving them.
         // Deciding it twice is how the two ends drift.
+        //
+        // #1071: the eligible set is video-on Zoom participants (roster order) followed
+        // by the show-input slots bound to a local source with video (slot order,
+        // TilesLocalSourcePolicy.LocalVideoSources). Local ids arrive canonical
+        // (capture:/media:) and are only accepted in that shape — a bare id here would
+        // be qualified as Zoom and match no frame.
         var eligible = roomVideoParticipants
             .Where(participant => participant.Health != FeedHealth.VideoOff)
             .Select(participant => QualifySourceId(participant.Id))
+            .Concat((localVideoSourceIds ?? []).Where(TilesLocalSourcePolicy.IsLocalSourceId))
             .Distinct(StringComparer.Ordinal)
             .ToList();
         var roster = (identityRoster ?? roomVideoParticipants)
@@ -66,7 +74,8 @@ public static class TilesLayerPayloadBuilder
                 GlowSoftness: FiniteClamp(settings.GlowSoftness, 0, 100),
                 AnimateLayout: settings.AnimateLayout,
                 AnimationDurationMs: Math.Clamp(settings.AnimationDurationMs, 100, 2000), FillMode: TilesMembershipPolicy.NormalizeMode(settings.MembershipMode),
-                BackgroundSourceId: settings.BackgroundSourceId),
+                BackgroundSourceId: settings.BackgroundSourceId,
+                NameEachTile: settings.NameEachTile),
             Overrides: settings.Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
             Rect: SceneWorkspacePolicy.NormalizeRect(settings.WallRect), Opacity: settings.WallVisible ? FiniteClamp(settings.WallOpacity,0,1,1) : 0,
             TransparentBackground: settings.TransparentBackground);
@@ -112,4 +121,5 @@ public sealed record TilesStylePayload(
     string BackgroundColor,
     string BorderShape = "square", string BorderColor = "#000000", double BorderThickness = 0,
     double CornerRadius = 16, string GlowColor = "#FFFFFF", double GlowSize = 0,
-    double GlowIntensity = 100, double GlowSoftness = 0, bool AnimateLayout = false, int AnimationDurationMs = 350, string FillMode = "auto", string BackgroundSourceId = "");
+    double GlowIntensity = 100, double GlowSoftness = 0, bool AnimateLayout = false, int AnimationDurationMs = 350, string FillMode = "auto", string BackgroundSourceId = "",
+    bool NameEachTile = false);

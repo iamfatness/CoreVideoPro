@@ -847,26 +847,90 @@ TEST(ZoomEngineRuntime, CoalescesVersionedRosterFactsOnExistingEventDrain) {
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
 
+// #1037 (characterization for the applyEvent hold shrink): a roster fact is
+// published exactly when the meeting generation or roster revision moves.
+TEST(ZoomEngineRuntime, RosterFactOnlyWhenGenerationOrRevisionMoves) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    const auto apply = [&](int generation, int revision, const char* name) {
+      const auto event = corevideo::modules::parseZoomEngineEvent(
+          std::string(R"({"cmd":"participants","meeting_generation":)") + std::to_string(generation) +
+          R"(,"roster_revision":)" + std::to_string(revision) +
+          R"(,"participants":[{"id":42,"name":")" + name + R"("}]})");
+      ASSERT_TRUE(event.has_value());
+      runtime.applyEngineEventForTest(*event);
+    };
+    const auto facts = [&] {
+      int count = 0;
+      for (const auto& event : runtime.drainFrameEvents())
+        if (event.getString("type") == "zoom-roster-fact") ++count;
+      return count;
+    };
+    apply(1, 1, "Guest");
+    EXPECT_EQ(facts(), 1) << "a revision bump publishes one fact";
+    apply(1, 1, "Renamed");
+    EXPECT_EQ(facts(), 0) << "the same generation and revision publishes none";
+    apply(2, 1, "Guest");
+    EXPECT_EQ(facts(), 1) << "a new meeting generation publishes one";
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+// #1037: the render tick's one-acquisition roster view agrees with the
+// existing accessors and with what a snapshot reports as the speaker.
+TEST(ZoomEngineRuntime, RenderViewCarriesTheFloorRosterAndTheDirectedSpeaker) {
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+  {
+    corevideo::modules::ZoomEngineRuntime unconfigured;
+    EXPECT_FALSE(unconfigured.renderViewIfConfigured().has_value());
+  }
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    const auto roster = corevideo::modules::parseZoomEngineEvent(
+        R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Talker","has_video":true,"is_talking":true},{"id":2,"name":"Quiet","has_video":true}]})");
+    ASSERT_TRUE(roster.has_value());
+    runtime.applyEngineEventForTest(*roster);
+    const auto view = runtime.renderViewIfConfigured();
+    ASSERT_TRUE(view.has_value());
+    const auto floor = runtime.floorParticipants();
+    ASSERT_EQ(view->floorParticipants.size(), 2u);
+    ASSERT_EQ(view->floorParticipants.size(), floor.size());
+    for (size_t i = 0; i < floor.size(); ++i) {
+      EXPECT_EQ(view->floorParticipants[i].id, floor[i].id);
+      EXPECT_EQ(view->floorParticipants[i].directorExcluded, floor[i].directorExcluded);
+      EXPECT_EQ(view->floorParticipants[i].displayName, floor[i].displayName);
+    }
+    EXPECT_FALSE(view->directedSpeakerId.empty());
+    EXPECT_EQ(view->directedSpeakerId, runtime.snapshot().getString("activeSpeakerId"));
+    EXPECT_EQ(view->directedSpeakerId, runtime.directedSpeakerId());
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
 
 namespace corevideo::modules {
 struct ZoomEngineRuntimeTestAccess {
   static CaptureDeviceInfo::CpuArrivalEvidence isoStats(ZoomEngineRuntime& runtime, const std::string& id) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     return runtime.isoArrivalQueues_.at(id)->stats();
   }
   static uint32_t installIsoRegion(ZoomEngineRuntime& runtime, std::shared_ptr<void> region, const std::string& id = "42") {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     auto& ring = runtime.isoRingReaders_.at(id); ring.region = std::move(region);
     return ring.epoch;
   }
   static void runReader(ZoomEngineRuntime& runtime, bool enabled=true) {
-    {std::lock_guard<std::mutex> lock(runtime.mutex_);runtime.readerRunning_=enabled;}
+    {std::lock_guard<EngineMutex> lock(runtime.mutex_);runtime.readerRunning_=enabled;}
     runtime.readerLoop();
   }
 
   static void installVideoRegion(ZoomEngineRuntime& runtime, std::shared_ptr<void> region,
                                  std::uint32_t width = 4, std::uint32_t height = 4) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     auto& stream = runtime.videoStreams_["test-camera"];
     stream = {};
     stream.regionOpaque = std::move(region);
@@ -915,21 +979,21 @@ struct ZoomEngineRuntimeTestAccess {
     runtime.drainVideoStreamsThreePhase(afterCapture, {}, ZoomEngineRuntime::VideoDrain::Iso, worker);
   }
   static std::uint32_t videoSequence(ZoomEngineRuntime& runtime) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     return runtime.videoStreams_.at("test-camera").lastSequence;
   }
   static void forceNextFormatFactDue(ZoomEngineRuntime& runtime) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     runtime.videoStreams_.at("test-camera").lastFormatEmitMs = -1;
   }
   static std::size_t decodedCount(ZoomEngineRuntime& runtime) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     return runtime.latestDecodedFrames_.size();
   }
   static void seedSubscribedVideoCaches(ZoomEngineRuntime& runtime,
                                         const std::string& sourceUuid,
                                         std::uint32_t participantId) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     runtime.sentSubscriptions_[sourceUuid] = 1;
     auto& stream = runtime.videoStreams_[sourceUuid];
     stream.participantId = participantId;
@@ -941,17 +1005,17 @@ struct ZoomEngineRuntimeTestAccess {
   static bool hasVideoCaches(ZoomEngineRuntime& runtime,
                              const std::string& sourceUuid,
                              std::uint32_t participantId) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     const auto id = std::to_string(participantId);
     return runtime.videoStreams_.contains(sourceUuid) ||
            runtime.latestDecodedFrames_.contains(id) || runtime.frameSync_.contains(id);
   }
   static std::uint64_t staleVideoCount(ZoomEngineRuntime& runtime) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     return runtime.staleVideoPublications_;
   }
   static void invalidateVideo(ZoomEngineRuntime& runtime, int mutation, std::shared_ptr<void> replacement) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     auto& stream = runtime.videoStreams_.at("test-camera");
     switch (mutation) {
       case 0: stream.regionOpaque = std::move(replacement); break;
@@ -967,11 +1031,11 @@ struct ZoomEngineRuntimeTestAccess {
     }
   }
   static void markInitialized(ZoomEngineRuntime& runtime) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     runtime.initialized_ = true;
   }
   static std::uint64_t generation(ZoomEngineRuntime& runtime) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     return runtime.processGeneration_;
   }
   static void applyFromGeneration(ZoomEngineRuntime& runtime, const ZoomEngineEvent& event,
@@ -983,7 +1047,7 @@ struct ZoomEngineRuntimeTestAccess {
     return runtime.videoIngestRun_.load(std::memory_order_acquire);
   }
   static bool ingestJoinable(ZoomEngineRuntime& runtime) {
-    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    std::lock_guard<EngineMutex> lock(runtime.mutex_);
     return runtime.videoIngestThread_.joinable();
   }
 };

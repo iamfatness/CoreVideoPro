@@ -19,8 +19,7 @@ public sealed partial class GraphicsWorkspaceControl
     private readonly ScrollViewer _toolScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     private readonly TextBlock _toolTitle = new() { FontSize = 18 }, _selectionTitle = new() { FontSize = 16 },
         _selectionSummary = new() { FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis },
-        _assignmentCaption = new() { FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis },
-        _layerHeading = new() { Text = "LAYERS · top is front", FontSize = 11 };
+        _assignmentCaption = new() { FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly Dictionary<string, FrameworkElement> _toolPanels = new(StringComparer.Ordinal);
     private readonly CheckBox _studioFollowSource = new() { Content = "Use the Program source name and title in Studio", IsChecked = true };
     private readonly TextBlock _studioTextHelp = Copy("");
@@ -28,16 +27,12 @@ public sealed partial class GraphicsWorkspaceControl
     private readonly TextBox _cueSearch = new() { PlaceholderText = "Find a cue" };
     private readonly TextBlock _cueRackTitle = new() { Text="Show cues", FontSize=16 };
     private readonly ComboBox _cueScopeFilter = new() { Header="Scope", ItemsSource=new[] {"All scenes","Current Program scene"}, SelectedIndex=0, HorizontalAlignment=HorizontalAlignment.Stretch };
-    private readonly ListView _layerList = new() { SelectionMode = ListViewSelectionMode.Single };
-    private IReadOnlyList<GraphicsEditorLayer> _layerRows = [];
-    private string _layerStructure = "";
     private readonly Grid _inspectorBodies = new();
     private readonly List<Button> _inspectorTabs = [];
     private readonly List<ScrollViewer> _inspectorScrolls = [];
     private int _activeInspectorTab;
     private bool _advancedGraphicsControls;
     private readonly Button _customizeGraphic = ChromeButton("Customize layout & motion");
-    private readonly RowDefinition _layerPanelRow = new() { Height = new GridLength(0) };
     private Button _useInStudioButton = null!;
     private Button _goToStudioButton = null!;
     private readonly Grid _transport = new() { ColumnSpacing = 8, Padding = new Thickness(12, 8, 12, 8) };
@@ -60,7 +55,16 @@ public sealed partial class GraphicsWorkspaceControl
         var heading = new Grid { ColumnSpacing = 12 };
         heading.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         heading.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        heading.Children.Add(new TextBlock { Text = "Graphics", FontSize = 24, VerticalAlignment = VerticalAlignment.Center });
+        var titleRow = new Grid { ColumnSpacing = 12 };
+        titleRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        titleRow.Children.Add(new TextBlock { Text = "Graphics", FontSize = 24, VerticalAlignment = VerticalAlignment.Center });
+        // Not an Action(...): those are disabled while the session is busy, and a busy session must not take the way out with it.
+        var backToBuilder = ChromeButton("← Build a graphic");
+        AutomationProperties.SetName(backToBuilder, "← Build a graphic");
+        ToolTipService.SetToolTip(backToBuilder, "Back to the builder: Your designs, New design and Open in Designer.");
+        backToBuilder.Click += (_, _) => { _tools.IsPaneOpen = false; if (Studio is not null) Studio.GraphicsDesignAdvanced = false; };
+        Grid.SetColumn(backToBuilder, 1); titleRow.Children.Add(backToBuilder);
+        heading.Children.Add(titleRow);
         var headerActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         headerActions.Children.Add(Action("Show templates", () => { OpenShowTemplates(); return Task.CompletedTask; }));
         headerActions.Children.Add(Action("Automation", () => { OpenTools("automation", "Graphics automation"); return Task.CompletedTask; }));
@@ -84,7 +88,6 @@ public sealed partial class GraphicsWorkspaceControl
         center.RowDefinitions.Add(new() { Height = GridLength.Auto });
         center.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         center.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        center.RowDefinitions.Add(_layerPanelRow);
         var previewBar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         previewBar.Children.Add(new TextBlock { Text = "PRIVATE PREVIEW", FontSize = 11, VerticalAlignment = VerticalAlignment.Center });
         _samples.Header = null; _samples.Width = 150; _compare.Header = null; _compare.OnContent = _compare.OffContent = "Compare";
@@ -95,11 +98,7 @@ public sealed partial class GraphicsWorkspaceControl
         var canvasPanel = Panel(_canvas); Grid.SetRow(canvasPanel, 1); center.Children.Add(canvasPanel);
         var previewStatus = new Grid(); previewStatus.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); previewStatus.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         _native.TextTrimming = TextTrimming.CharacterEllipsis; _native.TextWrapping = TextWrapping.NoWrap; previewStatus.Children.Add(_native);
-        var editLayers = Action("Edit layers ↗", () => { OpenTools("layers", "Template layer editor"); return Task.CompletedTask; }); Grid.SetColumn(editLayers, 1); previewStatus.Children.Add(editLayers);
         Grid.SetRow(previewStatus, 2); center.Children.Add(previewStatus);
-        var layerPanel = new Grid { RowSpacing = 4 }; layerPanel.RowDefinitions.Add(new() { Height = GridLength.Auto }); layerPanel.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
-        layerPanel.Children.Add(_layerHeading); Grid.SetRow(_layerList, 1); layerPanel.Children.Add(_layerList); Grid.SetRow(layerPanel, 3); center.Children.Add(layerPanel);
-        _layerList.SelectionChanged += (_, _) => { if (!_loading && _layerList.SelectedIndex >= 0 && _layerList.SelectedIndex < _layerRows.Count) _session?.SelectLayer(_layerRows[_layerList.SelectedIndex].Id); };
         Grid.SetColumn(center, 1); _body.Children.Add(center);
 
         var inspector = new Grid { RowSpacing = 8, Padding = new Thickness(12) };
@@ -113,8 +112,10 @@ public sealed partial class GraphicsWorkspaceControl
             var scroll = new ScrollViewer { Content = panels[index], VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
             _inspectorBodies.Children.Add(scroll); _inspectorScrolls.Add(scroll);
         }
-        Grid.SetRow(tabs, 1); inspector.Children.Add(tabs); Grid.SetRow(_inspectorBodies, 2); inspector.Children.Add(_inspectorBodies); SelectInspectorTab(0);
-        var assignment = new StackPanel { Spacing = 4 };
+        // Four tabs can exceed a narrow inspector; scroll the strip rather than clip it.
+        var tabStrip = new ScrollViewer { Content = tabs, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollMode = ScrollMode.Disabled };
+        Grid.SetRow(tabStrip, 1); inspector.Children.Add(tabStrip); Grid.SetRow(_inspectorBodies, 2); inspector.Children.Add(_inspectorBodies); SelectInspectorTab(0);
+        var assignment = _assignmentPanel;
         assignment.Children.Add(_assignmentCaption);
         _useInStudioButton = Action("Use in Studio", async () => {
             if(_starterAdding || Studio is null)return;
@@ -161,7 +162,6 @@ public sealed partial class GraphicsWorkspaceControl
         manage.Children.Add(Action("Existing overlay controls", () => { _tools.IsPaneOpen = false; ExistingControlsRequested?.Invoke(this, EventArgs.Empty); return Task.CompletedTask; }));
         manage.Children.Add(Action("Remove Studio assignment", async () => { if (_savedLibrary is not null) await _savedLibrary.ClearStudioLowerThirdAsync(); }));
         _toolPanels["manage"] = manage; _toolPanels["automation"] = _automationDrawer; _automationDrawer.IsExpanded = true;
-        _toolPanels["layers"] = _layersEditor;
         var help = new StackPanel { Spacing = 12 };
         help.Children.Add(Copy("Choose or create a cue. Content, Style, Layout and Motion edit a private draft. Cue prepares Preview; Show reveals a prepared cue; Update changes an on-air graphic. Hide affects the selected graphic; Clear removes managed graphics and inhibits automation."));
         help.Children.Add(Copy("Use in Studio saves an independent copy for the existing Studio lower-third toggle. Browsing or editing another cue never changes that assignment. Reassigning while on air takes effect at the next Show. Loading an assignment never starts an output or arms automation."));
@@ -186,10 +186,9 @@ public sealed partial class GraphicsWorkspaceControl
     {
         _advancedGraphicsControls = advanced;
         _customizeGraphic.Content = advanced ? "Use simple controls" : "Customize layout & motion";
-        for (var i = 2; i < _inspectorTabs.Count; ++i) _inspectorTabs[i].Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
-        _layerPanelRow.Height = new GridLength(advanced ? 118 : 0);
-        _layerHeading.Visibility = _layerList.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
+        for (var i = 2; i < Math.Min(4, _inspectorTabs.Count); ++i) _inspectorTabs[i].Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
         if (!advanced) SelectInspectorTab(0);
+        if (_session is not null) RefreshDesignChrome();
     }
     private void ApplyWorkspaceSize(double width)
     {
@@ -220,18 +219,6 @@ public sealed partial class GraphicsWorkspaceControl
             ? "Each LT in uses the current Program source name and secondary line from Sources. The names here are private examples."
             : "Studio will use this graphic's text, including the sample name until you edit it. It will not use the Program source text.";
         _editGuestText.Visibility = relevant && follows ? Visibility.Visible : Visibility.Collapsed;
-    }
-    private void RefreshLayerList()
-    {
-        var document = _session?.TemplateDocument;
-        var authored = document is null ? Array.Empty<GraphicsEditorLayer>() : GraphicsTemplateEditor.Layers(document).ToArray();
-        IEnumerable<GraphicsEditorLayer> FrontToBack(string parent) {
-            foreach (var layer in authored.Where(l => l.Parent == parent).Reverse()) { yield return layer; foreach (var child in FrontToBack(layer.Id)) yield return child; }
-        }
-        var rows = FrontToBack("").ToArray();
-        var signature = string.Join('|', rows.Select(r => r.Id + ":" + r.Label + ":" + r.Visible + ":" + r.Locked));
-        if (signature != _layerStructure) { _layerStructure = signature; _layerRows = rows; _layerList.Items.Clear(); foreach (var row in rows) _layerList.Items.Add($"{(row.Visible ? "◉" : "○")}  {row.Label} · {row.Type}{(row.Locked ? " · locked" : "")}"); }
-        _layerList.SelectedIndex = _layerRows.ToList().FindIndex(r => r.Id == _session?.SelectedLayerId);
     }
     private void BuildMotionControls()
     {

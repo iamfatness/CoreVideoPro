@@ -29,7 +29,7 @@ public sealed class MediaCoreCrashLockOrderTests
         await using var bridge = new MediaCoreBridgeService(supervisor);
         var bridgeGate = Field(bridge, "_gate").GetValue(bridge)!;
 
-        var concurrentSync = Task.Run(() =>
+        var concurrentSync = Task.Factory.StartNew(() =>
         {
             lock (bridgeGate)
             {
@@ -42,11 +42,12 @@ public sealed class MediaCoreCrashLockOrderTests
                 if (acquired) Monitor.Exit(supervisorGate);
                 return acquired;
             }
-        });
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         Assert.True(bridgeHeld.Wait(TimeSpan.FromSeconds(5)));
-        var notification = Task.Run(() => typeof(MediaCoreSupervisor)
+        var notification = Task.Factory.StartNew(() => typeof(MediaCoreSupervisor)
             .GetMethod("OnChildExited", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(supervisor, [exited, EventArgs.Empty]));
+            .Invoke(supervisor, [exited, EventArgs.Empty]),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         Assert.True(await concurrentSync.WaitAsync(TimeSpan.FromSeconds(10)));
         await notification.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.False(callbackHeldSupervisorGate);
@@ -94,6 +95,53 @@ public sealed class MediaCoreCrashLockOrderTests
         Assert.True(supervisor.Health.Stopped);
         Assert.False(supervisor.Health.Recovering);
         Assert.Null(Field(supervisor, "_process").GetValue(supervisor));
+    }
+
+    // #782: Stop/DisposeAsync asked an unassociated Process whether it had exited and threw
+    // InvalidOperationException ("No process is associated with this object"), masking whatever
+    // the caller was really failing on. A Process object that never started is not an error to stop.
+    [Fact]
+    public async Task StopAndDisposeTolerateAProcessThatWasNeverAssociated()
+    {
+        await using var supervisor = new MediaCoreSupervisor(new MediaCoreSupervisorOptions { MaxRestarts = 0 });
+        using var inert = new Process();
+        Field(supervisor, "_process").SetValue(supervisor, inert);
+        Field(supervisor, "_stopped").SetValue(supervisor, false);
+
+        supervisor.Stop();
+
+        Assert.Null(Field(supervisor, "_process").GetValue(supervisor));
+        Assert.True(supervisor.Health.Stopped);
+    }
+
+    [Fact]
+    public async Task ADisposedProcessInTheSlotDoesNotMakeDisposalThrow()
+    {
+        await using var supervisor = new MediaCoreSupervisor(new MediaCoreSupervisorOptions { MaxRestarts = 0 });
+        var gone = new Process();
+        gone.Dispose();
+        Field(supervisor, "_process").SetValue(supervisor, gone);
+        Field(supervisor, "_stopped").SetValue(supervisor, false);
+
+        await supervisor.DisposeAsync();
+
+        Assert.Null(Field(supervisor, "_process").GetValue(supervisor));
+    }
+
+    // The production way to get there: Process.Start throws for a missing executable after the
+    // supervisor has already put the new Process in its slot.
+    [Fact]
+    public async Task StopAfterAFailedSpawnDoesNotThrow()
+    {
+        await using var supervisor = new MediaCoreSupervisor(new MediaCoreSupervisorOptions
+        {
+            Command = "corevideo-782-no-such-executable", MaxRestarts = 0
+        });
+
+        await Assert.ThrowsAnyAsync<Exception>(() => supervisor.StartAsync());
+
+        var stop = Record.Exception(() => supervisor.Stop());
+        Assert.Null(stop);
     }
 
     private static FieldInfo Field(object instance, string name) => instance.GetType()

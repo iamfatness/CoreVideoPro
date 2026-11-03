@@ -1,5 +1,6 @@
 #pragma once
 #include "compositor/TilesAnimator.h"
+#include "compositor/TilesNameLine.h"
 #include "modules/Interfaces.h"
 
 namespace corevideo::compositor {
@@ -65,11 +66,21 @@ class TilesPlanAnimation {
     for (auto& layer : plan.layers) {
       const bool video = layer.kind == "participant-video" && layer.layerId.rfind("tile:", 0) == 0;
       const bool glow = layer.kind == "tiles-glow" && layer.layerId.rfind("tiles-glow:", 0) == 0;
-      if (!video && !glow) continue;
-      const auto id = layer.layerId.substr(video ? 5 : 11);
+      // #1073: a tile's name line is an overlay layer keyed by the same member
+      // id. It does not get the tile's rect; it keeps its offset from the
+      // tile's anchored corner and fades with the tile (TilesNameLine.h).
+      const bool name = layer.kind == "overlay" && layer.layerId.rfind("tile-name:", 0) == 0;
+      if (!video && !glow && !name) continue;
+      const auto id = layer.layerId.substr(video ? 5 : glow ? 11 : 10);
       auto it = std::find_if(sampled_.begin(), sampled_.end(), [&](const auto& tile) { return tile.id == id; });
       if (it == sampled_.end()) continue;
-      layer.rect = {it->rect.x, it->rect.y, it->rect.width, it->rect.height};
+      if (name) {
+        const auto followed = followTilesNameLine({layer.rect.x, layer.rect.y, layer.rect.width, layer.rect.height},
+            it->target, it->rect, layer.overlay.appearance.anchor);
+        layer.rect = {followed.x, followed.y, followed.width, followed.height};
+      } else {
+        layer.rect = {it->rect.x, it->rect.y, it->rect.width, it->rect.height};
+      }
       layer.opacity *= it->alpha;
     }
   }

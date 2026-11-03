@@ -171,7 +171,7 @@ public sealed class CoreObservationModel
         "rosterEpoch" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "rosterRevision" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "sceneId" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
-        "sources" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
+        "sources" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "takeRecords" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         "takeTransition" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         "tiles" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },

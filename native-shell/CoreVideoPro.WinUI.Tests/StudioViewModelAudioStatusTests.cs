@@ -563,7 +563,7 @@ public sealed class StudioViewModelAudioStatusTests
     [InlineData("Streaming start failed: The streaming destination refused the connection. ffmpeg: Error opening output: I/O error")]
     [InlineData("Streaming start failed: RTMP settings are incomplete. Configure the server URL and stream key before streaming.")]
     [InlineData("Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg.")]
-    [InlineData("Streaming start failed: No stream destination is selected. Enable RTMP, NDI, or SRT before streaming.")]
+    [InlineData("Streaming start failed: No stream destination is selected. Enable RTMP, SRT, or HLS before streaming.")]
     [InlineData("")]
     public void IsStreamingStartStillWarming_FalseForRealFailures(string status)
     {
@@ -620,7 +620,7 @@ public sealed class StudioViewModelAudioStatusTests
             new InvalidOperationException("Select at least one stream destination."));
 
         Assert.StartsWith(
-            "Streaming start failed: No stream destination is selected. Enable RTMP, NDI, SRT, or HLS before streaming.",
+            "Streaming start failed: No stream destination is selected. Enable RTMP, SRT, or HLS before streaming.",
             status);
         Assert.Equal("No stream destination", TransportStatusFormatter.FormatOutputStatusBrief(status));
     }
@@ -678,16 +678,13 @@ public sealed class StudioViewModelAudioStatusTests
             Capabilities = ["rtmp-output"]
         };
 
-        Assert.Null(TransportStatusFormatter.ValidateStreamDestinationCapabilities(true, false, false, profile));
-        Assert.Equal(
-            "NDI output is selected, but the native media core profile is missing ndi-output.",
-            TransportStatusFormatter.ValidateStreamDestinationCapabilities(false, true, false, profile));
+        Assert.Null(TransportStatusFormatter.ValidateStreamDestinationCapabilities(true, false, profile));
         Assert.Equal(
             "SRT output is selected, but the native media core profile is missing srt-output.",
-            TransportStatusFormatter.ValidateStreamDestinationCapabilities(false, false, true, profile));
+            TransportStatusFormatter.ValidateStreamDestinationCapabilities(false, true, profile));
         Assert.Equal(
             "HLS output is selected, but the native media core profile is missing hls-output.",
-            TransportStatusFormatter.ValidateStreamDestinationCapabilities(false, false, false, profile, hlsEnabled: true));
+            TransportStatusFormatter.ValidateStreamDestinationCapabilities(false, false, profile, hlsEnabled: true));
     }
 
     [Fact]
@@ -725,16 +722,50 @@ public sealed class StudioViewModelAudioStatusTests
             [
                 new NativeMediaCoreOutputHealth
                 {
-                    Destination = "ndi",
+                    Destination = "srt",
                     Status = "idle",
-                    Message = "NDI sender idle."
+                    Message = "SRT sender idle."
                 }
             ]
         };
 
-        Assert.True(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["ndi"], out var failureStatus));
-        Assert.Contains("Selected stream destinations (NDI) did not arm a native output sender.", failureStatus, StringComparison.Ordinal);
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["srt"], out var failureStatus));
+        Assert.Contains("Selected stream destinations (SRT) did not arm a native output sender.", failureStatus, StringComparison.Ordinal);
         Assert.Equal("Stream sender not armed", TransportStatusFormatter.FormatOutputStatusBrief(failureStatus));
+    }
+
+    // NDI is its own output: an idle NDI sender is not a stream sender, and the stream's
+    // no-sender failure names only the platforms it asked for.
+    [Fact]
+    public void TryFormatStreamingStartNoSenderFailure_IgnoresNdi()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "idle",
+                ActiveSenderCount = 1,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "ndi:program",
+                        Destination = "ndi",
+                        Status = "idle"
+                    }
+                ]
+            }
+        };
+
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["rtmp"], out var failureStatus));
+        Assert.Contains("Selected stream destinations (RTMP) did not arm a native output sender.", failureStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("NDI", failureStatus, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["rtmp", "ndi", "ndi-graphics"], out failureStatus));
+        Assert.Contains("Selected stream destinations (RTMP) did not arm a native output sender.", failureStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("NDI", failureStatus, StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["ndi"], out _));
     }
 
     [Fact]
@@ -750,18 +781,18 @@ public sealed class StudioViewModelAudioStatusTests
                 [
                     new NativeMediaCoreOutputSender
                     {
-                        SenderId = "ndi:program",
-                        Destination = "ndi",
+                        SenderId = "srt:program",
+                        Destination = "srt",
                         Status = "warning",
-                        LastResultCode = "ndi-output-unavailable",
-                        Warning = "NDI output is selected, but no NDI sender module is available in this build."
+                        LastResultCode = "srt-output-unavailable",
+                        Warning = "SRT output is selected, but no SRT sender module is available in this build."
                     }
                 ]
             }
         };
 
-        Assert.True(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["ndi"], out var failureStatus));
-        Assert.Equal("NDI unavailable", TransportStatusFormatter.FormatOutputStatusBrief(failureStatus));
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["srt"], out var failureStatus));
+        Assert.Equal("SRT unavailable", TransportStatusFormatter.FormatOutputStatusBrief(failureStatus));
     }
 
     [Fact]
@@ -1016,6 +1047,60 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void TryFormatStreamingStartHealthFailure_IgnoresNdiUnavailableSessionWarning()
+    {
+        const string ndiWarning = "NDI output is selected, but no NDI sender module is available in this build.";
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                Warnings = [ndiWarning],
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender { SenderId = "ndi:program", Destination = "ndi", Status = "warning", Warning = ndiWarning }
+                ]
+            }
+        };
+
+        Assert.False(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out _));
+
+        var withRealWarning = new NativeMediaCoreStateSnapshot
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                Warnings = [ndiWarning, "Stream key rejected."],
+                Senders = snapshot.OutputSenderSession.Senders
+            }
+        };
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(withRealWarning, out var failureStatus));
+        Assert.Contains("Stream key rejected.", failureStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("NDI", failureStatus, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TryFormatStreamingStartNoSenderFailure_SenderStateCountsStreamSendersOnly()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "idle",
+                ActiveSenderCount = 2,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender { SenderId = "ndi", Destination = "ndi", Status = "live" },
+                    new NativeMediaCoreOutputSender { SenderId = "ndi-graphics", Destination = "ndi-graphics", Status = "live" }
+                ]
+            }
+        };
+
+        Assert.True(TransportStatusFormatter.TryFormatStreamingStartNoSenderFailure(snapshot, ["rtmp"], out var failureStatus));
+        Assert.Contains("Sender state idle:0.", failureStatus, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TryFormatStreamingStartHealthFailure_MapsNativeOutputWarningsToStartFailure()
     {
         var snapshot = new NativeMediaCoreStateSnapshot
@@ -1051,11 +1136,11 @@ public sealed class StudioViewModelAudioStatusTests
                 [
                     new NativeMediaCoreOutputSender
                     {
-                        SenderId = "ndi:program",
-                        Destination = "ndi",
+                        SenderId = "srt:program",
+                        Destination = "srt",
                         Status = "warning",
-                        LastResultCode = "ndi-output-unavailable",
-                        RuntimeDetail = "LibNDI runtime-missing on this machine."
+                        LastResultCode = "srt-output-unavailable",
+                        RuntimeDetail = "SRT sender module runtime-missing on this machine."
                     }
                 ]
             }
@@ -1063,11 +1148,11 @@ public sealed class StudioViewModelAudioStatusTests
 
         Assert.True(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
         Assert.StartsWith(
-            "Streaming start failed: NDI output is not available. Install the NDI runtime or use a build with NDI output enabled.",
+            "Streaming start failed: SRT output is not available in this build.",
             failureStatus);
-        Assert.Contains("ndi-output-unavailable", failureStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("srt-output-unavailable", failureStatus, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("runtime-missing", failureStatus, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("NDI unavailable", TransportStatusFormatter.FormatOutputStatusBrief(failureStatus));
+        Assert.Equal("SRT unavailable", TransportStatusFormatter.FormatOutputStatusBrief(failureStatus));
     }
 
     [Fact]
@@ -1079,9 +1164,9 @@ public sealed class StudioViewModelAudioStatusTests
             [
                 new NativeMediaCoreOutputHealth
                 {
-                    Destination = "ndi",
+                    Destination = "srt",
                     Status = "warning",
-                    Message = "NDI sender warning."
+                    Message = "SRT sender warning."
                 }
             ],
             OutputSenderSession = new NativeMediaCoreOutputSenderSession
@@ -1092,11 +1177,11 @@ public sealed class StudioViewModelAudioStatusTests
                 [
                     new NativeMediaCoreOutputSender
                     {
-                        SenderId = "ndi:program",
-                        Destination = "ndi",
+                        SenderId = "srt:program",
+                        Destination = "srt",
                         Status = "warning",
-                        LastResultCode = "ndi-output-unavailable",
-                        RuntimeDetail = "LibNDI runtime-missing on this machine."
+                        LastResultCode = "srt-output-unavailable",
+                        RuntimeDetail = "SRT sender module runtime-missing on this machine."
                     }
                 ]
             }
@@ -1104,9 +1189,9 @@ public sealed class StudioViewModelAudioStatusTests
 
         Assert.True(TransportStatusFormatter.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
         Assert.StartsWith(
-            "Streaming start failed: NDI output is not available. Install the NDI runtime or use a build with NDI output enabled.",
+            "Streaming start failed: SRT output is not available in this build.",
             failureStatus);
-        Assert.DoesNotContain("NDI sender warning.", failureStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("SRT sender warning.", failureStatus, StringComparison.Ordinal);
         Assert.Contains("runtime-missing", failureStatus, StringComparison.OrdinalIgnoreCase);
     }
 

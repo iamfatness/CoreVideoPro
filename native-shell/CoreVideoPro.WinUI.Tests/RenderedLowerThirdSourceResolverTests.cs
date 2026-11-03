@@ -51,6 +51,19 @@ public sealed class RenderedLowerThirdSourceResolverTests
     }
 
     [Fact]
+    public void MediaRouteOnProgramIsASubjectAndYieldsToParticipantVideo()
+    {
+        // 2026-10-31: on a media-only test show F1 / "LT in" found no subject because media routes were not eligible.
+        var clip = new NativeMediaCoreRenderedVideoSource { LayerId = "route:interview-1", SourceId = "media:media-83843756123d", ParticipantId = "", Kind = "media-video" };
+        var background = new NativeMediaCoreRenderedVideoSource { LayerId = "background", SourceId = "background:media-5f953bd23617", ParticipantId = "", Kind = "media-background" };
+        Assert.Equal(clip, RenderedLowerThirdSourceResolver.Resolve("interview", Frame(background, clip), "", Participants, []));
+        Assert.Null(RenderedLowerThirdSourceResolver.Resolve("interview", Frame(background), "", Participants, []));
+        // A person in the picture still wins over a clip; the sticky clip stays while present.
+        Assert.Equal("zoom:jamal", RenderedLowerThirdSourceResolver.Resolve("interview", Frame(clip, Source("jamal")), "", Participants, [])?.SourceId);
+        Assert.Equal(clip, RenderedLowerThirdSourceResolver.Resolve("interview", Frame(clip, Source("jamal")), clip.SourceId, Participants, []));
+    }
+
+    [Fact]
     public void CaptureAndScreenShareRequireExactCurrentSourceMetadata()
     {
         var camera = new CaptureDevice

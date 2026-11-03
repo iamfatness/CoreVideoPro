@@ -60,7 +60,8 @@ public sealed class ScenePersistenceServiceTests
                 BorderShape = "rounded",
                 BorderColor = "#FF8800",
                 BorderThickness = 4,
-                GlowSize = 12
+                GlowSize = 12,
+                NameEachTile = true  // #1073
             }
         };
         var routes = new List<SourceRoute>
@@ -111,6 +112,9 @@ public sealed class ScenePersistenceServiceTests
         Assert.Equal("4:3", restoredGallery.TileAspect);
         Assert.Equal("rounded", restoredGallery.BorderShape);
         Assert.Equal(12, restoredGallery.GlowSize, 3);
+        Assert.True(restoredGallery.NameEachTile);
+        // The option defaults OFF for a scene saved before #1073 (no key in its JSON).
+        Assert.False(ScenePersistenceService.FromPersisted(new PersistedDynamicGallerySettings()).NameEachTile);
 
         var restored = restoredScene.Routes.Select(ScenePersistenceService.FromPersisted).ToList();
         Assert.Equal(2, restored.Count);

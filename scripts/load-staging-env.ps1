@@ -1,7 +1,7 @@
 # Loads staging Cloudflare worker endpoints + API keys into the current shell.
 # STAGING OVERRIDE ONLY. Shipped builds bake the production endpoints
 # (https://telemetry.corevideo.io, https://ops.corevideo.io, OAuth broker
-# https://auth.corevideo.io) and need no env vars for them (#434/#436); dot-sourcing this
+# https://corevideo.iamfatness.us) and need no env vars for them (#434/#436); dot-sourcing this
 # script points THIS shell at the workers.dev staging Workers instead. The API
 # key still comes from .staging-secrets.local (never baked, never committed).
 # Usage: . .\scripts\load-staging-env.ps1

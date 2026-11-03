@@ -9,6 +9,10 @@ bounded restart policy**. It is a decorator that sits OUTSIDE the per-protocol a
 CompositeOutputSender -> SupervisedOutputSender -> AsyncOutputSender -> RTMP / SRT / NDI adapter
 ```
 
+The `ndi` and `ndi-graphics` senders are driven by the independent NDI output flag, not by
+Streaming; stream destination edits never restart them (pinned by
+`AsyncOutputSender.RemovingTheStreamDestinationNeverInterruptsNdi`).
+
 **Outside, not inside — that is the entire isolation argument.** Every call the supervisor
 makes lands on `AsyncOutputSender` (enqueue-and-return; `session()` is a cached snapshot),
 so a wedged FFmpeg pipe or a blocked libNDI send cannot block the supervisor, the control
@@ -56,6 +60,8 @@ its own supervisor thread.
   set) and **implements no `interrupt()` at all**, so a wedged libNDI send can be detected,
   published and escalated but NOT released — the writer is detached after
   `AsyncOutputSender`'s 2 s grace and leaks until exit. Moving NDI out of process is PR 20/28.
+  The NDI graphics key (`ndi-graphics`, [ndi-graphics-key.md](ndi-graphics-key.md)) has
+  the same traits and its own writer and supervisor.
   An UNKNOWN destination is assumed unprotected; never claim isolation that was not established.
 
 Tests: `native/tests/OutputDestinationSupervisorTest.cpp` — the ladder, the health rule, and

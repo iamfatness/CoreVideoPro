@@ -6,8 +6,11 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
+#include <string>
 #include <thread>
 
 namespace {
@@ -341,5 +344,128 @@ TEST(AsyncOutputSender, StopNeverInterruptsADestinationStillRequested) {
   std::lock_guard<std::mutex> lock(raw->mutex);
   EXPECT_EQ(std::find(raw->interrupted.begin(), raw->interrupted.end(), "hls"), raw->interrupted.end());
   EXPECT_EQ(std::find(raw->interrupted.begin(), raw->interrupted.end(), "srt"), raw->interrupted.end());
+  EXPECT_NE(std::find(raw->interrupted.begin(), raw->interrupted.end(), "rtmp"), raw->interrupted.end());
+}
+
+namespace {
+// Records every destination list a sender's writer saw, and every interrupt.
+class DestinationRecordingSender final : public IOutputSender {
+ public:
+  OutputSenderSession sync(const std::vector<std::string>& destinations, const ProgramFrame*, double,
+                           const std::vector<OutputDestinationSettings>&, const std::vector<float>*, int,
+                           int) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    syncs.push_back(destinations);
+    return {};
+  }
+  OutputSenderSession fail(const std::string&, const std::string&, double) override { return {}; }
+  OutputSenderSession recover(const std::string& destination, double, const std::string&) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    recovered.push_back(destination);
+    return {};
+  }
+  OutputSenderSession session() const override { return {}; }
+  void interrupt(const std::string& destination) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    interrupted.push_back(destination);
+  }
+  std::mutex mutex;
+  std::vector<std::vector<std::string>> syncs;
+  std::vector<std::string> interrupted;
+  std::vector<std::string> recovered;
+};
+}  // namespace
+
+// NDI graphics key: turning the key on and off is a destination-list change
+// that must never touch Program NDI. Program's writer must see "ndi" in every
+// sync (it only tears its sender down when "ndi" is absent) and must never be
+// interrupted or recovered; only the key's own destination is interrupted
+// when it is removed.
+TEST(AsyncOutputSender, TogglingTheGraphicsKeyNeverInterruptsProgramNdi) {
+  auto inner = std::make_unique<DestinationRecordingSender>();
+  auto* raw = inner.get();
+  AsyncOutputSender sender(std::move(inner));
+  sender.sync({"ndi"}, nullptr, 0.0);
+  ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(1)));
+  sender.sync({"ndi", "ndi-graphics"}, nullptr, 1.0);
+  ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(1)));
+  sender.sync({"ndi"}, nullptr, 2.0);
+  ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(1)));
+  std::lock_guard<std::mutex> lock(raw->mutex);
+  ASSERT_FALSE(raw->syncs.empty());
+  for (const auto& destinations : raw->syncs) {
+    EXPECT_NE(std::find(destinations.begin(), destinations.end(), "ndi"), destinations.end());
+  }
+  EXPECT_EQ(std::find(raw->interrupted.begin(), raw->interrupted.end(), "ndi"), raw->interrupted.end());
+  EXPECT_NE(std::find(raw->interrupted.begin(), raw->interrupted.end(), "ndi-graphics"), raw->interrupted.end());
+  EXPECT_TRUE(raw->recovered.empty());
+}
+
+namespace {
+// Models a per-destination writer: a destination "starts" when it enters the
+// synced list from absence and "stops" when it leaves; every sync carrying a
+// frame while it is listed counts as a frame for that destination.
+class PerDestinationLifecycleSender final : public IOutputSender {
+ public:
+  OutputSenderSession sync(const std::vector<std::string>& destinations, const ProgramFrame* frame, double,
+                           const std::vector<OutputDestinationSettings>&, const std::vector<float>*, int,
+                           int) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (const auto& destination : destinations) {
+      if (!active.count(destination)) ++starts[destination];
+      if (frame != nullptr) ++frames[destination];
+    }
+    active.clear();
+    active.insert(destinations.begin(), destinations.end());
+    return {};
+  }
+  OutputSenderSession fail(const std::string&, const std::string&, double) override { return {}; }
+  OutputSenderSession recover(const std::string&, double, const std::string&) override { return {}; }
+  OutputSenderSession session() const override { return {}; }
+  void interrupt(const std::string& destination) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    interrupted.push_back(destination);
+  }
+  std::mutex mutex;
+  std::vector<std::string> interrupted;
+  std::set<std::string> active;
+  std::map<std::string, int> starts;
+  std::map<std::string, int> frames;
+};
+}  // namespace
+
+// NDI is independent of Streaming: editing the stream destinations (removing
+// and re-adding rtmp) must neither restart the ndi writer nor interrupt its
+// frame flow.
+TEST(AsyncOutputSender, RemovingTheStreamDestinationNeverInterruptsNdi) {
+  auto inner = std::make_unique<PerDestinationLifecycleSender>();
+  auto* raw = inner.get();
+  AsyncOutputSender sender(std::move(inner));
+  ProgramFrame frame;
+  auto push = [&](const std::vector<std::string>& destinations, int number) {
+    frame.frameNumber = number;
+    sender.sync(destinations, &frame, number * 16.0);
+    ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(1)));
+  };
+  auto ndiFrames = [&] {
+    std::lock_guard<std::mutex> lock(raw->mutex);
+    return raw->frames["ndi"];
+  };
+
+  push({"rtmp", "ndi"}, 1);
+  push({"rtmp", "ndi"}, 2);
+  const int beforeRemoval = ndiFrames();
+  push({"ndi"}, 3);
+  push({"ndi"}, 4);
+  const int afterRemoval = ndiFrames();
+  EXPECT_GT(afterRemoval, beforeRemoval);
+  push({"rtmp", "ndi"}, 5);
+  push({"rtmp", "ndi"}, 6);
+  EXPECT_GT(ndiFrames(), afterRemoval);
+
+  std::lock_guard<std::mutex> lock(raw->mutex);
+  EXPECT_EQ(raw->starts["ndi"], 1);
+  EXPECT_EQ(raw->starts["rtmp"], 2);
+  EXPECT_EQ(std::find(raw->interrupted.begin(), raw->interrupted.end(), "ndi"), raw->interrupted.end());
   EXPECT_NE(std::find(raw->interrupted.begin(), raw->interrupted.end(), "rtmp"), raw->interrupted.end());
 }

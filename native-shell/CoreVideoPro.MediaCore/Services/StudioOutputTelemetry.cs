@@ -21,9 +21,26 @@ public static class StudioOutputTelemetry
         Map(recording?.Lifecycle, recording is null ? null : Math.Max(0, recording.TotalFramesWritten),
             "Recording", recording?.Active == true || recording?.Status is "starting" or "stopping", recording?.Status);
 
+    public static string NdiStatus(
+        bool enabled, IReadOnlyList<NativeMediaCoreOutputSender> senders, string? programName, string? refusalReason) =>
+        !enabled
+            ? string.IsNullOrWhiteSpace(refusalReason) ? "Off" : $"Unavailable \u00b7 {refusalReason}"
+            : senders.FirstOrDefault(sender => sender.Destination == "ndi") switch
+            {
+                null => "Starting",
+                { Status: "live" } => $"Live \u00b7 {(string.IsNullOrWhiteSpace(programName) ? "NDI" : programName)}" +
+                    (senders.Any(sender => sender.Destination == "ndi-graphics" && sender.Status == "live") ? " + key" : string.Empty),
+                { Status: "warning" or "failed" } sender =>
+                    $"Warning \u00b7 {FirstText(sender.Warning, sender.LastError, sender.RuntimeDetail, sender.LastResultCode) ?? sender.Status}",
+                _ => "Starting"
+            };
+
+    private static string? FirstText(params string?[] parts) =>
+        parts.FirstOrDefault(static part => !string.IsNullOrWhiteSpace(part));
+
     public static Readout Streaming(NativeMediaCoreStateSnapshot snapshot)
     {
-        var senders = CurrentSenders(snapshot.OutputSenderSession.Senders);
+        var senders = CurrentSenders(StreamSenders(snapshot.OutputSenderSession.Senders));
         var readout = Streaming(senders);
         // Modern destination lifecycles are authoritative. Historical aggregate
         // health must not turn an intentionally ended destination into a current failure.
@@ -41,7 +58,7 @@ public static class StudioOutputTelemetry
 
     public static Readout Streaming(IReadOnlyList<NativeMediaCoreOutputSender> senders)
     {
-        senders = CurrentSenders(senders);
+        senders = CurrentSenders(StreamSenders(senders));
         if (senders.Count == 0) return new("—", "Idle", "idle");
         var readouts = senders.Select(sender => Map(sender.Lifecycle, Math.Max(0, sender.FramesSent),
             "Streaming", sender.Status is not "idle" and not "stopped", sender.Status)).ToArray();
@@ -50,6 +67,10 @@ public static class StudioOutputTelemetry
             selected = new("", "Partial", "warning");
         return selected with { Progress = Frames(senders.Sum(sender => (long)Math.Max(0, sender.FramesSent))) };
     }
+
+    // NDI is its own output with its own status label; it never feeds the stream readout.
+    private static IReadOnlyList<NativeMediaCoreOutputSender> StreamSenders(IReadOnlyList<NativeMediaCoreOutputSender> senders) =>
+        senders.Where(static sender => OutputDestinationKind.IsStream(sender.Destination)).ToArray();
 
     private static IReadOnlyList<NativeMediaCoreOutputSender> CurrentSenders(IReadOnlyList<NativeMediaCoreOutputSender> senders)
     {

@@ -163,6 +163,8 @@ public sealed partial class MainWindow : Window
             var catalog = StartShowEngine(out var ohgAdapter);
 
             _controlSurface = new StudioControlSurface(ViewModel, _dispatcher, _showEngineBridge, ohgAdapter);
+            // #1076: playout buttons and F-keys invoke the same surface by action id.
+            GraphicsPlayoutActions.Surface = _controlSurface.InvokeAsync;
 
             _controlServer = new OscControlServer(_controlSurface, new OscControlServerOptions
             {
@@ -624,6 +626,7 @@ public sealed partial class MainWindow : Window
         // command gate before any asynchronous socket teardown or VM disposal.
         // Disposing it FIRST also unhooks the show engine's snapshot/health/host-command
         // handlers, so nothing arrives at a ViewModel that is being torn down.
+        GraphicsPlayoutActions.Surface = null;
         TryShutdownStep("control surface", () => _controlSurface?.Dispose());
         _controlSurface = null;
 

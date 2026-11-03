@@ -326,9 +326,35 @@ public sealed class NativeMediaCoreOutputSender
 
 public sealed class NativeMediaCoreSenderBackpressure
 {
+    /// <summary>The destination's own pressure recommendation (1 = none). Since #538 the
+    /// compositor no longer applies it; <see cref="AppliedDivisor"/> is the real export rate.</summary>
+    public int Divisor { get; init; } = 1;
     public int AppliedDivisor { get; init; }
     public int Level { get; init; }
+    /// <summary>Wall-clock age (ms) of the oldest chunk still queued for send at the observation
+    /// that drove the last decision; 0 between stalls.</summary>
+    public double BufferedMs { get; init; }
     public string? LastReason { get; init; }
+}
+
+/// <summary>One row of the core's <c>sources</c> node: the source bus's own per-source health
+/// (<c>producing</c> | <c>warming</c> | <c>stalled</c> | <c>failed</c> | <c>idle</c>). The bus calls a
+/// source <c>stalled</c> 200 ms after its last NEW frame: a fast diagnostic signal, not the 1.5 s
+/// on-air cut. Bound typed for #1074 (the network-congestion status line); before that it was
+/// only reachable from <see cref="NativeMediaCoreStateSnapshot.RawJson"/>.</summary>
+public sealed class NativeMediaCoreSourceHealth
+{
+    public required string SourceId { get; init; }
+    /// <summary>zoom | capture | media | still | composed | test.</summary>
+    public string Kind { get; init; } = "";
+    public string Health { get; init; } = "idle";
+    public bool HasVideo { get; init; }
+    public bool HasAudio { get; init; }
+    public string? DisplayName { get; init; }
+    /// <summary>Milliseconds since this source's last NEW frame on the bus's own clock; null before
+    /// the first frame, and on a core that predates the field (#1074 review). Compare against the
+    /// 1.5 s on-air stall rule, not <see cref="Health"/>'s 200 ms diagnostic.</summary>
+    public double? SinceLastNewFrameMs { get; init; }
 }
 
 public sealed class NativeMediaCoreOutputSenderSession
@@ -393,6 +419,12 @@ public sealed class NativeMediaCoreRecordingStream
     public required string Status { get; init; }
     public int FramesWritten { get; init; }
     public long? MuxVideoFrameCount { get; init; }
+    /// <summary>1-based ISO number (matches ISO-NN in the file name); ISO streams only, absent otherwise.</summary>
+    public int? IsoIndex { get; init; }
+    /// <summary>Cumulative video encode work for this writer, microseconds; absent until measured.</summary>
+    public long? VideoWorkUs { get; init; }
+    /// <summary>Writer frame rate as reported by the core; absent when not reported (never defaulted).</summary>
+    public double? FrameRate { get; init; }
     /// <summary>Per-source audio sample-frames muxed into this ISO's raw-stem AAC track (ISO-2).</summary>
     public long AudioSamples { get; init; }
     public int DroppedFrames { get; init; }
@@ -430,6 +462,29 @@ public sealed record NativeMediaCoreRecordingSession
     public long TotalBytesWritten { get; init; }
     public string? Warning { get; init; }
     public string? Error { get; init; }
+    /// <summary>Structured ISO encoder-placement verdict (#935); absent when no ISO was selected.</summary>
+    public NativeMediaCoreIsoAdmission? IsoAdmission { get; init; }
+    /// <summary>Why Record has not opened yet (#1042), e.g. "waiting for encoder capacity probe"; absent otherwise.</summary>
+    public string? Detail { get; init; }
+}
+
+public sealed record NativeMediaCoreIsoAdmission
+{
+    public string? Decision { get; init; }
+    public string? Code { get; init; }
+    public string? Message { get; init; }
+    public int HardwareCount { get; init; }
+    public int SoftwareCount { get; init; }
+    public int UnplacedCount { get; init; }
+    public int? AdmissibleIsoCount { get; init; }
+    public bool Probed { get; init; }
+    public string? ProbeStatus { get; init; }
+    public string? Capacity { get; init; }
+    public string? Workload { get; init; }
+    /// <summary>#1042: ms arm blocked for an in-flight capacity probe.</summary>
+    public long ArmWaitMs { get; init; }
+    /// <summary>#1042: not-started | cached | timed-out | discarded.</summary>
+    public string? ArmWaitOutcome { get; init; }
 }
 
 public sealed class NativeMediaCoreRecordingProof
@@ -460,7 +515,12 @@ public sealed class NativeMediaCoreRecordingProof
 public sealed class NativeMediaCoreRecordingEncoder
 {
     public string Codec { get; init; } = "h264";
+    /// <summary>#935: MEASURED. True only when the Program writer's instantiated encoder MFT is hardware.</summary>
     public bool HardwareAccelerated { get; init; }
+    /// <summary>Hardware MFTs were requested. Not evidence of what Program uses.</summary>
+    public bool HardwareRequested { get; init; }
+    /// <summary>#935: measured "hardware" | "software"; null until Program began writing.</summary>
+    public string? EncoderPath { get; init; }
     public double TargetBitrateMbps { get; init; }
 }
 
@@ -941,6 +1001,9 @@ public sealed record NativeMediaCoreStateSnapshot
     };
     /// <summary>Per-source media transport rows (#535 slice 3b). Empty, never null.</summary>
     public IReadOnlyList<NativeMediaCoreMediaSource> MediaSources { get; init; } = [];
+    /// <summary>The source bus's per-source health rows (the core's <c>sources</c> node, #1074).
+    /// Empty, never null; empty also when the core predates the typed binding.</summary>
+    public IReadOnlyList<NativeMediaCoreSourceHealth> Sources { get; init; } = [];
     public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];
     public IReadOnlyList<NativeMediaCoreEvent> EventLog { get; init; } = [];
     public NativeMediaCoreDiagnosticsSnapshot Diagnostics { get; init; } = new();

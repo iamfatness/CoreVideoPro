@@ -32,10 +32,9 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
     private readonly TextBox _search = new() { PlaceholderText = "Search looks" };
     private readonly ComboBox _scope=new() {Header="New cue scope",HorizontalAlignment=HorizontalAlignment.Stretch};
     private readonly ComboBox _family = new() { ItemsSource = new[] { "All", "lower-third", "title", "bug", "clock", "countdown" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly GraphicsTemplateLayerEditor _layersEditor=new();
     private readonly GraphicsAuthoringCanvas _canvas = new();
     private readonly TextBlock _status = Copy("Choose a look, create a cue, then edit privately."), _native = Copy("Native authoring canvas"), _facts = Copy("");
-    private readonly ComboBox _samples=new() {Header="Private preview copy",ItemsSource=new[] {"Your draft","Short text","Long text","Blank secondary","Unicode example"},SelectedIndex=0,HorizontalAlignment=HorizontalAlignment.Stretch};
+    private readonly ComboBox _samples=new() {Header="Private preview copy",ItemsSource=GraphicsPreviewSamples.All.Select(sample=>sample.Label).ToArray(),SelectedIndex=0,HorizontalAlignment=HorizontalAlignment.Stretch};
     private readonly ToggleSwitch _compare = new() { Header = "Compare Original / Edited" };
     private readonly List<Button> _actions = [], _inspectorActions = [];
     private Button _cueButton = null!, _showButton = null!, _updateButton = null!, _hideButton = null!, _deleteButton = null!, _undoButton = null!;
@@ -62,7 +61,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         _library.ItemClick += (_,e)=>{var index=_library.Items.IndexOf(e.ClickedItem);if(!_loading && index>=0 && index<_templateRows.Count) _session?.Browse(_templateRows[index]);};
         _library.SelectionChanged += (_, _) => { if (!_loading && _library.SelectedIndex >= 0 && _library.SelectedIndex < _templateRows.Count) _session?.Browse(_templateRows[_library.SelectedIndex]); };
         _cues.SelectionChanged += (_, _) => { if (!_loading && _session is not null && _cues.SelectedIndex >= 0 && _cues.SelectedIndex < _cueIds.Count) _session.Select(_cueIds[_cues.SelectedIndex]); };
-        _samples.SelectionChanged+=(_,_)=>{if(!_loading && _samples.SelectedIndex>=0) _session?.SetPreviewSample(new[] {"current","short","long","blank","unicode"}[_samples.SelectedIndex]);};
+        _samples.SelectionChanged+=(_,_)=>{if(!_loading && _samples.SelectedIndex>=0) _session?.SetPreviewSample(GraphicsPreviewSamples.All[_samples.SelectedIndex].Id);};
         _compare.Toggled += (_, _) => { if (!_loading) _session?.SetCompare(_compare.IsOn); };
         Loaded += (_, _) => Attach(); Unloaded += (_, _) => Detach();
         SizeChanged += (_, e) => ApplyWorkspaceSize(e.NewSize.Width);
@@ -70,9 +69,9 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
     private void Attach()
     {
         if (Studio is null || !IsLoaded || _session == Studio.GraphicsWorkspace) return;
-        Detach(); _session = Studio.GraphicsWorkspace; _canvas.Session=_session; _layersEditor.Session=_session;
+        Detach(); _session = Studio.GraphicsWorkspace; _canvas.Session=_session;
         _automation=new(Studio);_automationDrawer.Content=_automation;
-        _attachedStudio = Studio; _attachedStudio.PropertyChanged += OnStudioProperty;
+        _attachedStudio = Studio; _attachedStudio.PropertyChanged += OnStudioProperty; _attachedStudio.GraphicsDesignOpened += OnDesignOpened;
         _savedLibrary = Studio.GraphicsLibrary; _savedLibrary.Changed += OnLibraryChanged; _ = _savedLibrary.LoadAsync();
         _session.Changed += OnChanged; _session.PreviewChanged += OnPreviewChanged;
         _editor = new("preview:lower-third", "Graphics private draft", new() { Lut = "none" }) { LiveEditing = false };
@@ -84,10 +83,10 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         RetireTextFields(); _inspectorKey = "";
         if (_session is not null) { _session.Changed -= OnChanged; _session.PreviewChanged -= OnPreviewChanged; }
         if (_savedLibrary is not null) _savedLibrary.Changed -= OnLibraryChanged;
-        if (_attachedStudio is not null) _attachedStudio.PropertyChanged -= OnStudioProperty;
+        if (_attachedStudio is not null) { _attachedStudio.PropertyChanged -= OnStudioProperty; _attachedStudio.GraphicsDesignOpened -= OnDesignOpened; }
         _previewOwner?.Dispose(); _previewOwner = null;
         if (_editor is not null) _editor.PropertyChanged -= OnPreviewProperty;
-        _canvas.Session=null; _layersEditor.Session=null;
+        _canvas.Session=null;
         _automationDrawer.Content=null;_automation=null;
         _session = null; _editor = null; _savedLibrary = null; _attachedStudio = null;
     }
@@ -156,7 +155,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
             _hideButton.IsEnabled &= item is { ProgramRevision: > 0 }; _updateButton.IsEnabled &= item is { ProgramRevision: > 0 } && _session.PreviewSample=="current";
             _deleteButton.IsEnabled &= item is { ProgramRevision: 0 }; _undoButton.IsEnabled &= _session.CanUndo;
             _compare.IsOn = _session.CompareOriginal;
-            _samples.SelectedIndex=Array.IndexOf(new[] {"current","short","long","blank","unicode"},_session.PreviewSample);
+            _samples.SelectedIndex=GraphicsPreviewSamples.All.ToList().FindIndex(sample=>sample.Id==_session.PreviewSample);
             _facts.Text = item is null ? "Choose or create a cue. No Program action occurs while browsing." :
                 $"{item.TemplateId} v{item.TemplateVersion} · {item.Scope}\nDraft r{item.Revision} / look v{item.TemplateVersion} ({item.Preparation}) · Cue r{item.CueRevision} / look v{item.CueTemplateVersion}{(item.CuePending ? " preparing replacement" : "")} · Program r{item.ProgramRevision} / look v{item.ProgramTemplateVersion} ({item.Visibility}; {(item.CurrentlyComposed ? "draw submitted" : "not composed on latest frame")})\n{item.SourceId} {item.BindingState} {item.Warning} {item.CueWarning}";
             ToolTipService.SetToolTip(_status, _session.Status);
@@ -180,7 +179,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
             var inspectorKey = _session.Selected?.ClockConfigurationRevision + ":" + _session.SelectedId + ":" + _session.Draft?.TemplateId + ":" + _session.Draft?.TemplateVersion;
             if (_inspectorKey != inspectorKey) { _inspectorKey = inspectorKey; BuildInspector(); }
             RefreshStarterCards(); RefreshStarterChrome();
-            RefreshLayerList();
+            RefreshDesignChrome();
             foreach (var refresh in _refreshFields) refresh();
             foreach (var panel in new[] { _contentControls, _styleControls, _layoutControls, _motionControls })
                 foreach (var child in panel.Children.OfType<Microsoft.UI.Xaml.Controls.Control>()) child.IsEnabled = !_session.Busy;

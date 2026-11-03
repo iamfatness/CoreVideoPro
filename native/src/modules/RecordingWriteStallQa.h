@@ -18,7 +18,8 @@ class RecordingWriteStallQa {
     try {
       size_t d = 0, a = 0;
       const auto ms = std::stoi(duration, &d), frames = std::stoi(after, &a);
-      if (duration[d] || after[a] || ms < 1 || ms > 2000 || frames < 30 || frames > 36000) return;
+      // Up to 10 s so a drill can hold a writer past the 4 s bounded join (#1030).
+      if (duration[d] || after[a] || ms < 1 || ms > 10000 || frames < 30 || frames > 36000) return;
       source_ = source; milliseconds_ = ms; afterFrames_ = frames;
     } catch (...) {}
   }

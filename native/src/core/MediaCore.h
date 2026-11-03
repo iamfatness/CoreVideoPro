@@ -4,6 +4,7 @@
 
 #include "core/SourcePreviewDemand.h"
 #include "compositor/TilesMembership.h"
+#include "compositor/TilesHoldEpisodeLog.h"
 #include "compositor/TilesPlanAnimation.h"
 #include "core/TilesWallSource.h"
 #include "core/GradePreviewController.h"
@@ -20,6 +21,7 @@
 #include "core/RenderedSceneAttributionPolicy.h"
 #include "core/SourceBus.h"
 #include "core/IsoVideoIngress.h"
+#include "core/IsoDeparture.h"
 #include "core/AudioRouteControlState.h"
 #include "core/MediaTransports.h"
 #include "core/SourceContinuityLedger.h"
@@ -70,6 +72,9 @@ struct TilesStyle {
   bool manualFill = false;
   bool animateLayout = false;
   int animationDurationMs = 350;
+  // #1073: one name line per member tile, in the scene lower-third style
+  // (compositor/TilesNameLine.h). Wire key "nameEachTile".
+  bool nameEachTile = false;
   modules::TilesDecoration decoration;
 };
 
@@ -156,6 +161,22 @@ class MediaCore {
   // frame-validated, "" for nobody. See the .cpp and core/FollowSpeakerHold.h.
   [[nodiscard]] std::string followSpeakerForRoutes(const std::vector<modules::VideoFrame>& videoFrames) const;
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
+  // #1048 C1: the two halves of syncZoomMediaSpine, for the live command lane.
+  // The core half (multiview layout + preview scene) runs under coreMutex; the
+  // engine half (ZoomEngineRuntime::syncSpine: subscription diff + spine
+  // snapshot JSON, all under the engine mutex) runs after coreMutex is
+  // released. syncZoomMediaSpine() still runs both inline for direct callers.
+  void applyZoomSpineCoreState(const rpc::Json& payload);
+  // Engine half. Touches only zoomEngineRuntime_ (created once, never reset),
+  // so it is safe without coreMutex. nullopt when no engine is configured
+  // (the stub spine needs coreMutex: use syncZoomMediaSpine).
+  [[nodiscard]] std::optional<rpc::Json> syncZoomEngineSpineUnlocked(const rpc::Json& payload, double elapsedMs);
+  // #1048 C2: zoom-snapshot's answer when an engine is configured, a pure
+  // engine read made without coreMutex. nullopt = no engine (stub snapshot
+  // reads coreMutex state: use zoomSnapshot()).
+  [[nodiscard]] std::optional<rpc::Json> zoomEngineSnapshotUnlocked() const;
+  // The stub (no engine) spine half; coreMutex state.
+  [[nodiscard]] rpc::Json syncStubZoomSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
   [[nodiscard]] std::unique_ptr<modules::ProgramFrame> drainProgramPreviewJob();
@@ -182,7 +203,67 @@ class MediaCore {
   // blocking I/O — driven at ~60fps by the dedicated display worker under
   // coreMutex. Live command batches apply state without rendering; the next
   // display tick publishes the corresponding frame. Audio/output has its own worker.
+  // TESTS / DIRECT CALLERS ONLY: prepares the engine inputs inline (so under
+  // whatever lock the caller holds), then forwards to the 3-argument overload.
+  // The production render loop (JsonRpcServer) must call the 3-argument form
+  // with inputs prepared BEFORE it takes coreMutex (#1037).
   void renderDisplayTick(int64_t productionSlot = -1, int64_t productionAnchorNs = 0);
+
+  // #1037: everything the render tick needs from the Zoom engine roster,
+  // read BEFORE coreMutex (prepareRenderEngineInputsUnlocked).
+  struct RenderEngineInputs {
+    bool engineConfigured = false;
+    bool valid = false;                      // a pre-read happened (false = never read)
+    std::uint64_t speakerEpoch = 0;          // read BEFORE the view (L3 order)
+    std::uint64_t rosterSpeakerEpoch = 0;    // speakerEpoch if unchanged across the view, else 0
+    std::vector<modules::ZoomEngineParticipant> floorRoster;
+    std::string directedSpeakerId;
+    // #1048 D17: steady-clock ns taken just BEFORE the roster view was read.
+    // Guest A/V trims applied at or after it are never pruned against it.
+    std::int64_t rosterReadStartedNs = 0;
+    // #1049 fetch-before-lock: the frame group (R1 pollCompositorVideoFrames,
+    // R2 latestDecodedVideoFrames, R5 appendCpuVideoFrames) read here, with
+    // coreMutex free, instead of inside the tick. Valid for the tick only if
+    // the engine's session epoch is still `framesSpeakerEpoch` (a leave, Engine
+    // off or new engine process moves it; such frames are dropped).
+    bool framesPrefetched = false;
+    std::uint64_t framesSpeakerEpoch = 0;
+    std::vector<modules::VideoFrame> compositorFrames;  // R1
+    std::vector<modules::VideoFrame> decodedFrames;     // R2
+    std::vector<modules::VideoFrame> cpuArrivalFrames;  // R5
+  };
+  // #1037: read BEFORE coreMutex, for the same reason as pollZoomAudioUnlocked
+  // (ZoomEngineRuntime::mutex_ is held across roster events and the ingest
+  // poll). Touches only zoomEngineRuntime_ (created once, never reset).
+  [[nodiscard]] RenderEngineInputs prepareRenderEngineInputsUnlocked();
+  // The production render tick. Opens ForbidEngineMutexScope("render.display-tick").
+  void renderDisplayTick(int64_t productionSlot, int64_t productionAnchorNs, RenderEngineInputs inputs);
+  // #1049: where the render tick fetches Zoom frames. true (default) = in the
+  // pre-read (before coreMutex; the frame group leaves the hold), false =
+  // inside the tick under coreMutex (the #1037 order, kept as a rollback).
+  // COREVIDEO_RENDER_FRAME_FETCH=before-lock|under-lock overrides it at
+  // construction.
+  [[nodiscard]] bool renderFrameFetchBeforeLock() const {
+    return renderFrameFetchBeforeLock_.load(std::memory_order_relaxed);
+  }
+  // QA harness / tests: switch the order between ticks (render thread idle).
+  void setRenderFrameFetchBeforeLockForTest(bool beforeLock) {
+    renderFrameFetchBeforeLock_.store(beforeLock, std::memory_order_relaxed);
+  }
+  // #1049: Zoom frame age at the moment the render tick consumes a NEW frame
+  // under coreMutex (consume time - ingest observedAt, ns), the same point in
+  // both fetch orders. Sampled once per frame per participant; bounded.
+  // OFF by default: the production tick pays one relaxed atomic load and one
+  // acquire load (verbose flag) and returns, with no clock read and no
+  // allocation. Verbose diagnostics or this QA/test switch turn it on.
+  void setZoomFrameAgeSamplingForTest(bool enabled) {
+    zoomFrameAgeSampling_.store(enabled, std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::vector<std::int64_t> takeZoomFrameAgeSamplesNsForTest();
+  [[nodiscard]] std::size_t zoomFrameAgeTrackedParticipantsForTest() const {
+    return zoomFrameAgeLastFrameId_.size();
+  }
+  void observeZoomFrameAgeAtConsume(const std::vector<modules::VideoFrame>& frames);
 
   // Phase 2 audio/output decouple. The audio mix, routed-bus matrix, monitor
   // device render, BS.1770 loudness, encoder submit, output-sender network sync
@@ -296,6 +377,7 @@ class MediaCore {
   void setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
+  [[nodiscard]] modules::ZoomEngineRuntime* zoomEngineRuntimeForTest() { return zoomEngineRuntime_.get(); }
 
   // Test seam (#535 slice 0): register an ISource with the core's SourceBus.
   // Nothing outside native/tests/ calls this — production has no registered
@@ -430,6 +512,13 @@ class MediaCore {
   // roster displayName; `capture:<id>` → the capture device name, or a browser
   // source's URL host; ISO-3). Falls back to the bare id tail.
   [[nodiscard]] std::string resolveIsoDisplayName(const std::string& sourceId) const;
+  // #1073: the name a Tiles member's name line shows. The shell's
+  // set-source-policy displayName first (the Sources name, the same text the
+  // failed slate and the scene lower third carry), then the render tick's
+  // pre-read roster for a zoom: member. Empty means "no name known" and the
+  // tile stays unlabelled; nothing is invented. Render-path cheap: two map
+  // lookups, no snapshot, no engine round-trip.
+  [[nodiscard]] std::string tilesMemberDisplayName(const std::string& sourceId) const;
   // ISO-3 audio pairing: does this ISO source carry its own audio stem? A Zoom
   // participant always does; a `capture:<id>` source does ONLY when the operator
   // paired an audio input to that capture device (captureAudioSources_). A pure
@@ -504,7 +593,13 @@ class MediaCore {
   void setZoomSourceRoster(const rpc::Json& command);
   void setActiveSpeaker(const rpc::Json& command);
   void setScreenShareSource(const rpc::Json& command);
-  void renderSyntheticTick(bool videoOnly = false, int64_t mediaPresentationTime100ns = -1);
+  // `inputs` = the #1037 engine pre-read. nullopt (the command-lane / test
+  // path, N10) prepares it inline; the production display tick passes it in.
+  void renderSyntheticTick(bool videoOnly = false, int64_t mediaPresentationTime100ns = -1,
+                           std::optional<RenderEngineInputs> inputs = std::nullopt);
+  // #1037: the multiview/monitor tally speaker. Engine: the tick's pre-read
+  // (never a full snapshot under coreMutex). Stub: unchanged.
+  [[nodiscard]] std::string tallySpeakerId() const;
   void enqueueProgramFramePreviewEvent();
   void enqueueProgramSharedTextureEvent();
   void enqueueParticipantSharedTextureEvents();
@@ -680,6 +775,8 @@ class MediaCore {
     bool everSeen = false;
     int64_t lastFrameId = -1;
     int64_t lastChangedTickMs = 0;
+    // #1074: per-episode `[tiles-hold]` log latch (compositor/TilesHoldEpisodeLog.h).
+    compositor::TilesHoldEpisodeLog holdLog;
   };
   std::unordered_map<std::string, TilesFrameFreshness> tilesFrameFreshness_;
   // Task 4: the render plan the render tick actually built, cached for
@@ -817,6 +914,20 @@ class MediaCore {
     std::string displayName;
   };
   std::unordered_map<std::string, SourcePolicy> sourcePolicies_;
+  // #1073: the last placed name line per Tiles member, so a steady wall does
+  // not re-derive the band geometry and re-copy the appearance every tick on
+  // every bus. Keyed by member id; hit only when tile rect, insets, name and
+  // style are all unchanged. mutable: buildRenderPlanForScene is const, and
+  // this is a pure memo of its own output. Pruned to the members of the walls
+  // being built (bounded by 2 x 64 entries).
+  struct TilesNameLineMemo {
+    modules::CompositorLayerRect tileRect{};
+    float insetX = 0.f, insetY = 0.f;
+    std::string name;
+    compositor::LowerThirdAppearance style;
+    compositor::TilesNameLinePlacement placed;
+  };
+  mutable std::unordered_map<std::string, TilesNameLineMemo> tilesNameLineMemo_;
   // Resolves the layer's frame key (participantId, else sourceId, else
   // "media:" + mediaAssetId) and fills sourceHealth/dropoutPolicy/
   // sourceDisplayName from sourceBus_ / sourcePolicies_. Called once per
@@ -1043,6 +1154,10 @@ class MediaCore {
   std::mutex videoOutWaitMutex_;
   uint64_t lastVideoOutPublishSeq_ = 0;
   std::shared_ptr<const std::vector<std::uint8_t>> latestProgramNv12_;
+  // NDI graphics key: a reusable all-zero key the output worker sends when no
+  // fresh graphics readback exists (stale, GraphicsKeyRing). Output worker
+  // only, under videoOutputMutex_.
+  std::shared_ptr<const std::vector<std::uint8_t>> transparentGraphicsKey_;
   int latestProgramNv12Width_ = 0;
   int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;
@@ -1050,10 +1165,30 @@ class MediaCore {
   // Recently directed speakers for follow-speaker routes, scoped to one meeting
   // (#478 N2). Written only from plan builds, which run under coreMutex.
   mutable FollowSpeakerHold followSpeakerHold_;
+  // #1037: the last render tick's engine pre-read (coreMutex state). Every
+  // roster/speaker consumer on the render tick and the command lane reads it.
+  RenderEngineInputs renderEngineInputs_;
+  // #1049 (see renderFrameFetchBeforeLock()). Default before-lock: the A/B
+  // measured no median frame-age cost (|delta| <= 0.14 ms) and a lower hold
+  // under engine-mutex contention. under-lock is the rollback lever.
+  std::atomic<bool> renderFrameFetchBeforeLock_{true};
+  // #1049 frame age at consume (render thread, under coreMutex).
+  std::atomic<bool> zoomFrameAgeSampling_{false};
+  std::vector<std::int64_t> zoomFrameAgeSamplesNs_;
+  std::unordered_map<std::string, std::int64_t> zoomFrameAgeLastFrameId_;
+  std::uint64_t zoomFrameAgeEpoch_ = 0;  // the session the last-id map belongs to
+  std::chrono::steady_clock::time_point zoomFrameAgeWindowStart_{};
+  // #1037 R3: the Zoom half of the video consumer demand the render tick
+  // computed, applied to the engine by the NEXT tick's pre-read (coreMutex
+  // free). Accessed ONLY through std::atomic_load/store_explicit, the same
+  // pattern as programOutputConfiguration_.
+  std::shared_ptr<const std::vector<modules::SourceVideoDemand>> engineVideoDemand_;
   SpeakerFloor speakerFloor_;
   // Command/render/gather state under coreMutex. A changed speaker epoch drops
   // every manual setting so a recycled Zoom user id cannot inherit it.
   std::map<std::string, int> zoomGuestAvOffsets_;
+  // #1048 D17: steady-clock ns each trim in zoomGuestAvOffsets_ was applied.
+  std::map<std::string, std::int64_t> zoomGuestAvAppliedAtNs_;
   std::uint64_t zoomGuestAvEpoch_ = 0;
   std::uint64_t zoomGuestAvRevision_ = 0;
   GuestAvSyncVideo zoomGuestAvVideo_;
@@ -1248,6 +1383,9 @@ class MediaCore {
     std::vector<std::string> loopbackCaptureEndpointIds;
     bool recordingActive = false;
     std::vector<std::string> recordingIsoParticipantIds;
+    // #1030: selected Zoom ISO sources whose participant has left the meeting
+    // roster this tick (canonical ids). Their stems are not silence-filled.
+    std::unordered_set<std::string> departedIsoSourceIds;
     // Per-source ISO video for this tick (ISO-1), zero-copy shared_ptr refs
     // snapshotted from IsoVideoIngress under coreMutex at gather.
     std::vector<modules::IsoSourceVideoFrame> isoSources;
@@ -1291,8 +1429,13 @@ class MediaCore {
   // published members. The caller owns the locking (so the same trio serves both the
   // worker — phased/locked — and the synchronous test path — single-threaded, no locks).
   [[nodiscard]] std::vector<modules::AudioFrame> pollZoomAudioUnlocked();
+  // #1030: the meeting roster's ids for ISO departure, read BEFORE coreMutex
+  // for the same reason as pollZoomAudioUnlocked (the engine mutex is held
+  // across event handling and the ingest poll). nullopt = no engine.
+  [[nodiscard]] std::optional<std::unordered_set<std::string>> readZoomRosterIdsUnlocked();
   [[nodiscard]] AudioOutputWorkItem gatherAudioOutputWork(
-      std::vector<modules::AudioFrame> prePolledZoomAudio);
+      std::vector<modules::AudioFrame> prePolledZoomAudio,
+      std::optional<std::unordered_set<std::string>> prePolledRosterIds = std::nullopt);
   [[nodiscard]] AudioOutputResults runAudioOutputWork(AudioOutputWorkItem& work);
   void publishAudioOutputResults(const AudioOutputResults& results);
   // INNER lock guarding the audio/output module state (mixer, monitorOutput, encoder,

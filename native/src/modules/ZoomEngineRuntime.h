@@ -7,6 +7,7 @@
 #include "modules/ZoomPlayoutTiming.h"
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomEngineState.h"
+#include "modules/EngineMutexGuardrail.h"
 #include "modules/ZoomSubscriptionChurnPolicy.h"
 #include "rpc/Json.h"
 #include <atomic>
@@ -17,6 +18,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -25,6 +27,13 @@
 namespace corevideo::modules {
 
 class ZoomHandoffCpuScope;
+
+// #1037: what the render tick reads from the roster, in one engine-mutex hold.
+struct ZoomRenderView {
+  std::vector<ZoomEngineParticipant> floorParticipants;  // == state_.floorParticipants()
+  std::string directedSpeakerId;                          // after advanceActiveSpeaker(now)
+};
+
 class ZoomEngineRuntime {
  public:
   explicit ZoomEngineRuntime(std::shared_ptr<CpuSourcePreparation> preparation = {});
@@ -62,6 +71,16 @@ class ZoomEngineRuntime {
   // follow-speaker route binding (#478 R2).
   [[nodiscard]] std::string directedSpeakerId();
   [[nodiscard]] std::vector<ZoomEngineParticipant> floorParticipants();
+  // #1030: the meeting roster's SDK ids, or nullopt when no engine is
+  // configured. Takes mutex_: call it OUTSIDE coreMutex (the audio worker reads
+  // it before its gather, like pollCompositorAudioFrames).
+  [[nodiscard]] std::optional<std::vector<std::uint32_t>> rosterIdsIfConfigured();
+  // #1037: ONE mutex_ acquisition for everything the render tick needs from
+  // the roster: the floor participants and the directed speaker, read after the
+  // director is advanced (what a snapshot did for the multiview tally). Call it
+  // OUTSIDE coreMutex (MediaCore::prepareRenderEngineInputsUnlocked).
+  // nullopt = no engine configured.
+  [[nodiscard]] std::optional<ZoomRenderView> renderViewIfConfigured();
   // Moves whenever the meeting session changes under the core: join, leave,
   // Engine off (stopCapture) and every new engine process. A follow-speaker
   // route forgets its speaker history when it moves (#478 N2). Lock-free.
@@ -102,6 +121,15 @@ class ZoomEngineRuntime {
   // thread uses (state apply + frame/audio shared-memory ingest), so tests can
   // exercise the SHM audio ingest without a live engine subprocess.
   void applyEngineEventForTest(const ZoomEngineEvent& event);
+  // TEST SEAM (#1037): the participant ids holding an ISO CPU arrival queue,
+  // i.e. the Zoom ISO video demand the engine has applied. Takes mutex_.
+  [[nodiscard]] std::vector<std::string> isoArrivalDemandIdsForTest();
+  // TEST SEAM (#1049): publishes one decoded camera frame exactly as the video
+  // ingest thread's publish phase does (frame sync queue when enabled, else the
+  // latest-wins slot), stamped as observed at `observedAt`. Takes mutex_.
+  void publishDecodedVideoFrameForTest(const std::string& participantId, std::int64_t frameId,
+      std::shared_ptr<const std::vector<std::uint8_t>> i420, int width, int height,
+      std::chrono::steady_clock::time_point observedAt);
 
  private:
   std::atomic<bool> thumbnailDemand_{true}; // legacy clients retain CPU previews
@@ -175,7 +203,9 @@ class ZoomEngineRuntime {
   // client is destroyed only when the last reference drops.
   std::shared_ptr<ZoomEngineProcessClient> process_;
   ZoomEngineRuntimeState state_;
-  mutable std::mutex mutex_;
+  mutable EngineMutex mutex_;
+  // Lock-free mirror of !config_.executablePath.empty() for configured() (#1030).
+  std::atomic<bool> configuredMirror_{false};
   std::thread reader_;
   bool readerRunning_ = false;
   bool initialized_ = false;

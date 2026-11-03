@@ -590,7 +590,7 @@ public sealed class TransportCoordinator
         var requestedDestinations = _host.BuildSelectedStreamDestinations(validatedOnly: true);
         LaunchLog.Write(
             $"stream: toggle requested action={(starting ? "start" : "stop")} " +
-            $"rtmp={_host.StreamRtmpEnabled} ndi={_host.StreamNdiEnabled} srt={_host.StreamSrtEnabled} " +
+            $"rtmp={_host.StreamRtmpEnabled} srt={_host.StreamSrtEnabled} " +
             $"destinations={_host.FormatStreamDestinationTelemetry(requestedDestinations)} " +
             $"bitrate={_host.StreamLogBitrateMbps:0.0}Mbps " +
             $"codec={_host.StreamVideoCodec} encoder={_host.StreamEncoderMode}");

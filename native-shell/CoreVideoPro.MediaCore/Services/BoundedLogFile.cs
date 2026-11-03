@@ -84,10 +84,24 @@ public static class BoundedLogFile
             start++;
         }
 
-        var marker = Utf8.GetBytes($"[log-rollover] older entries removed; retained newest {read - start} bytes.{Environment.NewLine}");
+        // #1064: say what survived, so a reader knows the period that is gone.
+        var firstRetained = FirstLinePrefix(tail, start, read);
+        var marker = Utf8.GetBytes($"[log-rollover] older entries removed; retained newest {read - start} bytes, starting at: {firstRetained}{Environment.NewLine}");
         stream.SetLength(0);
         stream.Position = 0;
         stream.Write(marker);
         stream.Write(tail, start, read - start);
+    }
+
+    /// <summary>Up to 48 bytes of the first retained line, cut at its end of line and
+    /// decoded leniently (a UTF-8 sequence split at the cut becomes U+FFFD).</summary>
+    private static string FirstLinePrefix(byte[] tail, int start, int end)
+    {
+        var length = 0;
+        while (start + length < end && length < 48 && tail[start + length] != (byte)'\n' && tail[start + length] != (byte)'\r')
+        {
+            length++;
+        }
+        return length == 0 ? "(empty)" : Encoding.UTF8.GetString(tail, start, length);
     }
 }

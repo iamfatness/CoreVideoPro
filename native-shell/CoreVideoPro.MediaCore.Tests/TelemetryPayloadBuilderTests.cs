@@ -103,6 +103,28 @@ public sealed class TelemetryPayloadBuilderTests
         Assert.Equal(2, shape.ZoomParticipantCount);
     }
 
+    // Final review: NDI is its own output, not streaming. A live NDI sender alone (which the
+    // core counts in ActiveSenderCount) must not report StreamingEnabled.
+    [Fact]
+    public void OutputConfigShape_NdiAloneIsNotStreaming()
+    {
+        var snapshot = SecretLadenSnapshot() with
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "live",
+                ActiveSenderCount = 2,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender { SenderId = "ndi", Destination = "ndi", Status = "live" },
+                    new NativeMediaCoreOutputSender { SenderId = "ndi-graphics", Destination = "ndi-graphics", Status = "live" }
+                ]
+            }
+        };
+
+        Assert.False(TelemetryPayloadBuilder.BuildOutputConfigShape(snapshot).StreamingEnabled);
+    }
+
     [Fact]
     public void OutputConfigShape_NullSnapshot_IsEmptyAndDisabled()
     {

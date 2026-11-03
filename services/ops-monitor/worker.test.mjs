@@ -71,7 +71,7 @@ describe("buildTargets", () => {
     const byName = Object.fromEntries(buildTargets({}).map((t) => [t.name, t.url]));
     expect(byName["telemetry-ingest"]).toBe("https://telemetry.corevideo.io/health");
     expect(byName["ops-monitor"]).toBe("https://ops.corevideo.io/health");
-    expect(byName["oauth-broker"]).toBe("https://auth.corevideo.io/oauth/start?probe=ops-monitor");
+    expect(byName["oauth-broker"]).toBe("https://corevideo.iamfatness.us/oauth/start?probe=ops-monitor");
     const o = buildTargets({ OPS_TELEMETRY_URL: "https://t.test/health", OPS_SELF_URL: "https://s.test/health" });
     expect(o.find((t) => t.name === "telemetry-ingest").url).toBe("https://t.test/health");
     expect(o.find((t) => t.name === "ops-monitor").url).toBe("https://s.test/health");
@@ -253,7 +253,7 @@ describe("runChecks (multi-target aggregation)", () => {
     const fetchImpl = makeFetch(
       {
         "oauth-broker": 400, // broker up (expected 4xx)
-        "auth.corevideo.io": 400,
+        "corevideo.iamfatness.us": 400,
         "telemetry.corevideo.io": 503, // DOWN
         "ops.corevideo": 200
       },
@@ -280,7 +280,7 @@ describe("runChecks (multi-target aggregation)", () => {
     const kv = makeKv({ "oauth-broker": "up", "telemetry-ingest": "up", "ops-monitor": "up" });
     const capture = {};
     const fetchImpl = makeFetch(
-      { "auth.corevideo": 400, "telemetry": 200, "ops.corevideo": 200 },
+      { "corevideo.iamfatness": 400, "telemetry": 200, "ops.corevideo": 200 },
       capture
     );
     const summary = await runChecks({ OPS_ALERT_WEBHOOK_URL: "https://hooks.test/abc" }, { fetchImpl, kv, logger: quietLogger });
@@ -295,7 +295,7 @@ describe("runChecks (multi-target aggregation)", () => {
       },
       async put() {}
     };
-    const fetchImpl = makeFetch({ "auth.corevideo": "throw", "telemetry": 200, "ops.corevideo": 200 });
+    const fetchImpl = makeFetch({ "corevideo.iamfatness": "throw", "telemetry": 200, "ops.corevideo": 200 });
     const summary = await runChecks({}, { fetchImpl, kv: brokenKv, logger: quietLogger });
     // broker down; missing prior => baseline up => one down change; log-only (no webhook)
     expect(summary.changes.some((c) => c.name === "oauth-broker" && c.to === "down")).toBe(true);

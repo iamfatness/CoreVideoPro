@@ -20,10 +20,16 @@ public static class TransportStatusFormatter
             ? "Streaming start failed: Media core is busy applying changes. Wait a moment and try Stream again."
             : "Streaming stop failed: Media core is busy applying changes. Wait a moment and try Stream again.";
 
+    /// <summary>The requested ids that belong to the stream. NDI is its own output: its senders
+    /// never prove, fail or hold a stream start.</summary>
+    private static IReadOnlyList<string> StreamDestinationsOnly(IReadOnlyList<string> requestedDestinations) =>
+        requestedDestinations.Where(OutputDestinationKind.IsStream).ToList();
+
     public static bool IsStreamingStartProven(
         NativeMediaCoreStateSnapshot snapshot,
         IReadOnlyList<string> requestedDestinations)
     {
+        requestedDestinations = StreamDestinationsOnly(requestedDestinations);
         if (requestedDestinations.Count == 0)
         {
             return false;
@@ -44,6 +50,7 @@ public static class TransportStatusFormatter
         out string failureStatus)
     {
         failureStatus = string.Empty;
+        requestedDestinations = StreamDestinationsOnly(requestedDestinations);
         if (requestedDestinations.Count == 0)
         {
             return false;
@@ -74,7 +81,9 @@ public static class TransportStatusFormatter
         }
 
         var destinations = string.Join(", ", requestedDestinations.Select(destination => destination.ToUpperInvariant()));
-        var senderState = $"{snapshot.OutputSenderSession.Status}:{snapshot.OutputSenderSession.ActiveSenderCount}";
+        var ndiActive = snapshot.OutputSenderSession.Senders.Count(sender =>
+            !OutputDestinationKind.IsStream(sender.Destination) && sender.Status is "live" or "starting" or "warning");
+        var senderState = $"{snapshot.OutputSenderSession.Status}:{Math.Max(0, snapshot.OutputSenderSession.ActiveSenderCount - ndiActive)}";
         var detail = $"Selected stream destinations ({destinations}) did not arm a native output sender. Sender state {senderState}.";
         failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(detail));
         return true;
@@ -147,13 +156,17 @@ public static class TransportStatusFormatter
     public static bool TryFormatStreamingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
     {
         // Failure of one destination must not stop another healthy output. Individual
-        // sender errors remain in the snapshot and output-health readouts.
-        if (snapshot.OutputSenderSession.Senders.Any(sender => sender.Status is "live" or "starting"))
+        // sender errors remain in the snapshot and output-health readouts. Only stream
+        // senders count: NDI is its own output and neither holds nor fails a stream start.
+        var streamSenders = snapshot.OutputSenderSession.Senders
+            .Where(static sender => OutputDestinationKind.IsStream(sender.Destination))
+            .ToList();
+        if (streamSenders.Any(sender => sender.Status is "live" or "starting"))
         {
             failureStatus = string.Empty;
             return false;
         }
-        var detail = snapshot.OutputSenderSession.Senders
+        var detail = streamSenders
             .Where(static sender => sender.Status is "failed" or "warning")
             .Select(BuildOutputSenderFailureDetail)
             .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
@@ -161,12 +174,18 @@ public static class TransportStatusFormatter
         detail ??= snapshot.OutputHealth
             .Where(item =>
                 item.Status is "failed" or "warning" &&
-                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
+                OutputDestinationKind.IsStream(item.Destination))
             .Select(item => item.Message)
             .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
 
+        // A session warning that is really an NDI sender's own warning is NDI's, not the stream's.
+        var ndiTexts = snapshot.OutputSenderSession.Senders
+            .Where(static sender => !OutputDestinationKind.IsStream(sender.Destination))
+            .SelectMany(static sender => new[] { sender.Warning, sender.LastError })
+            .Where(static text => !string.IsNullOrWhiteSpace(text))
+            .ToList();
         detail ??= snapshot.OutputSenderSession.Warnings
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
+            .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item) && !ndiTexts.Contains(item));
 
         if (string.IsNullOrWhiteSpace(detail))
         {
@@ -330,13 +349,11 @@ public static class TransportStatusFormatter
               lowered.Contains("sender state idle", StringComparison.Ordinal)
                 ? "Native output sender did not start. Check Stream settings and open Health for sender diagnostics."
             : lowered.Contains("select at least one stream destination", StringComparison.Ordinal)
-                ? "No stream destination is selected. Enable RTMP, NDI, SRT, or HLS before streaming."
+                ? "No stream destination is selected. Enable RTMP, SRT, or HLS before streaming."
             : lowered.Contains("configure rtmp", StringComparison.Ordinal) ||
               lowered.Contains("rtmp server url", StringComparison.Ordinal) ||
               lowered.Contains("rtmp stream key", StringComparison.Ordinal)
                 ? "RTMP settings are incomplete. Configure the server URL and stream key before streaming."
-            : lowered.Contains("configure an ndi program name", StringComparison.Ordinal)
-                ? "NDI settings are incomplete. Set the NDI program name before streaming."
             : lowered.Contains("ndi", StringComparison.Ordinal) &&
               (lowered.Contains("output-unavailable", StringComparison.Ordinal) ||
                lowered.Contains("no ndi sender module", StringComparison.Ordinal) ||
@@ -551,11 +568,6 @@ public static class TransportStatusFormatter
             return "RTMP settings missing";
         }
 
-        if (normalized.Contains("NDI settings are incomplete", StringComparison.OrdinalIgnoreCase))
-        {
-            return "NDI settings missing";
-        }
-
         if (normalized.Contains("NDI output is not available", StringComparison.OrdinalIgnoreCase))
         {
             return "NDI unavailable";
@@ -691,7 +703,6 @@ public static class TransportStatusFormatter
 
     public static string? ValidateStreamDestinationCapabilities(
         bool streamRtmpEnabled,
-        bool streamNdiEnabled,
         bool streamSrtEnabled,
         NativeMediaCoreProfile? profile,
         bool hlsEnabled = false)
@@ -704,11 +715,6 @@ public static class TransportStatusFormatter
         if (streamRtmpEnabled && !HasNativeOutputCapability(profile, "rtmp-output"))
         {
             return "RTMP output is selected, but the native media core profile is missing rtmp-output.";
-        }
-
-        if (streamNdiEnabled && !HasNativeOutputCapability(profile, "ndi-output"))
-        {
-            return "NDI output is selected, but the native media core profile is missing ndi-output.";
         }
 
         if (streamSrtEnabled && !HasNativeOutputCapability(profile, "srt-output"))

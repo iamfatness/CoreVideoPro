@@ -146,4 +146,139 @@ public sealed class CrashDumpScannerTests : IDisposable
         var second = CrashDumpScanner.Scan(_dir, advanced);
         Assert.Empty(second);
     }
+
+    // ---- #1039: the installer's WER LocalDumps folder ----
+
+    [Fact]
+    public void ResolveDumpDirectories_NothingConfigured_ListsPerUserDefaultAndInstallerFolder()
+    {
+        var dirs = CrashDumpScanner.ResolveDumpDirectories(_ => null);
+        Assert.Equal(
+            [CrashDumpScanner.DefaultCrashDumpDirectory(), CrashDumpScanner.InstallerCrashDumpDirectory()],
+            dirs);
+    }
+
+    [Fact]
+    public void ResolveDumpDirectories_ExpandsEnvironmentStringsAndDeduplicates()
+    {
+        // The installer writes REG_EXPAND_SZ "%LOCALAPPDATA%\CoreVideoPro\crashes" for each exe.
+        var dirs = CrashDumpScanner.ResolveDumpDirectories(_ => @"%LOCALAPPDATA%\CoreVideoPro\crashes");
+        Assert.Equal(2, dirs.Count);
+        Assert.Contains(CrashDumpScanner.InstallerCrashDumpDirectory(), dirs, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain(dirs, d => d.Contains('%'));
+    }
+
+    [Fact]
+    public void ResolveDumpDirectories_ConfiguredFolderWinsOverInstallerDefault()
+    {
+        var custom = Path.Combine(_dir, "custom-dumps");
+        var dirs = CrashDumpScanner.ResolveDumpDirectories(
+            exe => exe == "corevideo-native.exe" ? custom : null);
+        Assert.Contains(custom, dirs);
+        Assert.DoesNotContain(CrashDumpScanner.InstallerCrashDumpDirectory(), dirs);
+        Assert.Contains(CrashDumpScanner.DefaultCrashDumpDirectory(), dirs);
+    }
+
+    [Fact]
+    public void ResolveDumpDirectories_UnresolvedVariableIsIgnored()
+    {
+        var dirs = CrashDumpScanner.ResolveDumpDirectories(_ => @"%CVP_NO_SUCH_VAR_1039%\x");
+        Assert.DoesNotContain(dirs, d => d.Contains('%'));
+        Assert.Contains(CrashDumpScanner.InstallerCrashDumpDirectory(), dirs);
+    }
+
+    [Fact]
+    public void Scan_MultipleDirectories_FindsDumpsInEachAndListsDuplicatesOnce()
+    {
+        var watermark = new DateTimeOffset(2026, 7, 10, 0, 0, 0, TimeSpan.Zero);
+        var perUser = Directory.CreateDirectory(Path.Combine(_dir, "CrashDumps")).FullName;
+        var installer = Directory.CreateDirectory(Path.Combine(_dir, "crashes")).FullName;
+        var a = Path.Combine(perUser, "corevideo-native.exe.1.dmp");
+        var b = Path.Combine(installer, "corevideo-zoom-engine.exe.2.dmp");
+        File.WriteAllBytes(a, new byte[8]);
+        File.WriteAllBytes(b, new byte[16]);
+        File.SetLastWriteTimeUtc(a, (watermark + TimeSpan.FromHours(1)).UtcDateTime);
+        File.SetLastWriteTimeUtc(b, (watermark + TimeSpan.FromHours(2)).UtcDateTime);
+
+        // Same folder given twice (different spelling) must not double-list.
+        var dumps = CrashDumpScanner.Scan([perUser, installer, perUser + Path.DirectorySeparatorChar, Path.Combine(_dir, "missing")], watermark);
+
+        Assert.Equal(2, dumps.Count);
+        Assert.Equal(a, dumps[0].Path);
+        Assert.Equal("corevideo-zoom-engine.exe", dumps[1].ProcessName);
+        Assert.Equal(16, dumps[1].Length);
+    }
+
+    [Fact]
+    public void Scan_UnreadableDirectoryDoesNotHideDumpsInTheOthers()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var watermark = new DateTimeOffset(2026, 7, 10, 0, 0, 0, TimeSpan.Zero);
+        var good = Directory.CreateDirectory(Path.Combine(_dir, "CrashDumps")).FullName;
+        var denied = Directory.CreateDirectory(Path.Combine(_dir, "denied")).FullName;
+        var dump = Path.Combine(good, "corevideo-native.exe.1.dmp");
+        File.WriteAllBytes(dump, new byte[8]);
+        File.SetLastWriteTimeUtc(dump, (watermark + TimeSpan.FromHours(1)).UtcDateTime);
+
+        using var denial = DenyListing(denied);
+        Assert.True(Directory.Exists(denied));
+        Assert.Throws<UnauthorizedAccessException>(() => CrashDumpScanner.Scan(denied, watermark));
+
+        // The unreadable folder comes FIRST: it used to abort the whole scan.
+        var dumps = CrashDumpScanner.Scan([denied, good], watermark);
+        Assert.Single(dumps);
+        Assert.Equal(dump, dumps[0].Path);
+    }
+
+    [Fact]
+    public void ReadConfiguredDumpFolderFromRegistry_AgainstTheLiveKey_IsNullOrAnExpandablePath()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        foreach (var exe in CrashDumpScanner.MonitoredExecutables)
+        {
+            var raw = CrashDumpScanner.ReadConfiguredDumpFolderFromRegistry(exe);
+            if (raw is null)
+            {
+                continue; // not installed / not configured on this machine
+            }
+
+            var expanded = Environment.ExpandEnvironmentVariables(raw);
+            Assert.False(string.IsNullOrWhiteSpace(expanded), exe);
+            Assert.DoesNotContain('%', expanded);
+        }
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static IDisposable DenyListing(string directory)
+    {
+        var info = new DirectoryInfo(directory);
+        var security = info.GetAccessControl();
+        var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        var rule = new System.Security.AccessControl.FileSystemAccessRule(
+            user,
+            System.Security.AccessControl.FileSystemRights.ListDirectory,
+            System.Security.AccessControl.AccessControlType.Deny);
+        security.AddAccessRule(rule);
+        info.SetAccessControl(security);
+        return new Restore(info, rule);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private sealed class Restore(DirectoryInfo info, System.Security.AccessControl.FileSystemAccessRule rule) : IDisposable
+    {
+        public void Dispose()
+        {
+            var security = info.GetAccessControl();
+            security.RemoveAccessRule(rule);
+            info.SetAccessControl(security);
+        }
+    }
 }

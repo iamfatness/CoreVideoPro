@@ -3,10 +3,14 @@
 #include "rpc/Json.h"
 #include "rpc/JsonRpcServer.h"
 #include "rpc/CommandMailbox.h"
+#include "modules/EngineMutexGuardrail.h"
+#include "modules/ZoomEngineClient.h"
+#include "modules/ZoomEngineRuntime.h"
 #include <thread>
 #include "core/CoreStateCapture.h"
 #include <future>
 #include <latch>
+#include <chrono>
 
 #include <gtest/gtest.h>
 
@@ -17,6 +21,20 @@
 #include <sstream>
 #include <string>
 #include <utility>
+
+namespace {
+// #907: a latch the server never reaches must FAIL the test within a bound, not
+// hang the whole CTest job until its timeout (which names no test).
+template <class Latch>
+bool waitForLatch(Latch& latch, std::chrono::seconds bound = std::chrono::seconds(30)) {
+  const auto deadline = std::chrono::steady_clock::now() + bound;
+  while (!latch.try_wait()) {
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return true;
+}
+}  // namespace
 
 TEST(JsonRpcServer, StalledResponseAssemblyDoesNotHoldRenderLockAndCapturesRemainOrdered) {
   // This injects response contention, not GPU cold-start latency. Use the same
@@ -32,7 +50,7 @@ TEST(JsonRpcServer, StalledResponseAssemblyDoesNotHoldRenderLockAndCapturesRemai
   std::istringstream input("{\"id\":1,\"type\":\"snapshot\"}\n{\"id\":2,\"type\":\"snapshot\"}\n{\"id\":3,\"type\":\"snapshot\"}\n{\"id\":4,\"type\":\"get-output-session\"}\n");
   std::ostringstream output;
   auto run = std::async(std::launch::async, [&] { server.run(input, output); });
-  entered.wait();
+  if (!waitForLatch(entered)) { release.count_down(); run.get(); ASSERT_TRUE(false) << "response assembly was never reached"; }
   // Three commands saturate the executing/pending capture slots. Command three
   // waits for capacity without owning coreMutex; render must continue here.
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -68,7 +86,7 @@ TEST(JsonRpcServer, SlowWriterPreservesAcceptedResponsesWithoutHoldingRenderLock
   for (int i = 1; i <= 64; ++i) commands << "{\"id\":" << i << ",\"type\":\"snapshot\"}\n";
   std::istringstream input(commands.str()); std::ostream output(&buffer);
   auto run = std::async(std::launch::async, [&] { server.run(input, output); });
-  buffer.entered.wait();
+  if (!waitForLatch(buffer.entered)) { buffer.release.count_down(); run.get(); ASSERT_TRUE(false) << "writer was never reached"; }
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   buffer.release.count_down(); run.get();
   std::map<int, double> frames;
@@ -99,7 +117,7 @@ TEST(JsonRpcServer, SoftwarePreviewKeepsPublishingDuringStalledResponseAssembly)
   });
   std::istringstream input("{\"id\":1,\"type\":\"snapshot\"}\n"); std::ostream output(&observer);
   auto run = std::async(std::launch::async, [&] { server.run(input, output); });
-  entered.wait();
+  if (!waitForLatch(entered)) { release.count_down(); run.get(); ASSERT_TRUE(false) << "response assembly was never reached"; }
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (!observer.received && std::chrono::steady_clock::now() < deadline)
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -932,4 +950,97 @@ TEST(GradePreviewRpc, ValidPressureIsOverloadedAndCannotMaskLaterInvalidIdentity
   EXPECT_GT(snapshot.get("gradePreview")->getNumber("eventOwnedByteBound"), 0);
   (void)core.drainGradePreviewEvents();
   EXPECT_TRUE(server.handle(request(16)).get("ok")->asBool());
+}
+
+// #1048 C1/C2: with a Zoom engine configured, the command lane runs
+// zoom-media-spine-sync's engine half (ZoomEngineRuntime::syncSpine) and the
+// whole of zoom-snapshot with coreMutex RELEASED. The loop gates both commands
+// with ForbidEngineMutexScope("cmd.handle"), so any engine mutex acquisition
+// left under coreMutex is counted. Command order is preserved: the spine's
+// engine half lands before the next command is handled.
+namespace {
+void setServerTestEnv(const char* name, const char* value) {
+#if defined(_WIN32)
+  _putenv_s(name, value ? value : "");
+#else
+  if (value) setenv(name, value, 1); else unsetenv(name);
+#endif
+}
+}  // namespace
+
+TEST(JsonRpcServer, SpineSyncAndZoomSnapshotRunTheirEngineWorkWithoutCoreMutex) {
+  using corevideo::rpc::Json;
+  setServerTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  setServerTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  ASSERT_TRUE(core.zoomEngineConfigured());
+  auto* runtime = core.zoomEngineRuntimeForTest();
+  runtime->applyEngineEventForTest(*corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Host"},{"id":2,"name":"Guest"}]})"));
+
+  Json::Array tiles;
+  for (int i = 0; i < 2; ++i)
+    tiles.emplace_back(Json::Object{{"sourceId", "zoom:" + std::to_string(i + 1)}, {"kind", "participant"},
+        {"participantId", std::to_string(i + 1)}, {"slot", i}, {"label", "Tile"}});
+  const Json spine = Json::Object{{"id", "spine"}, {"type", "zoom-media-spine-sync"}, {"elapsedMs", 33},
+      {"payload", Json::Object{
+          {"multiview", Json::Object{{"canvasWidth", 1920}, {"canvasHeight", 1080}, {"sources", tiles}}},
+          {"subscriptions", Json::Array{}},
+          {"directorExcludedParticipantIds", Json::Array{std::string("2")}}}}};
+  std::istringstream input(spine.stringify() + "\n" +
+                           R"({"id":"zsnap","type":"zoom-snapshot"})" "\n");
+  std::ostringstream output;
+
+  const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
+  {
+    corevideo::rpc::JsonRpcServer server(core);
+    server.run(input, output);
+  }
+  EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
+      << "zoom-media-spine-sync / zoom-snapshot took the Zoom engine mutex under coreMutex";
+
+  std::map<std::string, Json> responses;
+  std::istringstream lines(output.str());
+  std::string line;
+  while (std::getline(lines, line)) {
+    auto parsed = Json::parse(line);
+    if (parsed && parsed->get("id") && parsed->get("id")->isString())
+      responses.emplace(parsed->getString("id"), *parsed);
+  }
+  ASSERT_EQ(responses.count("spine"), 1u);
+  ASSERT_EQ(responses.count("zsnap"), 1u);
+  const auto& spineResponse = responses["spine"];
+  EXPECT_TRUE(spineResponse.get("ok")->asBool()) << spineResponse.stringify();
+  EXPECT_EQ(spineResponse.getString("type"), "zoom-media-spine-sync");
+  ASSERT_NE(spineResponse.get("spineSnapshot"), nullptr);
+  EXPECT_TRUE(spineResponse.get("spineSnapshot")->isObject()) << "the engine half must still answer";
+  ASSERT_NE(spineResponse.get("zoom"), nullptr);
+  EXPECT_TRUE(spineResponse.get("zoom")->isObject());
+
+  // The core half (multiview layout) still applied under coreMutex.
+  const auto session = core.sessionState();
+  ASSERT_NE(session.get("multiviewer"), nullptr);
+  EXPECT_EQ(session.get("multiviewer")->getNumber("sourceCount"), 2);
+
+  // Ordering: the snapshot requested AFTER the spine sync sees its exclusion.
+  const auto& snapshotResponse = responses["zsnap"];
+  EXPECT_TRUE(snapshotResponse.get("ok")->asBool());
+  const auto* participants = snapshotResponse.get("snapshot") ? snapshotResponse.get("snapshot")->get("participants") : nullptr;
+  ASSERT_TRUE(participants && participants->isArray()) << snapshotResponse.stringify();
+  bool sawExcluded = false;
+  for (const auto& participant : participants->asArray()) {
+    if (participant.getString("userId") == "2") sawExcluded = participant.get("directorExcluded") &&
+                                                                  participant.get("directorExcluded")->asBool();
+  }
+  EXPECT_TRUE(sawExcluded) << "the spine's engine half must land before the next command: "
+                           << snapshotResponse.stringify();
+
+  // The gate is live: handle() called directly (tests/direct callers) still does
+  // both halves inline, and an engine call inside the forbidden scope counts.
+  {
+    corevideo::modules::ForbidEngineMutexScope forbidden("test.cmd.handle");
+    corevideo::rpc::JsonRpcServer direct(core);
+    (void)direct.handle(Json::Object{{"id", "z2"}, {"type", "zoom-snapshot"}});
+  }
+  EXPECT_GT(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore);
 }

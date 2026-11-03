@@ -110,8 +110,11 @@ public static class TelemetryPayloadBuilder
         {
             // Recording is "enabled" when a session is actively writing.
             RecordingEnabled = snapshot.Recording is { Active: true },
-            // Streaming is "enabled" when at least one output sender is active.
-            StreamingEnabled = snapshot.OutputSenderSession.ActiveSenderCount > 0,
+            // Streaming is "enabled" when at least one stream sender is active (the core's
+            // live/starting/warning). NDI senders are their own output, not streaming.
+            StreamingEnabled = snapshot.OutputSenderSession.Senders.Any(static sender =>
+                OutputDestinationKind.IsStream(sender.Destination) &&
+                sender.Status is "live" or "starting" or "warning"),
             VcamEnabled = snapshot.VirtualCamera.Enabled,
             IsoSourceCount = snapshot.IsoParticipantIds.Count,
             CaptureSourceCount = captureSourceCount,

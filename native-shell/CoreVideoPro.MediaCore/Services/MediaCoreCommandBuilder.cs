@@ -218,7 +218,8 @@ public static class MediaCoreCommandBuilder
                     ["glowSoftness"] = tiles.GlowSoftness,
                     ["animateLayout"] = tiles.AnimateLayout,
                     ["animationDurationMs"] = tiles.AnimationDurationMs,
-                    ["fillMode"] = tiles.FillMode
+                    ["fillMode"] = tiles.FillMode,
+                    ["nameEachTile"] = tiles.NameEachTile
                 }
             };
 
@@ -691,7 +692,7 @@ public static class MediaCoreCommandBuilder
 
     private static NativeMediaCoreCommand? BuildOutputCommand(MediaCoreProductionSyncContext context)
     {
-        if (!context.Recording && !context.Streaming)
+        if (!context.Recording && !context.Streaming && !context.NdiOutput)
         {
             return null;
         }
@@ -705,6 +706,11 @@ public static class MediaCoreCommandBuilder
         if (context.Streaming)
         {
             destinations.AddRange(context.StreamDestinations.Where(destination => !string.IsNullOrWhiteSpace(destination)));
+        }
+
+        if (context.NdiOutput)
+        {
+            destinations.AddRange(context.NdiDestinations.Where(destination => !string.IsNullOrWhiteSpace(destination)));
         }
 
         if (destinations.Count == 0)

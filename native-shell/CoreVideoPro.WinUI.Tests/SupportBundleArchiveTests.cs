@@ -54,6 +54,69 @@ public sealed class SupportBundleArchiveTests : IDisposable
     }
 
     [Fact]
+    public async Task Archive_DumpListing_IncludesInstallerLocalDumpsFolder()
+    {
+        var jsonPath = WriteFile("support-1039.json", "{}");
+        var perUser = Path.Combine(_root, "CrashDumps");
+        var installer = Path.Combine(_root, "CoreVideoPro", "crashes");
+        Directory.CreateDirectory(perUser);
+        Directory.CreateDirectory(installer);
+        File.WriteAllBytes(Path.Combine(perUser, "corevideo-native.exe.1.dmp"), new byte[8]);
+        File.WriteAllBytes(Path.Combine(installer, "corevideo-zoom-engine.exe.2.dmp"), new byte[8]);
+
+        var zipPath = SupportBundleArchiveBuilder.DefaultArchivePath(jsonPath);
+        await SupportBundleArchiveBuilder.WriteArchiveAsync(zipPath, jsonPath, new SupportBundleArchiveOptions
+        {
+            CrashDumpsDirectory = perUser,
+            ExtraCrashDumpsDirectories = [installer, perUser]
+        });
+
+        var dumps = ReadZipEntries(zipPath)["dumps.txt"];
+        Assert.Contains("corevideo-native.exe.1.dmp", dumps);
+        Assert.Contains("corevideo-zoom-engine.exe.2.dmp", dumps);
+        Assert.Contains($"Directory: {installer}", dumps);
+        Assert.Equal(1, dumps.Split($"Directory: {perUser}").Length - 1);
+    }
+
+    [Fact]
+    public async Task Archive_DumpListing_NotesAnUnreadableFolderAndStillListsTheGoodOne()
+    {
+        var jsonPath = WriteFile("support-1039b.json", "{}");
+        var good = Path.Combine(_root, "CrashDumps");
+        var denied = Path.Combine(_root, "denied");
+        Directory.CreateDirectory(good);
+        Directory.CreateDirectory(denied);
+        File.WriteAllBytes(Path.Combine(good, "corevideo-native.exe.1.dmp"), new byte[8]);
+
+        var info = new DirectoryInfo(denied);
+        var security = info.GetAccessControl();
+        var rule = new System.Security.AccessControl.FileSystemAccessRule(
+            System.Security.Principal.WindowsIdentity.GetCurrent().User!,
+            System.Security.AccessControl.FileSystemRights.ListDirectory,
+            System.Security.AccessControl.AccessControlType.Deny);
+        security.AddAccessRule(rule);
+        info.SetAccessControl(security);
+        try
+        {
+            var zipPath = SupportBundleArchiveBuilder.DefaultArchivePath(jsonPath);
+            await SupportBundleArchiveBuilder.WriteArchiveAsync(zipPath, jsonPath, new SupportBundleArchiveOptions
+            {
+                CrashDumpsDirectory = denied,
+                ExtraCrashDumpsDirectories = [good]
+            });
+
+            var dumps = ReadZipEntries(zipPath)["dumps.txt"];
+            Assert.Contains("could not be listed", dumps);
+            Assert.Contains("corevideo-native.exe.1.dmp", dumps);
+        }
+        finally
+        {
+            security.RemoveAccessRule(rule);
+            info.SetAccessControl(security);
+        }
+    }
+
+    [Fact]
     public async Task Archive_ContainsManifestJsonLogsAndDumpListing()
     {
         var jsonPath = WriteFile("support-20260718.json", "{\"id\":\"support-20260718\"}");
