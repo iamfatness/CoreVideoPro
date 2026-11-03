@@ -43,6 +43,7 @@ public sealed class GraphicsDesignWorkflow
     public Task<GraphicsDesignResult> OpenInDesignerAsync(GraphicsDesign design)
     {
         if (!IsEditing(design)) return OpenAsync(design.DesignId);
+        if (_session.Template is { } template) RestoreTableValues(template);
         Opened?.Invoke(this, EventArgs.Empty);
         return Task.FromResult(new GraphicsDesignResult(true, "", design, _session.Template));
     }
@@ -60,6 +61,16 @@ public sealed class GraphicsDesignWorkflow
             : new GraphicsDesignResult(false, "Choose a blank kind or a look to start from.", null, null);
         if (!created.Ok || created.Template is not { } template) return created;
         if (!Show(template)) return created with { Message = created.Message + " It is stored; open it from Your designs." };
+        await ReleaseLeft(leaving, template);
+        return created;
+    }
+
+    public async Task<GraphicsDesignResult> CreateDataTableAsync(string name, GraphicsDataSource source, GraphicsDataBinding binding)
+    {
+        var leaving = Leaving();
+        var created = await _designs.CreateDataTableAsync(name, source, binding);
+        if (!created.Ok || created.Template is not { } template) return created;
+        if (!Show(template)) return created with { Message = created.Message + " It is stored. Open it from Your designs." };
         await ReleaseLeft(leaving, template);
         return created;
     }
@@ -181,8 +192,15 @@ public sealed class GraphicsDesignWorkflow
         var lowerThird = kind.Family == "lower-third";
         var hotkey = existing is not null ? existing.Hotkey : GraphicsBuilder.NextFreeHotkey(rows);
         // Text typed on the Operate row survives the re-pin (re-review I1); see GraphicsRowFields.KeepTyped.
-        return GraphicsRowFields.KeepTyped(GraphicsBuilder.RowFrom(kind, template, draft, existing?.Name ?? design.Name, hotkey, existing?.PlayOutAfterMs ?? (lowerThird ? 8000 : 0),
+        var row = GraphicsRowFields.KeepTyped(GraphicsBuilder.RowFrom(kind, template, draft, existing?.Name ?? design.Name, hotkey, existing?.PlayOutAfterMs ?? (lowerThird ? 8000 : 0),
             existing?.FollowSources ?? lowerThird, rows, existing, existing?.Motion, existing?.Variants, existing?.Clock), existing);
+        if (GraphicsDataTable.Binding(design.Definition) is not { } binding) return row;
+        if (existing?.DataBinding is not { } pinned || pinned.SourceId != binding.SourceId)
+            return row with { DataBinding = binding };
+        var fields = row.Fields.ToDictionary(StringComparer.Ordinal);
+        foreach (var cell in existing.Fields.Where(field => field.Key.StartsWith(GraphicsDataTable.RowPrefix, StringComparison.Ordinal)))
+            fields[cell.Key] = cell.Value.Clone();
+        return row with { DataBinding = binding with { Revision = pinned.Revision }, Fields = fields };
     }
 
     /// <summary>The design the editor is on, when moving off it may uninstall it: a browse draft (not a
@@ -211,8 +229,22 @@ public sealed class GraphicsDesignWorkflow
         _session.Observe(_snapshot());
         _session.Browse(template);
         if (_session.Draft is not { } draft || draft.TemplateId != template.TemplateId || draft.TemplateVersion != template.TemplateVersion) return false;
+        RestoreTableValues(template);
         Opened?.Invoke(this, EventArgs.Empty);
         return true;
+    }
+
+    private void RestoreTableValues(NativeGraphicsTemplate template)
+    {
+        if (_session.Draft is not { Scratch: null } draft || _session.CanUndo ||
+            template.Definition is not { } definition || GraphicsDataTable.Binding(definition) is not { } binding) return;
+        var fields = draft.Fields.EnumerateObject().ToDictionary(field => field.Name, field => field.Value.Clone(), StringComparer.Ordinal);
+        var published = _library.Document.Playlist.FirstOrDefault(row => row.TemplateId == template.TemplateId &&
+            row.TemplateVersion == template.TemplateVersion && row.DataBinding?.SourceId == binding.SourceId);
+        foreach (var field in GraphicsTemplateEditor.TemplateFields(NativeGraphicsScratch.From(definition)))
+            if (field.Id.StartsWith(GraphicsDataTable.RowPrefix, StringComparison.Ordinal))
+                fields[field.Id] = published?.Fields.GetValueOrDefault(field.Id) ?? field.Default ?? JsonSerializer.SerializeToElement("");
+        _session.Rebase(draft with { Fields = JsonSerializer.SerializeToElement(fields) });
     }
 
     private static string CopyName(string look)

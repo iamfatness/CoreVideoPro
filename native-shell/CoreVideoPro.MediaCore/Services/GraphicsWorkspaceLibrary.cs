@@ -117,10 +117,10 @@ public sealed partial class GraphicsWorkspaceLibrary
     }
     /// <summary>Replace the show's designs (GraphicsDesignService owns their lifecycle). Every
     /// other save rewrites the document with <c>with</c>, so designs survive those untouched.</summary>
-    public async Task<bool> SaveDesignsAsync(IReadOnlyList<GraphicsDesign> designs, string success)
+    public async Task<bool> SaveDesignsAsync(IReadOnlyList<GraphicsDesign> designs, string success, GraphicsDataSource? source = null)
     {
         await LoadAsync();
-        return await Save(Document with { Designs = designs.ToArray() }, success);
+        return await Save(Document with { Designs = designs.ToArray(), DataSources = source is null ? Document.DataSources : [.. Document.DataSources, source] }, success);
     }
     public async Task<bool> AddSourceColumnAsync(string id)
     {

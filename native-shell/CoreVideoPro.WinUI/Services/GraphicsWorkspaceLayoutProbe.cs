@@ -302,7 +302,42 @@ internal static class GraphicsWorkspaceLayoutProbe
         studio.GraphicsDesignerOpen = false; await Task.Delay(80); page.UpdateLayout();
         Require(designer.Visibility == Visibility.Collapsed, "Your designs did not close the Designer");
         await CheckOperateRowVariableAsync(page, studio, seedTemplate, checks, directory);
+        await CheckDataTableAsync(page, studio, checks, directory);
     }
+    private static async Task CheckDataTableAsync(OverlaysPage page, StudioViewModel studio, List<string> checks, string directory)
+    {
+        var mode = studio.GraphicsMode;
+        studio.GraphicsMode = StudioViewModel.GraphicsModeDesign;
+        await Task.Delay(80);
+        page.UpdateLayout();
+        Require(Button(page, "Data table…").ActualHeight > 0, "Design did not show the local data import entry.");
+        var data = GraphicsLocalData.Parse("id,player,score\na,Ada,9\nb,Bob,12", "csv", "id");
+        var binding = new GraphicsDataBinding("probe-data", "id", ["player", "score"], "score", 4, 1);
+        Require(await studio.GraphicsLibrary.SaveLocalDataAsync(binding.SourceId, "Probe scores", data) is not null,
+            "The probe dataset could not be saved.");
+        var row = new GraphicsPlaylistRow
+        {
+            Id = "probe-data", Kind = GraphicsPlaylistRow.Title, Name = "Probe leaderboard",
+            TemplateId = "design-probe-data", TemplateVersion = 1, DataBinding = binding, Fields = GraphicsDataTable.Fields(data, binding)
+        };
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([row]), "The probe data row could not be saved.");
+        studio.GraphicsMode = StudioViewModel.GraphicsModePlayout;
+        await Task.Delay(100);
+        var playout = Descendants(page).OfType<GraphicsPlayoutControl>().Single();
+        playout.SelectRow(row.Id);
+        foreach (var (width, height, label) in new[] { (1320d, 640d, "1360x768"), (1560d, 772d, "1600x900") })
+        {
+            page.Width = width; page.Height = height;
+            await Task.Delay(80); page.UpdateLayout();
+            Require(Button(playout, "Load CSV / JSON…").ActualHeight > 0 && Button(playout, "Publish data").ActualHeight > 0,
+                "The data row does not expose separate import and publication actions.");
+            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-data-table-{label}.png"));
+        }
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([]), "Could not clear the probe playlist.");
+        studio.GraphicsMode = mode;
+        checks.Add("Design exposes data-table import and Operate exposes independent load and publish actions at both viewport sizes.");
+    }
+
     private static async Task CheckContentAsync(OverlaysPage page, StudioViewModel studio, GraphicsDesignerControl designer,
         List<string> checks, string directory)
     {

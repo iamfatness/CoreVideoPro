@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using CoreVideoPro.MediaCore.Services;
 
 namespace CoreVideoPro.MediaCore.Models;
 
@@ -32,6 +33,7 @@ public sealed record GraphicsPlaylistRow
     public NativeGraphicsImageReference? Image { get; init; }
     /// <summary>Guest rows: name/title come from the Sources page text of the entry's source.</summary>
     public bool FollowSources { get; init; }
+    public GraphicsDataBinding? DataBinding { get; init; }
     public IReadOnlyDictionary<string, string> SourceMappings { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
     public bool ShowClock { get; init; }
     /// <summary>In/out motion sent with the instance (titler spec Phase 1 "in/out transitions").
@@ -65,6 +67,7 @@ public sealed record GraphicsPlaylistRow
     [JsonIgnore] public bool IsValid => ValidId(Id) && Kinds.Contains(Kind, StringComparer.Ordinal) && Name is { Length: > 0 and <= 128 } &&
         Hotkey is not null && ValidHotkey(Hotkey) && PlayOutAfterChoices.Contains(PlayOutAfterMs) &&
         TemplateId is not null && TemplateId.Length <= 64 && TemplateVersion >= 0 && (TemplateId.Length == 0) == (TemplateVersion == 0) &&
+        (DataBinding is null || DataBinding.Valid() && Kind == Title && !HasVariants) &&
         SourceMappings is { Count: <= 30 } && SourceMappings.All(mapping => ValidVariableId(mapping.Key) && mapping.Value is not null && ValidVariableId(mapping.Value)) &&
         Fields is not null && Fields.Count <= 32 && Fields.Keys.All(k => k.Length is > 0 and <= 64) && Style is { IsValid: true } &&
         (ImagePath is null || (ImagePath.Length <= 2048 && !ImagePath.Contains('\0'))) && ValidMotion(Motion) && ValidVariants(Variants) && (Placement is null || Placement.IsValid) && (Clock is null || Clock.IsValid) &&

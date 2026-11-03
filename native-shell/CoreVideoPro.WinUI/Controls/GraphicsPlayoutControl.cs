@@ -453,6 +453,8 @@ public sealed partial class GraphicsPlayoutControl : UserControl
         if (row is not null && mappedFields.Length > 0)
             signature += string.Join('|', columns.Select(c => $"{c.Id}:{c.Label}")) +
                 string.Join('|', mappedFields.Select(f => $"{f.Id}:{row.SourceMappings.GetValueOrDefault(f.Id)}"));
+        if (row?.DataBinding is { } data)
+            signature += $"|data:{data.SourceId}:{data.Revision}:{_library?.Document.DataSources.FirstOrDefault(source => source.Id == data.SourceId)?.Revision}";
         // Variable values are not in the signature: a commit (Enter / LostFocus) must not rebuild the inspector under the
         // box being typed in. Boxes without focus show the row's current value instead.
         if (signature == _inspectorSignature) {
@@ -539,6 +541,9 @@ public sealed partial class GraphicsPlayoutControl : UserControl
 
             if (row.Kind == GraphicsPlaylistRow.Guest || row.HasVariants)
                 _inspector.Children.Add(NamesListEditor(row, mappedFields.Select(field => field.Id).ToArray()));
+
+            if (row.DataBinding is { } dataBinding && _library is { } library)
+                _inspector.Children.Add(DataActions(row, dataBinding, library));
 
             var playOut = new ComboBox { Header = "Hides after", ItemsSource = PlayOutChoices.Select(c => c.Label).ToArray(), SelectedIndex = Math.Max(0, Array.FindIndex(PlayOutChoices, c => c.Ms == row.PlayOutAfterMs)), HorizontalAlignment = HorizontalAlignment.Stretch };
             playOut.SelectionChanged += (_, _) => { if (!_loading && playOut.SelectedIndex >= 0 && PlayOutChoices[playOut.SelectedIndex].Ms != row.PlayOutAfterMs) _ = SaveRowAsync(id, r => r with { PlayOutAfterMs = PlayOutChoices[playOut.SelectedIndex].Ms }); };

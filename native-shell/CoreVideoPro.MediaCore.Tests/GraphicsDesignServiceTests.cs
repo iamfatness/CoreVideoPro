@@ -83,6 +83,28 @@ public sealed class GraphicsDesignServiceTests : IDisposable
     }
     private void RestartCore() => _state = _state with { CoreEpoch = "core-b", Templates = _state.Templates.Where(t => BuiltIns.Contains(t.TemplateId)).ToArray(), TemplateInstalls = [], Instances = [] };
 
+    [Fact]
+    public async Task LocalDataDesignSavesInitialRowsAndReinstallsThePinnedTable()
+    {
+        var (library, service) = Build();
+        var workflow = new GraphicsDesignWorkflow(service, _session!, library, Observe);
+        var data = GraphicsLocalData.Parse("id,player,score\na,Ada,9\nb,Bob,12", "csv", "id");
+        var source = new GraphicsDataSource("scores", "Scores", 1, DateTimeOffset.UtcNow, data);
+        var binding = new GraphicsDataBinding("scores", "id", ["player", "score"], "score", 4, 1);
+        var created = await workflow.CreateDataTableAsync("Scores", source, binding);
+        Assert.True(created.Ok, created.Message);
+        Assert.Contains("Bob", _session!.Draft!.Fields.GetProperty("table-row-1").GetString());
+        var saved = await workflow.SaveToPlaylistAsync();
+        Assert.True(saved.Ok, saved.Message);
+        var row = Assert.Single(library.Document.Playlist);
+        Assert.Equal(1, row.DataBinding!.Revision);
+        Assert.Contains("Bob", row.Fields["table-row-1"].GetString());
+        RestartCore();
+        var reinstalled = await service.EnsureInstalledForPlaylistAsync();
+        Assert.True(reinstalled.Ok, reinstalled.Message);
+        Assert.True(IsInstalled(row.TemplateId, row.TemplateVersion));
+    }
+
     [Fact] public async Task CreateBlankStoresADesignAndInstallsVersionOne()
     {
         var (library, service) = Build();

@@ -49,6 +49,15 @@ public sealed record GraphicsLocalData(GraphicsDataColumn[] Columns, GraphicsDat
         { throw new InvalidDataException("The data file is malformed.", ex); }
     }
 
+    public GraphicsLocalData WithKey(string? column)
+    {
+        if (column is null) return this;
+        var index = IndexOf(column);
+        var keyed = this with { Rows = Rows.Select(row => row with { Key = row.Cells[index] }).ToArray() };
+        if (!keyed.Valid()) throw new InvalidDataException("The selected key needs a unique nonempty value in each row.");
+        return keyed;
+    }
+
     public bool Valid() =>
         Columns is { Length: > 0 and <= MaxColumns } &&
         Columns.All(c => c is not null && c.Id is { Length: > 0 and <= 128 } && c.Kind is "text" or "number" or "boolean") &&

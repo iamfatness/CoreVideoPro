@@ -29,7 +29,7 @@ public static partial class GraphicsTemplateEditor
         for(var i=0;i<layers.Count;i++) {
             if(layers[i] is not JsonObject node) throw new InvalidDataException("Invalid template layer.");
             if(node["id"] is not JsonValue id || !id.TryGetValue<string>(out var identity) || string.IsNullOrEmpty(identity) || identity.Length>64 ||
-                node["type"] is not JsonValue kind || !kind.TryGetValue<string>(out var type) || type is not ("rect" or "ellipse" or "line" or "text" or "image" or "group")) throw new InvalidDataException("Invalid template layer identity or type.");
+                node["type"] is not JsonValue kind || !kind.TryGetValue<string>(out var type) || type is not ("rect" or "ellipse" or "line" or "text" or "image" or "group" or "table")) throw new InvalidDataException("Invalid template layer identity or type.");
             var isLocked=locked || node["metadata"] is JsonObject meta && meta["editorLocked"] is JsonValue flag && flag.TryGetValue<bool>(out var on) && on;
             yield return (node,layers,i,parent,depth,isLocked);
             if(node["children"] is JsonArray children) foreach(var child in Walk(children,node["id"]?.GetValue<string>() ?? "",depth+1,isLocked)) yield return child;
@@ -91,7 +91,7 @@ public static partial class GraphicsTemplateEditor
     public static NativeGraphicsScratch Add(NativeGraphicsScratch scratch,string type)
     {
         var root=Read(scratch);var layers=root["layers"]!.AsArray();var count=Walk(layers).Count();
-        if(type is not ("rect" or "text" or "image" or "group")) throw new InvalidDataException("Unsupported native layer type.");
+        if(type is not ("rect" or "text" or "image" or "group" or "table")) throw new InvalidDataException("Unsupported native layer type.");
         if(count+(type=="group"?2:1)>64) throw new InvalidOperationException("A template supports at most 64 layers.");
         JsonObject Text()=>new() { ["id"]="layer-"+Guid.NewGuid().ToString("N"),[LayerTypeKey]="text",["text"]="Title",["font"]="Segoe UI",["fontSize"]=42,["fontWeight"]=600,["color"]="#FFFFFF",["x"]=20,["y"]=20,["width"]=600,["height"]=100 };
         var node=type=="text"?Text():new JsonObject { ["id"]="layer-"+Guid.NewGuid().ToString("N"),["type"]=type,["x"]=0,["y"]=0,["width"]=640,["height"]=180 };
@@ -244,7 +244,8 @@ public static partial class GraphicsTemplateEditor
     public static IReadOnlyList<GraphicsEditorVariable> Variables(NativeGraphicsScratch scratch)
     {
         var root=Read(scratch); var rows=Walk(root["layers"]!.AsArray()).ToArray();
-        return Fields(root).OfType<JsonObject>().Select(field=>{
+        var dataTable = root["metadata"] is JsonObject metadata && metadata["dataBinding"] is JsonObject;
+        return Fields(root).OfType<JsonObject>().Where(field => !dataTable || !field["id"]!.GetValue<string>().StartsWith(GraphicsDataTable.RowPrefix, StringComparison.Ordinal)).Select(field=>{
             var id=field["id"]!.GetValue<string>(); var type=field["type"]?.GetValue<string>() ?? "string";
             var users=rows.Where(r=>UsedProperties(r.Node,id).Any()).ToArray();
             var hide=users.Any(r=>r.Node["type"]!.GetValue<string>() is "text" or "image" && r.Node["collapseWhenEmpty"] is JsonValue c && c.TryGetValue<bool>(out var on) && on);
