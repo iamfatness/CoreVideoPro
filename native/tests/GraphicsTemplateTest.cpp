@@ -74,7 +74,7 @@ TEST(GraphicsTemplateRegistry, WorkerInstallsImmutableVersionsAndRefusesReserved
 TEST(GraphicsTemplate, BuiltinResolvesTypedFieldsBrandAlphaAndCollapsedOptionalText) {
   const auto definition = GraphicsTemplate::corporateLowerThird(); ASSERT_NE(definition, nullptr);
   std::string error; GraphicsDrawing drawing;
-  EXPECT_FALSE(definition->resolve(definition->defaultFields(), brand(), drawing, error));
+  EXPECT_FALSE(definition->resolve(Json::Object{{"name", "Ada Lovelace"}, {"title", "Engineer"}}, brand(), drawing, error));
   EXPECT_EQ("required-template-field-empty", error);
   const Json fields = Json::Object{{"name", "Presenter — العربية 日本語"}, {"title", ""}};
   ASSERT_TRUE(definition->resolve(fields, brand(), drawing, error));
@@ -422,3 +422,102 @@ TEST(GraphicsTemplateRegistry, RemoveUnknownIsNotFound) {
   EXPECT_EQ("template-removed",removeWhenIdle(registry,"only-two",2));
   EXPECT_EQ("template-not-found",removeWhenIdle(registry,"only-two",2));
 }
+
+TEST(GraphicsTemplate, TemplatesWithoutLayerMotionHaveNoUnits) {
+  for (const auto& definition : GraphicsTemplate::curated()) {
+    EXPECT_FALSE(definition->motionSummary().layered) << definition->id();
+  }
+  const auto definition = GraphicsTemplate::corporateLowerThird();
+  EXPECT_FALSE(definition->motionSummary().layered);
+  GraphicsDrawing drawing;
+  std::string error;
+  ASSERT_TRUE(definition->resolve(Json::Object{{"name", "Ada Lovelace"}, {"title", "Engineer"}}, brand(), drawing, error)) << error;
+  EXPECT_TRUE(drawing.units.empty());
+  for (const auto& primitive : drawing.primitives) EXPECT_EQ(-1, primitive.unit);
+}
+
+namespace {
+std::string motionFixture(const char* name) {
+  std::ifstream file(std::filesystem::path(COREVIDEO_REPO_ROOT) /
+      "native/tests/fixtures/graphics-motion" / name, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(file), {});
+}
+
+TEST(GraphicsTemplate, LayerMotionLoadsIntoUnitsAndSummarisesTotals) {
+  std::string error;
+  const auto bar = GraphicsTemplate::load(motionFixture("bar-first.json"), error);
+  ASSERT_TRUE(bar) << error;
+  const auto& summary = bar->motionSummary();
+  EXPECT_TRUE(summary.layered);
+  EXPECT_TRUE(summary.anyFollows);
+  EXPECT_EQ(2u, summary.units);
+  EXPECT_EQ(500., summary.inMs);
+  EXPECT_EQ(500., summary.outMs);
+  GraphicsDrawing drawing;
+  ASSERT_TRUE(bar->resolve(bar->defaultFields(), brand(), drawing, error)) << error;
+  ASSERT_EQ(2u, drawing.units.size());
+  EXPECT_EQ("plate", drawing.units[0].nodeId);
+  EXPECT_TRUE(drawing.units[0].root);
+  EXPECT_EQ(0., drawing.units[0].box.x);
+  EXPECT_EQ(1060., drawing.units[0].box.width);
+  EXPECT_EQ(168., drawing.units[0].mask.height);
+  for (const auto& primitive : drawing.primitives) {
+    EXPECT_EQ(primitive.id == "plate" ? 0 : primitive.id == "name-label" ? 1 : -1, primitive.unit);
+  }
+  const auto nested = GraphicsTemplate::load(motionFixture("nested-motion.json"), error);
+  ASSERT_TRUE(nested) << error;
+  ASSERT_TRUE(nested->resolve(nested->defaultFields(), brand(), drawing, error)) << error;
+  ASSERT_EQ(3u, drawing.units.size());
+  EXPECT_EQ(0, drawing.units[1].parent);
+  EXPECT_FALSE(drawing.units[1].root);
+  EXPECT_EQ(100., drawing.units[1].mask.x);
+  EXPECT_EQ(120., drawing.units[1].mask.height);
+  EXPECT_TRUE(nested->motionSummary().anyFollows);
+}
+
+TEST(GraphicsTemplate, LayerMotionValidationRefusesBadShapesWithExactReasons) {
+  using M = Json::Object;
+  const auto parsed = Json::parse(motionFixture("bar-first.json"));
+  ASSERT_TRUE(parsed);
+  auto document = parsed->asObject();
+  auto layers = document.at("layers").asArray();
+  const auto plate = std::find_if(layers.begin(), layers.end(),
+      [](const auto& node) { return node.getString("id") == "plate"; });
+  ASSERT_TRUE(plate != layers.end());
+  auto node = plate->asObject();
+  const auto withPlateAnimations = [&](const Json& animations) {
+    node["animations"] = animations;
+    *plate = node;
+    document["layers"] = layers;
+    return Json(document).stringify();
+  };
+  const std::vector<std::pair<Json, std::string>> cases = {
+    {M{{"type","spin"},{"durationMs",100}}, "template-layer-motion"},
+    {M{{"type","fade"},{"startMs",-1},{"durationMs",100}}, "template-layer-motion"},
+    {M{{"type","fade"},{"durationMs",3001}}, "template-layer-motion"},
+    {M{{"type","fade"},{"startMs",2800},{"durationMs",300}}, "template-motion-too-long"},
+    {M{{"type","cut"},{"durationMs",100}}, "template-layer-motion"},
+    {M{{"type","fade"},{"durationMs",0}}, "template-layer-motion"},
+    {M{{"type","fade"},{"durationMs",100},{"direction","left"}}, "template-layer-motion"},
+    {M{{"type","rise"},{"durationMs",100},{"distance",0}}, "template-layer-motion"},
+    {M{{"type","slide"},{"durationMs",100},{"direction","diagonal"}}, "template-layer-motion"},
+    {M{{"type","fade"},{"durationMs",100},{"loop",true}}, "template-layer-motion"}
+  };
+  std::string error;
+  for (const auto& [motion, reason] : cases) {
+    EXPECT_FALSE(GraphicsTemplate::load(withPlateAnimations(M{{"in", motion}}), error));
+    EXPECT_EQ(reason, error) << motion.stringify();
+  }
+  EXPECT_FALSE(GraphicsTemplate::load(withPlateAnimations(M{}), error));
+  EXPECT_EQ("template-layer-motion", error);
+  EXPECT_TRUE(GraphicsTemplate::load(withPlateAnimations(M{{"in", M{{"type","rise"},
+      {"durationMs",100},{"distance","edge"}}}}), error)) << error;
+  for (int i = 1; i <= 15; ++i) {
+    node["id"] = "rect-" + std::to_string(i);
+    layers.push_back(node);
+  }
+  document["layers"] = layers;
+  EXPECT_FALSE(GraphicsTemplate::load(Json(document).stringify(), error));
+  EXPECT_EQ("template-motion-layer-limit", error);
+}
+} // namespace

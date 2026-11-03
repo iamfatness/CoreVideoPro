@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "templateId": "motion-nested",
+  "templateVersion": 1,
+  "name": "Nested motion",
+  "family": "title",
+  "canvas": {"width": 1920, "height": 1080},
+  "bounds": {"width": 800, "height": 200},
+  "brandTokens": ["brand.primary", "brand.onPrimary", "brand.accent", "brand.fontBody"],
+  "fields": [{"id": "heading", "type": "string", "required": true, "default": "Heading"}],
+  "animations": {"in": {"type": "none"}, "out": {"type": "none"}},
+  "layers": [{
+    "id": "card", "type": "group", "x": 100, "y": 20, "width": 600, "height": 120,
+    "flow": "none", "padding": 0,
+    "animations": {"in": {"type": "slide", "durationMs": 400, "easing": "linear", "direction": "left", "distance": 200}},
+    "children": [
+      {
+        "id": "card-text", "type": "text", "x": 10, "y": 10, "width": 580, "height": 60,
+        "text": {"field": "heading"}, "font": {"token": "brand.fontBody"}, "fontSize": 40,
+        "color": {"token": "brand.onPrimary"},
+        "animations": {"in": {"type": "rise", "durationMs": 400, "easing": "linear", "distance": 24}}
+      },
+      {
+        "id": "card-bar", "type": "rect", "x": 0, "y": 100, "width": 600, "height": 20,
+        "fill": {"token": "brand.accent"},
+        "animations": {"in": {"type": "wipe", "durationMs": 400, "easing": "linear", "direction": "left"}}
+      }
+    ]
+  }]
+}

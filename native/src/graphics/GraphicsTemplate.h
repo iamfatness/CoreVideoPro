@@ -1,7 +1,7 @@
 #pragma once
 
 #include "rpc/Json.h"
-#include "graphics/GraphicsTimeline.h"
+#include "graphics/GraphicsMotion.h"
 #include "graphics/GraphicsAssets.h"
 #include "graphics/GraphicsPlacement.h"
 #include <array>
@@ -12,13 +12,13 @@
 
 namespace corevideo::graphics {
 class GraphicsTemplateDraft;
-struct GraphicsBox { double x = 0, y = 0, width = 0, height = 0; };
 struct GraphicsPrimitive {
   std::string id, type, text, font, align, overflow;
   GraphicsBox box, clip;
   uint32_t color = 0xffffffff, endColor = 0xffffffff;
   double opacity = 1, cornerRadius = 0, fontSize = 28, lineHeight = 1.2;
   bool gradient = false, verticalGradient = false;
+  int unit = -1;
   int fontWeight = 400, maxLines = 1;
   std::shared_ptr<const GraphicsAsset> image;
   std::string fit = "contain", imageAlign = "center", imageVerticalAlign = "center";
@@ -30,6 +30,7 @@ struct GraphicsDrawing {
   std::vector<std::string> warnings;
   std::set<std::string> usedFields;
   std::vector<GraphicsNodeGeometry> nodes;
+  std::vector<GraphicsMotionUnit> units;
 };
 
 // Immutable, bounded declarative definitions. Parsing/installation never occurs
@@ -46,11 +47,13 @@ class GraphicsTemplate {
   int version() const { return int(document_.getNumber("templateVersion")); }
   double width() const { return document_.get("bounds")->getNumber("width"); }
   double height() const { return document_.get("bounds")->getNumber("height"); }
+  const GraphicsMotionSummary& motionSummary() const { return motion_; }
   rpc::Json defaultFields() const;
   std::optional<GraphicsPlacement> defaultPlacement() const { std::optional<GraphicsPlacement> value; if (const auto* p = document_.get("defaultPlacement")) GraphicsPlacement::read(*p,value); return value; }
   bool validateFields(const rpc::Json& fields, bool requireValues, std::string& error) const;
   bool resolve(const rpc::Json& fields, const rpc::Json& brand, GraphicsDrawing& drawing, std::string& error, std::shared_ptr<const GraphicsAsset> logo = {}) const;
  private:
+  GraphicsMotionSummary motion_;
   rpc::Json document_;
   std::array<uint8_t, 32> hash_{};
   GraphicsAssets assets_;
