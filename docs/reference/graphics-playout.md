@@ -590,6 +590,32 @@ edit a lower third's text, add a logo or title, see what is live versus staged
 and clear it. For every Show on the tab, find and use its Hide within 5 s
 while it is on Program.
 
+## Designer content (Slice 4)
+
+Use **Shape** to add a rectangle, ellipse or line. In the **Layer** inspector,
+set the stroke on rectangles and ellipses or choose the line's stroke and
+diagonal. Text layers can use an outline and shadow. The shadow is drawn
+behind the outline and fill. Set a minimum font size to let long values
+shrink before the selected overflow behavior applies.
+
+Enable **Auto width** for a group or plate and set its minimum and maximum
+widths. The renderer measures the resolved text and other content each time
+the graphic is prepared. A plate follows the content around it and is excluded
+from its own measurement. The Designer's sample values are useful for checking
+how a long name will fit.
+
+Use **Image…** to import PNG, JPEG or SVG into a design. The builder logo
+picker also accepts SVG. Static SVG artwork becomes a transparent PNG at
+twice the layer dimensions, capped at 4096 pixels per side. Files with active
+content or external references are rejected. Save to playlist pins the
+revision and its assets. Operate installs that revision before showing it,
+including after a core restart.
+
+For Acceptance 4, import a transparent SVG logo into a lower third and
+inspect it on the private canvas. Save to playlist, reopen the design, then
+show the row from Operate. Check the logo's size and transparent edges at
+1080p on Program.
+
 ## Later (the spec's phases)
 
 Per-tile names in Tiles (#1073, native placement per tile rect), clocks and

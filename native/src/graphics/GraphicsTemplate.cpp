@@ -384,7 +384,7 @@ class Layout {
       p.align = stringProperty(node, "align", "left"); need(p.align == "left" || p.align == "center" || p.align == "right", "template-text-alignment");
       p.overflow = stringProperty(node, "overflow", "ellipsis"); need(p.overflow == "ellipsis" || p.overflow == "wrap-then-ellipsis", "template-text-overflow");
       if (node.get("minFontSize")) {
-        const double minimum = quantity(node, "minFontSize", 1, p.fontSize);
+        const double minimum = std::min(p.fontSize, quantity(node, "minFontSize", 1, 512));
         const auto fits = [&](double size) {
           const auto measured = measureText(p.text, p.font, size, p.fontWeight, p.box.width, p.overflow == "wrap-then-ellipsis");
           return measured.width <= p.box.width && measured.lines <= unsigned(p.maxLines) &&
