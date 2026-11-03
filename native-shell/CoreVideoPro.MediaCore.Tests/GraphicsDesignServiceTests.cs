@@ -453,6 +453,48 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.Single(library.Document.Playlist);
     }
 
+    // ---- Use for Zoom lower thirds: the first Guest row is the one LT, the lower-third hotkeys and automation use ----
+    [Fact] public async Task UseForZoomLowerThirdsPutsTheDesignOnTheFirstGuestRow()
+    {
+        var (library, _, workflow) = BuildWorkflow();
+        var guest = new GraphicsPlaylistRow { Id = "guest", Kind = GraphicsPlaylistRow.Guest, Name = "Guest", Hotkey = "F1", PlayOutAfterMs = 8000, FollowSources = true, TemplateId = "corporate-lower-third", TemplateVersion = 1 };
+        var logo = new GraphicsPlaylistRow { Id = "logo", Kind = GraphicsPlaylistRow.Logo, Name = "Logo", Hotkey = "F2", TemplateId = "corner-logo", TemplateVersion = 1 };
+        Assert.True(await library.SavePlaylistAsync([guest, logo]), library.Status);
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        var result = await workflow.UseForZoomLowerThirdsAsync();
+        Assert.True(result.Ok, result.Message);
+        Assert.Contains("Zoom lower third", result.Message);
+        var design = Assert.Single(library.Document.Designs);
+        Assert.Equal(2, library.Document.Playlist.Count);
+        var row = library.Document.Playlist[0];
+        Assert.Equal(("guest", "Guest", "F1", GraphicsPlaylistRow.Guest, true, 8000), (row.Id, row.Name, row.Hotkey, row.Kind, row.FollowSources, row.PlayOutAfterMs));
+        Assert.Equal((design.TemplateId, design.TemplateVersion), (row.TemplateId, row.TemplateVersion));
+        // Later edits: Save to playlist updates that same row, it does not add a second one.
+        _session!.EditTemplate(d => GraphicsTemplateEditor.AddField(d, "location", "text", 40));
+        Assert.True((await workflow.SaveToPlaylistAsync()).Ok);
+        Assert.Equal(2, library.Document.Playlist.Count);
+        Assert.Equal(("guest", library.Document.Designs[0].TemplateVersion), (library.Document.Playlist[0].Id, library.Document.Playlist[0].TemplateVersion));
+    }
+
+    [Fact] public async Task UseForZoomLowerThirdsAddsAGuestRowWhenThereIsNone()
+    {
+        var (library, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        Assert.True((await workflow.UseForZoomLowerThirdsAsync()).Ok);
+        var row = Assert.Single(library.Document.Playlist);
+        Assert.Equal((GraphicsPlaylistRow.Guest, true), (row.Kind, row.FollowSources));
+    }
+
+    [Fact] public async Task UseForZoomLowerThirdsNeedsALowerThirdDesign()
+    {
+        var (library, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("title", null, 0, "Opening title")).Ok);
+        var result = await workflow.UseForZoomLowerThirdsAsync();
+        Assert.False(result.Ok);
+        Assert.Equal("Only a lower-third design can be the Zoom lower third.", result.Message);
+        Assert.Empty(library.Document.Playlist);
+    }
+
     [Fact] public async Task CreateReportsAStoredDesignAsCreatedEvenWhenTheEditorIsBusy()
     {
         var (library, service) = Build();
