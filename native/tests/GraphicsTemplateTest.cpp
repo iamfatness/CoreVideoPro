@@ -564,3 +564,51 @@ TEST(GraphicsTemplate, TextOutlineAndShadowAcceptTheirDocumentedLimits) {
   EXPECT_FALSE(load(edited(8.1, 16), error));
   EXPECT_FALSE(load(edited(8, 16.1), error));
 }
+
+TEST(GraphicsTemplate, AutoWidthFitsVisibleContentAndClampsBeforeMotionLayout) {
+  using M = Json::Object;
+  auto document = manifest();
+  auto layers = document.at("layers").asArray();
+  auto plate = layers.front().asObject();
+  plate["width"] = "auto";
+  plate["minWidth"] = 140;
+  plate["maxWidth"] = 240;
+  layers.front() = std::move(plate);
+  auto group = layers.back().asObject();
+  group["width"] = "auto";
+  group["minWidth"] = 80;
+  group["maxWidth"] = 180;
+  layers.back() = std::move(group);
+  document["layers"] = std::move(layers);
+  std::string error;
+  const auto definition = load(document, error);
+  ASSERT_TRUE(definition) << error;
+  GraphicsDrawing shortName, longName;
+  ASSERT_TRUE(definition->resolve(M{{"name","I"},{"title",""}}, brand(), shortName, error)) << error;
+  ASSERT_TRUE(definition->resolve(M{{"name","A long presenter name that needs more room"},{"title",""}}, brand(), longName, error)) << error;
+  EXPECT_EQ(140., shortName.primitives.front().box.width);
+  EXPECT_EQ(204., longName.primitives.front().box.width);
+  EXPECT_EQ(180., longName.nodes[1].box.width);
+}
+
+TEST(GraphicsTemplate, TextShrinksToItsMinimumBeforeEllipsis) {
+  auto document = manifest();
+  auto layers = document.at("layers").asArray();
+  auto group = layers.back().asObject();
+  auto children = group.at("children").asArray();
+  auto text = children.front().asObject();
+  text["width"] = 60;
+  text["minFontSize"] = 20;
+  children.front() = std::move(text);
+  group["children"] = std::move(children);
+  layers.back() = std::move(group);
+  document["layers"] = std::move(layers);
+  std::string error;
+  const auto definition = load(document, error);
+  ASSERT_TRUE(definition) << error;
+  GraphicsDrawing drawing;
+  ASSERT_TRUE(definition->resolve(Json::Object{{"name","WWWWWWWWWWWWWW"},{"title",""}}, brand(), drawing, error)) << error;
+  ASSERT_EQ(2u, drawing.primitives.size());
+  EXPECT_EQ(20., drawing.primitives.back().fontSize);
+  EXPECT_EQ("ellipsis", drawing.primitives.back().overflow);
+}
