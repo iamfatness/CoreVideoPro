@@ -465,6 +465,37 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.Equal("ease-in", _session.Draft.Animations.Out.Easing);
     }
 
+    [Fact]
+    public async Task ImportedSvgIsAnAssetOfTheDesignAndItsSavedPlaylistVersion()
+    {
+        var (library, service, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        var source = Path.Combine(_directory, "transparent.svg");
+        await File.WriteAllTextAsync(source, """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect x="2" y="2" width="6" height="6" fill="#FF0000"/></svg>""");
+        var cache = Path.Combine(_directory, "graphics-cache");
+        var (edited, id) = await GraphicsTemplateEditor.ImportImageAsync(_session!.TemplateDocument!, source, cache);
+        Assert.Equal("", _session.EditTemplateSynced(_ => edited));
+        Assert.Equal("image", GraphicsTemplateEditor.Layer(edited, id).GetProperty("type").GetString());
+        Assert.Equal(cache, _session.Draft!.ForPreview().Scratch!.PackageRoot);
+        Assert.Equal("", _session.EditTemplateSynced(scratch => GraphicsTemplateEditor.Rename(scratch, "New graphic")));
+        Assert.Equal(cache, _session.Draft!.Scratch!.PackageRoot);
+        var saved = await workflow.SaveToPlaylistAsync();
+        Assert.True(saved.Ok, saved.Message);
+        var design = Assert.Single(library.Document.Designs);
+        Assert.Equal(cache, design.PackageRoot);
+        var asset = Assert.Single(design.Assets);
+        Assert.EndsWith(".png", asset.RelativePath);
+        using var image = SkiaSharp.SKBitmap.Decode(Path.Combine(cache, asset.RelativePath));
+        Assert.NotNull(image);
+        Assert.Equal(0, image.GetPixel(0, 0).Alpha);
+        Assert.Equal(255, image.GetPixel(image.Width / 2, image.Height / 2).Red);
+        var row = Assert.Single(library.Document.Playlist);
+        Assert.Contains(library.Document.Templates, pin => pin.TemplateVersion == row.TemplateVersion && pin.PackageRoot == cache);
+        RestartCore();
+        Assert.True((await service.EnsureInstalledForPlaylistAsync()).Ok);
+        Assert.Equal(cache, _state.Templates.Single(template => template.TemplateId == design.TemplateId).PackageRoot);
+    }
+
     [Fact] public async Task SaveToPlaylistSavesThenPinsOneRowOnTheNextFreeKey()
     {
         var (library, _, workflow) = BuildWorkflow();

@@ -179,6 +179,8 @@ public sealed partial class GraphicsWorkspaceSession
     }
     public void Edit(NativeGraphicsDraft value)
     {
+        if (value.Scratch is { PackageRoot: null } scratch && Draft?.Scratch?.PackageRoot is { } packageRoot)
+            value = value with { Scratch = scratch with { PackageRoot = packageRoot } };
         if (Busy || Draft is null || value.TemplateId != Draft.TemplateId || value.TemplateVersion != Draft.TemplateVersion || Same(value, Draft)) return;
         if (_gesture is null) PushUndo(Draft);
         Draft = value; CompareOriginal = false; StopOneShotPreview();
@@ -191,7 +193,7 @@ public sealed partial class GraphicsWorkspaceSession
         get {
             if(Draft?.Scratch is { } edited) return edited;
             if(Template is not { Definition: { } definition } template) return null;
-            if(_parentDocument is null || _parentDocumentHash!=template.ManifestHash) { _parentDocument=NativeGraphicsScratch.From(definition); _parentDocumentHash=template.ManifestHash; }
+            if(_parentDocument is null || _parentDocumentHash!=template.ManifestHash) { _parentDocument=NativeGraphicsScratch.From(definition) with { PackageRoot = template.PackageRoot.Length == 0 ? null : template.PackageRoot }; _parentDocumentHash=template.ManifestHash; }
             return _parentDocument;
         }
     }
@@ -426,12 +428,39 @@ public sealed partial class GraphicsWorkspaceSession
         catch (Exception ex) when (ex is not OutOfMemoryException) { ImportStatus = ex.Message; return false; }
         finally { ImportBusy = false; Changed?.Invoke(this, EventArgs.Empty); }
     }
+    private string AssetRoot => _assetRoot ?? Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_ASSET_ROOT") ??
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CoreVideoPro", "graphics");
+
+    public async Task<bool> ImportDesignImageAsync(string path, CancellationToken cancellation = default)
+    {
+        if (ImportBusy || Busy || Draft is not { Declarative: true } original || TemplateDocument is not { } document) return false;
+        ImportBusy = true;
+        ImportStatus = "Checking the design image…";
+        Changed?.Invoke(this, EventArgs.Empty);
+        try
+        {
+            var edited = await GraphicsTemplateEditor.ImportImageAsync(document, path, AssetRoot, cancellation);
+            if (!ReferenceEquals(Draft, original) || TemplateDocument != document)
+            {
+                ImportStatus = "The draft changed during import. Choose the image again.";
+                return false;
+            }
+            var refusal = EditTemplateSynced(_ => edited.Scratch);
+            if (refusal.Length > 0) { ImportStatus = refusal; return false; }
+            SelectLayer(edited.Id);
+            ImportStatus = "Image added to the private design.";
+            return true;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { ImportStatus = ex.Message; return false; }
+        finally { ImportBusy = false; Changed?.Invoke(this, EventArgs.Empty); }
+    }
+
     public async Task<NativeGraphicsImageReference?> ImportImageAsync(string path,CancellationToken cancellation=default,bool fullCanvas=false)
     {
         if(ImportBusy) return null;ImportBusy=true;ImportStatus="Verifying local image package. Program is unchanged.";Changed?.Invoke(this,EventArgs.Empty);
         var epoch=State?.CoreEpoch;
         try {
-            var root=_assetRoot ?? Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_ASSET_ROOT") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CoreVideoPro","graphics");
+            var root=AssetRoot;
             var staged=await GraphicsImageImport.StageAsync(path,root,cancellation,fullCanvas);
             if(State?.CoreEpoch!=epoch) {ImportStatus="Native core restarted; image import cancelled.";return null;}
             if(!await Send("graphics.template.install",new() {["manifest"]=staged.Package.Manifest,["packageRoot"]=staged.Package.PackageRoot},cancellation)) {ImportStatus=Status;return null;}

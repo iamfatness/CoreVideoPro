@@ -145,7 +145,17 @@ void GraphicsTemplateRegistry::run() {
         }
         entry.second = std::move(asset);
       }
-      if (addedBytes > 128ull * 1024 * 1024 - assetBytes_) { error = "graphics-encoded-asset-capacity"; definition.reset(); }
+      constexpr uint64_t assetLimit = 128ull * 1024 * 1024;
+      if (addedBytes > assetLimit - assetBytes_) {
+        for (auto it = assetPool_.begin(); it != assetPool_.end() && addedBytes > assetLimit - assetBytes_;) {
+          // A live definition, prepared revision or private draft retains its own lease.
+          if (it->second.use_count() == 1) {
+            assetBytes_ -= it->second->size();
+            it = assetPool_.erase(it);
+          } else ++it;
+        }
+      }
+      if (addedBytes > assetLimit - assetBytes_) { error = "graphics-encoded-asset-capacity"; definition.reset(); }
       else definition = GraphicsTemplate::load(job->manifest, error, std::move(assets));
     }
     const auto bytes = definition ? definition->document().stringify().size() : 0;

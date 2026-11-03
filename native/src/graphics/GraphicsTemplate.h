@@ -12,14 +12,21 @@
 
 namespace corevideo::graphics {
 class GraphicsTemplateDraft;
+struct GraphicsTextOutline { uint32_t color; double width; };
+struct GraphicsTextShadow { uint32_t color; double x, y, blur; };
 struct GraphicsPrimitive {
   std::string id, type, text, font, align, overflow;
   GraphicsBox box, clip;
   uint32_t color = 0xffffffff, endColor = 0xffffffff;
   double opacity = 1, cornerRadius = 0, fontSize = 28, lineHeight = 1.2;
+  uint32_t strokeColor = 0;
+  double strokeWidth = 0;
+  bool lineRises = false;
   bool gradient = false, verticalGradient = false;
   int unit = -1;
   int fontWeight = 400, maxLines = 1;
+  std::optional<GraphicsTextOutline> outline;
+  std::optional<GraphicsTextShadow> shadow;
   std::shared_ptr<const GraphicsAsset> image;
   std::string fit = "contain", imageAlign = "center", imageVerticalAlign = "center";
 };

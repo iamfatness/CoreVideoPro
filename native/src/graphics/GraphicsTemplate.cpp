@@ -6,6 +6,14 @@
 #include <sstream>
 #include <locale>
 #include <stdexcept>
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dwrite.h>
+#include "compositor/ComPtrLite.h"
+#endif
 
 namespace corevideo::graphics {
 using rpc::Json;
@@ -139,6 +147,44 @@ Json typedValue(const Json& field, const Json& value) {
   }
   return value;
 }
+struct TextSize { double width; unsigned lines; };
+
+TextSize measureText(const std::string& text, const std::string& font, double size, int weight,
+    double wrapWidth = 8192, bool wrap = false) {
+  if (text.empty()) return {0, 1};
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
+  const auto widen = [](const std::string& value) {
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), int(value.size()), nullptr, 0);
+    std::wstring wide(size_t(length), L'\0');
+    if (length) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), int(value.size()), wide.data(), length);
+    return wide;
+  };
+  using modules::ComPtrLite;
+  thread_local ComPtrLite<IDWriteFactory> factory;
+  if (!factory) DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+      reinterpret_cast<IUnknown**>(factory.put()));
+  const auto family = widen(font), value = widen(text);
+  ComPtrLite<IDWriteTextFormat> format;
+  ComPtrLite<IDWriteTextLayout> layout;
+  DWRITE_TEXT_METRICS metrics{};
+  if (factory && !family.empty() && !value.empty() &&
+      SUCCEEDED(factory->CreateTextFormat(family.c_str(), nullptr, DWRITE_FONT_WEIGHT(weight),
+          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, float(size), L"", format.put())) &&
+      SUCCEEDED(format->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP)) &&
+      SUCCEEDED(factory->CreateTextLayout(value.data(), UINT32(value.size()), format.get(),
+          float(wrapWidth), 8192.f, layout.put())) && SUCCEEDED(layout->GetMetrics(&metrics)))
+    return {metrics.widthIncludingTrailingWhitespace, metrics.lineCount};
+#else
+  (void)font; (void)weight;
+#endif
+  // Portable contract validation has no native typography. Keep a bounded
+  // estimate for its layout; the Windows renderer measures the shaped runs.
+  const auto characters = std::count_if(text.begin(), text.end(), [](unsigned char byte) { return (byte & 0xc0) != 0x80; });
+  const double width = double(characters) * size * .55;
+  if (!wrap) return {width, 1};
+  return {std::min(width, wrapWidth), unsigned(std::max(1., std::ceil(width / wrapWidth)))};
+}
+
 class Layout {
  public:
   Layout(const Json& document, const Json& fields, const Json& brand, const GraphicsAssets& assets, bool validate = false, std::shared_ptr<const GraphicsAsset> logo = {})
@@ -148,7 +194,9 @@ class Layout {
   GraphicsDrawing run() {
     GraphicsDrawing result; result.width = document_.get("bounds")->getNumber("width"); result.height = document_.get("bounds")->getNumber("height");
     draw_ = &result; const GraphicsBox root{0, 0, result.width, result.height};
-    for (const auto& node : document_.get("layers")->asArray()) visit(node, 0, 0, root, 1, 0, false);
+    const auto& layers = document_.get("layers")->asArray();
+    const double plateWidth = hasAutoPlate(layers) ? contentWidth(layers, "none", 0, 0) : 0;
+    for (const auto& node : layers) visit(node, 0, 0, root, 1, 0, false, true, {}, -1, plateWidth);
     return result;
   }
   bool hasUnanimatedLayer() const { return hasUnanimatedLayer_; }
@@ -177,16 +225,71 @@ class Layout {
     need(scalar.isNumber() && std::isfinite(scalar.asNumber()) && scalar.asNumber() >= minimum && scalar.asNumber() <= maximum, "template-geometry-or-number");
     return scalar.asNumber();
   }
-  bool visit(const Json& node, double originX, double originY, GraphicsBox clip, double opacity, int depth, bool flowChild, bool parentVisible = true, const std::string& parentId = {}, int unit = -1) {
+  static bool autoWidth(const Json& node) { return node.getString("width") == "auto"; }
+  static bool hasAutoPlate(const Json::Array& nodes) {
+    return std::any_of(nodes.begin(), nodes.end(), [](const auto& child) {
+      return child.getString("type") == "rect" && autoWidth(child);
+    });
+  }
+  double clampWidth(const Json& node, double width) {
+    const double minimum = quantity(node, "minWidth", 1, 8192);
+    const double maximum = quantity(node, "maxWidth", minimum, 8192);
+    return std::clamp(width, minimum, maximum);
+  }
+  double nodeWidth(const Json& node, int depth, double plateWidth) {
+    if (!autoWidth(node)) return quantity(node, "width", 1, 8192);
+    const auto type = node.getString("type");
+    if (type == "rect") return clampWidth(node, plateWidth - quantity(node, "x", 0, 8192, 0));
+    need(type == "group" && depth <= 8, "template-auto-width-type");
+    if (const auto cached = autoWidths_.find(&node); cached != autoWidths_.end()) return cached->second;
+    const auto* children = node.get("children");
+    need(children && children->isArray() && children->asArray().size() <= 64, "template-children");
+    const auto flow = stringProperty(node, "flow", "none");
+    const double gap = quantity(node, "gap", 0, 256, 0), padding = quantity(node, "padding", 0, 256, 0);
+    const auto width = clampWidth(node, contentWidth(children->asArray(), flow, gap, depth + 1) + 2 * padding);
+    autoWidths_.emplace(&node, width);
+    return width;
+  }
+  double contentWidth(const Json::Array& layers, const std::string& flow, double gap, int depth) {
+    need(depth <= 9, "template-layer-limit");
+    need(flow != "horizontal" || !hasAutoPlate(layers), "template-auto-width-cycle");
+    double extent = 0, offset = 0;
+    bool populated = false;
+    for (const auto& node : layers) {
+      measuredNodes_.insert(&node);
+      need(measuredNodes_.size() <= 64, "template-layer-limit");
+      const auto type = node.getString("type");
+      if (type == "rect" && autoWidth(node)) continue;
+      if (const auto* property = node.get("visible"); property && !resolve(property, "boolean").asBool()) continue;
+      auto width = nodeWidth(node, depth, 0);
+      if (type == "text") {
+        const auto text = resolve(node.get("text"), "string").asString();
+        if (text.empty() && boolean(node, "collapseWhenEmpty")) continue;
+        const auto font = resolve(node.get("font"), "string").asString();
+        width = std::min(width, measureText(text, font, quantity(node, "fontSize", 1, 512, 28),
+            int(quantity(node, "fontWeight", 400, 700, 400))).width);
+      } else if (type == "image" && boolean(node, "collapseWhenEmpty") &&
+          resolve(node.get("asset"), "image").asString().empty()) continue;
+      const double step = flow == "horizontal" ? offset + (populated ? gap : 0) : 0;
+      extent = std::max(extent, step + quantity(node, "x", 0, 8192, 0) + width);
+      offset = step + width;
+      populated = true;
+    }
+    return extent;
+  }
+  bool visit(const Json& node, double originX, double originY, GraphicsBox clip, double opacity, int depth, bool flowChild, bool parentVisible = true, const std::string& parentId = {}, int unit = -1, double plateWidth = 0, bool fitChildren = false) {
     need(depth <= 8 && ++nodes_ <= 64, "template-layer-limit");
     const auto nodeId = node.getString("id"), type = node.getString("type"); need(validTemplateId(nodeId) && ids_.insert(nodeId).second, "template-layer-id");
     std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata", "animations"};
-    if (type == "group") allowed.insert({"children", "flow", "gap", "padding"});
-    else if (type == "rect") allowed.insert({"fill", "cornerRadius"});
-    else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty"});
+    if (type == "group") allowed.insert({"children", "flow", "gap", "padding", "minWidth", "maxWidth"});
+    else if (type == "rect") allowed.insert({"fill", "cornerRadius", "stroke", "strokeWidth", "minWidth", "maxWidth"});
+    else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth"});
+    else if (type == "line") allowed.insert({"diagonal", "stroke", "strokeWidth"});
+    else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty", "outline", "shadow", "minFontSize"});
     else if (type == "image") allowed.insert({"asset", "fit", "align", "verticalAlign", "collapseWhenEmpty", "missing"});
     else need(false, "unsupported-template-node-type");
     keys(node, allowed);
+    need(autoWidth(node) || (!node.get("minWidth") && !node.get("maxWidth")), "template-auto-width-type");
     bool visible = parentVisible;
     if (const auto* property = node.get("visible")) {
       const auto value = resolve(property,"boolean"); need(value.isBool(),"template-visible-boolean"); visible = visible && value.asBool();
@@ -194,7 +297,9 @@ class Layout {
     if (validate_) visible = true;
     GraphicsPrimitive p; p.id = nodeId; p.type = type;
     p.box = {originX + quantity(node, "x", 0, 8192, flowChild ? 0 : -1), originY + quantity(node, "y", 0, 8192, flowChild ? 0 : -1),
-        quantity(node, "width", 1, 8192), quantity(node, "height", 1, 8192)};
+        nodeWidth(node, depth, plateWidth), quantity(node, "height", 1, 8192)};
+    if (fitChildren && type == "text")
+      p.box.width = std::clamp(clip.x + clip.width - p.box.x, 1., p.box.width);
     p.clip = intersect(clip, p.box); p.opacity = opacity * quantity(node, "opacity", 0, 1, 1);
     if (const auto* animations = node.get("animations")) {
       need(animations->isObject() && !animations->asObject().empty(), "template-layer-motion");
@@ -214,19 +319,34 @@ class Layout {
       const auto flow = stringProperty(node, "flow", "none"); need(flow == "none" || flow == "vertical" || flow == "horizontal", "template-flow");
       const auto padding = quantity(node, "padding", 0, 256, 0), gap = quantity(node, "gap", 0, 256, 0);
       const auto* children = node.get("children"); need(children && children->isArray() && children->asArray().size() <= 64, "template-children");
+      const double childPlateWidth = hasAutoPlate(children->asArray()) ? contentWidth(children->asArray(), flow, gap, depth + 1) : 0;
       double offset = 0; bool populated = false;
       for (const auto& child : children->asArray()) {
         const auto before = draw_->primitives.size();
         const double step = offset + (populated && flow != "none" ? gap : 0);
         if (visit(child, p.box.x + padding + (flow == "horizontal" ? step : 0), p.box.y + padding + (flow == "vertical" ? step : 0),
-            intersect(p.clip, {p.box.x + padding, p.box.y + padding, std::max(0., p.box.width - padding * 2), std::max(0., p.box.height - padding * 2)}), p.opacity, depth + 1, flow != "none", visible, nodeId, unit)) {
-          if (flow != "none") offset = step + quantity(child, flow == "vertical" ? "height" : "width", 1, 8192);
+            intersect(p.clip, {p.box.x + padding, p.box.y + padding, std::max(0., p.box.width - padding * 2), std::max(0., p.box.height - padding * 2)}), p.opacity, depth + 1, flow != "none", visible, nodeId, unit, childPlateWidth, autoWidth(node))) {
+          if (flow != "none") offset = step + (flow == "vertical" ? quantity(child, "height", 1, 8192) : nodeWidth(child, depth + 1, childPlateWidth));
           populated = populated || draw_->primitives.size() > before;
         }
       }
       return populated;
     }
-    if (type == "rect") {
+    if (type == "rect" || type == "ellipse" || type == "line") {
+      const auto* stroke = node.get("stroke");
+      need(stroke || (type != "line" && !node.get("strokeWidth")), "template-stroke-required");
+      if (stroke) {
+        p.strokeColor = color(resolve(stroke, "color").asString());
+        p.strokeWidth = std::min(quantity(node, "strokeWidth", 0, 4096, 1), std::min(p.box.width, p.box.height));
+      }
+      if (type == "line") {
+        const auto diagonal = stringProperty(node, "diagonal", "down");
+        need(diagonal == "up" || diagonal == "down", "template-line-diagonal");
+        p.lineRises = diagonal == "up";
+        if (!visible) return false;
+        draw_->primitives.push_back(std::move(p));
+        return true;
+      }
       const auto* fill = node.get("fill"); need(fill, "template-fill-required");
       if (fill->isObject() && fill->get("stops")) {
         keys(*fill, {"stops", "direction"}); const auto& stops = fill->get("stops")->asArray(); need(fill->get("stops")->isArray() && stops.size() == 2, "template-gradient-stops");
@@ -263,6 +383,34 @@ class Layout {
       const auto lines = quantity(node, "maxLines", 1, 3, 1); need(std::floor(lines) == lines, "template-max-lines"); p.maxLines = int(lines);
       p.align = stringProperty(node, "align", "left"); need(p.align == "left" || p.align == "center" || p.align == "right", "template-text-alignment");
       p.overflow = stringProperty(node, "overflow", "ellipsis"); need(p.overflow == "ellipsis" || p.overflow == "wrap-then-ellipsis", "template-text-overflow");
+      if (node.get("minFontSize")) {
+        const double minimum = std::min(p.fontSize, quantity(node, "minFontSize", 1, 512));
+        const auto fits = [&](double size) {
+          const auto measured = measureText(p.text, p.font, size, p.fontWeight, p.box.width, p.overflow == "wrap-then-ellipsis");
+          return measured.width <= p.box.width && measured.lines <= unsigned(p.maxLines) &&
+              measured.lines * size * p.lineHeight <= p.box.height;
+        };
+        if (!fits(p.fontSize)) {
+          double low = minimum, high = p.fontSize;
+          for (int step = 0; step < 8; ++step) {
+            const double size = (low + high) / 2;
+            if (fits(size)) low = size;
+            else high = size;
+          }
+          p.fontSize = low;
+        }
+      }
+      if (const auto* outline = node.get("outline")) {
+        keys(*outline, {"color", "width"});
+        p.outline = GraphicsTextOutline{color(resolve(outline->get("color"), "color").asString()),
+            quantity(*outline, "width", 0, 8)};
+      }
+      if (const auto* shadow = node.get("shadow")) {
+        keys(*shadow, {"color", "x", "y", "blur"});
+        p.shadow = GraphicsTextShadow{color(resolve(shadow->get("color"), "color").asString()),
+            quantity(*shadow, "x", -256, 256, 0), quantity(*shadow, "y", -256, 256, 0),
+            quantity(*shadow, "blur", 0, 16, 0)};
+      }
       if (boolean(node, "collapseWhenEmpty") && p.text.empty()) {draw_->nodes.back().visible=false;return false;}
     }
     if (!visible) return false;
@@ -270,6 +418,8 @@ class Layout {
   }
   const Json& document_; const Json& fields_; const Json& brand_; const GraphicsAssets& assets_; bool validate_;
   std::shared_ptr<const GraphicsAsset> logo_;
+  std::map<const Json*, double> autoWidths_;
+  std::set<const Json*> measuredNodes_;
   bool hasUnanimatedLayer_ = false;
   std::set<std::string> declared_, ids_; size_t nodes_ = 0; GraphicsDrawing* draw_ = nullptr;
 };

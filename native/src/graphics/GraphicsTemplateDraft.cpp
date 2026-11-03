@@ -12,15 +12,15 @@ std::string hex(const std::array<uint8_t,32>& bytes) {
 }
 }
 GraphicsTemplateDraft::~GraphicsTemplateDraft() { {std::lock_guard lock(mutex_);stopping_=true;} wake_.notify_one(); if(worker_.joinable()) worker_.join(); }
-bool GraphicsTemplateDraft::submit(std::string manifest,const std::string& expectedHash,std::shared_ptr<const GraphicsTemplate> parent,std::string& key,Json fields,Json brand) {
+bool GraphicsTemplateDraft::submit(std::string manifest,const std::string& expectedHash,std::shared_ptr<const GraphicsTemplate> parent,std::string& key,Json fields,Json brand,std::string packageRoot) {
   if(!parent || manifest.empty() || manifest.size()>256*1024 || expectedHash.size()!=64 ||
       !std::all_of(expectedHash.begin(),expectedHash.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');})) return false;
   std::string assets; for(const auto& entry:parent->assets()) assets+=entry.first+":"+entry.second->sha256+";";
-  const auto values=fields.stringify()+brand.stringify();
+  const auto values=fields.stringify()+brand.stringify()+packageRoot;
   key=expectedHash+":"+hex(parent->hash())+":"+hex(modules::hashing::sha256(reinterpret_cast<const uint8_t*>(assets.data()),assets.size()))+":"+hex(modules::hashing::sha256(reinterpret_cast<const uint8_t*>(values.data()),values.size()));
   std::unique_lock lock(mutex_,std::try_to_lock); if(!lock.owns_lock() || stopping_) return false;
   if(wanted_==key) return true;
-  wanted_=key; pending_=std::make_shared<const Request>(Request{std::move(manifest),expectedHash,key,std::move(parent),std::move(fields),std::move(brand)});
+  wanted_=key; pending_=std::make_shared<const Request>(Request{std::move(manifest),expectedHash,key,std::move(packageRoot),std::move(parent),std::move(fields),std::move(brand)});
   if(!worker_.joinable()) worker_=std::thread([this]{run();}); wake_.notify_one(); return true;
 }
 void GraphicsTemplateDraft::run() {
@@ -31,7 +31,11 @@ void GraphicsTemplateDraft::run() {
     if(hex(modules::hashing::sha256(reinterpret_cast<const uint8_t*>(request->manifest.data()),request->manifest.size()))!=request->expectedHash) result->error="private-template-hash-mismatch";
     else {
       auto parsed=hex(request->parent->hash())==request->expectedHash ? request->parent : GraphicsTemplate::load(request->manifest,result->error);
-      if(parsed==request->parent) result->definition=parsed;
+      if (parsed && !request->packageRoot.empty()) {
+        GraphicsAssets assets;
+        if (loadGraphicsAssets(parsed->document(), request->packageRoot, assets, result->error))
+          result->definition = GraphicsTemplate::load(request->manifest, result->error, std::move(assets));
+      } else if(parsed==request->parent) result->definition=parsed;
       else if(parsed) {
         GraphicsAssets assets;
         if(const auto* declarations=parsed->document().get("assets")) for(const auto& declaration:declarations->asArray()) {

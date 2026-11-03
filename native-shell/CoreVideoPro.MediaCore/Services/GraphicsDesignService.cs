@@ -63,7 +63,7 @@ public sealed class GraphicsDesignService
         if (CleanName(name) is not { } clean) return Fail(NameRule);
         if (Full()) return Fail(TooMany);
         JsonElement definition; var packageRoot = "";
-        if (_library.Document.Designs.FirstOrDefault(d => d.TemplateId == templateId && d.TemplateVersion == templateVersion) is { } design) definition = design.Definition;
+        if (_library.Document.Designs.FirstOrDefault(d => d.TemplateId == templateId && d.TemplateVersion == templateVersion) is { } design) (definition, packageRoot) = (design.Definition, design.PackageRoot ?? "");
         else if (Available().Templates.FirstOrDefault(t => t.TemplateId == templateId && t.TemplateVersion == templateVersion) is { Definition: { } installed } look) {
             if (look.Runtime != "declarative") return Fail("This look cannot be copied into a design.");
             (definition, packageRoot) = (installed, look.PackageRoot);
@@ -77,7 +77,7 @@ public sealed class GraphicsDesignService
     /// <summary>Install the design's current version when the core does not have it.</summary>
     public Task<GraphicsDesignResult> OpenAsync(string designId, CancellationToken ct = default) => Run(async () => {
         if (Find(designId) is not { } design) return Fail(Missing);
-        var packageRoot = _library.Document.Templates.FirstOrDefault(t => t.TemplateId == design.TemplateId && t.TemplateVersion == design.TemplateVersion)?.PackageRoot ?? "";
+        var packageRoot = design.PackageRoot ?? _library.Document.Templates.FirstOrDefault(t => t.TemplateId == design.TemplateId && t.TemplateVersion == design.TemplateVersion)?.PackageRoot ?? "";
         var (template, refusal) = await Install(design.Definition, packageRoot, design.TemplateId, design.TemplateVersion, ct);
         return template is null ? Fail(refusal) : new(true, Status = "Design ready.", design, template);
     });
@@ -92,11 +92,14 @@ public sealed class GraphicsDesignService
             .Concat(_library.Document.Templates.Where(t => t.TemplateId == design.TemplateId).Select(t => t.TemplateVersion))
             .Append(design.TemplateVersion).Max() + 1);
         manifest["templateId"] = design.TemplateId; manifest["templateVersion"] = version;
-        var packageRoot = state.Templates.FirstOrDefault(t => t.TemplateId == design.TemplateId && t.TemplateVersion == design.TemplateVersion)?.PackageRoot ?? "";
+        var packageRoot = scratch.PackageRoot ?? design.PackageRoot ?? state.Templates.FirstOrDefault(t => t.TemplateId == design.TemplateId && t.TemplateVersion == design.TemplateVersion)?.PackageRoot ?? "";
         var (template, refusal) = await Install(JsonSerializer.SerializeToElement(manifest), packageRoot, design.TemplateId, version, ct);
         if (template is null) return Fail(refusal);
         var saved = design with { TemplateVersion = version, Definition = (template.Definition ?? JsonSerializer.SerializeToElement(manifest)).Clone(),
-            Family = template.Family.Length > 0 ? template.Family : design.Family, UpdatedAt = _utcNow() };
+            Family = template.Family.Length > 0 ? template.Family : design.Family, UpdatedAt = _utcNow(),
+            PackageRoot = packageRoot.Length == 0 ? null : packageRoot,
+            Assets = manifest["assets"] is JsonArray assets ? assets.OfType<JsonObject>().Select(asset => new GraphicsDesignAsset(
+                asset["id"]!.GetValue<string>(), asset["sha256"]!.GetValue<string>(), asset["file"]!.GetValue<string>())).ToArray() : [] };
         if (!await Store(_library.Document.Designs.Select(d => d.DesignId == design.DesignId ? saved : d).ToArray(), $"Saved {saved.Name} as version {version}.")) {
             await Remove(design.TemplateId, version, ct);
             return Fail(_library.Status);
@@ -191,7 +194,7 @@ public sealed class GraphicsDesignService
         var (template, refusal) = await Install(JsonSerializer.SerializeToElement(manifest), packageRoot, templateId, 1, ct);
         if (template is null) return Fail(refusal);
         var family = template.Family.Length > 0 ? template.Family : manifest["family"]?.GetValue<string>() ?? "";
-        var design = new GraphicsDesign(templateId, name, family, templateId, 1, (template.Definition ?? JsonSerializer.SerializeToElement(manifest)).Clone(), [], _utcNow());
+        var design = new GraphicsDesign(templateId, name, family, templateId, 1, (template.Definition ?? JsonSerializer.SerializeToElement(manifest)).Clone(), [], _utcNow()) { PackageRoot = packageRoot.Length == 0 ? null : packageRoot };
         if (!await Store([.. _library.Document.Designs, design], $"Created {name}.")) {
             await Remove(templateId, 1, ct);
             return Fail(_library.Status);

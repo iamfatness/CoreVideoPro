@@ -518,3 +518,129 @@ TEST(GraphicsTemplate, LayerMotionValidationRefusesBadShapesWithExactReasons) {
   EXPECT_EQ("template-motion-layer-limit", error);
 }
 } // namespace
+
+TEST(GraphicsTemplate, EllipseAndLineResolveIntoMotionAwarePrimitives) {
+  using M = Json::Object;
+  auto document = manifest();
+  auto layers = document.at("layers").asArray();
+  layers.emplace_back(M{{"id","badge"},{"type","ellipse"},{"x",12},{"y",12},{"width",30},{"height",20},
+      {"fill","#FFFFFF"},{"stroke","#0080FF"},{"strokeWidth",2},
+      {"animations",M{{"in",M{{"type","fade"},{"durationMs",150}}}}}});
+  layers.emplace_back(M{{"id","rule"},{"type","line"},{"x",48},{"y",12},{"width",30},{"height",8},
+      {"diagonal","up"},{"stroke","#FFFFFF"},{"strokeWidth",2}});
+  document["layers"] = std::move(layers);
+  std::string error;
+  const auto definition = load(document, error);
+  ASSERT_TRUE(definition) << error;
+  GraphicsDrawing drawing;
+  ASSERT_TRUE(definition->resolve(M{{"name","Ada"},{"title","Engineer"}}, brand(), drawing, error)) << error;
+  ASSERT_GE(drawing.primitives.size(), 2u);
+  const auto& ellipse = drawing.primitives[drawing.primitives.size()-2];
+  const auto& line = drawing.primitives.back();
+  EXPECT_EQ("ellipse", ellipse.type);
+  EXPECT_EQ(0, ellipse.unit);
+  EXPECT_EQ("line", line.type);
+  EXPECT_EQ(8., line.box.height);
+}
+
+TEST(GraphicsTemplate, TextOutlineAndShadowAcceptTheirDocumentedLimits) {
+  using M = Json::Object;
+  const auto edited = [](double outlineWidth, double blur) {
+    auto document = manifest();
+    auto layers = document.at("layers").asArray();
+    auto group = layers.back().asObject();
+    auto children = group.at("children").asArray();
+    auto text = children.front().asObject();
+    text["outline"] = M{{"color","#123456"},{"width",outlineWidth}};
+    text["shadow"] = M{{"color","#00000080"},{"x",-2},{"y",4},{"blur",blur}};
+    children.front() = std::move(text);
+    group["children"] = std::move(children);
+    layers.back() = std::move(group);
+    document["layers"] = std::move(layers);
+    return document;
+  };
+  std::string error;
+  EXPECT_TRUE(load(edited(8, 16), error)) << error;
+  EXPECT_FALSE(load(edited(8.1, 16), error));
+  EXPECT_FALSE(load(edited(8, 16.1), error));
+}
+
+TEST(GraphicsTemplate, AutoWidthFitsVisibleContentAndClampsBeforeMotionLayout) {
+  using M = Json::Object;
+  auto document = manifest();
+  auto layers = document.at("layers").asArray();
+  auto plate = layers.front().asObject();
+  plate["width"] = "auto";
+  plate["minWidth"] = 140;
+  plate["maxWidth"] = 240;
+  layers.front() = std::move(plate);
+  auto group = layers.back().asObject();
+  group["width"] = "auto";
+  group["minWidth"] = 80;
+  group["maxWidth"] = 180;
+  layers.back() = std::move(group);
+  document["layers"] = std::move(layers);
+  std::string error;
+  const auto definition = load(document, error);
+  ASSERT_TRUE(definition) << error;
+  GraphicsDrawing shortName, longName;
+  ASSERT_TRUE(definition->resolve(M{{"name","I"},{"title",""}}, brand(), shortName, error)) << error;
+  ASSERT_TRUE(definition->resolve(M{{"name","A long presenter name that needs more room"},{"title",""}}, brand(), longName, error)) << error;
+  EXPECT_EQ(140., shortName.primitives.front().box.width);
+  EXPECT_EQ(204., longName.primitives.front().box.width);
+  EXPECT_EQ(180., longName.nodes[1].box.width);
+}
+
+TEST(GraphicsTemplate, TextShrinksToItsMinimumBeforeEllipsis) {
+  auto document = manifest();
+  auto layers = document.at("layers").asArray();
+  auto group = layers.back().asObject();
+  auto children = group.at("children").asArray();
+  auto text = children.front().asObject();
+  text["width"] = 60;
+  text["minFontSize"] = 20;
+  children.front() = std::move(text);
+  group["children"] = std::move(children);
+  layers.back() = std::move(group);
+  document["layers"] = std::move(layers);
+  std::string error;
+  const auto definition = load(document, error);
+  ASSERT_TRUE(definition) << error;
+  GraphicsDrawing drawing;
+  ASSERT_TRUE(definition->resolve(Json::Object{{"name","WWWWWWWWWWWWWW"},{"title",""}}, brand(), drawing, error)) << error;
+  ASSERT_EQ(2u, drawing.primitives.size());
+  EXPECT_EQ(20., drawing.primitives.back().fontSize);
+  EXPECT_EQ("ellipsis", drawing.primitives.back().overflow);
+}
+
+TEST(GraphicsTemplate, PrivateDraftLoadsNewVerifiedPackageAssets) {
+  using M = Json::Object;
+  std::string error;
+  const auto asset = corevideo::graphics::graphicsAssetFromBytes("draft-logo", graphicsTest::png(), error);
+  ASSERT_TRUE(asset) << error;
+  graphicsTest::Package package(asset);
+  const auto parent = GraphicsTemplate::corporateLowerThird();
+  auto document = parent->document().asObject();
+  auto layers = document.at("layers").asArray();
+  layers.emplace_back(M{{"id","imported-logo"},{"type","image"},{"asset",asset->id},
+      {"x",0},{"y",0},{"width",80},{"height",40},{"fit","contain"}});
+  document["layers"] = std::move(layers);
+  document["assets"] = Json::Array{M{{"id",asset->id},{"file","assets/" + asset->sha256 + ".png"},{"sha256",asset->sha256}}};
+  const auto bytes = Json(document).stringify();
+  const auto hash = corevideo::modules::hashing::sha256(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+  std::string hex;
+  for (const auto byte : hash) { hex += "0123456789abcdef"[byte >> 4]; hex += "0123456789abcdef"[byte & 15]; }
+  corevideo::graphics::GraphicsTemplateDraft draft;
+  std::string key;
+  ASSERT_TRUE(draft.submit(bytes, hex, parent, key, M{{"name","Ada"},{"title","Engineer"}}, brand(), package.root.string()));
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  auto published = draft.poll();
+  while ((!published || published->key != key) && std::chrono::steady_clock::now() < until) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    published = draft.poll();
+  }
+  ASSERT_TRUE(published);
+  ASSERT_TRUE(published->definition) << published->error;
+  EXPECT_EQ(asset->sha256, published->definition->assets().at(asset->id)->sha256);
+  EXPECT_FALSE(parent->assets().contains(asset->id));
+}

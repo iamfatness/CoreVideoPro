@@ -42,6 +42,8 @@ public sealed record NativeGraphicsPlacement
 
 public sealed record NativeGraphicsScratch(string Manifest,string Hash)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? PackageRoot { get; init; }
     public static NativeGraphicsScratch From(System.Text.Json.JsonElement definition)
     {
         var manifest=definition.GetRawText(); var bytes=System.Text.Encoding.UTF8.GetBytes(manifest);

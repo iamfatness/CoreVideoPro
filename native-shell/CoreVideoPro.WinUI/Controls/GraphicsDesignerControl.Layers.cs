@@ -69,7 +69,14 @@ public sealed partial class GraphicsDesignerControl
         add.RowDefinitions.Add(new() { Height = GridLength.Auto }); add.RowDefinitions.Add(new() { Height = GridLength.Auto });
         AutomationProperties.SetName(_addText, "Add text layer"); AutomationProperties.SetName(_addShape, "Add shape layer");
         AutomationProperties.SetName(_addImage, "Add image layer"); AutomationProperties.SetName(_addClock, "Add clock layer");
-        _addText.Click += (_, _) => AddLayer("text"); _addShape.Click += (_, _) => AddLayer("shape"); _addClock.Click += (_, _) => AddLayer("clock");
+        _addText.Click += (_, _) => AddLayer("text"); _addClock.Click += (_, _) => AddLayer("clock");
+        var shapes = new MenuFlyout();
+        foreach (var (kind, label) in new[] { ("shape", "Rectangle"), ("ellipse", "Ellipse"), ("line", "Line") }) {
+            var item = new MenuFlyoutItem { Text = label };
+            item.Click += (_, _) => AddLayer(kind);
+            shapes.Items.Add(item);
+        }
+        _addShape.Flyout = shapes;
         _addImage.Flyout = _imageSources; _imageSources.Opening += (_, _) => FillImageSources();
         _clockHost.Child = _addClock;
         add.Children.Add(_addText); Grid.SetColumn(_addShape, 1); add.Children.Add(_addShape);
@@ -90,6 +97,9 @@ public sealed partial class GraphicsDesignerControl
     private void FillImageSources()
     {
         _imageSources.Items.Clear();
+        var import = new MenuFlyoutItem { Text = "Import PNG, JPEG or SVG…" };
+        import.Click += async (_, _) => await PickDesignImageAsync();
+        _imageSources.Items.Add(import);
         var sources = new List<(string Source, string Label)>();
         if (_session?.TemplateDocument is { } document) {
             try { sources.AddRange(GraphicsDesignerModel.ImageSources(document)); }

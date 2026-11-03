@@ -6,7 +6,10 @@ namespace CoreVideoPro.MediaCore.Models;
 /// <summary>A graphic the operator built in the Graphics designer, stored in the show's graphics
 /// document (schema 3). <see cref="Definition"/> is the native template manifest; the native
 /// registry still owns the 16-definition and 256 KiB limits.</summary>
-public sealed record GraphicsDesign(string DesignId, string Name, string Family, string TemplateId, int TemplateVersion, JsonElement Definition, IReadOnlyList<GraphicsDesignAsset> Assets, DateTimeOffset UpdatedAt);
+public sealed record GraphicsDesign(string DesignId, string Name, string Family, string TemplateId, int TemplateVersion, JsonElement Definition, IReadOnlyList<GraphicsDesignAsset> Assets, DateTimeOffset UpdatedAt)
+{
+    public string? PackageRoot { get; init; }
+}
 
 /// <summary>An image a design references: content hash plus a path relative to the show's asset folder.</summary>
 public sealed record GraphicsDesignAsset(string AssetId, string Sha256, string RelativePath);

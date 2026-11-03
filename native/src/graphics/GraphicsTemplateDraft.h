@@ -8,16 +8,16 @@
 
 namespace corevideo::graphics {
 // One coalescing private authoring compiler. Scratch revisions never enter the
-// immutable installed catalog and can only reuse their parent's verified assets.
+// immutable installed catalog. New asset bytes use the same verified package loader as installs.
 class GraphicsTemplateDraft {
  public:
   struct Publication { std::string key,error; std::shared_ptr<const GraphicsTemplate> definition; rpc::Json layout; };
   GraphicsTemplateDraft()=default;
   ~GraphicsTemplateDraft();
-  bool submit(std::string manifest,const std::string& expectedHash,std::shared_ptr<const GraphicsTemplate> parent,std::string& key,rpc::Json fields = {},rpc::Json brand = {});
+  bool submit(std::string manifest,const std::string& expectedHash,std::shared_ptr<const GraphicsTemplate> parent,std::string& key,rpc::Json fields = {},rpc::Json brand = {},std::string packageRoot = {});
   std::shared_ptr<const Publication> poll() const { return std::atomic_load(&publication_); }
  private:
-  struct Request { std::string manifest,expectedHash,key; std::shared_ptr<const GraphicsTemplate> parent; rpc::Json fields,brand; };
+  struct Request { std::string manifest,expectedHash,key,packageRoot; std::shared_ptr<const GraphicsTemplate> parent; rpc::Json fields,brand; };
   void run();
   std::mutex mutex_; std::condition_variable wake_; std::thread worker_;
   std::shared_ptr<const Request> pending_; std::string wanted_; bool stopping_=false;

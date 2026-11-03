@@ -74,7 +74,8 @@ public sealed partial class GraphicsDesignerControl
         IReadOnlyList<NativeGraphicsTemplateField> fields = [];
         if (document is not null) { try { fields = GraphicsTemplateEditor.TemplateFields(document); } catch (Exception ex) when (ex is InvalidDataException or JsonException) { } }
         var signature = inspection is null ? "" : $"{inspection.Id}:{inspection.Kind}:{inspection.ShowsVariable is null}:{inspection.FontChoice}:{inspection.ColourChoice}:{inspection.FillChoice}:{inspection.ImageSource}:"
-            + string.Join(',', fields.Select(f => f.Id + "/" + f.Type));
+            + string.Join(',', fields.Select(f => f.Id + "/" + f.Type))
+            + (document is null ? "" : ContentSignature(GraphicsTemplateEditor.Layer(document, inspection.Id)));
         if (signature != _inspectorSignature) { _inspectorSignature = signature; BuildLayerInspector(inspection, fields, document); }
         if (inspection is not null) foreach (var refresh in _inspectorRefresh) refresh(inspection);
         var editable = CanEdit && inspection is { Locked: false };
@@ -87,10 +88,11 @@ public sealed partial class GraphicsDesignerControl
         _layerBody.Children.Clear(); _inspectorRefresh.Clear(); _inspectorInputs.Clear(); _pending.Clear(); // RefreshAll flushed text typed for another layer first
         if (layer is null) { _layerBody.Children.Add(Note("Choose a layer in the list or on the canvas.")); return; }
         var id = layer.Id;
+        var content = document is null ? default : GraphicsTemplateEditor.Layer(document, id);
         if (layer.Locked) _layerBody.Children.Add(Note("This layer is locked. Unlock it in the layers list to edit it."));
         switch (layer.Kind) {
             case "Text" or "Clock": BuildText(layer, fields); break;
-            case "Shape": BuildShape(layer); break;
+            case "Shape" or "Ellipse": BuildShape(layer); break;
             case "Image": BuildImage(layer, fields, document); break;
         }
         var position = new Grid { ColumnSpacing = 6 };
@@ -101,6 +103,10 @@ public sealed partial class GraphicsDesignerControl
             position.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
             var box = Number(label, min, 8192, read(layer), value => SetNumbers(id, new Dictionary<string, double> { [property] = value }));
             AutomationProperties.SetName(box, "Layer " + label);
+            if (property == "width" && IsAutoWidth(content)) {
+                _inspectorInputs.Remove(box);
+                box.IsEnabled = false;
+            }
             _inspectorRefresh.Add(l => Show(box, read(l)));
             Grid.SetColumn(box, i); position.Children.Add(box);
         }
@@ -110,6 +116,7 @@ public sealed partial class GraphicsDesignerControl
         opacity.EditStarted += (_, _) => _session?.BeginGesture(); opacity.EditCompleted += (_, _) => _session?.EndGesture();
         _inspectorRefresh.Add(l => { if (Math.Abs(opacity.Value - l.Opacity) > 1e-9) opacity.Value = l.Opacity; });
         _inspectorInputs.Add(opacity); _layerBody.Children.Add(opacity);
+        AddContentControls(layer, content);
     }
 
     private void BuildText(GraphicsLayerInspection layer, IReadOnlyList<NativeGraphicsTemplateField> fields)
@@ -167,11 +174,13 @@ public sealed partial class GraphicsDesignerControl
     {
         var fill = ColourChoice("Fill", "fill", layer.FillChoice, layer.Id);
         if (layer.FillGradient) ToolTipService.SetToolTip(fill, "This fill is a gradient. Choosing a colour replaces it.");
-        var radius = Number("Corner radius", 0, 4096, layer.CornerRadius, value => SetNumbers(layer.Id, new Dictionary<string, double> { ["cornerRadius"] = value }));
-        _inspectorRefresh.Add(l => Show(radius, l.CornerRadius));
         _layerBody.Children.Add(fill);
         if (layer.FillGradient) _layerBody.Children.Add(Note("Gradient fill. Choose a colour to replace it."));
-        _layerBody.Children.Add(radius);
+        if (layer.Kind == "Shape") {
+            var radius = Number("Corner radius", 0, 4096, layer.CornerRadius, value => SetNumbers(layer.Id, new Dictionary<string, double> { ["cornerRadius"] = value }));
+            _inspectorRefresh.Add(l => Show(radius, l.CornerRadius));
+            _layerBody.Children.Add(radius);
+        }
     }
 
     private void BuildImage(GraphicsLayerInspection layer, IReadOnlyList<NativeGraphicsTemplateField> fields, NativeGraphicsScratch? document)

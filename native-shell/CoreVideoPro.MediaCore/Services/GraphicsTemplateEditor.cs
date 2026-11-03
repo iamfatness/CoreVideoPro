@@ -29,7 +29,7 @@ public static partial class GraphicsTemplateEditor
         for(var i=0;i<layers.Count;i++) {
             if(layers[i] is not JsonObject node) throw new InvalidDataException("Invalid template layer.");
             if(node["id"] is not JsonValue id || !id.TryGetValue<string>(out var identity) || string.IsNullOrEmpty(identity) || identity.Length>64 ||
-                node["type"] is not JsonValue kind || !kind.TryGetValue<string>(out var type) || type is not ("rect" or "text" or "image" or "group")) throw new InvalidDataException("Invalid template layer identity or type.");
+                node["type"] is not JsonValue kind || !kind.TryGetValue<string>(out var type) || type is not ("rect" or "ellipse" or "line" or "text" or "image" or "group")) throw new InvalidDataException("Invalid template layer identity or type.");
             var isLocked=locked || node["metadata"] is JsonObject meta && meta["editorLocked"] is JsonValue flag && flag.TryGetValue<bool>(out var on) && on;
             yield return (node,layers,i,parent,depth,isLocked);
             if(node["children"] is JsonArray children) foreach(var child in Walk(children,node["id"]?.GetValue<string>() ?? "",depth+1,isLocked)) yield return child;
@@ -57,6 +57,9 @@ public static partial class GraphicsTemplateEditor
             throw new InvalidDataException("This layer property is not editable.");
         var replacement=JsonNode.Parse(value.GetRawText()); if(JsonNode.DeepEquals(row.Node[property],replacement)) return scratch;
         row.Node[property]=replacement;
+        if (property == "width" && replacement is JsonValue width && width.GetValueKind() == JsonValueKind.Number) {
+            row.Node.Remove("minWidth"); row.Node.Remove("maxWidth");
+        }
         if(replacement is JsonObject reference && reference["token"] is JsonValue token && token.TryGetValue<string>(out var name)) {
             var tokens=root["brandTokens"]?.AsArray(); if(tokens is not null && !tokens.Any(t=>t?.GetValue<string>()==name)) tokens.Add(name);
         }
@@ -149,6 +152,7 @@ public static partial class GraphicsTemplateEditor
     // Properties each native layer type accepts (GraphicsTemplate.cpp keys(node, allowed)).
     private static bool LayerAllows(string layerType,string property)=>property is "x" or "y" or "width" or "height" or "opacity" or "visible" || layerType switch {
         "rect"=>property is "fill" or "cornerRadius",
+        "ellipse"=>property == "fill",
         "text"=>property is "text" or "font" or "fontWeight" or "fontSize" or "lineHeight" or "color" or "align" or "maxLines" or "overflow",
         "image"=>property is "asset" or "fit" or "align" or "verticalAlign",
         "group"=>property is "flow" or "gap" or "padding",

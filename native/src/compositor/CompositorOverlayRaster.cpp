@@ -182,6 +182,119 @@ CompositorOverlayRaster::CompositorOverlayRaster()
              }, 64) {}
 CompositorOverlayRaster::~CompositorOverlayRaster() = default;
 
+namespace {
+// DirectWrite retains shaping, alignment, fallback and trimming. Capture its
+// positioned glyph runs as vector geometry only for text with effects.
+class TextEffectGeometry final : public IDWriteTextRenderer {
+ public:
+  explicit TextEffectGeometry(ID2D1Factory& factory) : factory_(factory) {}
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** result) override {
+    if (!result) return E_POINTER;
+    *result = nullptr;
+    if (id == __uuidof(IUnknown) || id == __uuidof(IDWriteTextRenderer))
+      *result = static_cast<IDWriteTextRenderer*>(this);
+    else if (id == __uuidof(IDWritePixelSnapping))
+      *result = static_cast<IDWritePixelSnapping*>(this);
+    else return E_NOINTERFACE;
+    AddRef();
+    return S_OK;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+  ULONG STDMETHODCALLTYPE Release() override { return --references_; }
+  HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* disabled) override {
+    *disabled = TRUE;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* matrix) override {
+    *matrix = {1, 0, 0, 1, 0, 0};
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* pixels) override {
+    *pixels = 1;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, FLOAT x, FLOAT y, DWRITE_MEASURING_MODE,
+      const DWRITE_GLYPH_RUN* run, const DWRITE_GLYPH_RUN_DESCRIPTION*, IUnknown*) override {
+    ComPtrLite<ID2D1PathGeometry> path;
+    ComPtrLite<ID2D1GeometrySink> sink;
+    HRESULT result = factory_.CreatePathGeometry(path.put());
+    if (SUCCEEDED(result)) result = path->Open(sink.put());
+    if (FAILED(result)) return result;
+    result = run->fontFace->GetGlyphRunOutline(run->fontEmSize, run->glyphIndices,
+        run->glyphAdvances, run->glyphOffsets, run->glyphCount, run->isSideways, (run->bidiLevel & 1) != 0, sink.get());
+    const HRESULT closed = sink->Close();
+    if (FAILED(result)) return result;
+    if (FAILED(closed)) return closed;
+    ComPtrLite<ID2D1TransformedGeometry> positioned;
+    const auto transform = D2D1::Matrix3x2F::Translation(x, y);
+    result = factory_.CreateTransformedGeometry(path.get(), transform, positioned.put());
+    if (SUCCEEDED(result)) runs_.push_back(std::move(positioned));
+    return result;
+  }
+  HRESULT STDMETHODCALLTYPE DrawUnderline(void*, FLOAT, FLOAT, const DWRITE_UNDERLINE*, IUnknown*) override {
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*, IUnknown*) override {
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE DrawInlineObject(void* context, FLOAT x, FLOAT y,
+      IDWriteInlineObject* object, BOOL sideways, BOOL rtl, IUnknown* effect) override {
+    return object->Draw(context, this, x, y, sideways, rtl, effect);
+  }
+
+  HRESULT group(ID2D1GeometryGroup** result) const {
+    std::vector<ID2D1Geometry*> geometries;
+    geometries.reserve(runs_.size());
+    for (const auto& run : runs_) geometries.push_back(run.get());
+    return factory_.CreateGeometryGroup(D2D1_FILL_MODE_WINDING, geometries.data(),
+        static_cast<UINT32>(geometries.size()), result);
+  }
+  bool empty() const { return runs_.empty(); }
+
+ private:
+  ID2D1Factory& factory_;
+  ULONG references_ = 1;
+  std::vector<ComPtrLite<ID2D1TransformedGeometry>> runs_;
+};
+
+bool drawTextEffects(ID2D1Factory& factory, ID2D1RenderTarget& target,
+    IDWriteTextLayout& text, const graphics::GraphicsPrimitive& primitive) {
+  TextEffectGeometry glyphs(factory);
+  if (FAILED(text.Draw(nullptr, &glyphs, float(primitive.box.x), float(primitive.box.y)))) return false;
+  if (glyphs.empty()) return true;
+  ComPtrLite<ID2D1GeometryGroup> geometry;
+  if (FAILED(glyphs.group(geometry.put()))) return false;
+  if (primitive.shadow) {
+    const auto& shadow = *primitive.shadow;
+    ComPtrLite<ID2D1TransformedGeometry> shifted;
+    const auto transform = D2D1::Matrix3x2F::Translation(float(shadow.x), float(shadow.y));
+    if (FAILED(factory.CreateTransformedGeometry(geometry.get(), transform, shifted.put()))) return false;
+    ComPtrLite<ID2D1SolidColorBrush> brush;
+    if (FAILED(target.CreateSolidColorBrush(d2dColorFromArgb(shadow.color), brush.put()))) return false;
+    // A bounded soft edge over the positioned glyph geometry works on the
+    // software WIC render target as well as during atlas preparation.
+    if (shadow.blur > 0) {
+      constexpr int rings = 8;
+      for (int ring = rings; ring > 0; --ring) {
+        const float fraction = float(ring) / rings;
+        brush->SetOpacity(float(primitive.opacity) * (1.f - fraction * .8f) / rings);
+        target.DrawGeometry(shifted.get(), brush.get(), float(2 * shadow.blur * fraction));
+      }
+    }
+    brush->SetOpacity(float(primitive.opacity));
+    target.FillGeometry(shifted.get(), brush.get());
+  }
+  if (primitive.outline && primitive.outline->width > 0) {
+    ComPtrLite<ID2D1SolidColorBrush> brush;
+    if (FAILED(target.CreateSolidColorBrush(d2dColorFromArgb(primitive.outline->color), brush.put()))) return false;
+    brush->SetOpacity(float(primitive.opacity));
+    target.DrawGeometry(geometry.get(), brush.get(), float(2 * primitive.outline->width));
+  }
+  return true;
+}
+}  // namespace
+
 bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
     const graphics::GraphicsDrawing& drawing, float scale, const std::map<std::string, ImageInput>& images,
     size_t first, size_t count, float offsetX, float offsetY) {
@@ -218,6 +331,21 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
       }
       target->PopAxisAlignedClip(); continue;
     }
+    ComPtrLite<ID2D1SolidColorBrush> stroke;
+    if (p.strokeWidth > 0) {
+      if (SUCCEEDED(target->CreateSolidColorBrush(d2dColorFromArgb(p.strokeColor), stroke.put())))
+        stroke->SetOpacity(float(p.opacity));
+      else complete = false;
+    }
+    const auto inset = p.strokeWidth / 2;
+    if (p.type == "line") {
+      if (stroke) target->DrawLine(
+          D2D1::Point2F(float(b.x + inset), float(p.lineRises ? b.y + b.height - inset : b.y + inset)),
+          D2D1::Point2F(float(b.x + b.width - inset), float(p.lineRises ? b.y + inset : b.y + b.height - inset)),
+          stroke.get(), float(p.strokeWidth));
+      target->PopAxisAlignedClip();
+      continue;
+    }
     ComPtrLite<ID2D1SolidColorBrush> solid;
     ComPtrLite<ID2D1LinearGradientBrush> gradient;
     ID2D1Brush* brush = nullptr;
@@ -232,8 +360,21 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
     if (!brush) complete = false;
     else {
       brush->SetOpacity(float(p.opacity));
-      if (p.type == "rect") target->FillRoundedRectangle(D2D1::RoundedRect(
-          D2D1::RectF(float(b.x), float(b.y), float(b.x + b.width), float(b.y + b.height)), float(p.cornerRadius), float(p.cornerRadius)), brush);
+      if (p.type == "rect") {
+        target->FillRoundedRectangle(D2D1::RoundedRect(
+            D2D1::RectF(float(b.x), float(b.y), float(b.x + b.width), float(b.y + b.height)), float(p.cornerRadius), float(p.cornerRadius)), brush);
+        if (stroke) {
+          const auto radius = float(std::max(0., p.cornerRadius - inset));
+          target->DrawRoundedRectangle(D2D1::RoundedRect(
+              D2D1::RectF(float(b.x + inset), float(b.y + inset), float(b.x + b.width - inset), float(b.y + b.height - inset)),
+              radius, radius), stroke.get(), float(p.strokeWidth));
+        }
+      } else if (p.type == "ellipse") {
+        const auto centre = D2D1::Point2F(float(b.x + b.width / 2), float(b.y + b.height / 2));
+        target->FillEllipse(D2D1::Ellipse(centre, float(b.width / 2), float(b.height / 2)), brush);
+        if (stroke) target->DrawEllipse(D2D1::Ellipse(centre, float(b.width / 2 - inset), float(b.height / 2 - inset)),
+            stroke.get(), float(p.strokeWidth));
+      }
       else if (p.type == "text" && !p.text.empty()) {
         const auto family = widenUtf8(p.font), text = widenUtf8(p.text);
         UINT32 fontIndex = 0; BOOL exists = FALSE;
@@ -257,6 +398,8 @@ bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
                 SUCCEEDED(dwriteFactory_->CreateEllipsisTrimmingSign(format.get(), ellipsis.put())) &&
                 SUCCEEDED(layout->SetTrimming(&trim, ellipsis.get()));
           }
+          if (textReady && (p.outline || p.shadow))
+            textReady = drawTextEffects(*d2dFactory_.get(), *target, *layout.get(), p);
           if (textReady) target->DrawTextLayout(D2D1::Point2F(float(b.x), float(b.y)), layout.get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
           else complete = false;
         }

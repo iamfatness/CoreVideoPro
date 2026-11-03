@@ -485,8 +485,7 @@ public sealed class GraphicsBuilderControl : UserControl
     {
         try {
             var picker = new Windows.Storage.Pickers.FileOpenPicker();
-            // SVG is not offered until it is rasterised at import (Graphics Designer slice 4).
-            picker.FileTypeFilter.Add(".png"); picker.FileTypeFilter.Add(".jpg"); picker.FileTypeFilter.Add(".jpeg");
+            picker.FileTypeFilter.Add(".png"); picker.FileTypeFilter.Add(".jpg"); picker.FileTypeFilter.Add(".jpeg"); picker.FileTypeFilter.Add(".svg");
             WinRT.Interop.InitializeWithWindow.Initialize(picker, App.MainWindowHandle);
             var file = await picker.PickSingleFileAsync();
             if (file is not null) await ImportLogoAsync(file.Path);

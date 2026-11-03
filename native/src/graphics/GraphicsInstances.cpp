@@ -122,9 +122,13 @@ std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPre
   if (!readRevision(draft, revision) || !revision.fieldsReady) return {};
   hashRevision(templateId, revision);
   if(revision.definition) {
-    const auto* scratch=draft.get("scratch"); std::string manifest,expected;
+    const auto* scratch=draft.get("scratch"); std::string manifest,expected,packageRoot;
     if(scratch && !scratch->isNull()) {
-      if(!scratch->isObject() || scratch->asObject().size()!=2 || !scratch->get("manifest") || !scratch->get("manifest")->isString() || !scratch->get("hash") || !scratch->get("hash")->isString()) return {};
+      if(!scratch->isObject() || scratch->asObject().size()<2 || scratch->asObject().size()>3 || !scratch->get("manifest") || !scratch->get("manifest")->isString() || !scratch->get("hash") || !scratch->get("hash")->isString()) return {};
+      for (const auto& [key, value] : scratch->asObject())
+        if ((key != "manifest" && key != "hash" && key != "packageRoot") || !value.isString()) return {};
+      packageRoot = scratch->getString("packageRoot");
+      if (packageRoot.size() > 2048 || packageRoot.find('\0') != std::string::npos) return {};
       manifest=scratch->getString("manifest");expected=scratch->getString("hash");
     } else {
       manifest=revision.definition->document().stringify(); static constexpr char hex[]="0123456789abcdef";
@@ -132,7 +136,7 @@ std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPre
     }
     if(!authoringCompiler_) authoringCompiler_=std::make_shared<GraphicsTemplateDraft>();
     std::string key;
-    if(!authoringCompiler_->submit(std::move(manifest),expected,revision.definition,key,revision.templateFields,revision.templateInput->brand)) return {};
+    if(!authoringCompiler_->submit(std::move(manifest),expected,revision.definition,key,revision.templateFields,revision.templateInput->brand,std::move(packageRoot))) return {};
     authoringKey_=key;
     authoringInput_=Json::Object{{"templateId",templateId},{"templateVersion",int(version)},{"manifestHash",expected},{"fields",revision.templateFields},
       {"style",draft.get("style") ? *draft.get("style") : Json{Json::Object{}}}};

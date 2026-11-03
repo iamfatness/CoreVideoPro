@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Svg.Skia" Version="5.2.3" />
+  </ItemGroup>
+  <ItemGroup>
     <EmbeddedResource Include="../CoreVideoPro.WinUI/Assets/StoreLogo.png" LogicalName="CoreVideoPro.Graphics.BuiltinLogo.png" />
     <EmbeddedResource Include="../../contracts/graphics-seeds/*.json" LogicalName="CoreVideoPro.Graphics.Seed.%(Filename)%(Extension)" />
   </ItemGroup>
