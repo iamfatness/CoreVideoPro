@@ -151,6 +151,7 @@ class Layout {
     for (const auto& node : document_.get("layers")->asArray()) visit(node, 0, 0, root, 1, 0, false);
     return result;
   }
+  bool hasUnanimatedLayer() const { return hasUnanimatedLayer_; }
  private:
   Json resolve(const Json* value, const std::string& type) {
     need(value != nullptr, "template-property-required");
@@ -207,6 +208,7 @@ class Layout {
       draw_->units.push_back(std::move(motion));
     }
     p.unit = unit;
+    if (unit < 0 && type != "group") hasUnanimatedLayer_ = true;
     draw_->nodes.push_back({nodeId,parentId,type,p.box,p.clip,visible && p.opacity>0});
     if (type == "group") {
       const auto flow = stringProperty(node, "flow", "none"); need(flow == "none" || flow == "vertical" || flow == "horizontal", "template-flow");
@@ -268,6 +270,7 @@ class Layout {
   }
   const Json& document_; const Json& fields_; const Json& brand_; const GraphicsAssets& assets_; bool validate_;
   std::shared_ptr<const GraphicsAsset> logo_;
+  bool hasUnanimatedLayer_ = false;
   std::set<std::string> declared_, ids_; size_t nodes_ = 0; GraphicsDrawing* draw_ = nullptr;
 };
 } // namespace
@@ -395,12 +398,14 @@ std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::load(const std::string
     definition->assets_ = std::move(assets);
     const auto* animations = d.get("animations"); need(animations, "template-animations"); keys(*animations, {"in", "out"});
     for (const auto& [_, transition] : animations->asObject()) { GraphicsTransition parsed; need(GraphicsTransition::read(transition, parsed), "template-animation"); }
-    const auto analysis = Layout(d, definition->defaultFields(), Json::Object{}, definition->assets_, true).run();
+    const auto defaults = definition->defaultFields();
+    const Json brand = Json::Object{};
+    Layout layout(d, defaults, brand, definition->assets_, true);
+    const auto analysis = layout.run();
     auto& motion = definition->motion_;
     motion.units = analysis.units.size();
     motion.layered = motion.units != 0;
-    motion.inFollows = motion.outFollows = !motion.layered || std::any_of(analysis.primitives.begin(), analysis.primitives.end(),
-        [](const auto& primitive) { return primitive.unit < 0; });
+    motion.inFollows = motion.outFollows = !motion.layered || layout.hasUnanimatedLayer();
     for (const auto& unit : analysis.units) {
       if (unit.in) motion.inMs = std::max(motion.inMs, unit.in->startMs + unit.in->durationMs);
       if (unit.out) motion.outMs = std::max(motion.outMs, unit.out->startMs + unit.out->durationMs);

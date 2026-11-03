@@ -313,6 +313,58 @@ Code: `GraphicsDesignerControl` (+ `.Layers` / `.Inspector`) over MediaCore
 `GraphicsDesignWorkflow.OpenInDesignerAsync` / `OpenForRowAsync` (over `DesignForRow` / `IsEditing`) decide what Open in
 Designer and Operate's "Open in Design" do.
 
+## Motion (Graphics Designer slice 3)
+
+Select a layer and open **Motion**. Use **In** and **Out** in the strip beneath the
+canvas to choose which move you are editing. **Show motion** opens the strip when it
+starts collapsed on a smaller display. The strip lists layers in paint order, back to
+front. Select a bar to select its layer. Drag the bar to change its start or drag an
+end to change its length. Timing snaps to 50 ms, or 10 ms while holding Ctrl. The arrow
+keys move the selected bar by 50 ms and Shift+arrow changes its duration.
+
+| Move | What you see |
+|---|---|
+| Cut | The layer switches at its start time. |
+| Fade | The layer changes opacity in place. |
+| Fade + rise | The layer fades as it rises into place. |
+| Slide | The layer enters from the chosen side. |
+| Wipe | The layer is revealed from the chosen edge. |
+| Grow | The layer scales from one edge. |
+| Pop | The layer grows from its centre, overshoots slightly, and settles. |
+
+**Starts at**, **Takes**, and **Feel** set the delay, duration and easing.
+Slide, Wipe, and Grow have direction controls. Fade + rise and Slide have a
+travel-distance control. **Moves with the graphic** restores the layer's
+inherited motion. Per-layer moves are masked by their parent's area. Each
+phase must finish within 3.0 seconds, and up to 16 layers can have their own
+motion.
+
+**Out mirrors In** starts on and makes the Out view read-only. Turn it off to
+edit Out separately. **Build left to right**, **Everything fades**, and
+**Bar first, words after** fill the strip. You can retime individual bars after
+applying a preset.
+
+**Play preview** plays In, holds one second, and plays Out. **Play In** and
+**Play Out** rehearse one phase. These one-shot previews stop on an edit,
+sample switch, or Undo. **Loop** keeps playing and restarts on edits. All
+four controls use the private Designer canvas. Program and the Studio Preview
+bus stay as they were.
+
+**Save to playlist** pins the design version on its row. **Show** in Operate
+uses the latest saved pin even if the row already has an instance. A row's own
+**Motion** makes the whole graphic move as one. With row Motion unset, a
+design row uses its saved motion and a built-in row uses the default fade.
+The instance leaves air when its last layer finishes. Show during Out and
+Play Out during In reverse the current move from its current position.
+
+### Acceptance 3
+
+1. Open a lower-third design. On **Plate**, choose **Wipe**, set **From left**, and set **Takes** to 0.35 s.
+2. On **Name**, choose **Fade + rise** and set **Starts at** to 0.20 s.
+3. Press **Play preview**. The plate begins before the name in the private canvas.
+4. Press **Save to playlist**. Go to **Operate** and press **Show** on that row.
+5. Confirm the plate wipes in first on Program and the name starts 0.20 s later. Confirm the instance leaves air after its last layer finishes Out.
+
 ## Show vs Cue
 
 **Show** puts the graphic on Program now: the row's native instance is created
@@ -439,6 +491,7 @@ makes the Take carry them:
 | ViewModel seam (strangler partial; scene select + routed guests for layouts) | `ViewModels/StudioViewModel.GraphicsPlayout.cs`, routing in `StudioViewModel.StudioLowerThird.cs` |
 | Control API and state | `CoreVideoPro.Control/ControlActionRegistry.cs`, `ControlState.cs` (`GraphicsStrip`, `GraphicsPlaylist`, `GraphicsLayouts`, `LowerThirdOnAir`), `WinUI/Services/StudioControlSurface.cs` |
 | Design surfaces | `Controls/GraphicsBuilderControl.cs` (builder, Your designs, Open in Designer, Cues & automation), `Controls/GraphicsDesignerControl*.cs` (Designer), `Controls/GraphicsWorkspaceControl*.cs` (Cues & automation), `Services/GraphicsDesignSurfaces.cs` (one surface at a time); decisions in MediaCore `GraphicsBuilder`, `GraphicsDesignWorkflow`, `GraphicsDesignerModel`, `GraphicsSnap`, `GraphicsPreviewSamples` |
+| Motion | `GraphicsDesignerControl.Motion*.cs`, `GraphicsTemplateEditor.Motion.cs`, `GraphicsMotionModel.cs`; native units, phase clock and atlas layout in `GraphicsMotion.*`, drawn by the Windows D3D11 compositor |
 | UI | `Controls/GraphicsOnAirStripControl.cs`, `Controls/GraphicsPlayoutControl.cs` (full and `Compact`), `Views/OverlaysPage.xaml` (toggle), `Views/StudioWorkspace.xaml` (strip + compact playlist), `Services/GraphicsHotkeyRouter.cs` |
 | Core | `native/src/graphics/GraphicsInstances.*` (`rideTake`, `promoteCuedForTake`, `uncue`), `native/src/core/MediaCore.cpp` (`beginTakeTransition`) |
 
@@ -508,6 +561,10 @@ row or layout and moves when reassigned.
 - The strip derives from the core's instance state only. A chip that is not
   there is a bug in the mapping, not a reason to add local state.
 - Do not flip lower-third authority to instances before an accepted Show.
+- Apply a saved row's pinned version and motion to the cue copy before Show.
+  Keep the previous Program revision until the new cue is ready.
+- Keep the private Play preview request and its clock out of the Program
+  render plan and instance state.
 - Instance capacity is eight per bus: entries are created lazily on Show /
   Cue and hidden ones are removed; a 10-guest roster never pre-creates.
 - Outputs drill: unaffected (it reads `graphics.coreEpoch` only); never rename

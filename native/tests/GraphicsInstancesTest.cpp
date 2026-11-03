@@ -1377,3 +1377,29 @@ TEST(GraphicsInstances, AuthoringPreviewAcceptsPlayAndCarriesTheGraphicMotion) {
   EXPECT_FALSE(state.authoringPreview(draft));
   EXPECT_TRUE(state.snapshot().get("instances")->asArray().empty());
 }
+
+TEST(GraphicsInstances, VersionUpdateRebasesFieldsAndKeepsCompatibleValues) {
+  GraphicsInstances state{"test-core"};
+  const auto fixture = Json::parse(corevideo::graphics::test::motionFixture("bar-first.json"));
+  ASSERT_TRUE(fixture);
+  ASSERT_TRUE(installAndWait(state, fixture->asObject()));
+  auto next = fixture->asObject();
+  next["templateVersion"] = 2;
+  for (const auto* key : {"layers", "fields"}) {
+    auto items = next.at(key).asArray();
+    std::erase_if(items, [](const Json& node) {
+      const auto id = node.getString("id");
+      return id == "title" || id == "title-label";
+    });
+    next[key] = std::move(items);
+  }
+  ASSERT_TRUE(installAndWait(state, std::move(next)));
+  ASSERT_TRUE(state.apply(request("graphics-instance-create", {
+      {"templateId","motion-bar-first"}, {"templateVersion",1}, {"scope","global"},
+      {"fields",Json::Object{{"name","Ada"},{"title","Engineer"}}}})));
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {
+      {"templateVersion",2}, {"target","cue"}, {"fields",Json::Object{}}}))) << lastReason(state);
+  EXPECT_EQ(2., row(state).getNumber("templateVersion"));
+  EXPECT_EQ("Ada", row(state).get("fields")->getString("name"));
+  EXPECT_FALSE(row(state).get("fields")->get("title"));
+}

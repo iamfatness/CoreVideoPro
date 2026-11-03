@@ -24,7 +24,8 @@ public sealed class GraphicsDesignServiceTests : IDisposable
     private static NativeGraphicsTemplate Installed(JsonElement definition, string packageRoot = "") => new() {
         TemplateId = definition.GetProperty("templateId").GetString()!, TemplateVersion = definition.GetProperty("templateVersion").GetInt32(),
         Name = definition.TryGetProperty("name", out var name) ? name.GetString()! : "", Family = definition.TryGetProperty("family", out var family) ? family.GetString()! : "",
-        Runtime = "declarative", ManifestHash = Hash(definition.GetRawText()), Definition = definition.Clone(), PackageRoot = packageRoot };
+        Runtime = "declarative", ManifestHash = Hash(definition.GetRawText()), Definition = definition.Clone(), PackageRoot = packageRoot,
+        Animations = GraphicsTemplateEditor.GraphicMotion(NativeGraphicsScratch.From(definition)) };
     private static string Hash(string text) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
 
     private Action? _onObserve;
@@ -437,6 +438,31 @@ public sealed class GraphicsDesignServiceTests : IDisposable
         Assert.Equal(2, Assert.Single(library.Document.Designs).TemplateVersion);
         Assert.Equal((design.TemplateId, 2), (_session.Draft!.TemplateId, _session.Draft.TemplateVersion));
         Assert.Contains(library.Document.Designs[0].Definition.GetProperty("fields").EnumerateArray(), f => f.GetProperty("id").GetString() == "location");
+    }
+
+    [Fact]
+    public async Task SaveToPlaylistCarriesTheSavedMotionAndPinsTheNewVersion()
+    {
+        var (library, _, workflow) = BuildWorkflow();
+        Assert.True((await workflow.CreateAsync("lower-third", null, 0, "Guest strap")).Ok);
+        Assert.Equal(200, _session!.Draft!.Animations.Out.DurationMs);
+        _session.EditTemplate(document =>
+        {
+            var plate = GraphicsTemplateEditor.SetLayerMotion(document, "plate", "in", new("wipe", 0, 350, Direction: "left"));
+            return GraphicsTemplateEditor.SetLayerMotion(plate, "name-label", "in", new("rise", 200, 300, Distance: 24));
+        });
+        Assert.Equal(200, _session.Draft!.Animations.Out.DurationMs);
+        var saved = await workflow.SaveToPlaylistAsync();
+        Assert.True(saved.Ok, saved.Message);
+        var row = Assert.Single(library.Document.Playlist);
+        Assert.Equal(2, row.TemplateVersion);
+        Assert.Null(row.Motion);
+        var pin = Assert.Single(library.Document.Templates, item => item.TemplateId == row.TemplateId && item.TemplateVersion == row.TemplateVersion);
+        var document = NativeGraphicsScratch.From(pin.Definition);
+        Assert.Equal("wipe", GraphicsTemplateEditor.LayerMotion(document, "plate", "in")!.Type);
+        Assert.Equal(200, GraphicsTemplateEditor.LayerMotion(document, "name-label", "in")!.StartMs);
+        Assert.Equal(250, _session.Draft!.Animations.Out.DurationMs);
+        Assert.Equal("ease-in", _session.Draft.Animations.Out.Easing);
     }
 
     [Fact] public async Task SaveToPlaylistSavesThenPinsOneRowOnTheNextFreeKey()

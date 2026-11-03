@@ -317,13 +317,13 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     if (overlay.graphicsTemplate && overlay.graphicsTemplate->definition) {
       const auto& definition = *overlay.graphicsTemplate->definition;
       const auto& motion = definition.motionSummary();
-      if (motion.layered) {
+      if (motion.layered && !overlay.graphicsTemplate->wholeGraphicMotion) {
         // Each animated subtree can split its surrounding paint run twice.
         // The worker charges the actual atlas dimensions after layout.
         const auto maxRuns = 2 * motion.units + 1;
-        const auto maxHeight = std::min<uint64_t>(16384, maxRuns * (height + 2) - 2);
+        const auto maxHeight = std::min<uint64_t>(16384, maxRuns * (height + 3) - 2);
         const auto maxWidth = uint64_t(std::min(16384., 1 + std::ceil(height * definition.width() / definition.height())));
-        admissionBytes = maxWidth * maxHeight * 4;
+        admissionBytes = std::min<uint64_t>(256ull * 1024 * 1024, maxWidth * maxHeight * 4);
       }
     }
     activeLease_ = cache_.findOrRequest(key, std::move(request),
@@ -401,7 +401,8 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   int textureWidth = widthPx, textureHeight = heightPx;
   const float scale = drawing.height > 0 ? float(heightPx / drawing.height) : 1.f;
   std::shared_ptr<graphics::GraphicsRunLayout> runs;
-  if (overlay.graphicsTemplate && overlay.graphicsTemplate->definition->motionSummary().layered && !request.thumbnail) {
+  if (overlay.graphicsTemplate && overlay.graphicsTemplate->definition->motionSummary().layered &&
+      !overlay.graphicsTemplate->wholeGraphicMotion && !request.thumbnail) {
     runs = std::make_shared<graphics::GraphicsRunLayout>();
     runs->width = drawing.width;
     runs->height = drawing.height;

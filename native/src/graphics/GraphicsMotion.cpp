@@ -116,10 +116,11 @@ GraphicsMotionSample sampleRun(const GraphicsDrawing& drawing, int unit, const G
     follow();
     return result;
   }
-  std::vector<int> chain;
-  for (int index = unit; index >= 0; index = drawing.units[index].parent) chain.push_back(index);
-  for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
-    const auto& layer = drawing.units[*it];
+  std::array<const GraphicsMotionUnit*, 16> chain{};
+  size_t count = 0;
+  for (int index = unit; index >= 0; index = drawing.units[index].parent) chain[count++] = &drawing.units[index];
+  while (count > 0) {
+    const auto& layer = *chain[--count];
     const auto& own = entering ? layer.in : layer.out;
     if (own) apply(*own, layer.box, layer.mask);
     else if (layer.root) follow();

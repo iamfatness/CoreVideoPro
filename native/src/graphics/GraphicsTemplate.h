@@ -66,6 +66,7 @@ struct GraphicsTemplateInput {
   std::optional<GraphicsPlacement> placement;
   std::shared_ptr<GraphicsTemplateDraft> draft;
   std::string draftKey;
+  bool wholeGraphicMotion = false;
   mutable std::shared_ptr<const GraphicsTemplateInput> resolvedDraft;
 };
 } // namespace corevideo::graphics

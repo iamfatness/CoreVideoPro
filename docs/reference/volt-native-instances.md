@@ -159,6 +159,12 @@ Independent GPU samples verify native plate changes with unchanged Program pixel
 and untouched instance/Cue state. This is not physical-display or output-continuity
 evidence.
 
+Create/Update accept optional `animations.layers` with values `own` (default) or
+`whole`. `own` uses node `animations.in` and `animations.out` when the definition
+has them. Each node can specify cut, fade, slide, rise, wipe, grow or pop with
+a start delay and duration that finish within 3000 ms. `whole` uses the
+instance's whole-graphic transition. The row's own Motion uses `whole`.
+
 Create/Update also accept an optional `animations` object with `in` and/or `out`
 definitions. Each definition accepts `type:none|fade|slide`,
 `direction:left|right|up|down`, `durationMs:0..3000`, and
@@ -207,6 +213,10 @@ them, rather than retaining textures in downstream encoder queues.
 
 The native timeline samples `steady_clock`, not render-call count or shell
 timers. An interrupted transition starts from its sampled opacity/position;
+For layered motion, Show during Out reverses Out and Hide during In reverses
+In from the current elapsed position. The last layer determines when the
+instance leaves Program.
+
 Show during an exit reverses continuously and repeated Show cannot restart an
 entrance. Updating on-air content preserves the running transition. Hide
 retires the Program revision when its out transition finishes; Clear cuts on

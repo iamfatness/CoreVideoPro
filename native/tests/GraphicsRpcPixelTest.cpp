@@ -545,7 +545,7 @@ TEST(GraphicsCompositionPixel, BarLeadsTheWordsOnProgramPixels) {
     payload["clientId"] = "motion-gpu-qa";
     payload["coreEpoch"] = "test-core";
     payload["instanceId"] = "featured";
-    payload["expectedRevision"] = 1;
+    payload.try_emplace("expectedRevision", 1);
     return graphics.apply(Json::Object{{"type", type}, {"graphics", std::move(payload)}});
   };
   const auto render = [&](bool preview = false) {
@@ -618,6 +618,27 @@ TEST(GraphicsCompositionPixel, BarLeadsTheWordsOnProgramPixels) {
   EXPECT_EQ(settled, preview);
   now = 1200;
   EXPECT_EQ(preview, render(true));
+
+  ASSERT_TRUE(command("graphics-program-clear", {{"channel","all"}}));
+  ASSERT_TRUE(command("graphics-instance-update", {{"target","cue"}, {"animations",Json::Object{
+      {"layers","whole"}, {"in",Json::Object{{"type","fade"},{"durationMs",1000},{"easing","linear"}}}}}}));
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"action","show"},{"expectedRevision",2}}));
+  const auto wholeReady = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (row().getString("visibility") != "entering" && std::chrono::steady_clock::now() < wholeReady) {
+    render();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_EQ("entering", row().getString("visibility")) << row().getString("warning");
+  now = 1700;
+  const auto half = render();
+  now = 2200;
+  const auto full = render();
+  ASSERT_EQ(blank.size(), half.size());
+  ASSERT_EQ(blank.size(), full.size());
+  const auto black = pixel(blank, 16, 160), blended = pixel(half, 16, 160), opaque = pixel(full, 16, 160);
+  EXPECT_NE(black, opaque);
+  for (size_t channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR((black[channel] + opaque[channel]) / 2., blended[channel], 2.);
 }
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS

@@ -138,6 +138,7 @@ std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPre
       {"style",draft.get("style") ? *draft.get("style") : Json{Json::Object{}}}};
     auto input=std::make_shared<GraphicsTemplateInput>(); input->definition=revision.definition; input->logo=revision.image;
     input->fields=revision.templateInput->fields; input->brand=revision.templateInput->brand; input->placement=revision.placement;
+    input->wholeGraphicMotion = revision.templateInput->wholeGraphicMotion;
     input->draft=authoringCompiler_; input->draftKey=key; revision.templateInput=std::move(input);
     if(scratch && !scratch->isNull()) {
       auto identity=std::string(reinterpret_cast<const char*>(revision.contentHash.data()),revision.contentHash.size())+key;
@@ -261,12 +262,16 @@ void GraphicsInstances::hashRevision(const std::string& templateId, Revision& re
     for (const auto byte : revision.definition->hash()) { definitionHash += hex[byte >> 4]; definitionHash += hex[byte & 15]; }
     for (const auto& asset : revision.definition->assets()) availableAssets.emplace_back(asset.first + ":" + asset.second->sha256);
   }
-  const auto serialized = Json{Json::Object{{"templateId", templateId}, {"templateVersion", revision.definition ? revision.definition->version() : 1},
+  const bool wholeGraphicMotion = revision.definition && revision.definition->motionSummary().layered && revision.layerMotion == "whole";
+  Json::Object content{{"templateId", templateId}, {"templateVersion", revision.definition ? revision.definition->version() : 1},
       {"name", revision.name}, {"title", revision.title}, {"style", styleState(revision.appearance)},
       {"binding", revision.binding ? contracts::toJson(*revision.binding) : Json{}},
       {"definitionHash", definitionHash},
       {"availableAssets", std::move(availableAssets)},{"imageHash",revision.image?revision.image->sha256:""},
-      {"templateFields", revision.templateFields}}}.stringify();
+      {"templateFields", revision.templateFields}};
+  // Whole-graphic opacity must fade a flattened raster. Its lease cannot adopt an atlas.
+  if (wholeGraphicMotion) content["wholeGraphicMotion"] = true;
+  const auto serialized = Json(std::move(content)).stringify();
   revision.contentHash = modules::hashing::sha256(reinterpret_cast<const uint8_t*>(serialized.data()), serialized.size());
   if (revision.definition) {
     const auto& a = revision.appearance;
@@ -278,6 +283,7 @@ void GraphicsInstances::hashRevision(const std::string& templateId, Revision& re
         {"brand.secondary", a.titleColor}, {"brand.accent", a.accentColor},
         {"brand.background", a.backgroundColor}, {"brand.foreground", a.nameColor}, {"brand.fontHeading", a.fontFamily},
         {"brand.logo", revision.definition->assets().count("logo") ? "logo" : ""}};
+    input->wholeGraphicMotion = wholeGraphicMotion;
     revision.templateInput = std::move(input);
   }
 }
@@ -587,7 +593,21 @@ bool GraphicsInstances::apply(const Json& command) {
         const auto found=templatesPublication_->definitions.find({instance.templateId,int(value)});
         if(found==templatesPublication_->definitions.end()) return finish(requestId,false,"template-version-not-installed");
         if(found->second->document().getString("family")!=revision.definition->document().getString("family")) return finish(requestId,false,"template-family-change-requires-new-instance");
-        revision.definition=found->second;
+        if (revision.definition != found->second) {
+          revision.definition = found->second;
+          auto fields = revision.definition->defaultFields().asObject();
+          for (auto& [key, value] : fields) {
+            const auto* previous = revision.templateFields.get(key);
+            if (!previous) continue;
+            const auto fallback = value;
+            value = *previous;
+            std::string error;
+            if (!revision.definition->validateFields(Json(fields), false, error)) value = fallback;
+          }
+          revision.templateFields = std::move(fields);
+          revision.name = revision.templateFields.getString("name");
+          revision.title = revision.templateFields.getString("title");
+        }
       }
     }
     if (!readRevision(*body, revision)) return finish(requestId, false, "invalid-fields-or-style");
@@ -1037,7 +1057,7 @@ void GraphicsInstances::show(Instance& instance, bool fromCue) {
   if(family=="lower-third" || family=="bug") managedFamilies_.insert(family);
   instance.programResource = fromCue ? instance.cueResource : instance.draftResource;
   const double entranceMs = layered(*revision) ? motionTotal(revision->definition->motionSummary(), revision->entrance, true) :
-      (revision->entrance.type == "none" ? 0 : revision->entrance.durationMs);
+      (revision->entrance.type != "none" ? revision->entrance.durationMs : 0);
   if (starting && entranceMs > 0) instance.awaitingEntrance = true;
   if (instance.awaitingEntrance) instance.visibility = "awaiting-composition";
   else startEntrance(instance, monotonicMs_());

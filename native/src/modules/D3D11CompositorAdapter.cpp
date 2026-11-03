@@ -982,7 +982,8 @@ class D3D11Compositor final : public ICompositor {
         bool hidden = false;
         if (!demand.playMode.empty()) {
           const auto base = key.overlay.graphicsMotion.value_or(graphics::GraphicsMotionState{});
-          const auto summary = definition ? definition->definition->motionSummary() : graphics::GraphicsMotionSummary{};
+          const auto summary = definition && !definition->wholeGraphicMotion ?
+              definition->definition->motionSummary() : graphics::GraphicsMotionSummary{};
           const double inMs = graphics::motionTotal(summary, base.graphicIn, true);
           const double outMs = graphics::motionTotal(summary, base.graphicOut, false);
           const auto motion = graphics::previewMotion(demand.playMode, demand.playElapsedMs,
