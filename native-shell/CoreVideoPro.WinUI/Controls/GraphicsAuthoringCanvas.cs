@@ -32,6 +32,7 @@ public sealed class GraphicsAuthoringCanvas : UserControl
     private readonly Line _snapY=new() {Stroke=SnapBrush,StrokeThickness=1,IsHitTestVisible=false,Visibility=Visibility.Collapsed};
     /// <summary>The Designer turns this on; Ctrl held while dragging suspends snapping.</summary>
     public bool SnapToGuides {get;set;}
+    internal Size PreviewViewport => new(_viewport.ActualWidth, _viewport.ActualHeight);
     private Point _start;private NativeGraphicsPlacement? _before;
     private NativeGraphicsNodeGeometry? _nodeBefore;private Rect? _optimistic;
     private double _localX,_localY,_localWidth,_localHeight,_width=1050,_height=176;

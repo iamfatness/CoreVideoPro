@@ -244,7 +244,7 @@ internal static class GraphicsWorkspaceLayoutProbe
         await Eventually(() => studio.GraphicsDesignerOpen && designer.Visibility == Visibility.Visible, () => $"Open in Designer with Probe strap selected did not show the Designer (open={studio.GraphicsDesignerOpen}, surface={studio.GraphicsDesignSurface})");
         checks.Add("Builder: Open in Designer with the Probe strap design selected shows it in the Designer");
         IReadOnlyList<GraphicsDesignerRow> Rows() => Descendants(designer).OfType<FrameworkElement>().Select(e => e.Tag).OfType<GraphicsDesignerRow>().ToArray();
-        foreach (var (width, height, shot, minCanvasWidth, minCanvasHeight) in new[] { (1320d, 640d, "graphics-designer-1360x768.png", 640d, 360d), (1560d, 772d, "graphics-designer-1600x900.png", 640d, 360d) }) {
+        foreach (var (width, height, shot, minCanvasWidth, minCanvasHeight) in new[] { (1320d, 640d, "graphics-designer-1360x768.png", 640d, 360d), (1560d, 772d, "graphics-designer-1600x900.png", 640d, 360d), (1840d, 820d, "graphics-designer-1080p.png", 640d, 360d) }) {
             page.Width = width; page.Height = height; await Task.Delay(150); page.UpdateLayout();
             await Eventually(() => designer.Visibility == Visibility.Visible && Rows().Count == 4, () => $"The Designer did not open on the Probe strap draft (visible={designer.Visibility}, rows={Rows().Count})");
             Require(Descendants(page).OfType<GraphicsBuilderControl>().Single().Visibility == Visibility.Collapsed && Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed,
@@ -264,6 +264,17 @@ internal static class GraphicsWorkspaceLayoutProbe
                     "Show motion is missing at 1360x768");
             var canvas = Descendants(designer).OfType<GraphicsAuthoringCanvas>().Single();
             Require(canvas.ActualWidth >= minCanvasWidth && canvas.ActualHeight >= minCanvasHeight, $"Designer canvas is {canvas.ActualWidth:0}x{canvas.ActualHeight:0} at {width:0}x{height:0}; needs {minCanvasWidth:0}x{minCanvasHeight:0}");
+            var preview = canvas.PreviewViewport;
+            var minimumPreview = width >= 1840 ? 1050 : width >= 1560 ? 960 : 740;
+            Require(preview.Width >= minimumPreview && Math.Abs(preview.Width / preview.Height - 16d / 9) < .01,
+                $"The fitted preview is only {preview.Width:0}x{preview.Height:0} at {width:0}x{height:0}.");
+            foreach (var tabName in new[] { "Layer tab", "Variables tab", "Motion tab" })
+            {
+                var tab = Button(designer, tabName);
+                var x = tab.TransformToVisual(designer).TransformPoint(new(0, 0)).X;
+                Require(tab.FontSize <= 12 && x + tab.ActualWidth <= designer.ActualWidth,
+                    $"{tabName} does not fit at compact Designer density.");
+            }
             var layerScroll = Descendants(designer).OfType<ScrollViewer>().Single(v => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(v) == "Layer properties");
             var layerTop = layerScroll.TransformToVisual(designer).TransformPoint(new(0, 0)).Y;
             var visibleLayer = Math.Min(layerScroll.ViewportHeight, designer.ActualHeight - layerTop);
@@ -282,7 +293,7 @@ internal static class GraphicsWorkspaceLayoutProbe
                 Invoke(Button(designer, "Layer tab")); await Task.Delay(50); designer.UpdateLayout();
             }
             await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, shot));
-            checks.Add($"Designer at page {width:0}x{height:0}: one surface, layer rows front-to-back, every header/add/sample action inside, canvas {canvas.ActualWidth:0}x{canvas.ActualHeight:0}, Layer tab {visibleLayer:0} px");
+            checks.Add($"Designer at page {width:0}x{height:0}: one surface, layer rows front-to-back, every header/add/sample action inside, fitted preview {preview.Width:0}x{preview.Height:0}, Layer tab {visibleLayer:0} px");
         }
         // Selecting another layer restyles the rows in place (a rebuild would swallow the second tap of a double-click).
         var rowElements = Descendants(designer).OfType<Grid>().Where(g => g.Tag is GraphicsDesignerRow).ToArray();

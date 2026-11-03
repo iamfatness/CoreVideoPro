@@ -19,20 +19,20 @@ public sealed class GraphicsVariablesPanel : UserControl
 
     private readonly StackPanel _rows = new() { Spacing = 6 };
     private readonly TextBlock _count = Body(""), _status = Body(""), _empty = Body("Open a design to edit its variables.");
-    private readonly StackPanel _content = new() { Spacing = 10 };
-    private readonly StackPanel _editor = new() { Spacing = 8, Padding = new Thickness(10), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8) };
-    private readonly TextBlock _editorTitle = new() { FontSize = 15, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
+    private readonly StackPanel _content = new() { Spacing = 6 };
+    private readonly StackPanel _editor = new() { Spacing = 5, Padding = new Thickness(6), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8) };
+    private readonly TextBlock _editorTitle = new() { FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _usedBy = Body("");
-    private readonly TextBox _name = new() { Header = "Name", MaxLength = 64, FontSize = 14 };
-    private readonly NumberBox _maxLength = new() { Header = "Max length (characters)", Minimum = 1, Maximum = 4096, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 14 };
-    private readonly TextBox _sampleText = new() { Header = "Sample value", MaxLength = 4096, FontSize = 14 };
-    private readonly NumberBox _sampleNumber = new() { Header = "Sample value", SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 14 };
+    private readonly TextBox _name = new() { Header = "Name", MaxLength = 64, FontSize = 12 };
+    private readonly NumberBox _maxLength = new() { Header = "Max length (characters)", Minimum = 1, Maximum = 4096, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 12 };
+    private readonly TextBox _sampleText = new() { Header = "Sample value", MaxLength = 4096, FontSize = 12 };
+    private readonly NumberBox _sampleNumber = new() { Header = "Sample value", SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 12 };
     private readonly ToggleSwitch _sampleOn = new() { Header = "Sample value", OnContent = "On", OffContent = "Off" };
-    private readonly ComboBox _ifEmpty = new() { Header = "If empty", ItemsSource = new[] { "Hide its layer", "Show the sample" }, HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 14 };
+    private readonly ComboBox _ifEmpty = new() { Header = "If empty", ItemsSource = new[] { "Hide its layer", "Show the sample" }, HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 12 };
     private readonly Button _rename = StudioBrushes.GhostButton("Rename"), _apply = StudioBrushes.GhostButton("Apply"), _delete = StudioBrushes.GhostButton("Delete variable");
-    private readonly TextBox _newName = new() { Header = "New variable", MaxLength = 64, PlaceholderText = "location", FontSize = 14 };
-    private readonly ComboBox _newKind = new() { Header = "Kind", ItemsSource = KindChoices.Select(k => k.Label).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 14 };
-    private readonly NumberBox _newMaxLength = new() { Header = "Max length", Minimum = 1, Maximum = 4096, Value = 128, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 14 };
+    private readonly TextBox _newName = new() { Header = "New variable", MaxLength = 64, PlaceholderText = "location", FontSize = 12 };
+    private readonly ComboBox _newKind = new() { Header = "Kind", ItemsSource = KindChoices.Select(k => k.Label).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 12 };
+    private readonly NumberBox _newMaxLength = new() { Header = "Max length", Minimum = 1, Maximum = 4096, Value = 128, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact, FontSize = 12 };
     private readonly Button _add = StudioBrushes.AccentButton("Add variable");
 
     private readonly Button _addColumn = StudioBrushes.GhostButton("Add Sources column");
@@ -43,7 +43,7 @@ public sealed class GraphicsVariablesPanel : UserControl
 
     public GraphicsVariablesPanel()
     {
-        var root = new StackPanel { Spacing = 10 };
+        var root = new StackPanel { Spacing = 6 };
         _count.Foreground = StudioBrushes.Muted;
         root.Children.Add(_count); root.Children.Add(_empty);
         _content.Children.Add(Body("The words and values that change each time this graphic is used. Layers show a variable or fixed text."));
@@ -52,15 +52,19 @@ public sealed class GraphicsVariablesPanel : UserControl
         _editor.Background = StudioBrushes.SurfaceRaised; _editor.BorderBrush = StudioBrushes.Border;
         _editorTitle.Foreground = StudioBrushes.Text;
         _editor.Children.Add(_editorTitle); _editor.Children.Add(_usedBy);
-        var renameRow = new Grid { ColumnSpacing = 8 }; renameRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); renameRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var renameRow = new Grid { ColumnSpacing = 5 }; renameRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); renameRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         renameRow.Children.Add(_name); _rename.VerticalAlignment = VerticalAlignment.Bottom; Grid.SetColumn(_rename, 1); renameRow.Children.Add(_rename);
         _editor.Children.Add(renameRow);
         foreach (var control in new FrameworkElement[] { _maxLength, _sampleText, _sampleNumber, _sampleOn, _ifEmpty }) { control.HorizontalAlignment = HorizontalAlignment.Stretch; _editor.Children.Add(control); }
-        var editActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; editActions.Children.Add(_apply); editActions.Children.Add(_delete);
+        var editActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 }; editActions.Children.Add(_apply); editActions.Children.Add(_delete);
+        foreach (var button in new[] { _rename, _apply, _delete, _addColumn, _add })
+        {
+            button.FontSize = 12; button.MinHeight = 28; button.Padding = new Thickness(6, 3, 6, 3);
+        }
         _editor.Children.Add(editActions); _editor.Children.Add(_addColumn);
         _content.Children.Add(_editor);
 
-        var addRow = new Grid { ColumnSpacing = 8, RowSpacing = 6 };
+        var addRow = new Grid { ColumnSpacing = 5, RowSpacing = 6 };
         addRow.ColumnDefinitions.Add(new() { Width = new GridLength(3, GridUnitType.Star) }); addRow.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
         addRow.RowDefinitions.Add(new() { Height = GridLength.Auto }); addRow.RowDefinitions.Add(new() { Height = GridLength.Auto });
         addRow.Children.Add(_newName); Grid.SetColumn(_newKind, 1); addRow.Children.Add(_newKind);
@@ -125,12 +129,12 @@ public sealed class GraphicsVariablesPanel : UserControl
     {
         var selected = variable.Id == _selected;
         var body = new StackPanel { Spacing = 2 };
-        var top = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        top.Children.Add(new TextBlock { Text = variable.Id, FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = StudioBrushes.Text });
-        top.Children.Add(new TextBlock { Text = KindLabel(variable) + (variable.Required ? " · required" : ""), FontSize = 14, Foreground = StudioBrushes.Muted });
+        var top = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+        top.Children.Add(new TextBlock { Text = variable.Id, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = StudioBrushes.Text });
+        top.Children.Add(new TextBlock { Text = KindLabel(variable) + (variable.Required ? " · required" : ""), FontSize = 12, Foreground = StudioBrushes.Muted });
         body.Children.Add(top);
-        body.Children.Add(new TextBlock { Text = UsedBy(variable), FontSize = 14, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap });
-        var row = new Button { Content = body, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 6, 10, 6), CornerRadius = new CornerRadius(6),
+        body.Children.Add(new TextBlock { Text = UsedBy(variable), FontSize = 12, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap });
+        var row = new Button { Content = body, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(6, 3, 6, 3), CornerRadius = new CornerRadius(6),
             Background = selected ? StudioBrushes.SurfaceRaised : StudioBrushes.Panel, BorderBrush = selected ? StudioBrushes.Accent : StudioBrushes.Border, BorderThickness = new Thickness(selected ? 2 : 1) };
         AutomationProperties.SetName(row, "Variable " + variable.Id);
         row.Click += (_, _) => { _selected = variable.Id; _status.Text = ""; Refresh(); };
@@ -220,5 +224,5 @@ public sealed class GraphicsVariablesPanel : UserControl
     private static string KindLabel(GraphicsEditorVariable variable) =>
         (KindChoices.FirstOrDefault(k => k.Kind == variable.Kind).Label ?? "Text") + (variable.Kind == "text" && variable.MaxLength is int max ? $" (max {max})" : "");
     private static string UsedBy(GraphicsEditorVariable variable) => variable.UsedBy.Count == 0 ? "Not on any layer yet" : "Used by: " + string.Join(", ", variable.UsedBy);
-    private static TextBlock Body(string text) => new() { Text = text, FontSize = 14, TextWrapping = TextWrapping.Wrap, Foreground = StudioBrushes.Text };
+    private static TextBlock Body(string text) => new() { Text = text, FontSize = 12, TextWrapping = TextWrapping.Wrap, Foreground = StudioBrushes.Text };
 }

@@ -14,7 +14,7 @@ public sealed partial class GraphicsDesignerControl
 {
     private readonly TextBlock _inspectorTitle = Heading("");
     private readonly Button _layerTab = StudioBrushes.GhostButton("Layer"), _variablesTab = StudioBrushes.GhostButton("Variables");
-    private readonly StackPanel _layerBody = new() { Spacing = 10, Padding = new Thickness(0, 0, 10, 8) };
+    private readonly StackPanel _layerBody = new() { Spacing = 6, Padding = new Thickness(0, 0, 3, 4) };
     private readonly ScrollViewer _layerScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     private readonly ScrollViewer _variablesScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Visibility = Visibility.Collapsed };
     private readonly GraphicsVariablesPanel _variables = new();
@@ -24,11 +24,11 @@ public sealed partial class GraphicsDesignerControl
 
     private Border BuildInspector()
     {
-        var grid = new Grid { RowSpacing = 8 };
+        var grid = new Grid { RowSpacing = 5 };
         foreach (var height in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star) }) grid.RowDefinitions.Add(new() { Height = height });
         grid.Children.Add(_inspectorTitle);
-        var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        foreach (var tab in new[] { _layerTab, _variablesTab, _motionTab }) { tab.FontSize = 14; tabs.Children.Add(tab); }
+        var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
+        foreach (var tab in new[] { _layerTab, _variablesTab, _motionTab }) { CompactButton(tab); tabs.Children.Add(tab); }
         AutomationProperties.SetName(_layerTab, "Layer tab"); AutomationProperties.SetName(_variablesTab, "Variables tab");
         AutomationProperties.SetName(_motionTab, "Motion tab");
         _motionTab.Click += (_, _) => { CommitPendingText(); SelectTab(layerTab: false, motionTab: true); };
@@ -95,7 +95,7 @@ public sealed partial class GraphicsDesignerControl
             case "Shape" or "Ellipse": BuildShape(layer); break;
             case "Image": BuildImage(layer, fields, document); break;
         }
-        var position = new Grid { ColumnSpacing = 6 };
+        var position = new Grid { ColumnSpacing = 3 };
         var boxes = new (string Property, string Label, double Min, Func<GraphicsLayerInspection, double> Read)[] {
             ("x", "X", 0, l => l.X), ("y", "Y", 0, l => l.Y), ("width", "W", 1, l => l.Width), ("height", "H", 1, l => l.Height) };
         for (var i = 0; i < boxes.Length; i++) {
@@ -124,7 +124,7 @@ public sealed partial class GraphicsDesignerControl
         var id = layer.Id;
         var textFields = fields.Where(f => f.Type == "string").Select(f => f.Id).ToList();
         var shows = Choice("Shows", [("", "Fixed text"), .. textFields.Select(f => (f, "Variable: " + f))], layer.ShowsVariable ?? "");
-        var fixedText = new TextBox { Header = "Fixed text", Text = layer.FixedText, MaxLength = 512, FontSize = 14, TextWrapping = TextWrapping.Wrap, Visibility = layer.ShowsVariable is null ? Visibility.Visible : Visibility.Collapsed };
+        var fixedText = new TextBox { Header = "Fixed text", Text = layer.FixedText, MaxLength = 512, FontSize = 12, TextWrapping = TextWrapping.Wrap, Visibility = layer.ShowsVariable is null ? Visibility.Visible : Visibility.Collapsed };
         AutomationProperties.SetName(fixedText, "Fixed text"); _inspectorInputs.Add(fixedText);
         shows.SelectionChanged += (_, _) => {
             if (_loading || shows.SelectedValue is not string chosen) return;
@@ -216,7 +216,7 @@ public sealed partial class GraphicsDesignerControl
 
     private ComboBox Choice(string header, IReadOnlyList<(string Id, string Label)> choices, string selected)
     {
-        var box = new ComboBox { Header = header, FontSize = 14, HorizontalAlignment = HorizontalAlignment.Stretch, SelectedValuePath = "Tag" };
+        var box = new ComboBox { Header = header, FontSize = 12, HorizontalAlignment = HorizontalAlignment.Stretch, SelectedValuePath = "Tag" };
         foreach (var (id, label) in choices) box.Items.Add(new ComboBoxItem { Content = label, Tag = id });
         box.SelectedValue = selected;
         AutomationProperties.SetName(box, header); _inspectorInputs.Add(box);
@@ -264,7 +264,7 @@ public sealed partial class GraphicsDesignerControl
 
     private NumberBox Number(string header, double min, double max, double value, Action<double> commit)
     {
-        var box = new NumberBox { Header = header, Minimum = min, Maximum = max, Value = value, FontSize = 14, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Hidden,
+        var box = new NumberBox { Header = header, Minimum = min, Maximum = max, Value = value, FontSize = 12, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Hidden,
             ValidationMode = NumberBoxValidationMode.InvalidInputOverwritten, HorizontalAlignment = HorizontalAlignment.Stretch,
             NumberFormatter = new Windows.Globalization.NumberFormatting.DecimalFormatter { FractionDigits = 0, IsDecimalPointAlwaysDisplayed = false,
                 NumberRounder = new Windows.Globalization.NumberFormatting.IncrementNumberRounder { Increment = 0.01 } } };
@@ -283,5 +283,5 @@ public sealed partial class GraphicsDesignerControl
         }
         return grid;
     }
-    private static TextBlock Note(string text) => new() { Text = text, FontSize = 13, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap };
+    private static TextBlock Note(string text) => new() { Text = text, FontSize = 12, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap };
 }

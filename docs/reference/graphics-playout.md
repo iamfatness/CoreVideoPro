@@ -316,8 +316,7 @@ Designer and Operate's "Open in Design" do.
 ## Motion (Graphics Designer slice 3)
 
 Select a layer and open **Motion**. Use **In** and **Out** in the strip beneath the
-canvas to choose which move you are editing. **Show motion** opens the strip when it
-starts collapsed on a smaller display. The strip lists layers in paint order, back to
+canvas to choose which move you are editing. **Show motion** opens the strip below the preview. It starts collapsed so the 16:9 preview can grow with the window. The strip lists layers in paint order, back to
 front. Select a bar to select its layer. Drag the bar to change its start or drag an
 end to change its length. Timing snaps to 50 ms, or 10 ms while holding Ctrl. The arrow
 keys move the selected bar by 50 ms and Shift+arrow changes its duration.

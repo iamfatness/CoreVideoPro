@@ -22,11 +22,11 @@ public sealed partial class GraphicsDesignerControl : UserControl
     public StudioViewModel? Studio { get => (StudioViewModel?)GetValue(StudioProperty); set => SetValue(StudioProperty, value); }
 
     private const double WideBreakpoint = 1500;
-    private readonly Grid _root = new() { RowSpacing = 10 }, _body = new() { ColumnSpacing = 12 };
+    private readonly Grid _root = new() { RowSpacing = 6 }, _body = new() { ColumnSpacing = 8 };
     private readonly GraphicsAuthoringCanvas _canvas = new() { SnapToGuides = true };
     private readonly TextBlock _family = new() { FontSize = 11, CharacterSpacing = 120, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = StudioBrushes.Muted, TextTrimming = TextTrimming.CharacterEllipsis },
-        _designName = new() { FontSize = 18, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = StudioBrushes.Text, TextTrimming = TextTrimming.CharacterEllipsis },
-        _status = new() { FontSize = 13, Foreground = StudioBrushes.Text, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+        _designName = new() { FontSize = 16, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = StudioBrushes.Text, TextTrimming = TextTrimming.CharacterEllipsis },
+        _status = new() { FontSize = 12, Foreground = StudioBrushes.Text, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     private readonly Button _back = StudioBrushes.GhostButton("← Your designs"), _undo = StudioBrushes.GhostButton("Undo"),
         _save = StudioBrushes.GhostButton("Save"), _saveToPlaylist = StudioBrushes.AccentButton("Save to playlist"),
         _useForZoom = StudioBrushes.GhostButton("Use for Zoom lower thirds");
@@ -57,18 +57,19 @@ public sealed partial class GraphicsDesignerControl : UserControl
 
     private Grid BuildHeader()
     {
-        var header = new Grid { ColumnSpacing = 14 };
+        var header = new Grid { ColumnSpacing = 8 };
         foreach (var width in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto }) header.ColumnDefinitions.Add(new() { Width = width });
+        CompactButton(_back);
         _back.VerticalAlignment = VerticalAlignment.Center; AutomationProperties.SetName(_back, "Back to Your designs");
         ToolTipService.SetToolTip(_back, "Back to Your designs. Unsaved edits stay in this private draft.");
         _back.Click += (_, _) => { if (_attached is { } s) s.GraphicsDesignerOpen = false; };
         header.Children.Add(_back);
-        var title = new StackPanel { Spacing = 0, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 360 }; title.Children.Add(_family); title.Children.Add(_designName);
+        var title = new StackPanel { Spacing = 0, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 240 }; title.Children.Add(_family); title.Children.Add(_designName);
         Grid.SetColumn(title, 1); header.Children.Add(title);
         AutomationProperties.SetName(_status, "Design status"); Grid.SetColumn(_status, 2); header.Children.Add(_status);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5, VerticalAlignment = VerticalAlignment.Center };
         _save.Foreground = StudioBrushes.Accent; _save.BorderBrush = StudioBrushes.Accent;
-        foreach (var button in new[] { _undo, _playPreview, _save, _useForZoom, _saveToPlaylist }) { button.FontSize = 14; button.MinHeight = 36; actions.Children.Add(button); }
+        foreach (var button in new[] { _undo, _playPreview, _save, _useForZoom, _saveToPlaylist }) { CompactButton(button); actions.Children.Add(button); }
         AutomationProperties.SetName(_undo, "Undo"); AutomationProperties.SetName(_save, "Save design"); AutomationProperties.SetName(_saveToPlaylist, "Save to playlist"); AutomationProperties.SetName(_useForZoom, "Use for Zoom lower thirds");
         ToolTipService.SetToolTip(_undo, "Undo the last change to this draft.");
         ToolTipService.SetToolTip(_save, "Store your edits as the design's next version. Program and Preview are unchanged.");
@@ -86,39 +87,49 @@ public sealed partial class GraphicsDesignerControl : UserControl
 
     private Grid BuildCentre()
     {
-        var centre = new Grid { RowSpacing = 8 };
+        var centre = new Grid { RowSpacing = 4 };
         centre.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); centre.RowDefinitions.Add(new() { Height = GridLength.Auto });
         centre.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        centre.Children.Add(new Border { Background = StudioBrushes.Field, BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(6), Child = _canvas });
-        var bar = new Grid { ColumnSpacing = 10 };
+        centre.Children.Add(new Border { Background = StudioBrushes.Field, BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(2), Child = _canvas });
+        var bar = new Grid { ColumnSpacing = 6 };
         bar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); bar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); bar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-        bar.Children.Add(new TextBlock { Text = "Sample text:", FontSize = 14, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center });
+        bar.Children.Add(new TextBlock { Text = "Sample:", FontSize = 12, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center });
         foreach (var (id, label) in GraphicsPreviewSamples.Buttons) {
-            var button = StudioBrushes.GhostButton(label); button.FontSize = 14; button.FontWeight = Microsoft.UI.Text.FontWeights.Normal;
+            var button = StudioBrushes.GhostButton(label); CompactButton(button); button.FontWeight = Microsoft.UI.Text.FontWeights.Normal;
             AutomationProperties.SetName(button, label);
             button.Click += (_, _) => _session?.SetPreviewSample(id);
             _sampleButtons.Add((id, button)); _samples.Children.Add(button);
         }
         ToolTipService.SetToolTip(_samples, "Preview only: Typical is your draft's values; Longest name and Empty title test the layout. Drag edits work on Typical.");
         Grid.SetColumn(_samples, 1); bar.Children.Add(_samples);
-        var caption = new TextBlock { Text = "Safe area · snap to guides on · 1920 × 1080 · hold Ctrl to place freely", FontSize = 13, Foreground = StudioBrushes.Muted,
+        var caption = new TextBlock { Text = "16:9 · Ctrl frees snapping", FontSize = 12, Foreground = StudioBrushes.Muted,
             TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis, HorizontalAlignment = HorizontalAlignment.Right, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(caption, 2); bar.Children.Add(caption);
+        bar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        CompactButton(_motionExpand);
+        Grid.SetColumn(_motionExpand, 3); bar.Children.Add(_motionExpand);
         Grid.SetRow(bar, 1); centre.Children.Add(bar);
         var motion = BuildMotionStrip();
         Grid.SetRow(motion, 2); centre.Children.Add(motion);
         return centre;
     }
 
-    private static Border Panel(UIElement child) => new() { Background = StudioBrushes.Panel, BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(12), Child = child };
-    private static TextBlock Heading(string text) => new() { Text = text, FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.Bold, CharacterSpacing = 80, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+    private static void CompactButton(Button button)
+    {
+        button.FontSize = 12;
+        button.MinHeight = 28;
+        button.Padding = new Thickness(7, 3, 7, 3);
+    }
+
+    private static Border Panel(UIElement child) => new() { Background = StudioBrushes.Panel, BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(8), Child = child };
+    private static TextBlock Heading(string text) => new() { Text = text, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.Bold, CharacterSpacing = 80, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
 
     private void Reflow(double width)
     {
         var wide = width >= WideBreakpoint;
-        _body.ColumnDefinitions[0].Width = new GridLength(wide ? 240 : 220);
-        _body.ColumnDefinitions[2].Width = new GridLength(wide ? 300 : 280);
-        ReflowMotion(wide);
+        _body.ColumnDefinitions[0].Width = new GridLength(210);
+        _body.ColumnDefinitions[2].Width = new GridLength(wide ? 272 : 254);
+
     }
 
     // ---- lifecycle -------------------------------------------------------------------------
