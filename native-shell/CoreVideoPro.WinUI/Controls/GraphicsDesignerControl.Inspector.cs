@@ -28,32 +28,41 @@ public sealed partial class GraphicsDesignerControl
         foreach (var height in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star) }) grid.RowDefinitions.Add(new() { Height = height });
         grid.Children.Add(_inspectorTitle);
         var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        foreach (var tab in new[] { _layerTab, _variablesTab }) { tab.FontSize = 14; tabs.Children.Add(tab); }
+        foreach (var tab in new[] { _layerTab, _variablesTab, _motionTab }) { tab.FontSize = 14; tabs.Children.Add(tab); }
         AutomationProperties.SetName(_layerTab, "Layer tab"); AutomationProperties.SetName(_variablesTab, "Variables tab");
+        AutomationProperties.SetName(_motionTab, "Motion tab");
+        _motionTab.Click += (_, _) => { CommitPendingText(); SelectTab(layerTab: false, motionTab: true); };
         _layerTab.Click += (_, _) => SelectTab(layerTab: true); _variablesTab.Click += (_, _) => SelectTab(layerTab: false);
         Grid.SetRow(tabs, 1); grid.Children.Add(tabs);
         _layerScroll.Content = _layerBody; AutomationProperties.SetName(_layerScroll, "Layer properties");
         _variablesScroll.Content = _variables; AutomationProperties.SetName(_variablesScroll, "Design variables");
-        var bodies = new Grid(); bodies.Children.Add(_layerScroll); bodies.Children.Add(_variablesScroll);
+        _motionScroll.Content = _motionPanel; AutomationProperties.SetName(_motionScroll, "Layer motion");
+        var bodies = new Grid(); bodies.Children.Add(_layerScroll); bodies.Children.Add(_variablesScroll); bodies.Children.Add(_motionScroll);
         Grid.SetRow(bodies, 2); grid.Children.Add(bodies);
         SelectTab(layerTab: true);
         return Panel(grid);
     }
 
-    private void SelectTab(bool layerTab)
+    private void SelectTab(bool layerTab, bool motionTab = false)
     {
         _layerScroll.Visibility = layerTab ? Visibility.Visible : Visibility.Collapsed;
-        _variablesScroll.Visibility = layerTab ? Visibility.Collapsed : Visibility.Visible;
+        _variablesScroll.Visibility = layerTab || motionTab ? Visibility.Collapsed : Visibility.Visible;
+        _motionScroll.Visibility = motionTab ? Visibility.Visible : Visibility.Collapsed;
         _layerTab.BorderBrush = layerTab ? StudioBrushes.Accent : StudioBrushes.Border; _layerTab.Foreground = layerTab ? StudioBrushes.Accent : StudioBrushes.Text;
-        _variablesTab.BorderBrush = layerTab ? StudioBrushes.Border : StudioBrushes.Accent; _variablesTab.Foreground = layerTab ? StudioBrushes.Text : StudioBrushes.Accent;
-        if (!layerTab) _variables.Refresh();
+        var variables = !layerTab && !motionTab;
+        _variablesTab.BorderBrush = variables ? StudioBrushes.Accent : StudioBrushes.Border;
+        _variablesTab.Foreground = variables ? StudioBrushes.Accent : StudioBrushes.Text;
+        _motionTab.BorderBrush = motionTab ? StudioBrushes.Accent : StudioBrushes.Border;
+        _motionTab.Foreground = motionTab ? StudioBrushes.Accent : StudioBrushes.Text;
+        if (variables) _variables.Refresh();
+        RefreshAll();
     }
 
     private void CommitPendingText() => _pending.Flush();
 
     private void RefreshInspector(IReadOnlyList<GraphicsDesignerRow> rows)
     {
-        if (_session is not { } session) return;
+        if (_session is not { } session || _motionScroll.Visibility == Visibility.Visible) return;
         var document = session.Draft is { Declarative: true } ? session.TemplateDocument : null;
         var row = rows.FirstOrDefault(r => r.Id == session.SelectedLayerId);
         GraphicsLayerInspection? inspection = null;

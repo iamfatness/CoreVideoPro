@@ -241,4 +241,29 @@ public sealed class GraphicsWorkspaceSessionTests
         workspace.Undo();
         Assert.Equal(original, workspace.Draft);
     }
+
+    [Fact]
+    public void PlayPreviewIsPrivateAndOneShotsStopOnEdit()
+    {
+        var template = new NativeGraphicsTemplate { TemplateId = "design-test-a1b2c3", TemplateVersion = 1, Runtime = "declarative",
+            Fields = [new() { Id = "title", Type = "string", Default = Value("Title") }] };
+        var state = Initial with { Templates = [template] };
+        var workspace = new GraphicsWorkspaceSession((_,_,_) => throw new InvalidOperationException("Play is private."), () => state);
+        workspace.Observe(state);
+        workspace.Browse(template);
+        workspace.PlayPreview("in");
+        var first = Assert.IsType<NativeGraphicsPreviewPlay>(workspace.PreviewPlay);
+        workspace.PlayPreview("in");
+        Assert.Equal(first.Token + 1, workspace.PreviewPlay!.Token);
+        Assert.Equal(workspace.PreviewPlay, workspace.Draft!.ForPreview(workspace.PreviewPlay).Play);
+        workspace.SetField("title", Value("Host"));
+        Assert.Null(workspace.PreviewPlay);
+        workspace.PlayPreview("loop");
+        workspace.SetField("title", Value("Guest"));
+        Assert.Equal("loop", workspace.PreviewPlay!.Mode);
+        workspace.SetPreviewSample("blank");
+        Assert.Equal("loop", workspace.PreviewPlay!.Mode);
+        workspace.StopPreviewPlay();
+        Assert.Null(workspace.PreviewPlay);
+    }
 }

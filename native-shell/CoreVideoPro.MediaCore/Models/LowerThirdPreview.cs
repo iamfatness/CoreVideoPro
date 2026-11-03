@@ -22,10 +22,12 @@ public sealed record NativeGraphicsDraft(string TemplateId, int TemplateVersion,
         return System.Text.Json.JsonSerializer.SerializeToElement(style.EnumerateObject().Where(p => consumed.Contains(p.Name))
             .ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal), options);
     }
-    public NativeGraphicsPreview ForPreview() => new(TemplateId, TemplateVersion, Fields, StyleWire(), Animations, Placement, Scratch, Image);
+    public NativeGraphicsPreview ForPreview(NativeGraphicsPreviewPlay? play = null) => new(TemplateId, TemplateVersion, Fields, StyleWire(), Animations, Placement, Scratch, Image, play);
 }
+public sealed record NativeGraphicsPreviewPlay(string Mode, int Token);
+
 public sealed record NativeGraphicsPreview(string TemplateId, int TemplateVersion,
-    System.Text.Json.JsonElement Fields, System.Text.Json.JsonElement Style, NativeGraphicsAnimations Animations, NativeGraphicsPlacement? Placement = null, NativeGraphicsScratch? Scratch = null, NativeGraphicsImageReference? Image = null);
+    System.Text.Json.JsonElement Fields, System.Text.Json.JsonElement Style, NativeGraphicsAnimations Animations, NativeGraphicsPlacement? Placement = null, NativeGraphicsScratch? Scratch = null, NativeGraphicsImageReference? Image = null, NativeGraphicsPreviewPlay? Play = null);
 
 public sealed record NativeGraphicsPlacement
 {

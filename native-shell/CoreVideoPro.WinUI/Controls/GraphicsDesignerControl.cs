@@ -34,6 +34,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
     private readonly List<(string Id, Button Button)> _sampleButtons = [];
 
     private GraphicsWorkspaceSession? _session; private StudioViewModel? _attached;
+    private NativeGraphicsPreview? _lastPreview;
     private ColorGradeEditorViewModel? _editor; private IDisposable? _previewOwner; private bool _suspended = true;
     private bool _saving, _loading;
 
@@ -67,12 +68,14 @@ public sealed partial class GraphicsDesignerControl : UserControl
         AutomationProperties.SetName(_status, "Design status"); Grid.SetColumn(_status, 2); header.Children.Add(_status);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         _save.Foreground = StudioBrushes.Accent; _save.BorderBrush = StudioBrushes.Accent;
-        foreach (var button in new[] { _undo, _save, _useForZoom, _saveToPlaylist }) { button.FontSize = 14; button.MinHeight = 36; actions.Children.Add(button); }
+        foreach (var button in new[] { _undo, _playPreview, _save, _useForZoom, _saveToPlaylist }) { button.FontSize = 14; button.MinHeight = 36; actions.Children.Add(button); }
         AutomationProperties.SetName(_undo, "Undo"); AutomationProperties.SetName(_save, "Save design"); AutomationProperties.SetName(_saveToPlaylist, "Save to playlist"); AutomationProperties.SetName(_useForZoom, "Use for Zoom lower thirds");
         ToolTipService.SetToolTip(_undo, "Undo the last change to this draft.");
         ToolTipService.SetToolTip(_save, "Store your edits as the design's next version. Program and Preview are unchanged.");
         ToolTipService.SetToolTip(_saveToPlaylist, "Save, then put this design in the playlist on the F-key shown. Show it from Operate.");
         ToolTipService.SetToolTip(_useForZoom, "Save, then use this design for every Zoom lower third: the LT button, lower-third hotkeys and automation.");
+        AutomationProperties.SetName(_playPreview, "Play preview");
+        _playPreview.Click += (_, _) => PlayMotion("cycle");
         _undo.Click += (_, _) => { if (!_saving) _session?.Undo(); };
         _save.Click += async (_, _) => await SaveAsync(toPlaylist: false);
         _saveToPlaylist.Click += async (_, _) => await SaveAsync(toPlaylist: true);
@@ -85,6 +88,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
     {
         var centre = new Grid { RowSpacing = 8 };
         centre.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); centre.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        centre.RowDefinitions.Add(new() { Height = GridLength.Auto });
         centre.Children.Add(new Border { Background = StudioBrushes.Field, BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(6), Child = _canvas });
         var bar = new Grid { ColumnSpacing = 10 };
         bar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); bar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); bar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
@@ -101,6 +105,8 @@ public sealed partial class GraphicsDesignerControl : UserControl
             TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis, HorizontalAlignment = HorizontalAlignment.Right, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(caption, 2); bar.Children.Add(caption);
         Grid.SetRow(bar, 1); centre.Children.Add(bar);
+        var motion = BuildMotionStrip();
+        Grid.SetRow(motion, 2); centre.Children.Add(motion);
         return centre;
     }
 
@@ -112,6 +118,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
         var wide = width >= WideBreakpoint;
         _body.ColumnDefinitions[0].Width = new GridLength(wide ? 240 : 220);
         _body.ColumnDefinitions[2].Width = new GridLength(wide ? 300 : 280);
+        ReflowMotion(wide);
     }
 
     // ---- lifecycle -------------------------------------------------------------------------
@@ -132,9 +139,11 @@ public sealed partial class GraphicsDesignerControl : UserControl
     {
         if (_session is not null) { _session.Changed -= OnSessionChanged; _session.PreviewChanged -= OnPreviewChanged; _session.EditRefused -= OnEditRefused; }
         _pending.Clear();
+        if (_motionDrag is not null) EndMotionDrag();
+        _motionSignature = _motionPanelSignature = "";
         if (_attached is not null) { _attached.PropertyChanged -= OnStudioProperty; _attached.GraphicsDesignOpened -= OnDesignOpened; _attached.GraphicsLibrary.Changed -= OnLibraryChanged; }
         if (_editor is not null) _editor.PropertyChanged -= OnEditorProperty;
-        _previewOwner?.Dispose(); _previewOwner = null; _canvas.Session = null; _variables.Session = null;
+        _previewOwner?.Dispose(); _previewOwner = null; _lastPreview = null; _canvas.Session = null; _variables.Session = null;
         _session = null; _attached = null; _editor = null; _rowsSignature = _inspectorSignature = "";
     }
     /// <summary>The page holds the private preview only while this is the visible Design surface.</summary>
@@ -143,13 +152,23 @@ public sealed partial class GraphicsDesignerControl : UserControl
     private void UpdatePreviewLease()
     {
         if (_editor is null) return;
-        if (_session?.Preview is not { } draft) { _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable("Open a design to preview it."); return; }
-        if (_session.PreviewValidation is { Length: > 0 } invalid) { _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable(invalid); return; }
+        if (_session?.Preview is not { } draft) { _previewOwner?.Dispose(); _previewOwner = null; _lastPreview = null; _editor.SetNativeUnavailable("Open a design to preview it."); return; }
+        if (_session.PreviewValidation is { Length: > 0 } invalid) { _previewOwner?.Dispose(); _previewOwner = null; _lastPreview = null; _editor.SetNativeUnavailable(invalid); return; }
         if (!_suspended && _attached?.IsOverlaysTab == true) {
-            _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview()));
+            var preview = draft.ForPreview(_session.PreviewPlay);
+            // Authoring observations and the session's paired notifications can repeat the same draft.
+            // Reissuing it would reset the native playback clock before a cycle could finish.
+            if (_lastPreview is not { } last || !SamePreview(last, preview)) {
+                _lastPreview = preview;
+                _editor.SetLowerThirdPreview(new(null, Graphics: preview));
+            }
             _previewOwner ??= _attached.CreateAppearancePreview(_editor);
-        } else { _previewOwner?.Dispose(); _previewOwner = null; }
+        } else { _previewOwner?.Dispose(); _previewOwner = null; _lastPreview = null; }
     }
+    private static bool SamePreview(NativeGraphicsPreview left, NativeGraphicsPreview right) =>
+        left with { Fields = default, Style = default } == right with { Fields = default, Style = default } &&
+        JsonElement.DeepEquals(left.Fields, right.Fields) && JsonElement.DeepEquals(left.Style, right.Style);
+
     private void OnEditorProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (_editor is not null && e.PropertyName == nameof(ColorGradeEditorViewModel.NativeSurface)) _canvas.SurfaceState = _editor.NativeSurface;
@@ -165,7 +184,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
     private void OnSessionChanged(object? sender, EventArgs e) { RefreshAll(); UpdatePreviewLease(); }
     // Every refused edit (the Designer's own, or a canvas drag on a locked layer) lands in the status line.
     private void OnEditRefused(object? sender, string message) { if (Visible) Say(message); }
-    private void OnPreviewChanged(object? sender, EventArgs e) { if (_session?.Draft is null) RefreshAll(); UpdatePreviewLease(); }
+    private void OnPreviewChanged(object? sender, EventArgs e) { if (_session?.Draft is null) RefreshAll(); RefreshMotionPlayback(); UpdatePreviewLease(); }
     private readonly GraphicsPendingEdit _pending = new();
     private IReadOnlyCollection<string> _rowIds = [];
 
@@ -199,6 +218,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
                 _session.SelectLayer(keep);
             _rowIds = rows.Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
             RefreshHeader(); RefreshRows(rows); RefreshInspector(rows); RefreshSamples();
+            RefreshMotionStrip(); RefreshMotionPanel(rows);
             _canvas.IsEnabled = !_saving;
             if (_variablesScroll.Visibility == Visibility.Visible) _variables.Refresh();
             _variablesScroll.IsEnabled = !_saving;
@@ -219,6 +239,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
         _useForZoom.Visibility = family == "lower-third" ? Visibility.Visible : Visibility.Collapsed;
         _undo.IsEnabled = !_saving && _session is { Busy: false, CanUndo: true };
         _back.IsEnabled = !_saving;
+        _playPreview.IsEnabled = CanEdit;
         ToolTipService.SetToolTip(_status, _status.Text.Length == 0 ? null : _status.Text);
     }
 

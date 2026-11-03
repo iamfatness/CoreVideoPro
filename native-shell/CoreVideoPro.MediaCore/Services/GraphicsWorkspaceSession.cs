@@ -76,8 +76,32 @@ public sealed partial class GraphicsWorkspaceSession
             return layout;
         }
     }
+    private int _previewPlayToken;
+    public NativeGraphicsPreviewPlay? PreviewPlay { get; private set; }
+
+    public void PlayPreview(string mode)
+    {
+        if (mode is not ("in" or "out" or "cycle" or "loop")) throw new ArgumentException("Choose a preview play mode.", nameof(mode));
+        if (Busy || Draft is null) return;
+        _previewPlayToken = _previewPlayToken == int.MaxValue ? 0 : _previewPlayToken + 1;
+        PreviewPlay = new(mode, _previewPlayToken);
+        PreviewChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void StopPreviewPlay()
+    {
+        if (PreviewPlay is null) return;
+        PreviewPlay = null;
+        PreviewChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void StopOneShotPreview()
+    {
+        if (PreviewPlay is { Mode: not "loop" }) PreviewPlay = null;
+    }
+
     public string PreviewSample { get; private set; }="current";
-    public void SetPreviewSample(string sample) {if(!GraphicsPreviewSamples.All.Any(s=>s.Id==sample)) return;PreviewSample=sample;NotifyPreview();}
+    public void SetPreviewSample(string sample) {if(!GraphicsPreviewSamples.All.Any(s=>s.Id==sample)) return;PreviewSample=sample;StopOneShotPreview();NotifyPreview();}
     public bool CompareOriginal { get; private set; }
     public bool Busy { get; private set; }
     public bool ImportBusy { get; private set; }
@@ -157,7 +181,7 @@ public sealed partial class GraphicsWorkspaceSession
     {
         if (Busy || Draft is null || value.TemplateId != Draft.TemplateId || value.TemplateVersion != Draft.TemplateVersion || Same(value, Draft)) return;
         if (_gesture is null) PushUndo(Draft);
-        Draft = value; CompareOriginal = false;
+        Draft = value; CompareOriginal = false; StopOneShotPreview();
         Status = "Private draft — use Cue to Preview or Update on air to apply.";
         Changed?.Invoke(this, EventArgs.Empty); PreviewChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -225,13 +249,13 @@ public sealed partial class GraphicsWorkspaceSession
     public void SetStyle(LowerThirdAppearance style) { if (Draft is not null && style.IsValid) Edit(Draft with { Style = style }); }
     public void BeginGesture() { if (!Busy) _gesture ??= Draft; }
     public void EndGesture() { if (_gesture is { } before && Draft is { } after && !Same(before, after)) PushUndo(before); _gesture = null; }
-    public void CancelGesture() { if (_gesture is { } before) { Draft = before; _gesture = null; NotifyPreview(); } }
+    public void CancelGesture() { if (_gesture is { } before) { Draft = before; _gesture = null; StopOneShotPreview(); NotifyPreview(); } }
     public void Undo()
     {
         if (Busy) return;
         if (_gesture is not null) { CancelGesture(); return; }
         if (_undo.Count == 0) return;
-        Draft = _undo[^1]; _undo.RemoveAt(_undo.Count - 1); CompareOriginal = false; NotifyPreview();
+        Draft = _undo[^1]; _undo.RemoveAt(_undo.Count - 1); CompareOriginal = false; StopOneShotPreview(); NotifyPreview();
     }
     public void CancelDraft() {
         if (Busy || Selected is not { } selected) return;
@@ -272,7 +296,7 @@ public sealed partial class GraphicsWorkspaceSession
     {
         if (Busy || (Selected is null && Draft?.TemplateId==template.TemplateId && Draft.TemplateVersion==template.TemplateVersion)) return;
         EndGesture();RememberDraft(); SelectedId=""; SelectedLayerId=""; PreviewSample="current"; _undo.Clear(); _gesture=null; CompareOriginal=false; _draftBaseRevision=0;
-        Draft=_original=NewDraft(template);
+        Draft=_original=NewDraft(template); StopOneShotPreview();
         if(_browseEdits.TryGetValue((template.TemplateId,template.TemplateVersion),out var saved)) {Draft=saved.Draft;_original=saved.Original;_undo.AddRange(saved.Undo);SelectedLayerId=saved.SelectedLayer;}
         Status="Private library preview — edit this look, then Create hidden cue. Program is unchanged."; NotifyPreview();
     }
@@ -283,7 +307,7 @@ public sealed partial class GraphicsWorkspaceSession
     public void Rebase(NativeGraphicsDraft value, string? selectedLayerId = null)
     {
         if (Busy || Draft is null || value.TemplateId != Draft.TemplateId || value.TemplateVersion != Draft.TemplateVersion) return;
-        Draft = _original = value; _undo.Clear(); _gesture = null; CompareOriginal = false;
+        Draft = _original = value; _undo.Clear(); _gesture = null; CompareOriginal = false; StopOneShotPreview();
         if (selectedLayerId is { Length: > 0 } layer && TemplateDocument is { } document) {
             try { if (GraphicsTemplateEditor.Layers(document).Any(l => l.Id == layer)) SelectedLayerId = layer; }
             catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException or JsonException) { }

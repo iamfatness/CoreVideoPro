@@ -244,7 +244,7 @@ internal static class GraphicsWorkspaceLayoutProbe
         await Eventually(() => studio.GraphicsDesignerOpen && designer.Visibility == Visibility.Visible, () => $"Open in Designer with Probe strap selected did not show the Designer (open={studio.GraphicsDesignerOpen}, surface={studio.GraphicsDesignSurface})");
         checks.Add("Builder: Open in Designer with the Probe strap design selected shows it in the Designer");
         IReadOnlyList<GraphicsDesignerRow> Rows() => Descendants(designer).OfType<FrameworkElement>().Select(e => e.Tag).OfType<GraphicsDesignerRow>().ToArray();
-        foreach (var (width, height, shot, minCanvasWidth, minCanvasHeight) in new[] { (1320d, 640d, "graphics-designer-1360x768.png", 640d, 360d), (1560d, 772d, "graphics-designer-1600x900.png", 800d, 450d) }) {
+        foreach (var (width, height, shot, minCanvasWidth, minCanvasHeight) in new[] { (1320d, 640d, "graphics-designer-1360x768.png", 640d, 360d), (1560d, 772d, "graphics-designer-1600x900.png", 640d, 360d) }) {
             page.Width = width; page.Height = height; await Task.Delay(150); page.UpdateLayout();
             await Eventually(() => designer.Visibility == Visibility.Visible && Rows().Count == 4, () => $"The Designer did not open on the Probe strap draft (visible={designer.Visibility}, rows={Rows().Count})");
             Require(Descendants(page).OfType<GraphicsBuilderControl>().Single().Visibility == Visibility.Collapsed && Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed,
@@ -259,6 +259,9 @@ internal static class GraphicsWorkspaceLayoutProbe
                 Require(button.ActualHeight > 0 && point.X >= -1 && point.Y >= -1 && point.X + button.ActualWidth <= designer.ActualWidth + 1 && point.Y + button.ActualHeight <= designer.ActualHeight + 1,
                     $"{name} is clipped or outside the Designer at {width:0}x{height:0} ({point.X:0},{point.Y:0} {button.ActualWidth:0}x{button.ActualHeight:0} in {designer.ActualWidth:0}x{designer.ActualHeight:0})");
             }
+            if (width < 1500)
+                Require(Descendants(designer).OfType<Button>().Any(b => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(b) == "Show motion" && b.ActualHeight > 0),
+                    "Show motion is missing at 1360x768");
             var canvas = Descendants(designer).OfType<GraphicsAuthoringCanvas>().Single();
             Require(canvas.ActualWidth >= minCanvasWidth && canvas.ActualHeight >= minCanvasHeight, $"Designer canvas is {canvas.ActualWidth:0}x{canvas.ActualHeight:0} at {width:0}x{height:0}; needs {minCanvasWidth:0}x{minCanvasHeight:0}");
             var layerScroll = Descendants(designer).OfType<ScrollViewer>().Single(v => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(v) == "Layer properties");
@@ -294,10 +297,79 @@ internal static class GraphicsWorkspaceLayoutProbe
         await Eventually(() => Rows().Count == 4, () => $"Undo did not remove the added layer (rows={Rows().Count})");
         checks.Add("Designer Add text layer adds and selects text-1; Undo removes it");
         await CheckLocationVariableAsync(studio, designer, Rows, checks);
+        await CheckMotionAsync(page, studio, designer, checks, directory);
         studio.GraphicsDesignerOpen = false; await Task.Delay(80); page.UpdateLayout();
         Require(designer.Visibility == Visibility.Collapsed, "Your designs did not close the Designer");
         await CheckOperateRowVariableAsync(page, studio, seedTemplate, checks, directory);
     }
+    private static async Task CheckMotionAsync(OverlaysPage page, StudioViewModel studio, GraphicsDesignerControl designer,
+        List<string> checks, string directory)
+    {
+        var session = studio.GraphicsWorkspace;
+        page.Width = 1320; page.Height = 640;
+        await Task.Delay(100); page.UpdateLayout();
+        var canvas = Descendants(designer).OfType<GraphicsAuthoringCanvas>().Single();
+        Require(Button(designer, "Show motion").ActualHeight > 0 && canvas.ActualWidth >= 640 && canvas.ActualHeight >= 360,
+            $"Collapsed Motion strip at 1360x768 leaves a {canvas.ActualWidth:0}x{canvas.ActualHeight:0} canvas");
+        Invoke(Button(designer, "Show motion"));
+        await Task.Delay(100); page.UpdateLayout();
+        var labels = Descendants(designer).OfType<Button>()
+            .Select(Microsoft.UI.Xaml.Automation.AutomationProperties.GetName)
+            .Where(name => name.Contains(" motion, starts ", StringComparison.Ordinal))
+            .Select(name => name.Split(" motion, starts ")[0]).ToArray();
+        Require(labels.SequenceEqual(new[] { "Plate", "Accent bar", "Name", "Title" }),
+            "Motion strip order differs from paint order: " + string.Join(", ", labels));
+        Require(canvas.ActualWidth >= 480 && canvas.ActualHeight >= 270 && designer.ActualWidth <= page.Width + 1,
+            $"Expanded Motion strip at 1360x768 leaves a {canvas.ActualWidth:0}x{canvas.ActualHeight:0} canvas");
+        session.SelectLayer("plate");
+        Invoke(Button(designer, "Motion tab"));
+        await Task.Delay(50); designer.UpdateLayout();
+        Invoke(Button(designer, "Wipe"));
+        await Eventually(() => session.TemplateDocument is { } document &&
+            GraphicsTemplateEditor.LayerMotion(document, "plate", "in")?.Type == "wipe",
+            () => "Selecting Wipe did not give the plate its own motion.");
+        designer.UpdateLayout();
+        Require(Button(designer, "Plate motion, starts 0.00 s, takes 0.35 s").ActualHeight > 0, "The strip did not show the plate wipe.");
+        session.SelectLayer("name-label");
+        Invoke(Button(designer, "Fade + rise"));
+        await Task.Delay(50); designer.UpdateLayout();
+        var start = Descendants(designer).OfType<TextBox>().Single(box =>
+            Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(box) == "Starts at");
+        start.Text = "0.20 s";
+        Invoke(Button(designer, "Play preview"));
+        await Eventually(() => session.PreviewPlay?.Mode == "cycle", () => "Play preview did not start a private cycle.");
+        Require(session.TemplateDocument is { } edited && GraphicsTemplateEditor.LayerMotion(edited, "name-label", "in")?.StartMs == 200,
+            "The name should begin 0.20 s after the plate.");
+        checks.Add($"Motion at 1360x768 starts collapsed; expanded canvas {canvas.ActualWidth:0}x{canvas.ActualHeight:0}. Plate wipes and Name rises at 0.20 s.");
+        await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-designer-motion-1360x768.png"));
+
+        page.Width = 1560; page.Height = 772;
+        await Task.Delay(100); page.UpdateLayout();
+        Require(canvas.ActualWidth >= 640 && canvas.ActualHeight >= 360, $"Expanded Motion strip at 1600x900 leaves a {canvas.ActualWidth:0}x{canvas.ActualHeight:0} canvas");
+        foreach (var name in new[] { "Play preview", "Play In", "Play Out", "Loop preview", "Out mirrors In", "Motion tab" })
+        {
+            var element = Descendants(designer).OfType<FrameworkElement>().Single(item =>
+                Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(item) == name);
+            var point = element.TransformToVisual(designer).TransformPoint(new(0, 0));
+            Require(element.ActualHeight > 0 && point.X >= -1 && point.Y >= -1 &&
+                point.X + element.ActualWidth <= designer.ActualWidth + 1 && point.Y + element.ActualHeight <= designer.ActualHeight + 1,
+                $"{name} is clipped at 1600x900");
+        }
+        Invoke(Button(designer, "Bar first, words after"));
+        await Eventually(() => session.TemplateDocument is { } preset &&
+            GraphicsTemplateEditor.LayerMotion(preset, "accent", "in")?.Type == "wipe", () => "The bar-first preset did not apply.");
+        designer.UpdateLayout();
+        Require(Button(designer, "Name motion, starts 0.20 s, takes 0.30 s").ActualHeight > 0, "The bar-first preset did not show Name at 0.20 s.");
+        await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-designer-motion-1600x900.png"));
+        Invoke(Button(designer, "Play preview"));
+        await Eventually(() => session.PreviewPlay?.Mode == "cycle", () => "The second Play preview did not start a private cycle.");
+        Invoke(Button(designer, "Undo"));
+        await Eventually(() => session.PreviewPlay is null && session.TemplateDocument is { } restored &&
+            GraphicsTemplateEditor.LayerMotion(restored, "accent", "in") is null, () => "Undo did not restore the draft and stop the private play.");
+        for (var i = 0; i < 3; i++) session.Undo();
+        checks.Add($"Motion at 1600x900 keeps all controls inside the Designer and a {canvas.ActualWidth:0}x{canvas.ActualHeight:0} canvas; preset, Play preview and Undo passed.");
+    }
+
     /// <summary>Acceptance 1 in the Designer (final review C1b / M5): add <c>location</c> (Text, 40), give it a Sample value
     /// (the draft follows), add a text layer and choose Shows: Variable location in the ComboBox (the inspector rebuild is
     /// deferred past the box's own SelectionChanged). Undo then restores the probe draft.</summary>
