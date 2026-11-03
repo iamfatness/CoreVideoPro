@@ -185,7 +185,7 @@ class Layout {
     else if (type == "rect") allowed.insert({"fill", "cornerRadius", "stroke", "strokeWidth"});
     else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth"});
     else if (type == "line") allowed.insert({"diagonal", "stroke", "strokeWidth"});
-    else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty"});
+    else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty", "outline", "shadow"});
     else if (type == "image") allowed.insert({"asset", "fit", "align", "verticalAlign", "collapseWhenEmpty", "missing"});
     else need(false, "unsupported-template-node-type");
     keys(node, allowed);
@@ -279,6 +279,17 @@ class Layout {
       const auto lines = quantity(node, "maxLines", 1, 3, 1); need(std::floor(lines) == lines, "template-max-lines"); p.maxLines = int(lines);
       p.align = stringProperty(node, "align", "left"); need(p.align == "left" || p.align == "center" || p.align == "right", "template-text-alignment");
       p.overflow = stringProperty(node, "overflow", "ellipsis"); need(p.overflow == "ellipsis" || p.overflow == "wrap-then-ellipsis", "template-text-overflow");
+      if (const auto* outline = node.get("outline")) {
+        keys(*outline, {"color", "width"});
+        p.outline = GraphicsTextOutline{color(resolve(outline->get("color"), "color").asString()),
+            quantity(*outline, "width", 0, 8)};
+      }
+      if (const auto* shadow = node.get("shadow")) {
+        keys(*shadow, {"color", "x", "y", "blur"});
+        p.shadow = GraphicsTextShadow{color(resolve(shadow->get("color"), "color").asString()),
+            quantity(*shadow, "x", -256, 256, 0), quantity(*shadow, "y", -256, 256, 0),
+            quantity(*shadow, "blur", 0, 16, 0)};
+      }
       if (boolean(node, "collapseWhenEmpty") && p.text.empty()) {draw_->nodes.back().visible=false;return false;}
     }
     if (!visible) return false;

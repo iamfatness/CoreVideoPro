@@ -542,3 +542,25 @@ TEST(GraphicsTemplate, EllipseAndLineResolveIntoMotionAwarePrimitives) {
   EXPECT_EQ("line", line.type);
   EXPECT_EQ(8., line.box.height);
 }
+
+TEST(GraphicsTemplate, TextOutlineAndShadowAcceptTheirDocumentedLimits) {
+  using M = Json::Object;
+  const auto edited = [](double outlineWidth, double blur) {
+    auto document = manifest();
+    auto layers = document.at("layers").asArray();
+    auto group = layers.back().asObject();
+    auto children = group.at("children").asArray();
+    auto text = children.front().asObject();
+    text["outline"] = M{{"color","#123456"},{"width",outlineWidth}};
+    text["shadow"] = M{{"color","#00000080"},{"x",-2},{"y",4},{"blur",blur}};
+    children.front() = std::move(text);
+    group["children"] = std::move(children);
+    layers.back() = std::move(group);
+    document["layers"] = std::move(layers);
+    return document;
+  };
+  std::string error;
+  EXPECT_TRUE(load(edited(8, 16), error)) << error;
+  EXPECT_FALSE(load(edited(8.1, 16), error));
+  EXPECT_FALSE(load(edited(8, 16.1), error));
+}

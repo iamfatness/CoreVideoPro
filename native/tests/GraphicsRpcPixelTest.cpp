@@ -532,6 +532,50 @@ TEST(GraphicsCompositionPixel, NativeFadeAndReversalReachActualGpuPixels) {
   EXPECT_EQ(blank, render());
 }
 
+TEST(GraphicsCompositionPixel, TextEffectsDrawShadowOutlineAndFill) {
+  using namespace corevideo;
+  auto compositor = modules::createD3D11Compositor();
+  ASSERT_TRUE(compositor);
+  auto input = std::make_shared<graphics::GraphicsTemplateInput>();
+  std::string error;
+  input->definition = graphics::GraphicsTemplate::load(R"({
+    "schemaVersion":1,"templateId":"slice4-text","templateVersion":1,"name":"Text effects","family":"title",
+    "canvas":{"width":1920,"height":1080},"bounds":{"width":320,"height":180},"brandTokens":[],"fields":[],
+    "animations":{"in":{"type":"none"},"out":{"type":"none"}},
+    "layers":[{"id":"text","type":"text","x":20,"y":15,"width":260,"height":130,
+      "text":"Ada","font":"Segoe UI","fontSize":64,"color":"#FFFFFF",
+      "outline":{"color":"#FF0000","width":3},"shadow":{"color":"#00FF00","x":12,"y":20,"blur":5}}]})", error);
+  ASSERT_TRUE(input->definition) << error;
+  input->fields = rpc::Json::Object{};
+  input->brand = rpc::Json::Object{};
+  modules::CompositorRenderPlan plan;
+  plan.width = 320;
+  plan.height = 180;
+  modules::CompositorRenderPlanLayer layer;
+  layer.layerId = "text-effects";
+  layer.kind = "overlay";
+  layer.rect = {0,0,1,1};
+  layer.hasOverlayContent = true;
+  layer.overlay.appearance.enabled = true;
+  layer.overlay.graphicsTemplate = input;
+  plan.layers.push_back(std::move(layer));
+  int fill = 0, outline = 0, shadow = 0;
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (fill == 0 && std::chrono::steady_clock::now() < until) {
+    const auto pixels = compositor->render(plan, {}).preview.bgra;
+    for (size_t i = 0; i + 3 < pixels.size(); i += 4) {
+      const auto b = pixels[i], g = pixels[i+1], r = pixels[i+2];
+      if (b > 220 && g > 220 && r > 220) ++fill;
+      if (r > 180 && g < 50 && b < 50) ++outline;
+      if (g > 180 && r < 50 && b < 50) ++shadow;
+    }
+    if (fill == 0) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_GT(fill, 100);
+  EXPECT_GT(outline, 100);
+  EXPECT_GT(shadow, 100);
+}
+
 TEST(GraphicsCompositionPixel, NewShapesDrawCoverageAndInsetStrokes) {
   using namespace corevideo;
   auto compositor = modules::createD3D11Compositor();
