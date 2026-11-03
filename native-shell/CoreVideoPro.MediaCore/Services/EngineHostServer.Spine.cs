@@ -6,6 +6,15 @@ namespace CoreVideoPro.MediaCore.Services;
 
 public sealed partial class EngineHostServer
 {
+    internal static bool PreservesSpineIntent(JsonElement payload) =>
+        payload.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String &&
+        type.GetString() is "media-core-sync" or "native-media-core-sync" &&
+        payload.TryGetProperty("commands", out var commands) && commands.ValueKind == JsonValueKind.Array &&
+        commands.GetArrayLength() > 0 && commands.EnumerateArray().All(command =>
+            command.ValueKind == JsonValueKind.Object &&
+            command.TryGetProperty("type", out var commandType) && commandType.ValueKind == JsonValueKind.String &&
+            commandType.GetString() is "set-audio-route-control" or "set-audio-monitor-control");
+
     private async Task RefreshSpineAsync(CancellationToken cancellationToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(500));

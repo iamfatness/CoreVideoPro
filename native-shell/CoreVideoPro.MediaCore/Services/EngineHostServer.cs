@@ -159,8 +159,11 @@ public sealed partial class EngineHostServer(MediaCoreSupervisor supervisor, str
             // Reserve before forwarding. A timeout must never make an ID reusable.
             _sequences[request.ClientId] = sequence;
             _session.ReserveMutation();
-            _spineRefresh = null;
-            spineIntentVersion = ++_spineIntentVersion;
+            if (!PreservesSpineIntent(payload))
+            {
+                _spineRefresh = null;
+                spineIntentVersion = ++_spineIntentVersion;
+            }
         }
         var command = JsonSerializer.Deserialize<Dictionary<string, object?>>(payload.GetRawText())!;
         EngineHostSpineIntent? spineIntent = null;
