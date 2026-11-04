@@ -1,4 +1,4 @@
-﻿#include "compositor/CompositorLayout.h"
+#include "compositor/CompositorLayout.h"
 #include "core/AudioControlSourcePolicy.h"
 #include "core/BoundedAsyncLog.h"
 #include "core/CoreStateCapture.h"
@@ -21,6 +21,7 @@
 #include "modules/ZoomEngineRuntime.h"
 #include "core/TestPatternSource.h"
 #include "rpc/Json.h"
+#include "graphics/GraphicsPreparedResource.h"
 
 #include <gtest/gtest.h>
 
@@ -7581,6 +7582,114 @@ TEST(MediaCoreCommand, PublishesAlwaysOnRealtimeWorkerEvidenceWithoutVerboseLogg
   EXPECT_EQ(videoOutput->getNumber("completedTicks"), 1);
   EXPECT_GE(render->getNumber("progressAgeMs"), 0);
   EXPECT_EQ(state.get("health")->getNumber("renderDeadlineMisses"), 5);
+}
+
+TEST(MediaCoreCommand, GuardedShotLayoutRefusalDoesNotApplyTheFollowingSceneLoad) {
+  using Json = corevideo::rpc::Json;
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  const auto initial = mediaCore.applyCommands(Json::Array{
+      Json::Object{{"type", "load-scene-graph"}, {"sceneId", "outgoing"}, {"routes", Json::Array{}}},
+      Json::Object{{"type", "set-preview-scene"}, {"sceneId", "incoming"}, {"routes", Json::Array{}}}});
+  const auto epoch = initial.get("graphics")->getString("coreEpoch");
+  const auto revision = initial.get("previewScene")->getNumber("revision", 1);
+  const auto guarded = mediaCore.applyCommands(Json::Array{
+      Json::Object{{"type", "begin-take-transition"}, {"operationId", "layout-test"}, {"mode", "cut"},
+          {"graphicsLayout", Json::Object{
+              {"coreEpoch", epoch}, {"sceneId", "incoming"}, {"previewRevision", revision},
+              {"playOutOthers", true}, {"cues", Json::Array{
+                  Json::Object{{"instanceId", "first"}, {"cueRevision", 1}},
+                  Json::Object{{"instanceId", "unavailable"}, {"cueRevision", 2}}}}}}},
+      Json::Object{{"type", "load-scene-graph"}, {"sceneId", "incoming"}, {"routes", Json::Array{}}},
+      Json::Object{{"type", "set-preview-scene"}, {"sceneId", "outgoing"}, {"routes", Json::Array{}}}});
+  EXPECT_EQ("outgoing", guarded.getString("sceneId"));
+  EXPECT_EQ("incoming", guarded.get("previewScene")->getString("sceneId"));
+  const auto* receipts = guarded.get("graphics")->get("layoutTakeReceipts");
+  ASSERT_NE(receipts, nullptr);
+  ASSERT_EQ(1u, receipts->asArray().size());
+  EXPECT_EQ("refused", receipts->asArray().front().getString("disposition"));
+  EXPECT_EQ("layout-cue-unavailable:first", receipts->asArray().front().getString("reason"));
+}
+
+TEST(MediaCoreCommand, GuardedShotLayoutKeepsTheOldPlanWhileColdAndCommitsBothGraphicsOnce) {
+  using Json = corevideo::rpc::Json;
+  using namespace corevideo::modules;
+  class PreparingCompositor final : public ICompositor {
+   public:
+    std::string rendererName() const override { return "layout-test"; }
+    bool supportsGraphicsInstances() const override { return true; }
+    ProgramFrame render(const CompositorRenderPlan& plan, const std::vector<VideoFrame>&) override {
+      ProgramFrame frame;
+      frame.width = plan.width; frame.height = plan.height; frame.renderPlanId = plan.renderPlanId;
+      for (const auto& layer : plan.graphicsPreparations) {
+        auto resource = std::make_shared<corevideo::graphics::GraphicsPreparedResource>();
+        resource->native = std::make_shared<int>(1);
+        frame.graphicsFacts.push_back({layer.graphicsInstanceId, layer.graphicsRevision, "ready", "", resource});
+      }
+      visible.clear();
+      for (const auto& layer : plan.layers)
+        if (!layer.graphicsInstanceId.empty()) visible.insert(layer.graphicsInstanceId);
+      return frame;
+    }
+    std::set<std::string> visible;
+  };
+
+  auto modules = createStubModules();
+  auto compositor = std::make_unique<PreparingCompositor>();
+  auto* observed = compositor.get();
+  modules.compositor = std::move(compositor);
+  corevideo::core::MediaCore core(std::move(modules));
+  const Json::Array incomingRoutes{Json::Object{{"routeId", "clip"}, {"mode", "fixed"},
+      {"mediaAssetId", "cold"}, {"mediaAssetKind", "video"}, {"mediaAssetPath", "test-missing.mp4"}}};
+  const auto initial = core.applyCommands(Json::Array{
+      Json::Object{{"type", "load-scene-graph"}, {"sceneId", "outgoing"}, {"routes", Json::Array{}}},
+      Json::Object{{"type", "set-preview-scene"}, {"sceneId", "incoming"}, {"routes", incomingRoutes}}});
+  const auto epoch = initial.get("graphics")->getString("coreEpoch");
+  const auto preview = initial.get("previewScene")->getNumber("revision");
+  int sequence = 0;
+  const auto send = [&](const std::string& type, const std::string& id, Json::Object body) {
+    body["instanceId"] = id; body["coreEpoch"] = epoch; body["schemaVersion"] = 1;
+    body["clientId"] = "layout-test"; body["requestId"] = "request-" + std::to_string(++sequence);
+    return core.applyCommand(Json::Object{{"type", type}, {"graphics", std::move(body)}});
+  };
+  Json::Array cues;
+  for (const auto* id : {"first", "second"}) {
+    const auto created = send("graphics-instance-create", id, {{"scope", "global"}, {"templateId", "compact-solid"},
+        {"templateVersion", 1}, {"fields", Json::Object{{"name", id}}},
+        {"animations", Json::Object{{"in", Json::Object{{"type", "none"}}}, {"out", Json::Object{{"type", "none"}}}}}});
+    const auto revision = created.get("graphics")->get("lastResult")->getNumber("currentRevision");
+    ASSERT_GT(revision, 0.0);
+    const auto queued = send("graphics-instance-cue", id, {{"expectedRevision", revision}, {"cueOwner", "layout-cold"}});
+    ASSERT_TRUE(queued.get("graphics")->get("lastResult")->get("accepted")->asBool());
+    cues.push_back(Json::Object{{"instanceId", id}, {"cueRevision", revision}});
+  }
+  for (int tick = 0; tick < 4; ++tick) core.renderDisplayTick();
+  const auto prepared = core.sessionState();
+  for (const auto& instance : prepared.get("graphics")->get("instances")->asArray())
+    ASSERT_EQ("ready", instance.getString("cuePreparation")) << instance.stringify();
+  const Json::Array batch{
+      Json::Object{{"type", "begin-take-transition"}, {"operationId", "layout-cold"}, {"mode", "cut"},
+          {"graphicsLayout", Json::Object{{"coreEpoch", epoch}, {"sceneId", "incoming"}, {"previewRevision", preview},
+              {"playOutOthers", false}, {"cues", cues}}}},
+      Json::Object{{"type", "load-scene-graph"}, {"sceneId", "incoming"}, {"routes", incomingRoutes}},
+      Json::Object{{"type", "set-preview-scene"}, {"sceneId", "outgoing"}, {"routes", Json::Array{}}}};
+  const auto warming = core.applyCommands(batch);
+  EXPECT_EQ("outgoing", warming.getString("sceneId"));
+  EXPECT_TRUE(observed->visible.empty());
+  ASSERT_NE(warming.get("graphics")->get("layoutTakeReceipts"), nullptr);
+  const auto& receipt = warming.get("graphics")->get("layoutTakeReceipts")->asArray().back();
+  ASSERT_EQ("warming", receipt.getString("disposition")) << receipt.stringify();
+
+  for (int tick = 0; tick < 60; ++tick) core.renderDisplayTick();
+  EXPECT_TRUE(observed->visible.empty());
+  const auto taken = core.applyCommands(batch);
+  EXPECT_EQ("incoming", taken.getString("sceneId"));
+  EXPECT_EQ("committed", taken.get("graphics")->get("layoutTakeReceipts")->asArray().back().getString("disposition"));
+  EXPECT_EQ((std::set<std::string>{"first", "second"}), observed->visible);
+
+  (void)core.applyCommand(Json::Object{{"type", "load-scene-graph"}, {"sceneId", "later"}, {"routes", Json::Array{}}});
+  const auto replay = core.applyCommands(batch);
+  EXPECT_EQ("later", replay.getString("sceneId"));
+  EXPECT_EQ("committed", replay.get("graphics")->get("layoutTakeReceipts")->asArray().back().getString("disposition"));
 }
 
 TEST(MediaCoreCommand, TakeTransitionTracksOneEdgeTriggeredOperationToCompletion) {

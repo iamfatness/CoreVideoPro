@@ -11,6 +11,7 @@ public sealed record NativeGraphicsState
     public NativeGraphicsAuthoring? Authoring { get; init; }
     public NativeGraphicsAutomation? Automation {get;init;}
     public int SchemaVersion { get; init; }
+    public IReadOnlyList<GraphicsLayoutTakeReceipt> LayoutTakeReceipts { get; init; } = [];
     public string CoreEpoch { get; init; } = "";
     public IReadOnlyList<NativeGraphicsInstance> Instances { get; init; } = [];
     public IReadOnlyList<NativeGraphicsOperationResult> Operations {get;init;}=[];

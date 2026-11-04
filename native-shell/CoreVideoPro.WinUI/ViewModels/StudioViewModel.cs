@@ -4264,9 +4264,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     public bool CanTake =>
+        _transportCoordinator?.GuardedTakePending == true || (_graphicsPlayout?.LayoutPreparing != true &&
         Scenes.Any(scene => string.Equals(scene.Id, PreviewSceneId, StringComparison.Ordinal)) &&
         Scenes.Any(scene => string.Equals(scene.Id, ActiveSceneId, StringComparison.Ordinal)) &&
-        (PreviewSceneId != ActiveSceneId || HasPendingPreviewTake);
+        (_graphicsPlayout?.PreparedLayout is not null || PreviewSceneId != ActiveSceneId || HasPendingPreviewTake));
 
     public string TakeTransitionLabel => TakeTransitionMode switch
     {
@@ -9129,12 +9130,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _audioMixChannelSettings = new Dictionary<string, ParticipantAudioMix>(StringComparer.Ordinal);
     }
 
-    private async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null)
+    private async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null, GraphicsLayoutTakeRequest? guardedTake = null)
     {
         // Capture and submit together on the binding thread: deferred workers and
         // post-await callers must never enumerate the live route/roster/audio collections.
         var pending = await CaptureUiOwnedAsync(() =>
         {
+            if (guardedTake is null && _transportCoordinator.GuardedTakePending)
+                throw new MediaCoreSyncInFlightException();
             var scene = Scenes.FirstOrDefault(s => s.Id == ActiveSceneId)
                 ?? throw new InvalidOperationException("Program scene is unavailable. Select a valid scene before taking.");
             var context = BuildProductionSyncContext();
@@ -9144,10 +9147,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 context = context with
                 {
                     TakeTransition = new MediaCoreTakeTransitionWire(
-                        Guid.NewGuid().ToString("N"),
+                        guardedTake?.OperationId ?? Guid.NewGuid().ToString("N"),
                         version,
                         NormalizeTakeTransitionMode(TakeTransitionMode),
-                        DurationMs: 300)
+                        DurationMs: 300, GraphicsLayout: guardedTake?.Guard)
                 };
             }
             var commands = MediaCoreCommandBuilder.BuildSyncCommands(context);
@@ -9157,6 +9160,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }).ConfigureAwait(false);
 
         var snapshot = await pending.Response.ConfigureAwait(false);
+        if (guardedTake is not null && snapshot.Graphics?.LayoutTakeReceipts
+            .Any(receipt => receipt.OperationId == guardedTake.OperationId && receipt.Disposition == "committed") != true)
+            return snapshot;
         await CaptureUiOwnedAsync(() =>
         {
             // A queued response must not apply an older request's patch to a newer

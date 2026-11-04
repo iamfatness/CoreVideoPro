@@ -272,6 +272,17 @@ public sealed record MediaCoreOutputProfileWire(
     string Codec = "h264",
     int AudioBitrateKbps = 160);
 
+public sealed record GraphicsLayoutCue(string InstanceId, long CueRevision);
+
+public sealed record GraphicsLayoutTakeGuard(
+    string CoreEpoch, string SceneId, long PreviewRevision, bool KeepProgramScene,
+    bool PlayOutOthers, IReadOnlyList<GraphicsLayoutCue> Cues);
+
+public sealed record GraphicsLayoutTakeRequest(string OperationId, GraphicsLayoutTakeGuard Guard);
+
+public sealed record GraphicsLayoutTakeReceipt(string OperationId, string Disposition, string Reason);
+
+
 /// <summary>
 /// A render-clock transition requested by a Take. This is intentionally present only on
 /// the one production sync that performs the Take; ordinary state reconciliation must not
@@ -283,7 +294,8 @@ public sealed record MediaCoreTakeTransitionWire(
     string Mode,
     int DurationMs = 300,
     string Direction = "left-to-right",
-    string DipColor = "#000000");
+    string DipColor = "#000000",
+    GraphicsLayoutTakeGuard? GraphicsLayout = null);
 
 /// <summary>
 /// Production inputs for building a media-core-sync command batch.

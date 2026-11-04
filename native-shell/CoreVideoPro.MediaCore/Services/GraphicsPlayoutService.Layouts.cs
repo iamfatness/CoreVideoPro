@@ -2,8 +2,6 @@ using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.MediaCore.Services;
 
-public sealed record GraphicsLayoutCue(string InstanceId, long CueRevision);
-
 public sealed record GraphicsPreparedLayout(
     ShotLayout Layout, string CoreEpoch, string AttemptId, IReadOnlyList<GraphicsLayoutCue> Cues, string? PreviewStamp);
 
@@ -13,6 +11,27 @@ public sealed partial class GraphicsPlayoutService
     private GraphicsPreparedLayout? _preparedLayout;
     public GraphicsPreparedLayout? PreparedLayout => _preparedLayout;
     public bool LayoutPreparing => _layoutPreparation is not null;
+
+    public bool IsPreparedLayoutCurrent(GraphicsPreparedLayout prepared, string previewStamp)
+    {
+        if (!ReferenceEquals(prepared, _preparedLayout) || prepared.PreviewStamp != previewStamp ||
+            !ReferenceEquals(prepared.Layout, Layout(prepared.Layout.Id)) || _observe() is not { } state ||
+            state.CoreEpoch != prepared.CoreEpoch) return false;
+        return prepared.Cues.All(cue => state.Instances.Any(instance => MatchesLayoutCue(instance, prepared.AttemptId, cue)));
+    }
+
+    public void ConfirmLayoutTake(string attemptId)
+    {
+        if (_preparedLayout is not { } prepared || prepared.AttemptId != attemptId) return;
+        _preparedLayout = null;
+        if (prepared.Layout.PlayOutOthers)
+        {
+            var carried = prepared.Cues.Select(cue => cue.InstanceId).ToHashSet(StringComparer.Ordinal);
+            foreach (var instance in Strip.OnProgram)
+                if (!carried.Contains(instance.InstanceId)) CancelAutoOut(instance.InstanceId);
+        }
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
 
     public async Task<NativeGraphicsOperationResult> CancelLayoutAsync()
     {

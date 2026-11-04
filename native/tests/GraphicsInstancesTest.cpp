@@ -1209,6 +1209,38 @@ TEST(GraphicsInstances, LayoutCueRequiresItsOwnerAndNeverRidesAnOrdinaryTake) {
   EXPECT_EQ(0., rowFor(state, "featured").getNumber("cueRevision"));
 }
 
+TEST(GraphicsInstances, GuardedLayoutPromotesTheWholeGroupAndPlaysOutOthersOnlyAtCommit) {
+  double now = 0;
+  GraphicsInstances state{"test-core", [&] { return now; }};
+  for (const auto* id : {"first", "second", "unrelated", "on-air"}) {
+    ASSERT_TRUE(createFor(state, id, id));
+    readyFor(state, id, uint64_t(rev(state, id)));
+  }
+  const auto first = rev(state, "first"), second = rev(state, "second");
+  const auto unrelated = rev(state, "unrelated"), onAir = rev(state, "on-air");
+  for (const auto* id : {"first", "second"}) {
+    ASSERT_TRUE(state.apply(requestFor(id, "graphics-instance-cue",
+        {{"expectedRevision", rev(state, id)}, {"cueOwner", "layout-one"}})));
+  }
+  ASSERT_TRUE(state.apply(requestFor("unrelated", "graphics-instance-cue", {{"expectedRevision", unrelated}})));
+  ASSERT_TRUE(state.apply(requestFor("on-air", "graphics-instance-trigger",
+      {{"action", "show"}, {"expectedRevision", onAir}})));
+  const std::vector<GraphicsInstances::LayoutCue> invalid{{"first", uint64_t(first)}, {"second", uint64_t(second + 1)}};
+  EXPECT_FALSE(state.commitLayoutTake("layout-one", invalid, true));
+  EXPECT_EQ(0., rowFor(state, "first").getNumber("programRevision"));
+  EXPECT_EQ(onAir, rowFor(state, "on-air").getNumber("programRevision"));
+
+  const std::vector<GraphicsInstances::LayoutCue> readyGroup{{"first", uint64_t(first)}, {"second", uint64_t(second)}};
+  ASSERT_TRUE(state.commitLayoutTake("layout-one", readyGroup, true));
+  EXPECT_EQ(first, rowFor(state, "first").getNumber("programRevision"));
+  EXPECT_EQ(second, rowFor(state, "second").getNumber("programRevision"));
+  EXPECT_EQ(unrelated, rowFor(state, "unrelated").getNumber("cueRevision"));
+  EXPECT_EQ(0., rowFor(state, "unrelated").getNumber("programRevision"));
+  EXPECT_EQ(0., rowFor(state, "first").getNumber("cueRevision"));
+  EXPECT_EQ(0., rowFor(state, "second").getNumber("cueRevision"));
+  EXPECT_FALSE(state.commitLayoutTake("layout-one", readyGroup, true));
+}
+
 TEST(GraphicsInstances, RehearsalCueDoesNotRideTheTake) {
   double now = 0; GraphicsInstances state{"test-core", [&] { return now; }}; ASSERT_TRUE(create(state));
   state.observeSources({guest()}, 7, sourceFrames());

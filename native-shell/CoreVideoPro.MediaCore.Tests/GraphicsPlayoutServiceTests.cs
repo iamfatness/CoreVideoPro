@@ -739,6 +739,25 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Equal(2, Bodies("graphics.instance.trigger").Count());
     }
 
+    [Fact]
+    public async Task GuardedLayoutTakeReusesTheReadyAttemptOnRetry()
+    {
+        var (library, service, layout) = await DataLayout(2, "crawl", "\"Final\"");
+        Assert.True(await library.SaveShotLayoutsAsync([layout]), library.Status);
+        var attempts = new List<string>();
+        Task<string?> Take(CancellationToken _)
+        {
+            attempts.Add(Assert.IsType<GraphicsPreparedLayout>(service.PreparedLayout).AttemptId);
+            return Task.FromResult(attempts.Count == 1 ? "The reply was lost." : (string?)null);
+        }
+
+        Assert.False((await service.CueAndTakeLayoutAsync(layout.Id, SelectScene, null, null, Take)).Accepted);
+        Assert.True((await service.CueAndTakeLayoutAsync(layout.Id, SelectScene, null, null, Take)).Accepted);
+        Assert.Equal(2, attempts.Count);
+        Assert.Equal(attempts[0], attempts[1]);
+        Assert.Equal(2, Bodies("graphics.instance.cue").Count());
+    }
+
     private async Task<(GraphicsWorkspaceLibrary Library, GraphicsPlayoutService Service, ShotLayout Layout)> DataLayout(
         long revision, string source, string heading)
     {

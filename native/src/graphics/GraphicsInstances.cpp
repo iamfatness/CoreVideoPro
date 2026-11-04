@@ -736,10 +736,8 @@ bool GraphicsInstances::apply(const Json& command) {
     if (action == "clear") {
       instance.program.reset(); instance.clockProgramPending.reset(); instance.awaitingEntrance=false; instance.programResource.reset(); instance.timeline.clear(); instance.layered.clear(); instance.awaitingEntrance=false; instance.visibility = "hidden";
       instance.firstDrawSubmittedFrame = 0;
-    } else if (instance.program) {
-      instance.awaitingEntrance=false;
-      if (layered(*instance.program)) instance.layered.hide(monotonicMs_());
-      else instance.timeline.hide(instance.program->exit, monotonicMs_());
+    } else {
+      startHide(instance);
       advanceAnimations();
     }
     return finish(requestId, true, instance.program ? "hide-accepted" : "hidden");
@@ -1158,6 +1156,52 @@ void GraphicsInstances::show(Instance& instance, bool fromCue) {
   if (instance.awaitingEntrance) instance.visibility = "awaiting-composition";
   else startEntrance(instance, monotonicMs_());
   instance.showPending = instance.updatePending = false;
+}
+
+void GraphicsInstances::startHide(Instance& instance) {
+  instance.crawlBoundaryMs.reset();
+  instance.showPending = instance.updatePending = false;
+  if (!instance.program) return;
+  instance.awaitingEntrance = false;
+  const auto now = monotonicMs_();
+  if (layered(*instance.program)) instance.layered.hide(now);
+  else instance.timeline.hide(instance.program->exit, now);
+}
+
+std::string GraphicsInstances::unavailableLayoutCue(const std::string& owner,
+    const std::vector<LayoutCue>& cues) const {
+  for (const auto& cue : cues) {
+    const auto found = instances_.find(cue.instanceId);
+    if (found == instances_.end()) return cue.instanceId;
+    const auto& instance = found->second;
+    if (!instance.cued || instance.cueOwner != owner || instance.pendingCue || !instance.cue ||
+        instance.cue->number != cue.revision ||
+        (instance.cue->binding && !sources_->contains(*instance.cue->binding)) ||
+        !resourceMatches(instance.cueResource, instance.cue->contentHash))
+      return cue.instanceId;
+  }
+  return {};
+}
+
+bool GraphicsInstances::commitLayoutTake(const std::string& owner,
+    const std::vector<LayoutCue>& cues, bool playOutOthers) {
+  if (cues.empty() || !unavailableLayoutCue(owner, cues).empty()) return false;
+  if (playOutOthers) {
+    for (auto& [id, instance] : instances_) {
+      if ((!instance.program && !instance.showPending) ||
+          std::any_of(cues.begin(), cues.end(), [&](const auto& cue) { return cue.instanceId == id; })) continue;
+      startHide(instance);
+      automation_.manual(id);
+    }
+  }
+  for (const auto& cue : cues) {
+    auto& instance = instances_.at(cue.instanceId);
+    show(instance, true);
+    clearCue(instance);
+  }
+  advanceAnimations();
+  publish();
+  return true;
 }
 
 void GraphicsInstances::clearCue(Instance& instance) {

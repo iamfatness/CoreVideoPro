@@ -182,15 +182,17 @@ public sealed partial class GraphicsPlayoutService
     /// <summary>CueLayoutAsync, then the ordinary Take through <paramref name="take"/> (null = taken,
     /// otherwise the refusal). A layout with no scene and no rows (Clean) has nothing to Take.</summary>
     public async Task<NativeGraphicsOperationResult> CueAndTakeLayoutAsync(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
-        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests, Func<CancellationToken, Task<string?>> take, CancellationToken cancellation = default)
+        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests, Func<CancellationToken, Task<string?>> take,
+        CancellationToken cancellation = default, Func<string>? previewStamp = null)
     {
-        var cued = await CueLayoutAsync(layoutId, sceneSelect, programSubject, sceneGuests, cancellation);
+        var cued = _preparedLayout?.Layout.Id == layoutId
+            ? new NativeGraphicsOperationResult { Accepted = true, Reason = "Shot Layout is ready." }
+            : await CueLayoutAsync(layoutId, sceneSelect, programSubject, sceneGuests, cancellation, previewStamp);
         if (!cued.Accepted) return cued;
-        var layout = Layout(layoutId);
+        var layout = _preparedLayout?.Layout ?? Layout(layoutId);
         if (layout is null || (layout.SceneId.Length == 0 && layout.RowIds.Count == 0)) return cued with { Reason = cued.Reason + " Nothing to Take." };
-        if (layout.RowSettings.Count > 0) return Refuse("The layout requires a guarded Take.");
         var error = await take(cancellation);
-        return error is null ? cued with { Reason = $"{layout.Name} taken." } : Refuse($"{layout.Name} is cued on Preview but the Take was refused: {error}");
+        return error is null ? cued with { Reason = $"{layout.Name} taken." } : Refuse($"{layout.Name}: {error}");
     }
 
     private async Task<NativeGraphicsOperationResult> CueLayout(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,

@@ -37,6 +37,9 @@ class GraphicsInstances {
   // Take: every cued instance whose cue is ready and opted in (rideTake) goes
   // to Program from its cue and leaves Preview. Rehearsal cues stay put.
   void promoteCuedForTake();
+  struct LayoutCue { std::string instanceId; uint64_t revision; };
+  std::string unavailableLayoutCue(const std::string& owner, const std::vector<LayoutCue>& cues) const;
+  bool commitLayoutTake(const std::string& owner, const std::vector<LayoutCue>& cues, bool playOutOthers);
   // Private monitor input, not an instance mutation, cue or Program revision.
   std::optional<modules::CompositorOverlayContent> authoringPreview(const rpc::Json& draft);
 
@@ -97,6 +100,7 @@ class GraphicsInstances {
   void publish();
   void show(Instance& instance, bool fromCue = false);
   static void clearCue(Instance& instance);
+  void startHide(Instance& instance);
   bool updateTemplates();
   bool templateInUse(const std::string& templateId, int templateVersion) const;
   bool advanceAnimations();

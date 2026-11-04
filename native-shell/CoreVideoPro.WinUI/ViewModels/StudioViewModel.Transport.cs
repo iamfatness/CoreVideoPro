@@ -314,6 +314,32 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     Task ITransportHost.EnsureMediaCoreRunningAsync(string startingStatus) =>
         EnsureMediaCoreRunningAsync(startingStatus);
 
+    bool ITransportHost.PreparingShotLayout => _graphicsPlayout?.LayoutPreparing == true;
+    GraphicsPreparedLayout? ITransportHost.PreparedShotLayout => _graphicsPlayout?.PreparedLayout;
+
+    GraphicsLayoutTakeRequest? ITransportHost.CreateGuardedTake(GraphicsPreparedLayout prepared)
+    {
+        if (!GraphicsPlayout.IsPreparedLayoutCurrent(prepared, CaptureLayoutPreviewStamp()))
+            return null;
+        var preview = _bridge.LastSnapshot?.PreviewScene;
+        var keepProgram = prepared.Layout.SceneId.Length == 0;
+        if (!keepProgram && (preview?.SceneId != prepared.Layout.SceneId || preview.Revision <= 0))
+            return null;
+        return new(prepared.AttemptId, new(prepared.CoreEpoch, keepProgram ? ActiveSceneId : prepared.Layout.SceneId,
+            preview?.Revision ?? 0, keepProgram, prepared.Layout.PlayOutOthers, prepared.Cues));
+    }
+
+    Task<NativeMediaCoreStateSnapshot> ITransportHost.SyncGuardedTakeAsync(GraphicsLayoutTakeRequest request) =>
+        SyncActiveSceneAsync("take", request);
+
+    Task<NativeMediaCoreStateSnapshot> ITransportHost.ObserveGuardedTakeAsync() => _bridge.PollSnapshotAsync();
+
+    async Task ITransportHost.FinishGuardedTakeAsync(string operationId, bool committed)
+    {
+        if (committed) GraphicsPlayout.ConfirmLayoutTake(operationId);
+        else if (GraphicsPlayout.PreparedLayout?.AttemptId == operationId) await GraphicsPlayout.CancelLayoutAsync();
+    }
+
     Task<NativeMediaCoreStateSnapshot> ITransportHost.SyncActiveSceneAsync(string? reason) =>
         SyncActiveSceneAsync(reason);
 
