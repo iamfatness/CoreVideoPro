@@ -53,7 +53,11 @@ The owner identified X, YouTube, Twitch and LinkedIn as eligible targets. These 
 | Twitch | Messages from one selected channel. [Twitch EventSub subscription types](https://dev.twitch.tv/docs/eventsub/eventsub-subscription-types/#channelchatmessage) |
 | LinkedIn | Comments on a selected post for which the connected account has API access. [LinkedIn Comments API](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/comments-api) |
 
-Before adding each adapter, confirm the account and content, provider access and scopes, selection and moderation workflow, retention and deletion rules, and a test account or fixture. Keep provider authorization separate from custom endpoint credentials. Explicit operator approval before external messages reach Program is the proposed first-release default. Provider order and any unattended publication policy remain owner decisions. Qualify the selected provider and its revoke, disconnect, moderation, and recovery behavior before adding another.
+Before adding each adapter, confirm the account and content, provider access and scopes, retention and deletion rules, and a test account or fixture. Keep provider authorization separate from custom endpoint credentials. Provider order remains open. Qualify the selected provider and its revoke, disconnect, moderation and recovery behavior before adding another.
+
+**Owner requirement.** An operator must review and explicitly approve each individual social item before it can air. Incoming items enter a private review queue. Approve records the exact reviewed version for that show and source. Approval makes that version eligible for a separate Publish or Show action. Rejection keeps the item out of playout. A provider edit returns the new version to review. A deletion or withdrawal makes the item ineligible for future playout. Provider-specific retention and removal policy covers items already on air.
+
+Enforce eligibility in the shared publication and playout paths, including Cue, Show, Take, Shot Layouts, hotkeys and control API actions. Recheck it at the Program handoff so a deleted or withdrawn item cannot ride an older Cue. Social sources use explicit publication. Custom scoreboard and other data sources use the configured publication mode.
 
 ## Acceptance
 
@@ -61,6 +65,7 @@ Before adding each adapter, confirm the account and content, provider access and
 - Reconnect during a burst, deliver an old-socket completion after the replacement connects, then deliver a newer snapshot. Confirm freshness, sequence and publication behavior through manual Publish and opt-in live follow. Reopen the show and confirm the durable watermark rejects an older snapshot.
 - Exercise a looping and a single-pass crawl and a pinned Cue alongside live-follow updates. Verify the existing boundaries and the first frame of a table revision. Confirm disabled startup, cancellation, and independent pull-feed operation.
 - Map a nested custom HTTPS response into the same table and test missing fields, credential rotation and rejected redirects. Stage a WSS snapshot from a custom producer and confirm both modes use the same publication path.
+- For each qualified social adapter, ingest two items and approve one. Verify only that reviewed version can reach Program. Repeat after editing, deleting or withdrawing a cued item, and through a hotkey, Shot Layout and control API action.
 - Use a controlled TLS fixture for the protocol and certificate path. Record installed-show and any public-provider checks separately.
 
 [WebSocket protocol](https://www.rfc-editor.org/rfc/rfc6455) · [.NET ClientWebSocket connection API](https://learn.microsoft.com/en-us/dotnet/api/system.net.websockets.clientwebsocket.connectasync?view=net-9.0)

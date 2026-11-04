@@ -46,4 +46,6 @@ Commit **Expose and qualify custom graphics API feeds**.
 
 ## Social follow-up
 
-X, YouTube, Twitch and LinkedIn are eligible targets. The first social adapter starts from a separate issue and provider-specific spec after the owner chooses the provider and confirms the moderation policy. Its test-first plan covers provider authorization, message selection, explicit approval, retention, deletion and revocation. Qualify that provider end to end using the staged publication contract before adding another.
+X, YouTube, Twitch and LinkedIn are eligible targets. Start the first adapter from its own issue and provider-specific spec after the owner chooses a provider. Apply the owner requirement for explicit review and approval of each item.
+
+Start with red tests for two incoming items with only one approved, exact version matching, duplicate delivery, and an approved item edited, deleted or withdrawn before Take. Check direct publication, Cue, Show, Take, Shot Layouts, hotkeys and control actions. Keep unapproved items in private review and use the shared eligibility check at publication and at the Program handoff. Exercise provider authorization, retention, deletion and revocation for the chosen platform. Qualify that provider end to end before adding another.
