@@ -24,22 +24,53 @@ public sealed partial class GraphicsPlayoutService
         }, cancellation);
     });
 
-    public Task<NativeGraphicsOperationResult> SetCrawlLiveFollowAsync(string rowId, bool enabled) => Run(async () =>
+    public Task<NativeGraphicsOperationResult> SetDataLiveFollowAsync(string rowId, bool enabled) => Run(async () =>
     {
         await _library.LoadAsync();
-        if (Row(rowId) is not { DataBinding: { Crawl: not null } binding } row)
-            return Refuse("This row has no crawl binding.");
+        if (Row(rowId) is not { DataBinding: { } binding } row || (binding.Crawl is null && !binding.Remote))
+            return Refuse("Live follow is unavailable for this row.");
         var saved = await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(_library.Document.Playlist,
             row with { DataBinding = binding with { LiveFollow = enabled } }));
         return saved ? new() { Accepted = true, Reason = enabled ? "Live follow enabled for subsequent reloads." : "Manual publication enabled." }
             : Refuse(_library.Status);
     });
 
+    public async Task<GraphicsFeedStage> StageFeedAsync(GraphicsFeedDefinition definition, GraphicsLocalData data,
+        DateTimeOffset receivedAt, CancellationToken cancellation)
+    {
+        await _gate.WaitAsync(cancellation);
+        try
+        {
+            await _library.LoadAsync();
+            var rows = Playlist.Where(row => row.DataBinding?.SourceId == definition.Id).ToArray();
+            try
+            {
+                foreach (var row in rows) GraphicsDataTable.Fields(data, row.DataBinding!);
+            }
+            catch (InvalidDataException) { return GraphicsFeedStage.Rejected; }
+
+            var result = await _library.StageFeedAsync(definition, data, receivedAt, cancellation);
+            if (result == GraphicsFeedStage.Rejected) return result;
+            var revision = _library.Document.DataSources.Single(source => source.Id == definition.Id).Revision;
+            foreach (var row in rows)
+            {
+                cancellation.ThrowIfCancellationRequested();
+                if (!_library.Document.Feeds.Contains(definition)) break;
+                if (row.DataBinding is not { LiveFollow: true } binding || binding.Revision >= revision) continue;
+                try { Status = (await PublishData(row.Id, cancellation, waitForProgram: false)).Reason; }
+                catch (InvalidOperationException) { Status = "Feed saved. Program publication was interrupted."; }
+                Changed?.Invoke(this, EventArgs.Empty);
+            }
+            return result;
+        }
+        finally { _gate.Release(); }
+    }
+
     public Task<NativeGraphicsOperationResult> StageDataAsync(string rowId, GraphicsDataBinding selectedBinding,
         GraphicsLocalData data, CancellationToken cancellation = default) => Run(async () =>
     {
         await _library.LoadAsync();
-        if (Row(rowId) is not { DataBinding: { } binding } row || binding != selectedBinding)
+        if (Row(rowId) is not { DataBinding: { } binding } row || binding != selectedBinding || binding.Remote)
             return Refuse("The row changed while the data file was open. Choose the file again.");
 
         try { GraphicsDataTable.Fields(data, binding); }
@@ -59,7 +90,7 @@ public sealed partial class GraphicsPlayoutService
         return await PublishData(rowId, cancellation);
     });
 
-    private async Task<NativeGraphicsOperationResult> PublishData(string rowId, CancellationToken cancellation)
+    private async Task<NativeGraphicsOperationResult> PublishData(string rowId, CancellationToken cancellation, bool waitForProgram = true)
     {
         if (Row(rowId) is not { DataBinding: { } binding } row ||
             _library.Document.DataSources.FirstOrDefault(source => source.Id == binding.SourceId) is not { } source)
@@ -78,6 +109,7 @@ public sealed partial class GraphicsPlayoutService
                 return Refuse(_library.Status);
         }
 
+        cancellation.ThrowIfCancellationRequested();
         var state = _observe();
         if (state is null || state.CoreEpoch.Length == 0)
             return new() { Accepted = true, Reason = $"Data revision {source.Revision} saved for the next Cue or Show." };
@@ -98,6 +130,8 @@ public sealed partial class GraphicsPlayoutService
             return updated with { Reason = crawl.Mode == "loop" ?
                 $"Data revision {source.Revision} queued for a loop boundary." :
                 $"Data revision {source.Revision} saved for the next Cue or Show." };
+
+        if (!waitForProgram) return updated with { Reason = $"Data revision {source.Revision} submitted for Program preparation." };
 
         var until = _utcNow().AddSeconds(5);
         while (true)

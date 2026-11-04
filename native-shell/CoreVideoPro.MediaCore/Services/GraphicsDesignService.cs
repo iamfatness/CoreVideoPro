@@ -63,10 +63,12 @@ public sealed class GraphicsDesignService
         if (Full()) return Fail(TooMany);
         var id = NewTemplateId(clean);
 
+        var stored = _library.Document.DataSources.FirstOrDefault(item => item.Id == source.Id);
+        var feed = _library.Document.Feeds.FirstOrDefault(item => item.Id == source.Id);
         if (!source.Valid() || binding.SourceId != source.Id || binding.Revision != source.Revision ||
-            _library.Document.DataSources.Any(item => item.Id == source.Id))
-            return Fail("The local data source is invalid or already exists.");
-        try { return await Create(GraphicsDataTable.Manifest(id, clean, binding, source.Data), "", clean, ct, source); }
+            (binding.Remote ? stored != source || feed?.KeyColumn != binding.KeyColumn : stored is not null || feed is not null))
+            return Fail("The data source changed or is unavailable. Choose the source again.");
+        try { return await Create(GraphicsDataTable.Manifest(id, clean, binding, source.Data), "", clean, ct, binding.Remote ? null : source); }
         catch (InvalidDataException ex) { return Fail(ex.Message); }
     });
 

@@ -71,7 +71,7 @@ public sealed partial class GraphicsPlayoutControl
             {
                 if (_attached is not { } studio) return;
                 follow.IsEnabled = false;
-                try { _status.Text = (await studio.GraphicsPlayout.SetCrawlLiveFollowAsync(row.Id, follow.IsOn)).Reason; }
+                try { _status.Text = (await studio.GraphicsPlayout.SetDataLiveFollowAsync(row.Id, follow.IsOn)).Reason; }
                 catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = ex.Message; }
                 finally { follow.IsEnabled = true; }
             };
