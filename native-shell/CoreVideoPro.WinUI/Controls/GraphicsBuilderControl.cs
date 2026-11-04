@@ -32,8 +32,8 @@ public sealed partial class GraphicsBuilderControl : UserControl
     private readonly StackPanel _kinds = new() { Spacing = 6 };
     private readonly StackPanel _looks = new() { Spacing = 8 };
     private readonly TextBlock _looksNote = Note("");
-    private readonly StackPanel _center = new() { Spacing = 8 };
-    private readonly GraphicsAuthoringCanvas _canvas = new() { WholeGraphic = true, MinHeight = 240 };
+    private readonly Grid _center = new() { RowSpacing = 8 };
+    private readonly GraphicsAuthoringCanvas _canvas = new() { WholeGraphic = true };
     private readonly TextBlock _previewLine = Note("Private preview. Nothing here is on air until you Show it from Operate.");
     private readonly StackPanel _form = new() { Spacing = 10, MinWidth = 280 };
     private readonly StackPanel _fields = new() { Spacing = 8 };
@@ -106,9 +106,13 @@ public sealed partial class GraphicsBuilderControl : UserControl
         Grid.SetRow(shelfScroll, 1); _root.Children.Add(shelfScroll);
 
         // 3: preview
+        _center.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        _center.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
+        _center.RowDefinitions.Add(new() { Height = GridLength.Auto });
         _center.Children.Add(Step("3", "PREVIEW"));
         var frame = new Border { Background = StudioBrushes.Field, BorderBrush = StudioBrushes.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(6), Child = _canvas };
-        _center.Children.Add(frame); _center.Children.Add(_previewLine);
+        Grid.SetRow(frame, 1); _center.Children.Add(frame);
+        Grid.SetRow(_previewLine, 2); _center.Children.Add(_previewLine);
         Grid.SetRow(_center, 1); Grid.SetColumn(_center, 1); _root.Children.Add(_center);
 
         // 4 + 5: fill in and save
@@ -140,10 +144,15 @@ public sealed partial class GraphicsBuilderControl : UserControl
         var timing = new Grid { ColumnSpacing = 8 }; timing.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); timing.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         timing.Children.Add(_hotkey); Grid.SetColumn(_playOut, 1); timing.Children.Add(_playOut); _form.Children.Add(timing);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        actions.Children.Add(_save); actions.Children.Add(_discard); _form.Children.Add(actions);
+        actions.Children.Add(_save); actions.Children.Add(_discard);
         _form.Children.Add(_status); _operate.Visibility = Visibility.Collapsed; _form.Children.Add(_operate);
         var formScroll = new ScrollViewer { Content = _form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        Grid.SetRow(formScroll, 1); Grid.SetColumn(formScroll, 2); _root.Children.Add(formScroll);
+        var inspector = new Grid { RowSpacing = 8 };
+        inspector.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
+        inspector.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        inspector.Children.Add(formScroll);
+        Grid.SetRow(actions, 1); inspector.Children.Add(actions);
+        Grid.SetRow(inspector, 1); Grid.SetColumn(inspector, 2); _root.Children.Add(inspector);
 
         _save.Click += async (_, _) => await SaveAsync();
         _discard.Click += (_, _) => StartNew();
@@ -527,13 +536,21 @@ public sealed partial class GraphicsBuilderControl : UserControl
 
     private void Reflow(double width)
     {
-        var narrow = width < 1000; if (narrow == _narrow) return; _narrow = narrow;
+        var narrow = width < 1000;
+        if (!narrow)
+        {
+            _root.ColumnDefinitions[0].Width = new GridLength(width < 1500 ? 264 : 300);
+            _root.ColumnDefinitions[2].Width = new GridLength(width < 1500 ? 300 : 340);
+        }
+        if (narrow == _narrow) return;
+        _narrow = narrow;
+        _center.RowDefinitions[1].Height = narrow ? new GridLength(254) : new GridLength(1, GridUnitType.Star);
         if (narrow) {
             _root.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star); _root.ColumnDefinitions[1].Width = new GridLength(0); _root.ColumnDefinitions[2].Width = new GridLength(0);
             for (var i = _root.RowDefinitions.Count; i < 4; i++) _root.RowDefinitions.Add(new() { Height = GridLength.Auto });
             foreach (var child in _root.Children.OfType<FrameworkElement>()) { if (Grid.GetRow(child) == 0 && Grid.GetColumnSpan(child) == 3) continue; var col = Grid.GetColumn(child); Grid.SetColumn(child, 0); Grid.SetRow(child, 1 + col); }
         } else {
-            _root.ColumnDefinitions[0].Width = new GridLength(300); _root.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star); _root.ColumnDefinitions[2].Width = new GridLength(340);
+            _root.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star);
             foreach (var child in _root.Children.OfType<FrameworkElement>()) { if (Grid.GetRow(child) == 0 && Grid.GetColumnSpan(child) == 3) continue; var row = Grid.GetRow(child); Grid.SetRow(child, 1); Grid.SetColumn(child, row - 1); }
         }
     }
