@@ -437,7 +437,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             Id = "probe-feed", Name = "Probe remote table", DataBinding = remoteBinding,
             Fields = GraphicsDataTable.Fields(remoteData, remoteBinding)
         };
-        Require(await studio.GraphicsLibrary.SavePlaylistAsync([remoteRow]), "Could not save the remote table row.");
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([crawl, remoteRow]), "Could not save the remote table and crawl rows.");
         playout.SelectRow(remoteRow.Id);
         var remoteState = new NativeGraphicsState
         {
