@@ -46,6 +46,30 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(Descendants(page).OfType<TextBlock>().Any(t => t.Text == "YOUR DESIGNS" && t.ActualHeight > 0), "Design does not show Your designs");
             foreach (var action in new[] { "New design", "Open design", "Duplicate design", "Delete design" })
                 Require(Button(page, action).ActualHeight > 0, action + " is missing from Your designs");
+            var builderCanvas = Descendants(page).OfType<GraphicsBuilderControl>().Single();
+            var previewCanvas = Descendants(builderCanvas).OfType<GraphicsAuthoringCanvas>().Single();
+            foreach (var (width, height, suffix, minimum) in new[] {
+                (1320d, 640d, "1360x768", 630d), (1560d, 772d, "1600x900", 840d), (1840d, 820d, "1080p", 950d) })
+            {
+                page.Width = width;
+                page.Height = height;
+                await Task.Delay(100);
+                page.UpdateLayout();
+                var preview = previewCanvas.PreviewViewport;
+                Require(preview.Width >= minimum && Math.Abs(preview.Width / preview.Height - 16d / 9) < .01,
+                    $"Builder preview at {suffix} is only {preview.Width:0}x{preview.Height:0}.");
+                var save = Button(builderCanvas, "Add to playlist");
+                var savePosition = save.TransformToVisual(builderCanvas).TransformPoint(new(0, 0));
+                Require(save.ActualHeight > 0 && savePosition.Y >= 0 &&
+                    savePosition.Y + save.ActualHeight <= builderCanvas.ActualHeight + 1,
+                    $"Builder Add to playlist is outside the visible controls at {suffix}.");
+                checks.Add($"Builder preview at {suffix} fits at {preview.Width:0}x{preview.Height:0}.");
+                await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-builder-{suffix}.png"));
+            }
+            page.ClearValue(FrameworkElement.WidthProperty);
+            page.ClearValue(FrameworkElement.HeightProperty);
+            await Task.Delay(100);
+            page.UpdateLayout();
             await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-builder.png"));
             Invoke(Button(page, "New design"));
             GraphicsDesignStartDialog? startDialog = null;

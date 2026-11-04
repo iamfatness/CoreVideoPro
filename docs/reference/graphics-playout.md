@@ -74,7 +74,7 @@ numbered steps left to right:
    here; they are listed once, under Your designs (#1087 N3). A sponsor card is an image you choose
    instead (PNG/JPG, full frame), pinned through `AssignPlaylistImageAsync`.
 3. **Preview**: the workspace session's private draft on the native authoring
-   canvas. It is never on air.
+   canvas. The 16:9 picture fits the available center panel while the look shelf and form scroll independently. Add to playlist stays visible below the form. It is never on air.
 4. **Fill it in**: the template's own fields (text, choices, numbers, colors,
    bundled images), a logo slot with "Use the brand kit logo", and four color
    swatches (accent, background, name, second line) with "Use brand kit colors".
