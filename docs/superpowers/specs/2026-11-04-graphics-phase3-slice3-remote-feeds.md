@@ -1,0 +1,27 @@
+# Graphics Phase 3 Slice 3 — remote data feeds
+
+Owner request [#1103](https://github.com/iamfatness/CoreVideoPro/issues/1103). This narrows the [Phase 3 design](2026-11-03-graphics-phase3-data-production.md) to shell-owned HTTPS polling for the tables, leaderboards and crawls shipped in Slices 1 and 2.
+
+## Operator workflow
+
+In Design, add a remote source, choose its format, provide an endpoint and enable it. Use Refresh now to request an immediate check within the feed's minimum request interval. Once a refresh succeeds, preview the column names, types and row count before binding a graphic. In Operate, display the last successful check, accepted data age, staged and published revision, next retry and a short failure message. Show the Program revision separately when it differs. Disabling or editing a source cancels outstanding work. An existing row keeps its last published values after a restart or failed refresh.
+
+⚑ Manual publication remains the default. A successful refresh stages a changed dataset. Publishing uses the existing prepared native update path. A table or leaderboard switches after a whole frame is prepared. A loop switches at a loop boundary. A single pass holds the accepted list until the next Show or Cue. A prepared private Cue stays pinned through Take. Live follow is a per-row opt-in and uses the same publication path. It may coalesce superseded staging revisions while work is pending. The native compositor performs no network requests.
+
+## Providers and normalization
+
+- **Google Sheets.** The owner selected a dedicated tab published to the web as CSV for the first beta. The operator supplies the published link and a stable key column. Google controls propagation from edits to the published feed. CoreVideo reports when it observed the published data. Use only content intended for public viewing in the published tab. Private-sheet authorization is deferred. [Google published sheets](https://support.google.com/docs/answer/183965?hl=en).
+- **RSS.** Accept RSS 2.0 with a bounded XML reader and external entity resolution disabled. Use item GUID or, if absent, the item link as the row key. Extract title and plain-text description, with optional published date. Embedded markup is treated as text data. External item URLs are never fetched.
+- **REST/JSON.** Accept a HTTPS GET endpoint returning the same flat array of objects as the local JSON importer. Require an explicit stable key column. Credentials and query-signed endpoints are outside the initial anonymous REST path.
+
+All providers normalize through the existing text, number and boolean types and the same dataset bounds of 1 MiB decoded, 1,000 rows and 32 columns. Missing or duplicate keys, schema mismatches, malformed rows or an oversized body reject the complete refresh. Compare normalized typed content in file/feed order. A healthy identical response advances the successful-check time without creating a new data revision. Source identity and polling status are distinct from immutable data and playlist publication. A result from an older source configuration, show session or superseded request cannot stage or publish anything.
+
+## Network and persistence
+
+⚑ Sources default to disabled. Poll every 15 seconds by default, with a five-second minimum and one request per source at a time. A timeout, disabled source or show change cancels network and decode work. Use a 10-second request deadline and exponential retry delays capped at five minutes. Mark data stale after two configured poll intervals without a successful check. Keep the failure category visible alongside the last-good timestamp. Apply the existing show storage lifecycle and preserve the last successful dataset and the separate published playlist values. Diagnostics use source names or IDs and sanitized reason categories. Omit endpoint query strings, credentials, response bodies and raw provider exception text.
+
+Accept HTTPS on port 443 and refuse embedded credentials. Validate URLs before requests and validate every redirect before connecting, with a maximum of three hops. Bound both received and decoded bytes even when Content-Length is missing or compression is used. Resolve and validate the addresses used for the connection, then connect to an approved address while retaining the original hostname for TLS. Deny private, loopback, link-local, multicast, unspecified and other non-public destinations, including mapped IPv6 forms. Disable implicit redirects, proxy routing and cookies in the initial transport. Use deterministic fake DNS and transport for policy tests. Controlled loopback fixtures require a test-only transport.
+
+## Acceptance
+
+Bind a synthetic remote feed to a table and a crawl, stage an update, and show that Program holds until publication at each safe boundary. Repeat with live follow enabled. Simulate an outage, an invalid payload and a reply from a replaced source configuration. Confirm the accepted Program content survives and recovery stages only the newest valid response. Reopen the show and confirm previously staged content stays separate from the selected publication. Qualify a dedicated published Google Sheets tab containing synthetic data in an isolated profile.
