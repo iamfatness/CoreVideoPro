@@ -514,6 +514,7 @@ struct CompositorOverlayContent {
   std::optional<CompositorLayerRect> graphicsAuthoringRect;
   std::shared_ptr<const graphics::GraphicsTemplateInput> graphicsTemplate;
   std::optional<graphics::GraphicsMotionState> graphicsMotion;
+  std::optional<double> graphicsCrawlDistance;
   std::shared_ptr<const graphics::GraphicsAsset> graphicsImage;
 };
 

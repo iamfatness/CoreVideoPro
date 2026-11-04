@@ -28,6 +28,7 @@ class GraphicsInstances {
   void append(modules::CompositorRenderPlan& plan, bool preview,
               const std::vector<modules::VideoFrame>& frames = {}, ScopePass scope = ScopePass::All) const;
   void observe(const modules::ProgramFrame& frame);
+  void advanceCrawls();
   void observeSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
                           const std::vector<modules::VideoFrame>& frames = {},
                           const std::function<std::string_view(const std::string&)>& captureLabel = {});
@@ -74,6 +75,9 @@ class GraphicsInstances {
     std::string preparation = "unprepared", warning;
     GraphicsTimeline timeline;
     GraphicsLayerClock layered;
+    GraphicsCrawlClock crawlClock, cueCrawlClock;
+    std::optional<double> crawlBoundaryMs;
+    bool crawlComplete = false;
     std::string visibility = "hidden";
   };
   static bool validId(const std::string& value);
@@ -84,6 +88,7 @@ class GraphicsInstances {
   static bool layered(const Revision&);
   void setProgramRevision(Instance&, const std::shared_ptr<const Revision>&);
   static void startEntrance(Instance&, double now);
+  void acceptPreparedUpdate(Instance&);
   bool readRevision(const rpc::Json& request, Revision& revision);
   static void hashRevision(const std::string& templateId, Revision& revision);
   modules::CompositorRenderPlanLayer layer(const Instance&, const Revision&, int width, int height) const;

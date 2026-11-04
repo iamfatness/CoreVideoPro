@@ -1,3 +1,4 @@
+#include "graphics/GraphicsCrawl.h"
 #include "GraphicsMotionFixture.h"
 #include "gtest/gtest.h"
 
@@ -122,4 +123,38 @@ TEST(GraphicsMotion, AtlasStacksSlicesWithAGutterAndRefusesOversize) {
   EXPECT_EQ(40, slices[1].width);
   const std::vector<GraphicsRun> tall(9, GraphicsRun{0, 0, 1, {0, 0, 10, 2000}});
   EXPECT_FALSE(packAtlas(tall, 1., slices, width, height));
+}
+
+TEST(GraphicsCrawl, TravelKeepsOrderInBothDirections) {
+  EXPECT_EQ(300., crawlItemX(300, 0, 40, 0, false));
+  EXPECT_EQ(358., crawlItemX(300, 58, 25, 0, false));
+  EXPECT_EQ(250., crawlItemX(300, 0, 40, 50, false));
+  EXPECT_EQ(-40., crawlItemX(300, 0, 40, 0, true));
+  EXPECT_EQ(-83., crawlItemX(300, 58, 25, 0, true));
+  EXPECT_EQ(10., crawlItemX(300, 0, 40, 50, true));
+}
+
+TEST(GraphicsCrawl, LoopWrapsAtExactBoundaryAndAcrossSkippedTicks) {
+  GraphicsCrawlClock clock;
+  clock.restart(50);
+  EXPECT_EQ(99., clock.sample(1040, 100, 100, true).distance);
+  EXPECT_EQ(0., clock.sample(1050, 100, 100, true).distance);
+  EXPECT_EQ(25., clock.sample(102300, 100, 100, true).distance);
+  EXPECT_FALSE(clock.sample(102300, 100, 100, true).complete);
+}
+
+TEST(GraphicsCrawl, PauseResumeAndRestartAreAnchoredToTheInjectedTick) {
+  GraphicsCrawlClock clock;
+  clock.restart(100);
+  clock.pause(400);
+  clock.pause(500);
+  EXPECT_EQ(30., clock.sample(1000, 100, 100, false).distance);
+  clock.resume(1000);
+  clock.resume(1050);
+  EXPECT_EQ(99., clock.sample(1690, 100, 100, false).distance);
+  EXPECT_TRUE(clock.sample(1700, 100, 100, false).complete);
+  EXPECT_EQ(100., clock.sample(6000, 100, 100, false).distance);
+  clock.restart(6000);
+  EXPECT_EQ(0., clock.sample(6000, 100, 100, false).distance);
+  EXPECT_FALSE(clock.sample(6000, 100, 100, false).complete);
 }

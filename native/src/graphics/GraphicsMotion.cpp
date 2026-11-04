@@ -137,7 +137,9 @@ std::vector<GraphicsRun> planRuns(const GraphicsDrawing& drawing) {
   std::vector<GraphicsRun> runs;
   for (size_t i = 0; i < drawing.primitives.size(); ++i) {
     const auto& primitive = drawing.primitives[i];
-    if (runs.empty() || runs.back().unit != primitive.unit) runs.push_back({primitive.unit, i, 0, {}});
+    if (runs.empty() || runs.back().unit != primitive.unit || primitive.crawlStart ||
+        drawing.primitives[runs.back().first].crawlStart)
+      runs.push_back({primitive.unit, i, 0, {}});
     auto& run = runs.back();
     ++run.count;
     const auto& clip = primitive.clip;

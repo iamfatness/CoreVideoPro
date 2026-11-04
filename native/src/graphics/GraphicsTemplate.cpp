@@ -277,6 +277,48 @@ class Layout {
     }
     return extent;
   }
+  bool crawl(const Json& node, const GraphicsPrimitive& base, bool visible) {
+    need(!hasCrawl_, "template-crawl-limit");
+    hasCrawl_ = true;
+    const auto direction = stringProperty(node, "direction", "left");
+    const auto mode = stringProperty(node, "mode", "loop");
+    need(direction == "left" || direction == "right", "template-crawl-direction");
+    need(mode == "loop" || mode == "single", "template-crawl-mode");
+    const double speed = quantity(node, "speed", 1, 1200, 120);
+    const double gap = quantity(node, "gap", 0, 512, 48);
+    const auto* items = node.get("items");
+    need(items && items->isObject() && items->get("field"), "template-crawl-items-field");
+    const auto value = resolve(items, "string");
+    need(value.isString() && value.asString().size() <= 4096, "template-crawl-items");
+    const auto list = Json::parse(value.asString());
+    need(list && list->isArray() && !list->asArray().empty() && list->asArray().size() <= 64, "template-crawl-items");
+
+    auto text = base;
+    text.type = "text";
+    text.font = resolve(node.get("font"), "string").asString();
+    need(!text.font.empty() && text.font.size() <= 128 && utf8(text.font), "template-crawl-font");
+    text.fontSize = quantity(node, "fontSize", 1, std::min(512., base.box.height), 28);
+    text.color = color(resolve(node.get("color"), "color").asString());
+    text.align = "left";
+    text.overflow = "clip";
+    double start = 0;
+    for (const auto& item : list->asArray()) {
+      need(item.isString() && !item.asString().empty() && utf8(item.asString()) &&
+          item.asString().find_first_of("\r\n\t") == std::string::npos, "template-crawl-item");
+      text.text = item.asString();
+      text.box.width = std::ceil(measureText(text.text, text.font, text.fontSize, text.fontWeight).width);
+      need(text.box.width > 0 && text.box.width <= 8192, "template-crawl-item-width");
+      text.clip = text.box;
+      text.crawlStart = start;
+      if (visible && text.opacity > 0) draw_->primitives.push_back(text);
+      start += text.box.width + gap;
+    }
+    if (visible && text.opacity > 0)
+      draw_->crawl = GraphicsCrawlGeometry{base.box, base.clip, speed,
+          base.box.width + start - gap, direction == "right", mode == "loop"};
+    return visible;
+  }
+
   bool table(const Json& node, const GraphicsPrimitive& base, bool visible) {
     need(!hasTable_, "template-table-limit");
     hasTable_ = true;
@@ -360,6 +402,7 @@ class Layout {
     else if (type == "ellipse") allowed.insert({"fill", "stroke", "strokeWidth"});
     else if (type == "line") allowed.insert({"diagonal", "stroke", "strokeWidth"});
     else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty", "outline", "shadow", "minFontSize"});
+    else if (type == "crawl") allowed.insert({"items", "font", "fontSize", "color", "speed", "gap", "direction", "mode"});
     else if (type == "table") allowed.insert({"columns", "rows", "rowHeight", "font", "fontSize", "color", "headerFill", "rowFill", "alternateFill"});
     else if (type == "image") allowed.insert({"asset", "fit", "align", "verticalAlign", "collapseWhenEmpty", "missing"});
     else need(false, "unsupported-template-node-type");
@@ -407,6 +450,7 @@ class Layout {
       }
       return populated;
     }
+    if (type == "crawl") return crawl(node, p, visible);
     if (type == "table") return table(node, p, visible);
     if (type == "rect" || type == "ellipse" || type == "line") {
       const auto* stroke = node.get("stroke");
@@ -497,7 +541,7 @@ class Layout {
   std::map<const Json*, double> autoWidths_;
   std::set<const Json*> measuredNodes_;
   bool hasUnanimatedLayer_ = false;
-  bool hasTable_ = false;
+  bool hasTable_ = false, hasCrawl_ = false;
   std::set<std::string> declared_, ids_; size_t nodes_ = 0; GraphicsDrawing* draw_ = nullptr;
 };
 } // namespace

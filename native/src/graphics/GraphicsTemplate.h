@@ -14,7 +14,13 @@ namespace corevideo::graphics {
 class GraphicsTemplateDraft;
 struct GraphicsTextOutline { uint32_t color; double width; };
 struct GraphicsTextShadow { uint32_t color; double x, y, blur; };
+struct GraphicsCrawlGeometry {
+  GraphicsBox window, clip;
+  double speed = 120, passWidth = 0;
+  bool rightward = false, loop = true;
+};
 struct GraphicsPrimitive {
+  std::optional<double> crawlStart;
   std::string id, type, text, font, align, overflow;
   GraphicsBox box, clip;
   uint32_t color = 0xffffffff, endColor = 0xffffffff;
@@ -34,6 +40,7 @@ struct GraphicsNodeGeometry { std::string id,parent,type; GraphicsBox box,clip; 
 struct GraphicsDrawing {
   double width = 0, height = 0;
   std::vector<GraphicsPrimitive> primitives;
+  std::optional<GraphicsCrawlGeometry> crawl;
   std::vector<std::string> warnings;
   std::set<std::string> usedFields;
   std::vector<GraphicsNodeGeometry> nodes;

@@ -5762,6 +5762,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
 
   sourceGrades_.observe(videoFrames);
+  graphicsInstances_.advanceCrawls();
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
   const double animationNowMs = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;

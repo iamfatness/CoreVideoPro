@@ -113,6 +113,28 @@ holds the private preview lease at a time (`GraphicsDesignSurfaces`). The pure d
 upsert order) are unit-tested; the control is `GraphicsBuilderControl`, hosted by
 `OverlaysPage` beside the workspace and the playlist.
 
+## Local data crawls
+
+From Graphics → Design, select **Data crawl…** and open a local CSV or JSON file.
+Choose a text column, review the items in file order and set the speed, gap,
+direction and playback mode. The crawl takes up to 64 nonempty single-line items
+and fits the existing 4 KiB graphics field limit. The Designer exposes the crawl's
+settings, text styling and window geometry. Save to playlist when ready.
+
+In Operate, use **Cue to Preview** and Take, or use **Show** directly. A Cue pins
+its data and runs on its own clock. Program starts from the edge on Take. Select
+the on-air row to pause, resume or restart it. **Hide** is available throughout,
+including after a single pass finishes.
+
+**Load CSV / JSON…** stages a new revision. The inspector shows its item count
+and first items. **Publish data** selects it for the
+next Cue or Show. A playing loop adopts prepared data at its next boundary.
+A paused loop holds its current picture until it resumes and reaches a boundary.
+A single pass keeps its original list through Restart. Enable **Live follow local
+reloads** on a row to publish future successful reloads automatically. The
+inspector shows loaded, selected, Program and pending revisions. Failed
+preparation leaves the accepted Program list playing.
+
 ## Designs (Graphics Designer slice 1)
 
 A **design** is a graphic the operator authored, stored in the show's graphics

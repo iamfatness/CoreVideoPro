@@ -1,3 +1,4 @@
+#include "graphics/GraphicsResourceBudget.h"
 #include "compositor/CompositorLayout.h"
 #include "compositor/ColorGradeParams.h"
 #include "core/ComApartmentLifetime.h"
@@ -6,6 +7,7 @@
 #include "graphics/GraphicsInstances.h"
 #include "MonitorTestMode.h"
 #include "modules/GraphicsKeyPixels.h"
+#include "modules/ProgramFramePreview.h"
 #if COREVIDEO_WITH_D3D11
 #include "modules/D3DGraphicsKeyTap.h"
 // D3DGraphicsKeyTap.h pulls in <Windows.h>, whose rpcndr.h defines `small` as `char`;
@@ -1369,7 +1371,8 @@ namespace {
 
 struct KeyRig {
   std::unique_ptr<corevideo::modules::ICompositor> compositor = corevideo::modules::createD3D11Compositor();
-  corevideo::graphics::GraphicsInstances graphics{"test-core"};
+  explicit KeyRig(std::function<double()> tick = {}) : graphics("test-core", std::move(tick)) {}
+  corevideo::graphics::GraphicsInstances graphics;
   corevideo::modules::VideoFrame video = makeI420SolidFrame("p-key", 320, 180, 200, 1);
   int sequence = 0;
 
@@ -1577,6 +1580,114 @@ TEST(D3D11Compositor, GraphicsKeyTapBacksOffAFailingRigBuild) {
   corevideo::modules::GraphicsKeySelection selection;
   ASSERT_TRUE(tap.select(1, now + 250, selection));
   EXPECT_TRUE(selection.stale);
+}
+
+TEST(D3D11Compositor, CrawlLoopSwitchKeepsFrameMatchedProgramAndKeyAt1080p) {
+  using corevideo::rpc::Json;
+  using namespace corevideo::modules;
+  double tick = 0;
+  KeyRig rig([&] { return tick; });
+  ASSERT_TRUE(rig.compositor);
+  auto plan = [&] (bool key = false) {
+    rig.graphics.advanceCrawls();
+    auto value = fullRectParticipantPlan("crawl-key", "p-key", 1920, 1080);
+    value.graphicsKeyReadback = key;
+    rig.graphics.append(value, false);
+    return value;
+  };
+  auto row = [&]() -> const Json& { return rig.graphics.snapshot().get("instances")->asArray().front(); };
+  auto waitFor = [&](const auto& ready) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+      rig.render(plan());
+      if (ready()) return true;
+      std::this_thread::yield();
+    } while (std::chrono::steady_clock::now() < until);
+    return false;
+  };
+  ASSERT_TRUE(rig.command("graphics-template-install", {{"manifest",R"({
+    "schemaVersion":1,"templateId":"key-crawl","templateVersion":1,"name":"Crawl","family":"title",
+    "canvas":{"width":1920,"height":1080},"bounds":{"width":320,"height":96},"brandTokens":[],
+    "fields":[{"id":"crawl-items","type":"string","default":"[\"MMMMMMM\"]","maxLength":4096}],
+    "animations":{"in":{"type":"none"},"out":{"type":"none"}},
+    "layers":[{"id":"clip","type":"group","x":40,"y":10,"width":100,"height":64,"children":[
+      {"id":"crawl","type":"crawl","x":0,"y":0,"width":120,"height":64,"speed":1000,
+       "font":"Segoe UI","fontSize":48,"color":"#FFFFFF","items":{"field":"crawl-items"}}]}]
+  })"}}));
+  ASSERT_TRUE(waitFor([&] {
+    const auto& installs = rig.graphics.snapshot().get("templateInstalls")->asArray();
+    return !installs.empty() && installs.back().getString("state") == "installed";
+  }));
+  const auto blank = rig.render(plan());
+  const auto background = previewPixelRgba(blank.preview, 4, 4);
+  const auto preparationStart = std::chrono::steady_clock::now();
+  ASSERT_TRUE(rig.command("graphics-instance-create", {{"scope","global"},{"templateId","key-crawl"},{"templateVersion",1}}));
+  ASSERT_TRUE(rig.command("graphics-instance-cue", {{"expectedRevision",1}}));
+  ASSERT_TRUE(waitFor([&] { return row().getString("cuePreparation") == "ready"; }));
+  rig.graphics.promoteCuedForTake();
+  ASSERT_EQ(1., row().getNumber("programRevision"));
+  const auto preparationMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - preparationStart).count();
+  const auto initial = plan();
+  ASSERT_TRUE(initial.layers.back().graphicsPreparedResource && initial.layers.back().graphicsPreparedResource->crawl);
+  const double boundary = initial.layers.back().graphicsPreparedResource->crawl->passWidth;
+
+  auto keyed = [&](ProgramFrame& program, GraphicsKeySelection& key) {
+    const auto value = plan(true);
+    const bool exact = rig.keyed(value, program, key);
+    std::printf("[crawl-key] exact=%d program=%dx%d/%lld key=%dx%d/%lld\n", int(exact),
+        program.preview.width, program.preview.height, static_cast<long long>(program.frameNumber),
+        key.frame.width, key.frame.height, static_cast<long long>(key.frame.frameNumber));
+    if (!exact || key.frame.width != 1920 || key.frame.height != 1080 ||
+        program.width != 1920 || program.height != 1080 ||
+        key.frame.frameNumber != program.frameNumber || !key.frame.bgra) return false;
+    const auto& rect = value.layers.back().rect;
+    const double left = (rect.x + rect.width * 40. / 320.) * 1920.;
+    const double right = (rect.x + rect.width * 140. / 320.) * 1920.;
+    const double top = (rect.y + rect.height * 10. / 96.) * 1080.;
+    const double bottom = (rect.y + rect.height * 74. / 96.) * 1080.;
+    for (int y = 0; y < 1080; ++y)
+      for (int x = 0; x < 1920; ++x)
+        if ((*key.frame.bgra)[(size_t(y) * 1920 + x) * 4 + 3] > 0 &&
+            (x < std::floor(left) || x >= std::ceil(right) || y < std::floor(top) || y >= std::ceil(bottom))) return false;
+
+    // The Program observation is the normal nearest-neighbor 320x180 thumbnail.
+    // Sample the matching full-resolution key with the same transform.
+    ProgramFramePreviewPixels keyPreview;
+    downscaleBgraNearestNeighbor(key.frame.bgra->data(), 1920, 1080, 1920 * 4, keyPreview);
+    const auto stats = checkKeyAgainstProgram(keyPreview.bgra, program, background);
+    std::printf("[crawl-key] mismatch=%zu opaque=%zu partial=%zu transparent=%zu\n",
+        stats.compositingMismatches, stats.opaque, stats.partial, stats.transparent);
+    return stats.compositingMismatches == 0 && stats.opaque + stats.partial > 0 &&
+        stats.transparent > 320u * 180u / 2;
+  };
+  tick = 65;
+  ProgramFrame first;
+  GraphicsKeySelection firstKey;
+  ASSERT_TRUE(keyed(first, firstKey));
+
+  ASSERT_TRUE(rig.command("graphics-instance-update", {{"expectedRevision",1},{"target","program"},
+      {"fields",Json::Object{{"crawl-items","[\"WWWWWWW\"]"}}}}));
+  ASSERT_TRUE(waitFor([&] { return row().getString("preparation") == "ready"; }));
+  ASSERT_EQ(1., row().getNumber("programRevision"));
+  const auto before = rig.render(plan(true));
+  EXPECT_EQ(first.preview.bgra, before.preview.bgra);
+
+  tick = boundary + 65;
+  ProgramFrame after;
+  GraphicsKeySelection afterKey;
+  const auto drawStart = std::chrono::steady_clock::now();
+  ASSERT_TRUE(keyed(after, afterKey));
+  const auto drawAndReadbackMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawStart).count();
+  EXPECT_EQ(2., row().getNumber("programRevision"));
+  EXPECT_NE(first.preview.bgra, after.preview.bgra);
+  EXPECT_NE(*firstKey.frame.bgra, *afterKey.frame.bgra);
+  EXPECT_EQ(before.frameNumber + 1, after.frameNumber);
+  const auto budget = corevideo::graphics::GraphicsResourceBudget::process().counters();
+  std::printf("[crawl-1080p] preparation_ms=%.2f render_and_exact_key_readback_ms=%.2f program=%lld->%lld\n",
+      preparationMs, drawAndReadbackMs, static_cast<long long>(before.frameNumber), static_cast<long long>(after.frameNumber));
+  std::printf("[crawl-1080p] resident_resources=%zu gpu_bytes=%zu gpu_high_water_bytes=%zu cpu_high_water_bytes=%zu\n",
+      static_cast<size_t>(budget.residentResources), static_cast<size_t>(budget.gpuBytes),
+      static_cast<size_t>(budget.gpuHighWater), static_cast<size_t>(budget.cpuHighWater));
 }
 
 #endif  // COREVIDEO_WITH_D3D11

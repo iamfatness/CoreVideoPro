@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <memory>
 #include <array>
+#include <optional>
+#include "graphics/GraphicsCrawl.h"
 
 namespace corevideo::graphics {
 // Internal backend lease, never accepted over RPC or serialized. An accepted
@@ -16,5 +18,6 @@ struct GraphicsPreparedResource {
   std::shared_ptr<const void> native;
   std::array<uint8_t, 32> contentHash{};
   bool hasContentHash = false;
+  std::optional<GraphicsCrawlPlayback> crawl;
 };
 }

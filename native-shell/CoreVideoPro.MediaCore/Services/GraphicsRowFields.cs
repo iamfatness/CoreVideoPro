@@ -34,7 +34,7 @@ public static class GraphicsRowFields
     /// (<paramref name="titleKey"/>). Variables with a fixed choice list are not typed.</summary>
     public static IReadOnlyList<GraphicsRowTypeableField> Typeable(GraphicsPlaylistRow row, NativeGraphicsState? state, IReadOnlyList<GraphicsSavedTemplate> pins, string? titleKey = null) =>
         TemplateFieldsOf(row, state, pins)
-            .Where(f => f.Type == "string" && f.Choices.Count == 0 && !Handled.Contains(f.Id) && f.Id != titleKey && (row.DataBinding is null || !f.Id.StartsWith(GraphicsDataTable.RowPrefix, StringComparison.Ordinal)))
+            .Where(f => f.Type == "string" && f.Choices.Count == 0 && !Handled.Contains(f.Id) && f.Id != titleKey && (row.DataBinding is null || !GraphicsDataTable.IsDataField(f.Id)))
             .Select(f => new GraphicsRowTypeableField(f.Id, LabelOf(f), f.MaxLength)).ToArray();
 
     // Variables Operate offers no box for (the row name is the row's own Name; clock and LIVE label fill themselves)

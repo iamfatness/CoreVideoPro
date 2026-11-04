@@ -94,6 +94,7 @@ public sealed partial class GraphicsDesignerControl
             case "Text" or "Clock": BuildText(layer, fields); break;
             case "Shape" or "Ellipse": BuildShape(layer); break;
             case "Image": BuildImage(layer, fields, document); break;
+            case "Crawl": BuildCrawl(layer, content); break;
         }
         var position = new Grid { ColumnSpacing = 3 };
         var boxes = new (string Property, string Label, double Min, Func<GraphicsLayerInspection, double> Read)[] {
@@ -117,6 +118,35 @@ public sealed partial class GraphicsDesignerControl
         _inspectorRefresh.Add(l => { if (Math.Abs(opacity.Value - l.Opacity) > 1e-9) opacity.Value = l.Opacity; });
         _inspectorInputs.Add(opacity); _layerBody.Children.Add(opacity);
         AddContentControls(layer, content);
+    }
+
+    private void BuildCrawl(GraphicsLayerInspection layer, JsonElement node)
+    {
+        var direction = Choice("Direction", [("left", "Left"), ("right", "Right")], ReadString(node, "direction", "left"));
+        var mode = Choice("Playback", [("loop", "Loop"), ("single", "Single pass")], ReadString(node, "mode", "loop"));
+        void SelectOption(ComboBox box, string property)
+        {
+            if (!_loading && box.SelectedValue is string value)
+                AfterSelectionChanged(() => Apply(s => GraphicsTemplateEditor.Set(s, layer.Id, property, JsonSerializer.SerializeToElement(value))));
+        }
+        direction.SelectionChanged += (_, _) => SelectOption(direction, "direction");
+        mode.SelectionChanged += (_, _) => SelectOption(mode, "mode");
+        var speed = Number("Speed (px/s)", 1, 1200, ReadNumber(node, "speed", 120),
+            value => AfterSelectionChanged(() => SetNumbers(layer.Id, new Dictionary<string, double> { ["speed"] = value })));
+        var gap = Number("Gap (px)", 0, 512, ReadNumber(node, "gap", 48),
+            value => AfterSelectionChanged(() => SetNumbers(layer.Id, new Dictionary<string, double> { ["gap"] = value })));
+        _layerBody.Children.Add(Columns([direction, mode], [1, 1]));
+        _layerBody.Children.Add(Columns([speed, gap], [1, 1]));
+        var font = Choice("Typeface", GraphicsDesignerModel.FontChoices(layer.FontChoice), layer.FontChoice);
+        font.SelectionChanged += (_, _) =>
+        {
+            if (!_loading && font.SelectedValue is string value)
+                AfterSelectionChanged(() => Apply(s => GraphicsDesignerModel.SetTypeface(s, layer.Id, value)));
+        };
+        _layerBody.Children.Add(font);
+        _layerBody.Children.Add(Number("Font size", 1, Math.Clamp(layer.Height, 1, 512), layer.FontSize,
+            value => SetNumbers(layer.Id, new Dictionary<string, double> { ["fontSize"] = value })));
+        _layerBody.Children.Add(ColourChoice("Colour", "color", layer.ColourChoice, layer.Id));
     }
 
     private void BuildText(GraphicsLayerInspection layer, IReadOnlyList<NativeGraphicsTemplateField> fields)

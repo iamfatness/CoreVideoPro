@@ -11,7 +11,7 @@ public sealed partial class GraphicsDesignerControl
 {
     private static string ContentSignature(JsonElement node)
     {
-        var properties = new[] { "stroke", "strokeWidth", "diagonal", "outline", "shadow", "minFontSize", "minWidth", "maxWidth" };
+        var properties = new[] { "stroke", "strokeWidth", "diagonal", "outline", "shadow", "minFontSize", "minWidth", "maxWidth", "speed", "gap", "direction", "mode" };
         return string.Join('|', properties.Select(name => ReadProperty(node, name).ToString())) + IsAutoWidth(node);
     }
 

@@ -57,10 +57,11 @@ bool create(GraphicsInstances& state) {
       {"templateId", "compact-solid"}, {"templateVersion", 1}, {"scope", "global"},
       {"fields", Json::Object{{"name", "Guest"}, {"title", "Engineer"}}}}));
 }
-void ready(GraphicsInstances& state, uint64_t revision) {
+void ready(GraphicsInstances& state, uint64_t revision, std::optional<corevideo::graphics::GraphicsCrawlPlayback> crawl = {}) {
   ProgramFrame frame;
   auto resource = std::make_shared<corevideo::graphics::GraphicsPreparedResource>();
   resource->native = std::make_shared<int>(1);
+  resource->crawl = crawl;
   frame.graphicsFacts.push_back({"featured", revision, "ready", "", resource});
   state.observe(frame);
 }
@@ -1402,4 +1403,112 @@ TEST(GraphicsInstances, VersionUpdateRebasesFieldsAndKeepsCompatibleValues) {
   EXPECT_EQ(2., row(state).getNumber("templateVersion"));
   EXPECT_EQ("Ada", row(state).get("fields")->getString("name"));
   EXPECT_FALSE(row(state).get("fields")->get("title"));
+}
+
+namespace {
+bool createCrawl(GraphicsInstances& state, const char* mode = "loop") {
+  auto document = curatedDocument("centered-title", 2);
+  document["fields"] = Json::Array{Json::Object{{"id","crawl-items"},{"type","string"},{"default","[\"First\"]"},{"maxLength",4096}}};
+  document["animations"] = Json::Object{{"in",Json::Object{{"type","none"}}},{"out",Json::Object{{"type","none"}}}};
+  document["layers"] = Json::Array{Json::Object{{"id","crawl"},{"type","crawl"},{"x",0},{"y",0},{"width",100},{"height",40},
+      {"font","Segoe UI"},{"fontSize",24},{"color","#FFFFFF"},{"mode",mode},{"items",Json::Object{{"field","crawl-items"}}}}};
+  return installAndWait(state, std::move(document)) &&
+      state.apply(request("graphics-instance-create",{{"templateId","centered-title"},{"templateVersion",2},{"scope","global"}}));
+}
+
+bool updateCrawl(GraphicsInstances& state, int expectedRevision, const char* items) {
+  return state.apply(request("graphics-instance-update",{{"target","program"},{"expectedRevision",expectedRevision},
+      {"fields",Json::Object{{"crawl-items",items}}}}));
+}
+
+double crawlDistance(const GraphicsInstances& state, bool preview = false) {
+  CompositorRenderPlan plan;
+  plan.width = 1920; plan.height = 1080;
+  state.append(plan, preview);
+  if (plan.layers.size() != 1) return -1;
+  return plan.layers.front().overlay.graphicsCrawlDistance.value_or(-1);
+}
+}
+
+TEST(GraphicsInstances, CrawlCueTakePauseAndPublishKeepOneProgramInstance) {
+  double now = 0;
+  GraphicsInstances state{"test-core", [&] { return now; }};
+  ASSERT_TRUE(createCrawl(state));
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue")));
+  ready(state, 1, corevideo::graphics::GraphicsCrawlPlayback{120, 120, true});
+  now = 250;
+  EXPECT_EQ(30., crawlDistance(state, true));
+  EXPECT_EQ(0., row(state).getNumber("programRevision"));
+  state.promoteCuedForTake();
+  EXPECT_EQ(1., row(state).getNumber("programRevision"));
+  EXPECT_EQ(0., crawlDistance(state));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","pause"}})));
+  EXPECT_EQ("paused", row(state).getString("crawlPlayback"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-update",{{"target","program"},{"fields",Json::Object{{"crawl-items","[\"Next\"]"}}}})));
+  ready(state, 2, corevideo::graphics::GraphicsCrawlPlayback{120, 240, true});
+  EXPECT_EQ(1., row(state).getNumber("programRevision"));
+  EXPECT_EQ(2., row(state).getNumber("crawlPendingRevision"));
+  now = 1500;
+  state.advanceCrawls();
+  EXPECT_EQ(1., row(state).getNumber("programRevision"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","resume"},{"expectedRevision",2}})));
+  now = 2499;
+  state.advanceCrawls();
+  EXPECT_EQ(1., row(state).getNumber("programRevision"));
+  now = 2501;
+  state.advanceCrawls();
+  EXPECT_EQ(2., row(state).getNumber("programRevision"));
+  EXPECT_EQ(0., row(state).getNumber("crawlPendingRevision"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","hide"},{"expectedRevision",2}})));
+}
+
+TEST(GraphicsInstances, CrawlRejectsLateAndFailedUpdatesWithoutReplacingAcceptedResource) {
+  using corevideo::graphics::GraphicsCrawlPlayback;
+  double now = 0;
+  GraphicsInstances state{"test-core", [&] { return now; }};
+  ASSERT_TRUE(createCrawl(state));
+  ready(state, 1, GraphicsCrawlPlayback{120, 120, true});
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+  ASSERT_TRUE(updateCrawl(state, 1, "[\"Stale\"]"));
+  ready(state, 2, GraphicsCrawlPlayback{120, 120, true});
+  ASSERT_TRUE(updateCrawl(state, 2, "[\"Broken\"]"));
+  ready(state, 2, GraphicsCrawlPlayback{120, 120, true});
+  ProgramFrame failure;
+  failure.graphicsFacts.push_back({"featured", 3, "failed", "Test resource admission"});
+  state.observe(failure);
+  now = 1100;
+  state.advanceCrawls();
+  EXPECT_EQ(1., row(state).getNumber("programRevision"));
+  EXPECT_EQ("failed", row(state).getString("preparation"));
+  EXPECT_EQ(0., row(state).getNumber("crawlPendingRevision"));
+  ASSERT_TRUE(updateCrawl(state, 3, "[\"Ready\"]"));
+  ready(state, 4, GraphicsCrawlPlayback{120, 120, true});
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","hide"},{"expectedRevision",4}})));
+  now = 3000;
+  state.advanceCrawls();
+  EXPECT_EQ(0., row(state).getNumber("programRevision"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"},{"expectedRevision",4}})));
+  ready(state, 2, GraphicsCrawlPlayback{120, 120, true});
+  EXPECT_EQ(4., row(state).getNumber("programRevision"));
+  EXPECT_EQ(0., crawlDistance(state));
+}
+
+TEST(GraphicsInstances, SinglePassKeepsItsRevisionThroughRestart) {
+  using corevideo::graphics::GraphicsCrawlPlayback;
+  double now = 0;
+  GraphicsInstances state{"test-core", [&] { return now; }};
+  ASSERT_TRUE(createCrawl(state, "single"));
+  ready(state, 1, GraphicsCrawlPlayback{120, 120, false});
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+  ASSERT_TRUE(updateCrawl(state, 1, "[\"Next show\"]"));
+  ready(state, 2, GraphicsCrawlPlayback{120, 120, false});
+  now = 1000;
+  state.advanceCrawls();
+  EXPECT_EQ("complete", row(state).getString("crawlPlayback"));
+  EXPECT_EQ(1., row(state).getNumber("programRevision"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","restart"},{"expectedRevision",2}})));
+  EXPECT_EQ(0., crawlDistance(state));
+  EXPECT_EQ(1., row(state).getNumber("programRevision"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"},{"expectedRevision",2}})));
+  EXPECT_EQ(2., row(state).getNumber("programRevision"));
 }

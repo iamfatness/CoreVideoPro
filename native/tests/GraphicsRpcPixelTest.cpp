@@ -1172,4 +1172,55 @@ TEST(GraphicsCompositionPixel, EightProgramAndCueInstancesRefuseExcessRevisionsW
   // Offscreen 320x180 composition/identity coverage, not full-output delivery acceptance.
 }
 
+TEST(GraphicsCompositionPixel, CrawlUsesPreparedTextAndClipsBothDirections) {
+  using namespace corevideo;
+  auto compositor = modules::createD3D11Compositor();
+  ASSERT_TRUE(compositor);
+  modules::CompositorRenderPlan plan;
+  plan.width = 320; plan.height = 180;
+  const auto blank = compositor->render(plan, {}).preview.bgra;
+  ASSERT_EQ(320u * 180 * 4, blank.size());
+  for (const auto* direction : {"left", "right"}) {
+    auto input = std::make_shared<graphics::GraphicsTemplateInput>();
+    std::string error;
+    const auto document = std::string(R"({
+      "schemaVersion":1,"templateId":"pixel-crawl","templateVersion":1,"name":"Crawl","family":"title",
+      "canvas":{"width":1920,"height":1080},"bounds":{"width":320,"height":180},"brandTokens":[],
+      "fields":[{"id":"crawl-items","type":"string","default":"[\"MMMMMMMM\"]","maxLength":4096}],
+      "animations":{"in":{"type":"none"},"out":{"type":"none"}},
+      "layers":[{"id":"crop","type":"group","x":90,"y":65,"width":60,"height":50,"children":[
+        {"id":"crawl","type":"crawl","x":0,"y":0,"width":80,"height":50,"font":"Segoe UI",
+         "fontSize":32,"color":"#FFFFFF","items":{"field":"crawl-items"},"direction":")") + direction + R"("}]}]})";
+    input->definition = graphics::GraphicsTemplate::load(document, error);
+    ASSERT_TRUE(input->definition) << error;
+    input->fields = input->definition->defaultFields();
+    input->brand = rpc::Json::Object{};
+    modules::CompositorRenderPlanLayer layer;
+    layer.layerId = direction;
+    layer.graphicsInstanceId = direction;
+    layer.kind = "overlay";
+    layer.rect = {0,0,1,1};
+    layer.hasOverlayContent = true;
+    layer.overlay.appearance.enabled = true;
+    layer.overlay.graphicsTemplate = input;
+    layer.overlay.graphicsCrawlDistance = 50.;
+    plan.layers = {layer};
+    auto pixels = blank;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+      pixels = compositor->render(plan, {}).preview.bgra;
+      std::this_thread::yield();
+    } while (pixels == blank && std::chrono::steady_clock::now() < until);
+    ASSERT_EQ(blank.size(), pixels.size());
+    ASSERT_NE(blank, pixels);
+    for (size_t i = 0; i < pixels.size(); i += 4) {
+      if (std::equal(pixels.begin() + i, pixels.begin() + i + 4, blank.begin() + i)) continue;
+      const auto x = (i / 4) % 320, y = i / 4 / 320;
+      ASSERT_TRUE(x >= 90 && x < 150 && y >= 65 && y < 115) << direction << " x=" << x << " y=" << y;
+    }
+    plan.layers.front().overlay.graphicsCrawlDistance = 0.;
+    EXPECT_EQ(blank, compositor->render(plan, {}).preview.bgra);
+  }
+}
+
 #endif
