@@ -455,6 +455,12 @@ public sealed partial class GraphicsPlayoutControl : UserControl
                 string.Join('|', mappedFields.Select(f => $"{f.Id}:{row.SourceMappings.GetValueOrDefault(f.Id)}"));
         if (row?.DataBinding is { } data)
             signature += $"|data:{data.SourceId}:{data.Revision}:{_library?.Document.DataSources.FirstOrDefault(source => source.Id == data.SourceId)?.Revision}";
+        if (row?.DataBinding is { Remote: true } remote)
+        {
+            var feed = _library?.Document.Feeds.FirstOrDefault(item => item.Id == remote.SourceId);
+            var live = _attached?.GraphicsPlayout.DataOnProgram(row.Id);
+            signature += $"|feed:{feed?.Generation}:{remote.LiveFollow}:{live?.ProgramRevision}:{live?.Revision}:{live?.Preparation}";
+        }
         if (row?.DataBinding is { Crawl: not null } crawlBinding)
         {
             var live = _attached?.GraphicsPlayout.CrawlOnProgram(row.Id);

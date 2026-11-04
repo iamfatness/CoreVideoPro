@@ -200,7 +200,7 @@ public sealed class GraphicsDesignWorkflow
         var fields = row.Fields.ToDictionary(StringComparer.Ordinal);
         foreach (var cell in existing.Fields.Where(field => GraphicsDataTable.IsDataField(field.Key)))
             fields[cell.Key] = cell.Value.Clone();
-        return row with { DataBinding = binding with { Revision = pinned.Revision, LiveFollow = pinned.LiveFollow && binding.Crawl is not null }, Fields = fields };
+        return row with { DataBinding = binding with { Revision = pinned.Revision, LiveFollow = pinned.LiveFollow && (binding.Crawl is not null || binding.Remote) }, Fields = fields };
     }
 
     /// <summary>The design the editor is on, when moving off it may uninstall it: a browse draft (not a

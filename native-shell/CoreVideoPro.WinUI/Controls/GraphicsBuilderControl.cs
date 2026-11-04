@@ -659,6 +659,9 @@ public sealed partial class GraphicsBuilderControl : UserControl
         var crawl = StudioBrushes.GhostButton("Data crawl…");
         crawl.Click += async (_, _) => await ShowCrawlDialogAsync();
         actions.Children.Add(crawl);
+        var feeds = StudioBrushes.GhostButton("Remote feeds…");
+        feeds.Click += async (_, _) => await ShowRemoteFeedsAsync();
+        actions.Children.Add(feeds);
         AutomationProperties.SetName(_openDesign, "Open design"); AutomationProperties.SetName(_duplicateDesign, "Duplicate design");
         AutomationProperties.SetName(_deleteDesign, "Delete design"); AutomationProperties.SetName(_newDesign, "New design");
         ToolTipService.SetToolTip(_openDesign, "Open the selected design in the editor as a private draft. Program is unchanged.");

@@ -257,7 +257,7 @@ public sealed partial class GraphicsPlayoutService
         var signature = next.CoreEpoch + "|" + next.AutomationMode + ":" + next.AutomationArmed + "|" +
             string.Join('|', next.OnProgram.Concat(next.OnPreview).Concat(next.Auto).Select(i => $"{i.InstanceId}:{i.Label}:{i.Owner}:{i.Revision}:{i.Visibility}:{i.CuePending}:{i.AutoOutArmed}:{i.RuleId}")) +
             "|" + next.OnProgram.Count + ":" + next.OnPreview.Count + ":" + next.Auto.Count;
-        signature += "|" + string.Join('|', state.Instances.Where(i => i.CrawlPlayback.Length > 0)
+        signature += "|" + string.Join('|', state.Instances.Where(i => i.CrawlPlayback.Length > 0 || RowOf(i.InstanceId, rows)?.DataBinding?.Remote == true)
             .Select(i => $"{i.InstanceId}:{i.CrawlPlayback}:{i.ProgramRevision}:{i.CrawlPendingRevision}:{i.Preparation}:{i.Warning}"));
         if (signature == _stripSignature) return;
         _stripSignature = signature; Strip = next; StripChanged?.Invoke(this, EventArgs.Empty);
