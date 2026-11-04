@@ -19,7 +19,8 @@ public sealed class GraphicsFeedTransport(
             UseProxy = false,
             UseCookies = false,
             AutomaticDecompression = DecompressionMethods.None,
-            ConnectCallback = ConnectAsync,
+            ConnectCallback = (context, cancellation) => ConnectPublicAsync(context.DnsEndPoint,
+                Dns.GetHostAddressesAsync, DialAsync, cancellation),
             PooledConnectionLifetime = TimeSpan.FromMinutes(2),
             MaxConnectionsPerServer = 4
         }) { Timeout = Timeout.InfiniteTimeSpan };
@@ -63,12 +64,13 @@ public sealed class GraphicsFeedTransport(
         return target;
     }
 
-    internal static void ValidateWebSocketEndpoint(GraphicsFeedDefinition feed)
+    internal static Uri ValidateWebSocketEndpoint(GraphicsFeedDefinition feed)
     {
         if (feed.Format != "wss" || !feed.Valid() || !Uri.TryCreate(feed.Endpoint, UriKind.Absolute, out var target) ||
             target.Query.Length != 0)
             throw new InvalidDataException("Use a public WSS feed URL without query parameters.");
         ValidateTarget(target, "wss");
+        return target;
     }
 
     private static bool IsGoogleSheetHost(string host) => host.Equals("docs.google.com", StringComparison.OrdinalIgnoreCase) ||
@@ -116,14 +118,20 @@ public sealed class GraphicsFeedTransport(
         return addresses;
     }
 
-    private static async ValueTask<Stream> ConnectAsync(SocketsHttpConnectionContext context, CancellationToken cancellation)
+    internal static async ValueTask<Stream> ConnectPublicAsync(DnsEndPoint endpoint,
+        Func<string, CancellationToken, Task<IPAddress[]>> resolve,
+        Func<IPAddress[], int, CancellationToken, ValueTask<Stream>> dial, CancellationToken cancellation)
     {
-        var endpoint = context.DnsEndPoint;
-        var addresses = await ResolvePublicAsync(endpoint.Host, Dns.GetHostAddressesAsync, cancellation);
+        var addresses = await ResolvePublicAsync(endpoint.Host, resolve, cancellation).ConfigureAwait(false);
+        return await dial(addresses, endpoint.Port, cancellation).ConfigureAwait(false);
+    }
+
+    internal static async ValueTask<Stream> DialAsync(IPAddress[] addresses, int port, CancellationToken cancellation)
+    {
         var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
         try
         {
-            await socket.ConnectAsync(addresses, endpoint.Port, cancellation);
+            await socket.ConnectAsync(addresses, port, cancellation).ConfigureAwait(false);
             return new NetworkStream(socket, ownsSocket: true);
         }
         catch
