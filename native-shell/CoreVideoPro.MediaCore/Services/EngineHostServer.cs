@@ -3,10 +3,11 @@ using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using CoreVideoPro.MediaCore.Json;
 
 namespace CoreVideoPro.MediaCore.Services;
 
-public sealed class EngineHostServer(MediaCoreSupervisor supervisor, string endpoint)
+public sealed partial class EngineHostServer(MediaCoreSupervisor supervisor, string endpoint)
 {
     private readonly SemaphoreSlim _commands = new(1, 1);
     private readonly SemaphoreSlim _urgent = new(1, 1);
@@ -19,13 +20,18 @@ public sealed class EngineHostServer(MediaCoreSupervisor supervisor, string endp
     private int _corePid = supervisor.HostedProcessId;
     private long _lastClientLog;
     private bool _stopping;
+    private EngineHostSpineRefresh? _spineRefresh;
+    private long _spineIntentVersion;
+    private long _spineIntentAt;
+    private int _spineCorePid;
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _exit.Token);
         // Separate endpoint reserves admission even when all ordinary clients stop reading/writing.
         await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => ListenAsync(false, lifetime.Token))
-            .Concat(Enumerable.Range(0, 2).Select(_ => ListenAsync(true, lifetime.Token))));
+            .Concat(Enumerable.Range(0, 2).Select(_ => ListenAsync(true, lifetime.Token)))
+            .Append(RefreshSpineAsync(lifetime.Token)));
     }
 
     private async Task ListenAsync(bool reserved, CancellationToken lifetime)
@@ -126,6 +132,7 @@ public sealed class EngineHostServer(MediaCoreSupervisor supervisor, string endp
             if (_session.Validate(request) is { } denied) return Reply(request, false, error: denied);
             // Explicit administrative action only, never called on client disposal.
             _stopping = true;
+            _spineRefresh = null;
             await Task.Run(() => supervisor.StopForAppExit(TimeSpan.FromSeconds(10)), lifetime);
             // Shutdown is committed independently of the client reading its ACK.
             _exit.CancelAfter(TimeSpan.FromSeconds(3));
@@ -134,6 +141,7 @@ public sealed class EngineHostServer(MediaCoreSupervisor supervisor, string endp
         if (request.Operation != "command" || request.Payload is not { ValueKind: JsonValueKind.Object } payload)
             return Reply(request, false, error: "invalid-operation");
         var observation = EngineHostWire.IsObservation(payload);
+        var spineIntentVersion = _spineIntentVersion;
         var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload.GetRawText())));
         if (!observation)
         {
@@ -151,14 +159,38 @@ public sealed class EngineHostServer(MediaCoreSupervisor supervisor, string endp
             // Reserve before forwarding. A timeout must never make an ID reusable.
             _sequences[request.ClientId] = sequence;
             _session.ReserveMutation();
+            if (!PreservesSpineIntent(payload))
+            {
+                _spineRefresh = null;
+                spineIntentVersion = ++_spineIntentVersion;
+            }
         }
         var command = JsonSerializer.Deserialize<Dictionary<string, object?>>(payload.GetRawText())!;
+        EngineHostSpineIntent? spineIntent = null;
+        if (command.Remove(EngineHostSpineIntent.CommandKey, out var rawIntent) &&
+            payload.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String &&
+            type.GetString() == "zoom-media-spine-sync" && rawIntent is JsonElement { ValueKind: JsonValueKind.Object } intentElement)
+        {
+            try { spineIntent = intentElement.Deserialize<EngineHostSpineIntent>(MediaCoreJson.Options); }
+            catch (JsonException) { }
+        }
+        var corePid = supervisor.HostedProcessId;
         command["elapsedMs"] = Stopwatch.GetElapsedTime(_started).TotalMilliseconds;
         using var response = await supervisor.ForwardHostedCommandAsync(command, lifetime);
         var result = response.RootElement.Clone();
+        var refresh = spineIntent is not null
+            ? EngineHostSpineRefresh.Accept(spineIntent, CoreProtocolParser.TryParseZoomMediaSpineSnapshot(response))
+            : null;
         lock (_state)
         {
             if (!observation) _session.Commit(request.ClientId + ":" + request.Fence, request.CommandId!, fingerprint, result);
+            if (refresh is not null && !_stopping && spineIntentVersion == _spineIntentVersion &&
+                corePid != 0 && corePid == supervisor.HostedProcessId)
+            {
+                _spineRefresh = refresh;
+                _spineIntentAt = Stopwatch.GetTimestamp();
+                _spineCorePid = corePid;
+            }
             return Reply(request, true, result);
         }
     }
