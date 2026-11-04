@@ -292,8 +292,10 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         }).ToArray() };
         Assert.True((await service.ControlCrawlAsync(row.Id, "pause")).Accepted);
         Assert.Equal("pause", Bodies("graphics.instance.trigger").Single().GetProperty("action").GetString());
-        Assert.NotNull(await reopened.SaveLocalDataAsync("crawl", "Crawl",
-            GraphicsLocalData.Parse("line\nRevised", "csv", null)));
+        var currentBinding = service.Row(row.Id)!.DataBinding!;
+        var manual = await service.StageDataAsync(row.Id, currentBinding, GraphicsLocalData.Parse("line\nRevised", "csv", null));
+        Assert.True(manual.Accepted, manual.Reason);
+        Assert.Empty(Bodies("graphics.instance.update"));
         Assert.Equal(1, service.Row(row.Id)!.DataBinding!.Revision);
         Assert.True((await service.PublishDataAsync(row.Id)).Accepted);
         var update = Bodies("graphics.instance.update").Single();
@@ -301,10 +303,19 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Equal("2", update.GetProperty("fields").GetProperty(GraphicsCrawlData.RevisionField).GetString());
         Assert.Single(Bodies("graphics.instance.trigger"));
         Assert.True((await service.SetCrawlLiveFollowAsync(row.Id, true)).Accepted);
+        currentBinding = service.Row(row.Id)!.DataBinding!;
+        var rejected = await service.StageDataAsync(row.Id, currentBinding, GraphicsLocalData.Parse("wrong\nUnusable", "csv", null));
+        Assert.False(rejected.Accepted);
+        Assert.Equal(2, reopened.Document.DataSources.Single().Revision);
+        Assert.Single(Bodies("graphics.instance.update"));
+        var followed = await service.StageDataAsync(row.Id, currentBinding, GraphicsLocalData.Parse("line\nFollowed", "csv", null));
+        Assert.True(followed.Accepted, followed.Reason);
+        Assert.Equal("3", Bodies("graphics.instance.update").Last().GetProperty("fields").GetProperty(GraphicsCrawlData.RevisionField).GetString());
+        Assert.Equal(2, Bodies("graphics.instance.update").Count());
         var (later, _) = Build();
         await later.LoadAsync();
         Assert.True(later.Document.Playlist.Single().DataBinding!.LiveFollow);
-        Assert.Equal(2, later.Document.Playlist.Single().DataBinding!.Revision);
+        Assert.Equal(3, later.Document.Playlist.Single().DataBinding!.Revision);
         Assert.True((await service.PlayOutAsync(cue.InstanceId)).Accepted);
         Assert.Equal("hide", Bodies("graphics.instance.trigger").Last().GetProperty("action").GetString());
     }

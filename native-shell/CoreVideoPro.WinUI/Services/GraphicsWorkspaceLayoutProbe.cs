@@ -355,6 +355,8 @@ internal static class GraphicsWorkspaceLayoutProbe
         Require(await studio.GraphicsLibrary.SaveLocalDataAsync(crawlBinding.SourceId, "Probe crawl", crawlData) is not null,
             "The probe crawl source could not be saved.");
         Require(await studio.GraphicsLibrary.SavePlaylistAsync([crawl]), "The probe crawl row could not be saved.");
+        Require(await studio.GraphicsLibrary.SaveLocalDataAsync(crawlBinding.SourceId, "Probe crawl",
+            GraphicsLocalData.Parse("line\nStaged item", "csv", null)) is not null, "The next crawl revision could not be staged.");
         var crawlState = new NativeGraphicsState
         {
             CoreEpoch = "probe-crawl",
@@ -377,6 +379,8 @@ internal static class GraphicsWorkspaceLayoutProbe
                 Button(playout, "Restart").IsEnabled, $"Crawl playback controls at {label} do not reflect paused Program.");
             Require(Descendants(playout).OfType<TextBlock>().Any(t => t.Text.Contains("Program data 1 · pending 2")),
                 "Crawl status does not distinguish the Program and pending revisions.");
+            Require(Descendants(playout).OfType<TextBlock>().Any(t => t.Text.Contains("Loaded 1 item · Staged item")),
+                "The staged crawl content is missing from the inspector.");
             await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-data-crawl-{label}.png"));
         }
         studio.GraphicsPlayout.Observe(new() { CoreEpoch = "probe-crawl" });

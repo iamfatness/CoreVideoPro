@@ -28,13 +28,8 @@ public sealed partial class GraphicsPlayoutControl
                 var file = await GraphicsBuilderControl.PickDataFileAsync();
                 if (file is null || _attached != studio) return;
                 var data = await GraphicsLocalData.ReadAsync(file.Path, binding.KeyColumn);
-                GraphicsDataTable.Fields(data, binding);
-                if (studio.GraphicsPlayout.Row(row.Id)?.DataBinding != binding) return;
-                var staged = await library.SaveLocalDataAsync(binding.SourceId, source?.Name ?? row.Name, data);
-                if (staged is not null && studio.GraphicsPlayout.Row(row.Id)?.DataBinding is { LiveFollow: true })
-                    _status.Text = (await studio.GraphicsPlayout.PublishDataAsync(row.Id)).Reason;
-                else
-                    _status.Text = staged is null ? library.Status : $"Data revision {staged.Revision} loaded. Choose Publish data to apply it.";
+                await _rowText.Flush();
+                _status.Text = (await studio.GraphicsPlayout.StageDataAsync(row.Id, binding, data)).Reason;
             }
             catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = ex.Message; }
             finally { reload.IsEnabled = publish.IsEnabled = true; }
@@ -54,6 +49,23 @@ public sealed partial class GraphicsPlayoutControl
         };
         if (binding.Crawl is not null)
         {
+            if (source is not null && source.Revision > binding.Revision)
+            {
+                try
+                {
+                    var items = GraphicsCrawlData.Items(source.Data, binding.Columns[0], binding.Limit);
+                    panel.Children.Add(new TextBlock
+                    {
+                        Text = $"Loaded {items.Length} {(items.Length == 1 ? "item" : "items")} · " +
+                            string.Join("  •  ", items.Take(3)),
+                        TextWrapping = TextWrapping.Wrap, MaxLines = 3, TextTrimming = TextTrimming.CharacterEllipsis
+                    });
+                }
+                catch (InvalidDataException ex)
+                {
+                    panel.Children.Add(new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap });
+                }
+            }
             var follow = new ToggleSwitch { Header = "Live follow local reloads", IsOn = binding.LiveFollow };
             follow.Toggled += async (_, _) =>
             {

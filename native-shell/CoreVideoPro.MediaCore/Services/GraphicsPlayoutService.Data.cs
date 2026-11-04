@@ -35,9 +35,32 @@ public sealed partial class GraphicsPlayoutService
             : Refuse(_library.Status);
     });
 
+    public Task<NativeGraphicsOperationResult> StageDataAsync(string rowId, GraphicsDataBinding selectedBinding,
+        GraphicsLocalData data, CancellationToken cancellation = default) => Run(async () =>
+    {
+        await _library.LoadAsync();
+        if (Row(rowId) is not { DataBinding: { } binding } row || binding != selectedBinding)
+            return Refuse("The row changed while the data file was open. Choose the file again.");
+
+        try { GraphicsDataTable.Fields(data, binding); }
+        catch (InvalidDataException ex) { return Refuse(ex.Message); }
+
+        var source = _library.Document.DataSources.FirstOrDefault(item => item.Id == binding.SourceId);
+        var staged = await _library.SaveLocalDataAsync(binding.SourceId, source?.Name ?? row.Name, data);
+        if (staged is null) return Refuse(_library.Status);
+        return binding.LiveFollow
+            ? await PublishData(rowId, cancellation)
+            : new() { Accepted = true, Reason = $"Data revision {staged.Revision} loaded. Choose Publish data to apply it." };
+    });
+
     public Task<NativeGraphicsOperationResult> PublishDataAsync(string rowId, CancellationToken cancellation = default) => Run(async () =>
     {
         await _library.LoadAsync();
+        return await PublishData(rowId, cancellation);
+    });
+
+    private async Task<NativeGraphicsOperationResult> PublishData(string rowId, CancellationToken cancellation)
+    {
         if (Row(rowId) is not { DataBinding: { } binding } row ||
             _library.Document.DataSources.FirstOrDefault(source => source.Id == binding.SourceId) is not { } source)
             return Refuse("This row has no local dataset.");
@@ -88,5 +111,5 @@ public sealed partial class GraphicsPlayoutService
                 return updated with { Reason = "Data is saved. The Program update is still preparing." };
             await _delay(TimeSpan.FromMilliseconds(50), cancellation);
         }
-    });
+    }
 }

@@ -126,7 +126,8 @@ its data and runs on its own clock. Program starts from the edge on Take. Select
 the on-air row to pause, resume or restart it. **Hide** is available throughout,
 including after a single pass finishes.
 
-**Load CSV / JSON…** stages a new revision. **Publish data** selects it for the
+**Load CSV / JSON…** stages a new revision. The inspector shows its item count
+and first items. **Publish data** selects it for the
 next Cue or Show. A playing loop adopts prepared data at its next boundary.
 A paused loop holds its current picture until it resumes and reaches a boundary.
 A single pass keeps its original list through Restart. Enable **Live follow local
