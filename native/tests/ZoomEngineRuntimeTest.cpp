@@ -553,6 +553,34 @@ TEST(ZoomEngineRuntime, StopCaptureSendsStopMediaAndRearmsSubscriptionsFromScrat
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
 
+TEST(ZoomEngineRuntime, HostedRefreshCannotReuseCaptureAuthorityAfterStopAndRearm) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+    runtime.installEngineProcessForTest(fake);
+    corevideo::rpc::Json start = corevideo::rpc::Json::Object{{"startCapture", true}};
+    ASSERT_FALSE(runtime.syncSpine(start, 0.0).isNull());
+
+    const auto snapshot = runtime.snapshot();
+    corevideo::rpc::Json refresh = corevideo::rpc::Json::Object{
+        {"captureRefresh", corevideo::rpc::Json::Object{
+            {"rosterEpoch", snapshot.getString("rosterEpoch")},
+            {"rosterRevision", snapshot.getNumber("rosterRevision")},
+            {"captureGeneration", snapshot.getString("captureGeneration")},
+        }},
+        {"startCapture", true},
+        {"subscriptions", corevideo::rpc::Json::Array{}},
+    };
+    EXPECT_FALSE(runtime.syncSpine(refresh, 0.0).isNull());
+    runtime.stopCapture();
+    EXPECT_TRUE(runtime.syncSpine(refresh, 0.0).isNull());
+    ASSERT_FALSE(runtime.syncSpine(start, 0.0).isNull());
+    EXPECT_TRUE(runtime.syncSpine(refresh, 0.0).isNull());
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
 // End-to-end SHM audio ingest: create the per-source audio region the way the
 // engine does, feed the matching pipe event through the reader path, and the
 // next compositor audio poll must return REAL coalesced PCM for that

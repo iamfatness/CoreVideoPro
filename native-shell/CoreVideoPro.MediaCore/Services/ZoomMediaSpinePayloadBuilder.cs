@@ -77,6 +77,23 @@ public static class ZoomMediaSpinePayloadBuilder
         public MediaCoreMultiviewLayout? Multiview { get; init; }
     }
 
+    public static IReadOnlyList<MediaCoreParticipantWire> ProjectNativeRoster(
+        NativeMediaCoreStateSnapshot? snapshot, string fallbackRoomId, string fallbackRoomName)
+    {
+        if (snapshot?.MeetingState != "in_meeting") return [];
+        var speaker = snapshot.ActiveSpeakerId;
+        return snapshot.Participants.Select(participant => new MediaCoreParticipantWire(
+            participant.UserId,
+            participant.DisplayName,
+            participant.Role ?? "guest",
+            participant.BreakoutRoomId ?? fallbackRoomId,
+            participant.BreakoutRoomName ?? fallbackRoomName,
+            string.IsNullOrWhiteSpace(speaker) ? participant.Talking == true : participant.UserId == speaker,
+            participant.Muted == true,
+            participant.SharingScreen == true,
+            LiveProductionSync.NormalizeFeedHealthLabel(participant))).ToArray();
+    }
+
     public static Dictionary<string, object?> Build(BuildInput input)
     {
         var participants = FilterParticipants(input.Participants, input.SelectedBreakoutRoomId)
