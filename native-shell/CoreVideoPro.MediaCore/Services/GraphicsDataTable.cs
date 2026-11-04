@@ -10,6 +10,7 @@ public sealed record GraphicsDataBinding(string SourceId, string? KeyColumn, str
 {
     public GraphicsCrawlOptions? Crawl { get; init; }
     public bool LiveFollow { get; init; }
+    public bool Remote { get; init; }
 
     public bool Valid() => SourceId is not null && GraphicsPlaylistRow.ValidId(SourceId) &&
         Columns is { Length: > 0 and <= GraphicsLocalData.MaxVisibleColumns } &&
@@ -18,9 +19,9 @@ public sealed record GraphicsDataBinding(string SourceId, string? KeyColumn, str
         KeyColumn is null or { Length: > 0 and <= 128 } &&
         SortColumn is null or { Length: > 0 and <= 128 } &&
         (SortColumn is null || Columns.Length < GraphicsLocalData.MaxVisibleColumns) &&
-        (Crawl is null ? Limit is >= 1 and <= GraphicsLocalData.MaxVisibleRows && !LiveFollow :
+        (Crawl is null ? Limit is >= 1 and <= GraphicsLocalData.MaxVisibleRows && (!LiveFollow || Remote) :
             Crawl.Valid() && Columns.Length == 1 && SortColumn is null && Limit is >= 1 and <= GraphicsCrawlData.MaxItems) &&
-        Revision > 0;
+        (!Remote || KeyColumn is not null) && Revision > 0;
 }
 
 public static class GraphicsDataTable
@@ -29,8 +30,9 @@ public static class GraphicsDataTable
     private static readonly JsonSerializerOptions CellsJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     private const string ManifestTypeKey = "type";
     public const string RowPrefix = "table-row-";
+    public const string RevisionField = "data-revision";
     public static bool IsDataField(string id) => id.StartsWith(RowPrefix, StringComparison.Ordinal) ||
-        id is GraphicsCrawlData.ItemsField or GraphicsCrawlData.RevisionField;
+        id is GraphicsCrawlData.ItemsField or GraphicsCrawlData.RevisionField or RevisionField;
     public static string FieldId(int index) => RowPrefix + (index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     public static Dictionary<string, JsonElement> Fields(GraphicsLocalData data, GraphicsDataBinding binding)
@@ -48,6 +50,8 @@ public static class GraphicsDataTable
             if (Encoding.UTF8.GetByteCount(encoded) > 4096) throw new InvalidDataException("A displayed row is too long. Shorten its values or select fewer columns.");
             fields.Add(FieldId(index), JsonSerializer.SerializeToElement(encoded));
         }
+        if (binding.Remote)
+            fields.Add(RevisionField, JsonSerializer.SerializeToElement(binding.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         return fields;
     }
 
@@ -82,7 +86,7 @@ public static class GraphicsDataTable
                 ["heading"] = column, ["weight"] = binding.SortColumn is not null && index == 0 ? 0.4 : 1,
                 ["align"] = column == binding.SortColumn || (binding.SortColumn is not null && index == 0) ? "right" : "left"
             }).ToArray()),
-            ["rows"] = new JsonArray(fields.Keys.Select(field => (JsonNode)new JsonObject { ["field"] = field }).ToArray()),
+            ["rows"] = new JsonArray(fields.Keys.Where(field => field.StartsWith(RowPrefix, StringComparison.Ordinal)).Select(field => (JsonNode)new JsonObject { ["field"] = field }).ToArray()),
             ["metadata"] = new JsonObject { ["label"] = "Data table" }
         });
         seed["metadata"] = new JsonObject { ["dataBinding"] = JsonSerializer.SerializeToNode(binding, Json) };

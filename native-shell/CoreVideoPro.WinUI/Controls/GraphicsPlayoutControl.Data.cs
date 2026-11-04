@@ -16,12 +16,43 @@ public sealed partial class GraphicsPlayoutControl
             Text = $"Data · published {binding.Revision} · loaded {source?.Revision.ToString() ?? "unavailable"}",
             TextWrapping = TextWrapping.Wrap
         });
-        var reload = StudioBrushes.GhostButton("Load CSV / JSON…");
+        var reload = StudioBrushes.GhostButton(binding.Remote ? "Refresh now" : "Load CSV / JSON…");
+        if (binding.Remote && _attached is { } attached)
+        {
+            var feeds = attached.GraphicsFeeds;
+            var feedStatus = new TextBlock { TextWrapping = TextWrapping.Wrap };
+            void UpdateStatus()
+            {
+                feedStatus.Text = GraphicsFeedStatusText.Describe(feeds.Status(binding.SourceId), source);
+                reload.IsEnabled = library.Document.Feeds.Any(feed => feed.Id == binding.SourceId && feed.Enabled);
+            }
+            EventHandler changed = (_, _) => UpdateStatus();
+            feedStatus.Loaded += (_, _) => feeds.Changed += changed;
+            feedStatus.Unloaded += (_, _) => feeds.Changed -= changed;
+            UpdateStatus();
+            panel.Children.Add(feedStatus);
+            if (binding.Crawl is null && attached.GraphicsPlayout.DataOnProgram(row.Id) is { } live)
+            {
+                var revision = live.ProgramFields?.AdditionalFields?.GetValueOrDefault(GraphicsDataTable.RevisionField).ToString() ?? "unknown";
+                var pending = live.ProgramRevision != live.Revision
+                    ? live.Fields.AdditionalFields?.GetValueOrDefault(GraphicsDataTable.RevisionField).ToString() : null;
+                panel.Children.Add(new TextBlock
+                {
+                    Text = $"Program data {revision}" + (pending is null ? "" : $" · requested {pending} ({live.Preparation})"),
+                    TextWrapping = TextWrapping.Wrap
+                });
+            }
+        }
         var publish = StudioBrushes.AccentButton("Publish data");
         reload.HorizontalAlignment = publish.HorizontalAlignment = HorizontalAlignment.Stretch;
         reload.Click += async (_, _) =>
         {
             if (_attached is not { } studio) return;
+            if (binding.Remote)
+            {
+                studio.GraphicsFeeds.Refresh(binding.SourceId);
+                return;
+            }
             reload.IsEnabled = publish.IsEnabled = false;
             try
             {
@@ -32,7 +63,11 @@ public sealed partial class GraphicsPlayoutControl
                 _status.Text = (await studio.GraphicsPlayout.StageDataAsync(row.Id, binding, data)).Reason;
             }
             catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = ex.Message; }
-            finally { reload.IsEnabled = publish.IsEnabled = true; }
+            finally
+            {
+                publish.IsEnabled = true;
+                reload.IsEnabled = !binding.Remote || library.Document.Feeds.Any(feed => feed.Id == binding.SourceId && feed.Enabled);
+            }
         };
         publish.Click += async (_, _) =>
         {
@@ -45,9 +80,13 @@ public sealed partial class GraphicsPlayoutControl
                 _status.Text = result.Reason;
             }
             catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = ex.Message; }
-            finally { reload.IsEnabled = publish.IsEnabled = true; }
+            finally
+            {
+                publish.IsEnabled = true;
+                reload.IsEnabled = !binding.Remote || library.Document.Feeds.Any(feed => feed.Id == binding.SourceId && feed.Enabled);
+            }
         };
-        if (binding.Crawl is not null)
+        if (binding.Crawl is not null || binding.Remote)
         {
             if (source is not null && source.Revision > binding.Revision)
             {
@@ -66,12 +105,12 @@ public sealed partial class GraphicsPlayoutControl
                     panel.Children.Add(new TextBlock { Text = ex.Message, TextWrapping = TextWrapping.Wrap });
                 }
             }
-            var follow = new ToggleSwitch { Header = "Live follow local reloads", IsOn = binding.LiveFollow };
+            var follow = new ToggleSwitch { Header = binding.Remote ? "Live follow feed updates" : "Live follow local reloads", IsOn = binding.LiveFollow };
             follow.Toggled += async (_, _) =>
             {
                 if (_attached is not { } studio) return;
                 follow.IsEnabled = false;
-                try { _status.Text = (await studio.GraphicsPlayout.SetCrawlLiveFollowAsync(row.Id, follow.IsOn)).Reason; }
+                try { _status.Text = (await studio.GraphicsPlayout.SetDataLiveFollowAsync(row.Id, follow.IsOn)).Reason; }
                 catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = ex.Message; }
                 finally { follow.IsEnabled = true; }
             };

@@ -55,6 +55,7 @@ public sealed record GraphicsShowDocument
     /// <summary>Graphics-designer designs (schema 3). Additive; older documents load it empty.</summary>
     public IReadOnlyList<GraphicsDesign> Designs { get; init; } = [];
     public IReadOnlyList<GraphicsDataSource> DataSources { get; init; } = [];
+    public IReadOnlyList<GraphicsFeedDefinition> Feeds { get; init; } = [];
     public IReadOnlyList<GraphicsSourceColumn> SourceColumns { get; init; } = [];
     [JsonExtensionData] public Dictionary<string, JsonElement>? Metadata { get; init; }
 }
@@ -130,6 +131,7 @@ public sealed class GraphicsDocumentStore
                 var temporary = Path.Combine(directory, ".graphics-" + Guid.NewGuid().ToString("N") + ".tmp");
                 try {
                     using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { file.Write(bytes); file.Flush(true); }
+                    cancellation.ThrowIfCancellationRequested();
                     if (File.Exists(_path)) {
                         if (_recovered) { File.Copy(_path, _path + ".corrupt", true); File.Move(temporary, _path, true); }
                         else File.Replace(temporary, _path, _path + ".bak");
@@ -197,6 +199,10 @@ public sealed class GraphicsDocumentStore
                 string.IsNullOrEmpty(style.TemplateId) || style.TemplateId.Length>64 || style.Fields.ValueKind!=JsonValueKind.Object ||
                 Encoding.UTF8.GetByteCount(style.Fields.GetRawText())>65536 || style.Fields.EnumerateObject().Count()>32)
                 throw new InvalidDataException("Invalid saved template style.");
+        if (document.Feeds is not { Count: <= 32 } ||
+            document.Feeds.Any(feed => feed is null || !feed.Valid() || feed.Generation == 0) ||
+            document.Feeds.Select(feed => feed.Id).Distinct(StringComparer.Ordinal).Count() != document.Feeds.Count)
+            throw new InvalidDataException("Invalid saved graphics feed definitions.");
         if (document.DataSources is not { Count: <= 32 } ||
             document.DataSources.Any(source => source is null || !source.Valid()) ||
             document.DataSources.Select(source => source.Id).Distinct(StringComparer.Ordinal).Count() != document.DataSources.Count)
