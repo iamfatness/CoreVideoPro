@@ -69,6 +69,7 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
             case "graphics.instance.update":
                 revision = _state.Instances.Single(i => i.InstanceId == id).Revision + 1;
                 _state = _state with { Instances = Map(i => i with { Revision = revision, Fields = JsonSerializer.Deserialize<NativeGraphicsFields>(input.GetProperty("fields"), Json)!,
+                    ProgramRevision = input.GetProperty("target").GetString() == "program" ? revision : i.ProgramRevision,
                     TemplateVersion = input.TryGetProperty("templateVersion", out var version) ? version.GetInt32() : i.TemplateVersion,
                     Animations = input.TryGetProperty("animations", out var animations) ? JsonSerializer.Deserialize<NativeGraphicsAnimations>(animations, Json)! : i.Animations }) };
                 break;
@@ -78,7 +79,7 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
                 break;
             case "graphics.instance.trigger":
                 _state = input.GetProperty("action").GetString() switch {
-                    "show" => _showDoesNotLand ? _state : _state with { Instances = Map(i => i with { ProgramRevision = i.CueRevision, Visibility = "visible", CueRevision = 0, Cued = false }) },
+                    "show" => _showDoesNotLand ? _state : _state with { Instances = Map(i => i with { ProgramRevision = i.CueRevision, ProgramTemplateVersion = i.TemplateVersion, Visibility = "visible", CueRevision = 0, Cued = false }) },
                     "hide" => _state with { Instances = Map(i => i with { ProgramRevision = 0, Visibility = "hidden" }) },
                     "uncue" => _state with { Instances = Map(i => i with { CueRevision = 0, Cued = false }) },
                     _ => _state };
@@ -230,6 +231,34 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
             Assert.True((await service.PlayInAsync(entry)).Accepted);
         Assert.Equal(["Boston", "London", "Paris, France", "Tokyo"],
             Bodies("graphics.instance.create").Select(body => body.GetProperty("fields").GetProperty("location").GetString()));
+    }
+
+    [Fact]
+    public async Task LocalLeaderboardSurvivesReopenAndPublishesWithoutAnotherShow()
+    {
+        const string design = "design-scores";
+        var first = GraphicsLocalData.Parse("id,player,score\na,Ada,10\nb,Bob,9", "csv", "id");
+        var binding = new GraphicsDataBinding("scores", "id", ["player", "score"], "score", 2, 1);
+        var fields = GraphicsDataTable.Fields(first, binding);
+        _state = _state with { Templates = [.. _state.Templates, Template(design, "title", "declarative", fields.Keys.ToArray())] };
+        var (library, _) = Build();
+        Assert.NotNull(await library.SaveLocalDataAsync("scores", "Scores", first));
+        var row = new GraphicsPlaylistRow { Id = "scores", Kind = GraphicsPlaylistRow.Title, Name = "Scores",
+            TemplateId = design, TemplateVersion = 1, DataBinding = binding, Fields = fields };
+        Assert.True(await library.SavePlaylistAsync([row]), library.Status);
+        var (reopened, service) = Build();
+        await reopened.LoadAsync();
+        Assert.True((await service.PlayInAsync(GraphicsPlayoutService.EntryFor(row))).Accepted);
+        Assert.Contains("Ada", Bodies("graphics.instance.create").Single().GetProperty("fields").GetProperty("table-row-1").GetString());
+        Assert.NotNull(await reopened.SaveLocalDataAsync("scores", "Scores",
+            GraphicsLocalData.Parse("id,player,score\na,Ada,10\nb,Bob,19", "csv", "id")));
+        Assert.Single(Bodies("graphics.instance.trigger"));
+        Assert.True((await service.PublishDataAsync(row.Id)).Accepted);
+        var update = Bodies("graphics.instance.update").Single();
+        Assert.Equal("program", update.GetProperty("target").GetString());
+        Assert.Contains("Bob", update.GetProperty("fields").GetProperty("table-row-1").GetString());
+        Assert.Single(Bodies("graphics.instance.trigger"));
+        Assert.Equal(2, reopened.Document.Playlist.Single().DataBinding!.Revision);
     }
 
     [Fact] public async Task PlayInSendsTheRowsOwnPlacementWhenItHasOne()

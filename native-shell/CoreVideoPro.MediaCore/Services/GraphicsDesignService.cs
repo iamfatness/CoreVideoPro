@@ -57,6 +57,19 @@ public sealed class GraphicsDesignService
         return await Create(GraphicsDesignSeeds.Manifest(kind, templateId, 1, clean), "", clean, ct);
     });
 
+    public Task<GraphicsDesignResult> CreateDataTableAsync(string name, GraphicsDataSource source, GraphicsDataBinding binding, CancellationToken ct = default) => Run(async () =>
+    {
+        if (CleanName(name) is not { } clean) return Fail(NameRule);
+        if (Full()) return Fail(TooMany);
+        var id = NewTemplateId(clean);
+
+        if (!source.Valid() || binding.SourceId != source.Id || binding.Revision != source.Revision ||
+            _library.Document.DataSources.Any(item => item.Id == source.Id))
+            return Fail("The table data source is invalid or already exists.");
+        try { return await Create(GraphicsDataTable.Manifest(id, clean, binding, source.Data), "", clean, ct, source); }
+        catch (InvalidDataException ex) { return Fail(ex.Message); }
+    });
+
     /// <summary>Start from a look: a design or any installed declarative template. Always a copy under
     /// a new design id; the source (built-ins above all) is never edited in place.</summary>
     public Task<GraphicsDesignResult> CreateFromAsync(string templateId, int templateVersion, string name, CancellationToken ct = default) => Run(async () => {
@@ -188,14 +201,14 @@ public sealed class GraphicsDesignService
         return manifest;
     }
 
-    private async Task<GraphicsDesignResult> Create(JsonObject manifest, string packageRoot, string name, CancellationToken ct)
+    private async Task<GraphicsDesignResult> Create(JsonObject manifest, string packageRoot, string name, CancellationToken ct, GraphicsDataSource? source = null)
     {
         var templateId = manifest["templateId"]!.GetValue<string>();
         var (template, refusal) = await Install(JsonSerializer.SerializeToElement(manifest), packageRoot, templateId, 1, ct);
         if (template is null) return Fail(refusal);
         var family = template.Family.Length > 0 ? template.Family : manifest["family"]?.GetValue<string>() ?? "";
         var design = new GraphicsDesign(templateId, name, family, templateId, 1, (template.Definition ?? JsonSerializer.SerializeToElement(manifest)).Clone(), [], _utcNow()) { PackageRoot = packageRoot.Length == 0 ? null : packageRoot };
-        if (!await Store([.. _library.Document.Designs, design], $"Created {name}.")) {
+        if (!await _library.SaveDesignsAsync([.. _library.Document.Designs, design], $"Created {name}.", source)) {
             await Remove(templateId, 1, ct);
             return Fail(_library.Status);
         }

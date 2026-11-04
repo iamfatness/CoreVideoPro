@@ -34,6 +34,9 @@ public sealed partial class StudioViewModel
     /// <summary>The design a draft belongs to (by template id), or null for a built-in or package look.</summary>
     public GraphicsDesign? GraphicsDesignFor(NativeGraphicsDraft? draft) => GraphicsDesignWorkflow.DesignFor(draft);
 
+    public Task<GraphicsDesignResult> CreateGraphicsDataTableAsync(string name, GraphicsDataSource source, GraphicsDataBinding binding) =>
+        GraphicsDesignWorkflow.CreateDataTableAsync(name, source, binding);
+
     public Task<GraphicsDesignResult> CreateGraphicsDesignAsync(string? kind, string? lookTemplateId, int lookTemplateVersion, string name) =>
         GraphicsDesignWorkflow.CreateAsync(kind, lookTemplateId, lookTemplateVersion, name);
     /// <summary>The design a playlist row shows; null for a built-in or imported look.</summary>

@@ -576,6 +576,77 @@ TEST(GraphicsCompositionPixel, TextEffectsDrawShadowOutlineAndFill) {
   EXPECT_GT(shadow, 100);
 }
 
+TEST(GraphicsCompositionPixel, DataTablePublishesCompleteRowsAndKeepsAcceptedPixelsOnFailure) {
+  using corevideo::rpc::Json;
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_TRUE(compositor);
+  corevideo::graphics::GraphicsInstances graphics{"table-core"};
+  int sequence = 0;
+  const auto command = [&](const std::string& type, Json::Object body) {
+    body["schemaVersion"] = 1;
+    body["requestId"] = "table-" + std::to_string(++sequence);
+    body["clientId"] = "table-qa";
+    body["coreEpoch"] = "table-core";
+    body["instanceId"] = "scores";
+    if (!body.count("expectedRevision")) body["expectedRevision"] = 1;
+    return graphics.apply(Json::Object{{"type",type},{"graphics",std::move(body)}});
+  };
+  const auto render = [&] {
+    corevideo::modules::CompositorRenderPlan plan; plan.width = 320; plan.height = 180;
+    graphics.append(plan, false);
+    auto frame = compositor->render(plan, {});
+    graphics.observe(frame);
+    return frame.preview.bgra;
+  };
+  const auto until = [&](const auto& predicate) {
+    const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+      render();
+      const auto snapshot = graphics.snapshot();
+      if (predicate(snapshot)) return true;
+      std::this_thread::yield();
+    } while (std::chrono::steady_clock::now() < limit);
+    return false;
+  };
+  const auto blank = render();
+  ASSERT_TRUE(command("graphics-template-install", {{"manifest",R"({
+    "schemaVersion":1,"templateId":"phase3-scoreboard","templateVersion":1,"name":"Scores","family":"title",
+    "canvas":{"width":1920,"height":1080},"bounds":{"width":320,"height":180},"brandTokens":[],
+    "fields":[{"id":"table-row-1","type":"string","default":"","maxLength":4096}],
+    "animations":{"in":{"type":"none"},"out":{"type":"none"}},
+    "layers":[{"id":"scores","type":"table","x":0,"y":0,"width":320,"height":180,
+      "columns":[{"heading":"Player"},{"heading":"Score","align":"right"}],"rows":[{"field":"table-row-1"}],
+      "rowHeight":56,"font":"Segoe UI","fontSize":28,"color":"#FFFFFF","headerFill":"#123456","rowFill":"#101010"}]
+  })"}}));
+  ASSERT_TRUE(until([](const Json& state) {
+    const auto& installs = state.get("templateInstalls")->asArray();
+    return !installs.empty() && installs.back().getString("state") == "installed";
+  }));
+  ASSERT_TRUE(command("graphics-instance-create", {{"templateId","phase3-scoreboard"},{"templateVersion",1},{"scope","global"},
+      {"fields",Json::Object{{"table-row-1","[\"Ada\",\"10\"]"}}}}));
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"action","show"}}));
+  ASSERT_TRUE(until([](const Json& state) {
+    return state.get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame") > 0;
+  }));
+  const auto first = render();
+  EXPECT_NE(blank, first);
+  ASSERT_TRUE(command("graphics-instance-update", {{"target","program"},
+      {"fields",Json::Object{{"table-row-1","[\"Bob\",\"19\"]"}}}}));
+  ASSERT_TRUE(until([](const Json& state) {
+    return state.get("instances")->asArray().front().getNumber("programRevision") == 2;
+  }));
+  const auto second = render();
+  EXPECT_NE(first, second);
+  ASSERT_TRUE(command("graphics-instance-update", {{"target","program"},{"expectedRevision",2},
+      {"fields",Json::Object{{"table-row-1","[19]"}}}}));
+  ASSERT_TRUE(until([](const Json& state) {
+    return state.get("instances")->asArray().front().getString("preparation") == "failed";
+  }));
+  const auto failed = graphics.snapshot();
+  EXPECT_EQ(2., failed.get("instances")->asArray().front().getNumber("programRevision"));
+  EXPECT_EQ(second, render());
+}
+
 TEST(GraphicsCompositionPixel, NewShapesDrawCoverageAndInsetStrokes) {
   using namespace corevideo;
   auto compositor = modules::createD3D11Compositor();

@@ -644,3 +644,24 @@ TEST(GraphicsTemplate, PrivateDraftLoadsNewVerifiedPackageAssets) {
   EXPECT_EQ(asset->sha256, published->definition->assets().at(asset->id)->sha256);
   EXPECT_FALSE(parent->assets().contains(asset->id));
 }
+
+TEST(GraphicsTemplate, DataTableExpandsBoundRowsIntoClippedNativePrimitives) {
+  using M = Json::Object;
+  auto document = manifest();
+  document["fields"] = Json::Array{M{{"id","table-row-1"},{"type","string"},{"default",""},{"maxLength",4096}}};
+  document["layers"] = Json::Array{M{{"id","scoreboard"},{"type","table"},{"x",0},{"y",0},{"width",300},{"height",100},
+      {"columns",Json::Array{M{{"heading","Player"},{"weight",2}},M{{"heading","Score"},{"align","right"}}}},
+      {"rows",Json::Array{M{{"field","table-row-1"}}}},
+      {"rowHeight",40},{"fontSize",18},{"font","Segoe UI"},{"color","#FFFFFF"},{"headerFill","#123456"},{"rowFill","#101010"}}};
+  std::string error;
+  const auto definition = load(document, error);
+  ASSERT_TRUE(definition) << error;
+  GraphicsDrawing drawing;
+  ASSERT_TRUE(definition->resolve(M{{"table-row-1","[\"Ada\",\"12\"]"}}, brand(), drawing, error)) << error;
+  ASSERT_EQ(6u, drawing.primitives.size());
+  EXPECT_EQ("Player", drawing.primitives[1].text);
+  EXPECT_EQ("Ada", drawing.primitives[4].text);
+  EXPECT_EQ("12", drawing.primitives[5].text);
+  EXPECT_EQ("right", drawing.primitives[5].align);
+  EXPECT_FALSE(definition->resolve(M{{"table-row-1","[1,2]"}}, brand(), drawing, error));
+}

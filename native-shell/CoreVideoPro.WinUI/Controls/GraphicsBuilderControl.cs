@@ -16,7 +16,7 @@ namespace CoreVideoPro.WinUI.Controls;
 /// you are making, 2 pick a look, 3 fill it in while the native preview updates, 4 save it to the
 /// playlist with an F-key. Everything here edits the workspace session's PRIVATE draft; nothing
 /// reaches Program or Preview until the operator shows the row from Operate.</summary>
-public sealed class GraphicsBuilderControl : UserControl
+public sealed partial class GraphicsBuilderControl : UserControl
 {
     public static readonly DependencyProperty StudioProperty = DependencyProperty.Register(nameof(Studio), typeof(StudioViewModel),
         typeof(GraphicsBuilderControl), new PropertyMetadata(null, (d, _) => ((GraphicsBuilderControl)d).Attach()));
@@ -636,6 +636,9 @@ public sealed class GraphicsBuilderControl : UserControl
         var chips = new ScrollViewer { Content = _designChips, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalAlignment = VerticalAlignment.Center };
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
         foreach (var button in new[] { _openDesign, _duplicateDesign, _deleteDesign, _newDesign }) { button.FontSize = 14; actions.Children.Add(button); }
+        var dataTable = StudioBrushes.GhostButton("Data table…");
+        dataTable.Click += async (_, _) => await ShowDataTableDialogAsync();
+        actions.Children.Add(dataTable);
         AutomationProperties.SetName(_openDesign, "Open design"); AutomationProperties.SetName(_duplicateDesign, "Duplicate design");
         AutomationProperties.SetName(_deleteDesign, "Delete design"); AutomationProperties.SetName(_newDesign, "New design");
         ToolTipService.SetToolTip(_openDesign, "Open the selected design in the editor as a private draft. Program is unchanged.");

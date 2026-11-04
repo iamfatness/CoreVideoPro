@@ -26,8 +26,9 @@ public sealed partial class GraphicsDesignerControl
     private readonly Canvas _motionScale = new() { Height = 17 };
     private readonly List<(GraphicsMotionBar Bar, Button Button)> _motionButtons = [];
     private string _motionPhase = "in", _motionSignature = "";
-    private bool _motionWide, _motionExpanded;
-    private bool? _motionExpansionOverride;
+    private bool _motionExpanded;
+    private Border? _motionStrip;
+
     private double _motionRange = 1000;
     private MotionDrag? _motionDrag;
     private bool _motionDragMoved;
@@ -42,7 +43,6 @@ public sealed partial class GraphicsDesignerControl
         header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-        header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         header.Children.Add(Heading("MOTION"));
         Grid.SetColumn(_motionActions, 1); header.Children.Add(_motionActions);
         foreach (var button in new[] { _motionIn, _motionOut, _playIn, _playOut })
@@ -52,17 +52,15 @@ public sealed partial class GraphicsDesignerControl
         }
         _motionActions.Children.Add(_motionLoop);
         _motionActions.Children.Add(_motionMirror);
-        _motionExpand.FontSize = 13;
-        _motionExpand.Padding = new Thickness(7, 3, 7, 3);
         Grid.SetColumn(_motionHint, 2); header.Children.Add(_motionHint);
-        Grid.SetColumn(_motionExpand, 3); header.Children.Add(_motionExpand);
+
         AutomationProperties.SetName(_motionIn, "Show the way in");
         AutomationProperties.SetName(_motionOut, "Show the way out");
         AutomationProperties.SetName(_playIn, "Play In");
         AutomationProperties.SetName(_playOut, "Play Out");
         AutomationProperties.SetName(_motionLoop, "Loop preview");
         AutomationProperties.SetName(_motionMirror, "Out mirrors In");
-        _motionExpand.Click += (_, _) => { _motionExpansionOverride = !_motionExpanded; ReflowMotion(_motionWide); };
+        _motionExpand.Click += (_, _) => SetMotionExpanded(!_motionExpanded);
         _motionIn.Click += (_, _) => SetMotionPhase("in");
         _motionOut.Click += (_, _) => SetMotionPhase("out");
         _playIn.Click += (_, _) => PlayMotion("in");
@@ -83,12 +81,14 @@ public sealed partial class GraphicsDesignerControl
         Grid.SetColumn(_motionScale, 1); scaleRow.Children.Add(_motionScale);
         _motionScale.SizeChanged += (_, _) => DrawMotionScale();
         _motionBody.Children.Add(scaleRow);
-        _motionBody.Children.Add(new ScrollViewer { Content = _motionRows, MaxHeight = 132,
+        _motionBody.Children.Add(new ScrollViewer { Content = _motionRows, MaxHeight = 110,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         stack.Children.Add(_motionBody);
-        ReflowMotion(false);
-        return new Border { Child = stack, Background = StudioBrushes.Panel, BorderBrush = StudioBrushes.Border,
+
+        _motionStrip = new Border { Child = stack, Background = StudioBrushes.Panel, BorderBrush = StudioBrushes.Border,
             BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(8, 2, 8, 2) };
+        SetMotionExpanded(false);
+        return _motionStrip;
     }
 
     private static Grid MotionRow()
@@ -99,12 +99,12 @@ public sealed partial class GraphicsDesignerControl
         return row;
     }
 
-    private void ReflowMotion(bool wide)
+    private void SetMotionExpanded(bool expanded)
     {
-        _motionWide = wide;
-        _motionExpanded = _motionExpansionOverride ?? wide;
-        _motionActions.Visibility = _motionBody.Visibility = _motionHint.Visibility = _motionExpanded ? Visibility.Visible : Visibility.Collapsed;
-        _motionExpand.Content = _motionExpanded ? "⌃" : "Show motion";
+
+        _motionExpanded = expanded;
+        if (_motionStrip is not null) _motionStrip.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+        _motionExpand.Content = _motionExpanded ? "Hide motion" : "Show motion";
         AutomationProperties.SetName(_motionExpand, _motionExpanded ? "Hide motion" : "Show motion");
         if (_motionExpanded) RefreshMotionStrip();
     }

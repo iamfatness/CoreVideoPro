@@ -316,8 +316,7 @@ Designer and Operate's "Open in Design" do.
 ## Motion (Graphics Designer slice 3)
 
 Select a layer and open **Motion**. Use **In** and **Out** in the strip beneath the
-canvas to choose which move you are editing. **Show motion** opens the strip when it
-starts collapsed on a smaller display. The strip lists layers in paint order, back to
+canvas to choose which move you are editing. **Show motion** opens the strip below the preview. It starts collapsed so the 16:9 preview can grow with the window. The strip lists layers in paint order, back to
 front. Select a bar to select its layer. Drag the bar to change its start or drag an
 end to change its length. Timing snaps to 50 ms, or 10 ms while holding Ctrl. The arrow
 keys move the selected bar by 50 ms and Shift+arrow changes its duration.
@@ -636,6 +635,29 @@ any quotes inside a quoted cell. A missing or bare empty cell falls back to
 the row value. A quoted empty string clears a text variable. Supported
 extra values are text, numbers, colours and on/off. Enter `true` or `false`
 for on/off. The old one- and two-column lists still work.
+
+## Local data tables and leaderboards
+
+In Design, choose **Data table…** and open a UTF-8 CSV or JSON file. CSV
+uses a header row. JSON uses an array of objects with the same columns in
+every row. Choose a unique row key or keep file order, select the columns
+to display, and set the visible row count. Selecting a numeric sort column
+adds a rank and sorts high to low. Equal scores use the row key for order.
+
+Create the design, check it on the private canvas, and use **Save to playlist**.
+In Operate, Cue or Show the saved table as you would a title. **Load CSV /
+JSON…** stages a new revision. **Publish data** saves that revision for the
+next Cue or Show and asks an on-air instance of the same design version to
+update in place. A cue already on Preview keeps the revision it captured.
+If preparation fails, Program keeps the last accepted pixels. Use the
+existing Hide action to take the table out.
+
+A table displays up to 12 rows and eight columns, including the rank column
+on a leaderboard. The first layout uses equal-width data columns, a narrower
+rank column, one line per cell and ellipsis. An encoded display row is capped
+at 4096 UTF-8 bytes. The show stores the latest staged source and the
+materialized rows pinned to each playlist entry. Loading a file has no
+effect on Program by itself.
 
 ## Later (the spec's phases)
 

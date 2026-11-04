@@ -27,16 +27,16 @@ public sealed partial class GraphicsDesignerControl
     private IReadOnlyList<GraphicsDesignerRow> _rows = [];
     private string _rowsSignature = "", _renaming = "", _dragId = "";
 
-    private static Button SmallButton(string label) { var b = StudioBrushes.GhostButton(label); b.FontSize = 13; b.FontWeight = Microsoft.UI.Text.FontWeights.Normal; b.Padding = new Thickness(8, 4, 8, 4); b.MinHeight = 30; return b; }
+    private static Button SmallButton(string label) { var b = StudioBrushes.GhostButton(label); b.FontSize = 12; b.FontWeight = Microsoft.UI.Text.FontWeights.Normal; b.Padding = new Thickness(8, 4, 8, 4); b.MinHeight = 28; return b; }
     private static Button AddButton(string label)
     {
-        var b = StudioBrushes.GhostButton(label); b.FontSize = 14; b.FontWeight = Microsoft.UI.Text.FontWeights.Normal; b.Background = StudioBrushes.SurfaceRaised;
-        b.HorizontalAlignment = HorizontalAlignment.Stretch; b.MinHeight = 34; return b;
+        var b = StudioBrushes.GhostButton(label); b.FontSize = 12; b.FontWeight = Microsoft.UI.Text.FontWeights.Normal; b.Background = StudioBrushes.SurfaceRaised;
+        b.HorizontalAlignment = HorizontalAlignment.Stretch; b.MinHeight = 28; return b;
     }
 
     private Border BuildLayersPanel()
     {
-        var grid = new Grid { RowSpacing = 8 };
+        var grid = new Grid { RowSpacing = 5 };
         foreach (var height in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto }) grid.RowDefinitions.Add(new() { Height = height });
         grid.Children.Add(Heading("LAYERS"));
         var toolbar = new Grid { ColumnSpacing = 4, RowSpacing = 4 };
@@ -61,7 +61,7 @@ public sealed partial class GraphicsDesignerControl
         _endDrop.Drop += (_, e) => DropLayer(_rows.Count, false);
         var scroll = new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         Grid.SetRow(scroll, 2); grid.Children.Add(scroll);
-        var hint = new TextBlock { Text = "Top of the list is in front. Drag to reorder, double-click to rename.", FontSize = 13, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap };
+        var hint = new TextBlock { Text = "Drag to reorder · double-click to rename", FontSize = 12, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap };
         Grid.SetRow(hint, 3); grid.Children.Add(hint);
 
         var add = new Grid { ColumnSpacing = 6, RowSpacing = 6 };
@@ -140,7 +140,7 @@ public sealed partial class GraphicsDesignerControl
             _rowsSignature = signature;
             _rowsPanel.Children.Clear(); _rowParts.Clear();
             for (var i = 0; i < rows.Count; i++) _rowsPanel.Children.Add(Row(rows[i], i));
-            if (rows.Count == 0) _rowsPanel.Children.Add(new TextBlock { Text = "Open a design to see its layers.", FontSize = 14, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap });
+            if (rows.Count == 0) _rowsPanel.Children.Add(new TextBlock { Text = "Open a design to see its layers.", FontSize = 12, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap });
         }
         foreach (var (id, parts) in _rowParts) StyleRow(parts, id == selected);
     }
@@ -159,7 +159,7 @@ public sealed partial class GraphicsDesignerControl
 
     private Grid Row(GraphicsDesignerRow row, int index)
     {
-        var grid = new Grid { ColumnSpacing = 4, Padding = new Thickness(4 + row.Depth * 14, 3, 2, 3), CornerRadius = new CornerRadius(6), MinHeight = 34, Tag = row,
+        var grid = new Grid { ColumnSpacing = 4, Padding = new Thickness(4 + row.Depth * 14, 3, 2, 3), CornerRadius = new CornerRadius(6), MinHeight = 28, Tag = row,
             Background = ClearBrush, BorderBrush = ClearBrush, BorderThickness = new Thickness(1) };
         foreach (var width in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto }) grid.ColumnDefinitions.Add(new() { Width = width });
         AutomationProperties.SetName(grid, $"{row.Label}, {row.Kind.ToLowerInvariant()} layer{(row.Locked ? ", locked" : "")}{(row.Visible ? "" : ", hidden")}");
@@ -178,7 +178,7 @@ public sealed partial class GraphicsDesignerControl
         Grid.SetColumn(glyph, 1); grid.Children.Add(glyph);
 
         if (_renaming == row.Id) {
-            var box = new TextBox { Text = row.Label, MaxLength = 64, FontSize = 14, MinHeight = 28, Padding = new Thickness(6, 2, 6, 2), VerticalAlignment = VerticalAlignment.Center };
+            var box = new TextBox { Text = row.Label, MaxLength = 64, FontSize = 12, MinHeight = 28, Padding = new Thickness(6, 2, 6, 2), VerticalAlignment = VerticalAlignment.Center };
             AutomationProperties.SetName(box, "Layer name");
             box.KeyDown += (_, e) => {
                 // Always close the box: an unchanged name is a no-op edit that raises no session change.
@@ -190,11 +190,11 @@ public sealed partial class GraphicsDesignerControl
             Grid.SetColumn(box, 2); Grid.SetColumnSpan(box, 2); grid.Children.Add(box);
             _rowParts[row.Id] = new(grid, glyph, null, null);
         } else {
-            var label = new TextBlock { Text = row.Label, FontSize = 14, Foreground = StudioBrushes.Text, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
+            var label = new TextBlock { Text = row.Label, FontSize = 12, Foreground = StudioBrushes.Text, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
                 Opacity = row.Visible ? 1 : .6 };
             ToolTipService.SetToolTip(label, row.Label);
             Grid.SetColumn(label, 2); grid.Children.Add(label);
-            var detail = new TextBlock { Text = row.Detail, FontSize = 12, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 76, TextTrimming = TextTrimming.CharacterEllipsis };
+            var detail = new TextBlock { Text = row.Detail, FontSize = 12, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 58, TextTrimming = TextTrimming.CharacterEllipsis };
             Grid.SetColumn(detail, 3); grid.Children.Add(detail);
             _rowParts[row.Id] = new(grid, glyph, label, detail);
         }
@@ -228,7 +228,7 @@ public sealed partial class GraphicsDesignerControl
 
     private static Button IconButton(string glyph, string name)
     {
-        var button = new Button { Content = glyph, FontFamily = Icons, FontSize = 13, Width = 26, Height = 28, Padding = new Thickness(0), CornerRadius = new CornerRadius(6),
+        var button = new Button { Content = glyph, FontFamily = Icons, FontSize = 12, Width = 26, Height = 28, Padding = new Thickness(0), CornerRadius = new CornerRadius(6),
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0), Foreground = StudioBrushes.Text, VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetName(button, name);
         return button;

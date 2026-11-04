@@ -35,7 +35,7 @@ public sealed record GraphicsStripState
 /// constructible: an invoke delegate, an observe delegate and the library. Show =
 /// create/update -> cue(rideTake) -> wait for the cue revision -> trigger show from cue.
 /// Preview truth and Program truth come back from native state only.</summary>
-public sealed class GraphicsPlayoutService
+public sealed partial class GraphicsPlayoutService
 {
     public const string InstancePrefix = "playlist-";
     public const string ClientId = "graphics-playout";
