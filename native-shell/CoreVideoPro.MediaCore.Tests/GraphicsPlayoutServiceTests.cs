@@ -593,6 +593,99 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
     }
 
     // ---- Shot layouts (#1076 slice 2) --------------------------------------------------------
+    [Theory]
+    [InlineData(99, "crawl", "\"Final\"")]
+    [InlineData(2, "different-feed", "\"Final\"")]
+    [InlineData(2, "crawl", "12")]
+    public async Task DataLayoutRefusesAnInvalidSecondRowBeforeAnyMutation(long revision, string source, string heading)
+    {
+        var (library, service, layout) = await DataLayout(revision, source, heading);
+        Assert.True(await library.SaveShotLayoutsAsync([layout]), library.Status);
+        var takes = 0;
+        var result = await service.CueAndTakeLayoutAsync(layout.Id, SelectScene, null, null,
+            _ => { takes++; return Task.FromResult<string?>(null); });
+        Assert.False(result.Accepted, result.Reason);
+        Assert.Contains("Crawl", result.Reason);
+        Assert.Empty(_sceneSelects);
+        Assert.Empty(Commands);
+        Assert.Equal(0, takes);
+    }
+
+    [Fact]
+    public async Task DataLayoutResolvesPublishedAndLoadedRevisionsWithoutChangingPlaylist()
+    {
+        var (library, _, layout) = await DataLayout(2, "crawl", "\"Final\"");
+        Assert.True(await library.SaveShotLayoutsAsync([layout]), library.Status);
+        var (reopened, service) = Build();
+        await reopened.LoadAsync();
+        var result = await service.CueLayoutAsync(layout.Id, SelectScene, null);
+        Assert.True(result.Accepted, result.Reason);
+        var fields = Bodies("graphics.instance.create").Select(body => body.GetProperty("fields")).ToArray();
+        Assert.Contains("Ada", fields[0].GetProperty("table-row-1").GetString());
+        Assert.Equal("Scores tonight", fields[0].GetProperty("heading").GetString());
+        Assert.Equal("2", fields[1].GetProperty(GraphicsCrawlData.RevisionField).GetString());
+        Assert.Equal("Final", fields[1].GetProperty("heading").GetString());
+        Assert.All(reopened.Document.Playlist, row => Assert.Equal(1, row.DataBinding!.Revision));
+        Assert.All(reopened.Document.Playlist, row => Assert.False(row.Fields.ContainsKey("heading")));
+    }
+
+    [Theory]
+    [InlineData(GraphicsCrawlData.RevisionField, false)]
+    [InlineData("heading", true)]
+    public async Task DataLayoutRefusesGeneratedOrRePinnedFields(string key, bool changePin)
+    {
+        var (library, service, layout) = await DataLayout(2, "crawl", "\"Final\"");
+        var settings = layout.RowSettings.ToDictionary();
+        settings["crawl"] = settings["crawl"] with
+        {
+            Overrides = new Dictionary<string, JsonElement> { [key] = JsonSerializer.SerializeToElement("Final") }
+        };
+        Assert.True(await library.SaveShotLayoutsAsync([layout with { RowSettings = settings }]), library.Status);
+        if (changePin)
+        {
+            var replacement = Template("design-crawl", "title", "declarative", GraphicsCrawlData.ItemsField, GraphicsCrawlData.RevisionField)
+                with { TemplateVersion = 2, Definition = JsonSerializer.SerializeToElement(new { templateId = "design-crawl", templateVersion = 2 }) };
+            _state = _state with { Templates = [.. _state.Templates, replacement] };
+            Assert.True(await library.SavePlaylistAsync(library.Document.Playlist.Select(row =>
+                row.Id == "crawl" ? row with { TemplateVersion = 2 } : row).ToArray()), library.Status);
+        }
+
+        var result = await service.CueLayoutAsync(layout.Id, SelectScene, null);
+        Assert.False(result.Accepted);
+        Assert.Contains(key, result.Reason);
+        Assert.Empty(_sceneSelects);
+        Assert.Empty(Commands);
+    }
+
+    private async Task<(GraphicsWorkspaceLibrary Library, GraphicsPlayoutService Service, ShotLayout Layout)> DataLayout(
+        long revision, string source, string heading)
+    {
+        var scores = GraphicsLocalData.Parse("id,name,score\na,Ada,8", "csv", "id");
+        var crawl = GraphicsLocalData.Parse("[{\"line\":\"First\"}]", "json", null);
+        var scoreBinding = new GraphicsDataBinding("scores", "id", ["name", "score"], "score", 1, 1);
+        var crawlBinding = new GraphicsDataBinding("crawl", null, ["line"], null, 8, 1) { Crawl = new() };
+        var scoreFields = GraphicsDataTable.Fields(scores, scoreBinding);
+        var crawlFields = GraphicsDataTable.Fields(crawl, crawlBinding);
+        _state = _state with { Templates = [.. _state.Templates,
+            Template("design-scores", "title", "declarative", [.. scoreFields.Keys, "heading"]),
+            Template("design-crawl", "title", "declarative", [.. crawlFields.Keys, "heading"])] };
+        var (library, service) = Build();
+        Assert.NotNull(await library.SaveLocalDataAsync("scores", "Scores", scores));
+        Assert.NotNull(await library.SaveLocalDataAsync("scores", "Scores", GraphicsLocalData.Parse("id,name,score\nb,Bob,9", "csv", "id")));
+        Assert.NotNull(await library.SaveLocalDataAsync("crawl", "Crawl", crawl));
+        Assert.NotNull(await library.SaveLocalDataAsync("crawl", "Crawl", GraphicsLocalData.Parse("[{\"line\":\"Second\"}]", "json", null)));
+        Assert.True(await library.SavePlaylistAsync([
+            new() { Id = "scores", Name = "Scores", TemplateId = "design-scores", TemplateVersion = 1, Fields = scoreFields, DataBinding = scoreBinding },
+            new() { Id = "crawl", Name = "Crawl", TemplateId = "design-crawl", TemplateVersion = 1, Fields = crawlFields, DataBinding = crawlBinding }
+        ]), library.Status);
+        var layout = JsonSerializer.Deserialize<ShotLayout>($$"""
+            {"id":"results","name":"Results","sceneId":"intro","rowIds":["scores","crawl"],"playOutOthers":true,
+             "rowSettings":{"scores":{"overrides":{"heading":"Scores tonight"},"dataPin":{"sourceId":"scores","revision":1} },
+                            "crawl":{"overrides":{"heading":{{heading}} },"dataPin":{"sourceId":"{{source}}","revision":{{revision}} } } } }
+            """, Json)!;
+        return (library, service, layout);
+    }
+
     [Fact] public async Task DefaultShotLayoutsShipWithTheDefaultPlaylist()
     {
         var (library, service) = await BuildWithDefaultPlaylist();

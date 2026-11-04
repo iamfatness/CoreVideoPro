@@ -206,11 +206,25 @@ public sealed partial class GraphicsPlayoutService
             else if (programSubject is not null) entries.Add(programSubject with { RowId = row.Id });
             else return Refuse($"{layout.Name}: {row.Name} needs a Program subject bound to a Show Input. Route a guest first.");
         }
+        GraphicsLayoutResolver.ResolvedRow[]? resolved = null;
+        if (layout.RowSettings.Count > 0)
+        {
+            var document = _library.Document;
+            var state = Available();
+            var required = entries.Select(InstanceIdFor).ToHashSet(StringComparer.Ordinal);
+            if (required.Count != entries.Count)
+                return Refuse($"{layout.Name}: multiple rows resolve to the same graphic instance.");
+            required.UnionWith(state.Instances.Select(instance => instance.InstanceId));
+            if (required.Count > 8)
+                return Refuse($"{layout.Name}: the required graphics exceed the core's instance capacity.");
+            try { resolved = entries.Select(entry => GraphicsLayoutResolver.Resolve(document, state, layout, entry)).ToArray(); }
+            catch (InvalidDataException ex) { return Refuse($"{layout.Name}: {ex.Message}"); }
+        }
         if (layout.SceneId.Length > 0 && !await sceneSelect(layout.SceneId, cancellation))
             return Refuse($"{layout.Name}: scene '{layout.SceneId}' is not in this show, so the layout was not cued. Edit the layout to pick a scene.");
         var carried = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var entry in entries) {
-            var cued = await Cue(entry, cancellation);
+        for (var index = 0; index < entries.Count; index++) {
+            var cued = await Cue(entries[index], cancellation, resolved?[index]);
             if (!cued.Accepted) return cued with { Reason = $"{layout.Name}: {cued.Reason}" };
             carried.Add(cued.InstanceId);
         }
@@ -300,10 +314,11 @@ public sealed partial class GraphicsPlayoutService
         return result.Accepted ? result with { Reason = "Preview cleared." } : result;
     });
 
-    private async Task<NativeGraphicsOperationResult> Ensure(GraphicsPlaylistEntry entry, CancellationToken cancellation)
+    private async Task<NativeGraphicsOperationResult> Ensure(GraphicsPlaylistEntry entry, CancellationToken cancellation,
+        GraphicsLayoutResolver.ResolvedRow? resolved = null)
     {
         await _library.LoadAsync();
-        if (Row(entry.RowId) is not { } row) return Refuse("That playlist row no longer exists.");
+        if ((resolved?.Row ?? Row(entry.RowId)) is not { } row) return Refuse("That playlist row no longer exists.");
         var state = Available(); var epoch = _epoch = state.CoreEpoch;
         var templateId = row.Image?.TemplateId ?? row.TemplateId; var version = row.Image?.TemplateVersion ?? row.TemplateVersion;
         if (templateId.Length == 0) return Refuse($"{row.Name} has no graphic yet. Choose an image or template for it first.");
@@ -321,17 +336,10 @@ public sealed partial class GraphicsPlayoutService
         if (pin is not null && pin.ManifestHash != installed.ManifestHash) return Refuse($"{row.Name}: the installed template differs from its saved pin. Program is unchanged.");
         state = Current(epoch);
         var declarative = installed.Runtime == "declarative";
-        var values = row.Fields.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal);
-        // Bindings are template variables: apply each one the template declares (compat
-        // lower thirds declare name/title implicitly); unknown variables are ignored.
-        if (entry.IsVariant || (row.FollowSources && entry.SourceId.Length > 0))
-            foreach (var binding in entry.Bindings)
-                if (declarative ? installed.Fields.Any(f => f.Id == binding.Key && f.Type == "string") : binding.Key is "name" or "title")
-                    values[binding.Key] = JsonSerializer.SerializeToElement(binding.Value);
-        if (declarative) GraphicsMappedValues.Apply(row, entry, installed.Fields, _library.Document.SourceColumns, values);
-        if (declarative) foreach (var key in values.Keys.Where(k => installed.Fields.All(f => f.Id != k)).ToArray()) values.Remove(key);
-        else foreach (var key in values.Keys.Where(k => k is not ("name" or "title")).ToArray()) values.Remove(key);
+        var values = resolved?.Row.Fields ?? GraphicsLayoutResolver.CueFields(row, entry, declarative, installed.Fields, _library.Document.SourceColumns);
         var identity = entry.SourceId.Length == 0 ? null : state.Sources.FirstOrDefault(s => s.VideoOn && s.Identity?.SourceId == entry.SourceId)?.Identity;
+        if (resolved is not null && resolved.Identity != identity)
+            return Refuse($"{row.Name}: the selected source changed during preparation.");
         var fields = JsonSerializer.SerializeToElement(values, Json);
         var id = InstanceIdFor(entry);
         var motion = row.Motion is { } rowMotion ? rowMotion with { Layers = "whole" } :
@@ -390,9 +398,10 @@ public sealed partial class GraphicsPlayoutService
         return result.Accepted ? result with { InstanceId = id, Reason = "Clock " + action + "." } : result;
     });
 
-    private async Task<NativeGraphicsOperationResult> Cue(GraphicsPlaylistEntry entry, CancellationToken cancellation)
+    private async Task<NativeGraphicsOperationResult> Cue(GraphicsPlaylistEntry entry, CancellationToken cancellation,
+        GraphicsLayoutResolver.ResolvedRow? resolved = null)
     {
-        var ensured = await Ensure(entry, cancellation);
+        var ensured = await Ensure(entry, cancellation, resolved);
         if (!ensured.Accepted) return ensured;
         var id = ensured.InstanceId; var revision = ensured.CurrentRevision; var epoch = _epoch;
         var cued = await Send("graphics.instance.cue", new() { ["instanceId"] = id, ["expectedRevision"] = revision, ["rideTake"] = true }, cancellation);

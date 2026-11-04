@@ -128,6 +128,35 @@ public sealed class GraphicsDocumentStoreTests : IDisposable
         await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { ShotLayouts = [layouts[0] with { Name = "" }] }));
         Assert.False(new ShotLayout { Id = "Bad Id", Name = "x" }.IsValid);
     }
+    [Fact]
+    public async Task DataShotLayoutSettingsRoundTripAndRejectOrphanRows()
+    {
+        var store = new GraphicsDocumentStore(DocumentPath);
+        var layout = new ShotLayout
+        {
+            Id = "scores", Name = "Scores", RowIds = ["first", "second"],
+            RowSettings = new Dictionary<string, ShotLayoutRowSettings>
+            {
+                ["first"] = new() { DataPin = new("scores", 2) },
+                ["second"] = new() { Overrides = new Dictionary<string, JsonElement> { ["heading"] = JsonSerializer.SerializeToElement("Final") } }
+            }
+        };
+
+        await store.SaveAsync(Example with { ShotLayouts = [layout] });
+        var loaded = Assert.Single((await new GraphicsDocumentStore(DocumentPath).LoadAsync()).Document.ShotLayouts);
+        Assert.Equal(new ShotLayoutDataPin("scores", 2), loaded.RowSettings["first"].DataPin);
+        Assert.Equal("Final", loaded.RowSettings["second"].Overrides["heading"].GetString());
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(Example with { ShotLayouts = [layout with { RowIds = ["first"] }] }));
+    }
+
+    [Theory]
+    [InlineData("""{"rowSettings":{"row":{"overrides":{"heading":"A","heading":"B"}}}}""")]
+    [InlineData("""{"rowSettings":{"row":{"dataPin":{"sourceId":"scores","revision":1}},"row":{"dataPin":{"sourceId":"scores","revision":2}}}}""")]
+    public void DataShotLayoutRejectsDuplicateJsonKeys(string json)
+    {
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<ShotLayout>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    }
+
     private const string V2Document = """
     {"schemaVersion":2,"showId":"default","authority":"legacy",
      "cues":[{"id":"cue-one","name":"Interview","scope":"global","sceneId":"","sourceId":"","draft":{"templateId":"compact-solid","templateVersion":1,"fields":{"name":"Ada","title":""},"style":{},"animations":{"in":{"type":"none","direction":"left","easing":"linear","durationMs":0},"out":{"type":"none","direction":"left","easing":"linear","durationMs":0}}}}],
