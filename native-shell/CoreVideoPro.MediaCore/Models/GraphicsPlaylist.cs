@@ -125,6 +125,10 @@ public sealed record ShotLayout
     public string Name { get; init; } = "";
     public string SceneId { get; init; } = "";
     public IReadOnlyList<string> RowIds { get; init; } = [];
+
+    [JsonConverter(typeof(ShotLayoutUniqueMapConverter<ShotLayoutRowSettings>))]
+    public IReadOnlyDictionary<string, ShotLayoutRowSettings> RowSettings { get; init; } =
+        new Dictionary<string, ShotLayoutRowSettings>(StringComparer.Ordinal);
     /// <summary>"" or Shift+F1..Shift+F11 (Shift+F12 is Play Out all).</summary>
     public string Hotkey { get; init; } = "";
     public bool PlayOutOthers { get; init; }
@@ -134,5 +138,7 @@ public sealed record ShotLayout
     [JsonIgnore] public bool IsValid => GraphicsPlaylistRow.ValidId(Id) && Name is { Length: > 0 and <= 128 } &&
         SceneId is not null && SceneId.Length <= 64 && Hotkey is not null && ValidHotkey(Hotkey) &&
         RowIds is not null && RowIds.Count <= 16 && RowIds.All(GraphicsPlaylistRow.ValidId) &&
-        RowIds.Distinct(StringComparer.Ordinal).Count() == RowIds.Count;
+        RowIds.Distinct(StringComparer.Ordinal).Count() == RowIds.Count &&
+        RowSettings is { Count: <= 16 } &&
+        RowSettings.All(pair => RowIds.Contains(pair.Key, StringComparer.Ordinal) && pair.Value is { IsValid: true });
 }

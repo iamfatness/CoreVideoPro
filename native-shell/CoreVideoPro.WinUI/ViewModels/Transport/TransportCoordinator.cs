@@ -23,7 +23,7 @@ namespace CoreVideoPro.WinUI.ViewModels.Transport;
 /// <see cref="ITransportHost"/> + inline <see cref="ITransportDispatcher"/>), which is what
 /// carries the first-ever characterization tests of transport orchestration.
 /// </summary>
-public sealed class TransportCoordinator
+public sealed partial class TransportCoordinator
 {
     private readonly IMediaCoreBridge _bridge;
     private readonly ITransportHost _host;
@@ -153,8 +153,18 @@ public sealed class TransportCoordinator
         _takeInFlight = true;
         try
         {
+            if (_guardedTake is { } pending)
+                return await ResolveGuardedTakeAsync(pending);
+            if (_host.PreparingShotLayout)
+                return TakeResult.Failed("Wait for all Shot Layout graphics to prepare.");
+            var prepared = _host.PreparedShotLayout;
+            var guarded = prepared is null ? null : _host.CreateGuardedTake(prepared);
+            if (prepared is not null && guarded is null)
+                return TakeResult.Failed("The Shot Layout cue changed. Cancel and cue it again.");
+            if (guarded is not null && !_bridge.Running)
+                return TakeResult.Failed("The core is offline. Cue the Shot Layout again after it reconnects.");
             var previousProgramSceneId = _host.ActiveSceneId;
-            var takenSceneId = _host.PreviewSceneId;
+            var takenSceneId = guarded?.Guard.KeepProgramScene == true ? previousProgramSceneId : _host.PreviewSceneId;
             if (!_host.IsSceneAvailable(previousProgramSceneId) || !_host.IsSceneAvailable(takenSceneId))
             {
                 const string unavailable = "Take unavailable - select an available Preview scene.";
@@ -168,42 +178,51 @@ public sealed class TransportCoordinator
             var selectionBeforeTake = _host.CaptureMediaSelection();
             // Captured before the swap/copy: the go-live policy compares before vs after.
             var previousProgramRoutes = _host.GetResolvedProgramRoutes();
-            _host.BeginTakeMutation();
-            try
+            if (guarded?.Guard.KeepProgramScene != true)
             {
-                if (previousProgramSceneId == takenSceneId && _host.HasPendingPreviewChanges(takenSceneId))
-                    _host.CopyPreviewRoutesToScene(takenSceneId);
-                else
+                _host.BeginTakeMutation();
+                try
                 {
-                    _host.ActiveSceneId = takenSceneId;
-                    _host.PreviewSceneId = previousProgramSceneId;
+                    if (previousProgramSceneId == takenSceneId && _host.HasPendingPreviewChanges(takenSceneId))
+                        _host.CopyPreviewRoutesToScene(takenSceneId);
+                    else
+                    {
+                        _host.ActiveSceneId = takenSceneId;
+                        _host.PreviewSceneId = previousProgramSceneId;
+                    }
+                    var wentLive = _host.AssetsEnteringProgram(previousProgramRoutes);
+                    // Go-live is the only event a source reacts to: promote only what entered Program.
+                    var promoted = wentLive.Count > 0 && _host.PromoteProgramMediaRouteToPlayback(wentLive);
+                    // T1.2 task 3 (controller ruling, folded in): a clip that LEFT Program on this
+                    // Take also needs its bin row refreshed (and the SELECTED asset's local playing
+                    // flag cleared if it is the one that left) — but only when the Program media SET
+                    // actually changed, and only when Promote did NOT already rebuild the bin. This
+                    // is what keeps an automated Magic Scene Take between two non-media scenes from
+                    // rebuilding MediaBinGroups on every cut, and avoids a double rebuild the Take a
+                    // clip DOES go live on.
+                    if (!promoted && !string.Equals(
+                            StudioViewModel.BuildProgramMediaRouteSignature(previousProgramRoutes),
+                            StudioViewModel.BuildProgramMediaRouteSignature(_host.GetResolvedProgramRoutes()),
+                            StringComparison.Ordinal))
+                    {
+                        _host.RefreshMediaBinPlaybackIndicators(previousProgramRoutes);
+                    }
+                    _host.RefreshPreviewRoutingState();
                 }
-                var wentLive = _host.AssetsEnteringProgram(previousProgramRoutes);
-                // Go-live is the only event a source reacts to: promote only what entered Program.
-                var promoted = wentLive.Count > 0 && _host.PromoteProgramMediaRouteToPlayback(wentLive);
-                // T1.2 task 3 (controller ruling, folded in): a clip that LEFT Program on this
-                // Take also needs its bin row refreshed (and the SELECTED asset's local playing
-                // flag cleared if it is the one that left) — but only when the Program media SET
-                // actually changed, and only when Promote did NOT already rebuild the bin. This
-                // is what keeps an automated Magic Scene Take between two non-media scenes from
-                // rebuilding MediaBinGroups on every cut, and avoids a double rebuild the Take a
-                // clip DOES go live on.
-                if (!promoted && !string.Equals(
-                        StudioViewModel.BuildProgramMediaRouteSignature(previousProgramRoutes),
-                        StudioViewModel.BuildProgramMediaRouteSignature(_host.GetResolvedProgramRoutes()),
-                        StringComparison.Ordinal))
-                {
-                    _host.RefreshMediaBinPlaybackIndicators(previousProgramRoutes);
-                }
-                _host.RefreshPreviewRoutingState();
+                finally { _host.EndTakeMutation(); }
             }
-            finally { _host.EndTakeMutation(); }
             var rollbackScenes = sealRollback();
             var selectionAfterTake = _host.CaptureMediaSelection();
             // A copy: the host may hand back a list the scene rollback later refills in place.
             var attemptedProgramRoutes = _host.GetResolvedProgramRoutes().ToList();
             bool rollback() => RollBackTake(rollbackScenes, selectionBeforeTake, selectionAfterTake, attemptedProgramRoutes);
 
+            if (guarded is not null)
+            {
+                _guardedTake = new(guarded, previousProgramSceneId, rollback);
+                _host.NotifyGuardedTakeChanged();
+                return await ResolveGuardedTakeAsync(_guardedTake);
+            }
             if (!_bridge.Running)
             {
                 const string offline = "Program selected locally; Take was not sent because the media core is offline.";

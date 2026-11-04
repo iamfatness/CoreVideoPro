@@ -846,6 +846,27 @@ class MediaCore {
     std::vector<std::string> coldMediaSourceIds;
   };
 
+  struct GuardedLayoutTake {
+    std::string operationId, coreEpoch, sceneId;
+    uint64_t previewRevision = 0;
+    bool keepProgramScene = false, playOutOthers = false;
+    std::vector<graphics::GraphicsInstances::LayoutCue> cues;
+    rpc::Json::Array commands;
+    std::vector<std::string> coldSources;
+    double warmupMs = 0;
+    bool ready = false;
+  };
+
+  bool handleGuardedLayoutBatch(const rpc::Json::Array& commands);
+  void observeGuardedLayoutWarmup(const std::vector<modules::VideoFrame>& frames, double elapsedMs);
+  std::string validateGuardedLayout(const GuardedLayoutTake& take) const;
+  void commitGuardedLayout(GuardedLayoutTake take);
+  void recordLayoutTake(const std::string& id, const std::string& disposition, const std::string& reason = {});
+  std::optional<GuardedLayoutTake> pendingLayoutTake_;
+  std::deque<rpc::Json> layoutTakeReceipts_;
+  bool committingLayoutTake_ = false;
+  uint64_t previewSceneRevision_ = 0;
+
   void beginTakeTransition(const rpc::Json& command);
   void advanceTakeTransition(double frameIntervalMs);
   [[nodiscard]] modules::CompositorRenderPlan applyTakeTransition(

@@ -457,7 +457,11 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
       projectionMutex_(&core.snapshotProjectionMutex_) {
   ScopedLockHoldTimer captureTimer("rpc.metadata-capture", LockHoldGuardrail::kDefaultBudgetUs);
   appliedControlRevision_ = core.appliedControlRevision_;
-  graphicsState_ = core.graphicsInstances_.snapshot();
+  auto graphicsState = core.graphicsInstances_.snapshot().asObject();
+  if (!core.layoutTakeReceipts_.empty())
+    graphicsState.emplace("layoutTakeReceipts", rpc::Json::Array(core.layoutTakeReceipts_.begin(), core.layoutTakeReceipts_.end()));
+  graphicsState_ = std::move(graphicsState);
+  previewSceneRevision_ = core.previewSceneRevision_;
   resourceEventStaging_ = core.pendingResourceEvents_.facts();
   audioChannels_ = core.audioChannels_;
   audioCompGainReductionDbBySource_ = core.audioCompGainReductionDbBySource_;
@@ -1063,6 +1067,7 @@ rpc::Json CoreStateCapture::sessionState() const {
     const auto previewPlanLayers = previewPlanLayerCount_;
     state.emplace("previewScene", rpc::Json::Object{
                                       {"sceneId", previewSceneId_},
+                                      {"revision", static_cast<double>(previewSceneRevision_)},
                                       {"routeCount", previewRouteCount_},
                                       {"overlayCount", previewOverlayCount_},
                                       {"layerCount", previewPlanLayers},

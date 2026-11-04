@@ -356,7 +356,7 @@ bool GraphicsInstances::apply(const Json& command) {
   static const std::map<std::string, std::set<std::string>> actionKeys{
       {"graphics-instance-create", {"templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement", "image"}},
       {"graphics-instance-update", {"label", "rackOrder", "templateVersion", "sourceId", "fields", "style", "target", "animations", "binding", "placement", "image"}},
-      {"graphics-instance-cue", {"rideTake"}}, {"graphics-instance-trigger", {"action", "target"}},
+      {"graphics-instance-cue", {"rideTake", "cueOwner"}}, {"graphics-instance-trigger", {"action", "target", "cueOwner"}},
       {"graphics-clock-control", {"action","configuration","expectedClockRevision"}},
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}},
       {"graphics-automation-configure", {"configuration", "expectedAutomationRevision"}}, {"graphics-automation-control", {"action", "mode", "expectedAutomationRevision", "expectedActivationRevision"}},
@@ -369,6 +369,10 @@ bool GraphicsInstances::apply(const Json& command) {
     if (!common.count(key) && !allowed->second.count(key)) return finish(requestId, false, "unsupported-request-field");
     if(key=="includeThumbnails") {if(!value.isBool()) return finish(requestId,false,"invalid-thumbnail-demand");}
     else if(key=="rideTake") {if(!value.isBool()) return finish(requestId,false,"invalid-ride-take");}
+    else if (key == "cueOwner") {
+      if (!value.isString() || !validId(value.asString()))
+        return finish(requestId, false, "invalid-cue-owner");
+    }
     else if (key == "manifest") {
       if (!value.isString() || value.asString().empty() || value.asString().size() > 256 * 1024)
         return finish(requestId, false, "template-manifest-size");
@@ -550,6 +554,18 @@ bool GraphicsInstances::apply(const Json& command) {
     return finish(requestId, false, "invalid-trigger-target");
   if (triggerTarget == "cue" && !instance.cue) return finish(requestId, false, "cue-not-ready");
   const double expected = body->getNumber("expectedRevision", -1);
+  const auto cueOwner = body->getString("cueOwner");
+  if (!cueOwner.empty() && type == "graphics-instance-trigger") {
+    if (body->getString("action") != "uncue") return finish(requestId, false, "invalid-cue-owner");
+    if (instance.cueOwner != cueOwner || expected != static_cast<double>(instance.cueRequestedRevision))
+      return finish(requestId, false, "cue-owner-conflict");
+    clearCue(instance);
+    return finish(requestId, true, "uncued");
+  }
+  if (!cueOwner.empty() && (instance.cued || instance.cue || instance.pendingCue))
+    return finish(requestId, false, "preview-cue-already-exists");
+  if (triggerTarget == "cue" && !instance.cueOwner.empty())
+    return finish(requestId, false, "layout-cue-requires-guarded-take");
   const auto expectedIdentity = triggerTarget == "cue" ? instance.cue : instance.draft;
   if (expected != static_cast<double>(expectedIdentity->number)) return finish(requestId, false, "revision-conflict");
   if(type=="graphics-instance-update" && (body->get("label") || body->get("rackOrder"))) {
@@ -659,8 +675,10 @@ bool GraphicsInstances::apply(const Json& command) {
     if (instance.draft->binding && !sources_->contains(*instance.draft->binding)) return finish(requestId, false, "source-identity-changed");
     if (!instance.draft->fieldsReady) return finish(requestId, false, "required-field-empty");
     if (instance.preparation == "failed") return finish(requestId, false, "graphics-preparation-failed");
+    if (cueOwner.empty() && !instance.cueOwner.empty()) clearCue(instance);
     instance.cued = true;
-    instance.rideTake = body->get("rideTake") ? body->get("rideTake")->asBool() : true;  // operators ride the Take unless they opt out
+    instance.cueOwner = cueOwner;
+    instance.rideTake = cueOwner.empty() && (!body->get("rideTake") || body->get("rideTake")->asBool());
     instance.cueRequestedRevision = instance.draft->number;
     instance.cueWarning.clear();
     if (instance.readyRevision == instance.draft->number && instance.draftResource) {
@@ -718,10 +736,8 @@ bool GraphicsInstances::apply(const Json& command) {
     if (action == "clear") {
       instance.program.reset(); instance.clockProgramPending.reset(); instance.awaitingEntrance=false; instance.programResource.reset(); instance.timeline.clear(); instance.layered.clear(); instance.awaitingEntrance=false; instance.visibility = "hidden";
       instance.firstDrawSubmittedFrame = 0;
-    } else if (instance.program) {
-      instance.awaitingEntrance=false;
-      if (layered(*instance.program)) instance.layered.hide(monotonicMs_());
-      else instance.timeline.hide(instance.program->exit, monotonicMs_());
+    } else {
+      startHide(instance);
       advanceAnimations();
     }
     return finish(requestId, true, instance.program ? "hide-accepted" : "hidden");
@@ -1142,7 +1158,56 @@ void GraphicsInstances::show(Instance& instance, bool fromCue) {
   instance.showPending = instance.updatePending = false;
 }
 
+void GraphicsInstances::startHide(Instance& instance) {
+  instance.crawlBoundaryMs.reset();
+  instance.showPending = instance.updatePending = false;
+  if (!instance.program) return;
+  instance.awaitingEntrance = false;
+  const auto now = monotonicMs_();
+  if (layered(*instance.program)) instance.layered.hide(now);
+  else instance.timeline.hide(instance.program->exit, now);
+}
+
+std::string GraphicsInstances::unavailableLayoutCue(const std::string& owner,
+    const std::vector<LayoutCue>& cues) const {
+  for (const auto& cue : cues) {
+    const auto found = instances_.find(cue.instanceId);
+    if (found == instances_.end()) return cue.instanceId;
+    const auto& instance = found->second;
+    if (!instance.cued || instance.cueOwner != owner || instance.pendingCue || !instance.cue ||
+        instance.cue->number != cue.revision ||
+        (instance.cue->binding && !sources_->contains(*instance.cue->binding)) ||
+        !resourceMatches(instance.cueResource, instance.cue->contentHash))
+      return cue.instanceId;
+  }
+  return {};
+}
+
+bool GraphicsInstances::commitLayoutTake(const std::string& owner,
+    const std::vector<LayoutCue>& cues, bool playOutOthers) {
+  if (cues.empty() || !unavailableLayoutCue(owner, cues).empty()) return false;
+  if (playOutOthers) {
+    for (auto& entry : instances_) {
+      const auto& id = entry.first;
+      auto& instance = entry.second;
+      if ((!instance.program && !instance.showPending) ||
+          std::any_of(cues.begin(), cues.end(), [&](const auto& cue) { return cue.instanceId == id; })) continue;
+      startHide(instance);
+      automation_.manual(id);
+    }
+  }
+  for (const auto& cue : cues) {
+    auto& instance = instances_.at(cue.instanceId);
+    show(instance, true);
+    clearCue(instance);
+  }
+  advanceAnimations();
+  publish();
+  return true;
+}
+
 void GraphicsInstances::clearCue(Instance& instance) {
+  instance.cueOwner.clear();
   instance.cue.reset(); instance.cueResource.reset(); instance.pendingCue.reset();
   instance.cued = false; instance.cuePreparation = "unprepared"; instance.cueWarning.clear();
 }
@@ -1247,7 +1312,7 @@ void GraphicsInstances::publish() {
       {"cueTemplateVersion",instance.cue && instance.cue->definition ? instance.cue->definition->version() : 1},
       {"programTemplateVersion",instance.program && instance.program->definition ? instance.program->definition->version() : 1},
       {"cueRequestedRevision", double(instance.cueRequestedRevision)},
-      {"cuePending", instance.pendingCue != nullptr}, {"cuePreparation", instance.cuePreparation}, {"cueWarning", instance.cueWarning},
+      {"cuePending", instance.pendingCue != nullptr}, {"cueOwner", instance.cueOwner}, {"cuePreparation", instance.cuePreparation}, {"cueWarning", instance.cueWarning},
       {"cueFields", instance.cue ? (instance.cue->definition ? instance.cue->templateFields : Json{Json::Object{{"name", instance.cue->name}, {"title", instance.cue->title}}}) : Json{}},
       {"cueStyle", instance.cue ? styleState(instance.cue->appearance) : Json{}},
       {"cueBinding", instance.cue && instance.cue->binding ? contracts::toJson(*instance.cue->binding) : Json{}},

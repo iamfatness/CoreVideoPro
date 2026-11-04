@@ -462,12 +462,12 @@ it, so a single Take changes the picture and the graphics together (that is what
 the core-side "cued graphics ride the Take" work exists for). The SHOT LAYOUTS
 row sits under the On Air strip in the Graphics tab (full form only). Click a
 layout to cue it; the selected layout offers "Cue and Take"; "Edit layouts" opens
-the flyout to name it, pick the scene, tick the playlist rows, set its Shift+F
+the editor to name it, pick the scene, tick the playlist rows, set its Shift+F
 key and choose whether it plays out other graphics.
 
 `ShotLayout { Id, Name, SceneId, RowIds[], Hotkey ("Shift+F1".."Shift+F11" or
 blank), PlayOutOthers }` persists on the graphics document as `ShotLayouts`
-(schema stays 2; older documents load it empty). The default playlist installs
+(older documents load it empty). The default playlist installs
 four presets:
 
 | Layout | Scene | Rows | Hotkey | Notes |
@@ -482,7 +482,7 @@ Cue (`graphics.layout.cue`) selects the scene to Preview through the same
 each row. A Guest row cues the entries bound to the slots that scene routes (Show
 Input slot routes and fixed Zoom participant routes); when none resolve it cues
 the current Program subject. `PlayOutOthers` plays out Program graphics the layout
-does not carry. Everything is resolved before the first side effect: a layout
+does not carry. The scene and playlist references are checked before cueing. A layout
 whose scene is no longer in the show, or that names a playlist row that no longer
 exists, is refused whole with the reason, never silently skipped. Cue and Take
 (`graphics.layout.take`) runs the ordinary Take afterwards (a layout with no scene
@@ -495,6 +495,36 @@ when the scene or a row does not exist; a hotkey held by another layout moves),
 `graphics.layout.take` (`layoutId`). `ControlState.GraphicsLayouts` carries id,
 name, sceneId and hotkey; OSC feedback adds
 `graphics/layout/<id>/name|scene|hotkey|onPreview`.
+
+### Data-aware Shot Layouts
+
+In **Graphics → Operate → Edit layouts**, tick the playlist rows to carry and
+expand **Values and data** on a selected row. Use the playlist's published data
+or pin one of the available revisions. You can also override declared text,
+number, Boolean and color variables for this layout. The editor uses the
+row's current template
+schema. A pin that has aged out or a field that has changed type blocks Cue
+until you correct the layout.
+
+Select the layout card to Cue it. The status lists the selected scene, each
+graphic, and its captured dataset revision. **Cancel layout** releases its
+private cues. When the status says **Ready for Take**, use **Take** in Graphics
+or Studio. A Shift+F1 through Shift+F11 layout hotkey still cues the layout.
+A data refresh after Cue leaves the captured values intact. Explicit
+publication and live follow apply to the Program row after Take.
+
+The core validates the prepared scene and all cue revisions together. A failed
+check holds Program. **Play out other graphics** takes effect when the guarded
+Take commits. **No scene change** keeps the current Program scene and routes.
+A cold cut holds the outgoing picture and graphics while the incoming media
+warms. If the Take reply is interrupted, **Check Take** reads the original
+operation receipt. A refused attempt needs a fresh Cue.
+
+The optional Shot Layout row settings use the existing document and
+`graphics.layout.*` actions. Older layouts without row settings retain their
+existing Cue, Take, and Clean behavior. A pin references the row's published
+copy or the latest accepted source data. Available revisions can show their
+load time.
 
 ## Guest names from Sources
 

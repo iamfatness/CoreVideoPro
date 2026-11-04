@@ -1,4 +1,5 @@
 using System.Collections.Specialized;
+using System.Text.Json;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
@@ -19,6 +20,7 @@ public sealed partial class StudioViewModel
     public GraphicsPlayoutService GraphicsPlayout => _graphicsPlayout ??= CreateGraphicsPlayout();
     public GraphicsStripState GraphicsStrip => GraphicsPlayout.Strip;
     public string GraphicsPlayoutStatus => GraphicsPlayout.Status;
+    public bool GraphicsLayoutTakePending => _transportCoordinator?.GuardedTakePending == true;
     public bool GraphicsPlayoutBusy => GraphicsPlayout.Busy || GraphicsLibrary.Busy;
     /// <summary>One entry per bound roster slot of every guest row, with the Sources-page text resolved.</summary>
     public IReadOnlyList<GraphicsPlaylistEntry> GuestEntries { get; private set; } = [];
@@ -30,6 +32,8 @@ public sealed partial class StudioViewModel
         service.Changed += (_, _) => {
             OnPropertyChanged(nameof(GraphicsPlayoutStatus)); OnPropertyChanged(nameof(GraphicsPlayoutBusy));
             RefreshGuestEntries(service);
+            OnPropertyChanged(nameof(CanTake));
+            TakeCommand.NotifyCanExecuteChanged();
         };
         service.StripChanged += (_, _) => OnPropertyChanged(nameof(GraphicsStrip));
         ShowInputEditors.CollectionChanged += OnShowInputEditorsChangedForPlayout;
@@ -71,7 +75,7 @@ public sealed partial class StudioViewModel
 
     /// <summary>graphics.layout.cue: scene to Preview, then the layout's rows to Preview; one Take carries both.</summary>
     public Task<NativeGraphicsOperationResult> CueLayoutAsync(string layoutId, CancellationToken cancellation = default) =>
-        GraphicsPlayout.CueLayoutAsync(layoutId, SelectSceneForLayoutAsync, ProgramSubjectGuestEntry, GuestEntriesRoutedIn(GraphicsPlayout.Layout(layoutId)?.SceneId ?? ""), cancellation);
+        GraphicsPlayout.CueLayoutAsync(layoutId, SelectSceneForLayoutAsync, ProgramSubjectGuestEntry, GuestEntriesRoutedIn(GraphicsPlayout.Layout(layoutId)?.SceneId ?? ""), cancellation, CaptureLayoutPreviewStamp);
 
     /// <summary>graphics.layout.take: CueLayoutAsync then the ordinary Take (TransportCoordinator.TakeAsync).</summary>
     public Task<NativeGraphicsOperationResult> CueAndTakeLayoutAsync(string layoutId, CancellationToken cancellation = default) =>
@@ -79,7 +83,10 @@ public sealed partial class StudioViewModel
             if (!TakeCommand.CanExecute(null)) return "Take is unavailable. Queue a valid Preview scene or a changed draft and wait for any current Take to finish.";
             try { var taken = await TakeForControlAsync(); return taken.Succeeded ? null : taken.Error ?? "Take was not confirmed by the media core."; }
             catch (Exception ex) when (ex is not OutOfMemoryException) { return $"Take failed: {ex.Message}"; }
-        }, cancellation);
+        }, cancellation, CaptureLayoutPreviewStamp);
+
+    private string CaptureLayoutPreviewStamp() =>
+        JsonSerializer.Serialize(new { ActiveSceneId, PreviewSceneId, PreviewScene, Routes = GetPreviewRoutesForSync() });
 
     /// <summary>Called from ObserveGraphicsState for every native snapshot; cheap when nothing changed.</summary>
     private void ObserveGraphicsPlayout(NativeGraphicsState? state)

@@ -906,6 +906,7 @@ public sealed record NativeDirectorSlotBinding
 
 public sealed record NativeMediaCorePreviewScene
 {
+    public long Revision { get; init; }
     public string? SceneId { get; init; }
     public int RouteCount { get; init; }
     public int LayerCount { get; init; }
