@@ -220,13 +220,13 @@ public sealed partial class GraphicsWorkspaceLibrary
     internal NativeGraphicsDraft? EditorDraft => _session.Draft;
     /// <summary>Versions holding unsaved template edits the operator moved off (never evicted).</summary>
     internal IEnumerable<(string TemplateId, int TemplateVersion)> UnsavedTemplateEdits => _session.UnsavedTemplateEdits;
-    private async Task<bool> Save(GraphicsShowDocument document, string success)
+    private async Task<bool> Save(GraphicsShowDocument document, string success, CancellationToken cancellation = default)
     {
         await LoadAsync(); if (ReadOnly) return Fail("This graphics library is read-only. Original retained.");
         if (Busy) return Fail("A graphics save is in progress. Wait for completion before another edit.");
         document = PruneTemplates(document);
         Busy = true; Changed?.Invoke(this, EventArgs.Empty);
-        try { await _store.SaveAsync(document); Document = document; Status = success; Changed?.Invoke(this, EventArgs.Empty); return true; }
+        try { await _store.SaveAsync(document, cancellation); Document = document; Status = success; Changed?.Invoke(this, EventArgs.Empty); return true; }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException) { return Fail(ex.Message); }
         finally { Busy = false; Changed?.Invoke(this, EventArgs.Empty); }
     }

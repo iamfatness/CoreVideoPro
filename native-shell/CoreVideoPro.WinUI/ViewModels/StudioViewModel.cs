@@ -1692,6 +1692,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = RefreshCaptureDevicesAsync();
         _ = RefreshAudioCaptureDevicesAsync();
         _ = RefreshAudioRenderDevicesAsync();
+        GraphicsFeeds.Start();
         _ = StartMediaCoreOnLaunchAsync();
         }
     }

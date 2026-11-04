@@ -135,6 +135,28 @@ reloads** on a row to publish future successful reloads automatically. The
 inspector shows loaded, selected, Program and pending revisions. Failed
 preparation leaves the accepted Program list playing.
 
+## Remote graphics feeds
+
+Open **Graphics → Design → Remote feeds…**. Add a published Google Sheets CSV
+tab, an RSS 2.0 feed or an HTTPS JSON endpoint returning a flat array of objects.
+For Sheets, publish only a dedicated tab containing public data and use the CSV
+link for that tab. Select a stable ID column for Sheets and JSON. RSS uses item
+GUIDs or links. The initial RSS and JSON paths use public URLs without query
+parameters.
+
+Feed polling starts off. Save the configuration, enable polling and use
+**Refresh now** when you want an early check. It respects the five-second
+minimum between requests. The default interval is 15 seconds. The settings
+dialog shows available columns and their types once a valid dataset lands.
+Use **Create table…** or **Create crawl…** to bind that feed to a design.
+
+Operate shows feed health, last successful check, accepted data age and loaded,
+published and Program revisions. **Publish data** is manual by default. Enable
+**Live follow feed updates** on a row to publish successful changes automatically.
+Tables and crawls use their existing native preparation and publication rules.
+An invalid or unavailable feed retains the last accepted data and Program
+content. Disabling polling keeps the saved dataset available for the next show.
+
 ## Designs (Graphics Designer slice 1)
 
 A **design** is a graphic the operator authored, stored in the show's graphics

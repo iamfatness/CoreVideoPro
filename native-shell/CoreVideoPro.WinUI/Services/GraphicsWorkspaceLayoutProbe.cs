@@ -347,6 +347,29 @@ internal static class GraphicsWorkspaceLayoutProbe
         page.UpdateLayout();
         Require(Button(page, "Data table…").ActualHeight > 0, "Design did not show the local data import entry.");
         Require(Button(page, "Data crawl…").ActualHeight > 0, "Design did not show the crawl import entry.");
+        Require(Button(page, "Remote feeds…").ActualHeight > 0, "Design did not show remote feed configuration.");
+        var remote = await studio.GraphicsLibrary.SaveFeedAsync(new("probe-feed", "Probe HTTPS feed",
+            "json", "https://example.com/fixture", "id", Enabled: true));
+        Require(remote is not null, "Could not save the isolated feed fixture.");
+        var remoteData = GraphicsLocalData.Parse("id,line\na,First item", "csv", "id");
+        Require(await studio.GraphicsLibrary.StageFeedAsync(remote!, remoteData, DateTimeOffset.UtcNow, default) == GraphicsFeedStage.Updated,
+            "Could not stage the isolated feed fixture.");
+        Require(await studio.GraphicsLibrary.SaveFeedAsync(remote! with { Enabled = false }) is not null,
+            "Could not disable the isolated feed fixture.");
+        Invoke(Button(page, "Remote feeds…"));
+        ContentDialog? feedDialog = null;
+        await Eventually(() => (feedDialog = VisualTreeHelper.GetOpenPopupsForXamlRoot(page.XamlRoot)
+            .Select(p => p.Child).Where(c => c is not null).SelectMany(c => Descendants(c).Prepend(c))
+            .OfType<ContentDialog>().FirstOrDefault(dialog => dialog.Title?.ToString() == "Remote graphics feeds")) is { IsLoaded: true },
+            "Remote feed settings did not open.");
+        Require(Descendants(feedDialog!).OfType<ToggleSwitch>().Single(control => control.Header?.ToString() == "Enable polling").IsOn == false,
+            "Saved disabled feed did not remain off.");
+        Require(Descendants(feedDialog!).OfType<TextBlock>().Any(text => text.Text.Contains("Last successful check") &&
+            text.Text.Contains("Accepted data age")), "Feed settings did not show freshness.");
+        Require(Button(feedDialog!, "Create table…").IsEnabled && Button(feedDialog!, "Create crawl…").IsEnabled,
+            "The accepted dataset cannot be bound to a table or crawl.");
+        await ReviewImageWriter.SaveAsync(feedDialog!, Path.Combine(directory, "graphics-feed-settings.png"));
+        feedDialog!.Hide(); await Task.Delay(120);
         var data = GraphicsLocalData.Parse("id,player,score\na,Ada,9\nb,Bob,12", "csv", "id");
         var binding = new GraphicsDataBinding("probe-data", "id", ["player", "score"], "score", 4, 1);
         Require(await studio.GraphicsLibrary.SaveLocalDataAsync(binding.SourceId, "Probe scores", data) is not null,
@@ -408,6 +431,40 @@ internal static class GraphicsWorkspaceLayoutProbe
             await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-data-crawl-{label}.png"));
         }
         studio.GraphicsPlayout.Observe(new() { CoreEpoch = "probe-crawl" });
+        var remoteBinding = new GraphicsDataBinding("probe-feed", "id", ["line"], null, 8, 1) { Remote = true };
+        var remoteRow = row with
+        {
+            Id = "probe-feed", Name = "Probe remote table", DataBinding = remoteBinding,
+            Fields = GraphicsDataTable.Fields(remoteData, remoteBinding)
+        };
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([remoteRow]), "Could not save the remote table row.");
+        playout.SelectRow(remoteRow.Id);
+        var remoteState = new NativeGraphicsState
+        {
+            CoreEpoch = "probe-feed",
+            Instances = [new()
+            {
+                InstanceId = GraphicsPlayoutService.InstanceIdFor(remoteRow.Id, ""), Revision = 2, ProgramRevision = 1,
+                Preparation = "preparing", Visibility = "on-air",
+                Fields = new() { AdditionalFields = GraphicsDataTable.Fields(remoteData, remoteBinding with { Revision = 2 }) },
+                ProgramFields = new() { AdditionalFields = GraphicsDataTable.Fields(remoteData, remoteBinding) }
+            }]
+        };
+        foreach (var (width, height, label) in new[] { (1320d, 640d, "1360x768"), (1560d, 772d, "1600x900"), (1840d, 820d, "1080p") })
+        {
+            page.Width = width; page.Height = height;
+            await Task.Delay(80);
+            studio.GraphicsPlayout.Observe(remoteState);
+            playout.Refresh(); page.UpdateLayout();
+            Require(!Button(playout, "Refresh now").IsEnabled &&
+                Button(playout, "Publish data").ActualHeight > 0, "Remote feed actions are unavailable or polling is enabled.");
+            Require(Descendants(playout).OfType<TextBlock>().Any(text => text.Text.Contains("Program data 1 · requested 2")) &&
+                Descendants(playout).OfType<TextBlock>().Any(text => text.Text.Contains("Accepted data age")),
+                "Remote table freshness and Program revision are missing.");
+            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-feed-operate-{label}.png"));
+        }
+        studio.GraphicsPlayout.Observe(new() { CoreEpoch = "probe-feed" });
+        checks.Add("Remote feed settings and Operate show enabled state, freshness and Program versus requested data at all viewport sizes.");
         checks.Add("Operate exposes paused crawl controls and accepted and pending data revisions at all three viewport sizes.");
         if (studio.GraphicsWorkspace.State is { } graphics)
             studio.GraphicsWorkspace.Observe(graphics with { Templates = [.. graphics.Templates, new NativeGraphicsTemplate

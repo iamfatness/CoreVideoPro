@@ -308,7 +308,7 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Equal("program", update.GetProperty("target").GetString());
         Assert.Equal("2", update.GetProperty("fields").GetProperty(GraphicsCrawlData.RevisionField).GetString());
         Assert.Single(Bodies("graphics.instance.trigger"));
-        Assert.True((await service.SetCrawlLiveFollowAsync(row.Id, true)).Accepted);
+        Assert.True((await service.SetDataLiveFollowAsync(row.Id, true)).Accepted);
         currentBinding = service.Row(row.Id)!.DataBinding!;
         var rejected = await service.StageDataAsync(row.Id, currentBinding, GraphicsLocalData.Parse("wrong\nUnusable", "csv", null));
         Assert.False(rejected.Accepted);
@@ -324,6 +324,54 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Equal(3, later.Document.Playlist.Single().DataBinding!.Revision);
         Assert.True((await service.PlayOutAsync(cue.InstanceId)).Accepted);
         Assert.Equal("hide", Bodies("graphics.instance.trigger").Last().GetProperty("action").GetString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RemoteFeedKeepsCuePinnedAndFollowsOnlyAfterOptIn(bool crawl)
+    {
+        const string design = "design-remote";
+        var data = GraphicsLocalData.Parse("id,line\na,First", "csv", "id");
+        var next = GraphicsLocalData.Parse("id,line\na,Second", "csv", "id");
+        var later = GraphicsLocalData.Parse("id,line\na,Third", "csv", "id");
+        var binding = new GraphicsDataBinding("feed", "id", ["line"], null, 8, 1) { Crawl = crawl ? new() : null, Remote = true };
+        var fields = GraphicsDataTable.Fields(data, binding);
+        _state = _state with { Templates = [.. _state.Templates, Template(design, "title", "declarative", fields.Keys.ToArray())] };
+        var (library, service) = Build();
+        var definition = Assert.IsType<GraphicsFeedDefinition>(await library.SaveFeedAsync(
+            new("feed", "Feed", "json", "https://example.com/feed", "id", Enabled: true)));
+        var now = DateTimeOffset.UtcNow;
+        Assert.Equal(GraphicsFeedStage.Updated, await service.StageFeedAsync(definition, data, now, default));
+        var row = new GraphicsPlaylistRow { Id = "feed", Kind = GraphicsPlaylistRow.Title, Name = "Feed",
+            TemplateId = design, TemplateVersion = 1, DataBinding = binding, Fields = fields };
+        Assert.True(await library.SavePlaylistAsync([row]));
+        var cue = await service.ToPreviewAsync(GraphicsPlayoutService.EntryFor(row));
+        Assert.True(cue.Accepted, cue.Reason);
+        Assert.Equal(GraphicsFeedStage.Updated, await service.StageFeedAsync(definition, next, now.AddSeconds(15), default));
+        Assert.Equal(1, library.Document.Playlist.Single().DataBinding!.Revision);
+        Assert.Empty(Bodies("graphics.instance.update"));
+        Assert.Equal(1, _state.Instances.Single().CueRevision);
+        Assert.True((await service.PublishDataAsync(row.Id)).Accepted);
+        Assert.Empty(Bodies("graphics.instance.update"));
+        Assert.Equal(1, _state.Instances.Single().CueRevision);
+        _state = _state with { Instances = _state.Instances.Select(instance => instance with
+        {
+            ProgramRevision = instance.CueRevision, ProgramTemplateVersion = 1, Visibility = "on-air"
+        }).ToArray() };
+        var saved = library.Document.Playlist.Single();
+        Assert.True(await library.SavePlaylistAsync([saved with { DataBinding = saved.DataBinding! with { LiveFollow = true } }]));
+        Assert.Equal(GraphicsFeedStage.Updated, await service.StageFeedAsync(definition, later, now.AddSeconds(30), default));
+        Assert.Equal(3, library.Document.Playlist.Single().DataBinding!.Revision);
+        Assert.Equal("program", Assert.Single(Bodies("graphics.instance.update")).GetProperty("target").GetString());
+        Assert.Equal(1, _state.Instances.Single().CueRevision);
+        Assert.Empty(Bodies("graphics.instance.trigger"));
+
+        var disabled = definition with { Enabled = false };
+        Assert.NotNull(await library.SaveFeedAsync(disabled));
+        Assert.Equal(GraphicsFeedStage.Rejected, await service.StageFeedAsync(definition, next, now.AddSeconds(45), default));
+        Assert.Equal(3, library.Document.DataSources.Single().Revision);
+        Assert.Single(Bodies("graphics.instance.update"));
     }
 
     [Fact] public async Task PlayInSendsTheRowsOwnPlacementWhenItHasOne()
