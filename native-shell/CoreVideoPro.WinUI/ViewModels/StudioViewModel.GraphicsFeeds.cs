@@ -33,6 +33,12 @@ internal sealed class GraphicsFeedViewModel : IDisposable
 
     private string? ResolveCredential(GraphicsFeedDefinition definition) => _credentials.Resolve(_library.Document.ShowId, definition);
 
+    internal Task<bool> HasLocalCredentialAsync(GraphicsFeedDefinition definition) => Task.Run(() =>
+    {
+        try { return ResolveCredential(definition) is not null; }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
+    });
+
     internal Task<GraphicsFeedDefinition?> SaveFeedAsync(GraphicsFeedDefinition definition, string? replacementBearer = null,
         bool clearCredential = false) => _credentials.SaveAsync(_library, definition, replacementBearer, clearCredential);
 
