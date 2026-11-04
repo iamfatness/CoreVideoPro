@@ -1172,8 +1172,6 @@ TEST(GraphicsCompositionPixel, EightProgramAndCueInstancesRefuseExcessRevisionsW
   // Offscreen 320x180 composition/identity coverage, not full-output delivery acceptance.
 }
 
-#endif
-
 TEST(GraphicsCompositionPixel, CrawlUsesPreparedTextAndClipsBothDirections) {
   using namespace corevideo;
   auto compositor = modules::createD3D11Compositor();
@@ -1224,3 +1222,5 @@ TEST(GraphicsCompositionPixel, CrawlUsesPreparedTextAndClipsBothDirections) {
     EXPECT_EQ(blank, compositor->render(plan, {}).preview.bgra);
   }
 }
+
+#endif
