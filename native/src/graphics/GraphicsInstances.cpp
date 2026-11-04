@@ -1187,7 +1187,9 @@ bool GraphicsInstances::commitLayoutTake(const std::string& owner,
     const std::vector<LayoutCue>& cues, bool playOutOthers) {
   if (cues.empty() || !unavailableLayoutCue(owner, cues).empty()) return false;
   if (playOutOthers) {
-    for (auto& [id, instance] : instances_) {
+    for (auto& entry : instances_) {
+      const auto& id = entry.first;
+      auto& instance = entry.second;
       if ((!instance.program && !instance.showPending) ||
           std::any_of(cues.begin(), cues.end(), [&](const auto& cue) { return cue.instanceId == id; })) continue;
       startHide(instance);
