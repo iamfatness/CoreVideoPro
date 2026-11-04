@@ -68,6 +68,7 @@ class GraphicsInstances {
     std::string cuePreparation = "unprepared", cueWarning;
     bool cued = false, showPending = false, updatePending = false;
     bool rideTake = true;
+    std::string cueOwner;
     bool awaitingEntrance = false, currentlyComposed = false;
     uint64_t readyRevision = 0;
     uint64_t cueRequestedRevision = 0;

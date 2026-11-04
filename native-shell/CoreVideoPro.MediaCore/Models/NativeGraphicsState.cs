@@ -132,6 +132,7 @@ public sealed record NativeGraphicsInstance
     public string CrawlPlayback { get; init; } = "";
     public long CrawlPendingRevision { get; init; }
     public long CueRevision { get; init; }
+    public string CueOwner { get; init; } = "";
     public int CueTemplateVersion { get; init; }
     public int ProgramTemplateVersion { get; init; }
     public long CueRequestedRevision { get; init; }

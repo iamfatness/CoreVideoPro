@@ -1189,6 +1189,26 @@ TEST(GraphicsInstances, UncueRemovesExactlyOneInstanceFromPreview) {
   EXPECT_EQ(featuredRev, rowFor(state, "featured").getNumber("programRevision"));
 }
 
+TEST(GraphicsInstances, LayoutCueRequiresItsOwnerAndNeverRidesAnOrdinaryTake) {
+  GraphicsInstances state{"test-core"};
+  ASSERT_TRUE(createFor(state, "featured", "Ada"));
+  const auto revision = rev(state, "featured");
+  readyFor(state, "featured", uint64_t(revision));
+  ASSERT_TRUE(state.apply(requestFor("featured", "graphics-instance-cue",
+      {{"expectedRevision", revision}, {"cueOwner", "layout-one"}, {"rideTake", true}})));
+  state.promoteCuedForTake();
+  EXPECT_EQ(0., rowFor(state, "featured").getNumber("programRevision"));
+  EXPECT_EQ("layout-one", rowFor(state, "featured").getString("cueOwner"));
+  EXPECT_FALSE(state.apply(requestFor("featured", "graphics-instance-trigger",
+      {{"expectedRevision", revision}, {"action", "show"}, {"target", "cue"}})));
+  EXPECT_FALSE(state.apply(requestFor("featured", "graphics-instance-trigger",
+      {{"expectedRevision", revision}, {"action", "uncue"}, {"cueOwner", "layout-two"}})));
+  EXPECT_EQ(revision, rowFor(state, "featured").getNumber("cueRevision"));
+  ASSERT_TRUE(state.apply(requestFor("featured", "graphics-instance-trigger",
+      {{"expectedRevision", revision}, {"action", "uncue"}, {"cueOwner", "layout-one"}})));
+  EXPECT_EQ(0., rowFor(state, "featured").getNumber("cueRevision"));
+}
+
 TEST(GraphicsInstances, RehearsalCueDoesNotRideTheTake) {
   double now = 0; GraphicsInstances state{"test-core", [&] { return now; }}; ASSERT_TRUE(create(state));
   state.observeSources({guest()}, 7, sourceFrames());

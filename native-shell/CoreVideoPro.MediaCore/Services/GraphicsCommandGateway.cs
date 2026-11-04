@@ -76,7 +76,7 @@ public static class GraphicsCommandRequest
         ["graphics.authority.set"] = ["family", "authority"],
         ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement", "image"],
         ["graphics.instance.update"] = ["label","rackOrder","templateVersion", "target", "sourceId", "fields", "style", "animations", "binding", "placement", "image"],
-        ["graphics.instance.cue"] = ["rideTake"], ["graphics.instance.trigger"] = ["action", "target"],
+        ["graphics.instance.cue"] = ["rideTake", "cueOwner"], ["graphics.instance.trigger"] = ["action", "target", "cueOwner"],
         ["graphics.clock.control"] = ["action","configuration","expectedClockRevision"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"],
         ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = ["includeThumbnails"],
@@ -127,6 +127,9 @@ public static class GraphicsCommandRequest
                 else if (property.Value.ValueKind != JsonValueKind.String || Encoding.UTF8.GetByteCount(property.Value.GetString()!) > (property.Name is "packagePath" or "packageRoot" ? 2048 : 256) || property.Value.GetString()!.Contains('\0'))
                     return false;
             }
+            if (body.TryGetProperty("cueOwner", out var cueOwner) &&
+                (!Id(cueOwner.GetString()!) || (action == "graphics.instance.trigger" && Text(body, "action") != "uncue")))
+                return false;
             var libraryAction = action.StartsWith("graphics.automation.",StringComparison.Ordinal) || action=="graphics.authority.set" || action.StartsWith("graphics.template.", StringComparison.Ordinal);
             if(action=="graphics.automation.control" && (Text(body,"action") is "arm" or "enable-automatic") &&
                 (!body.TryGetProperty("expectedAutomationRevision",out var armRevision) || !Integer(armRevision,1) || !body.TryGetProperty("expectedActivationRevision",out var activationRevision) || !Integer(activationRevision,1) || Text(body,"mode") is not ("automatic" or "rehearsal"))) return false;

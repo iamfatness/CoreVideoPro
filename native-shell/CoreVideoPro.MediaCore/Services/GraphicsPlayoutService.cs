@@ -175,8 +175,9 @@ public sealed partial class GraphicsPlayoutService
     /// <see cref="ShotLayout.PlayOutOthers"/> plays out every Program graphic the layout does not
     /// carry. Rows that no longer exist refuse the whole layout; nothing is half-applied.</summary>
     public Task<NativeGraphicsOperationResult> CueLayoutAsync(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
-        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests = null, CancellationToken cancellation = default) =>
-        Run(() => CueLayout(layoutId, sceneSelect, programSubject, sceneGuests, cancellation));
+        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests = null,
+        CancellationToken cancellation = default, Func<string>? previewStamp = null) =>
+        Run(() => CueLayout(layoutId, sceneSelect, programSubject, sceneGuests, cancellation, previewStamp));
 
     /// <summary>CueLayoutAsync, then the ordinary Take through <paramref name="take"/> (null = taken,
     /// otherwise the refusal). A layout with no scene and no rows (Clean) has nothing to Take.</summary>
@@ -187,12 +188,13 @@ public sealed partial class GraphicsPlayoutService
         if (!cued.Accepted) return cued;
         var layout = Layout(layoutId);
         if (layout is null || (layout.SceneId.Length == 0 && layout.RowIds.Count == 0)) return cued with { Reason = cued.Reason + " Nothing to Take." };
+        if (layout.RowSettings.Count > 0) return Refuse("The layout requires a guarded Take.");
         var error = await take(cancellation);
         return error is null ? cued with { Reason = $"{layout.Name} taken." } : Refuse($"{layout.Name} is cued on Preview but the Take was refused: {error}");
     }
 
     private async Task<NativeGraphicsOperationResult> CueLayout(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
-        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests, CancellationToken cancellation)
+        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests, CancellationToken cancellation, Func<string>? previewStamp)
     {
         await _library.LoadAsync();
         if (Layout(layoutId) is not { } layout) return Refuse(layoutId.Length == 0 ? "Choose a shot layout." : "That shot layout no longer exists.");
@@ -220,11 +222,15 @@ public sealed partial class GraphicsPlayoutService
             try { resolved = entries.Select(entry => GraphicsLayoutResolver.Resolve(document, state, layout, entry)).ToArray(); }
             catch (InvalidDataException ex) { return Refuse($"{layout.Name}: {ex.Message}"); }
         }
+        if (resolved is not null)
+            return await PrepareLayout(layout, entries, resolved, sceneSelect, cancellation, previewStamp);
+        if (_preparedLayout is not null)
+            return Refuse("Cancel the prepared Shot Layout before cueing another.");
         if (layout.SceneId.Length > 0 && !await sceneSelect(layout.SceneId, cancellation))
             return Refuse($"{layout.Name}: scene '{layout.SceneId}' is not in this show, so the layout was not cued. Edit the layout to pick a scene.");
         var carried = new HashSet<string>(StringComparer.Ordinal);
         for (var index = 0; index < entries.Count; index++) {
-            var cued = await Cue(entries[index], cancellation, resolved?[index]);
+            var cued = await Cue(entries[index], cancellation);
             if (!cued.Accepted) return cued with { Reason = $"{layout.Name}: {cued.Reason}" };
             carried.Add(cued.InstanceId);
         }
@@ -399,17 +405,27 @@ public sealed partial class GraphicsPlayoutService
     });
 
     private async Task<NativeGraphicsOperationResult> Cue(GraphicsPlaylistEntry entry, CancellationToken cancellation,
-        GraphicsLayoutResolver.ResolvedRow? resolved = null)
+        GraphicsLayoutResolver.ResolvedRow? resolved = null, string? owner = null, DateTime? deadline = null,
+        List<GraphicsLayoutCue>? attempted = null)
     {
         var ensured = await Ensure(entry, cancellation, resolved);
         if (!ensured.Accepted) return ensured;
         var id = ensured.InstanceId; var revision = ensured.CurrentRevision; var epoch = _epoch;
-        var cued = await Send("graphics.instance.cue", new() { ["instanceId"] = id, ["expectedRevision"] = revision, ["rideTake"] = true }, cancellation);
+        var body = new Dictionary<string, object?> { ["instanceId"] = id, ["expectedRevision"] = revision, ["rideTake"] = owner is null };
+        if (owner is not null)
+        {
+            body["cueOwner"] = owner;
+            attempted!.Add(new(id, revision));
+        }
+        var cued = await Send("graphics.instance.cue", body, cancellation);
         if (!cued.Accepted) return cued;
-        var until = _utcNow().AddSeconds(5);
+        var until = deadline ?? _utcNow().AddSeconds(5);
         while (true) {
             var current = Current(epoch).Instances.FirstOrDefault(i => i.InstanceId == id);
-            if (current is null || current.Revision != revision) return Refuse("The graphic changed while cueing. Retry explicitly.");
+            if (current is null || (owner is null && current.Revision != revision) || (owner is not null && current.CueOwner != owner))
+                return Refuse("The graphic changed while cueing. Retry explicitly.");
+            if (owner is not null && current.CuePreparation == "failed")
+                return Refuse("Graphic preparation failed.");
             if (current.CueRevision == revision && !current.CuePending) break;
             if (_utcNow() >= until) return Refuse("The graphic is still preparing. Retry when ready.");
             await _delay(TimeSpan.FromMilliseconds(50), cancellation);
