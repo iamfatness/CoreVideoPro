@@ -658,6 +658,32 @@ public sealed class TransportCoordinatorTests
     }
 
     [Fact]
+    public async Task GuardedTakeReconcilesALostReplyWithoutResubmittingOrSwappingAgain()
+    {
+        var (coordinator, _, host) = Build(recordingSyncRetryDelayMs: 1);
+        host.PreviewSceneId = "interview";
+        var layout = new ShotLayout { Id = "results", Name = "Results", SceneId = "interview" };
+        host.PreparedShotLayout = new(layout, "core-a", "layout-op", [new("first", 3), new("second", 4)], "preview");
+        host.GuardedSync = request => throw new IOException($"Lost reply for {request.OperationId}.");
+        Assert.False((await coordinator.TakeAsync()).Succeeded);
+        Assert.True(coordinator.GuardedTakePending);
+        Assert.Equal("interview", host.ActiveSceneId);
+        Assert.Equal("intro", host.PreviewSceneId);
+
+        host.GuardedObservation = new()
+        {
+            Graphics = new() { CoreEpoch = "core-a", LayoutTakeReceipts = [new("layout-op", "committed", "")] }
+        };
+        Assert.True((await coordinator.TakeAsync()).Succeeded);
+        Assert.False(coordinator.GuardedTakePending);
+        Assert.Equal(["layout-op"], host.SubmittedGuardedTakes);
+        Assert.Equal("interview", host.ActiveSceneId);
+        Assert.Equal("intro", host.PreviewSceneId);
+        Assert.Equal(0, host.RollbackCount);
+    }
+
+
+    [Fact]
     public async Task Take_DoubleInvocationWhileAwaitingSyncDoesNotSwapBack()
     {
         var (coordinator, _, host) = Build();
@@ -1412,6 +1438,19 @@ public sealed class TransportCoordinatorTests
             EnsureMediaCoreRunningCallCount++;
             return OnEnsureMediaCoreRunning?.Invoke() ?? Task.CompletedTask;
         }
+
+        public GraphicsPreparedLayout? PreparedShotLayout { get; set; }
+        public Func<GraphicsLayoutTakeRequest, NativeMediaCoreStateSnapshot>? GuardedSync { get; set; }
+        public NativeMediaCoreStateSnapshot GuardedObservation { get; set; } = new();
+        public List<string> SubmittedGuardedTakes { get; } = [];
+        public GraphicsLayoutTakeRequest? CreateGuardedTake(GraphicsPreparedLayout prepared) =>
+            new(prepared.AttemptId, new(prepared.CoreEpoch, prepared.Layout.SceneId, 1, false, false, prepared.Cues));
+        public Task<NativeMediaCoreStateSnapshot> SyncGuardedTakeAsync(GraphicsLayoutTakeRequest request)
+        {
+            SubmittedGuardedTakes.Add(request.OperationId);
+            return Task.FromResult(GuardedSync?.Invoke(request) ?? GuardedObservation);
+        }
+        public Task<NativeMediaCoreStateSnapshot> ObserveGuardedTakeAsync() => Task.FromResult(GuardedObservation);
 
         public async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null)
         {

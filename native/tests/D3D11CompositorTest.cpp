@@ -1582,6 +1582,52 @@ TEST(D3D11Compositor, GraphicsKeyTapBacksOffAFailingRigBuild) {
   EXPECT_TRUE(selection.stale);
 }
 
+TEST(D3D11Compositor, GuardedShotLayoutDrawsBothPreparedGraphicsOnItsFirstFrame) {
+  using corevideo::rpc::Json;
+  double tick = 0;
+  KeyRig rig([&] { return tick; });
+  ASSERT_TRUE(rig.compositor);
+  const auto apply = [&](const std::string& type, const std::string& id, Json::Object body) {
+    body["instanceId"] = id; body["coreEpoch"] = "test-core"; body["schemaVersion"] = 1;
+    body["requestId"] = "shot-pixel-" + std::to_string(++rig.sequence); body["clientId"] = "gpu-qa";
+    return rig.graphics.apply(Json::Object{{"type", type}, {"graphics", std::move(body)}});
+  };
+  std::vector<corevideo::graphics::GraphicsInstances::LayoutCue> cues;
+  for (const auto* id : {"upper", "lower"}) {
+    const bool upper = std::string_view(id) == "upper";
+    ASSERT_TRUE(apply("graphics-instance-create", id, {
+        {"scope", "global"}, {"templateId", "compact-solid"}, {"templateVersion", 1},
+        {"fields", Json::Object{{"name", upper ? "First" : "Second"}}},
+        {"placement", Json::Object{{"anchor", upper ? "upper-left" : "lower-left"}, {"x", 48}, {"y", upper ? 48 : -48}, {"scale", 1}}},
+        {"animations", Json::Object{{"in", Json::Object{{"type", "none"}}}, {"out", Json::Object{{"type", "none"}}}}}}));
+    const auto revision = rig.graphics.snapshot().get("lastResult")->getNumber("currentRevision");
+    ASSERT_GT(revision, 0.0);
+    ASSERT_TRUE(apply("graphics-instance-cue", id, {{"cueOwner", "layout-pixels"}, {"expectedRevision", revision}}));
+    cues.push_back({id, uint64_t(revision)});
+  }
+  auto frame = rig.render(rig.plan(false));
+  for (int i = 0; i < 720 && !rig.graphics.unavailableLayoutCue("layout-pixels", cues).empty(); ++i) {
+    frame = rig.render(rig.plan(false));
+    std::this_thread::yield();
+  }
+  ASSERT_TRUE(rig.graphics.unavailableLayoutCue("layout-pixels", cues).empty())
+      << rig.graphics.snapshot().get("instances")->stringify();
+  ASSERT_TRUE(rig.graphics.commitLayoutTake("layout-pixels", cues, false));
+  const auto taken = rig.render(rig.plan(false));
+  ASSERT_EQ(frame.preview.bgra.size(), taken.preview.bgra.size());
+  ASSERT_FALSE(taken.preview.bgra.empty());
+  bool top = false, bottom = false;
+  for (int y = 0; y < taken.preview.height; ++y) {
+    for (int x = 0; x < taken.preview.width; ++x) {
+      if (previewPixelRgba(frame.preview, x, y) == previewPixelRgba(taken.preview, x, y)) continue;
+      if (y < taken.preview.height / 2) top = true;
+      else bottom = true;
+    }
+  }
+  EXPECT_TRUE(top);
+  EXPECT_TRUE(bottom);
+}
+
 TEST(D3D11Compositor, CrawlLoopSwitchKeepsFrameMatchedProgramAndKeyAt1080p) {
   using corevideo::rpc::Json;
   using namespace corevideo::modules;

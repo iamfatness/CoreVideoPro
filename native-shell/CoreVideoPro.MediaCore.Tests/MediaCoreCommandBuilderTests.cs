@@ -80,6 +80,22 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void GuardedTakeWireCarriesExactSceneAndCueIdentities()
+    {
+        var guard = new GraphicsLayoutTakeGuard("core-a", "interview", 23, false, true, [new("first", 7), new("second", 9)]);
+        var command = MediaCoreCommandBuilder.BuildTakeTransitionCommand(new("layout-attempt", 5, "cut", GraphicsLayout: guard));
+        var sent = command.ExtensionData!["graphicsLayout"];
+        Assert.Equal("layout-attempt", GetString(command, "operationId"));
+        Assert.Equal("core-a", sent.GetProperty("coreEpoch").GetString());
+        Assert.Equal("interview", sent.GetProperty("sceneId").GetString());
+        Assert.Equal(23, sent.GetProperty("previewRevision").GetInt64());
+        Assert.True(sent.GetProperty("playOutOthers").GetBoolean());
+        Assert.False(sent.GetProperty("keepProgramScene").GetBoolean());
+        Assert.Equal("second", sent.GetProperty("cues")[1].GetProperty("instanceId").GetString());
+        Assert.Equal(9, sent.GetProperty("cues")[1].GetProperty("cueRevision").GetInt64());
+    }
+
+    [Fact]
     public void OrdinarySyncDoesNotRestartTakeTransition()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

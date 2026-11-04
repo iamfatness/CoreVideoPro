@@ -11,6 +11,7 @@ public sealed record NativeGraphicsState
     public NativeGraphicsAuthoring? Authoring { get; init; }
     public NativeGraphicsAutomation? Automation {get;init;}
     public int SchemaVersion { get; init; }
+    public IReadOnlyList<GraphicsLayoutTakeReceipt> LayoutTakeReceipts { get; init; } = [];
     public string CoreEpoch { get; init; } = "";
     public IReadOnlyList<NativeGraphicsInstance> Instances { get; init; } = [];
     public IReadOnlyList<NativeGraphicsOperationResult> Operations {get;init;}=[];
@@ -132,6 +133,7 @@ public sealed record NativeGraphicsInstance
     public string CrawlPlayback { get; init; } = "";
     public long CrawlPendingRevision { get; init; }
     public long CueRevision { get; init; }
+    public string CueOwner { get; init; } = "";
     public int CueTemplateVersion { get; init; }
     public int ProgramTemplateVersion { get; init; }
     public long CueRequestedRevision { get; init; }

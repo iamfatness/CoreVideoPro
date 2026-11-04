@@ -14,6 +14,9 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
     private readonly Dictionary<TimeSpan, TaskCompletionSource> _heldDelays = [];
     private int _cuePendingPolls;
     private bool _showDoesNotLand;
+    private string? _holdCueInstance;
+    private string? _lostCueReply;
+    private readonly TaskCompletionSource _heldCueReached = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static NativeGraphicsTemplate Template(string id, string family, string runtime, params string[] fields) => new() {
         TemplateId = id, TemplateVersion = 1, Name = id, Family = family, Runtime = runtime, ManifestHash = Hash(id), Definition = JsonSerializer.SerializeToElement(new { templateId = id, templateVersion = 1 }),
@@ -75,13 +78,16 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
                 break;
             case "graphics.instance.cue":
                 var expected = input.GetProperty("expectedRevision").GetInt64();
-                _state = _state with { Instances = Map(i => i with { CueRevision = expected, CuePending = _cuePendingPolls > 0, Cued = true }) };
+                _state = _state with { Instances = Map(i => i with { CueRevision = expected, CuePending = _cuePendingPolls > 0 || id == _holdCueInstance, Cued = true, CueOwner = input.TryGetProperty("cueOwner", out var owner) ? owner.GetString()! : "" }) };
+                if (id == _holdCueInstance) _heldCueReached.TrySetResult();
+                if (id == _lostCueReply) throw new InvalidOperationException("Cue response was lost.");
                 break;
             case "graphics.instance.trigger":
                 _state = input.GetProperty("action").GetString() switch {
                     "show" => _showDoesNotLand ? _state : _state with { Instances = Map(i => i with { ProgramRevision = i.CueRevision, ProgramTemplateVersion = i.TemplateVersion, Visibility = "visible", CueRevision = 0, Cued = false }) },
                     "hide" => _state with { Instances = Map(i => i with { ProgramRevision = 0, Visibility = "hidden" }) },
-                    "uncue" => _state with { Instances = Map(i => i with { CueRevision = 0, Cued = false }) },
+                    "uncue" => _state with { Instances = Map(i => !input.TryGetProperty("cueOwner", out var cancelOwner) || i.CueOwner == cancelOwner.GetString()
+                        ? i with { CueRevision = 0, Cued = false, CuePending = false, CueOwner = "" } : i) },
                     _ => _state };
                 break;
             case "graphics.instance.remove": _state = _state with { Instances = _state.Instances.Where(i => i.InstanceId != id).ToArray() }; break;
@@ -641,6 +647,200 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
     }
 
     // ---- Shot layouts (#1076 slice 2) --------------------------------------------------------
+    [Theory]
+    [InlineData(99, "crawl", "\"Final\"")]
+    [InlineData(2, "different-feed", "\"Final\"")]
+    [InlineData(2, "crawl", "12")]
+    public async Task DataLayoutRefusesAnInvalidSecondRowBeforeAnyMutation(long revision, string source, string heading)
+    {
+        var (library, service, layout) = await DataLayout(revision, source, heading);
+        Assert.True(await library.SaveShotLayoutsAsync([layout]), library.Status);
+        var takes = 0;
+        var result = await service.CueAndTakeLayoutAsync(layout.Id, SelectScene, null, null,
+            _ => { takes++; return Task.FromResult<string?>(null); });
+        Assert.False(result.Accepted, result.Reason);
+        Assert.Contains("Crawl", result.Reason);
+        Assert.Empty(_sceneSelects);
+        Assert.Empty(Commands);
+        Assert.Equal(0, takes);
+    }
+
+    [Fact]
+    public async Task DataLayoutResolvesPublishedAndLoadedRevisionsWithoutChangingPlaylist()
+    {
+        var (library, _, layout) = await DataLayout(2, "crawl", "\"Final\"");
+        Assert.True(await library.SaveShotLayoutsAsync([layout]), library.Status);
+        var (reopened, service) = Build();
+        await reopened.LoadAsync();
+        var result = await service.CueLayoutAsync(layout.Id, SelectScene, null);
+        Assert.True(result.Accepted, result.Reason);
+        var fields = Bodies("graphics.instance.create").Select(body => body.GetProperty("fields")).ToArray();
+        Assert.Contains("Ada", fields[0].GetProperty("table-row-1").GetString());
+        Assert.Equal("Scores tonight", fields[0].GetProperty("heading").GetString());
+        Assert.Equal("2", fields[1].GetProperty(GraphicsCrawlData.RevisionField).GetString());
+        Assert.Equal("Final", fields[1].GetProperty("heading").GetString());
+        Assert.All(reopened.Document.Playlist, row => Assert.Equal(1, row.DataBinding!.Revision));
+        Assert.All(reopened.Document.Playlist, row => Assert.False(row.Fields.ContainsKey("heading")));
+    }
+
+    [Theory]
+    [InlineData(GraphicsCrawlData.RevisionField, false)]
+    [InlineData("heading", true)]
+    public async Task DataLayoutRefusesGeneratedOrRePinnedFields(string key, bool changePin)
+    {
+        var (library, service, layout) = await DataLayout(2, "crawl", "\"Final\"");
+        var settings = layout.RowSettings.ToDictionary();
+        settings["crawl"] = settings["crawl"] with
+        {
+            Overrides = new Dictionary<string, JsonElement> { [key] = JsonSerializer.SerializeToElement("Final") }
+        };
+        Assert.True(await library.SaveShotLayoutsAsync([layout with { RowSettings = settings }]), library.Status);
+        if (changePin)
+        {
+            var replacement = Template("design-crawl", "title", "declarative", GraphicsCrawlData.ItemsField, GraphicsCrawlData.RevisionField)
+                with { TemplateVersion = 2, Definition = JsonSerializer.SerializeToElement(new { templateId = "design-crawl", templateVersion = 2 }) };
+            _state = _state with { Templates = [.. _state.Templates, replacement] };
+            Assert.True(await library.SavePlaylistAsync(library.Document.Playlist.Select(row =>
+                row.Id == "crawl" ? row with { TemplateVersion = 2 } : row).ToArray()), library.Status);
+        }
+
+        var result = await service.CueLayoutAsync(layout.Id, SelectScene, null);
+        Assert.False(result.Accepted);
+        Assert.Contains(key, result.Reason);
+        Assert.Empty(_sceneSelects);
+        Assert.Empty(Commands);
+    }
+
+    [Fact]
+    public async Task GuardedLayoutKeepsProgramGraphicsAndDoesNotRideAnUnguardedTake()
+    {
+        var (library, service, layout) = await DataLayout(2, "crawl", "\"Final\"");
+        Assert.True(await library.SaveShotLayoutsAsync([layout]), library.Status);
+        _state = _state with { Instances = [new() { InstanceId = "manual-logo", Revision = 1, ProgramRevision = 1, Visibility = "visible" }] };
+
+        var result = await service.CueLayoutAsync(layout.Id, SelectScene, null);
+        Assert.True(result.Accepted, result.Reason);
+        var progress = Assert.IsType<GraphicsLayoutProgress>(service.LayoutProgress);
+        Assert.Equal("Ready for Take", progress.State);
+        Assert.Equal(new long?[] { 1, 2 }, progress.Rows.Select(row => row.DataRevision));
+        Assert.All(progress.Rows, row => Assert.Equal("Ready", row.State));
+        var cues = Bodies("graphics.instance.cue");
+        Assert.Equal(2, cues.Count());
+        Assert.All(cues, cue => Assert.False(cue.GetProperty("rideTake").GetBoolean()));
+        Assert.Single(cues.Select(cue => cue.GetProperty("cueOwner").GetString()).Distinct());
+        Assert.Empty(Bodies("graphics.instance.trigger"));
+        Assert.Contains(_state.Instances, instance => instance.InstanceId == "manual-logo" && instance.ProgramRevision == 1);
+    }
+
+    [Fact]
+    public async Task GuardedLayoutCancellationReleasesOnlyItsOwnCues()
+    {
+        var (library, service, layout) = await DataLayout(2, "crawl", "\"Final\"");
+        Assert.True(await library.SaveShotLayoutsAsync([layout]), library.Status);
+        _state = _state with { Instances = [new() { InstanceId = "independent-cue", Revision = 1, CueRevision = 1, Cued = true }] };
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _heldDelays[TimeSpan.FromMilliseconds(50)] = pending;
+        _holdCueInstance = "playlist-crawl";
+        var cue = service.CueLayoutAsync(layout.Id, SelectScene, null);
+        await _heldCueReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(service.LayoutPreparing);
+        Assert.Equal("Preparing", service.LayoutProgress?.State);
+        Assert.True((await service.CancelLayoutAsync()).Accepted);
+
+        Assert.False((await cue).Accepted);
+        Assert.False(service.LayoutPreparing);
+        Assert.Null(service.LayoutProgress);
+        Assert.Equal(["independent-cue"], _state.Instances.Where(instance => instance.Cued || instance.CuePending).Select(instance => instance.InstanceId));
+        Assert.All(Bodies("graphics.instance.trigger"), body =>
+            Assert.Equal("uncue", body.GetProperty("action").GetString()));
+    }
+
+    [Fact]
+    public async Task GuardedLayoutDetectsPreviewEditAndPreservesAReplacementCue()
+    {
+        var (library, service, layout) = await DataLayout(2, "crawl", "\"Final\"");
+        Assert.True(await library.SaveShotLayoutsAsync([layout]), library.Status);
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _heldDelays[TimeSpan.FromMilliseconds(50)] = pending;
+        _holdCueInstance = "playlist-crawl";
+        var stamp = "preview-1";
+        var cue = service.CueLayoutAsync(layout.Id, SelectScene, null, previewStamp: () => stamp);
+        await _heldCueReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        stamp = "preview-2";
+        _state = _state with { Instances = _state.Instances.Select(instance => instance.InstanceId switch
+        {
+            "playlist-scores" => instance with { CueOwner = "" },
+            _ => instance with { CuePending = false }
+        }).ToArray() };
+        pending.SetResult();
+
+        Assert.False((await cue).Accepted);
+        Assert.Null(service.PreparedLayout);
+        Assert.Equal("playlist-scores", Assert.Single(_state.Instances, instance => instance.Cued).InstanceId);
+    }
+
+    [Fact]
+    public async Task GuardedLayoutCleansUpACueWhoseResponseWasLost()
+    {
+        var (library, service, layout) = await DataLayout(2, "crawl", "\"Final\"");
+        Assert.True(await library.SaveShotLayoutsAsync([layout]), library.Status);
+        _lostCueReply = "playlist-crawl";
+
+        var result = await service.CueLayoutAsync(layout.Id, SelectScene, null);
+        Assert.False(result.Accepted);
+        Assert.Null(service.PreparedLayout);
+        Assert.DoesNotContain(_state.Instances, instance => instance.Cued || instance.CuePending);
+        Assert.Equal(2, Bodies("graphics.instance.trigger").Count());
+    }
+
+    [Fact]
+    public async Task GuardedLayoutTakeReusesTheReadyAttemptOnRetry()
+    {
+        var (library, service, layout) = await DataLayout(2, "crawl", "\"Final\"");
+        Assert.True(await library.SaveShotLayoutsAsync([layout]), library.Status);
+        var attempts = new List<string>();
+        Task<string?> Take(CancellationToken _)
+        {
+            attempts.Add(Assert.IsType<GraphicsPreparedLayout>(service.PreparedLayout).AttemptId);
+            return Task.FromResult(attempts.Count == 1 ? "The reply was lost." : (string?)null);
+        }
+
+        Assert.False((await service.CueAndTakeLayoutAsync(layout.Id, SelectScene, null, null, Take)).Accepted);
+        Assert.True((await service.CueAndTakeLayoutAsync(layout.Id, SelectScene, null, null, Take)).Accepted);
+        Assert.Equal(2, attempts.Count);
+        Assert.Equal(attempts[0], attempts[1]);
+        Assert.Equal(2, Bodies("graphics.instance.cue").Count());
+    }
+
+    private async Task<(GraphicsWorkspaceLibrary Library, GraphicsPlayoutService Service, ShotLayout Layout)> DataLayout(
+        long revision, string source, string heading)
+    {
+        var scores = GraphicsLocalData.Parse("id,name,score\na,Ada,8", "csv", "id");
+        var crawl = GraphicsLocalData.Parse("[{\"line\":\"First\"}]", "json", null);
+        var scoreBinding = new GraphicsDataBinding("scores", "id", ["name", "score"], "score", 1, 1);
+        var crawlBinding = new GraphicsDataBinding("crawl", null, ["line"], null, 8, 1) { Crawl = new() };
+        var scoreFields = GraphicsDataTable.Fields(scores, scoreBinding);
+        var crawlFields = GraphicsDataTable.Fields(crawl, crawlBinding);
+        _state = _state with { Templates = [.. _state.Templates,
+            Template("design-scores", "title", "declarative", [.. scoreFields.Keys, "heading"]),
+            Template("design-crawl", "title", "declarative", [.. crawlFields.Keys, "heading"])] };
+        var (library, service) = Build();
+        Assert.NotNull(await library.SaveLocalDataAsync("scores", "Scores", scores));
+        Assert.NotNull(await library.SaveLocalDataAsync("scores", "Scores", GraphicsLocalData.Parse("id,name,score\nb,Bob,9", "csv", "id")));
+        Assert.NotNull(await library.SaveLocalDataAsync("crawl", "Crawl", crawl));
+        Assert.NotNull(await library.SaveLocalDataAsync("crawl", "Crawl", GraphicsLocalData.Parse("[{\"line\":\"Second\"}]", "json", null)));
+        Assert.True(await library.SavePlaylistAsync([
+            new() { Id = "scores", Name = "Scores", TemplateId = "design-scores", TemplateVersion = 1, Fields = scoreFields, DataBinding = scoreBinding },
+            new() { Id = "crawl", Name = "Crawl", TemplateId = "design-crawl", TemplateVersion = 1, Fields = crawlFields, DataBinding = crawlBinding }
+        ]), library.Status);
+        var layout = JsonSerializer.Deserialize<ShotLayout>($$"""
+            {"id":"results","name":"Results","sceneId":"intro","rowIds":["scores","crawl"],"playOutOthers":true,
+             "rowSettings":{"scores":{"overrides":{"heading":"Scores tonight"},"dataPin":{"sourceId":"scores","revision":1} },
+                            "crawl":{"overrides":{"heading":{{heading}} },"dataPin":{"sourceId":"{{source}}","revision":{{revision}} } } } }
+            """, Json)!;
+        return (library, service, layout);
+    }
+
     [Fact] public async Task DefaultShotLayoutsShipWithTheDefaultPlaylist()
     {
         var (library, service) = await BuildWithDefaultPlaylist();

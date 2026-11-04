@@ -72,6 +72,7 @@ class CoreStateCapture {
   bool previewComposite_ = false;
   rpc::Json encodedPreview_;
   rpc::Json graphicsState_;
+  uint64_t previewSceneRevision_ = 0;
   modules::ProgramFrame lastProgramFrame_;
   modules::CompositorRenderPlan lastRenderPlan_;
   std::map<std::string, AudioOutputObservation::BusTap> routedBusPcm_;

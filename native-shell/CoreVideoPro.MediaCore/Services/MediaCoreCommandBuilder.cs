@@ -123,8 +123,9 @@ public static class MediaCoreCommandBuilder
         return commands;
     }
 
-    public static NativeMediaCoreCommand BuildTakeTransitionCommand(MediaCoreTakeTransitionWire transition) =>
-        Command("begin-take-transition", new Dictionary<string, object?>
+    public static NativeMediaCoreCommand BuildTakeTransitionCommand(MediaCoreTakeTransitionWire transition)
+    {
+        var fields = new Dictionary<string, object?>
         {
             ["operationId"] = transition.OperationId,
             ["revision"] = transition.Revision,
@@ -132,7 +133,21 @@ public static class MediaCoreCommandBuilder
             ["durationMs"] = transition.DurationMs,
             ["direction"] = transition.Direction,
             ["dipColor"] = transition.DipColor
-        });
+        };
+        if (transition.GraphicsLayout is { } guard)
+        {
+            fields["graphicsLayout"] = new
+            {
+                coreEpoch = guard.CoreEpoch,
+                sceneId = guard.SceneId,
+                previewRevision = guard.PreviewRevision,
+                keepProgramScene = guard.KeepProgramScene,
+                playOutOthers = guard.PlayOutOthers,
+                cues = guard.Cues.Select(cue => new { instanceId = cue.InstanceId, cueRevision = cue.CueRevision }).ToArray()
+            };
+        }
+        return Command("begin-take-transition", fields);
+    }
 
     public static NativeMediaCoreCommand BuildSceneGraphCommand(
         string sceneId,

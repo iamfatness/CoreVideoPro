@@ -37,6 +37,14 @@ public static class GraphicsRowFields
             .Where(f => f.Type == "string" && f.Choices.Count == 0 && !Handled.Contains(f.Id) && f.Id != titleKey && (row.DataBinding is null || !GraphicsDataTable.IsDataField(f.Id)))
             .Select(f => new GraphicsRowTypeableField(f.Id, LabelOf(f), f.MaxLength)).ToArray();
 
+    public static bool CanOverrideLayoutField(NativeGraphicsTemplateField field) =>
+        field.Id is not ("time" or "label") && !GraphicsDataTable.IsDataField(field.Id) &&
+        field.Type is "string" or "number" or "boolean" or "color";
+
+    public static bool ValidLayoutOverride(NativeGraphicsTemplateField field, JsonElement value) =>
+        value.ValueKind != JsonValueKind.Undefined && CanOverrideLayoutField(field) && GraphicsCommandRequest.ValidField(value, field) &&
+        (field.Type != "color" || System.Text.Encoding.UTF8.GetByteCount(value.GetString()!) <= (field.MaxLength ?? 128));
+
     // Variables Operate offers no box for (the row name is the row's own Name; clock and LIVE label fill themselves)
     // follow the Designer instead (final re-review I4).
     private static readonly IReadOnlyList<string> NotTypedOnTheRow = ["name", "time", "label"];

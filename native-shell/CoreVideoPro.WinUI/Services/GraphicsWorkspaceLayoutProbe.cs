@@ -177,7 +177,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             var seedTemplate = System.Text.Json.JsonSerializer.Deserialize<NativeGraphicsTemplate>(seedManifest.ToJsonString(),new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))! with {
                 Runtime="declarative", Definition=seedDefinition, ManifestHash=NativeGraphicsScratch.From(seedDefinition).Hash };
             studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=[..catalog,seedTemplate]});
-            await CheckDesignerAsync(page, studio, seedTemplate, checks, directory);
+            await CheckDesignerAsync(window, page, studio, seedTemplate, checks, directory);
             studio.GraphicsDesignAdvanced = true; await Task.Delay(80);
             page.Width = 1840; page.Height = 820; await Task.Delay(100); page.UpdateLayout();
             studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=catalog});
@@ -256,7 +256,7 @@ internal static class GraphicsWorkspaceLayoutProbe
     /// private draft) shows it in the Designer; then, at the 1360x768 and
     /// 1600x900 shell budgets (page 1320x640 and 1560x772): one surface, the seed's layer rows, every fixed action
     /// inside the designer, a canvas that is not crowded out, the Variables tab, and Add text / Undo.</summary>
-    private static async Task CheckDesignerAsync(OverlaysPage page, StudioViewModel studio, NativeGraphicsTemplate seedTemplate, List<string> checks, string directory)
+    private static async Task CheckDesignerAsync(Window window, OverlaysPage page, StudioViewModel studio, NativeGraphicsTemplate seedTemplate, List<string> checks, string directory)
     {
         studio.GraphicsWorkspace.Browse(seedTemplate);
         studio.GraphicsDesignAdvanced = false; await Task.Delay(80); page.UpdateLayout();
@@ -337,9 +337,9 @@ internal static class GraphicsWorkspaceLayoutProbe
         studio.GraphicsDesignerOpen = false; await Task.Delay(80); page.UpdateLayout();
         Require(designer.Visibility == Visibility.Collapsed, "Your designs did not close the Designer");
         await CheckOperateRowVariableAsync(page, studio, seedTemplate, checks, directory);
-        await CheckDataTableAsync(page, studio, checks, directory);
+        await CheckDataTableAsync(window, page, studio, checks, directory);
     }
-    private static async Task CheckDataTableAsync(OverlaysPage page, StudioViewModel studio, List<string> checks, string directory)
+    private static async Task CheckDataTableAsync(Window window, OverlaysPage page, StudioViewModel studio, List<string> checks, string directory)
     {
         var mode = studio.GraphicsMode;
         studio.GraphicsMode = StudioViewModel.GraphicsModeDesign;
@@ -437,7 +437,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             Id = "probe-feed", Name = "Probe remote table", DataBinding = remoteBinding,
             Fields = GraphicsDataTable.Fields(remoteData, remoteBinding)
         };
-        Require(await studio.GraphicsLibrary.SavePlaylistAsync([remoteRow]), "Could not save the remote table row.");
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([crawl, remoteRow]), "Could not save the remote table and crawl rows.");
         playout.SelectRow(remoteRow.Id);
         var remoteState = new NativeGraphicsState
         {
@@ -466,6 +466,74 @@ internal static class GraphicsWorkspaceLayoutProbe
         studio.GraphicsPlayout.Observe(new() { CoreEpoch = "probe-feed" });
         checks.Add("Remote feed settings and Operate show enabled state, freshness and Program versus requested data at all viewport sizes.");
         checks.Add("Operate exposes paused crawl controls and accepted and pending data revisions at all three viewport sizes.");
+        if (studio.GraphicsWorkspace.State is { } graphics)
+            studio.GraphicsWorkspace.Observe(graphics with { Templates = [.. graphics.Templates, new NativeGraphicsTemplate
+            {
+                TemplateId = crawl.TemplateId, TemplateVersion = 1, Name = "Probe crawl", Runtime = "declarative",
+                Fields = [new() { Id = "heading", Type = "string" }]
+            }] });
+        Require(await studio.GraphicsLibrary.SaveShotLayoutsAsync([new ShotLayout
+        {
+            Id = "probe-results", Name = "Probe results", RowIds = [crawl.Id],
+            RowSettings = new Dictionary<string, ShotLayoutRowSettings>
+            {
+                [crawl.Id] = new()
+                {
+                    DataPin = new(crawlBinding.SourceId, 2),
+                    Overrides = new Dictionary<string, System.Text.Json.JsonElement>
+                    {
+                        ["heading"] = System.Text.Json.JsonSerializer.SerializeToElement("Synthetic results")
+                    }
+                }
+            }
+        }]), "Could not save the data-aware Shot Layout fixture.");
+        ContentDialog? FindLayoutDialog() => VisualTreeHelper.GetOpenPopupsForXamlRoot(page.XamlRoot)
+            .Where(popup => popup.IsOpen).Select(popup => popup.Child).Where(child => child is not null)
+            .SelectMany(child => Descendants(child).Prepend(child)).OfType<ContentDialog>()
+            .FirstOrDefault(item => item.Title as string == "Edit Shot Layout");
+        window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, 1360, 768));
+        page.Width = 1320; page.Height = 640;
+        await Task.Delay(120);
+        playout.Refresh(); page.UpdateLayout();
+        Invoke(Button(playout, "Edit layouts"));
+        ContentDialog? dialog = null;
+        await Eventually(() => (dialog = FindLayoutDialog()) is { IsLoaded: true }, "Shot Layout editor did not open.");
+        var presenter = dialog!;
+        foreach (var (width, height, viewportWidth, viewportHeight, label) in new[]
+            { (1320d, 640d, 1360, 768, "1360x768"), (1560d, 772d, 1600, 900, "1600x900"), (1840d, 820d, 1920, 1080, "1080p") })
+        {
+            window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, viewportWidth, viewportHeight));
+            page.Width = width; page.Height = height;
+            await Task.Delay(120);
+            presenter.UpdateLayout();
+            var revisionPicker = Descendants(presenter).OfType<ComboBox>().FirstOrDefault(combo => combo.Header as string == "Data revision");
+            Require(revisionPicker is { ActualHeight: > 0 } && revisionPicker.SelectedItem?.ToString() == "Pin revision 2",
+                "Shot Layout editor does not show the saved data revision.");
+            var overrideInput = Descendants(presenter).OfType<TextBox>().FirstOrDefault(input => input.Text == "Synthetic results" && input.IsEnabled);
+            Require(overrideInput is not null, "Shot Layout editor does not show the saved typed override.");
+            var scroll = Descendants(presenter).OfType<ScrollViewer>().First(viewer => viewer.Content is StackPanel);
+            var inputY = overrideInput!.TransformToVisual(scroll).TransformPoint(new(0, 0)).Y;
+            Require(inputY >= 0 && inputY + overrideInput.ActualHeight <= scroll.ActualHeight + 1,
+                $"The typed override is clipped at {label}.");
+            Require(Button(presenter, "Save layout").ActualHeight > 0, "Shot Layout editor has no visible Save.");
+            await ReviewImageWriter.SaveAsync(presenter, Path.Combine(directory, $"graphics-shot-layout-editor-{label}.png"));
+        }
+        Invoke(Button(presenter, "Save layout"));
+        await Eventually(() => FindLayoutDialog() is null && Button(playout, "Edit layouts").IsEnabled,
+            "Saving the Shot Layout did not close the editor.");
+        var settings = studio.GraphicsLibrary.Document.ShotLayouts.Single().RowSettings[crawl.Id];
+        Require(settings.DataPin == new ShotLayoutDataPin(crawlBinding.SourceId, 2) &&
+            settings.Overrides["heading"].GetString() == "Synthetic results", "Saving changed the pinned revision or typed value.");
+        checks.Add("Shot Layout editor exposes its saved data revision, typed value and Save at all three viewport sizes.");
+        Require(!(await studio.CueLayoutAsync("probe-results")).Accepted, "Isolated layout unexpectedly reached a media core.");
+        playout.Refresh(); page.UpdateLayout();
+        Require(Descendants(playout).OfType<TextBlock>().Any(text => text.Text.StartsWith("Blocked · ", StringComparison.Ordinal)),
+            "A refused layout did not show a blocked preflight.");
+        Require(Button(playout, "Cancel layout").IsEnabled, "A blocked layout has no available Cancel.");
+        await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "graphics-shot-layout-blocked-1080p.png"));
+        Require((await studio.GraphicsPlayout.CancelLayoutAsync()).Accepted, "Could not cancel the probe layout.");
+        Require(await studio.GraphicsLibrary.SaveShotLayoutsAsync([]), "Could not clear the probe layouts.");
+        checks.Add("A blocked Shot Layout shows its reason and a Cancel action.");
         Require(await studio.GraphicsLibrary.SavePlaylistAsync([]), "Could not clear the probe playlist.");
         studio.GraphicsMode = mode;
         checks.Add("Design exposes data-table import and Operate exposes independent load and publish actions at both viewport sizes.");

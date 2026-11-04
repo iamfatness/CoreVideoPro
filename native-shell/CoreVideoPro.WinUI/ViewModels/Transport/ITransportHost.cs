@@ -122,6 +122,15 @@ public interface ITransportHost
     Task EnsureMediaCoreRunningAsync(string startingStatus);
 
     Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null);
+    bool PreparingShotLayout => false;
+    GraphicsPreparedLayout? PreparedShotLayout => null;
+    GraphicsLayoutTakeRequest? CreateGuardedTake(GraphicsPreparedLayout prepared) => null;
+    Task<NativeMediaCoreStateSnapshot> SyncGuardedTakeAsync(GraphicsLayoutTakeRequest request) =>
+        throw new InvalidOperationException("Guarded Take is unavailable.");
+    Task<NativeMediaCoreStateSnapshot> ObserveGuardedTakeAsync() =>
+        throw new InvalidOperationException("Guarded Take observation is unavailable.");
+    Task FinishGuardedTakeAsync(string operationId, bool committed) => Task.CompletedTask;
+    void NotifyGuardedTakeChanged() { }
 
     Task<Dictionary<string, object?>> BuildSpinePayloadAsync(CancellationToken cancellationToken);
 

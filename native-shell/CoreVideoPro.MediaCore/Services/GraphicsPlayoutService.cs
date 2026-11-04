@@ -174,28 +174,42 @@ public sealed partial class GraphicsPlayoutService
     /// routed in that scene) when any were resolved, otherwise <paramref name="programSubject"/>.
     /// <see cref="ShotLayout.PlayOutOthers"/> plays out every Program graphic the layout does not
     /// carry. Rows that no longer exist refuse the whole layout; nothing is half-applied.</summary>
-    public Task<NativeGraphicsOperationResult> CueLayoutAsync(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
-        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests = null, CancellationToken cancellation = default) =>
-        Run(() => CueLayout(layoutId, sceneSelect, programSubject, sceneGuests, cancellation));
+    public async Task<NativeGraphicsOperationResult> CueLayoutAsync(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
+        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests = null,
+        CancellationToken cancellation = default, Func<string>? previewStamp = null)
+    {
+        var result = await Run(() => CueLayout(layoutId, sceneSelect, programSubject, sceneGuests, cancellation, previewStamp));
+        if (!result.Accepted && Layout(layoutId)?.RowSettings.Count > 0 && !cancellation.IsCancellationRequested &&
+            LayoutProgress is { LayoutId: var progressId } progress && progressId == layoutId)
+            ReportLayoutProgress(progress with { State = "Blocked", Reason = result.Reason });
+        return result;
+    }
 
     /// <summary>CueLayoutAsync, then the ordinary Take through <paramref name="take"/> (null = taken,
     /// otherwise the refusal). A layout with no scene and no rows (Clean) has nothing to Take.</summary>
     public async Task<NativeGraphicsOperationResult> CueAndTakeLayoutAsync(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
-        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests, Func<CancellationToken, Task<string?>> take, CancellationToken cancellation = default)
+        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests, Func<CancellationToken, Task<string?>> take,
+        CancellationToken cancellation = default, Func<string>? previewStamp = null)
     {
-        var cued = await CueLayoutAsync(layoutId, sceneSelect, programSubject, sceneGuests, cancellation);
+        var cued = _preparedLayout?.Layout.Id == layoutId
+            ? new NativeGraphicsOperationResult { Accepted = true, Reason = "Shot Layout is ready." }
+            : await CueLayoutAsync(layoutId, sceneSelect, programSubject, sceneGuests, cancellation, previewStamp);
         if (!cued.Accepted) return cued;
-        var layout = Layout(layoutId);
+        var layout = _preparedLayout?.Layout ?? Layout(layoutId);
         if (layout is null || (layout.SceneId.Length == 0 && layout.RowIds.Count == 0)) return cued with { Reason = cued.Reason + " Nothing to Take." };
         var error = await take(cancellation);
-        return error is null ? cued with { Reason = $"{layout.Name} taken." } : Refuse($"{layout.Name} is cued on Preview but the Take was refused: {error}");
+        return error is null ? cued with { Reason = $"{layout.Name} taken." } : Refuse($"{layout.Name}: {error}");
     }
 
     private async Task<NativeGraphicsOperationResult> CueLayout(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
-        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests, CancellationToken cancellation)
+        GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests, CancellationToken cancellation, Func<string>? previewStamp)
     {
         await _library.LoadAsync();
         if (Layout(layoutId) is not { } layout) return Refuse(layoutId.Length == 0 ? "Choose a shot layout." : "That shot layout no longer exists.");
+        if (_preparedLayout is not null)
+            return Refuse("Cancel the prepared Shot Layout before cueing another.");
+        if (layout.RowSettings.Count > 0)
+            ReportLayoutProgress(new(layout.Id, "Checking", "", []));
         // Resolve everything before the first side effect so a broken layout is refused whole.
         var entries = new List<GraphicsPlaylistEntry>();
         foreach (var rowId in layout.RowIds) {
@@ -206,11 +220,27 @@ public sealed partial class GraphicsPlayoutService
             else if (programSubject is not null) entries.Add(programSubject with { RowId = row.Id });
             else return Refuse($"{layout.Name}: {row.Name} needs a Program subject bound to a Show Input. Route a guest first.");
         }
+        GraphicsLayoutResolver.ResolvedRow[]? resolved = null;
+        if (layout.RowSettings.Count > 0)
+        {
+            var document = _library.Document;
+            var state = Available();
+            var required = entries.Select(InstanceIdFor).ToHashSet(StringComparer.Ordinal);
+            if (required.Count != entries.Count)
+                return Refuse($"{layout.Name}: multiple rows resolve to the same graphic instance.");
+            required.UnionWith(state.Instances.Select(instance => instance.InstanceId));
+            if (required.Count > 8)
+                return Refuse($"{layout.Name}: the required graphics exceed the core's instance capacity.");
+            try { resolved = entries.Select(entry => GraphicsLayoutResolver.Resolve(document, state, layout, entry)).ToArray(); }
+            catch (InvalidDataException ex) { return Refuse($"{layout.Name}: {ex.Message}"); }
+        }
+        if (resolved is not null)
+            return await PrepareLayout(layout, entries, resolved, sceneSelect, cancellation, previewStamp);
         if (layout.SceneId.Length > 0 && !await sceneSelect(layout.SceneId, cancellation))
             return Refuse($"{layout.Name}: scene '{layout.SceneId}' is not in this show, so the layout was not cued. Edit the layout to pick a scene.");
         var carried = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var entry in entries) {
-            var cued = await Cue(entry, cancellation);
+        for (var index = 0; index < entries.Count; index++) {
+            var cued = await Cue(entries[index], cancellation);
             if (!cued.Accepted) return cued with { Reason = $"{layout.Name}: {cued.Reason}" };
             carried.Add(cued.InstanceId);
         }
@@ -300,10 +330,11 @@ public sealed partial class GraphicsPlayoutService
         return result.Accepted ? result with { Reason = "Preview cleared." } : result;
     });
 
-    private async Task<NativeGraphicsOperationResult> Ensure(GraphicsPlaylistEntry entry, CancellationToken cancellation)
+    private async Task<NativeGraphicsOperationResult> Ensure(GraphicsPlaylistEntry entry, CancellationToken cancellation,
+        GraphicsLayoutResolver.ResolvedRow? resolved = null)
     {
         await _library.LoadAsync();
-        if (Row(entry.RowId) is not { } row) return Refuse("That playlist row no longer exists.");
+        if ((resolved?.Row ?? Row(entry.RowId)) is not { } row) return Refuse("That playlist row no longer exists.");
         var state = Available(); var epoch = _epoch = state.CoreEpoch;
         var templateId = row.Image?.TemplateId ?? row.TemplateId; var version = row.Image?.TemplateVersion ?? row.TemplateVersion;
         if (templateId.Length == 0) return Refuse($"{row.Name} has no graphic yet. Choose an image or template for it first.");
@@ -321,17 +352,10 @@ public sealed partial class GraphicsPlayoutService
         if (pin is not null && pin.ManifestHash != installed.ManifestHash) return Refuse($"{row.Name}: the installed template differs from its saved pin. Program is unchanged.");
         state = Current(epoch);
         var declarative = installed.Runtime == "declarative";
-        var values = row.Fields.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal);
-        // Bindings are template variables: apply each one the template declares (compat
-        // lower thirds declare name/title implicitly); unknown variables are ignored.
-        if (entry.IsVariant || (row.FollowSources && entry.SourceId.Length > 0))
-            foreach (var binding in entry.Bindings)
-                if (declarative ? installed.Fields.Any(f => f.Id == binding.Key && f.Type == "string") : binding.Key is "name" or "title")
-                    values[binding.Key] = JsonSerializer.SerializeToElement(binding.Value);
-        if (declarative) GraphicsMappedValues.Apply(row, entry, installed.Fields, _library.Document.SourceColumns, values);
-        if (declarative) foreach (var key in values.Keys.Where(k => installed.Fields.All(f => f.Id != k)).ToArray()) values.Remove(key);
-        else foreach (var key in values.Keys.Where(k => k is not ("name" or "title")).ToArray()) values.Remove(key);
+        var values = resolved?.Row.Fields ?? GraphicsLayoutResolver.CueFields(row, entry, declarative, installed.Fields, _library.Document.SourceColumns);
         var identity = entry.SourceId.Length == 0 ? null : state.Sources.FirstOrDefault(s => s.VideoOn && s.Identity?.SourceId == entry.SourceId)?.Identity;
+        if (resolved is not null && resolved.Identity != identity)
+            return Refuse($"{row.Name}: the selected source changed during preparation.");
         var fields = JsonSerializer.SerializeToElement(values, Json);
         var id = InstanceIdFor(entry);
         var motion = row.Motion is { } rowMotion ? rowMotion with { Layers = "whole" } :
@@ -390,17 +414,28 @@ public sealed partial class GraphicsPlayoutService
         return result.Accepted ? result with { InstanceId = id, Reason = "Clock " + action + "." } : result;
     });
 
-    private async Task<NativeGraphicsOperationResult> Cue(GraphicsPlaylistEntry entry, CancellationToken cancellation)
+    private async Task<NativeGraphicsOperationResult> Cue(GraphicsPlaylistEntry entry, CancellationToken cancellation,
+        GraphicsLayoutResolver.ResolvedRow? resolved = null, string? owner = null, DateTime? deadline = null,
+        List<GraphicsLayoutCue>? attempted = null)
     {
-        var ensured = await Ensure(entry, cancellation);
+        var ensured = await Ensure(entry, cancellation, resolved);
         if (!ensured.Accepted) return ensured;
         var id = ensured.InstanceId; var revision = ensured.CurrentRevision; var epoch = _epoch;
-        var cued = await Send("graphics.instance.cue", new() { ["instanceId"] = id, ["expectedRevision"] = revision, ["rideTake"] = true }, cancellation);
+        var body = new Dictionary<string, object?> { ["instanceId"] = id, ["expectedRevision"] = revision, ["rideTake"] = owner is null };
+        if (owner is not null)
+        {
+            body["cueOwner"] = owner;
+            attempted!.Add(new(id, revision));
+        }
+        var cued = await Send("graphics.instance.cue", body, cancellation);
         if (!cued.Accepted) return cued;
-        var until = _utcNow().AddSeconds(5);
+        var until = deadline ?? _utcNow().AddSeconds(5);
         while (true) {
             var current = Current(epoch).Instances.FirstOrDefault(i => i.InstanceId == id);
-            if (current is null || current.Revision != revision) return Refuse("The graphic changed while cueing. Retry explicitly.");
+            if (current is null || (owner is null && current.Revision != revision) || (owner is not null && current.CueOwner != owner))
+                return Refuse("The graphic changed while cueing. Retry explicitly.");
+            if (owner is not null && current.CuePreparation == "failed")
+                return Refuse("Graphic preparation failed.");
             if (current.CueRevision == revision && !current.CuePending) break;
             if (_utcNow() >= until) return Refuse("The graphic is still preparing. Retry when ready.");
             await _delay(TimeSpan.FromMilliseconds(50), cancellation);

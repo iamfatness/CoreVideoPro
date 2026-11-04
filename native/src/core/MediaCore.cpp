@@ -1140,7 +1140,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   commandProtocolFailures_.clear();
   const auto frameNumberBefore = lastProgramFrame_.frameNumber;
   const auto tCmd0 = std::chrono::steady_clock::now();
-  for (const auto& command : commands) {
+  if (!handleGuardedLayoutBatch(commands)) for (const auto& command : commands) {
     const auto ci0 = std::chrono::steady_clock::now();
     applyCommandMutation(command);
     ++appliedControlRevision_;
@@ -1182,8 +1182,10 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
 
 rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
   commandProtocolFailures_.clear();
-  applyCommandMutation(command);
-  ++appliedControlRevision_;
+  if (!handleGuardedLayoutBatch({command})) {
+    applyCommandMutation(command);
+    ++appliedControlRevision_;
+  }
   return sessionState();
 }
 
@@ -1487,7 +1489,7 @@ void MediaCore::beginTakeTransition(const rpc::Json& command) {
   next.active = next.mode != "cut" && next.durationMs > 0.0;
   // Cued graphics ride the Take: ready, opted-in cues go to Program now and
   // leave Preview, so the operator's Preview is the truth of the next Take.
-  graphicsInstances_.promoteCuedForTake();
+  if (!committingLayoutTake_) graphicsInstances_.promoteCuedForTake();
   takeTransition_ = std::move(next);
 }
 
@@ -2250,7 +2252,7 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
   // outgoing Program scene on air while its one existing media transport cues
   // asynchronously. A cued clip releases on the very next render tick.
   takeTransition_.coldMediaSourceIds.clear();
-  if (isTakeSceneLoad && takeTransition_.mode == "cut" && takeTransition_.outgoingSceneId != "unloaded" &&
+  if (!committingLayoutTake_ && isTakeSceneLoad && takeTransition_.mode == "cut" && takeTransition_.outgoingSceneId != "unloaded" &&
       takeTransition_.outgoingSceneId != sceneId_) {
     for (const auto& route : sceneRoutes_) {
       if (!route.mediaAssetId.empty() && !route.mediaAssetPath.empty() &&
@@ -3804,6 +3806,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   }
 
   previewSceneSignature_ = std::move(signature);
+  ++previewSceneRevision_;
   previewSceneId_ = sceneId;
   previewSceneRoutes_ = std::move(routes);
   previewSceneBackground_ = std::move(background);
@@ -5763,6 +5766,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
 
   sourceGrades_.observe(videoFrames);
+  observeGuardedLayoutWarmup(videoFrames, static_cast<double>(frameIntervalMs));
   graphicsInstances_.advanceCrawls();
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
   const double animationNowMs = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
