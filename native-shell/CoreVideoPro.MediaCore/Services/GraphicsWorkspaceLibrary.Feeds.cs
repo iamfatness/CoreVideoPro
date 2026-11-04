@@ -9,6 +9,8 @@ public sealed partial class GraphicsWorkspaceLibrary
         if (!definition.Valid() || definition.Generation != (previous?.Generation ?? 0) ||
             (previous is null && Document.DataSources.Any(source => source.Id == definition.Id)))
             return null;
+        try { GraphicsFeedTransport.ValidateEndpoint(definition); }
+        catch (InvalidDataException ex) { Fail(ex.Message); return null; }
         var saved = definition with { Generation = checked(definition.Generation + 1) };
         var feeds = Document.Feeds.Where(feed => feed.Id != saved.Id).Append(saved).ToArray();
         return await Save(Document with { Feeds = feeds }, "Graphics feed settings saved.") ? saved : null;
