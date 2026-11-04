@@ -204,7 +204,8 @@ public sealed class GraphicsDocumentStore
             document.Feeds.Select(feed => feed.Id).Distinct(StringComparer.Ordinal).Count() != document.Feeds.Count)
             throw new InvalidDataException("Invalid saved graphics feed definitions.");
         if (document.DataSources is not { Count: <= 32 } ||
-            document.DataSources.Any(source => source is null || !source.Valid()) ||
+            document.DataSources.Any(source => source is null || !source.Valid() ||
+                (source.FeedSequence is not null) != document.Feeds.Any(feed => feed.Id == source.Id && feed.Format == "wss")) ||
             document.DataSources.Select(source => source.Id).Distinct(StringComparer.Ordinal).Count() != document.DataSources.Count)
             throw new InvalidDataException("Invalid graphics datasets.");
         if (document.SourceColumns is not { Count: <= GraphicsSourceColumn.MaxColumns } ||

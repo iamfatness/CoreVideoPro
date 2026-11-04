@@ -63,6 +63,14 @@ public sealed class GraphicsFeedTransport(
         return target;
     }
 
+    internal static void ValidateWebSocketEndpoint(GraphicsFeedDefinition feed)
+    {
+        if (feed.Format != "wss" || !feed.Valid() || !Uri.TryCreate(feed.Endpoint, UriKind.Absolute, out var target) ||
+            target.Query.Length != 0)
+            throw new InvalidDataException("Use a public WSS feed URL without query parameters.");
+        ValidateTarget(target, "wss");
+    }
+
     private static bool IsGoogleSheetHost(string host) => host.Equals("docs.google.com", StringComparison.OrdinalIgnoreCase) ||
         host.EndsWith(".googleusercontent.com", StringComparison.OrdinalIgnoreCase);
 
@@ -86,9 +94,9 @@ public sealed class GraphicsFeedTransport(
             throw new InvalidDataException("Use a published Google Sheets CSV link for one tab.");
     }
 
-    private static void ValidateTarget(Uri target)
+    private static void ValidateTarget(Uri target, string scheme = "https")
     {
-        if (!target.IsAbsoluteUri || target.Scheme != Uri.UriSchemeHttps || target.Port != 443 ||
+        if (!target.IsAbsoluteUri || target.Scheme != scheme || target.Port != 443 ||
             target.UserInfo.Length > 0 || target.Fragment.Length > 0 || target.AbsoluteUri.Length > 4096)
             throw new InvalidDataException("The feed destination is not permitted.");
         var host = target.IdnHost.TrimEnd('.');

@@ -7,14 +7,14 @@ public sealed record GraphicsFeedDefinition(string Id, string Name, string Forma
 {
     public bool Valid() => Id is not null && GraphicsPlaylistRow.ValidId(Id) &&
         Name is { Length: > 0 and <= 128 } && !string.IsNullOrWhiteSpace(Name) &&
-        Format is "sheets" or "rss" or "json" && KeyColumn is { Length: > 0 and <= 128 } &&
+        Format is "sheets" or "rss" or "json" or "wss" && KeyColumn is { Length: > 0 and <= 128 } &&
         (Format != "rss" || KeyColumn == "id") && PollSeconds is >= 5 and <= 300 && Generation >= 0 &&
         Endpoint is { Length: > 0 and <= 2048 } && Uri.TryCreate(Endpoint, UriKind.Absolute, out var uri) &&
-        uri.Scheme == Uri.UriSchemeHttps && uri.Port == 443 && uri.UserInfo.Length == 0 &&
+        uri.Scheme == (Format == "wss" ? "wss" : Uri.UriSchemeHttps) && uri.Port == 443 && uri.UserInfo.Length == 0 &&
         uri.Fragment.Length == 0 && uri.Host.Length > 0;
 }
 
-public enum GraphicsFeedStage { Updated, Unchanged, Rejected }
+public enum GraphicsFeedStage { Updated, Unchanged, Rejected, WatermarkAdvanced, StaleSequence }
 
 public sealed record GraphicsFeedStatus(string State = "disabled", DateTimeOffset? LastSuccess = null,
     DateTimeOffset? NextCheck = null, string? Failure = null);

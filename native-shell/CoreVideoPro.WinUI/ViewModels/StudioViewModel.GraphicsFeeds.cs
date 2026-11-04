@@ -48,12 +48,13 @@ internal sealed class GraphicsFeedViewModel : IDisposable
     private void Synchronize()
     {
         if (_disposed) return;
-        foreach (var key in _pollers.Keys.Where(id => !_library.Document.Feeds.Any(feed => feed.Id == id)).ToArray())
+        var pullFeeds = _library.Document.Feeds.Where(feed => feed.Format != "wss").ToArray();
+        foreach (var key in _pollers.Keys.Where(id => !pullFeeds.Any(feed => feed.Id == id)).ToArray())
         {
             _pollers[key].Dispose();
             _pollers.Remove(key);
         }
-        foreach (var feed in _library.Document.Feeds)
+        foreach (var feed in pullFeeds)
         {
             if (!_pollers.TryGetValue(feed.Id, out var poller))
             {
