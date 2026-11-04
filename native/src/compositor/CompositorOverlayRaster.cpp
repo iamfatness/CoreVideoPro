@@ -544,8 +544,16 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   int textureWidth = widthPx, textureHeight = heightPx;
   const float scale = drawing.height > 0 ? float(heightPx / drawing.height) : 1.f;
   std::shared_ptr<graphics::GraphicsRunLayout> runs;
-  if (overlay.graphicsTemplate && overlay.graphicsTemplate->definition->motionSummary().layered &&
-      !overlay.graphicsTemplate->wholeGraphicMotion && !request.thumbnail) {
+  if (drawing.crawl && request.thumbnail) {
+    for (auto& primitive : drawing.primitives) {
+      if (!primitive.crawlStart) continue;
+      primitive.box.x += *primitive.crawlStart;
+      primitive.clip = graphics::intersect(primitive.box, drawing.crawl->clip);
+    }
+  }
+  if (overlay.graphicsTemplate && !request.thumbnail &&
+      (drawing.crawl || (overlay.graphicsTemplate->definition->motionSummary().layered &&
+      !overlay.graphicsTemplate->wholeGraphicMotion))) {
     runs = std::make_shared<graphics::GraphicsRunLayout>();
     runs->width = drawing.width;
     runs->height = drawing.height;

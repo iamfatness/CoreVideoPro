@@ -1,3 +1,4 @@
+#include "graphics/GraphicsCrawl.h"
 #include "graphics/GraphicsTemplateDraft.h"
 #include "compositor/AdvancedGrade.h"
 #include "core/FrameAllocation.h"
@@ -2153,14 +2154,27 @@ class D3D11Compositor final : public ICompositor {
           if (slice.width <= 0 || slice.height <= 0) continue;
           const auto sample = graphics::sampleRun(*layout->drawing, run.unit, state);
           if (sample.opacity <= 0) continue;
-          const auto destination = toRect(sample.transform.apply(run.source));
+          auto source = run.source;
+          auto mask = sample.clip;
+          const auto& item = layout->drawing->primitives[run.first];
+          if (item.crawlStart) {
+            const auto& crawl = *layout->drawing->crawl;
+            const auto distance = overlay.graphicsCrawlDistance;
+            if (distance && *distance >= crawl.passWidth) continue;
+            source.x = crawl.window.x + (distance ? graphics::crawlItemX(crawl.window.width,
+                *item.crawlStart, source.width, *distance, crawl.rightward) : *item.crawlStart);
+            const auto window = sample.transform.apply(crawl.clip);
+            if (graphics::intersect(sample.transform.apply(source), window).width <= 0) continue;
+            mask = mask ? graphics::intersect(*mask, window) : window;
+          }
+          const auto destination = toRect(sample.transform.apply(source));
           if (destination.width <= 0 || destination.height <= 0) continue;
           auto scissor = clip;
-          if (sample.clip) {
-            const auto mask = toRect(*sample.clip);
-            const float x = std::max(clip.x, mask.x), y = std::max(clip.y, mask.y);
-            scissor = {x, y, std::min(clip.x + clip.width, mask.x + mask.width) - x,
-                std::min(clip.y + clip.height, mask.y + mask.height) - y};
+          if (mask) {
+            const auto bounds = toRect(*mask);
+            const float x = std::max(clip.x, bounds.x), y = std::max(clip.y, bounds.y);
+            scissor = {x, y, std::min(clip.x + clip.width, bounds.x + bounds.width) - x,
+                std::min(clip.y + clip.height, bounds.y + bounds.height) - y};
           }
           if (scissor.width <= 0 || scissor.height <= 0) continue;
           draw(destination, scissor, alpha * float(sample.opacity),

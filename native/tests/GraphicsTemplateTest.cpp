@@ -665,3 +665,24 @@ TEST(GraphicsTemplate, DataTableExpandsBoundRowsIntoClippedNativePrimitives) {
   EXPECT_EQ("right", drawing.primitives[5].align);
   EXPECT_FALSE(definition->resolve(M{{"table-row-1","[1,2]"}}, brand(), drawing, error));
 }
+
+TEST(GraphicsTemplate, CrawlValidatesBoundListAndPlaybackLimits) {
+  using M = Json::Object;
+  auto document = manifest();
+  document["fields"] = Json::Array{M{{"id","crawl-items"},{"type","string"},{"default","[\"Sample\"]"},{"maxLength",4096}}};
+  document["layers"] = Json::Array{M{{"id","crawl"},{"type","crawl"},{"x",30},{"y",4},{"width",140},{"height",40},
+      {"items",M{{"field","crawl-items"}}},{"font","Segoe UI"},{"fontSize",20},{"color","#FFFFFF"}}};
+  std::string error;
+  const auto definition = load(document, error);
+  ASSERT_TRUE(definition) << error;
+  GraphicsDrawing drawing;
+  ASSERT_TRUE(definition->resolve(M{{"crawl-items","[\"Ada\",\"A much longer label\"]"}}, brand(), drawing, error)) << error;
+  ASSERT_EQ(2u, drawing.primitives.size());
+  EXPECT_TRUE(drawing.primitives[1].box.width > drawing.primitives[0].box.width);
+  EXPECT_FALSE(definition->resolve(M{{"crawl-items","[]"}}, brand(), drawing, error));
+  EXPECT_FALSE(definition->resolve(M{{"crawl-items","[\"Ada\",2]"}}, brand(), drawing, error));
+  auto layer = document["layers"].asArray()[0].asObject();
+  layer["speed"] = 1201;
+  document["layers"] = Json::Array{layer};
+  EXPECT_FALSE(load(document, error));
+}
