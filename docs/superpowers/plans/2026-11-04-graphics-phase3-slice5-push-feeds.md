@@ -26,16 +26,24 @@ Add a focused shell connection coordinator beside GraphicsFeedPoller. Reuse Time
 
 Commit **Reconnect and stage graphics push feeds safely**.
 
-## 4. Expose the operator workflow and qualify the WebSocket adapter
+## 4. Add custom pull mapping and endpoint credentials
 
-Start with a red layout probe for WSS setup, Reconnect now, stale and retry status, and staged versus published data at 1360×768 and 1600×900. Add controls to the existing Remote feeds and Operate surfaces. Keep scope-specific exceptions in the existing user-facing status path. Verify the four-socket limit and independent polling sources.
+Start with red tests for a root array and a nested array, per-row projection, JSON Pointer escaping and index bounds, missing or nonscalar values, and duplicate mapped keys. Exercise anonymous requests and a credentialed GET and WSS handshake. Verify a redirect is refused before credentials can reach another endpoint. Test protected storage round-trip, imported shows with missing credentials, credential rotation, endpoint edits, and sanitized diagnostics.
 
-Run the three shell suites and contract parity. Use a fresh report directory and inspect both screenshots, with a 1080p capture where available. Exercise the spec with a controlled WSS fixture, a synthetic table and crawl, and a development Program run. Verify existing native publication behavior through the shipped paths. Run exact native filters if needed for pixel or boundary evidence. If implementation changes native code, build it with the local SDK and run the full native suite once, at the end, with the installed app closed and isolated shared memory. Keep evidence under D:/CoreVideo-QA/tmp. Preserve the installed app, owner show files and OAuth broker configuration.
+Reuse GraphicsFeedPoller and GraphicsFeedTransport for custom HTTPS GET. Map one bounded JSON response into GraphicsLocalData and stage through GraphicsWorkspaceLibrary.Feeds. Add an endpoint-scoped secret reference using the existing shell secret-protection seam. Resolve credentials only after endpoint validation and apply the same binding checks to the WSS handshake. Preserve the Slice 3 provider paths and test that an older response from a replaced configuration cannot publish.
+
+Commit **Add custom graphics API mapping and credentials**.
+
+## 5. Expose and qualify custom push and pull feeds
+
+Start with a red layout probe for custom push and pull setup, mapping preview, credential status, Reconnect now, stale and retry status, and staged versus published data at 1360×768 and 1600×900. Add controls to the existing Remote feeds and Operate surfaces. Keep scope-specific exceptions in the existing user-facing status path. Verify the four-socket limit and independent polling sources.
+
+Run the three shell suites and contract parity. Use a fresh report directory and inspect both screenshots, with a 1080p capture where available. Exercise the spec with controlled HTTPS and WSS fixtures, a synthetic table and crawl, and a development Program run. Verify existing native publication behavior through the shipped paths. Run exact native filters if needed for pixel or boundary evidence. If implementation changes native code, build it with the local SDK and run the full native suite once, at the end, with the installed app closed and isolated shared memory. Keep evidence under D:/CoreVideo-QA/tmp. Preserve the installed app, owner show files and OAuth broker configuration.
 
 Update CLAUDE.md and docs/reference/graphics-playout.md. Review the complete diff and open a PR with test counts, flagged decisions, and any installed or public-provider checks still open.
 
-Commit **Expose and qualify graphics WebSocket feeds**.
+Commit **Expose and qualify custom graphics API feeds**.
 
 ## Social follow-up
 
-The first social adapter starts from a separate issue and provider-specific spec after the owner chooses the provider and approves the moderation policy. Its test-first plan covers provider authorization, message selection, explicit approval, retention, deletion and revocation. Qualify that provider end to end using the staged publication contract before adding another.
+X, YouTube, Twitch and LinkedIn are eligible targets. The first social adapter starts from a separate issue and provider-specific spec after the owner chooses the provider and confirms the moderation policy. Its test-first plan covers provider authorization, message selection, explicit approval, retention, deletion and revocation. Qualify that provider end to end using the staged publication contract before adding another.

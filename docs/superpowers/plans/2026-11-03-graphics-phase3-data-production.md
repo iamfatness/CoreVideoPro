@@ -39,7 +39,7 @@ Depends on Slice 1. Remote feeds can use the same revision contract when Slice 3
 
 ## Slice 5 — push and social adapters
 
-The [Slice 5 spec](../specs/2026-11-04-graphics-phase3-slice5-push-feeds.md) and [test-first plan](2026-11-04-graphics-phase3-slice5-push-feeds.md) detail WebSocket snapshots and the social qualification gate for [#1110](https://github.com/iamfatness/CoreVideoPro/issues/1110).
+The [Slice 5 spec](../specs/2026-11-04-graphics-phase3-slice5-push-feeds.md) and [test-first plan](2026-11-04-graphics-phase3-slice5-push-feeds.md) detail custom HTTPS pull, WebSocket push, and the social qualification gate for [#1110](https://github.com/iamfatness/CoreVideoPro/issues/1110).
 
 1. Add bounded WebSocket ingestion with reconnect, message ordering, cancellation and batch coalescing tests.
 2. Qualify a single social provider end to end before adding another. Specify its auth, message selection and retention policy separately. Treat external text as data.
