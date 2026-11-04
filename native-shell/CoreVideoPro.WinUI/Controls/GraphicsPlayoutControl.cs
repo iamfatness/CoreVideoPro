@@ -455,6 +455,11 @@ public sealed partial class GraphicsPlayoutControl : UserControl
                 string.Join('|', mappedFields.Select(f => $"{f.Id}:{row.SourceMappings.GetValueOrDefault(f.Id)}"));
         if (row?.DataBinding is { } data)
             signature += $"|data:{data.SourceId}:{data.Revision}:{_library?.Document.DataSources.FirstOrDefault(source => source.Id == data.SourceId)?.Revision}";
+        if (row?.DataBinding is { Crawl: not null } crawlBinding)
+        {
+            var live = _attached?.GraphicsPlayout.CrawlOnProgram(row.Id);
+            signature += $"|crawl:{crawlBinding.LiveFollow}:{live?.CrawlPlayback}:{live?.ProgramRevision}:{live?.CrawlPendingRevision}:{live?.Preparation}:{live?.Warning}";
+        }
         // Variable values are not in the signature: a commit (Enter / LostFocus) must not rebuild the inspector under the
         // box being typed in. Boxes without focus show the row's current value instead.
         if (signature == _inspectorSignature) {

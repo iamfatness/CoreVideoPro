@@ -198,9 +198,9 @@ public sealed class GraphicsDesignWorkflow
         if (existing?.DataBinding is not { } pinned || pinned.SourceId != binding.SourceId)
             return row with { DataBinding = binding };
         var fields = row.Fields.ToDictionary(StringComparer.Ordinal);
-        foreach (var cell in existing.Fields.Where(field => field.Key.StartsWith(GraphicsDataTable.RowPrefix, StringComparison.Ordinal)))
+        foreach (var cell in existing.Fields.Where(field => GraphicsDataTable.IsDataField(field.Key)))
             fields[cell.Key] = cell.Value.Clone();
-        return row with { DataBinding = binding with { Revision = pinned.Revision }, Fields = fields };
+        return row with { DataBinding = binding with { Revision = pinned.Revision, LiveFollow = pinned.LiveFollow && binding.Crawl is not null }, Fields = fields };
     }
 
     /// <summary>The design the editor is on, when moving off it may uninstall it: a browse draft (not a
@@ -242,7 +242,7 @@ public sealed class GraphicsDesignWorkflow
         var published = _library.Document.Playlist.FirstOrDefault(row => row.TemplateId == template.TemplateId &&
             row.TemplateVersion == template.TemplateVersion && row.DataBinding?.SourceId == binding.SourceId);
         foreach (var field in GraphicsTemplateEditor.TemplateFields(NativeGraphicsScratch.From(definition)))
-            if (field.Id.StartsWith(GraphicsDataTable.RowPrefix, StringComparison.Ordinal))
+            if (GraphicsDataTable.IsDataField(field.Id))
                 fields[field.Id] = published?.Fields.GetValueOrDefault(field.Id) ?? field.Default ?? JsonSerializer.SerializeToElement("");
         _session.Rebase(draft with { Fields = JsonSerializer.SerializeToElement(fields) });
     }

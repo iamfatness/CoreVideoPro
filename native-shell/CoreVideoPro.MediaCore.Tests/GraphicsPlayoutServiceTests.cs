@@ -261,6 +261,54 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         Assert.Equal(2, reopened.Document.Playlist.Single().DataBinding!.Revision);
     }
 
+    [Fact]
+    public async Task SavedCrawlCuesPinnedDataAndPublishesWithoutReshowingProgram()
+    {
+        const string design = "design-crawl";
+        var first = GraphicsLocalData.Parse("line\nFirst\nSecond", "csv", null);
+        var binding = new GraphicsDataBinding("crawl", null, ["line"], null, 64, 1) { Crawl = new() };
+        var fields = GraphicsDataTable.Fields(first, binding);
+        _state = _state with { Templates = [.. _state.Templates, Template(design, "title", "declarative", fields.Keys.ToArray())] };
+        var (library, _) = Build();
+        Assert.NotNull(await library.SaveLocalDataAsync("crawl", "Crawl", first));
+        var row = new GraphicsPlaylistRow { Id = "crawl", Kind = GraphicsPlaylistRow.Title, Name = "Crawl",
+            TemplateId = design, TemplateVersion = 1, DataBinding = binding, Fields = fields };
+        Assert.True(await library.SavePlaylistAsync([row]), library.Status);
+        var (reopened, service) = Build();
+        await reopened.LoadAsync();
+        var cue = await service.ToPreviewAsync(GraphicsPlayoutService.EntryFor(reopened.Document.Playlist.Single()));
+        Assert.True(cue.Accepted, cue.Reason);
+        var create = Bodies("graphics.instance.create").Single();
+        Assert.Equal(1, create.GetProperty("templateVersion").GetInt32());
+        Assert.Equal("1", create.GetProperty("fields").GetProperty(GraphicsCrawlData.RevisionField).GetString());
+        Assert.Empty(Bodies("graphics.instance.trigger"));
+
+        // The fake core observes the real native Take result. Private and
+        // Program clock independence is exercised in GraphicsInstancesTest.
+        _state = _state with { Instances = _state.Instances.Select(instance => instance with
+        {
+            Cued = false, CueRevision = 0, ProgramRevision = instance.Revision, ProgramTemplateVersion = 1,
+            Visibility = "on-air", CrawlPlayback = "playing", ProgramFields = instance.Fields
+        }).ToArray() };
+        Assert.True((await service.ControlCrawlAsync(row.Id, "pause")).Accepted);
+        Assert.Equal("pause", Bodies("graphics.instance.trigger").Single().GetProperty("action").GetString());
+        Assert.NotNull(await reopened.SaveLocalDataAsync("crawl", "Crawl",
+            GraphicsLocalData.Parse("line\nRevised", "csv", null)));
+        Assert.Equal(1, service.Row(row.Id)!.DataBinding!.Revision);
+        Assert.True((await service.PublishDataAsync(row.Id)).Accepted);
+        var update = Bodies("graphics.instance.update").Single();
+        Assert.Equal("program", update.GetProperty("target").GetString());
+        Assert.Equal("2", update.GetProperty("fields").GetProperty(GraphicsCrawlData.RevisionField).GetString());
+        Assert.Single(Bodies("graphics.instance.trigger"));
+        Assert.True((await service.SetCrawlLiveFollowAsync(row.Id, true)).Accepted);
+        var (later, _) = Build();
+        await later.LoadAsync();
+        Assert.True(later.Document.Playlist.Single().DataBinding!.LiveFollow);
+        Assert.Equal(2, later.Document.Playlist.Single().DataBinding!.Revision);
+        Assert.True((await service.PlayOutAsync(cue.InstanceId)).Accepted);
+        Assert.Equal("hide", Bodies("graphics.instance.trigger").Last().GetProperty("action").GetString());
+    }
+
     [Fact] public async Task PlayInSendsTheRowsOwnPlacementWhenItHasOne()
     {
         var (library, service) = await BuildWithDefaultPlaylist();

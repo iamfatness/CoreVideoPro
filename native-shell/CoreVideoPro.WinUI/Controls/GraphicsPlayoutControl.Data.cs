@@ -31,7 +31,10 @@ public sealed partial class GraphicsPlayoutControl
                 GraphicsDataTable.Fields(data, binding);
                 if (studio.GraphicsPlayout.Row(row.Id)?.DataBinding != binding) return;
                 var staged = await library.SaveLocalDataAsync(binding.SourceId, source?.Name ?? row.Name, data);
-                _status.Text = staged is null ? library.Status : $"Data revision {staged.Revision} loaded. Choose Publish data to apply it.";
+                if (staged is not null && studio.GraphicsPlayout.Row(row.Id)?.DataBinding is { LiveFollow: true })
+                    _status.Text = (await studio.GraphicsPlayout.PublishDataAsync(row.Id)).Reason;
+                else
+                    _status.Text = staged is null ? library.Status : $"Data revision {staged.Revision} loaded. Choose Publish data to apply it.";
             }
             catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = ex.Message; }
             finally { reload.IsEnabled = publish.IsEnabled = true; }
@@ -49,6 +52,47 @@ public sealed partial class GraphicsPlayoutControl
             catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = ex.Message; }
             finally { reload.IsEnabled = publish.IsEnabled = true; }
         };
+        if (binding.Crawl is not null)
+        {
+            var follow = new ToggleSwitch { Header = "Live follow local reloads", IsOn = binding.LiveFollow };
+            follow.Toggled += async (_, _) =>
+            {
+                if (_attached is not { } studio) return;
+                follow.IsEnabled = false;
+                try { _status.Text = (await studio.GraphicsPlayout.SetCrawlLiveFollowAsync(row.Id, follow.IsOn)).Reason; }
+                catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = ex.Message; }
+                finally { follow.IsEnabled = true; }
+            };
+            panel.Children.Add(follow);
+            if (_attached?.GraphicsPlayout.CrawlOnProgram(row.Id) is { } live)
+            {
+                var playing = live.ProgramFields?.AdditionalFields?.GetValueOrDefault(GraphicsCrawlData.RevisionField).ToString();
+                var pending = live.CrawlPendingRevision > 0
+                    ? live.Fields.AdditionalFields?.GetValueOrDefault(GraphicsCrawlData.RevisionField).ToString()
+                    : null;
+                panel.Children.Add(new TextBlock
+                {
+                    Text = $"Crawl {live.CrawlPlayback} · Program data {playing ?? "unknown"}" +
+                        (pending is not null ? $" · pending {pending} ({live.Preparation})" : "") +
+                        (live.Warning.Length > 0 ? $" · {live.Warning}" : ""),
+                    TextWrapping = TextWrapping.Wrap
+                });
+                var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                foreach (var (label, action) in new[] { ("Pause", "pause"), ("Resume", "resume"), ("Restart", "restart") })
+                {
+                    var button = StudioBrushes.GhostButton(label);
+                    button.IsEnabled = action == "restart" || (action == "pause" ? live.CrawlPlayback == "playing" : live.CrawlPlayback == "paused");
+                    button.Click += async (_, _) =>
+                    {
+                        if (_attached is not { } studio) return;
+                        try { _status.Text = (await studio.GraphicsPlayout.ControlCrawlAsync(row.Id, action)).Reason; }
+                        catch (Exception ex) when (ex is not OutOfMemoryException) { _status.Text = ex.Message; }
+                    };
+                    buttons.Children.Add(button);
+                }
+                panel.Children.Add(buttons);
+            }
+        }
         panel.Children.Add(reload);
         panel.Children.Add(publish);
         return panel;

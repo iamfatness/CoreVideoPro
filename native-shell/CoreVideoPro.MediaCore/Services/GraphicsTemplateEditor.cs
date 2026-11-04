@@ -29,7 +29,7 @@ public static partial class GraphicsTemplateEditor
         for(var i=0;i<layers.Count;i++) {
             if(layers[i] is not JsonObject node) throw new InvalidDataException("Invalid template layer.");
             if(node["id"] is not JsonValue id || !id.TryGetValue<string>(out var identity) || string.IsNullOrEmpty(identity) || identity.Length>64 ||
-                node["type"] is not JsonValue kind || !kind.TryGetValue<string>(out var type) || type is not ("rect" or "ellipse" or "line" or "text" or "image" or "group" or "table")) throw new InvalidDataException("Invalid template layer identity or type.");
+                node["type"] is not JsonValue kind || !kind.TryGetValue<string>(out var type) || type is not ("rect" or "ellipse" or "line" or "text" or "image" or "group" or "table" or "crawl")) throw new InvalidDataException("Invalid template layer identity or type.");
             var isLocked=locked || node["metadata"] is JsonObject meta && meta["editorLocked"] is JsonValue flag && flag.TryGetValue<bool>(out var on) && on;
             yield return (node,layers,i,parent,depth,isLocked);
             if(node["children"] is JsonArray children) foreach(var child in Walk(children,node["id"]?.GetValue<string>() ?? "",depth+1,isLocked)) yield return child;
@@ -53,10 +53,13 @@ public static partial class GraphicsTemplateEditor
         var root=Read(scratch); var row=Walk(root["layers"]!.AsArray()).FirstOrDefault(r=>r.Node["id"]?.GetValue<string>()==id);
         if(row.Node is null) throw new InvalidDataException("Layer was removed.");
         if(row.Locked) throw new InvalidOperationException("Unlock the layer or its parent before editing.");
-        if(property is not ("x" or "y" or "width" or "height" or "opacity" or "visible" or "fill" or "cornerRadius" or "font" or "fontSize" or "fontWeight" or "lineHeight" or "color" or "text" or "align" or "maxLines" or "overflow" or "gap" or "padding" or "fit" or "flow" or "asset" or "verticalAlign"))
+        if(property is not ("x" or "y" or "width" or "height" or "opacity" or "visible" or "fill" or "cornerRadius" or "font" or "fontSize" or "fontWeight" or "lineHeight" or "color" or "text" or "align" or "maxLines" or "overflow" or "gap" or "padding" or "fit" or "flow" or "asset" or "verticalAlign" or "speed" or "direction" or "mode"))
             throw new InvalidDataException("This layer property is not editable.");
         var replacement=JsonNode.Parse(value.GetRawText()); if(JsonNode.DeepEquals(row.Node[property],replacement)) return scratch;
         row.Node[property]=replacement;
+        if (row.Node[LayerTypeKey]?.GetValue<string>() == "crawl" && property is "speed" or "gap" or "direction" or "mode" &&
+            root["metadata"] is JsonObject metadata && metadata["dataBinding"] is JsonObject binding && binding["crawl"] is JsonObject options)
+            options[property] = replacement?.DeepClone();
         if (property == "width" && replacement is JsonValue width && width.GetValueKind() == JsonValueKind.Number) {
             row.Node.Remove("minWidth"); row.Node.Remove("maxWidth");
         }
@@ -245,7 +248,7 @@ public static partial class GraphicsTemplateEditor
     {
         var root=Read(scratch); var rows=Walk(root["layers"]!.AsArray()).ToArray();
         var dataTable = root["metadata"] is JsonObject metadata && metadata["dataBinding"] is JsonObject;
-        return Fields(root).OfType<JsonObject>().Where(field => !dataTable || !field["id"]!.GetValue<string>().StartsWith(GraphicsDataTable.RowPrefix, StringComparison.Ordinal)).Select(field=>{
+        return Fields(root).OfType<JsonObject>().Where(field => !dataTable || !GraphicsDataTable.IsDataField(field["id"]!.GetValue<string>())).Select(field=>{
             var id=field["id"]!.GetValue<string>(); var type=field["type"]?.GetValue<string>() ?? "string";
             var users=rows.Where(r=>UsedProperties(r.Node,id).Any()).ToArray();
             var hide=users.Any(r=>r.Node["type"]!.GetValue<string>() is "text" or "image" && r.Node["collapseWhenEmpty"] is JsonValue c && c.TryGetValue<bool>(out var on) && on);

@@ -322,6 +322,7 @@ internal static class GraphicsWorkspaceLayoutProbe
         await Task.Delay(80);
         page.UpdateLayout();
         Require(Button(page, "Data table…").ActualHeight > 0, "Design did not show the local data import entry.");
+        Require(Button(page, "Data crawl…").ActualHeight > 0, "Design did not show the crawl import entry.");
         var data = GraphicsLocalData.Parse("id,player,score\na,Ada,9\nb,Bob,12", "csv", "id");
         var binding = new GraphicsDataBinding("probe-data", "id", ["player", "score"], "score", 4, 1);
         Require(await studio.GraphicsLibrary.SaveLocalDataAsync(binding.SourceId, "Probe scores", data) is not null,
@@ -344,6 +345,42 @@ internal static class GraphicsWorkspaceLayoutProbe
                 "The data row does not expose separate import and publication actions.");
             await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-data-table-{label}.png"));
         }
+        var crawlData = GraphicsLocalData.Parse("line\nFirst item\nSecond item", "csv", null);
+        var crawlBinding = new GraphicsDataBinding("probe-crawl", null, ["line"], null, 64, 1) { Crawl = new() };
+        var crawl = row with
+        {
+            Id = "probe-crawl", Name = "Probe crawl", DataBinding = crawlBinding,
+            Fields = GraphicsDataTable.Fields(crawlData, crawlBinding)
+        };
+        Require(await studio.GraphicsLibrary.SaveLocalDataAsync(crawlBinding.SourceId, "Probe crawl", crawlData) is not null,
+            "The probe crawl source could not be saved.");
+        Require(await studio.GraphicsLibrary.SavePlaylistAsync([crawl]), "The probe crawl row could not be saved.");
+        var crawlState = new NativeGraphicsState
+        {
+            CoreEpoch = "probe-crawl",
+            Instances = [new()
+            {
+                InstanceId = GraphicsPlayoutService.InstanceIdFor(crawl.Id, ""), Revision = 2, ProgramRevision = 1,
+                CrawlPlayback = "paused", CrawlPendingRevision = 2, Preparation = "ready", Visibility = "on-air",
+                Fields = new() { AdditionalFields = GraphicsDataTable.Fields(crawlData, crawlBinding with { Revision = 2 }) },
+                ProgramFields = new() { AdditionalFields = GraphicsDataTable.Fields(crawlData, crawlBinding) }
+            }]
+        };
+        playout.SelectRow(crawl.Id);
+        foreach (var (width, height, label) in new[] { (1320d, 640d, "1360x768"), (1560d, 772d, "1600x900"), (1840d, 820d, "1080p") })
+        {
+            page.Width = width; page.Height = height;
+            await Task.Delay(80);
+            studio.GraphicsPlayout.Observe(crawlState);
+            playout.Refresh(); page.UpdateLayout();
+            Require(Button(playout, "Resume").IsEnabled && !Button(playout, "Pause").IsEnabled &&
+                Button(playout, "Restart").IsEnabled, $"Crawl playback controls at {label} do not reflect paused Program.");
+            Require(Descendants(playout).OfType<TextBlock>().Any(t => t.Text.Contains("Program data 1 · pending 2")),
+                "Crawl status does not distinguish the Program and pending revisions.");
+            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-data-crawl-{label}.png"));
+        }
+        studio.GraphicsPlayout.Observe(new() { CoreEpoch = "probe-crawl" });
+        checks.Add("Operate exposes paused crawl controls and accepted and pending data revisions at all three viewport sizes.");
         Require(await studio.GraphicsLibrary.SavePlaylistAsync([]), "Could not clear the probe playlist.");
         studio.GraphicsMode = mode;
         checks.Add("Design exposes data-table import and Operate exposes independent load and publish actions at both viewport sizes.");

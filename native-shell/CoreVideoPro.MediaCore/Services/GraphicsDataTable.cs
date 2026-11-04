@@ -8,6 +8,9 @@ namespace CoreVideoPro.MediaCore.Services;
 
 public sealed record GraphicsDataBinding(string SourceId, string? KeyColumn, string[] Columns, string? SortColumn, int Limit, long Revision)
 {
+    public GraphicsCrawlOptions? Crawl { get; init; }
+    public bool LiveFollow { get; init; }
+
     public bool Valid() => SourceId is not null && GraphicsPlaylistRow.ValidId(SourceId) &&
         Columns is { Length: > 0 and <= GraphicsLocalData.MaxVisibleColumns } &&
         Columns.All(column => column is { Length: > 0 and <= 128 }) &&
@@ -15,7 +18,9 @@ public sealed record GraphicsDataBinding(string SourceId, string? KeyColumn, str
         KeyColumn is null or { Length: > 0 and <= 128 } &&
         SortColumn is null or { Length: > 0 and <= 128 } &&
         (SortColumn is null || Columns.Length < GraphicsLocalData.MaxVisibleColumns) &&
-        Limit is >= 1 and <= GraphicsLocalData.MaxVisibleRows && Revision > 0;
+        (Crawl is null ? Limit is >= 1 and <= GraphicsLocalData.MaxVisibleRows && !LiveFollow :
+            Crawl.Valid() && Columns.Length == 1 && SortColumn is null && Limit is >= 1 and <= GraphicsCrawlData.MaxItems) &&
+        Revision > 0;
 }
 
 public static class GraphicsDataTable
@@ -24,11 +29,14 @@ public static class GraphicsDataTable
     private static readonly JsonSerializerOptions CellsJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     private const string ManifestTypeKey = "type";
     public const string RowPrefix = "table-row-";
+    public static bool IsDataField(string id) => id.StartsWith(RowPrefix, StringComparison.Ordinal) ||
+        id is GraphicsCrawlData.ItemsField or GraphicsCrawlData.RevisionField;
     public static string FieldId(int index) => RowPrefix + (index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     public static Dictionary<string, JsonElement> Fields(GraphicsLocalData data, GraphicsDataBinding binding)
     {
         if (!binding.Valid()) throw new InvalidDataException("Choose valid columns, row limit and leaderboard sort.");
+        if (binding.Crawl is not null) return GraphicsCrawlData.Fields(data, binding);
         var rows = data.Project(binding.Columns, binding.SortColumn, binding.Limit);
         var fields = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         for (var index = 0; index < binding.Limit; index++)
@@ -45,6 +53,13 @@ public static class GraphicsDataTable
 
     public static JsonObject Manifest(string id, string name, GraphicsDataBinding binding, GraphicsLocalData data)
     {
+        if (binding.Crawl is not null)
+        {
+            if (!binding.Valid()) throw new InvalidDataException("Choose valid crawl settings and one text column.");
+            var crawl = GraphicsCrawlData.Manifest(id, name, binding, data);
+            crawl["metadata"] = new JsonObject { ["dataBinding"] = JsonSerializer.SerializeToNode(binding, Json) };
+            return crawl;
+        }
         var fields = Fields(data, binding);
         var seed = GraphicsDesignSeeds.Manifest("title", id, 1, name);
         seed["bounds"] = new JsonObject { ["width"] = 1440, ["height"] = (binding.Limit + 1) * 56 };

@@ -65,7 +65,7 @@ public sealed class GraphicsDesignService
 
         if (!source.Valid() || binding.SourceId != source.Id || binding.Revision != source.Revision ||
             _library.Document.DataSources.Any(item => item.Id == source.Id))
-            return Fail("The table data source is invalid or already exists.");
+            return Fail("The local data source is invalid or already exists.");
         try { return await Create(GraphicsDataTable.Manifest(id, clean, binding, source.Data), "", clean, ct, source); }
         catch (InvalidDataException ex) { return Fail(ex.Message); }
     });

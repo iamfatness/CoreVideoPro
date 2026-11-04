@@ -53,6 +53,7 @@ public static class GraphicsDesignerModel
                     "ellipse"=>("Ellipse","shape"),
                     "line"=>("Line","shape"),
                     "table"=>("Data table","data"),
+                    "crawl"=>("Crawl","local data"),
                     "image"=>("Image",asset is null ? "image" : "{"+asset+"}"),
                     _=>shows is null ? ("Text",Cut(Str(node,"text") ?? "")) : (shows=="time" ? "Clock" : "Text","{"+shows+"}") };
                 var bound=node.ValueKind==JsonValueKind.Object && node.TryGetProperty("visible",out var v) && v.ValueKind==JsonValueKind.Object;

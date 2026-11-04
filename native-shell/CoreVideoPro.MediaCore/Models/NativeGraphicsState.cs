@@ -129,6 +129,8 @@ public sealed record NativeGraphicsInstance
     public string BindingState { get; init; } = "unbound";
     public long Revision { get; init; }
     public long ProgramRevision { get; init; }
+    public string CrawlPlayback { get; init; } = "";
+    public long CrawlPendingRevision { get; init; }
     public long CueRevision { get; init; }
     public int CueTemplateVersion { get; init; }
     public int ProgramTemplateVersion { get; init; }
