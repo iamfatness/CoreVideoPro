@@ -29,7 +29,9 @@ public sealed class GraphicsPushFeedCoordinator : IDisposable
 
     public GraphicsPushFeedCoordinator(
         Func<GraphicsFeedDefinition, GraphicsFeedSnapshot, DateTimeOffset, CancellationToken, Task<GraphicsFeedStage>> stage,
-        TimeProvider clock) : this(ReceiveAsync, stage, clock, work => Task.Run(work)) { }
+        TimeProvider clock, Func<GraphicsFeedDefinition, string?>? resolveCredential = null)
+        : this((feed, budget, connected, deliver, token) => ReceiveAsync(new GraphicsPushTransport(resolveCredential: resolveCredential),
+            feed, budget, connected, deliver, token), stage, clock, work => Task.Run(work)) { }
 
     internal GraphicsPushFeedCoordinator(
         Func<GraphicsFeedDefinition, GraphicsPushReceiveBudget, Action, Action<byte[]>, CancellationToken, Task> receive,
@@ -158,14 +160,15 @@ public sealed class GraphicsPushFeedCoordinator : IDisposable
         }
         catch (OperationCanceledException) when (attempt.Token.IsCancellationRequested) { }
         catch (TimeoutException) { attempt.End("timeout"); }
+        catch (GraphicsFeedCredentialException) { attempt.End("credentials-required"); }
         catch (InvalidDataException) { attempt.End("invalid-data"); }
         catch (Exception ex) when (ex is not OutOfMemoryException) { attempt.End("unavailable"); }
     }
 
-    private static async Task ReceiveAsync(GraphicsFeedDefinition feed, GraphicsPushReceiveBudget budget,
+    private static async Task ReceiveAsync(GraphicsPushTransport transport, GraphicsFeedDefinition feed, GraphicsPushReceiveBudget budget,
         Action connected, Action<byte[]> deliver, CancellationToken cancellation)
     {
-        using var socket = await new GraphicsPushTransport().ConnectAsync(feed, budget, cancellation).ConfigureAwait(false);
+        using var socket = await transport.ConnectAsync(feed, budget, cancellation).ConfigureAwait(false);
         connected();
         while (await socket.ReadAsync(cancellation).ConfigureAwait(false) is { } bytes)
             deliver(bytes);

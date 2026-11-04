@@ -7,7 +7,8 @@ namespace CoreVideoPro.MediaCore.Services;
 internal sealed class GraphicsPushTransport(
     Func<string, CancellationToken, Task<IPAddress[]>>? resolve = null,
     Func<IPAddress[], int, CancellationToken, ValueTask<Stream>>? dial = null,
-    X509ChainPolicy? testTrust = null)
+    X509ChainPolicy? testTrust = null,
+    Func<GraphicsFeedDefinition, string?>? resolveCredential = null)
 {
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
 
@@ -15,6 +16,8 @@ internal sealed class GraphicsPushTransport(
         CancellationToken cancellation)
     {
         var target = GraphicsFeedTransport.ValidateWebSocketEndpoint(feed);
+        cancellation.ThrowIfCancellationRequested();
+        var bearer = GraphicsFeedCredentials.Resolve(feed, resolveCredential);
         var started = budget.Clock.GetTimestamp();
         using var deadline = new CancellationTokenSource(ConnectTimeout, budget.Clock);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
@@ -33,6 +36,7 @@ internal sealed class GraphicsPushTransport(
         socket.Options.CollectHttpResponseDetails = true;
         try
         {
+            if (bearer is not null) socket.Options.SetRequestHeader("Authorization", "Bearer " + bearer);
             await socket.ConnectAsync(target, invoker, linked.Token).ConfigureAwait(false);
             linked.Token.ThrowIfCancellationRequested();
             if (budget.Clock.GetElapsedTime(started) >= ConnectTimeout)

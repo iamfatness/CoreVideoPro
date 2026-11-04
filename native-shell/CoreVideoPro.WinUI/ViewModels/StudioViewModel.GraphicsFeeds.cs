@@ -1,4 +1,5 @@
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.WinUI.Services;
 using Microsoft.UI.Dispatching;
 
 namespace CoreVideoPro.WinUI.ViewModels;
@@ -10,7 +11,8 @@ internal sealed class GraphicsFeedViewModel : IDisposable
     private readonly GraphicsWorkspaceLibrary _library;
     private readonly GraphicsPlayoutService _playout;
     private readonly DispatcherQueueTimer _timer;
-    private readonly GraphicsFeedTransport _transport = GraphicsFeedTransport.Create();
+    private readonly GraphicsFeedCredentialStore _credentials = new();
+    private readonly GraphicsFeedTransport _transport;
     private readonly Dictionary<string, GraphicsFeedPoller> _pollers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, GraphicsPushFeedCoordinator> _pushFeeds = new(StringComparer.Ordinal);
     private Dictionary<string, GraphicsFeedStatus> _statuses = new(StringComparer.Ordinal);
@@ -19,6 +21,7 @@ internal sealed class GraphicsFeedViewModel : IDisposable
     internal GraphicsFeedViewModel(GraphicsWorkspaceLibrary library, GraphicsPlayoutService playout, DispatcherQueue dispatcher)
     {
         (_library, _playout) = (library, playout);
+        _transport = GraphicsFeedTransport.Create(ResolveCredential);
         _timer = dispatcher.CreateTimer();
         _timer.Interval = TimeSpan.FromSeconds(1);
         _timer.Tick += OnTick;
@@ -27,6 +30,11 @@ internal sealed class GraphicsFeedViewModel : IDisposable
     }
 
     internal event EventHandler? Changed;
+
+    private string? ResolveCredential(GraphicsFeedDefinition definition) => _credentials.Resolve(_library.Document.ShowId, definition);
+
+    internal Task<GraphicsFeedDefinition?> SaveFeedAsync(GraphicsFeedDefinition definition, string? replacementBearer = null,
+        bool clearCredential = false) => _credentials.SaveAsync(_library, definition, replacementBearer, clearCredential);
 
     internal GraphicsFeedStatus Status(string id) => _pushFeeds.TryGetValue(id, out var push) ? push.Status :
         _pollers.TryGetValue(id, out var poller) ? poller.Status : new();
@@ -84,7 +92,7 @@ internal sealed class GraphicsFeedViewModel : IDisposable
         {
             if (!_pushFeeds.TryGetValue(feed.Id, out var push))
             {
-                push = new(_playout.StagePushSnapshotAsync, TimeProvider.System);
+                push = new(_playout.StagePushSnapshotAsync, TimeProvider.System, ResolveCredential);
                 _pushFeeds.Add(feed.Id, push);
             }
             push.Configure(feed, _library.Document.DataSources.FirstOrDefault(source => source.Id == feed.Id));

@@ -6,6 +6,9 @@ public sealed partial class GraphicsWorkspaceLibrary
     {
         await LoadAsync();
         var previous = Document.Feeds.FirstOrDefault(feed => feed.Id == definition.Id);
+        if (previous?.CredentialReference is { } prior && definition.CredentialReference == prior &&
+            (previous.Endpoint != definition.Endpoint || previous.Format != definition.Format))
+            definition = definition with { CredentialReference = null };
         var source = Document.DataSources.FirstOrDefault(item => item.Id == definition.Id);
         if (!definition.Valid() || definition.Generation != (previous?.Generation ?? 0) ||
             (previous is null && source is not null))

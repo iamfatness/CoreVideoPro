@@ -14,6 +14,8 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class GraphicsPushTransportTlsTests
 {
     private static readonly IPAddress VettedAddress = IPAddress.Parse("8.8.8.8");
+    private const string FixtureBearer = "fixture-websocket-token";
+    private const string FixtureReference = "177e7ce868d94c47af4eeb2736dd7bea";
 
     [Fact]
     public async Task UpgradesWithTrustedHostnameAndReadsAFragmentedMessage()
@@ -69,6 +71,44 @@ public sealed class GraphicsPushTransportTlsTests
         Assert.True(await server);
     }
 
+    [Theory]
+    [InlineData("upgrade")]
+    [InlineData("redirect")]
+    public async Task BearerIsSentOnlyToTheBoundTlsHandshake(string response)
+    {
+        using var fixture = new TlsFixture();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var server = fixture.ServeAsync(response, timeout.Token, expectedBearer: FixtureBearer);
+        var feed = Feed("feed.example.com") with { CredentialReference = FixtureReference };
+        var transport = fixture.Transport(resolveCredential: definition =>
+        {
+            Assert.Equal(feed, definition);
+            return FixtureBearer;
+        });
+        var connect = transport.ConnectAsync(feed, new(TimeProvider.System), timeout.Token);
+        if (response == "redirect")
+        {
+            var error = await Assert.ThrowsAsync<WebSocketException>(() => connect);
+            Assert.DoesNotContain(FixtureBearer, error.ToString());
+            Assert.DoesNotContain("other.example.com", error.ToString());
+        }
+        else
+        {
+            using var connection = await connect;
+            Assert.NotNull(await connection.ReadAsync(timeout.Token));
+        }
+        Assert.True(await server);
+        Assert.Equal(1, fixture.Dials);
+    }
+
+    [Fact]
+    public async Task MissingWebSocketCredentialStopsBeforeDial()
+    {
+        var transport = new GraphicsPushTransport((_, _) => throw new InvalidOperationException("Unexpected DNS."));
+        await Assert.ThrowsAsync<GraphicsFeedCredentialException>(() => transport.ConnectAsync(
+            Feed("feed.example.com") with { CredentialReference = FixtureReference }, new(TimeProvider.System), default));
+    }
+
     private static GraphicsFeedDefinition Feed(string host) =>
         new("feed", "Fixture", "wss", $"wss://{host}/live", "id");
 
@@ -104,7 +144,7 @@ public sealed class GraphicsPushTransportTlsTests
 
         public int Dials => Volatile.Read(ref _dials);
 
-        public GraphicsPushTransport Transport(bool trustRoot = true)
+        public GraphicsPushTransport Transport(bool trustRoot = true, Func<GraphicsFeedDefinition, string?>? resolveCredential = null)
         {
             var trust = new X509ChainPolicy
             {
@@ -120,10 +160,11 @@ public sealed class GraphicsPushTransportTlsTests
                 Interlocked.Increment(ref _dials);
                 return await GraphicsFeedTransport.DialAsync([IPAddress.Loopback],
                     ((IPEndPoint)_listener.LocalEndpoint).Port, cancellation);
-            }, trustRoot ? trust : null);
+            }, trustRoot ? trust : null, resolveCredential);
         }
 
-        public async Task<bool> ServeAsync(string response, CancellationToken cancellation, bool allowTlsFailure = false)
+        public async Task<bool> ServeAsync(string response, CancellationToken cancellation, bool allowTlsFailure = false,
+            string? expectedBearer = null)
         {
             using var client = await _listener.AcceptTcpClientAsync(cancellation);
             using var stream = new SslStream(client.GetStream());
@@ -151,6 +192,7 @@ public sealed class GraphicsPushTransportTlsTests
             Assert.Equal("feed.example.com", headers["Host"]);
             Assert.DoesNotContain("Sec-WebSocket-Extensions", headers.Keys, StringComparer.OrdinalIgnoreCase);
             Assert.DoesNotContain("Cookie", headers.Keys, StringComparer.OrdinalIgnoreCase);
+            Assert.Equal(expectedBearer is null ? null : "Bearer " + expectedBearer, headers.GetValueOrDefault("Authorization"));
             if (response == "redirect")
             {
                 await stream.WriteAsync("HTTP/1.1 302 Found\r\nLocation: https://other.example.com/redirected\r\nContent-Length: 0\r\n\r\n"u8.ToArray(), cancellation);

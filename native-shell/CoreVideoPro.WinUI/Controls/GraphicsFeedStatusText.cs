@@ -14,6 +14,7 @@ internal static class GraphicsFeedStatusText
             "timeout" => "Request timed out",
             "invalid-data" => "Invalid response or unsafe destination",
             "rejected" => "Dataset rejected or workspace busy",
+            "credentials-required" => "Authorize this feed on this computer",
             "unavailable" => "Feed unavailable",
             _ => null
         };

@@ -124,7 +124,7 @@ public sealed partial class GraphicsBuilderControl
                     var definition = new GraphicsFeedDefinition(current?.Id ?? "feed-" + Guid.NewGuid().ToString("N"),
                         name.Text.Trim(), provider, endpoint.Text.Trim(), provider == "rss" ? "id" : key.Text.Trim(),
                         enabled.IsOn, double.IsFinite(interval.Value) ? (int)Math.Round(interval.Value) : 15, current?.Generation ?? 0);
-                    var saved = await library.SaveFeedAsync(definition);
+                    var saved = await feeds.SaveFeedAsync(definition);
                     if (saved is null) error.Text = library.Status;
                     else LoadList(saved.Id);
                 }
