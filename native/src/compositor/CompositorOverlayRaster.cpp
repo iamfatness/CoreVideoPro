@@ -506,6 +506,10 @@ std::shared_ptr<const graphics::GraphicsPreparedResource> CompositorOverlayRaste
   resource->deviceIdentity = activeDevice_; resource->signature = activeSignature_;
   resource->width = activeWidth_; resource->height = activeHeight_; resource->native = activeLease_;
   resource->contentHash = activeContentHash_; resource->hasContentHash = activeHasContentHash_;
+  if (const auto runs = activeRuns(); runs && runs->drawing->crawl) {
+    const auto& crawl = *runs->drawing->crawl;
+    resource->crawl = graphics::GraphicsCrawlPlayback{crawl.speed, crawl.passWidth, crawl.loop};
+  }
   activeResource_ = resource;
   return resource;
 }

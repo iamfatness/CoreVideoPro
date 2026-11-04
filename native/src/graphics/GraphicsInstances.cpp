@@ -633,8 +633,7 @@ bool GraphicsInstances::apply(const Json& command) {
       if (target == "program" && instance.program && instance.program != instance.draft) {
         instance.updatePending = true;
         if (instance.readyRevision == instance.draft->number) {
-          setProgramRevision(instance, instance.draft); instance.programResource = instance.draftResource;
-          instance.updatePending = false; instance.firstDrawSubmittedFrame = 0;
+          acceptPreparedUpdate(instance);
         }
         return finish(requestId, true, "program-update-accepted");
       }
@@ -647,6 +646,7 @@ bool GraphicsInstances::apply(const Json& command) {
     // A pending Show names the accepted revision at trigger time. Editing the
     // cue cannot silently retarget that request to a different revision.
     instance.showPending = false;
+    instance.crawlBoundaryMs.reset();
     instance.draft = std::make_shared<const Revision>(std::move(revision));
     instance.preparation = instance.draft->fieldsReady ? "unprepared" : "failed";
     instance.draftResource.reset();
@@ -665,6 +665,7 @@ bool GraphicsInstances::apply(const Json& command) {
     instance.cueWarning.clear();
     if (instance.readyRevision == instance.draft->number && instance.draftResource) {
       instance.cue = instance.draft; instance.cueResource = instance.draftResource;
+      instance.cueCrawlClock.restart(monotonicMs_());
       instance.pendingCue.reset(); instance.cuePreparation = "ready";
     } else {
       instance.pendingCue = instance.draft; instance.cuePreparation = "preparing";
@@ -696,7 +697,23 @@ bool GraphicsInstances::apply(const Json& command) {
       clearCue(instance);
       return finish(requestId, true, wasCued ? "uncued" : "not-cued");
     }
+    if (action == "pause" || action == "resume" || action == "restart") {
+      if (!instance.program || !instance.programResource || !instance.programResource->crawl ||
+          instance.awaitingEntrance || instance.visibility == "exiting")
+        return finish(requestId, false, "crawl-not-on-program");
+      const auto now = monotonicMs_();
+      if (action == "pause") instance.crawlClock.pause(now);
+      else if (action == "resume") instance.crawlClock.resume(now);
+      else {
+        instance.crawlClock.restart(now);
+        instance.crawlComplete = false;
+        if (instance.crawlBoundaryMs)
+          instance.crawlBoundaryMs = instance.crawlClock.nextBoundary(now, *instance.programResource->crawl);
+      }
+      return finish(requestId, true, "crawl-playback-accepted");
+    }
     if (action != "hide" && action != "clear") return finish(requestId, false, "invalid-trigger");
+    instance.crawlBoundaryMs.reset();
     instance.showPending = instance.updatePending = false;
     if (action == "clear") {
       instance.program.reset(); instance.clockProgramPending.reset(); instance.awaitingEntrance=false; instance.programResource.reset(); instance.timeline.clear(); instance.layered.clear(); instance.awaitingEntrance=false; instance.visibility = "hidden";
@@ -820,6 +837,11 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
     }
     auto content = layer(instance, *revision, plan.width, plan.height);
     content.graphicsPreparedResource = preview ? instance.cueResource : instance.programResource;
+    if (content.graphicsPreparedResource && content.graphicsPreparedResource->crawl) {
+      const auto& playback = *content.graphicsPreparedResource->crawl;
+      const auto& clock = preview ? instance.cueCrawlClock : instance.crawlClock;
+      content.overlay.graphicsCrawlDistance = clock.sample(now, playback.speed, playback.passWidth, playback.loop).distance;
+    }
     if (!preview) {
       content.graphicsAwaitingEntrance = instance.awaitingEntrance;
       if (layered(*revision)) {
@@ -934,6 +956,7 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
       instance.cuePreparation = state; instance.cueWarning = warning;
       if (ready) {
         instance.cue = instance.pendingCue; instance.cueResource = fact.preparedResource;
+        instance.cueCrawlClock.restart(monotonicMs_());
         instance.pendingCue.reset(); changed = true;
       } else if (state == "failed") { instance.pendingCue.reset(); changed = true; }
     }
@@ -961,8 +984,8 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
     if (instance.showPending) {
       show(instance); changed = true;
     } else if (instance.updatePending) {
-      setProgramRevision(instance, instance.draft); instance.programResource = instance.draftResource; instance.firstDrawSubmittedFrame = 0;
-      instance.updatePending = false; changed = true;
+      acceptPreparedUpdate(instance);
+      changed = true;
     }
   }
   changed=applyAutomation(frame)||changed;
@@ -1041,7 +1064,57 @@ void GraphicsInstances::setProgramRevision(Instance& instance, const std::shared
   }
 }
 
+void GraphicsInstances::acceptPreparedUpdate(Instance& instance) {
+  if (instance.programResource && instance.programResource->crawl &&
+      instance.draftResource && instance.draftResource->crawl &&
+      sameDefinition(instance.program->definition, instance.draft->definition)) {
+    const auto& playback = *instance.programResource->crawl;
+    if (playback.loop && !instance.crawlBoundaryMs)
+      instance.crawlBoundaryMs = instance.crawlClock.nextBoundary(monotonicMs_(), playback);
+    instance.updatePending = playback.loop;
+    return;
+  }
+  const bool startsCrawl = instance.draftResource && instance.draftResource->crawl;
+  setProgramRevision(instance, instance.draft);
+  instance.programResource = instance.draftResource;
+  instance.updatePending = false;
+  instance.firstDrawSubmittedFrame = 0;
+  instance.crawlBoundaryMs.reset();
+  if (startsCrawl) {
+    instance.crawlClock.restart(monotonicMs_());
+    instance.crawlComplete = false;
+  }
+}
+
+void GraphicsInstances::advanceCrawls() {
+  const auto now = monotonicMs_();
+  bool changed = false;
+  for (auto& [_, instance] : instances_) {
+    if (!instance.program || !instance.programResource || !instance.programResource->crawl || instance.awaitingEntrance)
+      continue;
+    if (instance.updatePending && instance.crawlBoundaryMs &&
+        instance.crawlClock.reached(now, *instance.crawlBoundaryMs)) {
+      instance.crawlClock.adopt(*instance.crawlBoundaryMs);
+      instance.firstDrawSubmittedFrame = 0;
+      setProgramRevision(instance, instance.draft);
+      instance.programResource = instance.draftResource;
+      instance.updatePending = false;
+      instance.crawlBoundaryMs.reset();
+      changed = true;
+    }
+    const auto& playback = *instance.programResource->crawl;
+    const bool complete = instance.crawlClock.sample(now, playback.speed, playback.passWidth, playback.loop).complete;
+    if (complete != instance.crawlComplete) {
+      instance.crawlComplete = complete;
+      changed = true;
+    }
+  }
+  if (changed) publish();
+}
+
 void GraphicsInstances::startEntrance(Instance& instance, double now) {
+  instance.crawlClock.restart(now);
+  instance.crawlComplete = false;
   if (layered(*instance.program)) {
     instance.layered.show(now);
     instance.visibility = instance.layered.visibility(now);
@@ -1060,6 +1133,7 @@ void GraphicsInstances::show(Instance& instance, bool fromCue) {
   const auto family=revision->definition?revision->definition->document().getString("family"):"lower-third";
   if(family=="lower-third" || family=="bug") managedFamilies_.insert(family);
   instance.programResource = fromCue ? instance.cueResource : instance.draftResource;
+  instance.crawlBoundaryMs.reset();
   const double entranceMs = layered(*revision) ? motionTotal(revision->definition->motionSummary(), revision->entrance, true) :
       (revision->entrance.type != "none" ? revision->entrance.durationMs : 0);
   if (starting && entranceMs > 0) instance.awaitingEntrance = true;
@@ -1162,6 +1236,10 @@ void GraphicsInstances::publish() {
       {"label",instance.label},{"rackOrder",instance.rackOrder},{"instanceId", instance.id}, {"templateId", instance.templateId}, {"templateVersion", instance.draft->definition ? instance.draft->definition->version() : 1},
       {"scope", instance.scope}, {"sceneId", instance.sceneId},
       {"clock",instance.clockSample ? *instance.clockSample : Json{}},
+      {"crawlPlayback", instance.programResource && instance.programResource->crawl ?
+          (instance.crawlComplete ? "complete" : instance.crawlClock.paused() ? "paused" : "playing") : ""},
+      {"crawlPendingRevision", instance.programResource && instance.programResource->crawl && instance.updatePending ?
+          double(instance.draft->number) : 0.},
       {"clockConfigurationRevision",instance.clock ? double(instance.clockConfigurationRevision) : 0.},
       {"clockRequestedConfiguration",instance.clockRequestedConfiguration},
       {"revision", double(instance.draft->number)}, {"programRevision", instance.program ? double(instance.program->number) : 0.},

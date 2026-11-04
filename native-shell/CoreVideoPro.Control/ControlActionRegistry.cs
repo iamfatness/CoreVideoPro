@@ -177,7 +177,7 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
             new("graphics.instance.cue", "Cue graphic instance", "Prepare the accepted revision for Preview without changing Program.",
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
-            new("graphics.instance.trigger", "Trigger graphic instance", "Show after readiness, hide, or clear an accepted native revision.",
+            new("graphics.instance.trigger", "Trigger graphic instance", "Show after readiness, hide or clear a revision, or pause, resume or restart a Program crawl.",
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
             new("graphics.clock.control", "Control graphics clock", "Configure, start, pause, resume or reset the native clock without showing it.",
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics clock request") }),

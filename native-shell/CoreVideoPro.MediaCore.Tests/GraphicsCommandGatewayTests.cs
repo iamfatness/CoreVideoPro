@@ -139,13 +139,17 @@ public sealed class GraphicsCommandGatewayTests
     [InlineData("graphics.instance.trigger", "\"action\":\"uncue\"", true)]
     [InlineData("graphics.instance.trigger", "\"action\":\"uncue\",\"target\":\"cue\"", false)]
     [InlineData("graphics.instance.trigger", "\"action\":\"hide\",\"rideTake\":true", false)]
-    public void PlayoutCueRideTakeAndUncueReachTheCoreUnchanged(string action, string extra, bool accepted)
+    [InlineData("graphics.instance.trigger", "\"action\":\"pause\"", true)]
+    [InlineData("graphics.instance.trigger", "\"action\":\"resume\"", true)]
+    [InlineData("graphics.instance.trigger", "\"action\":\"restart\"", true)]
+    [InlineData("graphics.instance.trigger", "\"action\":\"restart\",\"target\":\"cue\"", false)]
+    public void PlayoutCueAndTriggerOptionsReachTheCoreUnchanged(string action, string extra, bool accepted)
     {
         Assert.Equal(accepted, GraphicsCommandRequest.TryBuild(action, Request(extra), Observed, out var command, out _, out _));
         if (!accepted) return;
         var sent = command!.ExtensionData!["graphics"];
         if (action == "graphics.instance.cue") Assert.Equal(extra.EndsWith("true"), sent.GetProperty("rideTake").GetBoolean());
-        else Assert.Equal("uncue", sent.GetProperty("action").GetString());
+        else Assert.Equal(extra, $"\"action\":\"{sent.GetProperty("action").GetString()}\"");
     }
 
     [Theory]

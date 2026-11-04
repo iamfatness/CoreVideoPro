@@ -154,7 +154,7 @@ public static class GraphicsCommandRequest
                 if ((scope != "global" && scope != "scene") || (scope == "scene" && scene.Length == 0) || (scope == "global" && scene.Length != 0)) return false;
             }
             if (action == "graphics.instance.update" && Text(body, "target") is not ("cue" or "program")) return false;
-            if (action == "graphics.instance.trigger" && Text(body, "action") is not ("show" or "hide" or "clear" or "uncue")) return false;
+            if (action == "graphics.instance.trigger" && Text(body, "action") is not ("show" or "hide" or "clear" or "uncue" or "pause" or "resume" or "restart")) return false;
             if (action == "graphics.instance.trigger" && body.TryGetProperty("target", out _) &&
                 (Text(body, "target") != "cue" || Text(body, "action") != "show")) return false;
             if (action == "graphics.program.clear" && Text(body, "channel") != "all") return false;

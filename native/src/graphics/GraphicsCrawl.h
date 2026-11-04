@@ -5,6 +5,12 @@
 
 namespace corevideo::graphics {
 
+struct GraphicsCrawlPlayback {
+  double speed = 120;
+  double passWidth = 0;
+  bool loop = true;
+};
+
 struct GraphicsCrawlSample {
   double distance = 0;
   bool complete = false;
@@ -36,6 +42,18 @@ class GraphicsCrawlClock {
     if (loop) return {std::fmod(distance, passWidth), false};
     return {(std::min)(distance, passWidth), distance >= passWidth};
   }
+
+  bool paused() const { return paused_; }
+  double nextBoundary(double nowMs, const GraphicsCrawlPlayback& playback) const {
+    const auto passMs = playback.passWidth * 1000. / playback.speed;
+    return (std::floor(elapsed(nowMs) / passMs) + 1.) * passMs;
+  }
+
+  bool reached(double nowMs, double boundaryMs) const {
+    return !paused_ && elapsed(nowMs) >= boundaryMs;
+  }
+
+  void adopt(double boundaryMs) { elapsedMs_ -= boundaryMs; }
 
  private:
   double elapsed(double nowMs) const {
