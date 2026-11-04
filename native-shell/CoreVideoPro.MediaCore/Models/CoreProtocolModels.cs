@@ -313,6 +313,7 @@ public sealed class RawCaptureSnapshot
 {
     public required string MeetingState { get; init; }
     public string? RosterEpoch { get; init; }
+    public string? CaptureGeneration { get; init; }
     public long RosterRevision { get; init; }
     public IReadOnlyList<RawParticipantEvent> Participants { get; init; } = [];
     public string? ActiveSpeakerId { get; init; }
