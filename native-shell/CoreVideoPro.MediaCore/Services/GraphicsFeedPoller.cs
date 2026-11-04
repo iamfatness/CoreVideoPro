@@ -42,9 +42,11 @@ public sealed class GraphicsFeedPoller(
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!definition.Valid()) throw new ArgumentException("Invalid graphics feed definition.", nameof(definition));
         if (_definition == definition) return;
+        var lastSuccess = _definition is { } previous && previous.Endpoint == definition.Endpoint &&
+            previous.Format == definition.Format && previous.KeyColumn == definition.KeyColumn ? _status.LastSuccess : null;
         _definition = definition;
         _failures = 0;
-        _status = definition.Enabled ? new("waiting", NextCheck: EarliestCheck()) : new();
+        _status = definition.Enabled ? new("waiting", lastSuccess, EarliestCheck()) : new(LastSuccess: lastSuccess);
         _inFlight?.Cancel();
     }
 

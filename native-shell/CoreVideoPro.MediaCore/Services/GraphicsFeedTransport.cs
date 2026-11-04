@@ -48,7 +48,8 @@ public sealed class GraphicsFeedTransport(
                 continue;
             }
             response.EnsureSuccessStatusCode();
-            return Parse(feed, await ReadBody(response.Content, cancellation), cancellation);
+            var bytes = await ReadBody(response.Content, cancellation);
+            return await Task.Run(() => Parse(feed, bytes, cancellation), cancellation);
         }
     }
 

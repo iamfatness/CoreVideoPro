@@ -131,6 +131,7 @@ public sealed class GraphicsDocumentStore
                 var temporary = Path.Combine(directory, ".graphics-" + Guid.NewGuid().ToString("N") + ".tmp");
                 try {
                     using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { file.Write(bytes); file.Flush(true); }
+                    cancellation.ThrowIfCancellationRequested();
                     if (File.Exists(_path)) {
                         if (_recovered) { File.Copy(_path, _path + ".corrupt", true); File.Move(temporary, _path, true); }
                         else File.Replace(temporary, _path, _path + ".bak");

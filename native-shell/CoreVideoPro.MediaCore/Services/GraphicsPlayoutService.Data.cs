@@ -7,6 +7,8 @@ public sealed partial class GraphicsPlayoutService
     private NativeGraphicsState? _observedGraphics;
 
     public NativeGraphicsInstance? CrawlOnProgram(string rowId) => FindCrawl(_observedGraphics, rowId);
+    public NativeGraphicsInstance? DataOnProgram(string rowId) =>
+        _observedGraphics?.Instances.FirstOrDefault(instance => instance.InstanceId == InstanceIdFor(rowId, "") && IsOnProgram(instance));
 
     private static NativeGraphicsInstance? FindCrawl(NativeGraphicsState? state, string rowId) =>
         state?.Instances.FirstOrDefault(instance => instance.InstanceId == InstanceIdFor(rowId, "") &&

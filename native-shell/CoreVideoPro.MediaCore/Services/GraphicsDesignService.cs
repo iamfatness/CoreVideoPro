@@ -66,8 +66,15 @@ public sealed class GraphicsDesignService
         var stored = _library.Document.DataSources.FirstOrDefault(item => item.Id == source.Id);
         var feed = _library.Document.Feeds.FirstOrDefault(item => item.Id == source.Id);
         if (!source.Valid() || binding.SourceId != source.Id || binding.Revision != source.Revision ||
-            (binding.Remote ? stored != source || feed?.KeyColumn != binding.KeyColumn : stored is not null || feed is not null))
+            (binding.Remote ? stored is null || feed?.KeyColumn != binding.KeyColumn : stored is not null || feed is not null))
             return Fail("The data source changed or is unavailable. Choose the source again.");
+        // A new revision may arrive while the author chooses columns. The feed
+        // staging path preserves the accepted column schema across refreshes.
+        if (binding.Remote)
+        {
+            source = stored!;
+            binding = binding with { Revision = source.Revision };
+        }
         try { return await Create(GraphicsDataTable.Manifest(id, clean, binding, source.Data), "", clean, ct, binding.Remote ? null : source); }
         catch (InvalidDataException ex) { return Fail(ex.Message); }
     });

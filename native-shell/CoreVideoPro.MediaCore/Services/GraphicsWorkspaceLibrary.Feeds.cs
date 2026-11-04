@@ -8,7 +8,7 @@ public sealed partial class GraphicsWorkspaceLibrary
         var previous = Document.Feeds.FirstOrDefault(feed => feed.Id == definition.Id);
         if (!definition.Valid() || definition.Generation != (previous?.Generation ?? 0) ||
             (previous is null && Document.DataSources.Any(source => source.Id == definition.Id)))
-            return null;
+        { Fail("Check the feed name, format, URL, stable ID and interval. Reopen settings if the feed changed."); return null; }
         try { GraphicsFeedTransport.ValidateEndpoint(definition); }
         catch (InvalidDataException ex) { Fail(ex.Message); return null; }
         var saved = definition with { Generation = checked(definition.Generation + 1) };
@@ -34,7 +34,7 @@ public sealed partial class GraphicsWorkspaceLibrary
         }
         var source = new GraphicsDataSource(expected.Id, expected.Name, checked((previous?.Revision ?? 0) + 1), receivedAt, data);
         var sources = Document.DataSources.Where(item => item.Id != expected.Id).Append(source).ToArray();
-        return await Save(Document with { DataSources = sources }, $"Loaded feed revision {source.Revision}.")
+        return await Save(Document with { DataSources = sources }, $"Loaded feed revision {source.Revision}.", cancellation)
             ? GraphicsFeedStage.Updated : GraphicsFeedStage.Rejected;
     }
 }

@@ -105,6 +105,41 @@ public sealed class GraphicsFeedPollerTests
         Assert.Equal(2, stageCount);
     }
 
+    private sealed class DeadlineClock : TimeProvider
+    {
+        public Action? Expire { get; private set; }
+        public TimeSpan Deadline { get; private set; }
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            Deadline = dueTime;
+            Expire = () => callback(state);
+            return new TimerHandle();
+        }
+
+        private sealed class TimerHandle : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => false;
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    [Fact]
+    public async Task RequestDeadlineCancelsFetchWithoutStaging()
+    {
+        var clock = new DeadlineClock();
+        var never = new TaskCompletionSource<GraphicsLocalData>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var poller = new GraphicsFeedPoller((_, cancellation) => never.Task.WaitAsync(cancellation),
+            (_, _, _) => throw new InvalidOperationException("Timed-out data reached staging."), clock);
+        poller.Configure(Feed with { Enabled = true });
+        var request = poller.TickAsync();
+        Assert.Equal(TimeSpan.FromSeconds(10), clock.Deadline);
+        clock.Expire!();
+        await request;
+        Assert.Equal("timeout", poller.Status.Failure);
+        Assert.Null(poller.Status.LastSuccess);
+    }
+
     [Fact]
     public async Task SavedFeedRetainsLastGoodRevisionAcrossReconfigureAndReopen()
     {
