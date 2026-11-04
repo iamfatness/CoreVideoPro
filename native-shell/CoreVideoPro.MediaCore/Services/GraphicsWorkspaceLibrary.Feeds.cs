@@ -11,6 +11,16 @@ public sealed partial class GraphicsWorkspaceLibrary
             (previous is null && source is not null))
         { Fail("Check the feed name, format, URL, stable ID and interval. Reopen settings if the feed changed."); return null; }
 
+        if (definition is { Format: "wss", Enabled: true })
+        {
+            var active = Document.Feeds.Where(feed => feed is { Format: "wss", Enabled: true } && feed.Id != definition.Id).ToArray();
+            if (active.Length >= GraphicsFeedDefinition.MaxActivePushFeeds)
+            {
+                Fail("Disable one of the active WebSocket feeds before enabling another: " + string.Join(", ", active.Select(feed => feed.Name)));
+                return null;
+            }
+        }
+
         if (source is not null && (definition.Format == "wss" || previous?.Format == "wss") &&
             (previous?.Format != definition.Format || previous.Endpoint != definition.Endpoint || previous.KeyColumn != definition.KeyColumn))
         {
@@ -40,7 +50,7 @@ public sealed partial class GraphicsWorkspaceLibrary
         if (previous is not null)
         {
             if (!previous.Data.Columns.SequenceEqual(data.Columns)) return GraphicsFeedStage.Rejected;
-            if (SameFeedRows(previous.Data, data)) return GraphicsFeedStage.Unchanged;
+            if (previous.Data.HasSameRows(data)) return GraphicsFeedStage.Unchanged;
         }
 
         var source = new GraphicsDataSource(expected.Id, expected.Name, checked((previous?.Revision ?? 0) + 1), receivedAt, data);
@@ -62,7 +72,7 @@ public sealed partial class GraphicsWorkspaceLibrary
         if (snapshot.Sequence < watermark) return GraphicsFeedStage.StaleSequence;
         if (previous is not null && !previous.Data.Columns.SequenceEqual(data.Columns)) return GraphicsFeedStage.Rejected;
 
-        var unchanged = previous is not null && SameFeedRows(previous.Data, data);
+        var unchanged = previous is not null && previous.Data.HasSameRows(data);
         if (snapshot.Sequence == watermark)
             return unchanged ? GraphicsFeedStage.Unchanged : GraphicsFeedStage.Rejected;
 
@@ -96,8 +106,4 @@ public sealed partial class GraphicsWorkspaceLibrary
         var sources = Document.DataSources.Where(item => item.Id != source.Id).Append(source).ToArray();
         return Save(Document with { DataSources = sources }, status, cancellation);
     }
-
-    private static bool SameFeedRows(GraphicsLocalData first, GraphicsLocalData second) =>
-        first.Rows.Length == second.Rows.Length && first.Rows.Zip(second.Rows)
-            .All(pair => pair.First.Key == pair.Second.Key && pair.First.Cells.SequenceEqual(pair.Second.Cells));
 }

@@ -321,28 +321,33 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task RemoteFeedKeepsCuePinnedAndFollowsOnlyAfterOptIn(bool crawl)
+    [InlineData("json", null)]
+    [InlineData("json", "loop")]
+    [InlineData("wss", null)]
+    [InlineData("wss", "loop")]
+    [InlineData("wss", "single")]
+    public async Task RemoteFeedKeepsCuePinnedAndFollowsOnlyAfterOptIn(string format, string? crawl)
     {
         const string design = "design-remote";
         var data = GraphicsLocalData.Parse("id,line\na,First", "csv", "id");
-        var next = GraphicsLocalData.Parse("id,line\na,Second", "csv", "id");
-        var later = GraphicsLocalData.Parse("id,line\na,Third", "csv", "id");
-        var binding = new GraphicsDataBinding("feed", "id", ["line"], null, 8, 1) { Crawl = crawl ? new() : null, Remote = true };
+        var binding = new GraphicsDataBinding("feed", "id", ["line"], null, 8, 1)
+            { Crawl = crawl is null ? null : new(Mode: crawl), Remote = true };
         var fields = GraphicsDataTable.Fields(data, binding);
         _state = _state with { Templates = [.. _state.Templates, Template(design, "title", "declarative", fields.Keys.ToArray())] };
         var (library, service) = Build();
         var definition = Assert.IsType<GraphicsFeedDefinition>(await library.SaveFeedAsync(
-            new("feed", "Feed", "json", "https://example.com/feed", "id", Enabled: true)));
+            new("feed", "Feed", format, $"{(format == "wss" ? "wss" : "https")}://example.com/feed", "id", Enabled: true)));
         var now = DateTimeOffset.UtcNow;
-        Assert.Equal(GraphicsFeedStage.Updated, await service.StageFeedAsync(definition, data, now, default));
+        Task<GraphicsFeedStage> Stage(long sequence, string line) => format == "wss"
+            ? service.StagePushSnapshotAsync(definition, PushSnapshot(sequence, line), now.AddSeconds(sequence), default)
+            : service.StageFeedAsync(definition, GraphicsLocalData.Parse($"id,line\na,{line}", "csv", "id"), now.AddSeconds(sequence), default);
+        Assert.Equal(GraphicsFeedStage.Updated, await Stage(1, "First"));
         var row = new GraphicsPlaylistRow { Id = "feed", Kind = GraphicsPlaylistRow.Title, Name = "Feed",
             TemplateId = design, TemplateVersion = 1, DataBinding = binding, Fields = fields };
         Assert.True(await library.SavePlaylistAsync([row]));
         var cue = await service.ToPreviewAsync(GraphicsPlayoutService.EntryFor(row));
         Assert.True(cue.Accepted, cue.Reason);
-        Assert.Equal(GraphicsFeedStage.Updated, await service.StageFeedAsync(definition, next, now.AddSeconds(15), default));
+        Assert.Equal(GraphicsFeedStage.Updated, await Stage(2, "Second"));
         Assert.Equal(1, library.Document.Playlist.Single().DataBinding!.Revision);
         Assert.Empty(Bodies("graphics.instance.update"));
         Assert.Equal(1, _state.Instances.Single().CueRevision);
@@ -355,18 +360,72 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         }).ToArray() };
         var saved = library.Document.Playlist.Single();
         Assert.True(await library.SavePlaylistAsync([saved with { DataBinding = saved.DataBinding! with { LiveFollow = true } }]));
-        Assert.Equal(GraphicsFeedStage.Updated, await service.StageFeedAsync(definition, later, now.AddSeconds(30), default));
+        Assert.Equal(GraphicsFeedStage.Updated, await Stage(3, "Third"));
         Assert.Equal(3, library.Document.Playlist.Single().DataBinding!.Revision);
-        Assert.Equal("program", Assert.Single(Bodies("graphics.instance.update")).GetProperty("target").GetString());
+        var update = Assert.Single(Bodies("graphics.instance.update"));
+        Assert.Equal("program", update.GetProperty("target").GetString());
+        Assert.Equal("3", update.GetProperty("fields").GetProperty(crawl is null ? GraphicsDataTable.RevisionField :
+            GraphicsCrawlData.RevisionField).GetString());
+        if (crawl == "loop") Assert.Contains("loop boundary", service.Status);
+        if (crawl == "single") Assert.Contains("next Cue or Show", service.Status);
         Assert.Equal(1, _state.Instances.Single().CueRevision);
         Assert.Empty(Bodies("graphics.instance.trigger"));
 
+        if (format == "wss")
+        {
+            Assert.Equal(GraphicsFeedStage.WatermarkAdvanced, await Stage(4, "Third"));
+            Assert.Equal(GraphicsFeedStage.Unchanged, await Stage(4, "Third"));
+            Assert.Equal(GraphicsFeedStage.StaleSequence, await Stage(3, "Third"));
+            Assert.Single(Bodies("graphics.instance.update"));
+            Assert.Equal(4, library.Document.DataSources.Single().FeedSequence);
+            var (_, reopened) = Build();
+            Assert.Equal(GraphicsFeedStage.StaleSequence,
+                await reopened.StagePushSnapshotAsync(definition, PushSnapshot(3, "Earlier"), now, default));
+        }
         var disabled = definition with { Enabled = false };
         Assert.NotNull(await library.SaveFeedAsync(disabled));
-        Assert.Equal(GraphicsFeedStage.Rejected, await service.StageFeedAsync(definition, next, now.AddSeconds(45), default));
+        Assert.Equal(GraphicsFeedStage.Rejected, await Stage(5, "Fourth"));
         Assert.Equal(3, library.Document.DataSources.Single().Revision);
         Assert.Single(Bodies("graphics.instance.update"));
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancelingPushAtTheDocumentBoundaryFencesLiveFollow(bool afterCommit)
+    {
+        var (library, service) = Build();
+        var feed = Assert.IsType<GraphicsFeedDefinition>(await library.SaveFeedAsync(
+            new("feed", "Feed", "wss", "wss://example.com/feed", "id", Enabled: true)));
+        var now = DateTimeOffset.UtcNow;
+        var first = PushSnapshot(1, "First");
+        Assert.Equal(GraphicsFeedStage.Updated, await service.StagePushSnapshotAsync(feed, first, now, default));
+        var binding = new GraphicsDataBinding("feed", "id", ["line"], null, 8, 1) { Remote = true, LiveFollow = true };
+        Assert.True(await library.SavePlaylistAsync([new GraphicsPlaylistRow
+        {
+            Id = "feed", Kind = GraphicsPlaylistRow.Title, Name = "Feed", TemplateId = "centered-title",
+            TemplateVersion = 1, DataBinding = binding, Fields = GraphicsDataTable.Fields(first.Data, binding)
+        }]));
+        using var lifetime = new CancellationTokenSource();
+        library.Changed += (_, _) =>
+        {
+            if (library.Busy && (library.Document.DataSources.Single().FeedSequence == 2) == afterCommit)
+                lifetime.Cancel();
+        };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.StagePushSnapshotAsync(feed, PushSnapshot(2, "Second"), now, lifetime.Token));
+        var (reopened, _) = Build();
+        await reopened.LoadAsync();
+        Assert.Equal(afterCommit ? 2 : 1, reopened.Document.DataSources.Single().FeedSequence);
+        Assert.Equal(1, reopened.Document.Playlist.Single().DataBinding!.Revision);
+        Assert.Empty(Bodies("graphics.instance.update"));
+    }
+
+    private static GraphicsFeedSnapshot PushSnapshot(long sequence, string line) =>
+        GraphicsFeedSnapshot.Parse(JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            schemaVersion = 1, sequence, rows = new[] { new { id = "a", line } }
+        }), "id");
 
     [Fact] public async Task PlayInSendsTheRowsOwnPlacementWhenItHasOne()
     {

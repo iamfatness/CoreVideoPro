@@ -201,7 +201,8 @@ public sealed class GraphicsDocumentStore
                 throw new InvalidDataException("Invalid saved template style.");
         if (document.Feeds is not { Count: <= 32 } ||
             document.Feeds.Any(feed => feed is null || !feed.Valid() || feed.Generation == 0) ||
-            document.Feeds.Select(feed => feed.Id).Distinct(StringComparer.Ordinal).Count() != document.Feeds.Count)
+            document.Feeds.Select(feed => feed.Id).Distinct(StringComparer.Ordinal).Count() != document.Feeds.Count ||
+            document.Feeds.Count(feed => feed is { Format: "wss", Enabled: true }) > GraphicsFeedDefinition.MaxActivePushFeeds)
             throw new InvalidDataException("Invalid saved graphics feed definitions.");
         if (document.DataSources is not { Count: <= 32 } ||
             document.DataSources.Any(source => source is null || !source.Valid() ||

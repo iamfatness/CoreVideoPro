@@ -5,6 +5,8 @@ namespace CoreVideoPro.MediaCore.Services;
 public sealed record GraphicsFeedDefinition(string Id, string Name, string Format, string Endpoint, string KeyColumn,
     bool Enabled = false, int PollSeconds = 15, long Generation = 0)
 {
+    internal const int MaxActivePushFeeds = 4;
+
     public bool Valid() => Id is not null && GraphicsPlaylistRow.ValidId(Id) &&
         Name is { Length: > 0 and <= 128 } && !string.IsNullOrWhiteSpace(Name) &&
         Format is "sheets" or "rss" or "json" or "wss" && KeyColumn is { Length: > 0 and <= 128 } &&
@@ -17,7 +19,12 @@ public sealed record GraphicsFeedDefinition(string Id, string Name, string Forma
 public enum GraphicsFeedStage { Updated, Unchanged, Rejected, WatermarkAdvanced, StaleSequence }
 
 public sealed record GraphicsFeedStatus(string State = "disabled", DateTimeOffset? LastSuccess = null,
-    DateTimeOffset? NextCheck = null, string? Failure = null);
+    DateTimeOffset? NextCheck = null, string? Failure = null)
+{
+    public DateTimeOffset? LastRead { get; init; }
+    public DateTimeOffset? LastValidated { get; init; }
+    public long? AcceptedSequence { get; init; }
+}
 
 /// <summary>One poller per source, driven by its owning dispatcher. The commit
 /// delegate must also fence writes against the saved source generation.</summary>

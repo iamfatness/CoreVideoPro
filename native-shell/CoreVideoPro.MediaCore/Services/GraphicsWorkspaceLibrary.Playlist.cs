@@ -48,7 +48,8 @@ public sealed partial class GraphicsWorkspaceLibrary
     /// ship with the core, so a missing catalog entry does not block the save. When
     /// <paramref name="layouts"/> is given it is saved in the same write (the default
     /// playlist installs its preset layouts this way).</summary>
-    public async Task<bool> SavePlaylistAsync(IReadOnlyList<GraphicsPlaylistRow> rows, IReadOnlyList<ShotLayout>? layouts = null)
+    public async Task<bool> SavePlaylistAsync(IReadOnlyList<GraphicsPlaylistRow> rows, IReadOnlyList<ShotLayout>? layouts = null,
+        CancellationToken cancellation = default)
     {
         await LoadAsync();
         if (rows is null || rows.Count > 64 || rows.Any(r => r is null || !r.IsValid) || rows.Select(r => r.Id).Distinct(StringComparer.Ordinal).Count() != rows.Count)
@@ -64,7 +65,8 @@ public sealed partial class GraphicsWorkspaceLibrary
             var pin = new GraphicsSavedTemplate(key.Id, key.Version, installed.ManifestHash, definition.Clone(), installed.PackageRoot);
             if (index < 0) templates.Add(pin); else templates[index] = pin;
         }
-        return await Save(Document with { Playlist = rows.ToArray(), Templates = templates, ShotLayouts = layouts?.ToArray() ?? Document.ShotLayouts }, "Playlist saved. Program and Preview are unchanged.");
+        return await Save(Document with { Playlist = rows.ToArray(), Templates = templates, ShotLayouts = layouts?.ToArray() ?? Document.ShotLayouts },
+            "Playlist saved. Program and Preview are unchanged.", cancellation);
     }
 
     /// <summary>Persist the shot layouts. Row ids must exist in the saved playlist; one hotkey

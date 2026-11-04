@@ -23,6 +23,22 @@ public sealed class GraphicsFeedSnapshotTests : IDisposable
         Assert.Empty(reopened.Document.DataSources);
     }
 
+    [Fact]
+    public async Task OnlyEnabledPushFeedsCountAgainstTheActiveLimit()
+    {
+        var library = Open();
+        var first = Assert.IsType<GraphicsFeedDefinition>(await library.SaveFeedAsync(Feed));
+        for (var index = 2; index <= 4; index++)
+            Assert.NotNull(await library.SaveFeedAsync(Feed with { Id = $"feed-{index}", Name = $"Feed {index}" }));
+        var fifth = Assert.IsType<GraphicsFeedDefinition>(await library.SaveFeedAsync(Feed with { Id = "feed-5", Enabled = false }));
+        Assert.NotNull(await library.SaveFeedAsync(Feed with { Id = "pull", Format = "json", Endpoint = "https://example.org/data" }));
+        Assert.Null(await library.SaveFeedAsync(fifth with { Enabled = true }));
+        Assert.Contains(first.Name, library.Status);
+        Assert.Contains("Feed 4", library.Status);
+        Assert.NotNull(await library.SaveFeedAsync(first with { Enabled = false }));
+        Assert.NotNull(await library.SaveFeedAsync(fifth with { Enabled = true }));
+    }
+
     [Theory]
     [InlineData("""{"schemaVersion":2,"sequence":1,"rows":[{"id":"a"}]}""")]
     [InlineData("""{"schemaVersion":1,"sequence":0,"rows":[{"id":"a"}]}""")]
