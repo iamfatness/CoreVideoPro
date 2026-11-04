@@ -31,6 +31,8 @@ Depends on Slice 1. Start with a documented provider authentication decision bef
 
 ## Slice 4 — data-aware shot layouts
 
+The [Slice 4 spec](../specs/2026-11-04-graphics-phase3-slice4-shot-layouts.md) and [test-first plan](2026-11-04-graphics-phase3-slice4-shot-layouts.md) detail the guarded Take for [#1106](https://github.com/iamfatness/CoreVideoPro/issues/1106).
+
 1. Test a shot layout with two data-bound rows and one invalid pin. Assert Program is unchanged on refusal and Take waits until every required cue is ready.
 2. Extend the existing ShotLayout document and cue path for typed value overrides and revision selection. Preserve older layouts, hotkeys and control action IDs.
 3. Add the editor and an inspectable preflight result. Verify cancellation and retries after a lost response. Trace cue preparation to the same Program Take used today.
