@@ -104,17 +104,24 @@ public sealed partial class GraphicsPlayoutControl : UserControl
     private void OnStudioProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(StudioViewModel.GraphicsStrip) or nameof(StudioViewModel.GuestEntries) or nameof(StudioViewModel.GraphicsPlayoutStatus)
-            or nameof(StudioViewModel.GraphicsPlayoutBusy) or nameof(StudioViewModel.GraphicsProgramSubjectSourceId) or nameof(StudioViewModel.PreviewSceneId)) Refresh();
+            or nameof(StudioViewModel.GraphicsPlayoutBusy) or nameof(StudioViewModel.GraphicsLayoutTakePending) or nameof(StudioViewModel.GraphicsProgramSubjectSourceId) or nameof(StudioViewModel.PreviewSceneId)) Refresh();
     }
 
     // ---- actions -------------------------------------------------------------------------
     private async Task Invoke(string actionId, params object?[] args)
     {
         if (_attached is not { } studio) return;
-        await _rowText.BeforeAirAsync(); // a variable typed without Enter reaches the row before Show / Cue / Take reads it
-        var result = await GraphicsPlayoutActions.InvokeAsync(studio, actionId, args);
-        if (!result.Ok) _status.Text = result.Error ?? "Refused.";
-        Refresh();
+        try
+        {
+            await _rowText.BeforeAirAsync(); // Flush edits before Show, Cue or Take reads the row.
+            var result = await GraphicsPlayoutActions.InvokeAsync(studio, actionId, args);
+            Refresh();
+            if (!result.Ok) _status.Text = result.Error ?? "Refused.";
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or OperationCanceledException)
+        {
+            _status.Text = ex.Message;
+        }
     }
     private async Task AddGraphicAsync()
     {
@@ -184,30 +191,53 @@ public sealed partial class GraphicsPlayoutControl : UserControl
 
     private void RefreshLayouts(StudioViewModel studio, IReadOnlyList<GraphicsPlaylistRow> rows, bool busy)
     {
-        var layouts = studio.GraphicsPlayout.Layouts; var preview = studio.PreviewSceneId ?? "";
-        var signature = $"{busy}|{_selectedLayoutId}|{preview}|{rows.Count}|" + string.Join('|', layouts.Select(l => $"{l.Id}:{l.Name}:{l.SceneId}:{string.Join(',', l.RowIds)}:{l.Hotkey}:{l.PlayOutOthers}:{LayoutSummary(studio, l, rows)}"));
+        if (_layoutEditorOpen) return;
+        var playout = studio.GraphicsPlayout;
+        var progress = playout.LayoutProgress;
+        var layouts = playout.Layouts;
+        var preview = studio.PreviewSceneId ?? "";
+        var progressSignature = progress is null ? "" : JsonSerializer.Serialize(progress);
+        var signature = $"{busy}|{_selectedLayoutId}|{preview}|{rows.Count}|{studio.GraphicsLayoutTakePending}|{progressSignature}|" + string.Join('|', layouts.Select(l => $"{l.Id}:{l.Name}:{l.SceneId}:{string.Join(',', l.RowIds)}:{l.Hotkey}{(l.PlayOutOthers ? 1 : 0)}:{l.RowSettings.Count}:{LayoutSummary(studio, l, rows)}"));
         if (signature == _layoutsSignature) return;
         _layoutsSignature = signature; _layouts.Children.Clear();
         var header = new Grid { ColumnSpacing = 8 };
         header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); header.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         header.Children.Add(new TextBlock { Text = "SHOT LAYOUTS", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center });
         if (rows.Count == 0) {
             // First open: the layouts appear once the default playlist exists (its presets install with it).
             var note = new TextBlock { Text = "Appear once you have graphics.", FontSize = 11, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center };
             Grid.SetColumn(note, 1); header.Children.Add(note); _layouts.Children.Add(header); return;
         }
-        var selected = layouts.FirstOrDefault(l => l.Id == _selectedLayoutId);
-        if (selected is not null) {
-            var take = StudioBrushes.ChipButton("Cue and Take"); take.IsEnabled = !busy;
-            ToolTipService.SetToolTip(take, $"Cue {selected.Name} to Preview, then Take: the picture and its graphics change together.");
+        var selected = playout.PreparedLayout?.Layout ?? layouts.FirstOrDefault(l => l.Id == _selectedLayoutId);
+        if (selected is not null && (selected.RowSettings.Count == 0 || playout.PreparedLayout is not null))
+        {
+            var guarded = selected.RowSettings.Count > 0;
+            var label = studio.GraphicsLayoutTakePending ? "Check Take" : guarded ? "Take" : "Cue and Take";
+            var take = StudioBrushes.ChipButton(label);
+            take.IsEnabled = !busy;
             take.Click += async (_, _) => await Invoke(GraphicsPlayoutActions.LayoutTake, selected.Id);
-            Grid.SetColumn(take, 1); header.Children.Add(take);
+            Grid.SetColumn(take, 1);
+            header.Children.Add(take);
+        }
+        if (progress is not null)
+        {
+            var cancel = StudioBrushes.ChipButton("Cancel layout");
+            cancel.IsEnabled = !studio.GraphicsLayoutTakePending;
+            cancel.Click += async (_, _) =>
+            {
+                try { await playout.CancelLayoutAsync(); }
+                catch (Exception ex) when (ex is InvalidOperationException or IOException or OperationCanceledException) { _status.Text = ex.Message; }
+            };
+            Grid.SetColumn(cancel, 2);
+            header.Children.Add(cancel);
         }
         var edit = StudioBrushes.ChipButton("Edit layouts"); edit.IsEnabled = !busy;
         ToolTipService.SetToolTip(edit, "Pick a scene, tick the graphics and set a Shift+F key for each layout. Program and Preview are unchanged.");
-        edit.Click += (_, _) => OpenLayoutEditor(edit, studio, rows);
-        Grid.SetColumn(edit, 2); header.Children.Add(edit);
+        edit.Click += async (_, _) => await OpenLayoutEditorAsync(edit, studio, rows);
+        Grid.SetColumn(edit, 3); header.Children.Add(edit);
         _layouts.Children.Add(header);
+        if (progress is not null) AddLayoutProgress(studio, progress);
         if (layouts.Count == 0) {
             _layouts.Children.Add(new TextBlock { Text = "No shot layouts yet. Edit layouts to make one: a scene plus the graphics that ride the Take with it.", FontSize = 11, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap });
             return;
@@ -238,14 +268,24 @@ public sealed partial class GraphicsPlayoutControl : UserControl
         return button;
     }
 
-    /// <summary>Edit layouts flyout: choose a layout (or New), name it, pick the scene, tick the
+    /// <summary>Edit layouts dialog: choose a layout (or New), name it, pick the scene, tick the
     /// rows, set the Shift+F key and whether it hides other graphics. Save goes through
     /// graphics.layout.set, Remove through graphics.layout.remove.</summary>
-    private void OpenLayoutEditor(FrameworkElement anchor, StudioViewModel studio, IReadOnlyList<GraphicsPlaylistRow> rows)
+    private bool _layoutEditorOpen;
+
+    private async Task OpenLayoutEditorAsync(Button anchor, StudioViewModel studio, IReadOnlyList<GraphicsPlaylistRow> rows)
     {
-        var flyout = new Flyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Bottom };
-        var panel = new StackPanel { Spacing = 10, MinWidth = 320, MaxWidth = 380 };
-        flyout.Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = 560 };
+        if (_layoutEditorOpen) return;
+        var dialog = new ContentDialog { XamlRoot = anchor.XamlRoot, Title = "Edit Shot Layout", CloseButtonText = "Close" };
+        var panel = new StackPanel { Spacing = 10 };
+        var footer = new StackPanel { Spacing = 6, Margin = new Thickness(0, 8, 0, 0) };
+        var editor = new Grid { MinWidth = 340, MaxWidth = 430, MaxHeight = 460 };
+        editor.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
+        editor.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        editor.Children.Add(new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        Grid.SetRow(footer, 1);
+        editor.Children.Add(footer);
+        dialog.Content = editor;
         var layouts = studio.GraphicsPlayout.Layouts;
         var picker = new ComboBox { Header = "Layout", ItemsSource = layouts.Select(l => l.Name).Append("New layout").ToArray(), HorizontalAlignment = HorizontalAlignment.Stretch,
             SelectedIndex = Math.Max(0, layouts.ToList().FindIndex(l => l.Id == _selectedLayoutId)) };
@@ -254,6 +294,7 @@ public sealed partial class GraphicsPlayoutControl : UserControl
         void Build()
         {
             form.Children.Clear();
+            footer.Children.Clear();
             var existing = picker.SelectedIndex >= 0 && picker.SelectedIndex < layouts.Count ? layouts[picker.SelectedIndex] : null;
             var scenes = studio.Scenes.ToArray();
             var name = new TextBox { Header = "Name", Text = existing?.Name ?? "", MaxLength = 128, PlaceholderText = "Open, Two-up, Panel..." };
@@ -261,41 +302,94 @@ public sealed partial class GraphicsPlayoutControl : UserControl
                 SelectedIndex = existing is null ? 0 : Math.Max(0, Array.FindIndex(scenes, s => s.Id == existing.SceneId) + 1) };
             if (existing is { SceneId.Length: > 0 } && scenes.All(s => s.Id != existing.SceneId))
                 form.Children.Add(new TextBlock { Text = $"Scene '{existing.SceneId}' is no longer in this show; this layout is refused until you pick another.", FontSize = 11, Foreground = StudioBrushes.Program, TextWrapping = TextWrapping.Wrap });
-            form.Children.Add(name); form.Children.Add(scene);
+            var details = new Grid { ColumnSpacing = 8 };
+            details.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+            details.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+            details.Children.Add(name);
+            Grid.SetColumn(scene, 1);
+            details.Children.Add(scene);
+            form.Children.Add(details);
             form.Children.Add(new TextBlock { Text = "Graphics that ride the Take", FontSize = 12, Foreground = StudioBrushes.Text });
             var ticks = rows.Select(r => new CheckBox { Content = r.Name, Tag = r.Id, IsChecked = existing?.RowIds.Contains(r.Id) == true }).ToArray();
-            foreach (var tick in ticks) form.Children.Add(tick);
+            var rowEditors = new Dictionary<string, Func<ShotLayoutRowSettings?>>(StringComparer.Ordinal);
+            for (var index = 0; index < rows.Count; index++)
+            {
+                var row = rows[index];
+                form.Children.Add(ticks[index]);
+                rowEditors.Add(row.Id, AddLayoutRowEditor(form, ticks[index], studio, row, existing?.RowSettings.GetValueOrDefault(row.Id)));
+            }
             var hotkey = new ComboBox { Header = "Hotkey", ItemsSource = LayoutHotkeyChoices, SelectedIndex = Math.Max(0, Array.IndexOf(LayoutHotkeyChoices, existing?.Hotkey ?? "")), HorizontalAlignment = HorizontalAlignment.Stretch };
             form.Children.Add(hotkey);
             var others = new ToggleSwitch { Header = "Other graphics", IsOn = existing?.PlayOutOthers == true, OnContent = "Play out Program graphics not in this layout", OffContent = "Leave other Program graphics alone" };
             form.Children.Add(others);
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            var error = new TextBlock { Foreground = StudioBrushes.Program, TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
+            void ShowError(string message)
+            {
+                error.Text = message;
+                error.Visibility = message.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+            }
             var save = StudioBrushes.AccentButton(existing is null ? "Add layout" : "Save layout");
-            save.Click += async (_, _) => {
-                var trimmed = name.Text.Trim();
-                if (trimmed.Length == 0) { _status.Text = "Give the layout a name."; return; }
-                var id = existing?.Id ?? Slug(trimmed, layouts.Select(l => l.Id));
-                var layout = new ShotLayout { Id = id, Name = trimmed, SceneId = scene.SelectedIndex > 0 ? scenes[scene.SelectedIndex - 1].Id : "",
-                    RowIds = ticks.Where(t => t.IsChecked == true).Select(t => (string)t.Tag).ToArray(),
-                    Hotkey = hotkey.SelectedIndex > 0 ? LayoutHotkeyChoices[hotkey.SelectedIndex] : "", PlayOutOthers = others.IsOn };
-                _selectedLayoutId = id;
-                await Invoke(GraphicsPlayoutActions.LayoutSet, JsonSerializer.Serialize(layout, LayoutJson));
-                flyout.Hide();
+            save.Click += async (_, _) =>
+            {
+                save.IsEnabled = false;
+                ShowError("");
+                try
+                {
+                    var trimmed = name.Text.Trim();
+                    if (trimmed.Length == 0) throw new InvalidDataException("Give the layout a name.");
+                    var id = existing?.Id ?? Slug(trimmed, layouts.Select(l => l.Id));
+                    var settings = new Dictionary<string, ShotLayoutRowSettings>(StringComparer.Ordinal);
+                    foreach (var (rowId, read) in rowEditors)
+                        if (read() is { } selectedSettings) settings.Add(rowId, selectedSettings);
+                    var layout = new ShotLayout
+                    {
+                        Id = id, Name = trimmed, SceneId = scene.SelectedIndex > 0 ? scenes[scene.SelectedIndex - 1].Id : "",
+                        RowIds = ticks.Where(tick => tick.IsChecked == true).Select(tick => (string)tick.Tag).ToArray(),
+                        Hotkey = hotkey.SelectedIndex > 0 ? LayoutHotkeyChoices[hotkey.SelectedIndex] : "",
+                        PlayOutOthers = others.IsOn, RowSettings = settings
+                    };
+                    var result = await GraphicsPlayoutActions.InvokeAsync(studio, GraphicsPlayoutActions.LayoutSet,
+                        [JsonSerializer.Serialize(layout, LayoutJson)]);
+                    if (!result.Ok) { ShowError(result.Error ?? "Could not save the layout."); return; }
+                    _selectedLayoutId = id;
+                    dialog.Hide();
+                }
+                catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException or IOException or OperationCanceledException)
+                {
+                    ShowError(ex.Message);
+                }
+                finally { save.IsEnabled = true; }
             };
             buttons.Children.Add(save);
-            if (existing is not null) {
-                var remove = StudioBrushes.GhostButton("Clear cue");
-                remove.Click += async (_, _) => { if (_selectedLayoutId == existing.Id) _selectedLayoutId = ""; await Invoke(GraphicsPlayoutActions.LayoutRemove, existing.Id); flyout.Hide(); };
+            if (existing is not null)
+            {
+                var remove = StudioBrushes.GhostButton("Remove layout");
+                remove.Click += async (_, _) =>
+                {
+                    if (_selectedLayoutId == existing.Id) _selectedLayoutId = "";
+                    await Invoke(GraphicsPlayoutActions.LayoutRemove, existing.Id);
+                    dialog.Hide();
+                };
                 buttons.Children.Add(remove);
             }
-            form.Children.Add(buttons);
+            footer.Children.Add(error);
+            footer.Children.Add(buttons);
             form.Children.Add(new TextBlock { Text = "Shift+F1..F11 cue a layout; Shift+F12 plays everything out. Cue selects the scene to Preview and stages the graphics; Take carries both.", FontSize = 10, Foreground = StudioBrushes.Muted, TextWrapping = TextWrapping.Wrap });
         }
         picker.SelectionChanged += (_, _) => Build();
-        panel.Children.Add(new TextBlock { Text = "EDIT LAYOUTS", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted });
         panel.Children.Add(picker); panel.Children.Add(form);
         Build();
-        flyout.ShowAt(anchor);
+        _layoutEditorOpen = true;
+        anchor.IsEnabled = false;
+        try { await dialog.ShowAsync(); }
+        catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledException) { _status.Text = ex.Message; }
+        finally
+        {
+            _layoutEditorOpen = false;
+            anchor.IsEnabled = !studio.GraphicsPlayoutBusy;
+            Refresh();
+        }
     }
 
     private static string Slug(string name, IEnumerable<string> taken)

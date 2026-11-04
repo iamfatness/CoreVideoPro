@@ -672,6 +672,10 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
 
         var result = await service.CueLayoutAsync(layout.Id, SelectScene, null);
         Assert.True(result.Accepted, result.Reason);
+        var progress = Assert.IsType<GraphicsLayoutProgress>(service.LayoutProgress);
+        Assert.Equal("Ready for Take", progress.State);
+        Assert.Equal(new long?[] { 1, 2 }, progress.Rows.Select(row => row.DataRevision));
+        Assert.All(progress.Rows, row => Assert.Equal("Ready", row.State));
         var cues = Bodies("graphics.instance.cue");
         Assert.Equal(2, cues.Count());
         Assert.All(cues, cue => Assert.False(cue.GetProperty("rideTake").GetBoolean()));
@@ -692,10 +696,12 @@ public sealed class GraphicsPlayoutServiceTests : IDisposable
         var cue = service.CueLayoutAsync(layout.Id, SelectScene, null);
         await _heldCueReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(service.LayoutPreparing);
+        Assert.Equal("Preparing", service.LayoutProgress?.State);
         Assert.True((await service.CancelLayoutAsync()).Accepted);
 
         Assert.False((await cue).Accepted);
         Assert.False(service.LayoutPreparing);
+        Assert.Null(service.LayoutProgress);
         Assert.Equal(["independent-cue"], _state.Instances.Where(instance => instance.Cued || instance.CuePending).Select(instance => instance.InstanceId));
         Assert.All(Bodies("graphics.instance.trigger"), body =>
             Assert.Equal("uncue", body.GetProperty("action").GetString()));

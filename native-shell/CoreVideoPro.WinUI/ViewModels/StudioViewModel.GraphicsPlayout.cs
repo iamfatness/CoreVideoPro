@@ -20,6 +20,7 @@ public sealed partial class StudioViewModel
     public GraphicsPlayoutService GraphicsPlayout => _graphicsPlayout ??= CreateGraphicsPlayout();
     public GraphicsStripState GraphicsStrip => GraphicsPlayout.Strip;
     public string GraphicsPlayoutStatus => GraphicsPlayout.Status;
+    public bool GraphicsLayoutTakePending => _transportCoordinator?.GuardedTakePending == true;
     public bool GraphicsPlayoutBusy => GraphicsPlayout.Busy || GraphicsLibrary.Busy;
     /// <summary>One entry per bound roster slot of every guest row, with the Sources-page text resolved.</summary>
     public IReadOnlyList<GraphicsPlaylistEntry> GuestEntries { get; private set; } = [];

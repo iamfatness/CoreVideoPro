@@ -5,12 +5,22 @@ namespace CoreVideoPro.MediaCore.Services;
 public sealed record GraphicsPreparedLayout(
     ShotLayout Layout, string CoreEpoch, string AttemptId, IReadOnlyList<GraphicsLayoutCue> Cues, string? PreviewStamp);
 
+public sealed record GraphicsLayoutRowProgress(string Name, long? DataRevision, DateTimeOffset? DataReceivedAt, string State);
+public sealed record GraphicsLayoutProgress(string LayoutId, string State, string Reason, IReadOnlyList<GraphicsLayoutRowProgress> Rows);
+
 public sealed partial class GraphicsPlayoutService
 {
     private CancellationTokenSource? _layoutPreparation;
     private GraphicsPreparedLayout? _preparedLayout;
     public GraphicsPreparedLayout? PreparedLayout => _preparedLayout;
     public bool LayoutPreparing => _layoutPreparation is not null;
+    public GraphicsLayoutProgress? LayoutProgress { get; private set; }
+
+    private void ReportLayoutProgress(GraphicsLayoutProgress? progress)
+    {
+        LayoutProgress = progress;
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
 
     public bool IsPreparedLayoutCurrent(GraphicsPreparedLayout prepared, string previewStamp)
     {
@@ -24,6 +34,7 @@ public sealed partial class GraphicsPlayoutService
     {
         if (_preparedLayout is not { } prepared || prepared.AttemptId != attemptId) return;
         _preparedLayout = null;
+        LayoutProgress = null;
         if (prepared.Layout.PlayOutOthers)
         {
             var carried = prepared.Cues.Select(cue => cue.InstanceId).ToHashSet(StringComparer.Ordinal);
@@ -43,6 +54,7 @@ public sealed partial class GraphicsPlayoutService
                 _preparedLayout = null;
                 await ReleaseLayoutCues(prepared.CoreEpoch, prepared.AttemptId, prepared.Cues);
             }
+            ReportLayoutProgress(null);
             return new() { Accepted = true, Reason = "Shot Layout cue cancelled." };
         });
     }
@@ -63,7 +75,9 @@ public sealed partial class GraphicsPlayoutService
         var cues = new List<GraphicsLayoutCue>(entries.Count);
         using var preparation = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         _layoutPreparation = preparation;
-        Changed?.Invoke(this, EventArgs.Empty);
+        var progress = rows.Select(row => new GraphicsLayoutRowProgress(row.Row.Name, row.DataRevision, row.DataReceivedAt, "Waiting")).ToArray();
+        void Report(string state) => ReportLayoutProgress(new(layout.Id, state, "", progress.ToArray()));
+        Report("Preparing");
         var token = preparation.Token;
         try
         {
@@ -75,8 +89,16 @@ public sealed partial class GraphicsPlayoutService
             {
                 token.ThrowIfCancellationRequested();
                 Current(epoch);
+                progress[index] = progress[index] with { State = "Preparing" };
+                Report("Preparing");
                 var cued = await Cue(entries[index], token, rows[index], attemptId, deadline, cues);
-                if (!cued.Accepted) return Refuse($"{layout.Name}: {rows[index].Row.Name}: {cued.Reason}");
+                if (!cued.Accepted)
+                {
+                    progress[index] = progress[index] with { State = "Blocked" };
+                    Report("Blocked");
+                    return Refuse($"{layout.Name}: {rows[index].Row.Name}: {cued.Reason}");
+                }
+                progress[index] = progress[index] with { State = "Ready" };
             }
             token.ThrowIfCancellationRequested();
             var latest = Current(epoch);
@@ -85,6 +107,7 @@ public sealed partial class GraphicsPlayoutService
             if (stamp != previewStamp?.Invoke())
                 return Refuse($"{layout.Name}: Preview changed during preparation. Cue the layout again.");
             _preparedLayout = new(layout, epoch, attemptId, cues.ToArray(), stamp);
+            Report("Ready for Take");
             return new() { Accepted = true, Reason = $"{layout.Name} ready for Take." };
         }
         finally

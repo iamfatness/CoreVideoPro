@@ -130,6 +130,7 @@ public interface ITransportHost
     Task<NativeMediaCoreStateSnapshot> ObserveGuardedTakeAsync() =>
         throw new InvalidOperationException("Guarded Take observation is unavailable.");
     Task FinishGuardedTakeAsync(string operationId, bool committed) => Task.CompletedTask;
+    void NotifyGuardedTakeChanged() { }
 
     Task<Dictionary<string, object?>> BuildSpinePayloadAsync(CancellationToken cancellationToken);
 

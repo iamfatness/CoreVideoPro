@@ -174,10 +174,16 @@ public sealed partial class GraphicsPlayoutService
     /// routed in that scene) when any were resolved, otherwise <paramref name="programSubject"/>.
     /// <see cref="ShotLayout.PlayOutOthers"/> plays out every Program graphic the layout does not
     /// carry. Rows that no longer exist refuse the whole layout; nothing is half-applied.</summary>
-    public Task<NativeGraphicsOperationResult> CueLayoutAsync(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
+    public async Task<NativeGraphicsOperationResult> CueLayoutAsync(string layoutId, Func<string, CancellationToken, Task<bool>> sceneSelect,
         GraphicsPlaylistEntry? programSubject, IReadOnlyList<GraphicsPlaylistEntry>? sceneGuests = null,
-        CancellationToken cancellation = default, Func<string>? previewStamp = null) =>
-        Run(() => CueLayout(layoutId, sceneSelect, programSubject, sceneGuests, cancellation, previewStamp));
+        CancellationToken cancellation = default, Func<string>? previewStamp = null)
+    {
+        var result = await Run(() => CueLayout(layoutId, sceneSelect, programSubject, sceneGuests, cancellation, previewStamp));
+        if (!result.Accepted && Layout(layoutId)?.RowSettings.Count > 0 && !cancellation.IsCancellationRequested &&
+            LayoutProgress is { LayoutId: var progressId } progress && progressId == layoutId)
+            ReportLayoutProgress(progress with { State = "Blocked", Reason = result.Reason });
+        return result;
+    }
 
     /// <summary>CueLayoutAsync, then the ordinary Take through <paramref name="take"/> (null = taken,
     /// otherwise the refusal). A layout with no scene and no rows (Clean) has nothing to Take.</summary>
@@ -200,6 +206,10 @@ public sealed partial class GraphicsPlayoutService
     {
         await _library.LoadAsync();
         if (Layout(layoutId) is not { } layout) return Refuse(layoutId.Length == 0 ? "Choose a shot layout." : "That shot layout no longer exists.");
+        if (_preparedLayout is not null)
+            return Refuse("Cancel the prepared Shot Layout before cueing another.");
+        if (layout.RowSettings.Count > 0)
+            ReportLayoutProgress(new(layout.Id, "Checking", "", []));
         // Resolve everything before the first side effect so a broken layout is refused whole.
         var entries = new List<GraphicsPlaylistEntry>();
         foreach (var rowId in layout.RowIds) {
@@ -226,8 +236,6 @@ public sealed partial class GraphicsPlayoutService
         }
         if (resolved is not null)
             return await PrepareLayout(layout, entries, resolved, sceneSelect, cancellation, previewStamp);
-        if (_preparedLayout is not null)
-            return Refuse("Cancel the prepared Shot Layout before cueing another.");
         if (layout.SceneId.Length > 0 && !await sceneSelect(layout.SceneId, cancellation))
             return Refuse($"{layout.Name}: scene '{layout.SceneId}' is not in this show, so the layout was not cued. Edit the layout to pick a scene.");
         var carried = new HashSet<string>(StringComparer.Ordinal);

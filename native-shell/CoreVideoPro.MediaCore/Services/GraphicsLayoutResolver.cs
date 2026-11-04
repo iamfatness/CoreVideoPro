@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using CoreVideoPro.MediaCore.Contracts;
 using CoreVideoPro.MediaCore.Models;
@@ -10,7 +9,7 @@ internal static class GraphicsLayoutResolver
 {
     internal sealed record ResolvedRow(
         GraphicsPlaylistRow Row,
-        SourceInstanceIdentity? Identity);
+        SourceInstanceIdentity? Identity, long? DataRevision, DateTimeOffset? DataReceivedAt);
 
     public static ResolvedRow Resolve(
         GraphicsShowDocument document, NativeGraphicsState state, ShotLayout layout, GraphicsPlaylistEntry entry)
@@ -43,14 +42,15 @@ internal static class GraphicsLayoutResolver
             foreach (var (id, value) in overrides)
             {
                 var field = descriptors.FirstOrDefault(item => item.Id == id);
-                if (GraphicsDataTable.IsDataField(id) || id is "time" or "label" ||
-                    field is null || field.Type == "image" || !GraphicsCommandRequest.ValidField(value, field) ||
-                    (field.Type == "color" && Encoding.UTF8.GetByteCount(value.GetString()!) > (field.MaxLength ?? 128)))
+                if (field is null || !GraphicsRowFields.ValidLayoutOverride(field, value))
                     throw new InvalidDataException($"{row.Name}: '{id}' is unavailable or the value does not match the selected template.");
                 values[id] = value.Clone();
             }
         }
-        return new(row with { Fields = values }, identity);
+        var revision = settings?.DataPin?.Revision ?? row.DataBinding?.Revision;
+        var received = document.DataSources.FirstOrDefault(source =>
+            source.Id == row.DataBinding?.SourceId && source.Revision == revision)?.ReceivedAt;
+        return new(row with { Fields = values }, identity, revision, received);
     }
 
     internal static Dictionary<string, JsonElement> CueFields(GraphicsPlaylistRow row, GraphicsPlaylistEntry entry,

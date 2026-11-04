@@ -220,6 +220,7 @@ public sealed partial class TransportCoordinator
             if (guarded is not null)
             {
                 _guardedTake = new(guarded, previousProgramSceneId, rollback);
+                _host.NotifyGuardedTakeChanged();
                 return await ResolveGuardedTakeAsync(_guardedTake);
             }
             if (!_bridge.Running)

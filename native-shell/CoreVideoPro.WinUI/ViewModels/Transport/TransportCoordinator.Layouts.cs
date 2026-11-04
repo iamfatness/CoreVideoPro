@@ -70,6 +70,7 @@ public sealed partial class TransportCoordinator
         if (refusal is not null && restore) pending.Rollback();
         _guardedTake = null;
         await _host.FinishGuardedTakeAsync(pending.Request.OperationId, refusal is null);
+        _host.NotifyGuardedTakeChanged();
         if (refusal is null)
         {
             _host.OutputStatus = "Program updated";

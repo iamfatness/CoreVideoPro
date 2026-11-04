@@ -334,6 +334,13 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 
     Task<NativeMediaCoreStateSnapshot> ITransportHost.ObserveGuardedTakeAsync() => _bridge.PollSnapshotAsync();
 
+    void ITransportHost.NotifyGuardedTakeChanged()
+    {
+        OnPropertyChanged(nameof(GraphicsLayoutTakePending));
+        OnPropertyChanged(nameof(CanTake));
+        TakeCommand.NotifyCanExecuteChanged();
+    }
+
     async Task ITransportHost.FinishGuardedTakeAsync(string operationId, bool committed)
     {
         if (committed) GraphicsPlayout.ConfirmLayoutTake(operationId);
