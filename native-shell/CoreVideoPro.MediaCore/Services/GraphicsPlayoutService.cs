@@ -273,7 +273,7 @@ public sealed partial class GraphicsPlayoutService
             var source = i.Binding?.SourceId ?? i.SourceId;
             // A names-list instance has no binding; its line is recoverable from the instance id.
             if (source.Length == 0 && row is { HasVariants: true }) source = VariantSourceIdOf(row, i.InstanceId);
-            var label = row is null ? (i.Label.Length > 0 ? i.Label : i.Fields.Name.Length > 0 ? i.Fields.Name : i.TemplateId)
+            var label = i.TemplateId == GraphicsSocialPlayout.TemplateId ? "YouTube chat" : row is null ? (i.Label.Length > 0 ? i.Label : i.Fields.Name.Length > 0 ? i.Fields.Name : i.TemplateId)
                 : (row.Kind == GraphicsPlaylistRow.Guest || row.HasVariants) && i.Fields.Name.Length > 0 ? row.Name + " · " + i.Fields.Name : row.Name;
             return new(i.InstanceId, label, owner, row?.Id ?? "", source, i.Revision, i.Visibility, i.CuePending, armed.Contains(i.InstanceId), rule?.Id ?? "");
         }

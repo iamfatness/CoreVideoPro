@@ -43,6 +43,7 @@ public sealed partial class GraphicsPlayoutControl : UserControl
     private readonly Border _inspectorPanel;
     private readonly TextBlock _status = new() { FontSize = 11, TextWrapping = TextWrapping.Wrap };
     private readonly Button _add;
+    private readonly Button _socialReview = StudioBrushes.GhostButton("Social review…");
     private string _selectedKey = "", _listSignature = "", _inspectorSignature = "";
     private bool _loading;
     /// <summary>Row variable text typed but not yet saved, and saves still running (re-review m1): Show, Cue and Take wait for them.</summary>
@@ -61,7 +62,11 @@ public sealed partial class GraphicsPlayoutControl : UserControl
         var header = new Grid { ColumnSpacing = 8 };
         header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         header.Children.Add(new TextBlock { Text = "PLAYLIST", FontSize = 10, CharacterSpacing = 160, FontFamily = StudioBrushes.Mono, Foreground = StudioBrushes.Muted, VerticalAlignment = VerticalAlignment.Center });
-        _add = StudioBrushes.GhostButton("＋ Add graphic"); _add.Click += async (_, _) => await AddGraphicAsync(); Grid.SetColumn(_add, 1); header.Children.Add(_add);
+        _add = StudioBrushes.GhostButton("＋ Add graphic"); _add.Click += async (_, _) => await AddGraphicAsync();
+        _socialReview.Click += async (_, _) => await OpenSocialReviewAsync();
+        var headerActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        headerActions.Children.Add(_socialReview); headerActions.Children.Add(_add);
+        Grid.SetColumn(headerActions, 1); header.Children.Add(headerActions);
         ToolTipService.SetToolTip(_add, "Add a graphic. An empty playlist installs the default five rows; otherwise this opens Design.");
         left.Children.Add(header);
         // Shot layouts sit under the Preview/Program strip, above the playlist (full form only).
@@ -83,6 +88,7 @@ public sealed partial class GraphicsPlayoutControl : UserControl
         _inspectorColumn.Width = Compact ? new GridLength(0) : new GridLength(300);
         _inspectorPanel.Visibility = Compact ? Visibility.Collapsed : Visibility.Visible;
         _layouts.Visibility = Compact ? Visibility.Collapsed : Visibility.Visible;
+        _socialReview.Visibility = Compact ? Visibility.Collapsed : Visibility.Visible;
         _listSignature = ""; _layoutsSignature = ""; Refresh();
     }
 
@@ -123,6 +129,16 @@ public sealed partial class GraphicsPlayoutControl : UserControl
             _status.Text = ex.Message;
         }
     }
+    private async Task OpenSocialReviewAsync()
+    {
+        if (_attached is not { } studio || XamlRoot is not { } root) return;
+        _socialReview.IsEnabled = false;
+        try { await new GraphicsSocialReviewDialog(root, studio.GraphicsSocialReview).ShowAsync(); }
+        catch (Exception error) when (error is InvalidOperationException or System.Runtime.InteropServices.COMException)
+        { _status.Text = "Close the open dialog before opening Social review."; }
+        finally { _socialReview.IsEnabled = true; }
+    }
+
     private async Task AddGraphicAsync()
     {
         if (_attached is not { } studio) return;

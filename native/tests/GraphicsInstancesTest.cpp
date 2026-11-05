@@ -72,7 +72,8 @@ const Json& row(const GraphicsInstances& state) {
 }
 
 TEST(GraphicsInstances, SocialReviewInstancesNeverRideTakeOrAcceptOrdinaryShow) {
-  GraphicsInstances state{"test-core"};
+  double now = 0;
+  GraphicsInstances state{"test-core", [&] { return now; }};
   auto social = [](const std::string& action, Json::Object fields = {}, bool trusted = true) {
     const auto base = request(action, std::move(fields));
     auto body = base.get("graphics")->asObject();
@@ -99,10 +100,17 @@ TEST(GraphicsInstances, SocialReviewInstancesNeverRideTakeOrAcceptOrdinaryShow) 
   EXPECT_TRUE(preview.layers.empty());
   EXPECT_FALSE(state.apply(social("graphics-instance-trigger", {{"action", "show"}}, false)));
   EXPECT_FALSE(state.apply(social("graphics-instance-trigger", {{"action", "show"}, {"target", "cue"}}, false)));
+  EXPECT_FALSE(state.unavailableLayoutCue("layout-owner", {{"social-review-test", 1}}).empty());
   state.promoteCuedForTake();
   EXPECT_EQ(0, row(state).getNumber("programRevision"));
   ASSERT_TRUE(state.apply(social("graphics-instance-trigger", {{"action", "show"}, {"target", "cue"}})));
   EXPECT_EQ(1, row(state).getNumber("programRevision"));
+  now = 14999;
+  state.observe(ProgramFrame{});
+  EXPECT_EQ(1, row(state).getNumber("programRevision"));
+  now = 15000;
+  state.observe(ProgramFrame{});
+  EXPECT_TRUE(state.snapshot().get("instances")->asArray().empty());
 }
 
 TEST(GraphicsInstances, BundledSocialCardResolvesItsReviewedFields) {

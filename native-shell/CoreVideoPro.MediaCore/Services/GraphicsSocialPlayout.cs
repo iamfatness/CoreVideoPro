@@ -69,6 +69,7 @@ public sealed class GraphicsSocialPlayout
     public Task<GraphicsSocialItem?> ReceiveAsync(long source, string id, string author, string message) =>
         ChangeAsync(() => _review.Receive(source, id, author, message));
     public Task WithdrawAsync(long source, string id) => ChangeAsync(() => { _review.Withdraw(source, id); return true; });
+    public Task<bool> WithdrawAsync(GraphicsSocialItemKey key) => ChangeAsync(() => _review.Withdraw(key));
     public bool Approve(GraphicsSocialItemKey key) { lock (_gate) return _review.Approve(key); }
     public bool Reject(GraphicsSocialItemKey key) { lock (_gate) return _review.Reject(key); }
 

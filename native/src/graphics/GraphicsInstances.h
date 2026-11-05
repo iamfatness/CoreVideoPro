@@ -80,7 +80,7 @@ class GraphicsInstances {
     GraphicsTimeline timeline;
     GraphicsLayerClock layered;
     GraphicsCrawlClock crawlClock, cueCrawlClock;
-    std::optional<double> crawlBoundaryMs;
+    std::optional<double> crawlBoundaryMs, socialExpiresAtMs;
     bool crawlComplete = false;
     std::string visibility = "hidden";
   };

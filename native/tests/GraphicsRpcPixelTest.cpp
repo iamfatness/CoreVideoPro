@@ -96,6 +96,77 @@ TEST(GraphicsRpcPixel, PrivateGraphicsPreviewRequiresExplicitNullAppearanceAndPr
   }
 }
 
+TEST(GraphicsCompositionPixel, ReviewedYouTubeCardRendersOnlyOnExplicitShowAndRetires) {
+  using corevideo::rpc::Json;
+  double now = 0;
+  corevideo::graphics::GraphicsInstances graphics{"test-core", [&] { return now; }};
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_TRUE(compositor);
+  std::ifstream file(std::filesystem::path(COREVIDEO_REPO_ROOT) / "contracts" / "graphics-social" / "youtube-chat-card.json");
+  ASSERT_TRUE(file.good());
+  const std::string manifest((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+  int sequence = 0;
+  const auto command = [&](const std::string& type, Json::Object body, const std::string& client = "graphics-social-review") {
+    body["schemaVersion"] = 1; body["coreEpoch"] = "test-core"; body["clientId"] = client;
+    body["requestId"] = "social-pixel-" + std::to_string(++sequence); body["instanceId"] = "social-review-pixel";
+    body["expectedRevision"] = 1;
+    return graphics.apply(Json::Object{{"type", type}, {"graphics", std::move(body)}});
+  };
+  const auto render = [&](bool preview = false) {
+    corevideo::modules::CompositorRenderPlan plan; plan.width = 320; plan.height = 180;
+    corevideo::modules::CompositorRenderPlanLayer background;
+    background.kind = "background"; background.hasFillColor = true; background.fillColor = "#07111A";
+    plan.layers.push_back(background);
+    graphics.append(plan, preview);
+    auto frame = compositor->render(plan, {});
+    if (!preview) graphics.observe(frame);
+    return frame.preview.bgra;
+  };
+  const auto advance = [&](const auto& complete) {
+    for (int step = 0; step < 600 && !complete(); ++step) { render(); std::this_thread::yield(); }
+    return complete();
+  };
+  const auto installed = [&] {
+    const auto& templates = graphics.snapshot().get("templates")->asArray();
+    return std::any_of(templates.begin(), templates.end(), [](const auto& row) { return row.getString("templateId") == "youtube-chat-card"; });
+  };
+  const auto instance = [&]() -> const Json& { return graphics.snapshot().get("instances")->asArray().front(); };
+  const auto baseline = render();
+  ASSERT_EQ(320u * 180 * 4, baseline.size());
+  ASSERT_TRUE(command("graphics-template-install", {{"manifest", manifest}}));
+  ASSERT_TRUE(advance(installed));
+  ASSERT_TRUE(command("graphics-instance-create", {{"templateId", "youtube-chat-card"}, {"templateVersion", 1},
+    {"scope", "global"}, {"fields", Json::Object{{"author", "Reviewed author"}, {"message", "Reviewed message"}}}}));
+  ASSERT_TRUE(command("graphics-instance-cue", {{"rideTake", false}}));
+  ASSERT_TRUE(advance([&] { return instance().getNumber("cueRevision") == 1; }));
+  EXPECT_EQ(baseline, render(true));
+  graphics.promoteCuedForTake();
+  EXPECT_FALSE(command("graphics-instance-trigger", {{"action", "show"}, {"target", "cue"}}, "generic-control"));
+  EXPECT_EQ(baseline, render());
+
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"action", "show"}, {"target", "cue"}}));
+  ASSERT_TRUE(advance([&] { return instance().getNumber("firstDrawSubmittedFrame") > 0; }));
+  EXPECT_EQ("Reviewed author", instance().get("programFields")->getString("author"));
+  EXPECT_EQ("Reviewed message", instance().get("programFields")->getString("message"));
+  const auto pixels = render();
+  ASSERT_EQ(baseline.size(), pixels.size());
+  const auto ink = [&](int y0, int y1, bool accent) {
+    int count = 0;
+    for (int y = y0; y < y1; ++y) for (int x = 29; x < 200; ++x) {
+      const auto at = (y * 320 + x) * 4;
+      const int b = pixels[at], g = pixels[at + 1], r = pixels[at + 2];
+      if (accent ? r > 140 && r > g + 24 : b > 155 && g > 155 && r > 155) ++count;
+    }
+    return count;
+  };
+  EXPECT_GT(ink(135, 142, true), 6);
+  EXPECT_GT(ink(142, 150, false), 6);
+  EXPECT_GT(ink(150, 163, false), 6);
+  now = 15000;
+  EXPECT_EQ(baseline, render());
+  EXPECT_TRUE(graphics.snapshot().get("instances")->asArray().empty());
+}
+
 TEST(GraphicsCompositionPixel, LocalScreenCaptureDrawFactsHonorPresentationSuppression) {
   auto compositor=corevideo::modules::createD3D11Compositor();ASSERT_TRUE(compositor);
   corevideo::modules::VideoFrame image;image.participantId="capture:screen:0";image.sourceGeneration=7;

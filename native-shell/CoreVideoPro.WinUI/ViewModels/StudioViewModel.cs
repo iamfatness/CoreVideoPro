@@ -14862,6 +14862,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             try { dispose(); }
             catch (Exception error) { LaunchLog.WriteException($"shutdown: {name}", error); }
         }
+        try { await _graphicsSocialShutdown.WaitAsync(TimeSpan.FromMilliseconds(350)).ConfigureAwait(false); }
+        catch (TimeoutException) { /* The native social card has a bounded lifetime. */ }
         // App exit (T1.8): let the core exit on its own after stdin closes, then kill-tree.
         DisposeResource("media core stop", () => ForceShutdownMediaCore(ShutdownBudget.CoreExitGrace));
         // Measured, not assumed: the headroom the core's exit grace leaves inside ShutdownTimeout.

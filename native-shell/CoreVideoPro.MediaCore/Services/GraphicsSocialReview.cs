@@ -115,6 +115,13 @@ public sealed class GraphicsSocialReview
         }
     }
 
+    internal bool Withdraw(GraphicsSocialItemKey key)
+    {
+        if (Find(key) is null) return false;
+        Remove(key.Id);
+        return true;
+    }
+
     public bool Approve(GraphicsSocialItemKey key) => Decide(key, GraphicsSocialDecision.Approved);
 
     public bool Reject(GraphicsSocialItemKey key) => Decide(key, GraphicsSocialDecision.Rejected);

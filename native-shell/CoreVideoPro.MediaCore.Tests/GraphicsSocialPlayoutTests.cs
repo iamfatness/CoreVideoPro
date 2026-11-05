@@ -13,12 +13,16 @@ public sealed class GraphicsSocialPlayoutTests
         public readonly TaskCompletionSource Preparing = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public readonly TaskCompletionSource Ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public NativeGraphicsState State = new() { CoreEpoch = "epoch",
-            Templates = [new() { TemplateId = GraphicsSocialPlayout.TemplateId, TemplateVersion = 1, Definition = GraphicsSocialPlayout.CardDefinition }] };
+            Templates = [new() { TemplateId = GraphicsSocialPlayout.TemplateId, TemplateVersion = 1, Runtime = "declarative",
+                Definition = GraphicsSocialPlayout.CardDefinition, Fields = [
+                    new() { Id = "author", Type = "string", MaxLength = 80, Required = true },
+                    new() { Id = "message", Type = "string", MaxLength = 192, Required = true }] }] };
         public GraphicsSocialPlayout Create() => new(Invoke, () => State,
             async (_, ct) => { Preparing.TrySetResult(); await Ready.Task.WaitAsync(ct); });
 
         private Task<NativeGraphicsOperationResult> Invoke(string action, string request, CancellationToken cancellation)
         {
+            Assert.True(GraphicsCommandRequest.TryBuild(action, request, State, out _, out _, out var error), error);
             var body = JsonSerializer.Deserialize<JsonElement>(request);
             Commands.Add((action, body));
             var id = body.GetProperty("instanceId").GetString()!;
@@ -59,7 +63,7 @@ public sealed class GraphicsSocialPlayoutTests
         var create = fixture.Commands[0].Body;
         Assert.Equal("First message", create.GetProperty("fields").GetProperty("message").GetString());
         Assert.False(fixture.Commands[1].Body.GetProperty("rideTake").GetBoolean());
-        Assert.Empty(fixture.State.Instances.Where(i => i.ProgramRevision > 0));
+        Assert.DoesNotContain(fixture.State.Instances, i => i.ProgramRevision > 0);
         fixture.FinishPreparation();
         Assert.True((await show).Accepted);
         Assert.True(playout.OnProgram);

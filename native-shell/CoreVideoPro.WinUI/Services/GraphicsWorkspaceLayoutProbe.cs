@@ -33,6 +33,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(studio.IsGraphicsPlayoutMode && Descendants(page).OfType<GraphicsPlayoutControl>().Single().Visibility == Visibility.Visible, "Graphics did not open in Playout mode");
             Require(Descendants(page).OfType<GraphicsOnAirStripControl>().Any(), "On Air strip is missing from the Graphics tab");
             Require(Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed, "Design workspace is visible in Playout mode");
+            await CheckSocialReviewAsync(window, page, studio, checks, directory);
             // Graphics Designer slice 1: one stored design (document only; no core needed to list it).
             var seedManifest = GraphicsDesignSeeds.Manifest("lower-third", "design-probe-strap-a1b2c3", 1, "Probe strap");
             var seedDefinition = System.Text.Json.JsonSerializer.SerializeToElement(seedManifest);
@@ -872,6 +873,67 @@ internal static class GraphicsWorkspaceLayoutProbe
         Require(stored=="Pending user edit","Disposed text binding wrote into the model");
         checks.Add("busy sessions retain pending input, retry once editable, avoid model echo and reject disposed callbacks");
     }
+    private static async Task CheckSocialReviewAsync(Window window, OverlaysPage page, StudioViewModel studio, List<string> checks, string directory)
+    {
+        var review = studio.GraphicsSocialReview.Playout;
+        var source = await review.ConnectAsync();
+        var first = (await review.ReceiveAsync(source, "first", "Synthetic host", "A reviewed chat message stays private until Show."))!;
+        await review.ReceiveAsync(source, "second", "Synthetic guest", "This message has no approval.");
+        var priorWidth = page.Width;
+        var priorHeight = page.Height;
+        GraphicsSocialReviewDialog? dialog = null;
+        try
+        {
+            foreach (var (width, height, suffix) in new[] { (1320d, 640d, "1360x768"), (1560d, 772d, "1600x900") })
+            {
+                var windowWidth = (int)width + 40;
+                var windowHeight = suffix == "1360x768" ? 768 : 900;
+                window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, windowWidth, windowHeight));
+                await Eventually(() => window.AppWindow.Size.Width == windowWidth &&
+                    window.AppWindow.Size.Height == windowHeight, $"Could not resize the isolated window to {suffix}.");
+                page.Width = width; page.Height = height;
+                page.UpdateLayout();
+                Invoke(Button(page, "Social review…"));
+                await Eventually(() => (dialog = VisualTreeHelper.GetOpenPopupsForXamlRoot(page.XamlRoot)
+                    .Select(p => p.Child).Where(child => child is not null)
+                    .SelectMany(child => Descendants(child).Prepend(child)).OfType<GraphicsSocialReviewDialog>().FirstOrDefault()) is { IsLoaded: true },
+                    "Social review did not open from Operate.");
+                var panel = dialog!;
+                var rows = Descendants(panel).OfType<ListView>().Single();
+                var approved = rows.Items.OfType<ListViewItem>().Single(row => row.Tag is GraphicsSocialItem item && item.Key == first.Key);
+                var pending = rows.Items.OfType<ListViewItem>().Single(row => row.Tag is GraphicsSocialItem item && item.Key.Id == "second");
+                var show = Button(panel, "Show approved");
+                Require(!show.IsEnabled, "Social review can show an item without a selection.");
+                rows.SelectedItem = pending;
+                Require(!show.IsEnabled, "An unapproved message can be shown.");
+                rows.SelectedItem = approved;
+                var approve = Button(panel, "Approve");
+                if (approve.IsEnabled) Invoke(approve);
+                await Eventually(() => show.IsEnabled, "The approved exact message could not be selected to Show.");
+                Require(Descendants(panel).OfType<TextBlock>().Any(text => text.Text.Contains(first.Message, StringComparison.Ordinal)),
+                    "The private review did not show the text being approved.");
+                panel.UpdateLayout();
+                await Eventually(() => show.ActualHeight > 0, $"Show approved has no visible control at {suffix}.");
+                await ReviewImageWriter.SaveAsync(panel, Path.Combine(directory, $"graphics-social-review-{suffix}.png"));
+                var content = (ScrollViewer)panel.Content;
+                Require(content.ActualHeight > 0 && content.ActualHeight <= height - 100,
+                    $"Social review at {suffix} has a {content.ActualHeight:0}px content viewport.");
+                panel.Hide();
+                await Eventually(() => Button(page, "Social review…").IsEnabled, "Social review did not close.");
+                dialog = null;
+                checks.Add($"Social review at {suffix} requires an approved selection before Show.");
+            }
+        }
+        finally
+        {
+            dialog?.Hide();
+            window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, 1920, 1080));
+            page.Width = priorWidth;
+            page.Height = priorHeight;
+            await review.DisconnectAsync();
+        }
+    }
+
     private static Button Button(DependencyObject root,string name)=>Descendants(root).OfType<Button>().Single(b=>b.Content?.ToString()==name || Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(b)==name);
     private static void Invoke(Button button)=>((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke();
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root) { for(var i=0;i<VisualTreeHelper.GetChildrenCount(root);i++) {var child=VisualTreeHelper.GetChild(root,i);yield return child;foreach(var descendant in Descendants(child))yield return descendant;} }
