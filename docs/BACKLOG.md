@@ -421,6 +421,8 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 ## Unranked — show survival and operator findings
 
+- [#1114](https://github.com/iamfatness/CoreVideoPro/issues/1114): Owner-reported Graphics drag feedback. Keep private artwork visible and show completed native revisions while moving or resizing it.
+
 - [#1113](https://github.com/iamfatness/CoreVideoPro/issues/1113): Owner-directed Graphics Phase 3 Slice 6. Review and approve each social item before Show, starting with one public YouTube live chat. [Spec](superpowers/specs/2026-11-04-graphics-phase3-slice6-social-feeds.md) and [implementation plan](superpowers/plans/2026-11-04-graphics-phase3-slice6-social-feeds.md).
 
 - [#968](https://github.com/iamfatness/CoreVideoPro/issues/968): intermittent decoded PCM gaps found during #960 full Studio crash qualification; blocks its audio-continuity evidence. Owner-authorized October 21 within active #960; retain failed trials.

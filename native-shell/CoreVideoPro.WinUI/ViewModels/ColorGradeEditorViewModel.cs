@@ -61,23 +61,44 @@ public sealed partial class ColorGradeEditorViewModel : ObservableObject
         RequestPreview();
         if (LiveEditing) QueueLiveGrade();
     }
-    private void RequestPreview()
+    private long _firstGraphicsRevision;
+    private long _displayedGraphicsRevision = -1;
+
+    private void RequestPreview(bool keepGraphicsFrame = false)
     {
         ++Revision;
+        ContinuousGraphicsPreview = keepGraphicsFrame;
         ScopeSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Participant,$"grade:scopes:{InstanceId}","Scopes");
-        NativeSurface = WaitingSurface();
+        if (!keepGraphicsFrame)
+        {
+            _firstGraphicsRevision = Revision;
+            NativeSurface = WaitingSurface();
+        }
         PreviewStatus = CompareOriginal ? "Preparing original source comparison (monitor only)." : "Applying draft to native preview.";
         PreviewRequested?.Invoke(this, EventArgs.Empty);
     }
     public void SetNativeUnavailable(string reason)
     {
+        _firstGraphicsRevision = Revision;
+        ContinuousGraphicsPreview = false;
         NativeSurface = WaitingSurface() with { StatusLine = reason };
         PreviewStatus = reason;
         ScopeSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Participant,$"grade:scopes:{InstanceId}","Scopes"); ScopeStatus = reason;
     }
     public void ObserveNativePreview(GradePreviewObservation observation)
     {
-        if (observation.InstanceId != InstanceId || observation.SourceId != SourceId || observation.Revision != Revision) return;
+        if (observation.InstanceId != InstanceId || observation.SourceId != SourceId) return;
+        if (ContinuousGraphicsPreview)
+        {
+            // The pointer can be ahead of a completed native frame. Accept only forward
+            // progress within this private edit, and hold its pixels during preparation.
+            if (observation.Revision < _firstGraphicsRevision || observation.Revision < _displayedGraphicsRevision ||
+                observation.Revision > Revision ||
+                (observation.Revision != Revision && observation.Status != "ready") ||
+                (observation.Status == "preparing" && HasPreview)) return;
+        }
+        else if (observation.Revision != Revision) return;
+
         ObserveScopes(observation);
         var label = observation.Status switch {
             "ready" => CompareOriginal ? "Original source — monitor comparison only" : "Native graded source",
@@ -93,8 +114,11 @@ public sealed partial class ColorGradeEditorViewModel : ObservableObject
             !ulong.TryParse(texture.SharedHandleHex.Replace("0x", "", StringComparison.OrdinalIgnoreCase),
                 NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var handle) || handle == 0)
         {
+            if (ContinuousGraphicsPreview && observation.Revision < Revision) return;
+            if (observation.Status == "unavailable") _firstGraphicsRevision = Revision;
             NativeSurface = WaitingSurface() with { StatusLine = label }; return;
         }
+        if (LowerThirdPreview?.Graphics is not null) _displayedGraphicsRevision = observation.Revision;
         NativeSurface = WaitingSurface() with { StatusLine = string.IsNullOrWhiteSpace(observation.Reason) ? label : $"{label} · {observation.Reason}",
             PendingSharedHandle = new SharedTextureHandle { NtHandle = handle, Width = texture.Width,
                 Height = texture.Height, Format = texture.Format, FrameNumber = texture.FrameNumber } };

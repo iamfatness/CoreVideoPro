@@ -6,7 +6,24 @@ public sealed partial class ColorGradeEditorViewModel
 {
     private LowerThirdPreview? _lowerThirdPreview;
     public LowerThirdPreview? LowerThirdPreview => _lowerThirdPreview;
-    internal void SetLowerThirdPreview(LowerThirdPreview preview) { _lowerThirdPreview=preview; RequestPreview(); }
+    internal bool ContinuousGraphicsPreview { get; private set; }
+
+    internal void SetLowerThirdPreview(LowerThirdPreview preview, bool continuous = false)
+    {
+        var previous = _lowerThirdPreview?.Graphics;
+        var next = preview.Graphics;
+        if (previous is not null && next is not null &&
+            previous with { Fields = default, Style = default } == next with { Fields = default, Style = default } &&
+            System.Text.Json.JsonElement.DeepEquals(previous.Fields, next.Fields) &&
+            System.Text.Json.JsonElement.DeepEquals(previous.Style, next.Style))
+            return;
+
+        _lowerThirdPreview = preview;
+        var keepFrame = continuous && previous is not null && next is not null &&
+            previous.TemplateId == next.TemplateId && previous.TemplateVersion == next.TemplateVersion &&
+            previous.Play == next.Play;
+        RequestPreview(keepFrame);
+    }
     private GradeScopeRoi _scopeRoi = new();
     public GradeScopeRoi ScopeRoi => _scopeRoi;
     public string ScopeRegionLabel => _scopeRoi.Enabled ? $"{(_scopeRoi.Shape=="circle"?"Circle":"Rectangle")} ROI · {_scopeRoi.X:P1}, {_scopeRoi.Y:P1} · {_scopeRoi.Width:P1} × {_scopeRoi.Height:P1} · selection {_scopeRoi.Revision}" : "Full frame";
