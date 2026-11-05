@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Beta release blocker, November 5 — [#1154](https://github.com/iamfatness/CoreVideoPro/issues/1154):** migrate the two retired macos-14 CI jobs to macos-15 without changing tests or thresholds; required to complete the owner-authorized beta.
+
 **Owner-directed Auto timing completion, November 5 — [#1150](https://github.com/iamfatness/CoreVideoPro/issues/1150):** run continuous person/scene holds concurrently while Preview warms; retain readiness, confidence and manual-control gates. Installed conversation acceptance remains #668.
 
 **Owner-directed Auto completion, November 5 — [#1148](https://github.com/iamfatness/CoreVideoPro/issues/1148):** preserve Take failures for same-scene person changes. Follow with [#1149](https://github.com/iamfatness/CoreVideoPro/issues/1149) lifecycle recovery and the timing/rehearsal acceptance in #668. Owner requested completion of these remaining repairs.
