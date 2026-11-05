@@ -278,6 +278,12 @@ Preserve the existing session while building; restart/rejoin for candidate valid
 
 ## Now — owner-accepted order (2026-10-08)
 
+Owner ranked the private camera-test cleanup fix next on November 5.
+
+| Issue | Work |
+|---|---|
+| [#1131](https://github.com/iamfatness/CoreVideoPro/issues/1131) | Make virtual-camera fixture permissions and no-file cleanup self-contained, preserve private slot isolation and report cleanup failures explicitly. |
+
 Owner-directed active stability work: [#960](https://github.com/iamfatness/CoreVideoPro/issues/960),
 reconnectable EngineHost with real opt-in WinUI/native consumer. This is one active
 item; dependent #961–#963 do not start concurrently.
@@ -594,6 +600,10 @@ issue exists yet for this row; one will be filed, labeled `backlog`, when the
 **Graphics qualification dependency — [#1010](https://github.com/iamfatness/CoreVideoPro/issues/1010):** local automatic introductions must read accepted native source labels after video reincarnation while refusing stale instance text. This is within the owner-requested #1007 local-source Graphics audit and fix; qualify the actual reconnect, not only a manual Show.
 
 ## Later — parked
+
+| Issue | Unranked finding |
+|---|---|
+| [#1141](https://github.com/iamfatness/CoreVideoPro/issues/1141) | Investigate the compiled camera receiver's wall-clock pacing assertion, reproduced on an unchanged previously qualified build. Preserve actual sample/pixel coverage and strict delivery gates. |
 
 | Issue | Item |
 |---|---|
