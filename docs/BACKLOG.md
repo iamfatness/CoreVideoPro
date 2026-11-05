@@ -620,6 +620,7 @@ issue exists yet for this row; one will be filed, labeled `backlog`, when the
 | Issue | Unranked finding |
 |---|---|
 | [#1143](https://github.com/iamfatness/CoreVideoPro/issues/1143) | Investigate the full-suite ISO late-frame drop and held-frame count mismatch; isolated current/prior-build reruns pass but do not explain the retained failed recording. Preserve strict output acceptance. |
+| [#1157](https://github.com/iamfatness/CoreVideoPro/issues/1157) | Investigate a valid private Graphics preview request rejected during the full native run. Capture the RPC response and preserve explicit-null validation and pixel assertions. |
 
 | Issue | Item |
 |---|---|
