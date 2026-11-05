@@ -51,12 +51,7 @@ public sealed class GraphicsSocialPlayout
     {
         foreach (var item in events)
         {
-            switch (item.Kind)
-            {
-                case SocialFeedEventKind.Text: _review.Receive(source, item.Id, item.Author, item.Text, item.AuthorId); break;
-                case SocialFeedEventKind.Remove: _review.Withdraw(source, item.Id); break;
-                case SocialFeedEventKind.Ban: _review.Ban(source, item.AuthorId); break;
-            }
+            _review.Apply(source, item);
         }
         return _review.IsCurrent(source);
     });

@@ -11,6 +11,7 @@ public sealed record GraphicsSocialItem(
     GraphicsSocialDecision Decision)
 {
     internal string AuthorId { get; init; } = "";
+    internal long Order { get; init; }
 }
 
 /// <summary>Session-only review state. Its console owner serializes callbacks, decisions and Show submission.</summary>
@@ -23,6 +24,8 @@ public sealed class GraphicsSocialReview
     private readonly Dictionary<string, GraphicsSocialItem> _items = new(StringComparer.Ordinal);
     private readonly HashSet<string> _removed = new(StringComparer.Ordinal);
     private readonly HashSet<string> _banned = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _authorClears = new(StringComparer.Ordinal);
+    private long _roomClear;
     private long _source;
     private long _revision;
 
@@ -62,14 +65,18 @@ public sealed class GraphicsSocialReview
         _items.Clear();
         _removed.Clear();
         _banned.Clear();
+        _authorClears.Clear();
+        _roomClear = 0;
         _revision = 0;
     }
 
-    public GraphicsSocialItem? Receive(long source, string id, string author, string message, string authorId = "")
+    public GraphicsSocialItem? Receive(long source, string id, string author, string message, string authorId = "", long order = 0)
     {
         var now = _utcNow();
         Expire(now);
-        if (!IsCurrent(source) || !ValidId(id) || _removed.Contains(id) || _banned.Contains(authorId))
+        if (!IsCurrent(source) || !ValidId(id) || _removed.Contains(id) || _banned.Contains(authorId) ||
+            (_roomClear > 0 && order <= _roomClear) ||
+            (_authorClears.TryGetValue(authorId, out var clearedAt) && order <= clearedAt))
             return null;
 
         var current = _items.GetValueOrDefault(id);
@@ -88,7 +95,7 @@ public sealed class GraphicsSocialReview
             return null;
 
         var item = new GraphicsSocialItem(new(source, id, ++_revision),
-            normalizedAuthor, normalizedMessage, current?.ReceivedAt ?? now, GraphicsSocialDecision.Pending) { AuthorId = authorId };
+            normalizedAuthor, normalizedMessage, current?.ReceivedAt ?? now, GraphicsSocialDecision.Pending) { AuthorId = authorId, Order = order };
         _items[id] = item;
         return item;
     }
@@ -99,11 +106,46 @@ public sealed class GraphicsSocialReview
             Remove(id);
     }
 
+    internal void Apply(long source, SocialFeedEvent item)
+    {
+        switch (item.Kind)
+        {
+            case SocialFeedEventKind.Text: Receive(source, item.Id, item.Author, item.Text, item.AuthorId, item.Order); break;
+            case SocialFeedEventKind.Remove: Withdraw(source, item.Id); break;
+            case SocialFeedEventKind.Ban: Ban(source, item.AuthorId); break;
+            case SocialFeedEventKind.ClearUser: ClearBefore(source, item.Order, item.AuthorId); break;
+            case SocialFeedEventKind.ClearRoom: ClearBefore(source, item.Order, null); break;
+        }
+    }
+
+    private void ClearBefore(long source, long order, string? authorId)
+    {
+        if (!IsCurrent(source)) return;
+        if (order <= 0 || (authorId is not null && !ValidId(authorId)))
+        {
+            Disconnect();
+            return;
+        }
+        if (authorId is null) _roomClear = Math.Max(_roomClear, order);
+        else _authorClears[authorId] = Math.Max(_authorClears.GetValueOrDefault(authorId), order);
+        if (_removed.Count + _banned.Count + _authorClears.Count > _removalCapacity)
+        {
+            Disconnect();
+            return;
+        }
+        foreach (var item in _items.Values.Where(item => item.Order <= order &&
+            (authorId is null || item.AuthorId == authorId)).ToArray())
+        {
+            Remove(item.Key.Id);
+            if (!IsConnected) break;
+        }
+    }
+
     internal void Ban(long source, string authorId)
     {
         if (!IsCurrent(source) || !ValidId(authorId)) return;
         _banned.Add(authorId);
-        if (_banned.Count + _removed.Count > _removalCapacity)
+        if (_banned.Count + _removed.Count + _authorClears.Count > _removalCapacity)
         {
             Disconnect();
             return;
@@ -160,7 +202,7 @@ public sealed class GraphicsSocialReview
     {
         _items.Remove(id);
         _removed.Add(id);
-        if (_removed.Count + _banned.Count > _removalCapacity)
+        if (_removed.Count + _banned.Count + _authorClears.Count > _removalCapacity)
             Disconnect();
     }
 

@@ -278,6 +278,9 @@ Preserve the existing session while building; restart/rejoin for candidate valid
 
 ## Now — owner-accepted order (2026-10-08)
 
+Owner ranked [#1118](https://github.com/iamfatness/CoreVideoPro/issues/1118) next on November 5. Implement moderated Twitch chat using the [provider design](superpowers/specs/2026-11-04-graphics-social-provider-followups.md) and [test-first plan](superpowers/plans/2026-11-04-graphics-social-provider-followups.md). Each exact message version needs operator approval and a separate Show.
+
+
 Owner-directed active stability work: [#960](https://github.com/iamfatness/CoreVideoPro/issues/960),
 reconnectable EngineHost with real opt-in WinUI/native consumer. This is one active
 item; dependent #961–#963 do not start concurrently.
@@ -424,7 +427,6 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 - [#1114](https://github.com/iamfatness/CoreVideoPro/issues/1114): Owner-reported Graphics drag feedback. Keep private artwork visible and show completed native revisions while moving or resizing it.
 
 - [#1117](https://github.com/iamfatness/CoreVideoPro/issues/1117): Owner-run controlled YouTube chat acceptance. [Operator check](reference/graphics-youtube-live-check.md).
-- [#1118](https://github.com/iamfatness/CoreVideoPro/issues/1118): Proposed next social adapter. Moderated Twitch chat with deletion, user clear and room clear. [Provider design](superpowers/specs/2026-11-04-graphics-social-provider-followups.md) and [plan](superpowers/plans/2026-11-04-graphics-social-provider-followups.md).
 - [#1119](https://github.com/iamfatness/CoreVideoPro/issues/1119): Moderated X posts. Confirm project access, budget and deletion evidence before live use.
 - [#1120](https://github.com/iamfatness/CoreVideoPro/issues/1120): Moderated LinkedIn organization comments. Confirm Community Management access and selected post permissions.
 - [#1121](https://github.com/iamfatness/CoreVideoPro/issues/1121): Deterministic social moderation races, replay and source replacement.
