@@ -526,6 +526,8 @@ Found by reading code on main; none reproduced in the running app unless its iss
 
 ## Unranked — mock code in the shipping path and repo cleanup (2026-10-01 audit)
 
+- [#1127](https://github.com/iamfatness/CoreVideoPro/issues/1127): The bundled native runner executes fixtures when asked to list test names.
+
 Found by the 2026-10-01 cleanup audit. Order within this table is a suggestion; the owner ranks.
 
 | Issue | Remaining work |
