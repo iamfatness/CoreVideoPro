@@ -40,6 +40,29 @@ TEST(VirtualCameraRequestSchedule, FreshPicturesCannotContinuouslyRebaseOrExtend
   EXPECT_EQ(schedule.begin(3000000).target100ns, 3166666);
 }
 
+TEST(VirtualCameraRequestSchedule, LateEntryWaitsOnlyUntilTheNextAbsoluteSlot) {
+  VirtualCameraRequestSchedule schedule;
+  schedule.reset(60);
+  schedule.begin(1'000'000);
+  ASSERT_TRUE(schedule.firstFreshEmission(1'000'000));
+
+  // 100 ns ticks. The caller enters late in the second slot, with only
+  // about 3.3 ms until the third. The original read deadline still applies.
+  const auto late = schedule.begin(1'300'000);
+  EXPECT_EQ(late.target100ns, 1'166'666);
+  EXPECT_EQ(late.wait100ns, 0);
+  EXPECT_EQ(late.readDeadlineUs, 131'333);
+
+  const auto next = schedule.begin(1'301'000);
+  EXPECT_EQ(next.target100ns, 1'333'333);
+  EXPECT_EQ(next.wait100ns, 32'333);
+  EXPECT_EQ(next.readDeadlineUs, 148'000);
+
+  const auto following = schedule.begin(1'333'333);
+  EXPECT_EQ(following.target100ns, 1'500'000);
+  EXPECT_EQ(following.wait100ns, 166'667);
+}
+
 TEST(VirtualCameraCadence, WholeHourHasNoFractionalFrameClockDrift) {
   for (uint32_t fps : {24u, 30u, 60u}) {
     VirtualCameraCadence cadence(fps); int64_t elapsed = 0;

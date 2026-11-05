@@ -477,6 +477,14 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
   ASSERT_TRUE(SUCCEEDED(session.mf));
   ShmWriter writer;
   ASSERT_TRUE(writer.open());
+  // Leave a stopped publisher's history file for the DLL to map on its first
+  // read. The first phase uses the legacy slot until history starts below.
+  // Creating the file late would make that transition depend on the reader's
+  // one-second retry interval for missing history files.
+  {
+    corevideo::modules::VirtualCameraHistoryWriter stoppedHistory;
+    ASSERT_TRUE(stoppedHistory.start(writer.file));
+  }
   std::vector<std::uint8_t> pixels(1920 * 1080 * 3 / 2, 42);
   writer.write(pixels, 1920, 1080);
   const auto logPath = corevideo::modules::virtualCameraShmDir() + "\\vcam-serve.log";
@@ -640,14 +648,17 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
   }
   EXPECT_EQ(received, requested.size());
   // Exercise the actual compiled DLL/event stream, not just the C++ reader:
-  // one producer phase crossing must deliver both original pixel identities.
+  // one producer phase crossing must deliver both original pixel identities
+  // with increasing PTS. VirtualCameraRequestSchedule tests cover pacing with
+  // fixed ticks because these calls can enter partway through a delivery slot.
   ASSERT_TRUE(writer.retainPublications());
   pixels[0] = 240; writer.write(pixels, 1920, 1080); EXPECT_EQ(receive(), 240);
   pixels[0] = 241; writer.write(pixels, 1920, 1080);
   pixels[0] = 242; writer.write(pixels, 1920, 1080);
-  const auto retainedStarted = std::chrono::steady_clock::now();
-  EXPECT_EQ(receive(), 241); EXPECT_EQ(receive(), 242);
-  EXPECT_GE(std::chrono::steady_clock::now() - retainedStarted, std::chrono::milliseconds(10));
+  const auto retainedPixel = receive();
+  EXPECT_EQ(retainedPixel, 241) << "retained pixel: " << retainedPixel;
+  const auto latestPixel = receive();
+  EXPECT_EQ(latestPixel, 242) << "latest pixel: " << latestPixel;
 }
 #endif
 
