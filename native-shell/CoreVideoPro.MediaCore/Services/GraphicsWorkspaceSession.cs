@@ -141,6 +141,12 @@ public sealed partial class GraphicsWorkspaceSession
     public void Observe(NativeGraphicsState? state)
     {
         if (state is null) return;
+        if (state.Instances.Any(i => i.InstanceId.StartsWith(GraphicsSocialPlayout.InstancePrefix, StringComparison.Ordinal)) ||
+            state.Templates.Any(t => t.TemplateId == GraphicsSocialPlayout.TemplateId))
+            state = state with {
+                Instances = state.Instances.Where(i => !i.InstanceId.StartsWith(GraphicsSocialPlayout.InstancePrefix, StringComparison.Ordinal)).ToArray(),
+                Templates = state.Templates.Where(t => t.TemplateId != GraphicsSocialPlayout.TemplateId).ToArray()
+            };
         var epochChanged = State is not null && State.CoreEpoch != state.CoreEpoch;
         var clockTextChanged = Selected?.Clock?.Text != state.Instances.FirstOrDefault(i=>i.InstanceId==SelectedId)?.Clock?.Text;
         State = state;

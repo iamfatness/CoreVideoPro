@@ -7,6 +7,19 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class GraphicsCommandGatewayTests
 {
+    [Fact]
+    public async Task PublicGraphicsCommandCannotClaimTheSocialReviewClient()
+    {
+        var gateway = new GraphicsCommandGateway(() => true, () => new() { Graphics = Observed },
+            (commands, _) => throw new InvalidOperationException("A social command reached the native transport."));
+        var forged = JsonSerializer.Serialize(new { schemaVersion = 1, requestId = "forged",
+            clientId = "graphics-social-review", coreEpoch = Observed.CoreEpoch, instanceId = "social-review-card",
+            expectedRevision = 1, action = "show", target = "cue" });
+        var refused = await gateway.InvokeAsync("graphics.instance.trigger", forged);
+        Assert.False(refused.Accepted);
+        Assert.Equal("social-graphics-require-operator-review", refused.Reason);
+    }
+
     private sealed class HeldPackageReader : IGraphicsPackageReader
     {
         public TaskCompletionSource<GraphicsPackageInput> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

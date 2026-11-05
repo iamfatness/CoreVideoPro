@@ -69,7 +69,7 @@ public sealed class GraphicsSocialReview
 
         var current = _items.GetValueOrDefault(id);
         var normalizedAuthor = Normalize(author, 80);
-        var normalizedMessage = Normalize(message, 512);
+        var normalizedMessage = Normalize(message, 192);
         if (normalizedAuthor is null || normalizedMessage is null)
         {
             if (current is not null)

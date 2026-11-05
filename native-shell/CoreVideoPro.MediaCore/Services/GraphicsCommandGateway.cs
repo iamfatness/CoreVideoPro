@@ -25,8 +25,15 @@ public sealed class GraphicsCommandGateway
         Func<IReadOnlyList<NativeMediaCoreCommand>, CancellationToken, Task<NativeMediaCoreStateSnapshot>> send, IGraphicsPackageReader? packages = null)
         => (_running, _observe, _send, _packages) = (running, observe, send, packages);
 
-    public async Task<NativeGraphicsOperationResult> InvokeAsync(string action, string request,
-        CancellationToken cancellationToken = default)
+    public Task<NativeGraphicsOperationResult> InvokeAsync(string action, string request,
+        CancellationToken cancellationToken = default) => InvokeCoreAsync(action, request, false, cancellationToken);
+
+    public GraphicsSocialPlayout CreateSocialPlayout() => new(
+        (action, request, cancellation) => InvokeCoreAsync(action, request, true, cancellation),
+        () => _observe()?.Graphics);
+
+    private async Task<NativeGraphicsOperationResult> InvokeCoreAsync(string action, string request,
+        bool socialReview, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var observed = _observe()?.Graphics;
@@ -34,6 +41,9 @@ public sealed class GraphicsCommandGateway
             return Refuse("", "graphics-native-state-unavailable");
         if (!GraphicsCommandRequest.TryBuild(action, request, observed, out var command, out var requestId, out var error))
             return Refuse(requestId, error);
+        var clientId = command!.ExtensionData!["graphics"].GetProperty("clientId").GetString();
+        if ((clientId == GraphicsSocialPlayout.ClientId) != socialReview)
+            return Refuse(requestId, "social-graphics-require-operator-review");
         // File expansion is independent of the short command admission gate:
         // importing a package cannot block an operator's Hide or Clear.
             if (action == "graphics.template.install" && command!.ExtensionData!["graphics"].TryGetProperty("packagePath", out var packagePath))
@@ -52,7 +62,6 @@ public sealed class GraphicsCommandGateway
         try
         {
             var response = await _send([command!], cancellationToken).ConfigureAwait(false);
-            var clientId=command!.ExtensionData!["graphics"].GetProperty("clientId").GetString();
             var result = response.Graphics?.Operations.LastOrDefault(r=>r.RequestId==requestId && r.ClientId==clientId) ?? response.Graphics?.LastResult;
             if (response.Graphics?.CoreEpoch != observed.CoreEpoch || result?.RequestId != requestId || (result.ClientId.Length>0 && result.ClientId!=clientId))
                 return Refuse(requestId, "graphics-result-not-correlated");

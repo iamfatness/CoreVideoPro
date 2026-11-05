@@ -96,7 +96,7 @@ public sealed class GraphicsSocialReviewTests
         var queue = new GraphicsSocialReview(() => Now);
         var source = queue.Connect();
         Assert.Null(queue.Receive(source, "bad", "Author", "Bad\0text"));
-        Assert.Null(queue.Receive(source, "long", "Author", new string('x', 513)));
+        Assert.Null(queue.Receive(source, "long", "Author", new string('x', 193)));
         var item = queue.Receive(source, "valid", " Author ", " Cafe\u0301 ")!;
         Assert.Equal("Author", item.Author);
         Assert.Equal("Café", item.Message);

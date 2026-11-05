@@ -280,7 +280,8 @@ public sealed partial class GraphicsPlayoutService
         var next = new GraphicsStripState {
             CoreEpoch = state.CoreEpoch,
             OnProgram = state.Instances.Where(IsOnProgram).Select(Item).ToArray(),
-            OnPreview = state.Instances.Where(IsOnPreview).Select(Item).ToArray(),
+            OnPreview = state.Instances.Where(i => IsOnPreview(i) &&
+                !i.InstanceId.StartsWith(GraphicsSocialPlayout.InstancePrefix, StringComparison.Ordinal)).Select(Item).ToArray(),
             Auto = state.Instances.Where(i => !i.InstanceId.StartsWith(InstancePrefix, StringComparison.Ordinal) && rules.Any(r => r.Enabled && r.InstanceId == i.InstanceId)).Select(Item).ToArray(),
             AutomationMode = state.Automation?.Mode ?? "manual", AutomationArmed = state.Automation?.Armed == true
         };
@@ -323,7 +324,8 @@ public sealed partial class GraphicsPlayoutService
     });
     public Task<NativeGraphicsOperationResult> ClearPreviewAsync(CancellationToken cancellation = default) => Run(async () => {
         var state = Available(); NativeGraphicsOperationResult result = new() { Accepted = true, Reason = "Preview is already clear." };
-        foreach (var instance in state.Instances.Where(IsOnPreview).ToArray()) {
+        foreach (var instance in state.Instances.Where(i => IsOnPreview(i) &&
+            !i.InstanceId.StartsWith(GraphicsSocialPlayout.InstancePrefix, StringComparison.Ordinal)).ToArray()) {
             result = await Uncue(instance.InstanceId, cancellation);
             if (!result.Accepted) return result;
         }

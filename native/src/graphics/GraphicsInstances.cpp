@@ -502,6 +502,17 @@ bool GraphicsInstances::apply(const Json& command) {
   }
   const auto id = body->getString("instanceId");
   if (!validId(id)) return finish(requestId, false, "invalid-instance-id");
+  if (id.starts_with("social-review-")) {
+    const auto intent = body->getString("action");
+    const bool stop = type == "graphics-instance-trigger" && (intent == "hide" || intent == "clear");
+    if (!stop && pendingClient_ != "graphics-social-review")
+      return finish(requestId, false, "social-graphics-require-operator-review");
+    if (type == "graphics-instance-cue" &&
+        (!body->get("rideTake") || body->get("rideTake")->asBool() || body->get("cueOwner")))
+      return finish(requestId, false, "social-graphics-private-cue-only");
+    if (type == "graphics-instance-trigger" && intent == "show" && body->getString("target") != "cue")
+      return finish(requestId, false, "social-graphics-require-prepared-cue");
+  }
   auto found = instances_.find(id);
   if (type == "graphics-instance-create") {
     if (found != instances_.end()) return finish(requestId, false, "instance-already-exists");
@@ -834,6 +845,7 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
     if ((scope == ScopePass::Scene && instance.scope != "scene") ||
         (scope == ScopePass::Global && instance.scope != "global")) continue;
     if (instance.scope == "scene" && instance.sceneId != plan.sceneId) continue;
+    if (preview && instance.id.starts_with("social-review-")) continue;
     const auto revision = preview ? instance.cue : instance.program;
     if (!revision) continue;
     if (revision->binding) {
