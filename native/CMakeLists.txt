@@ -1013,6 +1013,19 @@ if(BUILD_TESTING)
       "--gtest_filter=NoCoreVideoTestShouldMatchThisFilter.*")
   set_tests_properties(corevideo-native-tests-reject-empty-filter PROPERTIES
     WILL_FAIL TRUE TIMEOUT 30)
+  if(NOT GTest_FOUND)
+    add_test(NAME corevideo-native-tests-list-without-running
+      COMMAND "$<TARGET_FILE:corevideo-native-tests>" --gtest_list_tests
+        "--gtest_filter=ContractParity.RequestManifestMatchesTheRpcDispatcher")
+    set_tests_properties(corevideo-native-tests-list-without-running PROPERTIES
+      PASS_REGULAR_EXPRESSION "ContractParity\\.RequestManifestMatchesTheRpcDispatcher"
+      FAIL_REGULAR_EXPRESSION "\\[ RUN" TIMEOUT 30)
+    add_test(NAME corevideo-native-tests-reject-unsupported-argument
+      COMMAND "$<TARGET_FILE:corevideo-native-tests>" --gtest_repeet=2
+        "--gtest_filter=ContractParity.RequestManifestMatchesTheRpcDispatcher")
+    set_tests_properties(corevideo-native-tests-reject-unsupported-argument PROPERTIES
+      WILL_FAIL TRUE TIMEOUT 30)
+  endif()
   if(COREVIDEO_WITH_ZOOM)
     set_tests_properties(corevideo-native-tests PROPERTIES ENVIRONMENT "PATH=${COREVIDEO_ZOOM_SDK_ROOT}/bin;$ENV{PATH}")
   endif()
