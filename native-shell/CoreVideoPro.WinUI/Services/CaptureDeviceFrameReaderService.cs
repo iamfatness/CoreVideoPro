@@ -178,11 +178,16 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
     private readonly Dictionary<string, Task<CaptureDeviceFormatTelemetry>> _startingSessions = new(StringComparer.Ordinal);
     private static readonly StrategyBasedComWrappers MemoryBufferComWrappers = new();
     private static readonly SemaphoreSlim MediaCaptureStartupGate = new(1, 1);
+    private bool _disposed;
+
+    public event Action<string, long>? ReaderLost;
+
 
     public Task<CaptureDeviceFormatTelemetry> StartAsync(CaptureDevice device)
     {
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (_sessions.TryGetValue(device.Id, out var existing))
             {
                 return Task.FromResult(existing.FormatTelemetry);
@@ -197,7 +202,9 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             var session = new CaptureSession(
                 device.Id,
                 device.NativeDeviceId,
-                CaptureDeviceFormatSelector.AllowsLateFirstFrame(device.Name));
+                CaptureDeviceFormatSelector.AllowsLateFirstFrame(device.Name),
+                CaptureDeviceSharedMemoryWriter.BeginSession(device.Id),
+                (id, token) => ReaderLost?.Invoke(id, token));
             LaunchLog.Write(
                 $"capture: opening {device.Id} name=\"{device.Name}\" lateFirstFrame={CaptureDeviceFormatSelector.AllowsLateFirstFrame(device.Name)}");
             var startTask = StartSessionAsync(device.Id, session);
@@ -230,6 +237,11 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             var telemetry = await session.StartAsync().ConfigureAwait(false);
             lock (_gate)
             {
+                if (_disposed || !CaptureDeviceSharedMemoryWriter.IsCurrentSession(deviceId, session.Token))
+                {
+                    throw new OperationCanceledException("Capture reader was stopped while opening.");
+                }
+
                 _sessions[deviceId] = session;
             }
 
@@ -238,6 +250,11 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         catch (Exception ex)
         {
             LaunchLog.Write($"capture: start failed {deviceId}: {DescribeException(ex)}");
+            if (ex is not OperationCanceledException)
+            {
+                session.ReportLoss();
+            }
+
             await session.DisposeAsync().ConfigureAwait(false);
             throw;
         }
@@ -247,23 +264,33 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         }
     }
 
-    public async Task StopAsync(string deviceId)
+    public (long? MappingToken, Task Completion)? StopSession(
+        string deviceId, long? expectedToken, CaptureBridgeSignal signal, bool deferDispose = false)
     {
-        CaptureSession? session;
+        CaptureDeviceSharedMemoryWriter.Retirement retirement;
+        CaptureSession? session = null;
         lock (_gate)
         {
-            if (!_sessions.Remove(deviceId, out session))
+            if (CaptureDeviceSharedMemoryWriter.Retire(deviceId, expectedToken, signal) is not { } stopped)
             {
-                return;
+                return null;
             }
+
+            retirement = stopped;
+            // App shutdown disposes all active readers together after the
+            // core has stopped. The token is already fenced above.
+            if (!deferDispose && _sessions.TryGetValue(deviceId, out var current) &&
+                current.Token == retirement.SessionToken)
+            {
+                _sessions.Remove(deviceId);
+                session = current;
+            }
+            // A start in flight checks the retired token before adding itself.
         }
 
-        if (session is null)
-        {
-            return;
-        }
-
-        await session.DisposeAsync().ConfigureAwait(false);
+        var completion = session is null ? Task.CompletedTask
+            : Task.Run(async () => await session.DisposeAsync().ConfigureAwait(false));
+        return (retirement.MappingToken, completion);
     }
 
     public void Dispose()
@@ -271,6 +298,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         List<CaptureSession> sessions;
         lock (_gate)
         {
+            _disposed = true;
             sessions = _sessions.Values.ToList();
             _sessions.Clear();
             _startingSessions.Clear();
@@ -282,7 +310,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         }
     }
 
-    public sealed record CaptureDeviceFormatTelemetry(int Width, int Height, int Fps);
+    public sealed record CaptureDeviceFormatTelemetry(int Width, int Height, int Fps, long SessionToken);
 
     private static string DescribeException(Exception ex) =>
         string.IsNullOrWhiteSpace(ex.Message)
@@ -294,6 +322,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private readonly string _stableDeviceId;
         private readonly string _nativeDeviceId;
         private readonly bool _allowLateFirstFrame;
+        private readonly Action<string, long> _reportLoss;
         private MediaCapture? _capture;
         private MediaFrameReader? _reader;
         private int _frameId;
@@ -338,14 +367,18 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private System.Threading.Timer? _stallWatchdog;
         private const long StallThresholdMs = 2500;
 
-        public CaptureSession(string stableDeviceId, string nativeDeviceId, bool allowLateFirstFrame)
+        public CaptureSession(string stableDeviceId, string nativeDeviceId, bool allowLateFirstFrame,
+            long token, Action<string, long> reportLoss)
         {
             _stableDeviceId = stableDeviceId;
             _nativeDeviceId = nativeDeviceId;
             _allowLateFirstFrame = allowLateFirstFrame;
+            Token = token;
+            _reportLoss = reportLoss;
         }
 
-        public CaptureDeviceFormatTelemetry FormatTelemetry => new(_formatWidth, _formatHeight, _formatFps);
+        public long Token { get; }
+        public CaptureDeviceFormatTelemetry FormatTelemetry => new(_formatWidth, _formatHeight, _formatFps, Token);
 
         public async Task<CaptureDeviceFormatTelemetry> StartAsync()
         {
@@ -357,6 +390,8 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 MemoryPreference = MediaCaptureMemoryPreference.Cpu,
                 SharingMode = MediaCaptureSharingMode.SharedReadOnly
             });
+
+            _capture.Failed += OnCaptureFailed;
 
             var source = _capture.FrameSources.Values.FirstOrDefault(frameSource =>
                 frameSource.Info.MediaStreamType == MediaStreamType.VideoPreview &&
@@ -511,6 +546,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 CaptureDeviceFrameRouter.Publish(new CaptureDeviceFrame
                 {
                     DeviceId = _stableDeviceId,
+                    BridgeSessionToken = Token,
                     Bgra = bytes,
                     Width = bgra.PixelWidth,
                     Height = bgra.PixelHeight,
@@ -977,17 +1013,8 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
                 if (CaptureReaderStallPolicy.ShouldGiveUp(failures))
                 {
-                    // Stop hammering: the source is gone / the format won't come back on
-                    // its own. Leave the last frame frozen (the operator sees it) and let
-                    // a manual reconnect start a clean session.
-                    if (Interlocked.Exchange(ref _stallGaveUp, 1) == 0)
-                    {
-                        LaunchLog.Write(
-                            $"capture: giving up on {_stableDeviceId} after {failures} failed restarts " +
-                            $"(no signal / format unsupported) — reconnect the source to retry");
-                        _stallWatchdog?.Dispose();
-                        _stallWatchdog = null;
-                    }
+                    LaunchLog.Write($"capture: giving up on {_stableDeviceId} after {failures} failed restarts");
+                    ReportLoss();
                 }
             }
             finally
@@ -996,12 +1023,34 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             }
         }
 
+        private void OnCaptureFailed(MediaCapture sender, MediaCaptureFailedEventArgs args)
+        {
+            LaunchLog.Write($"capture: reader lost {_stableDeviceId}: 0x{args.Code:X8} {args.Message}");
+            ReportLoss();
+        }
+
+        public void ReportLoss()
+        {
+            if (Interlocked.Exchange(ref _stallGaveUp, 1) != 0)
+            {
+                return;
+            }
+
+            _stallWatchdog?.Dispose();
+            _stallWatchdog = null;
+            _reportLoss(_stableDeviceId, Token);
+        }
+
         public async ValueTask DisposeAsync()
         {
             await DisposeReaderAsync().ConfigureAwait(false);
 
-            _capture?.Dispose();
-            _capture = null;
+            if (_capture is { } capture)
+            {
+                capture.Failed -= OnCaptureFailed;
+                capture.Dispose();
+                _capture = null;
+            }
         }
 
         private async Task DisposeReaderAsync()

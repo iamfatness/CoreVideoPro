@@ -1,3 +1,4 @@
+#include "core/MediaCore.h"
 #include "modules/ShmCapturePreparation.h"
 #include "modules/WinUiCaptureDeviceAdapter.h"
 #include "modules/ProgramFramePreview.h"
@@ -180,6 +181,69 @@ TEST(ShmCapturePreparation, ReplacementRetainsLossUntilACompletedSampleArrives) 
 }
 
 
+
+TEST(ShmCapturePreparation, BridgeLossReachesTheActualProgramLayer) {
+  using corevideo::rpc::Json;
+  class ProgramObserver final : public ICompositor {
+   public:
+    explicit ProgramObserver(std::unique_ptr<ICompositor> inner) : inner_(std::move(inner)) {}
+    std::string rendererName() const override { return inner_->rendererName(); }
+    ProgramFrame render(const CompositorRenderPlan& plan, const std::vector<VideoFrame>& frames) override {
+      camera.reset();
+      for (const auto& layer : plan.layers) {
+        if (layer.participantId == "capture:decklink-1") {
+          camera = layer;
+          break;
+        }
+      }
+      return inner_->render(plan, frames);
+    }
+    std::optional<CompositorRenderPlanLayer> camera;
+
+   private:
+    std::unique_ptr<ICompositor> inner_;
+  };
+
+  Writer writer(64, 64);
+  auto modules = createStubModules();
+  auto observer = std::make_unique<ProgramObserver>(std::move(modules.compositor));
+  const auto* program = observer.get();
+  modules.compositor = std::move(observer);
+  modules.captureDevice = std::make_unique<WinUiCaptureDeviceAdapter>(std::move(modules.captureDevice));
+  corevideo::core::MediaCore core(std::move(modules));
+  (void)core.applyCommands(Json::Array{
+      Json::Object{{"type", "load-scene-graph"}, {"sceneId", "bridge-qa"},
+          {"routes", Json::Array{Json::Object{{"routeId", "camera"}, {"mode", "capture-input"},
+              {"captureDeviceId", "decklink-1"},
+              {"rect", Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}},
+      Json::Object{{"type", "set-source-policy"}, {"sourceId", "capture:decklink-1"},
+          {"dropoutPolicy", "black"}, {"displayName", "QA camera"}}});
+  core.registerCaptureShm("decklink-1", writer.name, 64, 64);
+  setBridgeSignal(writer, 1);
+  writer.write(2, 11);
+
+  const auto renderWithLiveness = [&](std::string_view expected) {
+    core.renderDisplayTick();
+    const auto state = core.sessionState();
+    const auto* sources = state.get("sources");
+    if (!sources || !sources->isArray()) return false;
+    for (const auto& source : sources->asArray()) {
+      if (source.getString("sourceId") == "capture:decklink-1" &&
+          source.getString("liveness") == expected) {
+        return true;
+      }
+    }
+    return false;
+  };
+  ASSERT_TRUE(waitFor([&] { return renderWithLiveness("live"); }));
+  setBridgeSignal(writer, 2);
+  ASSERT_TRUE(waitFor([&] { return renderWithLiveness("lost"); }));
+
+  ASSERT_TRUE(program->camera);
+  EXPECT_TRUE(program->camera->sourceHealth == "stalled" || program->camera->sourceHealth == "failed");
+  EXPECT_EQ(program->camera->dropoutPolicy, "black");
+  EXPECT_EQ(program->camera->sourceDisplayName, "QA camera");
+}
 
 TEST(ShmCapturePreparation, HoldsImmutableRealPixelsAndRefusesAnExhaustedPool) {
   Writer writer(64, 64);
