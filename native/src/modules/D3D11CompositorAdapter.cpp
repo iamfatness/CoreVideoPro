@@ -1461,7 +1461,10 @@ class D3D11Compositor final : public ICompositor {
         // per-source policy is "black": draw solid black, frame ignored. Must
         // run after the frame resolution above and before drawLayer, which
         // branches solid-vs-textured on layer.frame.
-        if (!compositorLayerIsOverlay(layer.plan) && layer.frame != nullptr && frameHasContent(*layer.frame) &&
+        if (!compositorLayerIsOverlay(layer.plan) && compositor::suppressFrameFor(layer.plan.sourceHealth)) {
+          layer.frame = nullptr;
+          layer.color = compositor::kFailedSlateRgba;
+        } else if (!compositorLayerIsOverlay(layer.plan) && layer.frame != nullptr && frameHasContent(*layer.frame) &&
             compositor::blackOnStalled(layer.plan.sourceHealth, layer.plan.dropoutPolicy)) {
           layer.frame = nullptr;
           layer.color = compositor::kDropoutBlackRgba;

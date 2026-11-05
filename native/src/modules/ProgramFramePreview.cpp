@@ -431,7 +431,10 @@ void fillSyntheticProgramFramePreview(
         // stays BGRA-only, unchanged: an I420 frame that reaches the
         // draw-a-real-frame branch below still falls through to the
         // synthetic fill (see blitVideoFrameLayerClipped's hasPixels() gate).
-        if (frameForLayer != nullptr && (frameForLayer->hasPixels() || frameForLayer->hasI420()) &&
+        if (compositor::suppressFrameFor(layer.sourceHealth)) {
+          frameForLayer = nullptr;
+          color = compositor::kFailedSlateRgba;
+        } else if (frameForLayer != nullptr && (frameForLayer->hasPixels() || frameForLayer->hasI420()) &&
             compositor::blackOnStalled(layer.sourceHealth, layer.dropoutPolicy)) {
           frameForLayer = nullptr;
           color = compositor::kDropoutBlackRgba;

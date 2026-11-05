@@ -7,22 +7,10 @@
 #include <string>
 #include <vector>
 
+#include "core/CaptureLivenessPolicy.h"
 #include "modules/Interfaces.h"
 
 namespace corevideo::core {
-
-enum class SourceHealth { Producing, Warming, Stalled, Failed, Idle };
-
-inline const char* sourceHealthName(SourceHealth health) {
-  switch (health) {
-    case SourceHealth::Producing: return "producing";
-    case SourceHealth::Warming: return "warming";
-    case SourceHealth::Stalled: return "stalled";
-    case SourceHealth::Failed: return "failed";
-    case SourceHealth::Idle: return "idle";
-  }
-  return "idle";
-}
 
 struct SourceDescriptor {
   std::string sourceId;   // canonical scheme:id == VideoFrame::participantId
@@ -85,6 +73,7 @@ class SourceBus {
     // Published so a reader can apply the 1.5 s on-air stall rule
     // (kOnAirStallNs) instead of the 200 ms diagnostic `health`.
     int64_t sinceLastNewFrameNs = -1;
+    std::optional<CaptureOnAirObservation> capture;
   };
 
   void add(std::shared_ptr<ISource> source) {
@@ -120,6 +109,7 @@ class SourceBus {
       if (!select(e.source->descriptor())) continue;
       SourceTick tick = e.source->poll(programTime100ns);
       const auto kind = e.source->descriptor().kind;
+      if (kind == "capture") recordCaptureObservation(*e.source, nowNs);
       for (auto& v : tick.video) {
         const bool isNew = !e.everProduced || v.frameId != e.counters.lastFrameId;
         if (isNew) {
@@ -141,7 +131,8 @@ class SourceBus {
     out.reserve(entries_.size());
     for (const auto& [id, e] : entries_) {
       out.push_back({e.source->descriptor(), e.counters, healthOf(e, nowNs),
-                     e.everProduced ? nowNs - e.counters.lastNewFrameNs : -1});
+                     e.everProduced ? nowNs - e.counters.lastNewFrameNs : -1,
+                     captureObservationFor(*e.source)});
     }
     return out;
   }
@@ -180,6 +171,7 @@ class SourceBus {
     SourceHealth health = SourceHealth::Idle;   // the 200ms diagnostic health
     int64_t sinceLastNewFrameNs = 0;            // 0 if never produced
     std::string_view kind;                      // descriptor().kind, e.g. "zoom"
+    std::optional<CaptureOnAirObservation> capture;
   };
   std::optional<OnAirStatus> onAirStatusFor(const std::string& sourceId, int64_t nowNs) const {
     auto it = entries_.find(sourceId);
@@ -189,10 +181,13 @@ class SourceBus {
     status.health = healthOf(e, nowNs);
     status.sinceLastNewFrameNs = e.everProduced ? (nowNs - e.counters.lastNewFrameNs) : 0;
     status.kind = e.source->descriptor().kind;
+    status.capture = captureObservationFor(*e.source);
     return status;
   }
 
  private:
+  static void recordCaptureObservation(ISource& source, int64_t nowNs);
+  static std::optional<CaptureOnAirObservation> captureObservationFor(const ISource& source);
   static constexpr int64_t kStaleAfterNs = 200'000'000;  // 200ms
   struct Entry {
     std::shared_ptr<ISource> source;
@@ -212,18 +207,5 @@ class SourceBus {
     return SourceHealth::Stalled;
   }
 };
-
-// #535 slice 4a (R1): the ON-AIR stall threshold, deliberately different from
-// SourceBus::kStaleAfterNs (200ms). 200ms is a fast DIAGNOSTIC signal (used
-// for sources[] / operator troubleshooting); an on-air CUT to black must
-// never fire on ordinary cadence noise — browser sources, WGC screen
-// capture, stills and paused clips legitimately re-serve the same frameId
-// for long stretches while perfectly healthy, and even a live Zoom guest on
-// a slow link or sharing a static screen can go well past 200ms between
-// real frames. 1.5s is long enough that only a genuinely dead Zoom feed
-// trips it, and it recovers on the very next new frame (lastNewFrameNs
-// advances the instant one arrives — no separate "recovered" state to get
-// wrong).
-inline constexpr int64_t kOnAirStallNs = 1'500'000'000;
 
 }  // namespace corevideo::core

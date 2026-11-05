@@ -35,6 +35,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly AudioCaptureDeviceDiscoveryService _audioCaptureDiscovery = new();
     private readonly AudioRenderDeviceDiscoveryService _audioRenderDiscovery = new();
     private readonly CaptureDeviceFrameReaderService _captureFrameReader = new();
+    private readonly CaptureBridgeLifecycle _captureBridge;
     private readonly VideoSurfaceCoordinator _surfaces = new();
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
     private readonly ZoomOAuthService _zoomOAuth;
@@ -1544,6 +1545,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         _startupBootstrap = startup;
         _bridge = startup.Bridge;
+        _captureBridge = new CaptureBridgeLifecycle(_captureFrameReader,
+            mapping => _bridge.RegisterCaptureShmAsync(mapping.DeviceId, mapping.ShmName, mapping.Width, mapping.Height),
+            id => _bridge.UnregisterCaptureShmAsync(id));
+        _captureFrameReader.ReaderLost += OnCaptureBridgeReaderLost;
         InitializeGuestAvSync();
         _outputPreferencesStore = startup.Store;
         Hls.PropertyChanged += (_, change) =>
@@ -1573,7 +1578,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // ShowInputsCoordinator. Construct it (with `this` as its IShowInputsHost) BEFORE the first
         // roster load/projection so the same-named forwarders route through it.
         _showInputsCoordinator = new global::CoreVideoPro.WinUI.ViewModels.ShowInputs.ShowInputsCoordinator(
-            _bridge, startup.StartInteractiveServices ? CreateShowInputRosterStore() : new InMemoryShowInputRosterStore(), this);
+            _bridge, startup.StartInteractiveServices ? CreateShowInputRosterStore() : new InMemoryShowInputRosterStore(), this,
+            id => _captureBridge.StopAsync(id, BridgeCaptureStopReason.OperatorDisconnect));
         _rtmpIngestCoordinator = new global::CoreVideoPro.WinUI.ViewModels.ShowInputs.RtmpIngestSourcesCoordinator(startup.StartInteractiveServices ? CreateRtmpIngestSourceStore() : new InMemoryRtmpIngestSourceStore());
         _rtmpIngestCoordinator.Changed += OnRtmpIngestSourcesChanged;
         LoadShowInputRoster();
@@ -7030,6 +7036,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var format = await _captureFrameReader.StartAsync(device).ConfigureAwait(false);
             RunOnUiThread(() =>
             {
+                if (!CaptureDeviceSharedMemoryWriter.IsCurrentSession(device.Id, format.SessionToken))
+                {
+                    return;
+                }
                 device.ConnectionState = CaptureConnectionState.Connected;
                 device.ApplyFormatTelemetry(format.Width, format.Height, format.Fps);
                 device.SignalPresent = false;
@@ -7041,6 +7051,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 RefreshMultiviewGridTiles();
                 CommandStatus = $"{device.Name} brought online as program source";
             });
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer lifecycle action already owns the device state.
         }
         catch (Exception ex)
         {
@@ -7115,13 +7129,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // MediaCapture bridge session for the same device so we never run two readers
             // against one device (the bridge reader would otherwise keep restarting — see
             // the OutputFormatNotSupported storm on 2026-07-10). No-op if none is running.
-            await _captureFrameReader.StopAsync(device.Id).ConfigureAwait(false);
-            // The stopped bridge session's shared-memory buffer must go with it. The core
-            // re-emits a registered buffer's last frame on every tick and lets it
-            // supersede any other frame for "capture:<id>", so a buffer left behind by an
-            // earlier bridge session froze this camera on its old frame while the native
-            // capture that just connected ran underneath it (#758).
-            ReleaseCaptureBridgeBuffer(device.Id);
+            await _captureBridge.StopAsync(device.Id, BridgeCaptureStopReason.NativeTakeover).ConfigureAwait(false);
 
             LaunchLog.Write(
                 $"capture: native uvc connected {device.Id} ({match.Width}x{match.Height}@{match.FrameRate}, core id {match.Id})");
@@ -7566,6 +7574,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void ApplyDiscoveredCaptureDevices(IReadOnlyList<CaptureDevice> discovered)
     {
         var priorById = CaptureDevices.ToDictionary(device => device.Id, device => device);
+        foreach (var vanished in BridgeCaptureStopPolicy.VanishedBridgedDeviceIds(
+            priorById.Keys, discovered.Select(device => device.Id), CaptureDeviceSharedMemoryWriter.TrackedDeviceIds()))
+        {
+            _ = _captureBridge.StopAsync(vanished, BridgeCaptureStopReason.DeviceRemoved);
+        }
         CaptureDevices.Clear();
         foreach (var device in discovered.Concat(CreateVirtualSrtIngestDevices()).Concat(
             CreateVirtualRtmpIngestDevices().Where(virtualDevice => discovered.All(found => found.Id != virtualDevice.Id))))
@@ -10356,34 +10369,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // memory the fresh core had no record of, and those cameras sat on the placeholder
     // tile forever. Core-side captures (screen/WGC) recovered on their own because the
     // new core re-enumerates them, which is why only SOME tiles stayed blank.
-    private void ReleaseCaptureBridgeBuffer(string deviceId)
-    {
-        if (!CaptureDeviceSharedMemoryWriter.Remove(deviceId))
-        {
-            return;
-        }
+    private void ReannounceCaptureShmToNewCore() => _captureBridge.ReannounceMappings();
 
-        // Fire-and-forget, like the registration: a failure here must not block the
-        // connect path. A respawned core never learns of the buffer at all, because
-        // ReannounceCaptureShmToNewCore only announces mappings that still exist.
-        _ = _bridge.UnregisterCaptureShmAsync(deviceId);
-    }
-
-    private void ReannounceCaptureShmToNewCore()
-    {
-        foreach (var mapping in CaptureDeviceSharedMemoryWriter.LiveMappings())
-        {
-            if (string.IsNullOrEmpty(mapping.ShmName))
-            {
-                continue;
-            }
-
-            // Fire-and-forget per device, mirroring OnCaptureDeviceFrameReceived: a
-            // failure here must never block the UI thread or the other devices.
-            _ = _bridge.RegisterCaptureShmAsync(
-                mapping.DeviceId, mapping.ShmName, mapping.Width, mapping.Height);
-        }
-    }
+    private void OnCaptureBridgeReaderLost(string deviceId, long token) =>
+        _ = _captureBridge.StopAsync(deviceId, BridgeCaptureStopReason.ReaderLost, token);
 
     private void OnBridgeHealthChanged(MediaCoreHealth health) =>
         RunOnUiThread(() => ApplyBridgeHealthChanged(health));
@@ -14864,6 +14853,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         try { await _graphicsSocialShutdown.WaitAsync(TimeSpan.FromMilliseconds(350)).ConfigureAwait(false); }
         catch (TimeoutException) { /* The native social card has a bounded lifetime. */ }
+        CaptureDeviceFrameRouter.FrameReceived -= OnCaptureDeviceFrameReceived;
+        _captureFrameReader.ReaderLost -= OnCaptureBridgeReaderLost;
+        _captureBridge.StopForShutdown();
         // App exit (T1.8): let the core exit on its own after stdin closes, then kill-tree.
         DisposeResource("media core stop", () => ForceShutdownMediaCore(ShutdownBudget.CoreExitGrace));
         // Measured, not assumed: the headroom the core's exit grace leaves inside ShutdownTimeout.
@@ -14932,10 +14924,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // Bridge every capture frame into the native core via shared memory (full
         // rate, independent of the throttled UI preview update) so the core
         // composites real capture pixels into the program frame / recording / stream.
-        var shm = CaptureDeviceSharedMemoryWriter.Write(frame.DeviceId, frame.Bgra, frame.Width, frame.Height);
-        if (shm.MappingChanged && !string.IsNullOrEmpty(shm.ShmName))
+        if (!_captureBridge.TryPublish(frame))
         {
-            _ = _bridge.RegisterCaptureShmAsync(frame.DeviceId, shm.ShmName, shm.Width, shm.Height);
+            return;
         }
 
         if (_surfaces.OnCaptureDeviceFrame(frame))
@@ -14946,6 +14937,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyCaptureDeviceFrameTelemetry(CaptureDeviceFrame frame)
     {
+        if (!CaptureDeviceSharedMemoryWriter.IsCurrentSession(frame.DeviceId, frame.BridgeSessionToken))
+        {
+            return;
+        }
+
         if (CaptureDevices.FirstOrDefault(device => string.Equals(device.Id, frame.DeviceId, StringComparison.Ordinal)) is { } device)
         {
             device.ApplyFrameTelemetry(frame.Width, frame.Height, frame.Fps);
