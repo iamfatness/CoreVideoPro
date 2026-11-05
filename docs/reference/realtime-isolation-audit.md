@@ -199,9 +199,10 @@ table: [the #1037 design](../superpowers/specs/2026-10-23-render-gather-engine-m
 | R9 | render | `zoomSnapshot()` for isolated-monitor tiles | Moved: pre-read speaker |
 | C1 | command | `syncSpine` (`zoom-media-spine-sync`) | Moved (#1048): engine half runs after coreMutex is released, same command thread, before the next command |
 | C2 | command | `snapshot()` (`zoom-snapshot`) | Moved (#1048): answered without coreMutex when an engine is configured |
-| C3 | command | `zoomSnapshot()` per ISO name at record start | Moved: tick roster cache |
+| C3 | command | ISO display-name lookup at record start | Reads one immutable name view published when the engine accepts a roster. A guest can join after the display pre-read and still get a friendly ISO name. Leave clears the view. |
 | C4 | command | `leave()` | Justified: operator rate, roster barrier |
 | C5 | command | `stopCapture()` | Justified: operator rate |
+| C6 | response assembly | Session and health Zoom observations | Copied once per response off coreMutex. Session roster, director, meeting state, readiness and nested health use the same observation. The session's subscription churn is still an independent diagnostic read. |
 
 **#1049 fetch order.** `COREVIDEO_RENDER_FRAME_FETCH=before-lock` is the
 default. `under-lock` restores the #1037 order and is the only remaining
@@ -223,6 +224,9 @@ that is late while its hold stays in budget logs under
 sync's lock-free engine half logs `[cmd] ... engine half lock-free Nms` at
 30 ms or more. The design doc's #1049
 addendum gives the format and the live acceptance procedure.
+Use `realtimeEvidence.zoomEngineForbiddenAcquisitions` in session snapshots to
+difference the process-lifetime guardrail total across the soak. The first
+violation also logs its scope; subsequent violations still increment the total.
 
 ## Integrated verification and delivery
 

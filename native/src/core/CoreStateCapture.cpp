@@ -4,6 +4,7 @@
 #include "core/AudioObservationFootprint.h"
 #include "core/DeliveryTrace.h"
 #include "modules/MonitorInputEvidence.h"
+#include "modules/EngineMutexGuardrail.h"
 #include "core/SystemMemoryPolicy.h"
 
 #include "compositor/CompositorLayout.h"
@@ -671,16 +672,19 @@ rpc::Json CoreStateCapture::assemble(SnapshotProjection kind) const {
   if (const auto* encoder = dynamic_cast<const modules::AsyncEncoderSink*>(modules_.encoder.get())) encoderEvidence_ = encoder->evidence();
   const AudioOutputObservation empty;
   const auto& observation = view_.payload ? view_.payload->value : empty;
-  if (kind == SnapshotProjection::Health) return health(observation);
   if (kind == SnapshotProjection::Profile) return profile(observation);
-  return sessionState();
+  // Assembly runs after the command releases coreMutex. All Zoom fields in
+  // this response share one roster revision, including the nested health view.
+  const auto engineCapture = zoomEngineConfigured() ? zoomEngineRuntime_->snapshot() : rpc::Json(nullptr);
+  if (kind == SnapshotProjection::Health) return health(observation, engineCapture);
+  return sessionState(engineCapture);
 }
 const AudioOutputObservation::BusTap& CoreStateCapture::audioBusTapPcm(const std::string& id) const {
   static const AudioOutputObservation::BusTap empty;
   const auto found = routedBusPcm_.find(id); return found == routedBusPcm_.end() ? empty : found->second;
 }
 std::string CoreStateCapture::normalizeIsoSourceId(const std::string& raw) { return MediaCore::normalizeIsoSourceId(raw); }
-rpc::Json CoreStateCapture::sessionState() const {
+rpc::Json CoreStateCapture::sessionState(const rpc::Json& engineCapture) const {
   // One immutable owner lease for every audio/output projection in this response.
   // Live readers never wait for DSP, device work or backend queries.
   const auto view = audioObservation();
@@ -761,7 +765,7 @@ rpc::Json CoreStateCapture::sessionState() const {
       {"virtualCamera", virtualCameraState()},
       {"captureDevices", captureDevicesState()},
       {"browserSources", browserSourcesState()},
-      {"health", health(observation)},
+      {"health", health(observation, engineCapture)},
       {"profile", profile(observation)},
       {"audioMixSession", audioMixSessionState(observation)},
       {"audioRoutingMatrix", audioRoutingMatrixState()},
@@ -771,7 +775,7 @@ rpc::Json CoreStateCapture::sessionState() const {
       {"overlayState", overlayState()},
       {"graphics", graphicsState_},
       {"mediaPlayback", mediaPlaybackState()},
-      {"autoProduction", autoProductionState()},
+      {"autoProduction", autoProductionState(engineCapture)},
       {"takeTransition", rpc::Json::Object{
           {"operationId", takeTransition_.operationId},
           {"revision", static_cast<double>(takeTransition_.revision)},
@@ -784,10 +788,10 @@ rpc::Json CoreStateCapture::sessionState() const {
               takeTransition_.waitingForColdMedia ? "warming" :
               takeTransition_.active ? "active" : "completed"},
       }},
-      {"meetingState", resolveMeetingStateForSession()},
+      {"meetingState", resolveMeetingStateForSession(engineCapture)},
       {"breakoutRoomId", breakoutRoomId_},
       {"breakoutRoomName", breakoutRoomName_},
-      {"zoom", rpc::Json::Object{{"readiness", zoomReadinessState()}, {"evidence", zoomEvidenceState()}}},
+      {"zoom", rpc::Json::Object{{"readiness", zoomReadinessState(engineCapture)}, {"evidence", zoomEvidenceState(engineCapture)}}},
   };
   state.emplace("audioObservation", audioObservationMetadata(view, audioMonitorControlEpoch_));
   state.emplace("appliedControlRevision", static_cast<double>(appliedControlRevision_));
@@ -909,6 +913,8 @@ rpc::Json CoreStateCapture::sessionState() const {
   state.emplace("gradePreview", GradePreviewController::diagnosticsFor(*modules_.compositor, gradeEditorCount_, gradeEventBytes_, gradeEventsRefused_));
   state.emplace("deliveryEvidence", core::deliveryEvidenceSnapshot());
   state.emplace("realtimeEvidence", rpc::Json::Object{
+      {"zoomEngineForbiddenAcquisitions", static_cast<double>(
+          modules::EngineMutexGuardrail::forbiddenAcquisitions().load(std::memory_order_relaxed))},
       {"resourceEventStaging", rpc::Json::Object{
           {"version", "resource-event-staging-v1"},
           {"items", double(resourceEventStaging_.items)}, {"ownedByteBound", double(resourceEventStaging_.bytes)},
@@ -1025,7 +1031,8 @@ rpc::Json CoreStateCapture::sessionState() const {
           {"completedTicks", static_cast<double>(videoOutputWorkerCompletedTicks_.load(std::memory_order_relaxed))},
           {"workTotalNs", static_cast<double>(videoOutputWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
           {"workMaximumNs", static_cast<double>(videoOutputWorkerWorkMaximumNs_.load(std::memory_order_relaxed))}}}});
-  const auto zoomCapture = zoomSnapshot();
+  const auto stubCapture = engineCapture.isNull() ? stubZoomSnapshot() : rpc::Json(nullptr);
+  const auto& zoomCapture = engineCapture.isNull() ? stubCapture : engineCapture;
   if (zoomCapture.get("participants")) {
     state.emplace("participants", *zoomCapture.get("participants"));
   }
@@ -1192,7 +1199,8 @@ rpc::Json CoreStateCapture::sessionState() const {
   return state;
 }
 
-rpc::Json CoreStateCapture::health(const AudioOutputObservation& observation) const {
+rpc::Json CoreStateCapture::health(const AudioOutputObservation& observation,
+                                   const rpc::Json& engineCapture) const {
   const auto& session = observation.encoder;
   rpc::Json::Array messages;
 #if COREVIDEO_STUB
@@ -1229,7 +1237,7 @@ rpc::Json CoreStateCapture::health(const AudioOutputObservation& observation) co
       {"programPixelSignature", static_cast<double>(lastProgramFrame_.programPixelSignature)},
       {"renderPlanSignature", static_cast<double>(lastProgramFrame_.renderPlanSignature)},
       {"captureDeviceCount", static_cast<double>(modules_.captureDevice->enumerate().size())},
-      {"zoom", rpc::Json::Object{{"readiness", zoomReadinessState()}, {"evidence", zoomEvidenceState()}}},
+      {"zoom", rpc::Json::Object{{"readiness", zoomReadinessState(engineCapture)}, {"evidence", zoomEvidenceState(engineCapture)}}},
       {"messages", messages},
   };
 }
@@ -2292,8 +2300,9 @@ rpc::Json CoreStateCapture::overlayState() const {
   };
 }
 
-rpc::Json CoreStateCapture::autoProductionState() const {
-  const auto recommendation = recommendAutoProduction();
+rpc::Json CoreStateCapture::autoProductionState(const rpc::Json& engineCapture) const {
+  const auto stubCapture = engineCapture.isNull() ? stubZoomSnapshot() : rpc::Json(nullptr);
+  const auto recommendation = recommendAutoProduction(engineCapture.isNull() ? stubCapture : engineCapture);
   rpc::Json::Array slotBindings;
   for (const auto& binding : recommendation.slotBindings) {
     slotBindings.emplace_back(rpc::Json::Object{
@@ -2426,9 +2435,8 @@ rpc::Json CoreStateCapture::zoomSubscriptionChurnState() const {
   };
 }
 
-std::string CoreStateCapture::resolveMeetingStateForSession() const {
-  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    const auto capture = zoomEngineRuntime_->snapshot();
+std::string CoreStateCapture::resolveMeetingStateForSession(const rpc::Json& capture) const {
+  if (!capture.isNull()) {
     const std::string meetingState = capture.getString("meetingState");
     if (meetingState == "in-meeting" || meetingState == "in_meeting") {
       return "in_meeting";
@@ -2441,9 +2449,8 @@ std::string CoreStateCapture::resolveMeetingStateForSession() const {
   return zoomJoined_ ? "in_meeting" : "idle";
 }
 
-rpc::Json CoreStateCapture::zoomReadinessState() const {
-  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    const auto capture = zoomEngineRuntime_->snapshot();
+rpc::Json CoreStateCapture::zoomReadinessState(const rpc::Json& capture) const {
+  if (!capture.isNull()) {
     const std::string meetingState = capture.getString("meetingState", "unknown");
     const std::string sdkVersion = capture.getString("sdkVersion", "external");
     return rpc::Json::Object{
@@ -2489,9 +2496,8 @@ rpc::Json CoreStateCapture::zoomReadinessState() const {
   };
 }
 
-rpc::Json CoreStateCapture::zoomEvidenceState() const {
-  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    const auto capture = zoomEngineRuntime_->snapshot();
+rpc::Json CoreStateCapture::zoomEvidenceState(const rpc::Json& capture) const {
+  if (!capture.isNull()) {
     const auto* participants = capture.get("participants");
     const auto participantCount = participants && participants->isArray() ? static_cast<int>(participants->asArray().size()) : 0;
     return rpc::Json::Object{
@@ -2599,12 +2605,12 @@ rpc::Json CoreStateCapture::audioMonitorControlState() const {
   };
 }
 
-DirectorRecommendation CoreStateCapture::recommendAutoProduction() const {
+DirectorRecommendation CoreStateCapture::recommendAutoProduction(const rpc::Json& capture) const {
   const auto nowMs = static_cast<std::uint64_t>(monotonicMs());
-  return recommendScene(deriveDirectorSignals(), speakerFloor_.snapshot(nowMs), nowMs);
+  return recommendScene(deriveDirectorSignals(capture), speakerFloor_.snapshot(nowMs), nowMs);
 }
 
-DirectorSignals CoreStateCapture::deriveDirectorSignals() const {
+DirectorSignals CoreStateCapture::deriveDirectorSignals(const rpc::Json& capture) const {
   // Derive the richer director signal bundle from the core's current state. This
   // mirrors the pure summarizers in src/engine/directorSignals.ts: we treat the
   // participants whose video is on as the "live" feeds the director reasons over,
@@ -2612,7 +2618,6 @@ DirectorSignals CoreStateCapture::deriveDirectorSignals() const {
   // the same roster the renderer would.
   DirectorSignals signals;
 
-  const auto capture = zoomSnapshot();
   const rpc::Json* participants = capture.get("participants");
   if (!participants || !participants->isArray()) {
     return signals;
@@ -2672,17 +2677,14 @@ DirectorSignals CoreStateCapture::deriveDirectorSignals() const {
   return signals;
 }
 
-rpc::Json CoreStateCapture::zoomSnapshot() const {
-  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    return zoomEngineRuntime_->snapshot();
-  }
-
+rpc::Json CoreStateCapture::stubZoomSnapshot() const {
+  const rpc::Json engineCapture(nullptr);
   ++zoomSnapshotTick_;
   if (!zoomJoined_) {
     return rpc::Json::Object{
         {"meetingState", "idle"},
-        {"readiness", zoomReadinessState()},
-        {"evidence", zoomEvidenceState()},
+        {"readiness", zoomReadinessState(engineCapture)},
+        {"evidence", zoomEvidenceState(engineCapture)},
         {"participants", rpc::Json::Array{}},
         {"tick", zoomSnapshotTick_},
     };
@@ -2716,8 +2718,8 @@ rpc::Json CoreStateCapture::zoomSnapshot() const {
       {"activeSpeakerId", speaker},
       {"screenShareParticipantId", shellScreenShareParticipantId_},
       {"caption", ""},
-      {"readiness", zoomReadinessState()},
-      {"evidence", zoomEvidenceState()},
+      {"readiness", zoomReadinessState(engineCapture)},
+      {"evidence", zoomEvidenceState(engineCapture)},
       {"tick", zoomSnapshotTick_},
       {"participants", std::move(participants)},
   };

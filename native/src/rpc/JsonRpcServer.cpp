@@ -1283,11 +1283,13 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           // a regression backstop above the 30ms [cmd] warning below.
           core::ScopedLockHoldTimer holdGuard("cmd.handle",
                                               core::LockHoldGuardrail::kCommandHandleBudgetUs, &commandDetail);
-          // #1048 gate: these two commands must not take the Zoom engine
-          // mutex while coreMutex is held (their engine work runs after the
-          // release, below). Any acquisition here is counted and logged once.
+          // #1048: spine sync defers its engine work and the read-only
+          // responses assemble after releasing coreMutex.
           std::optional<modules::ForbidEngineMutexScope> engineGate;
-          if (reqType == "zoom-media-spine-sync" || reqType == "zoom-snapshot") engineGate.emplace("cmd.handle");
+          if (reqType == "zoom-media-spine-sync" || reqType == "zoom-snapshot" ||
+              reqType == "snapshot" || reqType == "get-output-session" || reqType == "get-output-health") {
+            engineGate.emplace("cmd.handle");
+          }
           h0 = std::chrono::steady_clock::now();
           mediaCore_.setSnapshotDeferrer([&](std::unique_ptr<core::CoreStateCapture> value, core::SnapshotProjection kind) {
             capture = std::move(value); projection = kind; return Json(nullptr);

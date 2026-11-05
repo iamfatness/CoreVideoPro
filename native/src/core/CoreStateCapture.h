@@ -14,8 +14,8 @@ class CoreStateCapture {
   rpc::Json assemble(SnapshotProjection kind) const;
  private:
   ResourceEventStaging::Facts resourceEventStaging_;
-  rpc::Json sessionState() const;
-  rpc::Json health(const AudioOutputObservation& observation) const;
+  rpc::Json sessionState(const rpc::Json& engineCapture) const;
+  rpc::Json health(const AudioOutputObservation& observation, const rpc::Json& engineCapture) const;
   rpc::Json profile(const AudioOutputObservation& observation) const;
   rpc::Json audioMixSessionState(const AudioOutputObservation& observation) const;
   rpc::Json audioRoutingMatrixState() const;
@@ -25,22 +25,22 @@ class CoreStateCapture {
   rpc::Json captionTrackState() const;
   rpc::Json brandKitState() const;
   rpc::Json overlayState() const;
-  rpc::Json autoProductionState() const;
+  rpc::Json autoProductionState(const rpc::Json& engineCapture) const;
   rpc::Json mediaPlaybackState() const;
   rpc::Json takeRecordsState() const;
   rpc::Json zoomSubscriptionChurnState() const;
-  std::string resolveMeetingStateForSession() const;
-  rpc::Json zoomReadinessState() const;
-  rpc::Json zoomEvidenceState() const;
+  std::string resolveMeetingStateForSession(const rpc::Json& engineCapture) const;
+  rpc::Json zoomReadinessState(const rpc::Json& engineCapture) const;
+  rpc::Json zoomEvidenceState(const rpc::Json& engineCapture) const;
   rpc::Json browserSourcesState() const;
   rpc::Json captureDevicesState() const;
   rpc::Json virtualCameraState() const;
   std::vector<std::string> canonicalIsoSourceIds() const;
   rpc::Json masterMeterState(const AudioOutputObservation& observation) const;
   rpc::Json audioMonitorControlState() const;
-  DirectorRecommendation recommendAutoProduction() const;
-  DirectorSignals deriveDirectorSignals() const;
-  rpc::Json zoomSnapshot() const;
+  DirectorRecommendation recommendAutoProduction(const rpc::Json& capture) const;
+  DirectorSignals deriveDirectorSignals(const rpc::Json& capture) const;
+  rpc::Json stubZoomSnapshot() const;
   bool zoomJoinRequiresMissingEngine() const;
   contracts::OutputLifecycle evaluateSenderLifecycle(
     const modules::OutputSender& sender, bool desiredActive, int64_t nowMs) const;

@@ -71,6 +71,9 @@ class ZoomEngineRuntime {
   // follow-speaker route binding (#478 R2).
   [[nodiscard]] std::string directedSpeakerId();
   [[nodiscard]] std::vector<ZoomEngineParticipant> floorParticipants();
+  [[nodiscard]] std::shared_ptr<const ZoomParticipantDisplayNames> participantDisplayNames() const {
+    return state_.participantDisplayNames();
+  }
   // #1030: the meeting roster's SDK ids, or nullopt when no engine is
   // configured. Takes mutex_: call it OUTSIDE coreMutex (the audio worker reads
   // it before its gather, like pollCompositorAudioFrames).

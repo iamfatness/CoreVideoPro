@@ -2755,11 +2755,12 @@ void MediaCore::configureEncoderRecordingRequest() {
   // names files ISO-01-<SafeName>.mp4 (spec §5) instead of a per-meeting id.
   request.isoSources.clear();
   request.isoSources.reserve(recordingIsoParticipantIds_.size());
+  const auto zoomNames = zoomEngineConfigured() ? zoomEngineRuntime_->participantDisplayNames() : nullptr;
   for (const auto& rawId : recordingIsoParticipantIds_) {
     const std::string sourceId = normalizeIsoSourceId(rawId);
     // ISO-3: hasAudio is the capture audio-pairing decision — a pure-video
     // capture source gets a VIDEO-ONLY ISO (no all-silence AAC track).
-    request.isoSources.push_back({sourceId, resolveIsoDisplayName(sourceId), isoSourceHasAudio(sourceId)});
+    request.isoSources.push_back({sourceId, resolveIsoDisplayName(sourceId, zoomNames.get()), isoSourceHasAudio(sourceId)});
   }
   request.width = recordingOutputWidth_ > 0 ? recordingOutputWidth_ : (lastProgramFrame_.width > 0 ? lastProgramFrame_.width : outputWidth_);
   request.height = recordingOutputHeight_ > 0 ? recordingOutputHeight_ : (lastProgramFrame_.height > 0 ? lastProgramFrame_.height : outputHeight_);
@@ -2810,24 +2811,23 @@ std::string MediaCore::tilesMemberDisplayName(const std::string& sourceId) const
   return {};
 }
 
-std::string MediaCore::resolveIsoDisplayName(const std::string& sourceId) const {
+std::string MediaCore::resolveIsoDisplayName(
+    const std::string& sourceId, const modules::ZoomParticipantDisplayNames* zoomNames) const {
   // Strip the scheme to get the underlying id.
   const auto colon = sourceId.find(':');
   const std::string scheme = colon == std::string::npos ? "" : sourceId.substr(0, colon);
   const std::string bareId = colon == std::string::npos ? sourceId : sourceId.substr(colon + 1);
   if (scheme == "zoom" || scheme.empty()) {
-    if (renderEngineInputs_.engineConfigured && renderEngineInputs_.valid) {
-      // #1037 C3: the render tick's pre-read roster, never a full engine
-      // snapshot under coreMutex. Same fallback as rawCaptureSnapshotLocked
-      // for an empty name; a source not in the roster falls through to the
-      // bare id below, exactly as the snapshot lookup did.
-      for (const auto& participant : renderEngineInputs_.floorRoster) {
-        if (participant.id == 0 || std::to_string(participant.id) != bareId) continue;
-        return participant.displayName.empty() ? "Zoom User " + bareId : participant.displayName;
+    if (zoomEngineConfigured()) {
+      // Roster changes can precede the next display tick. Use one immutable
+      // name view for this recording request without taking the engine mutex.
+      if (zoomNames) {
+        const auto participant = zoomNames->find(bareId);
+        if (participant != zoomNames->end()) {
+          return participant->second.empty() ? "Zoom User " + bareId : participant->second;
+        }
       }
     } else {
-      // Cold path (engine configured but no render tick yet) and the stub:
-      // look the participant up in the snapshot roster (userId → displayName).
       const auto snapshot = zoomSnapshot();
       if (const rpc::Json* participants = snapshot.get("participants"); participants && participants->isArray()) {
         for (const auto& participant : participants->asArray()) {
