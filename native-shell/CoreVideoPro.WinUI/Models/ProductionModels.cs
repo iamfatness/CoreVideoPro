@@ -1063,6 +1063,11 @@ public static class ProductionStateHelper
     // capture:<id>) resolves to its persisted "on dropout" choice. Shared by
     // BuildFeedHealthRows (zoom rows) and StudioViewModel's capture-device
     // rows so the two never disagree on the default or the lookup shape.
+    public static bool SupportsDropoutPolicy(string? sourceId) =>
+        sourceId is not null &&
+        ((sourceId.StartsWith("zoom:", StringComparison.Ordinal) && sourceId.Length > "zoom:".Length) ||
+         (sourceId.StartsWith("capture:", StringComparison.Ordinal) && sourceId.Length > "capture:".Length));
+
     public static string ResolveSourceDropoutPolicy(
         string canonicalSourceId, IReadOnlyDictionary<string, string>? dropoutPolicies) =>
         dropoutPolicies is not null && dropoutPolicies.TryGetValue(canonicalSourceId, out var policy)
@@ -1133,15 +1138,8 @@ public static class ProductionStateHelper
                     string.Equals(item.Id, captureId, StringComparison.Ordinal))?.Name;
             }
 
-            // R2/round 2 (final review): a policy is Zoom-only this slice — a
-            // capture/media entry gets NO DropoutPolicy at all (null, not
-            // "hold"), so MediaCoreCommandBuilder omits the wire key entirely
-            // rather than sending a policy the core will refuse EVERY sync
-            // (that refusal re-fires because load-scene-graph clears warnings
-            // before the policy commands run, so it never stays cleared —
-            // programFrame.health would be permanently "degraded").
             string? policy = null;
-            if (isZoom)
+            if (SupportsDropoutPolicy(id))
             {
                 dropoutPolicies.TryGetValue(id, out var storedPolicy);
                 policy = storedPolicy ?? "hold";

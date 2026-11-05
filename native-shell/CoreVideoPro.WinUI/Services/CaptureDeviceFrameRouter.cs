@@ -3,6 +3,7 @@ namespace CoreVideoPro.WinUI.Services;
 public sealed class CaptureDeviceFrame
 {
     public required string DeviceId { get; init; }
+    public long BridgeSessionToken { get; init; }
     public required byte[] Bgra { get; init; }
     public required int Width { get; init; }
     public required int Height { get; init; }

@@ -67,7 +67,7 @@ internal sealed class OperatorSettingsProbe(string reportPath, bool streamDestin
             checks.Add("Settings health collapse and narrow window resize");
             Require(Descendants(page).OfType<ToggleSwitch>().Any(t => t.Name == "OhgShowOption" && !t.IsOn), "Optional OHG workspace control is missing or not off by default");
             checks.Add("Settings exposes the default-off optional OHG workspace control");
-            await CheckSourceOptions(window, checks);
+            await CheckSourceOptions(window, checks, Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
             await CheckSourcesLayout(window, checks,Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
             await CheckLowerThirdText(window, checks);
             await CheckAdjustmentControls(window,checks,Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
@@ -192,7 +192,7 @@ internal sealed class OperatorSettingsProbe(string reportPath, bool streamDestin
     }
     private static Task CheckSourcesLayout(Window window, List<string> checks,string reviewDirectory) =>
         SourcesWorkspaceIntegrationProbe.CheckAsync(window, checks, reviewDirectory);
-    private static async Task CheckSourceOptions(Window window, List<string> checks)
+    private static async Task CheckSourceOptions(Window window, List<string> checks, string directory)
     {
         var slot = new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.ZoomParticipant, ParticipantId = "synthetic-a" };
         var editor = new ShowInputSlotViewModel(slot, () => { });
@@ -212,7 +212,7 @@ internal sealed class OperatorSettingsProbe(string reportPath, bool streamDestin
         Require(writes.Count == 0, "Opening options wrote back initial selections");
         combos[0].SelectedValue = "reader";
         combos[1].SelectedValue = "hold";
-        Require(writes.SequenceEqual(new[] { "role:synthetic-a:reader", "policy:synthetic-a:hold" }), "Options did not target their original guest");
+        Require(writes.SequenceEqual(new[] { "role:synthetic-a:reader", "policy:zoom:synthetic-a:hold" }), "Options did not target their original guest");
         checks.Add("real source options preserve selections and write only explicit edits to the selected guest");
         slot.ParticipantId = "synthetic-b";
         combos[1].SelectedValue = "black";
@@ -233,6 +233,75 @@ internal sealed class OperatorSettingsProbe(string reportPath, bool streamDestin
         Require(writes.Count == 2 && !recycledCombos[1].IsEnabled, "Recycled row redirected an old flyout edit");
         recycled.Hide();
         checks.Add("unavailable guest retains saved policy; recycled container rejects stale edits even for the same participant");
+        slot.Kind = ShowInputKind.UvcWebcam;
+        slot.CaptureDeviceId = "synthetic-camera";
+        editor.RefreshSourceOptions([], [new CaptureDevice
+        {
+            Id = "synthetic-camera", NativeDeviceId = "synthetic-camera", Vendor = "uvc",
+            Name = "Review camera", Inputs = [], SelectedInputId = ""
+        }]);
+        owner.Tag = editor;
+        editor.ApplyCaptureDropout(new NativeMediaCoreSourceHealth
+        {
+            SourceId = "capture:synthetic-camera", Kind = "capture",
+            Liveness = "live", OnAir = "producing", DropoutPolicyApplies = true
+        });
+        var capture = SourcePolicyFlyout.Create(owner, editor, ProductionRoleService.AssignmentOptions,
+            policies, "", "black", false, (_, _) => writes.Add("unexpected-role"),
+            (id, value) => writes.Add($"policy:{id}:{value}"));
+        capture.ShowAt(owner);
+        var capturePanel = (StackPanel)capture.Content;
+        await Eventually(() => capturePanel.IsLoaded);
+        var captureCombos = capturePanel.Children.OfType<ComboBox>().ToArray();
+        Require(captureCombos[0].Visibility == Visibility.Collapsed && captureCombos[1].IsEnabled,
+            "Reported capture has incorrect role or policy controls");
+        Require(captureCombos[1].SelectedValue as string == "black", "Capture lost its saved policy");
+        captureCombos[1].SelectedValue = "hold";
+        Require(writes.Last() == "policy:capture:synthetic-camera:hold", "Capture edit lost its canonical identity");
+        capture.Hide();
+        await SaveSourceOptionsImage(window, owner, capture, directory, "capture-policy-reported.png");
+
+        editor.ApplyCaptureDropout(null);
+        var unknown = SourcePolicyFlyout.Create(owner, editor, ProductionRoleService.AssignmentOptions,
+            policies, "", "hold", false, (_, _) => writes.Add("unexpected-role"),
+            (_, _) => writes.Add("unexpected-policy"));
+        unknown.ShowAt(owner);
+        var unknownPanel = (StackPanel)unknown.Content;
+        await Eventually(() => unknownPanel.IsLoaded);
+        var unknownCombos = unknownPanel.Children.OfType<ComboBox>().ToArray();
+        Require(!unknownCombos[1].IsEnabled &&
+            unknownPanel.Children.OfType<TextBlock>().Any(text => text.Text == CaptureDropoutPresentation.UnavailableNotice),
+            "Unreported capture offers a working policy or hides the reason");
+        unknown.Hide();
+        await SaveSourceOptionsImage(window, owner, unknown, directory, "capture-policy-unreported.png");
+        checks.Add("reported capture edits use canonical identity; unreported capture disables policy with a reason");
+
+    }
+    private static async Task SaveSourceOptionsImage(Window window, Button owner, Flyout flyout, string directory, string name)
+    {
+        // RenderTargetBitmap does not reliably capture popup composition. Rehost
+        // the same compiled controls in the offscreen window for the review image.
+        var content = (StackPanel)flyout.Content;
+        flyout.Content = null;
+        var root = new Border
+        {
+            RequestedTheme = ElementTheme.Dark,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Black),
+            Padding = new Thickness(20), Width = 340,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Child = content
+        };
+        window.Content = root;
+        await Eventually(() => content.IsLoaded);
+        var policy = content.Children.OfType<ComboBox>().Last();
+        await Eventually(() => Descendants(policy).OfType<TextBlock>().Any(text =>
+            text.Text == ((RouteSelectOption)policy.SelectedItem).Label));
+        await ReviewImageWriter.SaveAsync(root, Path.Combine(directory, name));
+        root.Child = null;
+        flyout.Content = content;
+        window.Content = owner;
+        await Eventually(() => owner.IsLoaded);
     }
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {

@@ -355,6 +355,14 @@ public sealed class NativeMediaCoreSourceHealth
     /// the first frame, and on a core that predates the field (#1074 review). Compare against the
     /// 1.5 s on-air stall rule, not <see cref="Health"/>'s 200 ms diagnostic.</summary>
     public double? SinceLastNewFrameMs { get; init; }
+    public string Liveness { get; init; } = "";
+    public string OnAir { get; init; } = "";
+    public double? LastSampleAgeMs { get; init; }
+    public string LossReason { get; init; } = "";
+    public double? FailInMs { get; init; }
+    public bool DropoutPolicyApplies { get; init; }
+    public string DropoutPolicy { get; init; } = "hold";
+
 }
 
 public sealed class NativeMediaCoreOutputSenderSession

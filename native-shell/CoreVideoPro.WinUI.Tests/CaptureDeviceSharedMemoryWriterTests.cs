@@ -1,4 +1,5 @@
 using System;
+using System.IO.MemoryMappedFiles;
 using System.Linq;
 using CoreVideoPro.WinUI.Services;
 using Xunit;
@@ -30,16 +31,17 @@ public class CaptureDeviceSharedMemoryWriterTests
     public void Write_AnnouncesOnlyWhenTheMappingIsCreated()
     {
         var deviceId = DeviceId();
+        var token = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
 
-        var first = CaptureDeviceSharedMemoryWriter.Write(deviceId, Frame(64, 36), 64, 36);
+        var first = CaptureDeviceSharedMemoryWriter.Write(deviceId, token, Frame(64, 36), 64, 36);
         Assert.True(first.MappingChanged, "the first frame must announce a new buffer");
 
-        var second = CaptureDeviceSharedMemoryWriter.Write(deviceId, Frame(64, 36), 64, 36);
+        var second = CaptureDeviceSharedMemoryWriter.Write(deviceId, token, Frame(64, 36), 64, 36);
         Assert.False(second.MappingChanged);
 
         // This is the whole hazard in one assertion: a steady stream of frames NEVER
         // re-announces, so nothing here can tell a fresh core the buffer exists.
-        var third = CaptureDeviceSharedMemoryWriter.Write(deviceId, Frame(64, 36), 64, 36);
+        var third = CaptureDeviceSharedMemoryWriter.Write(deviceId, token, Frame(64, 36), 64, 36);
         Assert.False(third.MappingChanged);
     }
 
@@ -48,13 +50,15 @@ public class CaptureDeviceSharedMemoryWriterTests
     {
         var deviceA = DeviceId();
         var deviceB = DeviceId();
+        var tokenA = CaptureDeviceSharedMemoryWriter.BeginSession(deviceA);
+        var tokenB = CaptureDeviceSharedMemoryWriter.BeginSession(deviceB);
 
-        var a = CaptureDeviceSharedMemoryWriter.Write(deviceA, Frame(64, 36), 64, 36);
-        var b = CaptureDeviceSharedMemoryWriter.Write(deviceB, Frame(32, 18), 32, 18);
+        var a = CaptureDeviceSharedMemoryWriter.Write(deviceA, tokenA, Frame(64, 36), 64, 36);
+        var b = CaptureDeviceSharedMemoryWriter.Write(deviceB, tokenB, Frame(32, 18), 32, 18);
 
         // Steady-state frames — the state a core respawn actually interrupts.
-        CaptureDeviceSharedMemoryWriter.Write(deviceA, Frame(64, 36), 64, 36);
-        CaptureDeviceSharedMemoryWriter.Write(deviceB, Frame(32, 18), 32, 18);
+        CaptureDeviceSharedMemoryWriter.Write(deviceA, tokenA, Frame(64, 36), 64, 36);
+        CaptureDeviceSharedMemoryWriter.Write(deviceB, tokenB, Frame(32, 18), 32, 18);
 
         var live = CaptureDeviceSharedMemoryWriter.LiveMappings();
 
@@ -73,9 +77,10 @@ public class CaptureDeviceSharedMemoryWriterTests
     public void LiveMappings_TracksAResolutionChange()
     {
         var deviceId = DeviceId();
+        var token = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
 
-        CaptureDeviceSharedMemoryWriter.Write(deviceId, Frame(64, 36), 64, 36);
-        var resized = CaptureDeviceSharedMemoryWriter.Write(deviceId, Frame(96, 54), 96, 54);
+        CaptureDeviceSharedMemoryWriter.Write(deviceId, token, Frame(64, 36), 64, 36);
+        var resized = CaptureDeviceSharedMemoryWriter.Write(deviceId, token, Frame(96, 54), 96, 54);
         Assert.True(resized.MappingChanged, "a resolution change re-creates the buffer");
 
         // The re-announcement must carry the CURRENT name and dims — replaying a stale
@@ -95,54 +100,180 @@ public class CaptureDeviceSharedMemoryWriterTests
     public void Remove_DropsTheBufferSoItIsNeverReAnnounced()
     {
         var deviceId = DeviceId();
-        CaptureDeviceSharedMemoryWriter.Write(deviceId, Frame(64, 36), 64, 36);
+        var token = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+        CaptureDeviceSharedMemoryWriter.Write(deviceId, token, Frame(64, 36), 64, 36);
         Assert.Contains(CaptureDeviceSharedMemoryWriter.LiveMappings(), mapping => mapping.DeviceId == deviceId);
 
-        Assert.True(CaptureDeviceSharedMemoryWriter.Remove(deviceId), "a buffer existed, so the caller must unregister it with the core");
+        Assert.True(CaptureDeviceSharedMemoryWriter.Remove(deviceId, token), "a buffer existed, so the caller must unregister it with the core");
 
         Assert.DoesNotContain(CaptureDeviceSharedMemoryWriter.LiveMappings(), mapping => mapping.DeviceId == deviceId);
-        Assert.False(CaptureDeviceSharedMemoryWriter.Remove(deviceId), "nothing left to unregister");
+        Assert.False(CaptureDeviceSharedMemoryWriter.Remove(deviceId, token), "nothing left to unregister");
     }
 
     [Fact]
     public void Write_AfterRemove_AnnouncesAFreshBuffer()
     {
         var deviceId = DeviceId();
-        CaptureDeviceSharedMemoryWriter.Write(deviceId, Frame(64, 36), 64, 36);
-        CaptureDeviceSharedMemoryWriter.Remove(deviceId);
+        var token = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+        CaptureDeviceSharedMemoryWriter.Write(deviceId, token, Frame(64, 36), 64, 36);
+        CaptureDeviceSharedMemoryWriter.Retire(deviceId, token, CaptureBridgeSignal.Stopped);
+        CaptureDeviceSharedMemoryWriter.Remove(deviceId, token);
+        token = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
 
         // A later bridge session for the same device must register again, or the core
         // (which was told to let go) would never see its frames.
-        var restarted = CaptureDeviceSharedMemoryWriter.Write(deviceId, Frame(64, 36), 64, 36);
+        var restarted = CaptureDeviceSharedMemoryWriter.Write(deviceId, token, Frame(64, 36), 64, 36);
         Assert.True(restarted.MappingChanged);
-        CaptureDeviceSharedMemoryWriter.Remove(deviceId);
+        CaptureDeviceSharedMemoryWriter.Remove(deviceId, token);
     }
 
     [Fact]
-    public void TheReaderStopPathReleasesTheBridgeBuffer()
+    public void WritePublishesLiveAndRetirementChangesOnlyTheSignalWord()
     {
-        var code = ReadViewModel("StudioViewModel.cs");
-        var stop = code.IndexOf("await _captureFrameReader.StopAsync(device.Id)", StringComparison.Ordinal);
-        Assert.True(stop >= 0, "the bridge reader stop call moved; update this test");
-        var after = code.Substring(stop, 900);
-        Assert.Contains("ReleaseCaptureBridgeBuffer(device.Id);", after, StringComparison.Ordinal);
-        Assert.Contains("_bridge.UnregisterCaptureShmAsync(deviceId)", code, StringComparison.Ordinal);
-    }
-
-    private static string ReadViewModel(string fileName)
-    {
-        for (var directory = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
-             directory is not null;
-             directory = directory.Parent)
+        var deviceId = DeviceId();
+        var token = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+        try
         {
-            var candidate = System.IO.Path.Combine(
-                directory.FullName, "native-shell", "CoreVideoPro.WinUI", "ViewModels", fileName);
-            if (System.IO.File.Exists(candidate))
-            {
-                return System.IO.File.ReadAllText(candidate);
-            }
+            var pixels = Frame(64, 36);
+            pixels[0] = 91;
+            var write = CaptureDeviceSharedMemoryWriter.Write(deviceId, token, pixels, 64, 36);
+            using var file = MemoryMappedFile.OpenExisting(write.ShmName, MemoryMappedFileRights.Read);
+            using var view = file.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
+            var sequence = view.ReadUInt32(0);
+            Assert.Equal((uint)CaptureBridgeSignal.Live, view.ReadUInt32(12));
+            Assert.Equal(token, CaptureDeviceSharedMemoryWriter.Retire(deviceId, token, CaptureBridgeSignal.Lost)?.SessionToken);
+            Assert.Equal((uint)CaptureBridgeSignal.Lost, view.ReadUInt32(12));
+            Assert.Equal(sequence, view.ReadUInt32(0));
+            Assert.Equal((byte)91, view.ReadByte(16));
+            Assert.Null(CaptureDeviceSharedMemoryWriter.Write(deviceId, token, Frame(64, 36), 64, 36).ShmName);
         }
-
-        throw new System.IO.FileNotFoundException(fileName);
+        finally
+        {
+            CaptureDeviceSharedMemoryWriter.Remove(deviceId, token);
+        }
     }
+
+    [Fact]
+    public void OldSessionCannotWriteOrRemoveTheReplacementMapping()
+    {
+        var deviceId = DeviceId();
+        var first = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+        var prior = CaptureDeviceSharedMemoryWriter.Write(deviceId, first, Frame(64, 36), 64, 36);
+        CaptureDeviceSharedMemoryWriter.Retire(deviceId, first, CaptureBridgeSignal.Lost);
+        var replacement = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+        try
+        {
+            var next = CaptureDeviceSharedMemoryWriter.Write(deviceId, replacement, Frame(64, 36), 64, 36);
+            Assert.NotEqual(prior.ShmName, next.ShmName);
+            Assert.Null(CaptureDeviceSharedMemoryWriter.Write(deviceId, first, Frame(64, 36), 64, 36).ShmName);
+            Assert.False(CaptureDeviceSharedMemoryWriter.Remove(deviceId, first));
+            Assert.Equal(next.ShmName, CaptureDeviceSharedMemoryWriter.MappingFor(deviceId)?.ShmName);
+        }
+        finally
+        {
+            CaptureDeviceSharedMemoryWriter.Retire(deviceId, replacement, CaptureBridgeSignal.Stopped);
+            CaptureDeviceSharedMemoryWriter.Remove(deviceId, replacement);
+        }
+    }
+
+    [Fact]
+    public async Task DeliberateStopRemovesTheMappingAndUnregistersIt()
+    {
+        var deviceId = DeviceId();
+        var token = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+        var events = new List<string>();
+        using var reader = new CaptureDeviceFrameReaderService();
+        var bridge = new CaptureBridgeLifecycle(reader,
+            mapping => { events.Add("register:" + mapping.DeviceId); return Task.CompletedTask; },
+            id => { events.Add("unregister:" + id); return Task.CompletedTask; });
+        Assert.True(bridge.TryPublish(BridgeFrame(deviceId, token)));
+
+        await bridge.StopAsync(deviceId, BridgeCaptureStopReason.NativeTakeover);
+
+        Assert.Equal(new[] { "register:" + deviceId, "unregister:" + deviceId }, events);
+        Assert.Null(CaptureDeviceSharedMemoryWriter.MappingFor(deviceId));
+        Assert.False(bridge.TryPublish(BridgeFrame(deviceId, token)));
+    }
+
+    [Fact]
+    public async Task DelayedLossCannotUnregisterAReplacementSession()
+    {
+        var deviceId = DeviceId();
+        var first = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var events = new List<string>();
+        using var reader = new CaptureDeviceFrameReaderService();
+        var bridge = new CaptureBridgeLifecycle(reader,
+            mapping => { events.Add(mapping.ShmName); return Task.CompletedTask; },
+            id => { events.Add("unregister:" + id); return Task.CompletedTask; },
+            delay: _ => release.Task);
+        try
+        {
+            Assert.True(bridge.TryPublish(BridgeFrame(deviceId, first)));
+            var lost = bridge.StopAsync(deviceId, BridgeCaptureStopReason.ReaderLost, first);
+            Assert.False(lost.IsCompleted);
+            Assert.False(bridge.TryPublish(BridgeFrame(deviceId, first)));
+
+            var replacement = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+            Assert.True(bridge.TryPublish(BridgeFrame(deviceId, replacement)));
+            release.TrySetResult();
+            await lost;
+
+            Assert.Equal(2, events.Count);
+            Assert.NotEqual(events[0], events[1]);
+            Assert.Equal(events[1], CaptureDeviceSharedMemoryWriter.MappingFor(deviceId)?.ShmName);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await bridge.StopAsync(deviceId, BridgeCaptureStopReason.OperatorDisconnect);
+        }
+    }
+
+    [Fact]
+    public async Task InFlightRegistrationCannotLeaveAnUnregisterBehindItsSuccessor()
+    {
+        var deviceId = DeviceId();
+        var first = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var registrations = new List<string>();
+        var unregisters = new List<string>();
+        using var reader = new CaptureDeviceFrameReaderService();
+        var bridge = new CaptureBridgeLifecycle(reader,
+            mapping =>
+            {
+                registrations.Add(mapping.ShmName);
+                return registrations.Count == 1 ? release.Task : Task.CompletedTask;
+            },
+            id => { unregisters.Add(id); return Task.CompletedTask; });
+        try
+        {
+            Assert.True(bridge.TryPublish(BridgeFrame(deviceId, first)));
+            var stopping = bridge.StopAsync(deviceId, BridgeCaptureStopReason.OperatorDisconnect);
+            Assert.False(stopping.IsCompleted);
+            var replacement = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+            Assert.True(bridge.TryPublish(BridgeFrame(deviceId, replacement)));
+
+            release.TrySetResult();
+            await stopping;
+
+            Assert.Empty(unregisters);
+            Assert.Equal(CaptureDeviceSharedMemoryWriter.MappingFor(deviceId)?.ShmName, registrations.Last());
+        }
+        finally
+        {
+            release.TrySetResult();
+            await bridge.StopAsync(deviceId, BridgeCaptureStopReason.OperatorDisconnect);
+        }
+    }
+
+    private static CaptureDeviceFrame BridgeFrame(string deviceId, long token) => new()
+    {
+        DeviceId = deviceId,
+        BridgeSessionToken = token,
+        Bgra = Frame(64, 36),
+        Width = 64,
+        Height = 36,
+        FrameId = 1
+    };
 }

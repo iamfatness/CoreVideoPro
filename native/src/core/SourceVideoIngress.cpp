@@ -98,7 +98,7 @@ rpc::Json sourceHealthState(const std::vector<SourceBus::SourceStatus>& statuses
   {
     for (const auto& source : statuses) {
       const auto policy = policyFor(source.descriptor.sourceId);
-      sources.push_back(rpc::Json::Object{
+      rpc::Json::Object row{
           {"sourceId", source.descriptor.sourceId},
           {"kind", source.descriptor.kind},
           {"width", source.descriptor.width},
@@ -118,7 +118,19 @@ rpc::Json sourceHealthState(const std::vector<SourceBus::SourceStatus>& statuses
                : rpc::Json{static_cast<double>(source.sinceLastNewFrameNs / 1'000'000)}},
           {"dropoutPolicy", policy.dropoutPolicy},
           {"displayName", policy.displayName},
-      });
+      };
+      if (source.descriptor.kind == "capture") {
+        const auto& capture = source.capture;
+        row.emplace("liveness", capture ? captureLivenessName(capture->decision.phase) : "unreported");
+        row.emplace("onAir", sourceHealthName(capture ? capture->decision.health : SourceHealth::Producing));
+        row.emplace("lastSampleAgeMs", capture
+            ? rpc::Json(static_cast<double>(capture->lastSampleAgeNs) / 1'000'000.0) : rpc::Json(nullptr));
+        row.emplace("lossReason", capture ? captureLossReasonName(capture->reason) : "");
+        row.emplace("failInMs", capture && capture->decision.failInNs > 0
+            ? rpc::Json(static_cast<double>(capture->decision.failInNs) / 1'000'000.0) : rpc::Json(nullptr));
+        row.emplace("dropoutPolicyApplies", capture && capture->decision.policyApplies);
+      }
+      sources.emplace_back(std::move(row));
     }
   }
   return rpc::Json{sources};

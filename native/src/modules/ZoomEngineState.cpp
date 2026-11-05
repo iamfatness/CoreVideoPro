@@ -3,6 +3,7 @@
 #include "modules/ZoomJoinFailureMessage.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <utility>
 
@@ -104,6 +105,7 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
       auto previous = std::move(participants_);
       participants_.clear();
       screenShareParticipantId_ = 0;
+      auto names = std::make_shared<ZoomParticipantDisplayNames>();
       for (auto participant : event.participants) {
         const auto prior = previous.find(participant.id);
         if (prior != previous.end() &&
@@ -114,6 +116,9 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
           participant.sourceGeneration = ++nextSourceGeneration_;
         }
         participants_.emplace(participant.id, participant);
+        if (participant.id != 0) {
+          names->try_emplace(participantIdString(participant.id), participant.displayName);
+        }
         if (participant.isSharingScreen) {
           screenShareParticipantId_ = participant.id;
         }
@@ -129,6 +134,8 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
       }
       speakerDirector_.updateRoster(event.participants, rawSpeakerId, nowMs);
       activeSpeakerId_ = speakerDirector_.directedSpeakerId();
+      std::atomic_store_explicit(&participantDisplayNames_,
+          std::shared_ptr<const ZoomParticipantDisplayNames>(std::move(names)), std::memory_order_release);
       events_.emplace_back("Zoom roster updated.");
       break;
     }
@@ -287,11 +294,16 @@ void ZoomEngineRuntimeState::reset() {
   speakerDirector_.reset();
   screenShareParticipantId_ = 0;
   participants_.clear();
+  std::atomic_store_explicit(&participantDisplayNames_, {}, std::memory_order_release);
   meetingGeneration_ = 0;
   rosterRevision_ = 0;
   subscriptionStats_.clear();
   events_.clear();
   warnings_.clear();
+}
+
+std::shared_ptr<const ZoomParticipantDisplayNames> ZoomEngineRuntimeState::participantDisplayNames() const {
+  return std::atomic_load_explicit(&participantDisplayNames_, std::memory_order_acquire);
 }
 
 ZoomEngineRuntimeSnapshot ZoomEngineRuntimeState::snapshot() const {
