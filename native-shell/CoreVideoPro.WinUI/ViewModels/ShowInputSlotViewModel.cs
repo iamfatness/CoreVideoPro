@@ -1,3 +1,4 @@
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels.ShowInputs;
@@ -26,6 +27,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     private bool _suppressChangedCallback;
     private bool _isoEnabled;
     private bool _suppressIsoCallback;
+    private NativeMediaCoreSourceHealth? _captureDropout;
 
     public MultiviewInputRow Inspector { get; }
 
@@ -375,7 +377,33 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     /// dead controls.</summary>
     public bool IsAssigned => _slot.IsAssigned;
 
-    public bool ShowSourcePolicies => Kind == ShowInputKind.ZoomParticipant && !string.IsNullOrWhiteSpace(ParticipantId);
+    public bool ShowSourcePolicies =>
+        (Kind == ShowInputKind.ZoomParticipant && !string.IsNullOrWhiteSpace(ParticipantId)) ||
+        (SourceId?.StartsWith("capture:", StringComparison.Ordinal) == true);
+
+    private NativeMediaCoreSourceHealth? CaptureDropout =>
+        SourceId?.StartsWith("capture:", StringComparison.Ordinal) == true &&
+        string.Equals(_captureDropout?.SourceId, SourceId, StringComparison.Ordinal)
+            ? _captureDropout : null;
+    public bool CaptureDropoutPolicyApplies => CaptureDropout?.DropoutPolicyApplies == true;
+    public string CaptureDropoutStatusText => CaptureDropoutPresentation.Status(CaptureDropout);
+    public bool ShowCaptureDropoutStatus => !string.IsNullOrEmpty(CaptureDropoutStatusText);
+
+    public void ApplyCaptureDropout(NativeMediaCoreSourceHealth? source)
+    {
+        var previousApplies = CaptureDropoutPolicyApplies;
+        var previousText = CaptureDropoutStatusText;
+        _captureDropout = source;
+        if (previousApplies != CaptureDropoutPolicyApplies)
+        {
+            OnPropertyChanged(nameof(CaptureDropoutPolicyApplies));
+        }
+        if (!string.Equals(previousText, CaptureDropoutStatusText, StringComparison.Ordinal))
+        {
+            OnPropertyChanged(nameof(CaptureDropoutStatusText));
+            OnPropertyChanged(nameof(ShowCaptureDropoutStatus));
+        }
+    }
     public bool CanEditLowerThirdText => IsAssigned && Kind != ShowInputKind.Media;
 
     /// <summary>Editable display name for the assigned source. Defaults to the derived
@@ -503,6 +531,9 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(KindLabel));
         OnPropertyChanged(nameof(IsAssigned));
         OnPropertyChanged(nameof(ShowSourcePolicies));
+        OnPropertyChanged(nameof(CaptureDropoutPolicyApplies));
+        OnPropertyChanged(nameof(CaptureDropoutStatusText));
+        OnPropertyChanged(nameof(ShowCaptureDropoutStatus));
         OnPropertyChanged(nameof(CanEditLowerThirdText));
         OnPropertyChanged(nameof(AudioDeviceOptions));
         OnPropertyChanged(nameof(SelectedSourceId));
@@ -543,6 +574,9 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(RowOpacity));
         OnPropertyChanged(nameof(IsAssigned));
         OnPropertyChanged(nameof(ShowSourcePolicies));
+        OnPropertyChanged(nameof(CaptureDropoutPolicyApplies));
+        OnPropertyChanged(nameof(CaptureDropoutStatusText));
+        OnPropertyChanged(nameof(ShowCaptureDropoutStatus));
         OnPropertyChanged(nameof(CanEditLowerThirdText));
         OnPropertyChanged(nameof(ParticipantId));
         OnPropertyChanged(nameof(CaptureDeviceId));
