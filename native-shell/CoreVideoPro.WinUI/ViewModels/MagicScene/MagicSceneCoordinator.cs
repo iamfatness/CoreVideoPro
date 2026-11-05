@@ -61,8 +61,16 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     [ObservableProperty]
     private bool _automationAutoAssignInputsEnabled = true;
 
-    [ObservableProperty]
-    private bool _automationCaptionsEnabled = true;
+    public const string AutomaticCaptionsUnavailable =
+        "Automatic captions are unavailable: CoreVideo does not transcribe speech. Use explicit caption cues from a control client or the show engine.";
+
+    // Retain the legacy property for control-state compatibility, but never advertise
+    // an automatic caption source that does not exist (#1144).
+    public bool AutomationCaptionsEnabled
+    {
+        get => false;
+        set { if (value) _host.CommandStatus = AutomaticCaptionsUnavailable; }
+    }
 
     [ObservableProperty]
     private double _automationConfidenceThreshold = 70;
@@ -393,24 +401,11 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     {
         var changed = false;
         changed |= _host.SetAutomationGraphic("lower-third", AutomationLowerThirdsEnabled);
-        changed |= _host.SetAutomationGraphic("caption", AutomationCaptionsEnabled);
+        // Retire only the legacy automation-owned strip. Explicit caption cues and
+        // their text belong to the operator/show-engine, not scene automation.
+        changed |= _host.SetAutomationGraphic("caption", false);
 
         _host.RefreshProgramLowerThirdKeyPosition();
-
-        if (!AutomationCaptionsEnabled)
-        {
-            if (!string.IsNullOrEmpty(_host.CaptionText))
-            {
-                _host.CaptionText = string.Empty;
-                changed = true;
-            }
-
-            if (!string.IsNullOrEmpty(_host.CaptionSpeaker))
-            {
-                _host.CaptionSpeaker = string.Empty;
-                changed = true;
-            }
-        }
 
         if (changed)
         {
@@ -426,7 +421,6 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         AutomationPreferScreenShare = true;
         AutomationLowerThirdsEnabled = true;
         AutomationAutoAssignInputsEnabled = true;
-        AutomationCaptionsEnabled = true;
         AutomationConfidenceThreshold = 70;
         AutomationSwitchDelaySeconds = 4;
         AutomationPanelParticipantThreshold = 4;
@@ -474,8 +468,6 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         // Turning it on should immediately fill free slots from the current roster.
         _host.ReapplyShowInputAutoAssign();
     }
-
-    partial void OnAutomationCaptionsEnabledChanged(bool value) => OnAutomationPolicyChanged();
 
     partial void OnAutomationConfidenceThresholdChanged(double value)
     {

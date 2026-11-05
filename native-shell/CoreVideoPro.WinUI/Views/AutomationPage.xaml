@@ -170,9 +170,10 @@
                         </Grid.ColumnDefinitions>
                         <ToggleSwitch Header="Dynamic lower thirds"
                                       IsOn="{x:Bind ViewModel.AutomationLowerThirdsEnabled, Mode=TwoWay}" />
-                        <ToggleSwitch Grid.Column="1"
-                                      Header="Automation captions"
-                                      IsOn="{x:Bind ViewModel.AutomationCaptionsEnabled, Mode=TwoWay}" />
+                        <TextBlock Grid.Column="1"
+                                   Text="Auto mode does not generate captions."
+                                   TextWrapping="WrapWholeWords"
+                                   VerticalAlignment="Center" />
                     </Grid>
                     <TextBlock Text="{x:Bind ViewModel.AutomationScenePolicySummary, Mode=OneWay}"
                                FontSize="12"

@@ -696,8 +696,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 _vm.AutomationLowerThirdsEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
             case "automation.captions.set":
-                _vm.AutomationCaptionsEnabled = Bool(args, 0);
-                return ControlInvokeResult.Success;
+                return Bool(args, 0)
+                    ? ControlInvokeResult.Fail(CoreVideoPro.WinUI.ViewModels.MagicScene.MagicSceneCoordinator.AutomaticCaptionsUnavailable)
+                    : ControlInvokeResult.Success;
 
             // ---- Browser sources (BR-1) ----------------------------------------------
             case "browser.add":

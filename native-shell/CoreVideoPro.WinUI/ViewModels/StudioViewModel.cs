@@ -1264,7 +1264,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string AutomationOverlayPolicySummary =>
         $"{(AutomationLowerThirdsEnabled ? "Lower thirds on" : "Lower thirds off")} - " +
-        $"{(AutomationCaptionsEnabled ? "Captions on" : "Captions off")}";
+        "Captions controlled separately";
 
     public string AutomationTakeModeLabel => AutomationAutoTakeEnabled ? "Take to program" : "Queue on preview";
 

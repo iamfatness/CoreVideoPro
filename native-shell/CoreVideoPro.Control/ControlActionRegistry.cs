@@ -303,7 +303,7 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("on", b, true) }),
             new("automation.lowerThirds.set", "Auto lower-thirds", "Toggle automation lower-thirds.",
                 new[] { new ControlParam("on", b, true) }),
-            new("automation.captions.set", "Auto captions", "Toggle automation captions.",
+            new("automation.captions.set", "Auto captions (unavailable)", "Legacy compatibility: automatic captions are unavailable. Enabling is rejected; false is a no-op.",
                 new[] { new ControlParam("on", b, true) }),
 
             // ---- Browser sources (BR-1) ---------------------------------------------------
