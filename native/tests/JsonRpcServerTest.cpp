@@ -11,6 +11,8 @@
 #include <future>
 #include <latch>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 
 #include <gtest/gtest.h>
 
@@ -39,7 +41,41 @@ bool waitForLatch(Latch& latch, std::chrono::seconds bound = std::chrono::second
 TEST(JsonRpcServer, StalledResponseAssemblyDoesNotHoldRenderLockAndCapturesRemainOrdered) {
   // This injects response contention, not GPU cold-start latency. Use the same
   // deterministic compositor in production and stub build configurations.
-  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  class ProgramProgressCompositor final : public corevideo::modules::ICompositor {
+   public:
+    explicit ProgramProgressCompositor(std::unique_ptr<ICompositor> inner) : inner_(std::move(inner)) {}
+    std::string rendererName() const override { return inner_->rendererName(); }
+    corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+        const std::vector<corevideo::modules::VideoFrame>& frames) override {
+      auto result = inner_->render(plan, frames);
+      {
+        std::lock_guard lock(mutex_);
+        ++completed_;
+      }
+      changed_.notify_all();
+      return result;
+    }
+    uint64_t completedFrames() {
+      std::lock_guard lock(mutex_);
+      return completed_;
+    }
+    bool waitForFrames(uint64_t target) {
+      std::unique_lock lock(mutex_);
+      // A deadlock backstop, never a required frame rate for the CI host.
+      return changed_.wait_for(lock, std::chrono::seconds(30), [&] { return completed_ >= target; });
+    }
+
+   private:
+    std::unique_ptr<ICompositor> inner_;
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    uint64_t completed_ = 0;
+  };
+  auto modules = corevideo::modules::createStubModules();
+  auto progress = std::make_unique<ProgramProgressCompositor>(std::move(modules.compositor));
+  auto* observer = progress.get();
+  modules.compositor = std::move(progress);
+  corevideo::core::MediaCore core(std::move(modules));
   std::latch entered{1}, release{1};
   std::atomic<int> assemblies{0};
   corevideo::rpc::JsonRpcServer server(core, {}, [&](const corevideo::core::CoreStateCapture& capture,
@@ -53,9 +89,11 @@ TEST(JsonRpcServer, StalledResponseAssemblyDoesNotHoldRenderLockAndCapturesRemai
   if (!waitForLatch(entered)) { release.count_down(); run.get(); ASSERT_TRUE(false) << "response assembly was never reached"; }
   // Three commands saturate the executing/pending capture slots. Command three
   // waits for capacity without owning coreMutex; render must continue here.
-  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  const auto target = observer->completedFrames() + 6;
+  const bool progressed = observer->waitForFrames(target);
   release.count_down();
   run.get();
+  ASSERT_TRUE(progressed) << "Program stopped while response assembly was stalled";
   std::map<int, corevideo::rpc::Json> responses;
   std::istringstream lines(output.str()); std::string line;
   while (std::getline(lines, line)) {
