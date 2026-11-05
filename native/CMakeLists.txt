@@ -813,6 +813,7 @@ if(BUILD_TESTING)
     tests/VirtualCameraFrameTest.cpp
     tests/VirtualCameraDeliveryEvidenceTest.cpp
     tests/DeliveryCounterPatternTest.cpp
+    tests/CaptureLivenessPolicyTest.cpp
     tests/CaptureFrameWorkerTest.cpp
     tests/CaptureSessionLifecycleTest.cpp
     tests/D3DCaptureCpuBranchTest.cpp
