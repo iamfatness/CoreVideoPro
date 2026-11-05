@@ -39,12 +39,39 @@ inline void publishHeldCaptureFrame(SourceBus& bus, modules::VideoFrame frame) {
   }
 }
 
-inline void endHeldCaptureFrame(SourceBus& bus, const std::string& id) {
+inline void discardHeldCaptureFrame(SourceBus& bus, const std::string& id) {
   auto* source = dynamic_cast<CaptureDeviceSource*>(bus.sourceFor(id));
   if (!source) return;
   source->holdVideo(false);
   source->clearVideo();
   if (!source->descriptor().hasAudio) bus.remove(id);
+}
+
+inline void endHeldCaptureFrame(SourceBus& bus, const std::string& id) {
+  auto* source = dynamic_cast<CaptureDeviceSource*>(bus.sourceFor(id));
+  if (!source || source->tombstoneOrder() != 0) return;
+  source->holdVideo(false);
+  source->endVideo();
+  if (source->tombstoneOrder() == 0) {
+    if (!source->descriptor().hasAudio) bus.remove(id);
+    return;
+  }
+
+  // Keep a bounded record of recently lost sources without their pixels.
+  constexpr std::size_t kMaximumTombstones = 32;
+  std::size_t count = 0;
+  std::uint64_t oldestOrder = source->tombstoneOrder();
+  std::string oldestId = id;
+  for (const auto& sourceId : bus.sourceIds()) {
+    const auto* capture = dynamic_cast<const CaptureDeviceSource*>(bus.sourceFor(sourceId));
+    if (!capture || capture->tombstoneOrder() == 0) continue;
+    ++count;
+    if (capture->tombstoneOrder() < oldestOrder) {
+      oldestOrder = capture->tombstoneOrder();
+      oldestId = sourceId;
+    }
+  }
+  if (count > kMaximumTombstones) discardHeldCaptureFrame(bus, oldestId);
 }
 
 inline void syncCaptureSources(SourceBus& bus,
@@ -74,8 +101,7 @@ inline void syncCaptureSources(SourceBus& bus,
   for (const std::string& id : bus.sourceIds()) {
     auto* source = dynamic_cast<CaptureDeviceSource*>(bus.sourceFor(id));
     if (source && !source->videoHeld() && present.find(id) == present.end()) {
-      source->clearVideo();
-      if (!source->descriptor().hasAudio) bus.remove(id);
+      endHeldCaptureFrame(bus, id);
     }
   }
 }

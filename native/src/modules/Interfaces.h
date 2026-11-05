@@ -29,6 +29,21 @@ class CpuSourcePreparation;
 class CapturePresentationWindow;
 class ReadyCapturePublication;
 
+enum class CaptureLivenessState : uint8_t { Unreported, Live, Lost };
+
+enum class CaptureLossReason : uint8_t {
+  None, DeviceRemoved, DeviceInvalidated, StreamError, EndOfStream,
+  ReaderFailed, ShellReaderLost, ShellStopped
+};
+
+struct CaptureLiveness {
+  CaptureLivenessState state = CaptureLivenessState::Unreported;
+  bool cadenceTrusted = false;
+  int64_t lastSampleNs = 0;
+  int64_t lostAtNs = 0;
+  CaptureLossReason reason = CaptureLossReason::None;
+};
+
 struct VideoFrame {
   std::string participantId;
   int width = 0;
@@ -85,6 +100,7 @@ struct VideoFrame {
   uint64_t sourceEpoch = 0;
   uint64_t sourceGeneration = 0;  // Authoritative Zoom roster or source-bus video incarnation.
   int64_t captureTimestamp100ns = 0;
+  CaptureLiveness captureLiveness;
   [[nodiscard]] bool hasGpuPixels() const {
     return gpuPixels && gpuPixels->width > 0 && gpuPixels->height > 0;
   }

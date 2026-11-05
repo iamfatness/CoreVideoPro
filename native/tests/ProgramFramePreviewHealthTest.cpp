@@ -125,6 +125,15 @@ TEST(ProgramFramePreviewHealth, NoFrameFailedDrawsTheFailedSlate) {
   EXPECT_EQ(renderCentrePixel(plan, {}), corevideo::compositor::kFailedSlateRgba);
 }
 
+TEST(ProgramFramePreviewHealth, FailedCaptureDrawsSlateEvenWithAHeldFrame) {
+  constexpr uint32_t kGreen = 0xff00ff00u;
+  const auto frames = std::vector<corevideo::modules::VideoFrame>{makeSolidFrame("capture:a", kGreen)};
+  EXPECT_EQ(renderCentrePixel(makePlan(makeSourceLayer("failed", "hold")), frames),
+            corevideo::compositor::kFailedSlateRgba);
+  EXPECT_EQ(renderCentrePixel(makePlan(makeSourceLayer("failed", "black")), frames),
+            corevideo::compositor::kFailedSlateRgba);
+}
+
 // R4 (final review, #535 slice 4a): a source with NO content frame at all
 // that reads "stalled" (rather than "failed") draws the SAME failed slate —
 // an operator has never seen a picture from it either way, so "stalled with

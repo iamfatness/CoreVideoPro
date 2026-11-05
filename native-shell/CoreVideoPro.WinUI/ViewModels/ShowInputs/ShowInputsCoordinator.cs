@@ -31,6 +31,7 @@ public sealed class ShowInputsCoordinator
     private readonly IMediaCoreBridge _bridge;
     private readonly IShowInputRosterStore _showInputRosterStore;
     private readonly IShowInputsHost _host;
+    private readonly Func<string, Task>? _stopBridgeCapture;
     private readonly SourcePreviewDemandController _previewDemand;
     private bool _previewVisible;
     private bool _previewEngineAvailable = true;
@@ -41,11 +42,13 @@ public sealed class ShowInputsCoordinator
     private readonly object _multiviewTileGate = new();
     private IReadOnlyList<CoreVideoPro.MediaCore.Models.MultiviewTile>? _lastMultiviewTileRects;
 
-    public ShowInputsCoordinator(IMediaCoreBridge bridge, IShowInputRosterStore rosterStore, IShowInputsHost host)
+    public ShowInputsCoordinator(IMediaCoreBridge bridge, IShowInputRosterStore rosterStore, IShowInputsHost host,
+        Func<string, Task>? stopBridgeCapture = null)
     {
         _bridge = bridge;
         _showInputRosterStore = rosterStore;
         _host = host;
+        _stopBridgeCapture = stopBridgeCapture;
         _previewDemand = new SourcePreviewDemandController(enabled =>
             bridge is ISourcePreviewTransport transport
                 ? transport.SetSourcePreviewActiveAsync(enabled) : Task.CompletedTask);
@@ -54,6 +57,10 @@ public sealed class ShowInputsCoordinator
             action => { _host.RunOnUiThread(action); return true; }, snapshot =>
             {
                 MultiviewInputRows.ApplyRosterFact(snapshot);
+                foreach (var editor in ShowInputEditors)
+                {
+                    editor.ApplyCaptureDropout(snapshot.Sources.FirstOrDefault(source => source.SourceId == editor.SourceId));
+                }
                 foreach (var source in _host.SrtIngestSources)
                     source.ApplyRuntimeStatus(snapshot.CaptureDevices.FirstOrDefault(device => device.Id == source.DeviceId));
             });
@@ -85,6 +92,7 @@ public sealed class ShowInputsCoordinator
                 {
                     _previewEngineAvailable = false;
                     MultiviewInputRows.EngineStopped();
+                    foreach (var editor in ShowInputEditors) editor.ApplyCaptureDropout(null);
                     MultiviewInputRows.SetPreviewConsumerActive(false);
                     _ = _previewDemand.SetEngineAvailableAsync(false);
                 });
@@ -451,6 +459,11 @@ public sealed class ShowInputsCoordinator
         LaunchLog.Write(string.Format("lifecycle: take offline {0}", deviceId));
         try
         {
+            if (_stopBridgeCapture is not null)
+            {
+                await _stopBridgeCapture(deviceId).ConfigureAwait(false);
+            }
+
             var statuses = await _bridge.DisconnectNativeCaptureDeviceAsync(deviceId).ConfigureAwait(false);
             var match = statuses.FirstOrDefault(s => s.Id == deviceId);
             _host.RunOnUiThread(() =>
