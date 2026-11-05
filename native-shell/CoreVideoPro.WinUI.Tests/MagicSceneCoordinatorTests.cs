@@ -480,6 +480,33 @@ public sealed class MagicSceneCoordinatorTests
     }
 
     [Fact]
+    public void RejectedSameSceneTakePausesAndCanBeRetriedAfterOperatorResumes()
+    {
+        var (coordinator, host) = Build();
+        host.RoomVideoParticipantCount = 2;
+        host.CanTake = true;
+        host.FailTake = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Recommendation("intro", 90);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal("intro", host.ActiveSceneId);
+        Assert.Equal(ProductionMode.Manual, coordinator.ProductionMode);
+        Assert.Contains("test take rejected", coordinator.AutomationLastAction);
+        Assert.Equal(coordinator.AutomationLastAction, host.CommandStatus);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+
+        host.FailTake = false;
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(2, host.TakeAsyncCallCount);
+        Assert.Contains("taken by automation", coordinator.AutomationLastAction);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(2, host.TakeAsyncCallCount);
+    }
+
+    [Fact]
     public void AutomationCueSurvivesPreviewCallbackAndNestedReadoutRefresh()
     {
         var now = DateTimeOffset.UtcNow;
@@ -625,7 +652,7 @@ public sealed class MagicSceneCoordinatorTests
             set => CommandStatus = value;
         }
 
-        public async Task TakeAsync()
+        public async Task<CoreVideoPro.WinUI.ViewModels.Transport.TakeResult> TakeAsync()
         {
             TakeAsyncCallCount++;
             var target = PreviewSceneId;
@@ -636,6 +663,8 @@ public sealed class MagicSceneCoordinatorTests
                 await _pendingTake.Task;
             }
             if (!FailTake) ActiveSceneId = target;
+            return FailTake ? CoreVideoPro.WinUI.ViewModels.Transport.TakeResult.Failed("test take rejected")
+                : CoreVideoPro.WinUI.ViewModels.Transport.TakeResult.Success;
         }
 
         public async Task DrainTakeAsync()

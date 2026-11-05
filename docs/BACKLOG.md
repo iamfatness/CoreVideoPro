@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner-directed Auto completion, November 5 — [#1148](https://github.com/iamfatness/CoreVideoPro/issues/1148):** preserve Take failures for same-scene person changes. Follow with [#1149](https://github.com/iamfatness/CoreVideoPro/issues/1149) lifecycle recovery and the timing/rehearsal acceptance in #668. Owner requested completion of these remaining repairs.
+
 **Owner-directed Auto repair, November 5 — [#1146](https://github.com/iamfatness/CoreVideoPro/issues/1146):** keep native shot selection and bindings together, apply operator preferences inside the director, reset interrupted holds, and qualify actual Preview/Take outcomes. Preserve #668 guest identity/manual-control rules. Evidence and installed scenarios: [Auto director qualification](qa/auto-director-policy-2026-11-05.md). Caption defect #1144 remains separately scoped.
 
 **Owner-reported Auto defect, November 5 — [#1144](https://github.com/iamfatness/CoreVideoPro/issues/1144):** Auto creates an enabled caption strip without a transcription source. Remove unsupported enablement, reject legacy enable requests and preserve separately supplied caption cues. Broader Auto scene-choice quality remains a separate acceptance concern.
