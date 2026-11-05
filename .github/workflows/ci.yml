@@ -342,7 +342,11 @@ jobs:
           dotnet restore native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/provision-winui-test-runtime.ps1
+      - name: Build show engine for WinUI adapter conformance
+        run: npm run build:show-engine
       - name: MediaCore, Control, WinUI and bridge tests
+        env:
+          COREVIDEO_REQUIRE_OHG_CONFORMANCE: "1"
         run: npm run test:native-shell
       - name: WinUI meter lifetime and animation regression
         timeout-minutes: 5

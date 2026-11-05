@@ -117,8 +117,16 @@ public sealed partial class SourcesWorkspaceControl
             catch (Exception ex) when (ex is not OutOfMemoryException) { editors.Children.Add(Text(ex.Message, 12).Wrapped()); }
         };
         graphicsFields.Flyout = graphicsFlyout; panel.Children.Add(graphicsFields);
-        var options = Button("Guest role / dropout policy…", () => OpenSourceOptions(panel)); options.Name = "InspectorSourceOptions";
+        var options = Button("Source options…", () => OpenSourceOptions(panel)); options.Name = "InspectorSourceOptions";
         Bind(options, Microsoft.UI.Xaml.Controls.Control.IsEnabledProperty, State, "SelectedInput.ShowSourcePolicies"); Bind(options, FrameworkElement.TagProperty, State, "SelectedInput"); panel.Children.Add(options);
+        var dropoutStatus = Text("", 12).Wrapped();
+        Bind(dropoutStatus, TextBlock.TextProperty, State, "SelectedInput.CaptureDropoutStatusText");
+        dropoutStatus.SetBinding(UIElement.VisibilityProperty, new Binding
+        {
+            Source = State, Path = new PropertyPath("SelectedInput.ShowCaptureDropoutStatus"),
+            Converter = new Converters.BoolToVisibilityConverter()
+        });
+        panel.Children.Add(dropoutStatus);
         var unassign = Button("Unassign this input", () => { if (State.SelectedInput is { } input) Studio?.UnassignShowInputCommand.Execute(input); });
         Bind(unassign, Microsoft.UI.Xaml.Controls.Control.IsEnabledProperty, State, "SelectedInput.IsAssigned"); panel.Children.Add(unassign);
         return panel;
@@ -168,8 +176,8 @@ public sealed partial class SourcesWorkspaceControl
         var button = panel.Children.OfType<Button>().Single(b => b.Name == "InspectorSourceOptions");
         var row = studio.FeedHealthRows.FirstOrDefault(r => r.ParticipantId == input.ParticipantId);
         SourcePolicyFlyout.Create(button, input, studio.ProductionRoleAssignmentOptions, studio.DropoutPolicyOptions,
-            row?.ProductionRoleId ?? "", studio.SourceDropoutPolicy("zoom:" + input.ParticipantId), row is not null,
-            studio.SetParticipantProductionRole, (id, policy) => studio.SetSourceDropoutPolicy("zoom:" + id, policy)).ShowAt(button);
+            row?.ProductionRoleId ?? "", studio.SourceDropoutPolicy(input.SourceId ?? ""), row is not null,
+            studio.SetParticipantProductionRole, studio.SetSourceDropoutPolicy).ShowAt(button);
     }
 }
 

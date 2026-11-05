@@ -518,6 +518,10 @@ inline uint32_t slateColorFor(std::string_view sourceHealth) {
   return (sourceHealth == "failed" || sourceHealth == "stalled") ? kFailedSlateRgba : kWarmingSlateRgba;
 }
 
+inline bool suppressFrameFor(std::string_view health) {
+  return health == "failed";
+}
+
 inline bool blackOnStalled(std::string_view health, std::string_view policy) {
   return health == "stalled" && policy == "black";
 }

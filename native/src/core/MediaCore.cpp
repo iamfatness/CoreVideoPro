@@ -19,6 +19,7 @@
 #include "contracts/Lifecycle.h"
 #include "core/SourceAudioIngress.h"
 #include "core/SourceVideoIngress.h"
+#include "core/CaptureBusRoster.h"
 #include "core/AvSyncClapProbe.h"
 #include "core/ZoomBusRoster.h"
 #include "core/LockHoldGuardrail.h"
@@ -570,7 +571,13 @@ rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId,
 rpc::Json MediaCore::disconnectCaptureDevice(const std::string& deviceId) {
   ::corevideo::core::nativeLogf("[lifecycle] disconnect capture %s\n", deviceId.c_str());
   modules::ICaptureDeviceLifecycle& lifecycle = *modules_.captureDevice;
-  return captureDeviceArray(lifecycle.disconnect(deviceId));
+  auto devices = lifecycle.disconnect(deviceId);
+  const auto sourceId = deviceId.starts_with("capture:") ? deviceId : "capture:" + deviceId;
+  const auto* capture = dynamic_cast<const core::CaptureDeviceSource*>(sourceBus_->sourceFor(sourceId));
+  if (capture && capture->tombstoneOrder() != 0) {
+    core::discardHeldCaptureFrame(*sourceBus_, sourceId);
+  }
+  return captureDeviceArray(devices);
 }
 
 void MediaCore::registerCaptureShm(const std::string& deviceId, const std::string& shmName, int width, int height) {
@@ -1870,14 +1877,14 @@ void MediaCore::setSourcePolicy(const rpc::Json& command) {
   // does not know about yet (or intentionally leaves alone) must not clobber
   // state another sync already established.
   if (const rpc::Json* dropoutPolicy = command.get("dropoutPolicy"); dropoutPolicy && dropoutPolicy->isString()) {
-    if (!isZoom) {
+    if (!isZoom && !sourceId.starts_with("capture:")) {
       // loadSceneGraph clears sceneValidationWarnings_ (see its own clear()
       // call) — a set-source-policy that runs BEFORE the scene command in a
       // batch has this warning wiped by that clear. applyCommands runs
       // commands in the order given, so callers must put set-source-policy
       // AFTER load-scene-graph in the batch (as this file's own tests do).
       pushSceneWarningOnce(sceneValidationWarnings_,
-          "set-source-policy: only zoom:<pid> sources take a dropout policy this slice (" + sourceId + ")");
+          "set-source-policy: only zoom:<pid> and capture:<id> sources take a dropout policy (" + sourceId + ")");
     } else {
       const std::string policy = dropoutPolicy->asString();
       if (policy != "hold" && policy != "black") {
@@ -1908,16 +1915,12 @@ void MediaCore::annotateLayerSource(modules::CompositorRenderPlanLayer& layer,
   // sourceBus_ is constructed in the ctor and never reset (see its member
   // comment), so this is a single query, not two branches duplicating the
   // same frames-scan fallback.
-  // #535 slice 4a (R1): on-air "stalled" is Zoom-only and hysteretic (1.5s),
-  // deliberately different from the bus's 200ms diagnostic health. Capture,
-  // media and still sources can legitimately re-serve the same frameId for
-  // long stretches while healthy (a paused clip, a static screen share, a
-  // still image) — reading the 200ms diagnostic as an on-air cut would black
-  // those out while they are perfectly fine. Only a Zoom source with no new
-  // frame for >= kOnAirStallNs reads "stalled" here; everything else that the
-  // bus reports as present reads "producing" regardless of frame cadence.
+  // Zoom uses its established frame-age rule. Capture changes on-air
+  // health only when its adapter reports a liveness observation.
   const auto busStatus = sourceBus_ ? sourceBus_->onAirStatusFor(key, nowNs) : std::nullopt;
-  if (busStatus) {
+  if (busStatus && busStatus->capture) {
+    layer.sourceHealth = core::sourceHealthName(busStatus->capture->decision.health);
+  } else if (busStatus) {
     const bool zoomStalled = busStatus->kind == "zoom" && busStatus->sinceLastNewFrameNs >= core::kOnAirStallNs;
     layer.sourceHealth = zoomStalled ? core::sourceHealthName(core::SourceHealth::Stalled)
                                       : core::sourceHealthName(core::SourceHealth::Producing);
@@ -1929,7 +1932,11 @@ void MediaCore::annotateLayerSource(modules::CompositorRenderPlanLayer& layer,
     layer.sourceHealth.clear();
   }
   if (const auto it = sourcePolicies_.find(key); it != sourcePolicies_.end()) {
-    layer.dropoutPolicy = it->second.dropoutPolicy;
+    // Store capture policy before the adapter starts reporting. A legacy
+    // adapter continues to draw and report the existing hold behavior.
+    if (!key.starts_with("capture:") || (busStatus && busStatus->capture)) {
+      layer.dropoutPolicy = it->second.dropoutPolicy;
+    }
     layer.sourceDisplayName = it->second.displayName;
   }
 }
@@ -2755,11 +2762,12 @@ void MediaCore::configureEncoderRecordingRequest() {
   // names files ISO-01-<SafeName>.mp4 (spec §5) instead of a per-meeting id.
   request.isoSources.clear();
   request.isoSources.reserve(recordingIsoParticipantIds_.size());
+  const auto zoomNames = zoomEngineConfigured() ? zoomEngineRuntime_->participantDisplayNames() : nullptr;
   for (const auto& rawId : recordingIsoParticipantIds_) {
     const std::string sourceId = normalizeIsoSourceId(rawId);
     // ISO-3: hasAudio is the capture audio-pairing decision — a pure-video
     // capture source gets a VIDEO-ONLY ISO (no all-silence AAC track).
-    request.isoSources.push_back({sourceId, resolveIsoDisplayName(sourceId), isoSourceHasAudio(sourceId)});
+    request.isoSources.push_back({sourceId, resolveIsoDisplayName(sourceId, zoomNames.get()), isoSourceHasAudio(sourceId)});
   }
   request.width = recordingOutputWidth_ > 0 ? recordingOutputWidth_ : (lastProgramFrame_.width > 0 ? lastProgramFrame_.width : outputWidth_);
   request.height = recordingOutputHeight_ > 0 ? recordingOutputHeight_ : (lastProgramFrame_.height > 0 ? lastProgramFrame_.height : outputHeight_);
@@ -2810,24 +2818,23 @@ std::string MediaCore::tilesMemberDisplayName(const std::string& sourceId) const
   return {};
 }
 
-std::string MediaCore::resolveIsoDisplayName(const std::string& sourceId) const {
+std::string MediaCore::resolveIsoDisplayName(
+    const std::string& sourceId, const modules::ZoomParticipantDisplayNames* zoomNames) const {
   // Strip the scheme to get the underlying id.
   const auto colon = sourceId.find(':');
   const std::string scheme = colon == std::string::npos ? "" : sourceId.substr(0, colon);
   const std::string bareId = colon == std::string::npos ? sourceId : sourceId.substr(colon + 1);
   if (scheme == "zoom" || scheme.empty()) {
-    if (renderEngineInputs_.engineConfigured && renderEngineInputs_.valid) {
-      // #1037 C3: the render tick's pre-read roster, never a full engine
-      // snapshot under coreMutex. Same fallback as rawCaptureSnapshotLocked
-      // for an empty name; a source not in the roster falls through to the
-      // bare id below, exactly as the snapshot lookup did.
-      for (const auto& participant : renderEngineInputs_.floorRoster) {
-        if (participant.id == 0 || std::to_string(participant.id) != bareId) continue;
-        return participant.displayName.empty() ? "Zoom User " + bareId : participant.displayName;
+    if (zoomEngineConfigured()) {
+      // Roster changes can precede the next display tick. Use one immutable
+      // name view for this recording request without taking the engine mutex.
+      if (zoomNames) {
+        const auto participant = zoomNames->find(bareId);
+        if (participant != zoomNames->end()) {
+          return participant->second.empty() ? "Zoom User " + bareId : participant->second;
+        }
       }
     } else {
-      // Cold path (engine configured but no render tick yet) and the stub:
-      // look the participant up in the snapshot roster (userId → displayName).
       const auto snapshot = zoomSnapshot();
       if (const rpc::Json* participants = snapshot.get("participants"); participants && participants->isArray()) {
         for (const auto& participant : participants->asArray()) {

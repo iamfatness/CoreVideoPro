@@ -628,3 +628,28 @@ closes the MEDIA half of #449.
   The 750 ms release grace is REASONED, not measured against the real spine
   cadence. And only the MF adapter implements `mediaEnded()`, so the stub and
   macOS decoders fall back to the 6 s backstop.
+
+## Bridged camera liveness (#758)
+
+WinUI's MediaCapture bridge writes a 32-bit signal at byte 12 of the mapped
+frame header. A zero word remains compatible with older writers. A completed
+sample carries Live, and reader loss and deliberate stop have separate words.
+The preparation worker sees terminal signals even during an unfinished pixel
+write. A session token fences old callbacks and delayed mapping release after
+a reconnect.
+
+The capture adapter owns the sample and loss timestamps. One decision at
+source-bus ingest drives the render plan and the capture fields in `sources[]`.
+Trusted silence stalls after 1.5 seconds and fails after 5 seconds. Explicit loss
+holds for up to 2 seconds and respects the 5-second bound for trusted cadence.
+A failed layer uses the failed slate even if its adapter still has pixels. The
+black policy applies to Program during a stall. A reported source that ends
+leaves a bounded, pixel-free failure record until it reconnects or is cleared.
+
+The [capture dropout design](../superpowers/specs/2026-10-23-capture-dropout-policy-design.md)
+covers the native UVC path separately. The Sources inspector exposes the saved
+hold or black preference for capture sources. Its policy control is enabled when
+the core reports signal-loss support. An unreported source has a disabled
+control and a plain-language explanation. Status text uses the core's applied
+decision and ages, including the distinction between a held picture and Program
+black.

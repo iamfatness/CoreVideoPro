@@ -511,7 +511,8 @@ class MediaCore {
   // Resolve a canonical ISO source id to a human display name (Zoom userId →
   // roster displayName; `capture:<id>` → the capture device name, or a browser
   // source's URL host; ISO-3). Falls back to the bare id tail.
-  [[nodiscard]] std::string resolveIsoDisplayName(const std::string& sourceId) const;
+  [[nodiscard]] std::string resolveIsoDisplayName(
+      const std::string& sourceId, const modules::ZoomParticipantDisplayNames* zoomNames) const;
   // #1073: the name a Tiles member's name line shows. The shell's
   // set-source-policy displayName first (the Sources name, the same text the
   // failed slate and the scene lower third carry), then the render tick's

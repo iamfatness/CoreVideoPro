@@ -7,6 +7,26 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class CoreProtocolParserTests
 {
+    [Fact]
+    public void CaptureLivenessFieldsSurviveTheTypedSnapshotProjection()
+    {
+        using var response = JsonDocument.Parse("""
+            {"ok":true,"snapshot":{"sources":[{"sourceId":"capture:camera","kind":"capture",
+            "liveness":"lost","onAir":"stalled","lastSampleAgeMs":1500,"lossReason":"device-removed",
+            "failInMs":1000,"dropoutPolicyApplies":true,"dropoutPolicy":"black"}]}}
+            """);
+        var snapshot = CoreProtocolParser.TryParseSyncSnapshot(response);
+        Assert.NotNull(snapshot);
+        var camera = Assert.Single(snapshot.Sources);
+        Assert.Equal("lost", camera.Liveness);
+        Assert.Equal("stalled", camera.OnAir);
+        Assert.Equal(1500, camera.LastSampleAgeMs);
+        Assert.Equal(1000, camera.FailInMs);
+        Assert.Equal("device-removed", camera.LossReason);
+        Assert.True(camera.DropoutPolicyApplies);
+        Assert.Equal("black", camera.DropoutPolicy);
+    }
+
     [Theory]
     [InlineData("", 0UL)]
     [InlineData(", \"sourceEpoch\": 17", 17UL)]

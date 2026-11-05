@@ -112,48 +112,35 @@ public sealed class TelemetryConsentStoreTests : IDisposable
     }
 
     [Fact]
-    public void ConcurrentReadersNeverLoseTheWatermark()
+    public async Task ConcurrentStoreReadersSeeACompleteWatermark()
     {
         var store = new TelemetryConsentStore(Path_);
-        store.SetEnabled(true);
-        using var stop = new CancellationTokenSource();
-        var readers = Enumerable.Range(0, 2).Select(n => Task.Run(() =>
-        {
-            while (!stop.IsCancellationRequested)
-            {
-                // Raw reader that really holds the file (FileShare.Read blocks a
-                // replace); the store's own Load() would serialise on its gate.
-                try
-                {
-                    using (var held = new FileStream(Path_, FileMode.Open, FileAccess.Read, FileShare.Read))
-                    {
-                        Thread.Sleep(1);
-                    }
+        var readerA = new TelemetryConsentStore(Path_);
+        var readerB = new TelemetryConsentStore(Path_);
+        var previous = DateTimeOffset.UnixEpoch;
+        store.Save(new TelemetryConsentState { Enabled = true, LastSentUtc = previous });
 
-                    Thread.Sleep(4);
-                }
-                catch (IOException)
-                {
-                    // Momentarily replaced; try again.
-                }
-            }
-        })).ToArray();
+        for (var i = 0; i < 200; i++)
+        {
+            var next = previous.AddSeconds(1);
+            var write = Task.Run(() => store.MarkSent(next));
+            var readA = Task.Run(readerA.Load);
+            var readB = Task.Run(readerB.Load);
+            await Task.WhenAll(write, readA, readB);
 
-        try
-        {
-            for (var i = 0; i < 200; i++)
+            // A reader can win either side of the update, but it must see a
+            // complete state. The separate file-lock tests exercise raw handles.
+            foreach (var observed in new[] { await readA, await readB })
             {
-                var when = DateTimeOffset.UtcNow;
-                store.MarkSent(when);
-                var state = new TelemetryConsentStore(Path_).Load();
-                Assert.True(state.Enabled, $"iteration {i}: consent lost");
-                Assert.True(state.LastSentUtc >= when, $"iteration {i}: watermark lost");
+                Assert.True(observed.Enabled, $"iteration {i}: consent lost");
+                Assert.True(observed.LastSentUtc == previous || observed.LastSentUtc == next,
+                    $"iteration {i}: reader saw an invalid watermark {observed.LastSentUtc}");
             }
-        }
-        finally
-        {
-            stop.Cancel();
-            Task.WaitAll(readers);
+
+            var persisted = readerA.Load();
+            Assert.True(persisted.Enabled, $"iteration {i}: consent lost after write");
+            Assert.Equal(next, persisted.LastSentUtc);
+            previous = next;
         }
     }
 

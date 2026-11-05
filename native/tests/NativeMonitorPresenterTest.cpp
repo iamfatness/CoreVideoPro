@@ -8,6 +8,7 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 
 namespace {
@@ -86,10 +87,12 @@ struct MonitorRig {
     cv_monitor_snapshot(lease ? lease : owner, &result);
     return result;
   }
-  bool pixel(std::uint32_t value, void* lease = nullptr) {
+  bool pixel(std::uint32_t value, void* lease = nullptr, std::uint64_t minimumPresents = 1) {
+    // Reading stats observes the worker without driving presentation. The wait
+    // bounds a stalled worker; elapsed time does not determine the pass result.
     for (int i = 0; i < 200; ++i) {
       const auto result = stats(lease);
-      if (result.presents && result.pixelValid && result.pixel == value) return true;
+      if (result.presents >= minimumPresents && result.pixelValid && result.pixel == value) return true;
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return false;
@@ -112,13 +115,11 @@ TEST(NativeMonitorPresenter, ActualPixelsAdvanceWithoutControlPolling) {
   EXPECT_TRUE(rig.pixel(0xffff0000));
   const auto before = rig.stats().presents;
   rig.beginBlue();
-  std::this_thread::sleep_for(std::chrono::milliseconds(300)); // No control calls drive this interval.
-  EXPECT_TRUE(rig.stats().presents >= before + 8);
+  ASSERT_TRUE(rig.pixel(0xff0000ff, nullptr, before + 8));
   const auto observed = rig.stats();
   EXPECT_TRUE(observed.gaps >= 8);
   EXPECT_EQ(observed.gaps, observed.presents - 1);
   EXPECT_TRUE(observed.gapsOver50Ms <= observed.gapsOver33Ms && observed.gapsOver33Ms <= observed.gapsOver25Ms);
-  EXPECT_TRUE(rig.pixel(0xff0000ff));
 }
 TEST(NativeMonitorPresenter, SuspensionStopsAndResumeUsesActualLatestPixels) {
   MonitorRig rig; rig.publish(false); EXPECT_TRUE(rig.pixel(0xffff0000));
@@ -135,14 +136,16 @@ TEST(NativeMonitorPresenter, SuspensionStopsAndResumeUsesActualLatestPixels) {
 }
 TEST(NativeMonitorPresenter, RetiringOneAliasKeepsOtherAliasAndProducerAlive) {
   MonitorRig rig;
-  void* alias = rig.create(); EXPECT_TRUE(alias != nullptr);
-  rig.publish(false); EXPECT_TRUE(rig.pixel(0xffff0000)); EXPECT_TRUE(rig.pixel(0xffff0000, alias));
-  const auto before = rig.stats(alias).presents;
-  cv_monitor_release(rig.owner); rig.owner = nullptr;
-  rig.beginBlue(); std::this_thread::sleep_for(std::chrono::milliseconds(250));
-  EXPECT_TRUE(rig.stats(alias).presents >= before + 6);
-  EXPECT_TRUE(rig.pixel(0xff0000ff, alias));
-  cv_monitor_release(alias);
+  std::unique_ptr<void, decltype(&cv_monitor_release)> alias(rig.create(), cv_monitor_release);
+  ASSERT_TRUE(alias);
+  rig.publish(false);
+  ASSERT_TRUE(rig.pixel(0xffff0000));
+  ASSERT_TRUE(rig.pixel(0xffff0000, alias.get()));
+  const auto before = rig.stats(alias.get()).presents;
+  cv_monitor_release(rig.owner);
+  rig.owner = nullptr;
+  rig.beginBlue();
+  EXPECT_TRUE(rig.pixel(0xff0000ff, alias.get(), before + 6));
 }
 TEST(NativeMonitorPresenter, CrossDeviceResourceMixIsRefused) {
   MonitorRig rig;
