@@ -1247,54 +1247,15 @@ public static class ProductionStateHelper
         };
     }
 
-    /// <summary>
-    /// Prefer the deterministic native AI director recommendation (computed in the
-    /// C++ media core's Director kernel and surfaced in the snapshot). Falls back to
-    /// the count-only C# heuristic when the native recommendation is unavailable
-    /// (no meeting joined, native call not yet wired, or an empty payload).
-    /// </summary>
+    /// <summary>Only a native shot computed with the current operator policy may act.</summary>
     public static AutoProductionState BuildAutomationRecommendation(
         NativeMediaCoreAutoProduction? nativeRecommendation,
         IReadOnlyList<Participant> participants,
         IReadOnlyList<Scene> scenes,
         bool preferScreenShare = true,
-        int panelParticipantThreshold = 4)
-    {
-        // The native director has no shell policy inputs (its panel cutoff is
-        // fixed at three and screen sharing always wins). Keep its richer speaker
-        // decisions only when they agree with the operator's layout preferences.
-        var threshold = Math.Clamp(panelParticipantThreshold, 2, 10);
-        var nativeScene = nativeRecommendation?.RecommendedSceneId;
-        var conflictsWithPolicy =
-            (nativeScene == "speaker-slides" && !preferScreenShare) ||
-            (nativeScene == "panel" && participants.Count < threshold) ||
-            (nativeScene == "interview" && participants.Count >= threshold);
-        if (nativeRecommendation is not null &&
-            !string.IsNullOrWhiteSpace(nativeScene) &&
-            scenes.Any(scene => scene.Id == nativeScene) &&
-            !conflictsWithPolicy &&
-            participants.Count > 0)
-        {
-            return new AutoProductionState
-            {
-                RecommendedSceneId = nativeRecommendation.RecommendedSceneId,
-                Confidence = Math.Clamp(nativeRecommendation.Confidence, 0, 100),
-                Reason = string.IsNullOrWhiteSpace(nativeRecommendation.Rationale)
-                    ? "Native AI director recommendation."
-                    : nativeRecommendation.Rationale,
-                Action = ResolveNativeRecommendationAction(nativeRecommendation.RuleId),
-                SlotBindings = nativeRecommendation.SlotBindings
-            };
-        }
-
-        return BuildAutomationRecommendation(participants, scenes, preferScreenShare, panelParticipantThreshold);
-    }
-
-    private static string ResolveNativeRecommendationAction(string ruleId) => ruleId switch
-    {
-        "screen-share-priority" => "hold",
-        _ => "suggest"
-    };
+        int panelParticipantThreshold = 4) =>
+        NativeDirectorRecommendationPolicy.Resolve(nativeRecommendation, scenes,
+            preferScreenShare, panelParticipantThreshold);
 
     public static string BuildSceneIntelligenceSummary(
         IReadOnlyList<Participant> participants,

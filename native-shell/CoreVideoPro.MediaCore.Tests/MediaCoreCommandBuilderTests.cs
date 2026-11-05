@@ -24,6 +24,20 @@ public sealed class MediaCoreCommandBuilderTests
             command => Assert.False(command.ExtensionData?.ContainsKey("framerEnabled") ?? false));
     }
     [Fact]
+    public void OperatorDirectorPolicyIsSerializedInTheProductionBatch()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "intro",
+            DirectorPolicy = new() { PreferScreenShare = false, PanelGuestThreshold = 7 }
+        });
+        var command = Assert.Single(commands, command => command.Type == "set-director-policy");
+        using var json = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(command));
+        Assert.False(json.RootElement.GetProperty("preferScreenShare").GetBoolean());
+        Assert.Equal(7, json.RootElement.GetProperty("panelGuestThreshold").GetInt32());
+    }
+
+    [Fact]
     public void RecordingWriteDepthIsSentOnConfigureAndStart()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

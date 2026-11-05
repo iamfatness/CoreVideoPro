@@ -40,6 +40,83 @@ public sealed class MagicSceneCoordinatorTests
     }
 
     [Fact]
+    public void SerializedNativeShotWithCurrentPolicyCuesAndTakesTheIntendedGuests()
+    {
+        const string json = """{"recommendedSceneId":"interview","confidence":92,"rationale":"Two guests have the floor","policy":{"preferScreenShare":false,"panelGuestThreshold":4},"slotBindings":[{"slotIndex":0,"personId":"a","sourceId":"zoom:a"},{"slotIndex":1,"personId":"b","sourceId":"zoom:b"}]}""";
+        var native = System.Text.Json.JsonSerializer.Deserialize<NativeMediaCoreAutoProduction>(json,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 4;
+        host.CanTake = true;
+        coordinator.AutomationPreferScreenShare = false;
+        coordinator.Recommendation = ProductionStateHelper.BuildAutomationRecommendation(native,
+            Enumerable.Range(0, 4).Select(i => new Participant { Id = i.ToString() }).ToArray(), Scenes, false, 4);
+        coordinator.ToggleAutomationCommand.Execute(null);
+        Assert.Equal("intro", host.ActiveSceneId);
+        now = now.AddMilliseconds(1200);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal(new[] { "a", "b" }, host.PreviewBindings.Select(binding => binding.PersonId));
+        now = now.AddSeconds(4);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        Assert.Equal("interview", host.ActiveSceneId);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+    }
+
+    [Theory]
+    [InlineData("confidence")]
+    [InlineData("bindings")]
+    [InlineData("core")]
+    [InlineData("meeting")]
+    public void InterruptedPersonHoldMustEarnItsFullStabilityAgain(string interruption)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 2;
+        host.CanTake = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Recommendation("interview", 92);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddMilliseconds(1000);
+        if (interruption == "confidence") coordinator.Recommendation = Recommendation("interview", 0);
+        if (interruption == "bindings") coordinator.Recommendation = new AutoProductionState
+            { RecommendedSceneId = "interview", Confidence = 92, Reason = "no bindings", Action = "hold", SlotBindings = [] };
+        if (interruption == "core") host.IsMediaCoreRunning = false;
+        if (interruption == "meeting") host.IsInMeeting = false;
+        coordinator.EvaluateAutomationPolicy();
+        now = now.AddSeconds(20);
+        host.IsMediaCoreRunning = true;
+        host.IsInMeeting = true;
+        coordinator.Recommendation = Recommendation("interview", 92);
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(0, host.TakeAsyncCallCount);
+        Assert.Equal("intro", host.PreviewSceneId);
+        now = now.AddMilliseconds(1200);
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+    }
+
+    [Fact]
+    public void PolicyChangesRequestNativeSyncAndExplainTakeThreshold()
+    {
+        var (coordinator, host) = Build();
+        coordinator.AutomationPreferScreenShare = false;
+        Assert.Equal(1, host.SyncRequests);
+        Assert.False(coordinator.DirectorPolicy.PreferScreenShare);
+        coordinator.AutomationPanelParticipantThreshold = 7;
+        Assert.Equal(2, host.SyncRequests);
+        Assert.Equal(7, coordinator.DirectorPolicy.PanelGuestThreshold);
+        Assert.Contains("Take at 88%", coordinator.TimingSummary);
+        coordinator.AutomationConfidenceThreshold = 95;
+        Assert.Contains("Take at 95%", coordinator.TimingSummary);
+    }
+
+    [Fact]
     public void ProductionModeTransition_RunsPolicyEval_StartsAndStopsTimer()
     {
         var (coordinator, host) = Build();
@@ -601,7 +678,8 @@ public sealed class MagicSceneCoordinatorTests
 
         public void NotifyEnabledGraphicsChanged() { }
 
-        public void RequestMediaCoreSync() { }
+        public int SyncRequests { get; private set; }
+        public void RequestMediaCoreSync() => SyncRequests++;
 
         public void ReapplyShowInputAutoAssign() { }
 

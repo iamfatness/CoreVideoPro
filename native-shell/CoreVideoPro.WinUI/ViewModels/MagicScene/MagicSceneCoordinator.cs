@@ -99,6 +99,15 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         _timer = host.CreateAutomationTimer(EvaluateAutomationPolicy);
     }
 
+    public CoreVideoPro.MediaCore.Models.NativeDirectorPolicy DirectorPolicy => new()
+    {
+        PreferScreenShare = AutomationPreferScreenShare,
+        PanelGuestThreshold = (int)Math.Round(AutomationPanelParticipantThreshold)
+    };
+
+    public string TimingSummary =>
+        $"Preview at {AutomationConfidenceThreshold:0}% confidence; automatic Take at {Math.Max(88, AutomationConfidenceThreshold):0}% after person stability plus {AutomationSwitchDelaySeconds:0.#}s scene hold (share enter 2.5s / exit 3.5s).";
+
     private string RecommendedSceneName =>
         ProductionStateHelper.RecommendedSceneName(_host.Scenes, Recommendation.RecommendedSceneId);
 
@@ -228,16 +237,14 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
 
         if (!_host.IsInMeeting || _host.RoomVideoParticipantCount == 0)
         {
-            _pendingSceneId = null;
-            _pendingSince = null;
+            ResetPendingCandidate();
             AutomationLastAction = "Waiting for meeting participants";
             return;
         }
 
         if (!_host.IsMediaCoreRunning)
         {
-            _pendingSceneId = null;
-            _pendingSince = null;
+            ResetPendingCandidate();
             AutomationLastAction = "Waiting for media core before changing scenes";
             return;
         }
@@ -250,22 +257,22 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
 
         if (Recommendation.Confidence <= 0 || Recommendation.Confidence < AutomationConfidenceThreshold)
         {
-            _pendingSceneId = null;
-            _pendingSince = null;
-            AutomationLastAction = $"Holding current scene - confidence {Recommendation.Confidence}% is below {AutomationConfidenceThreshold:0}%";
+            ResetPendingCandidate();
+            AutomationLastAction = Recommendation.Confidence <= 0 ? Recommendation.Reason
+                : $"Holding current scene - confidence {Recommendation.Confidence}% is below {AutomationConfidenceThreshold:0}%";
             return;
         }
 
         var targetSceneId = Recommendation.RecommendedSceneId;
         if (!_host.Scenes.Any(scene => scene.Id == targetSceneId))
         {
-            _pendingSceneId = null;
-            _pendingSince = null;
+            ResetPendingCandidate();
             AutomationLastAction = "Recommended scene is no longer available";
             return;
         }
         if (Recommendation.SlotBindings.Count == 0)
         {
+            ResetPendingCandidate();
             AutomationLastAction = $"Holding Program: no source to bind on Preview. {Recommendation.Reason}";
             return;
         }
@@ -349,7 +356,9 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         }
         else
         {
-            AutomationLastAction = $"{RecommendedSceneName} queued on preview";
+            AutomationLastAction = AutomationAutoTakeEnabled
+                ? $"{RecommendedSceneName} queued on preview; confidence {Recommendation.Confidence}% is below the 88% automatic Take minimum"
+                : $"{RecommendedSceneName} queued on preview; Auto-take is off";
             _host.CommandStatus = AutomationLastAction;
         }
     }
@@ -357,8 +366,13 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     private async Task TakeAutomationPreviewAsync(string targetSceneId,
         IReadOnlyList<CoreVideoPro.MediaCore.Models.NativeDirectorSlotBinding> takenBindings)
     {
-        if (_takeInFlight || !string.Equals(_host.PreviewSceneId, targetSceneId, StringComparison.Ordinal) || !_host.CanTake)
+        if (_takeInFlight || !string.Equals(_host.PreviewSceneId, targetSceneId, StringComparison.Ordinal))
         {
+            return;
+        }
+        if (!_host.CanTake)
+        {
+            AutomationLastAction = $"Holding Program: {RecommendedSceneName} is queued but Take is not ready";
             return;
         }
 
@@ -505,6 +519,15 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         OnAutomationPolicyChanged();
     }
 
+    private void ResetPendingCandidate()
+    {
+        _pendingSceneId = null;
+        _pendingBindingKey = null;
+        _pendingBindingsApplied = false;
+        _pendingSince = null;
+        _bindingHold.Reset();
+    }
+
     private void OnAutomationPolicyChanged()
     {
         _overlayPolicyDirty = true;
@@ -512,6 +535,8 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         _pendingBindingKey = null;
         _pendingBindingsApplied = false;
         _pendingSince = null;
+        _bindingHold.Reset();
+        _host.RequestMediaCoreSync();
         _host.NotifyAutomationPolicySummaries();
         _host.RefreshProgramLowerThirdKeyPosition();
         _host.RefreshProductionReadouts();

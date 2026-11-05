@@ -64,26 +64,68 @@ public sealed class AutomationPolicyTests
     }
 
     [Theory]
-    [InlineData("speaker-slides", false, 4, 2, "interview")]
-    [InlineData("panel", true, 4, 3, "interview")]
-    [InlineData("interview", true, 2, 2, "panel")]
-    [InlineData("intro", true, 4, 5, "intro")]
-    public void NativeRecommendationHonorsOperatorPolicyWithoutLosingDominantSpeakerDecision(
-        string nativeScene, bool preferShare, int threshold, int count, string expected)
+    [InlineData("panel", 3, 3, 3)]
+    [InlineData("interview", 4, 3, 2)]
+    [InlineData("interview", 2, 5, 2)]
+    [InlineData("intro", 4, 5, 1)]
+    public void NativeShotAndBindingsStayTogetherRegardlessOfRawRosterCount(
+        string scene, int threshold, int count, int slots)
     {
         var native = new NativeMediaCoreAutoProduction
         {
-            RecommendedSceneId = nativeScene,
-            Confidence = 95,
-            RuleId = nativeScene == "intro" ? "single-speaker" : "test",
-            Rationale = "native recommendation"
+            RecommendedSceneId = scene, Confidence = 95, Rationale = "native floor",
+            Policy = new() { PreferScreenShare = false, PanelGuestThreshold = threshold },
+            SlotBindings = Enumerable.Range(0, slots).Select(i => new NativeDirectorSlotBinding
+                { SlotIndex = i, PersonId = $"guest-{i}", SourceId = $"zoom:guest-{i}" }).ToArray()
         };
-        var participants = Enumerable.Range(0, count)
-            .Select(i => Participant(i.ToString(), nativeScene == "speaker-slides" && i == 0)).ToArray();
-        var recommendation = ProductionStateHelper.BuildAutomationRecommendation(
-            native, participants, Scenes, preferShare, threshold);
-        Assert.Equal(expected, recommendation.RecommendedSceneId);
-        if (nativeScene == "intro") Assert.Equal(95, recommendation.Confidence);
+        var result = ProductionStateHelper.BuildAutomationRecommendation(native,
+            Enumerable.Range(0, count).Select(i => Participant(i.ToString())).ToArray(),
+            Scenes, false, threshold);
+        Assert.Equal(scene, result.RecommendedSceneId);
+        Assert.Equal(95, result.Confidence);
+        Assert.Equal(Enumerable.Range(0, slots).Select(i => $"guest-{i}"),
+            result.SlotBindings.Select(binding => binding.PersonId));
+    }
+
+    [Theory]
+    [InlineData(true, 4)]
+    [InlineData(false, 3)]
+    public void StalePolicyCannotProduceAnActionableFallback(bool preferShare, int threshold)
+    {
+        var native = new NativeMediaCoreAutoProduction
+        {
+            RecommendedSceneId = "interview", Confidence = 95,
+            Policy = new() { PreferScreenShare = false, PanelGuestThreshold = 4 },
+            SlotBindings = [new() { SlotIndex = 0, PersonId = "a", SourceId = "zoom:a" },
+                            new() { SlotIndex = 1, PersonId = "b", SourceId = "zoom:b" }]
+        };
+        var result = ProductionStateHelper.BuildAutomationRecommendation(native,
+            [Participant("a"), Participant("b")], Scenes, preferShare, threshold);
+        Assert.Equal(0, result.Confidence);
+        Assert.Empty(result.SlotBindings);
+        Assert.Contains("apply your settings", result.Reason);
+    }
+
+    [Fact]
+    public void MissingNativePolicyAndDuplicatePeopleAreExplicitHolds()
+    {
+        var missing = ProductionStateHelper.BuildAutomationRecommendation(null,
+            [Participant("a"), Participant("b")], Scenes);
+        Assert.Equal(0, missing.Confidence);
+        Assert.Contains("waiting for the native director", missing.Reason);
+        var native = new NativeMediaCoreAutoProduction
+        {
+            RecommendedSceneId = "interview", Confidence = 95,
+            SlotBindings = [new() { SlotIndex = 0, PersonId = "a", SourceId = "zoom:a" },
+                            new() { SlotIndex = 1, PersonId = "a", SourceId = "capture:a" }]
+        };
+        var unqualified = NativeDirectorRecommendationPolicy.Resolve(native, Scenes, true, 4);
+        Assert.Equal(0, unqualified.Confidence);
+        Assert.Contains("does not report operator policy", unqualified.Reason);
+        var duplicate = NativeDirectorRecommendationPolicy.Resolve(native with { Policy = new() }, Scenes, true, 4);
+        Assert.Equal(0, duplicate.Confidence);
+        Assert.Empty(duplicate.SlotBindings);
+        Assert.Contains("duplicate", duplicate.Reason);
     }
 
     private static Participant Participant(string id, bool isScreenSharing = false) => new()

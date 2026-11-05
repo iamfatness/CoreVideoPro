@@ -182,6 +182,7 @@ class CoreStateCapture {
   decltype(MediaCore::shellZoomRoster_) shellZoomRoster_;
   decltype(MediaCore::sourcePolicies_) sourcePolicies_;
   decltype(MediaCore::speakerFloor_) speakerFloor_;
+  DirectorPolicy directorPolicy_;
   decltype(MediaCore::takeRecords_) takeRecords_;
   decltype(MediaCore::takeTransition_) takeTransition_;
   decltype(MediaCore::tilesLayer_) tilesLayer_;

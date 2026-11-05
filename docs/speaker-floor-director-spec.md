@@ -128,6 +128,28 @@ stabilizer already holds; do not mint a parallel rule vocabulary.
 
 ## Scene selection
 
+### Operator policy amendment — November 5, #1146
+
+The native director owns both the scene choice and its person bindings. The shell
+sends `set-director-policy` with `preferScreenShare` and `panelGuestThreshold`
+(integer 2–10, default 4). The threshold counts distinct non-host guests with video,
+not raw roster members; it makes a panel eligible, not mandatory. Speaking-history
+requirements still apply. The five-guest single-scored-speaker gallery rule uses
+the greater of five and the configured threshold. Share preference off evaluates
+the same guest floor without the share-priority branch.
+
+The snapshot's `autoProduction.policy` reports the policy used for that exact
+recommendation. The shell waits for it to match current intent. Missing policy,
+missing bindings or an unavailable scene produces a named hold with confidence
+zero. It must never replace a bound shot with a count-only, unbound suggestion.
+The historical fixed gallery counts below describe the original kernel, superseded
+by this eligibility setting. Host exclusion and talk-history selection remain.
+
+The existing 88% automatic-Take minimum and additional person/scene holds stay in
+force and are explained in the UI. Loss of meeting/core, valid confidence or
+bindings resets continuous person stability as well as the scene hold. No elapsed
+time from an invalid candidate can earn an immediate Take after recovery.
+
 Candidate set = guests with `hasVideo`, unique by person id, sorted by `S`
 descending, then by `lastSpokeAtMs` descending, then by id.
 
