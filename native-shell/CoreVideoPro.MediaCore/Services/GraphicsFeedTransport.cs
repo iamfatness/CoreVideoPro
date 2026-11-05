@@ -181,7 +181,7 @@ public sealed class GraphicsFeedTransport(
             !(b[0] == 0x3f && (b[1] & 0xf0) == 0xf0);
     }
 
-    private static async Task<byte[]> ReadBody(HttpContent content, CancellationToken cancellation)
+    internal static async Task<byte[]> ReadBody(HttpContent content, CancellationToken cancellation)
     {
         if (content.Headers.ContentLength > GraphicsLocalData.ByteLimit)
             throw new InvalidDataException("Feed body exceeds 1 MiB.");

@@ -4,6 +4,8 @@
 #include "core/CaptureDeviceSource.h"
 #include "gtest/gtest.h"
 #include <chrono>
+#include <fstream>
+#include <sstream>
 #include <thread>
 
 using corevideo::graphics::GraphicsInstances;
@@ -67,6 +69,64 @@ void ready(GraphicsInstances& state, uint64_t revision, std::optional<corevideo:
 }
 const Json& row(const GraphicsInstances& state) {
   return state.snapshot().get("instances")->asArray().front();
+}
+
+TEST(GraphicsInstances, SocialReviewInstancesNeverRideTakeOrAcceptOrdinaryShow) {
+  double now = 0;
+  GraphicsInstances state{"test-core", [&] { return now; }};
+  auto social = [](const std::string& action, Json::Object fields = {}, bool trusted = true) {
+    const auto base = request(action, std::move(fields));
+    auto body = base.get("graphics")->asObject();
+    body["instanceId"] = "social-review-test";
+    if (trusted) body["clientId"] = "graphics-social-review";
+    return Json{Json::Object{{"type", action}, {"graphics", std::move(body)}}};
+  };
+  const Json::Object createFields{{"templateId", "compact-solid"}, {"templateVersion", 1},
+      {"scope", "global"}, {"fields", Json::Object{{"name", "Approved item"}}}};
+  EXPECT_FALSE(state.apply(social("graphics-instance-create", createFields, false)));
+  ASSERT_TRUE(state.apply(social("graphics-instance-create", createFields)));
+  EXPECT_FALSE(state.apply(social("graphics-instance-cue", {{"rideTake", true}})));
+  ASSERT_TRUE(state.apply(social("graphics-instance-cue", {{"rideTake", false}})));
+  ProgramFrame frame;
+  auto resource = std::make_shared<corevideo::graphics::GraphicsPreparedResource>();
+  resource->native = std::make_shared<int>(1);
+  frame.graphicsFacts.push_back({"social-review-test", 1, "ready", "", resource});
+  state.observe(frame);
+  ASSERT_EQ(1, row(state).getNumber("cueRevision"));
+  CompositorRenderPlan preview;
+  preview.width = 1920;
+  preview.height = 1080;
+  state.append(preview, true);
+  EXPECT_TRUE(preview.layers.empty());
+  EXPECT_FALSE(state.apply(social("graphics-instance-trigger", {{"action", "show"}}, false)));
+  EXPECT_FALSE(state.apply(social("graphics-instance-trigger", {{"action", "show"}, {"target", "cue"}}, false)));
+  EXPECT_FALSE(state.unavailableLayoutCue("layout-owner", {{"social-review-test", 1}}).empty());
+  state.promoteCuedForTake();
+  EXPECT_EQ(0, row(state).getNumber("programRevision"));
+  ASSERT_TRUE(state.apply(social("graphics-instance-trigger", {{"action", "show"}, {"target", "cue"}})));
+  EXPECT_EQ(1, row(state).getNumber("programRevision"));
+  now = 14999;
+  state.observe(ProgramFrame{});
+  EXPECT_EQ(1, row(state).getNumber("programRevision"));
+  now = 15000;
+  state.observe(ProgramFrame{});
+  EXPECT_TRUE(state.snapshot().get("instances")->asArray().empty());
+}
+
+TEST(GraphicsInstances, BundledSocialCardResolvesItsReviewedFields) {
+  std::ifstream file(std::string(COREVIDEO_REPO_ROOT) + "/contracts/graphics-social/youtube-chat-card.json");
+  std::ostringstream manifest;
+  manifest << file.rdbuf();
+  std::string error;
+  const auto definition = corevideo::graphics::GraphicsTemplate::load(manifest.str(), error);
+  ASSERT_TRUE(definition) << error;
+  corevideo::graphics::GraphicsDrawing drawing;
+  ASSERT_TRUE(definition->resolve(Json::Object{{"author", "Reviewed author"}, {"message", "Reviewed message"}},
+      Json::Object{}, drawing, error)) << error;
+  ASSERT_EQ(4u, drawing.primitives.size());
+  EXPECT_EQ("YouTube live chat", drawing.primitives[1].text);
+  EXPECT_EQ("Reviewed author", drawing.primitives[2].text);
+  EXPECT_EQ("Reviewed message", drawing.primitives[3].text);
 }
 
 TEST(GraphicsInstances, ManagedFamilySuppressesLegacyAndClearNeverRevealsTheOldKey) {

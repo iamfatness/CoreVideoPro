@@ -17,6 +17,8 @@ namespace corevideo::graphics {
 using rpc::Json;
 
 namespace {
+bool socialReviewId(std::string_view id) { return id.starts_with("social-review-"); }
+
 bool resourceMatches(const std::shared_ptr<const GraphicsPreparedResource>& resource,
                      const std::array<uint8_t, 32>& contentHash) {
   if (!resource || !resource->native) return false;
@@ -502,6 +504,17 @@ bool GraphicsInstances::apply(const Json& command) {
   }
   const auto id = body->getString("instanceId");
   if (!validId(id)) return finish(requestId, false, "invalid-instance-id");
+  if (socialReviewId(id)) {
+    const auto intent = body->getString("action");
+    const bool stop = type == "graphics-instance-trigger" && (intent == "hide" || intent == "clear");
+    if (!stop && pendingClient_ != "graphics-social-review")
+      return finish(requestId, false, "social-graphics-require-operator-review");
+    if (type == "graphics-instance-cue" &&
+        (!body->get("rideTake") || body->get("rideTake")->asBool() || body->get("cueOwner")))
+      return finish(requestId, false, "social-graphics-private-cue-only");
+    if (type == "graphics-instance-trigger" && intent == "show" && body->getString("target") != "cue")
+      return finish(requestId, false, "social-graphics-require-prepared-cue");
+  }
   auto found = instances_.find(id);
   if (type == "graphics-instance-create") {
     if (found != instances_.end()) return finish(requestId, false, "instance-already-exists");
@@ -544,6 +557,7 @@ bool GraphicsInstances::apply(const Json& command) {
       auto waiting=std::make_shared<Revision>(*instance.draft); waiting->fieldsReady=false; instance.draft=waiting;
       instance.preparation="waiting-clock";
     }
+    if (socialReviewId(id)) instance.socialExpiresAtMs = monotonicMs_() + 10000;
     instances_.emplace(id, std::move(instance));
     return finish(requestId, true, "created-hidden");
   }
@@ -834,6 +848,7 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
     if ((scope == ScopePass::Scene && instance.scope != "scene") ||
         (scope == ScopePass::Global && instance.scope != "global")) continue;
     if (instance.scope == "scene" && instance.sceneId != plan.sceneId) continue;
+    if (instance.socialExpiresAtMs && (preview || now >= *instance.socialExpiresAtMs)) continue;
     const auto revision = preview ? instance.cue : instance.program;
     if (!revision) continue;
     if (revision->binding) {
@@ -1142,6 +1157,7 @@ void GraphicsInstances::startEntrance(Instance& instance, double now) {
 
 void GraphicsInstances::show(Instance& instance, bool fromCue) {
   const auto revision = fromCue ? instance.cue : instance.draft;
+  if (instance.socialExpiresAtMs) instance.socialExpiresAtMs = monotonicMs_() + 15000;
   const bool starting = !instance.program;
   if (instance.program != revision) instance.firstDrawSubmittedFrame = 0;
   instance.clockProgramPending.reset();
@@ -1266,7 +1282,15 @@ bool GraphicsInstances::updateClocks() {
 bool GraphicsInstances::advanceAnimations() {
   bool changed = false;
   const auto now = monotonicMs_();
-  for (auto& [_, instance] : instances_) {
+  for (auto it = instances_.begin(); it != instances_.end();) {
+    auto& instance = (it++)->second;
+    if (instance.socialExpiresAtMs && now >= *instance.socialExpiresAtMs) {
+      const auto order = instance.rackOrder;
+      instances_.erase(instance.id);
+      for (auto& [_, other] : instances_) if (other.rackOrder > order) --other.rackOrder;
+      changed = true;
+      continue;
+    }
     if (instance.awaitingEntrance && instance.program) continue;
     const bool useLayers = instance.program && layered(*instance.program);
     if (useLayers) instance.layered.settle(now);
@@ -1281,7 +1305,7 @@ bool GraphicsInstances::advanceAnimations() {
 }
 
 bool GraphicsInstances::hasCue() const {
-  return std::any_of(instances_.begin(), instances_.end(), [](const auto& item) { return item.second.cued; });
+  return std::any_of(instances_.begin(), instances_.end(), [](const auto& item) { return item.second.cued && !item.second.socialExpiresAtMs; });
 }
 
 void GraphicsInstances::publish() {

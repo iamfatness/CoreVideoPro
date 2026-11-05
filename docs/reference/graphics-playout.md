@@ -195,6 +195,27 @@ Tables and crawls use their existing native preparation and publication rules.
 An invalid or unavailable feed retains the last accepted data and Program
 content. Disabling polling keeps the saved dataset available for the next show.
 
+## Social review
+
+In **Graphics → Operate → Social review**, enter the 11-character video ID
+of one public YouTube livestream and a YouTube Data API key restricted to
+that API. Connect explicitly. The console stores the key locally with Windows
+data protection. **Clear local data** disconnects and removes the saved key and
+review session from this workstation.
+
+Select a message and read its author and text in the private review panel.
+**Approve** makes that version eligible. **Show approved** is the separate
+action that puts it on Program. Use **Reject** to keep an item out, **Withdraw**
+to remove a reviewed item from eligibility, or **Hide social graphic** to take
+the current card off air. The native card expires after 15 seconds. Provider
+edits need a fresh review. Deletion, retraction, bans and disconnect clear the
+affected eligibility and retire the card. Reconnect starts with fresh decisions.
+
+The social queue is session-only. The card uses the native graphics renderer.
+Ordinary Take, Shot Layouts, playlist hotkeys and generic graphics commands
+cannot put a social message on air. Each social item uses individual review
+and an explicit Show.
+
 ## Designs (Graphics Designer slice 1)
 
 A **design** is a graphic the operator authored, stored in the show's graphics

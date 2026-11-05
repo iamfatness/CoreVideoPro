@@ -273,14 +273,15 @@ public sealed partial class GraphicsPlayoutService
             var source = i.Binding?.SourceId ?? i.SourceId;
             // A names-list instance has no binding; its line is recoverable from the instance id.
             if (source.Length == 0 && row is { HasVariants: true }) source = VariantSourceIdOf(row, i.InstanceId);
-            var label = row is null ? (i.Label.Length > 0 ? i.Label : i.Fields.Name.Length > 0 ? i.Fields.Name : i.TemplateId)
+            var label = i.TemplateId == GraphicsSocialPlayout.TemplateId ? "YouTube chat" : row is null ? (i.Label.Length > 0 ? i.Label : i.Fields.Name.Length > 0 ? i.Fields.Name : i.TemplateId)
                 : (row.Kind == GraphicsPlaylistRow.Guest || row.HasVariants) && i.Fields.Name.Length > 0 ? row.Name + " · " + i.Fields.Name : row.Name;
             return new(i.InstanceId, label, owner, row?.Id ?? "", source, i.Revision, i.Visibility, i.CuePending, armed.Contains(i.InstanceId), rule?.Id ?? "");
         }
         var next = new GraphicsStripState {
             CoreEpoch = state.CoreEpoch,
             OnProgram = state.Instances.Where(IsOnProgram).Select(Item).ToArray(),
-            OnPreview = state.Instances.Where(IsOnPreview).Select(Item).ToArray(),
+            OnPreview = state.Instances.Where(i => IsOnPreview(i) &&
+                !i.InstanceId.StartsWith(GraphicsSocialPlayout.InstancePrefix, StringComparison.Ordinal)).Select(Item).ToArray(),
             Auto = state.Instances.Where(i => !i.InstanceId.StartsWith(InstancePrefix, StringComparison.Ordinal) && rules.Any(r => r.Enabled && r.InstanceId == i.InstanceId)).Select(Item).ToArray(),
             AutomationMode = state.Automation?.Mode ?? "manual", AutomationArmed = state.Automation?.Armed == true
         };
@@ -323,7 +324,8 @@ public sealed partial class GraphicsPlayoutService
     });
     public Task<NativeGraphicsOperationResult> ClearPreviewAsync(CancellationToken cancellation = default) => Run(async () => {
         var state = Available(); NativeGraphicsOperationResult result = new() { Accepted = true, Reason = "Preview is already clear." };
-        foreach (var instance in state.Instances.Where(IsOnPreview).ToArray()) {
+        foreach (var instance in state.Instances.Where(i => IsOnPreview(i) &&
+            !i.InstanceId.StartsWith(GraphicsSocialPlayout.InstancePrefix, StringComparison.Ordinal)).ToArray()) {
             result = await Uncue(instance.InstanceId, cancellation);
             if (!result.Accepted) return result;
         }

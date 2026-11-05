@@ -14842,6 +14842,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             try { dispose(); }
             catch (Exception error) { LaunchLog.WriteException($"shutdown: {name}", error); }
         }
+        try { await _graphicsSocialShutdown.WaitAsync(TimeSpan.FromMilliseconds(350)).ConfigureAwait(false); }
+        catch (TimeoutException) { /* The native social card has a bounded lifetime. */ }
         CaptureDeviceFrameRouter.FrameReceived -= OnCaptureDeviceFrameReceived;
         _captureFrameReader.ReaderLost -= OnCaptureBridgeReaderLost;
         _captureBridge.StopForShutdown();
