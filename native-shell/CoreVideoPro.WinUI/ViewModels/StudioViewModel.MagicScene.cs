@@ -135,6 +135,9 @@ public sealed partial class StudioViewModel : IMagicSceneHost
 
     bool IMagicSceneHost.IsMediaCoreRunning => _bridge.Running;
 
+    string IMagicSceneHost.CoreEpoch => _bridge.LastSnapshot?.Graphics?.CoreEpoch ?? "";
+    string IMagicSceneHost.RosterEpoch => _bridge.LastSnapshot?.RosterEpoch ?? "";
+
     string IMagicSceneHost.CommandStatus
     {
         set => CommandStatus = value;

@@ -506,6 +506,68 @@ public sealed class MagicSceneCoordinatorTests
         Assert.Equal(2, host.TakeAsyncCallCount);
     }
 
+    [Theory]
+    [InlineData("core")]
+    [InlineData("meeting")]
+    [InlineData("offline")]
+    [InlineData("leave")]
+    public void SessionChangeRebindsEvenWhenSceneAndPeopleIdsAreReused(string change)
+    {
+        var (coordinator, host) = Build();
+        host.RoomVideoParticipantCount = 2;
+        host.CanTake = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Recommendation("intro", 90);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+
+        if (change == "core") host.CoreEpoch = "core-2";
+        if (change == "meeting") host.RosterEpoch = "meeting-2";
+        if (change == "offline") host.IsMediaCoreRunning = false;
+        if (change == "leave") host.IsInMeeting = false;
+        coordinator.EvaluateAutomationPolicy();
+        host.IsMediaCoreRunning = true;
+        host.IsInMeeting = true;
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(2, host.TakeAsyncCallCount);
+        Assert.Equal(ProductionMode.SetAndForget, coordinator.ProductionMode);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task PriorSessionTakeCompletionCannotClaimSuccessOrPauseNewSession(bool observeBeforeCompletion, bool failed)
+    {
+        var (coordinator, host) = Build();
+        host.RoomVideoParticipantCount = 2;
+        host.CanTake = true;
+        host.HoldTakeAsync = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Recommendation("intro", 90);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+
+        host.CoreEpoch = "core-2";
+        if (observeBeforeCompletion) coordinator.EvaluateAutomationPolicy();
+        host.FailTake = failed;
+        await host.DrainTakeAsync();
+        Assert.Equal(ProductionMode.SetAndForget, coordinator.ProductionMode);
+        Assert.DoesNotContain("taken by automation", coordinator.AutomationLastAction);
+        host.HoldTakeAsync = false;
+        host.FailTake = false;
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(2, host.TakeAsyncCallCount);
+        Assert.Contains("taken by automation", coordinator.AutomationLastAction);
+    }
+
     [Fact]
     public void AutomationCueSurvivesPreviewCallbackAndNestedReadoutRefresh()
     {
@@ -631,6 +693,9 @@ public sealed class MagicSceneCoordinatorTests
         public bool IsInMeeting { get; set; } = true;
 
         public bool IsMediaCoreRunning { get; set; } = true;
+
+        public string CoreEpoch { get; set; } = "core-1";
+        public string RosterEpoch { get; set; } = "meeting-1";
 
         public string? CommandStatus { get; private set; }
 

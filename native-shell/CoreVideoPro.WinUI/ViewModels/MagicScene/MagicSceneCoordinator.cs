@@ -34,6 +34,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     private bool _evaluating;
     private bool _overlayPolicyDirty = true;
     private long _modeGeneration;
+    private (string Core, string Roster, bool Running, bool InMeeting)? _observedSession;
 
     [ObservableProperty]
     private ProductionMode _productionMode = ProductionMode.Manual;
@@ -210,6 +211,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
 
     private void EvaluateAutomationPolicyCore()
     {
+        ObserveAutomationSession();
         if (ProductionMode != ProductionMode.SetAndForget)
         {
             if (_timer.IsRunning)
@@ -231,10 +233,6 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
             _timer.Start();
         }
 
-        // A pending Take owns preview until its acknowledgment arrives. Snapshot
-        // recommendation churn must not change the scene under that transaction.
-        if (_takeInFlight) return;
-
         if (!_host.IsInMeeting || _host.RoomVideoParticipantCount == 0)
         {
             ResetPendingCandidate();
@@ -248,6 +246,10 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
             AutomationLastAction = "Waiting for media core before changing scenes";
             return;
         }
+
+        // Keep Preview owned by the outstanding transport operation, but observe
+        // session loss above so its completion cannot revive stale Auto state.
+        if (_takeInFlight) return;
 
         if (_overlayPolicyDirty)
         {
@@ -381,6 +383,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         try
         {
             var result = await _host.TakeAsync();
+            ObserveAutomationSession();
             if (generation != _modeGeneration) return;
             _pendingSceneId = null;
             _pendingBindingKey = null;
@@ -399,6 +402,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         }
         catch (Exception ex)
         {
+            ObserveAutomationSession();
             if (generation == _modeGeneration)
             {
                 ProductionMode = ProductionMode.Manual;
@@ -527,6 +531,18 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         _pendingBindingsApplied = false;
         _pendingSince = null;
         _bindingHold.Reset();
+    }
+
+    private void ObserveAutomationSession()
+    {
+        var current = (_host.CoreEpoch, _host.RosterEpoch, _host.IsMediaCoreRunning, _host.IsInMeeting);
+        if (_observedSession == current) return;
+        _observedSession = current;
+        _modeGeneration++;
+        _lastTakenBindings = null;
+        ResetPendingCandidate();
+        if (ProductionMode == ProductionMode.SetAndForget)
+            AutomationLastAction = "Session changed - waiting for a fresh stable shot";
     }
 
     private void OnAutomationPolicyChanged()
