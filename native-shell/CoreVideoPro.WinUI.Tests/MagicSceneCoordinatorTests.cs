@@ -17,6 +17,7 @@ public sealed class MagicSceneCoordinatorTests
     [
         new() { Id = "intro", Name = "Intro", Layout = "host-focus" },
         new() { Id = "interview", Name = "Interview", Layout = "two-up" },
+        new() { Id = "panel", Name = "Panel", Layout = "grid" },
         new() { Id = "speaker-slides", Name = "Speaker + Slides", Layout = "speaker-slides" }
     ];
 
@@ -94,7 +95,8 @@ public sealed class MagicSceneCoordinatorTests
         coordinator.EvaluateAutomationPolicy();
         coordinator.EvaluateAutomationPolicy();
         Assert.Equal(0, host.TakeAsyncCallCount);
-        Assert.Equal("intro", host.PreviewSceneId);
+        Assert.Equal("interview", host.PreviewSceneId); // warm Preview while Program holds
+        Assert.Equal("intro", host.ActiveSceneId);
         now = now.AddMilliseconds(1200);
         coordinator.EvaluateAutomationPolicy();
         coordinator.EvaluateAutomationPolicy();
@@ -356,7 +358,8 @@ public sealed class MagicSceneCoordinatorTests
         coordinator.ProductionMode = ProductionMode.SetAndForget;
         now = now.AddMilliseconds(7999);
         coordinator.EvaluateAutomationPolicy();
-        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal("intro", host.PreviewSceneId);
+        Assert.Equal("interview", host.ActiveSceneId);
         Assert.Equal(0, host.TakeAsyncCallCount);
         now = now.AddMilliseconds(1);
         coordinator.EvaluateAutomationPolicy();
@@ -535,6 +538,49 @@ public sealed class MagicSceneCoordinatorTests
         coordinator.EvaluateAutomationPolicy();
         Assert.Equal(2, host.TakeAsyncCallCount);
         Assert.Equal(ProductionMode.SetAndForget, coordinator.ProductionMode);
+    }
+
+    [Theory]
+    [InlineData("intro", "interview", 4000)]
+    [InlineData("interview", "intro", 8000)]
+    [InlineData("intro", "intro", 4000)]
+    [InlineData("panel", "panel", 6000)]
+    [InlineData("intro", "speaker-slides", 2500)]
+    [InlineData("speaker-slides", "intro", 3500)]
+    public void PersonAndSceneHoldsShareOneDeadlineWhilePreviewWarms(string from, string to, int totalMs)
+    {
+        static AutoProductionState Shot(string scene, params string[] people) => new()
+        {
+            RecommendedSceneId = scene, Confidence = 95, Reason = "scripted conversation", Action = "hold",
+            SlotBindings = people.Select((id, slot) => new NativeDirectorSlotBinding
+                { SlotIndex = slot, PersonId = id, SourceId = "zoom:" + id }).ToArray()
+        };
+        var now = DateTimeOffset.UnixEpoch;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 4;
+        host.CanTake = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Shot(from, from == "panel" ? ["a", "b", "c"]
+            : from == "interview" ? ["a", "b"] : ["a"]);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddSeconds(10);
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+
+        coordinator.AutomationSwitchDelaySeconds = 4;
+        coordinator.Recommendation = Shot(to, to is "panel" or "interview" ? ["a", "b"] : ["b"]);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(to, host.PreviewSceneId);
+        Assert.Equal(coordinator.Recommendation.SlotBindings, host.PreviewBindings);
+        Assert.Equal(from, host.ActiveSceneId);
+        now = now.AddMilliseconds(totalMs - 1);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        now = now.AddMilliseconds(1);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(2, host.TakeAsyncCallCount);
+        Assert.Equal(to, host.ActiveSceneId);
     }
 
     [Theory]

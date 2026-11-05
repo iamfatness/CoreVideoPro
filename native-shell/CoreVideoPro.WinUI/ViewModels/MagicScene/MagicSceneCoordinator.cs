@@ -96,7 +96,8 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     public MagicSceneCoordinator(IMagicSceneHost host, Func<DateTimeOffset>? clock = null)
     {
         _host = host;
-        _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        var start = System.Diagnostics.Stopwatch.GetTimestamp();
+        _clock = clock ?? (() => DateTimeOffset.UnixEpoch + System.Diagnostics.Stopwatch.GetElapsedTime(start));
         _timer = host.CreateAutomationTimer(EvaluateAutomationPolicy);
     }
 
@@ -107,7 +108,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     };
 
     public string TimingSummary =>
-        $"Preview at {AutomationConfidenceThreshold:0}% confidence; automatic Take at {Math.Max(88, AutomationConfidenceThreshold):0}% after person stability plus {AutomationSwitchDelaySeconds:0.#}s scene hold (share enter 2.5s / exit 3.5s).";
+        $"Preview at {AutomationConfidenceThreshold:0}% confidence; automatic Take at {Math.Max(88, AutomationConfidenceThreshold):0}% after the longer of person stability and {AutomationSwitchDelaySeconds:0.#}s scene hold (share enter 2.5s / exit 3.5s).";
 
     private string RecommendedSceneName =>
         ProductionStateHelper.RecommendedSceneName(_host.Scenes, Recommendation.RecommendedSceneId);
@@ -281,15 +282,6 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         var now = _clock();
         var bindingDecision = _bindingHold.Evaluate(_host.ActiveSceneId, _lastTakenBindings,
             targetSceneId, Recommendation.SlotBindings, now);
-        if (!bindingDecision.Ready)
-        {
-            _pendingSceneId = null;
-            _pendingBindingKey = null;
-            _pendingBindingsApplied = false;
-            _pendingSince = null;
-            AutomationLastAction = $"Holding person bindings: {bindingDecision.ElapsedMs}/{bindingDecision.RequiredMs} ms";
-            return;
-        }
         var bindingKey = string.Join("|", Recommendation.SlotBindings.OrderBy(binding => binding.SlotIndex)
             .Select(binding => $"{binding.SlotIndex}:{binding.PersonId}:{binding.SourceId}"));
         var sceneHoldSeconds = DirectorBindingHoldPolicy.RequiredSceneHoldSeconds(
@@ -322,12 +314,17 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
             CuePreview(targetSceneId);
             if (!_host.ApplyPreviewBindings(targetSceneId, Recommendation.SlotBindings, out var bindingReason))
             {
-                _pendingSceneId = null;
-                _pendingBindingKey = null;
+                ResetPendingCandidate();
                 AutomationLastAction = $"Holding Program: Preview binding failed. {bindingReason}";
                 return;
             }
-            AutomationLastAction = $"Holding {RecommendedSceneName} for {sceneHoldSeconds:0.0}s before switching";
+            AutomationLastAction = $"Holding {RecommendedSceneName} for {Math.Max(sceneHoldSeconds, bindingDecision.RequiredMs / 1000.0):0.0}s before switching";
+            return;
+        }
+
+        if (!bindingDecision.Ready)
+        {
+            AutomationLastAction = $"Holding person bindings: {bindingDecision.ElapsedMs}/{bindingDecision.RequiredMs} ms (scene hold runs concurrently)";
             return;
         }
 
@@ -344,8 +341,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         CuePreview(targetSceneId);
         if (!_host.ApplyPreviewBindings(targetSceneId, Recommendation.SlotBindings, out var finalBindingReason))
         {
-            _pendingSceneId = null;
-            _pendingBindingKey = null;
+            ResetPendingCandidate();
             AutomationLastAction = $"Holding Program: Preview binding failed. {finalBindingReason}";
             return;
         }

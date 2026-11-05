@@ -14,8 +14,49 @@ Turning off share priority continues guest-floor selection rather than disabling
 actuation. A stale settings acknowledgment holds Program explicitly.
 
 Interrupted candidate holds restart; an offline/invalid interval cannot count as
-stable speech. The fixed Take-confidence minimum and additional timing holds are
+stable speech. The fixed Take-confidence minimum and concurrent timing holds are
 visible. A blocked Take reports waiting, rather than claiming it is taking.
+
+## Completion repairs (#1148, #1149, #1150)
+
+Auto preserves failed Take results even when Program already has the target scene
+ID; it pauses with the reason and permits a fresh attempt after operator resume.
+Core/roster epoch changes and observed disconnects clear last-taken binding history
+and pending holds. A late prior-session success or failure cannot overwrite the
+new session's automation state. The transport operation retains Preview ownership
+until it settles; invalidation does not issue overlapping Takes.
+
+Person and scene stability run concurrently while Preview warms. With the default
+four-second setting, the independently asserted waits after native eligibility are:
+
+| Transition | Continuous wait before Take |
+|---|---:|
+| Solo to interview | 4 seconds |
+| Interview to solo | 8 seconds |
+| Same-scene speaker change | 4 seconds |
+| Panel member removal | 6 seconds |
+| Enter share | 2.5 seconds |
+| Leave share for solo | 3.5 seconds |
+
+These are policy deadlines, not end-to-end speech-to-output latency promises.
+Native speaker qualification, timer sampling, source readiness and Take completion
+also contribute. Production elapsed time is monotonic; clock changes cannot earn
+or extend a hold. Binding failure resets both holds.
+
+Completion validation: 1,967 WinUI tests passed, including 45 coordinator cases.
+Temporarily removing Take-result handling and session invalidation and restoring
+sequential holds caused 13 of 15 targeted cases to fail. Restoring the fixes and
+rerunning the full 1,967-test suite passed. Logs: `auto-completion-full-tests.log`
+and `auto-completion-mutations.log`. No native/media-core code changed in these
+completion repairs; earlier native and MediaCore results below remain scoped to
+the director-policy change.
+
+Installed validation is still unverified: no CoreVideo process was running at the
+November 5 check. Do not run the operator script against an unrelated show. Use an
+integrated build and an authorized populated test meeting for the scenarios below,
+including same-scene failed Take, reconnect with reused IDs, and pending Take at
+disconnect. Capture actual Program and webcam output identity. The historical
+`operator-auto-take.cjs` scene-ID check alone cannot prove correct person bindings.
 
 ## Automated scenario evidence
 

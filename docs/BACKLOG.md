@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner-directed Auto timing completion, November 5 — [#1150](https://github.com/iamfatness/CoreVideoPro/issues/1150):** run continuous person/scene holds concurrently while Preview warms; retain readiness, confidence and manual-control gates. Installed conversation acceptance remains #668.
+
 **Owner-directed Auto completion, November 5 — [#1148](https://github.com/iamfatness/CoreVideoPro/issues/1148):** preserve Take failures for same-scene person changes. Follow with [#1149](https://github.com/iamfatness/CoreVideoPro/issues/1149) lifecycle recovery and the timing/rehearsal acceptance in #668. Owner requested completion of these remaining repairs.
 
 **Owner-directed Auto repair, November 5 — [#1146](https://github.com/iamfatness/CoreVideoPro/issues/1146):** keep native shot selection and bindings together, apply operator preferences inside the director, reset interrupted holds, and qualify actual Preview/Take outcomes. Preserve #668 guest identity/manual-control rules. Evidence and installed scenarios: [Auto director qualification](qa/auto-director-policy-2026-11-05.md). Caption defect #1144 remains separately scoped.
