@@ -43,6 +43,9 @@ public interface IMagicSceneHost
 
     bool IsMediaCoreRunning { get; }
 
+    string CoreEpoch { get; }
+    string RosterEpoch { get; }
+
     // --- command status + take ---
     string CommandStatus { set; }
 
