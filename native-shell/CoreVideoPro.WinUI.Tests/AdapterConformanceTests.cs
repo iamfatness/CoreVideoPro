@@ -104,9 +104,8 @@ internal sealed class RecordingOhgHostFacade : IOhgHostFacade
 /// is conformant here. Adapter BEHAVIOUR against a live ViewModel is Task 11's
 /// <c>StudioViewModelOhgFacade</c> work, not this.</para>
 ///
-/// <para><b>Skipping.</b> Node and a built <c>dist</c> are environment, not code, so their absence
-/// is a printed skip rather than a red — but a printed one: a silently skipped integration test is
-/// a guard that looks like coverage and isn't.</para>
+/// <para>A local run may skip when Node or the built engine is unavailable.
+/// Windows CI sets <c>COREVIDEO_REQUIRE_OHG_CONFORMANCE</c> so missing prerequisites fail the test.</para>
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed partial class AdapterConformanceTests
@@ -121,21 +120,21 @@ public sealed partial class AdapterConformanceTests
         var repoRoot = FindRepoRoot();
         if (repoRoot is null)
         {
-            _output.WriteLine("SKIPPED: no show-engine/package.json found walking up from " + AppContext.BaseDirectory);
+            SkipWithoutPrerequisite("no show-engine/package.json found walking up from " + AppContext.BaseDirectory);
             return;
         }
 
         var entryScript = Path.Combine(repoRoot, "show-engine", "dist", "host", "main.js");
         if (!File.Exists(entryScript))
         {
-            _output.WriteLine($"SKIPPED: {entryScript} is not built — run `npm run build` in show-engine/");
+            SkipWithoutPrerequisite($"{entryScript} is not built — run `npm run build` in show-engine/");
             return;
         }
 
         var nodeExe = FindNodeOnPath();
         if (nodeExe is null)
         {
-            _output.WriteLine("SKIPPED: node.exe is not on PATH");
+            SkipWithoutPrerequisite("node.exe is not on PATH");
             return;
         }
 
@@ -186,6 +185,12 @@ public sealed partial class AdapterConformanceTests
 
             Assert.Equal(expected, run.FacadeCallsByCase[caseName]);
         }
+    }
+
+    private void SkipWithoutPrerequisite(string reason)
+    {
+        Assert.False(Environment.GetEnvironmentVariable("COREVIDEO_REQUIRE_OHG_CONFORMANCE") == "1", reason);
+        _output.WriteLine($"SKIPPED: {reason}");
     }
 
     // ---- the run ------------------------------------------------------------------------
@@ -399,21 +404,21 @@ public sealed partial class AdapterConformanceTests
         var repoRoot = FindRepoRoot();
         if (repoRoot is null)
         {
-            _output.WriteLine("SKIPPED: no show-engine/package.json found walking up from " + AppContext.BaseDirectory);
+            SkipWithoutPrerequisite("no show-engine/package.json found walking up from " + AppContext.BaseDirectory);
             return;
         }
 
         var entryScript = Path.Combine(repoRoot, "show-engine", "dist", "host", "main.js");
         if (!File.Exists(entryScript))
         {
-            _output.WriteLine($"SKIPPED: {entryScript} is not built — run `npm run build` in show-engine/");
+            SkipWithoutPrerequisite($"{entryScript} is not built — run `npm run build` in show-engine/");
             return;
         }
 
         var nodeExe = FindNodeOnPath();
         if (nodeExe is null)
         {
-            _output.WriteLine("SKIPPED: node.exe is not on PATH");
+            SkipWithoutPrerequisite("node.exe is not on PATH");
             return;
         }
 
