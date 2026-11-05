@@ -5134,10 +5134,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         new() { Value = "black", Label = "Black" }
     ];
 
-    // R2 (final review, #535 slice 4a): a dropout policy is Zoom-only this
-    // slice (capture liveness via signalPresent isn't wired to a stall
-    // decision yet — see docs/BACKLOG.md #535). A non-"zoom:" id is a no-op
-    // that reports why, rather than silently doing nothing.
     public void SetSourceDropoutPolicy(string sourceId, string? policy)
     {
         if (string.IsNullOrWhiteSpace(sourceId))
@@ -5145,9 +5141,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        if (!sourceId.StartsWith("zoom:", StringComparison.Ordinal))
+        if (!ProductionStateHelper.SupportsDropoutPolicy(sourceId))
         {
-            CommandStatus = $"Dropout policy: only Zoom sources take a policy this slice ({sourceId})";
+            CommandStatus = $"Dropout policy is unavailable for {sourceId}";
             return;
         }
 
@@ -12504,17 +12500,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
         }
 
-        // #535 slice 4a: per-source dropout policy. Only "hold"/"black" are
-        // ever stored (SetSourceDropoutPolicy never writes "hold"), but an
-        // externally-edited file is still validated on load. R2 (final
-        // review): a policy is Zoom-only this slice, so a persisted
-        // "capture:"/"media:"/anything-else key (from before this slice, or
-        // hand-edited) is pruned rather than round-tripped back to the core.
+        // Validate persisted canonical source keys with the same rule as the control API.
         _sourceDropoutPolicies.Clear();
         foreach (var pair in preferences.SourceDropoutPolicies)
         {
             if (!string.IsNullOrWhiteSpace(pair.Key) &&
-                pair.Key.StartsWith("zoom:", StringComparison.Ordinal) &&
+                ProductionStateHelper.SupportsDropoutPolicy(pair.Key) &&
                 pair.Value is "hold" or "black")
             {
                 _sourceDropoutPolicies[pair.Key] = pair.Value;

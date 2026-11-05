@@ -647,5 +647,9 @@ black policy applies to Program during a stall. A reported source that ends
 leaves a bounded, pixel-free failure record until it reconnects or is cleared.
 
 The [capture dropout design](../superpowers/specs/2026-10-23-capture-dropout-policy-design.md)
-covers native UVC and the Sources policy control as separate work. The bridge
-path uses the default hold policy from the current WinUI controls.
+covers the native UVC path separately. The Sources inspector exposes the saved
+hold or black preference for capture sources. Its policy control is enabled when
+the core reports signal-loss support. An unreported source has a disabled
+control and a plain-language explanation. Status text uses the core's applied
+decision and ages, including the distinction between a held picture and Program
+black.

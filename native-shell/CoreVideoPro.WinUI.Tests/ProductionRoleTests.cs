@@ -250,11 +250,17 @@ public class ProductionRoleTests
         var wire = Assert.Single(wires.Values);
         Assert.Equal("capture:cam-1", wire.SourceId);
         Assert.Equal("Camera 1", wire.DisplayName);
-        // Round 2 (final review): a policy is Zoom-only this slice — a
-        // capture entry's DropoutPolicy must be null (a NAME-ONLY wire), so
-        // the command builder omits the key rather than sending a policy the
-        // core refuses on every sync (which would permanently degrade
-        // programFrame.health).
-        Assert.Null(wire.DropoutPolicy);
+        Assert.Equal("hold", wire.DropoutPolicy);
     }
+    [Fact]
+    public void CapturePolicyIsIncludedWithItsCanonicalId()
+    {
+        var wires = ProductionStateHelper.BuildSourcePolicyWires([], [],
+            new Dictionary<string, string> { ["capture:camera"] = "black" }, null);
+        Assert.Equal("black", wires["capture:camera"].DropoutPolicy);
+        Assert.True(ProductionStateHelper.SupportsDropoutPolicy("capture:camera"));
+        Assert.False(ProductionStateHelper.SupportsDropoutPolicy("capture:"));
+        Assert.False(ProductionStateHelper.SupportsDropoutPolicy("media:clip"));
+    }
+
 }

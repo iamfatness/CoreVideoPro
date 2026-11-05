@@ -7,7 +7,7 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class ShowInputSlotViewModelTests
 {
     [Fact]
-    public void ZoomPolicyVisibilityFollowsAssignmentWithoutDiscardingUnavailableGuest()
+    public void SourcePolicyVisibilityFollowsAssignmentWithoutDiscardingUnavailableGuest()
     {
         var slot = new ShowInputSlot { SlotNumber = 1 };
         var editor = new ShowInputSlotViewModel(slot, () => { });
@@ -26,7 +26,8 @@ public sealed class ShowInputSlotViewModelTests
         Assert.False(editor.ShowSourcePolicies);
         slot.Kind = ShowInputKind.UvcWebcam;
         slot.CaptureDeviceId = "camera";
-        Assert.False(editor.ShowSourcePolicies);
+        Assert.True(editor.ShowSourcePolicies);
+        Assert.False(editor.CaptureDropoutPolicyApplies);
     }
 
     [Fact]
