@@ -1256,11 +1256,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string AutomationPolicySummary =>
         $"{(AutomationAutoTakeEnabled ? "Auto-take" : "Queue preview")} - " +
-        $"{AutomationConfidenceThreshold:0}% confidence - {AutomationSwitchDelaySeconds:0}s hold";
+        MagicScene.TimingSummary;
 
     public string AutomationScenePolicySummary =>
         $"{(AutomationPreferScreenShare ? "Prefer screen share" : "Ignore screen share")} - " +
-        $"panel at {AutomationPanelParticipantThreshold:0}+ sources";
+        $"panel eligible at {AutomationPanelParticipantThreshold:0}+ guests; talk history chooses the shot";
 
     public string AutomationOverlayPolicySummary =>
         $"{(AutomationLowerThirdsEnabled ? "Lower thirds on" : "Lower thirds off")} - " +
@@ -9364,6 +9364,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         return new MediaCoreProductionSyncContext
         {
+            DirectorPolicy = MagicScene.DirectorPolicy,
             ActiveSceneId = ActiveSceneId,
             SceneRoutes = sceneRoutes,
             SceneBackground = BuildSceneBackgroundWire(ActiveSceneId),

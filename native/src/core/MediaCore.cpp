@@ -1373,6 +1373,11 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setActiveSpeaker(command);
   } else if (type == "set-screen-share-source") {
     setScreenShareSource(command);
+  } else if (type == "set-director-policy") {
+    if (!DirectorPolicy::read(command, directorPolicy_)) {
+      commandProtocolFailures_.push_back("set-director-policy: invalid policy");
+      return;
+    }
   } else if (type == "recommend-auto-production") {
     // Pure query: the recommendation is derived from current state and surfaced
     // in the snapshot (see autoProductionState()), so there is nothing to mutate.
@@ -1581,7 +1586,7 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
 
 DirectorRecommendation MediaCore::recommendAutoProduction() const {
   const auto nowMs = static_cast<std::uint64_t>(monotonicMs());
-  return recommendScene(deriveDirectorSignals(), speakerFloor_.snapshot(nowMs), nowMs);
+  return recommendScene(deriveDirectorSignals(), speakerFloor_.snapshot(nowMs), nowMs, directorPolicy_);
 }
 
 

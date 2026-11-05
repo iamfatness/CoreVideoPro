@@ -898,11 +898,18 @@ public sealed record NativeMediaCoreDiagnosticsSnapshot
 /// </summary>
 public sealed record NativeMediaCoreAutoProduction
 {
+    public NativeDirectorPolicy? Policy { get; init; }
     public string RuleId { get; init; } = string.Empty;
     public string RecommendedSceneId { get; init; } = string.Empty;
     public int Confidence { get; init; }
     public string Rationale { get; init; } = string.Empty;
     public IReadOnlyList<NativeDirectorSlotBinding> SlotBindings { get; init; } = [];
+}
+
+public sealed record NativeDirectorPolicy
+{
+    public bool PreferScreenShare { get; init; } = true;
+    public int PanelGuestThreshold { get; init; } = 4;
 }
 
 public sealed record NativeDirectorSlotBinding

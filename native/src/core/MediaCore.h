@@ -1206,6 +1206,7 @@ class MediaCore {
   // pattern as programOutputConfiguration_.
   std::shared_ptr<const std::vector<modules::SourceVideoDemand>> engineVideoDemand_;
   SpeakerFloor speakerFloor_;
+  DirectorPolicy directorPolicy_;
   // Command/render/gather state under coreMutex. A changed speaker epoch drops
   // every manual setting so a recycled Zoom user id cannot inherit it.
   std::map<std::string, int> zoomGuestAvOffsets_;

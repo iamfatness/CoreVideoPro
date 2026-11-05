@@ -855,13 +855,16 @@ public sealed class NativeMediaCoreStateMapperTests
     [Fact]
     public void AutoProductionFromARealCoreStateReachesTheSnapshotWithItsSlotBindings()
     {
-        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"autoProduction":{"ruleId":"focused-interview","recommendedSceneId":"interview","confidence":92,"rationale":"Two guests on camera.","slotBindings":[{"slotIndex":0,"personId":"guest-7","sourceId":"zoom:guest-7"},{"slotIndex":1,"personId":"guest-8","sourceId":"zoom:guest-8"}]}}""");
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"autoProduction":{"ruleId":"focused-interview","recommendedSceneId":"interview","confidence":92,"rationale":"Two guests on camera.","policy":{"preferScreenShare":false,"panelGuestThreshold":7},"slotBindings":[{"slotIndex":0,"personId":"guest-7","sourceId":"zoom:guest-7"},{"slotIndex":1,"personId":"guest-8","sourceId":"zoom:guest-8"}]}}""");
 
         var recommendation = Assert.IsType<NativeMediaCoreAutoProduction>(snapshot.AutoProduction);
         Assert.Equal("focused-interview", recommendation.RuleId);
         Assert.Equal("interview", recommendation.RecommendedSceneId);
         Assert.Equal(92, recommendation.Confidence);
         Assert.Equal("Two guests on camera.", recommendation.Rationale);
+        Assert.NotNull(recommendation.Policy);
+        Assert.False(recommendation.Policy.PreferScreenShare);
+        Assert.Equal(7, recommendation.Policy.PanelGuestThreshold);
         Assert.Equal(["guest-7", "guest-8"], recommendation.SlotBindings.Select(binding => binding.PersonId).ToArray());
         Assert.Equal(["zoom:guest-7", "zoom:guest-8"], recommendation.SlotBindings.Select(binding => binding.SourceId).ToArray());
         Assert.Equal([0, 1], recommendation.SlotBindings.Select(binding => binding.SlotIndex).ToArray());

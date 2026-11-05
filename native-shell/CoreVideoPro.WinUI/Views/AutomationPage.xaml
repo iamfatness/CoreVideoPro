@@ -70,7 +70,7 @@
                                    LargeChange="5"
                                    SpinButtonPlacementMode="Inline" />
                         <NumberBox Grid.Row="2"
-                                   Header="Panel at sources"
+                                   Header="Panel eligible at guests"
                                    Value="{x:Bind ViewModel.AutomationPanelParticipantThreshold, Mode=TwoWay}"
                                    Minimum="2"
                                    Maximum="10"

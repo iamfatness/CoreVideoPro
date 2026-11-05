@@ -61,7 +61,12 @@ public static class MediaCoreCommandBuilder
                 context.MultiviewCanvasHeight,
                 context.MultiviewColumns,
                 context.MultiviewRows),
-            BuildColorGradeCommand(context.ColorGrade)
+            BuildColorGradeCommand(context.ColorGrade),
+            Command("set-director-policy", new Dictionary<string, object?>
+            {
+                ["preferScreenShare"] = context.DirectorPolicy.PreferScreenShare,
+                ["panelGuestThreshold"] = Math.Clamp(context.DirectorPolicy.PanelGuestThreshold, 2, 10)
+            })
         ]);
         commands.AddRange(BuildSourcePolicyCommands(context.SourcePolicies));
         commands.AddRange([

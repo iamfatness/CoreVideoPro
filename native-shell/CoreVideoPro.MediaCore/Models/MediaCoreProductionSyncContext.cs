@@ -303,6 +303,7 @@ public sealed record MediaCoreTakeTransitionWire(
 /// </summary>
 public sealed record MediaCoreProductionSyncContext
 {
+    public NativeDirectorPolicy DirectorPolicy { get; init; } = new();
     public MediaCoreTakeTransitionWire? TakeTransition { get; init; }
     public required string ActiveSceneId { get; init; }
     public IReadOnlyList<MediaCoreSceneRouteWire> SceneRoutes { get; init; } = [];
