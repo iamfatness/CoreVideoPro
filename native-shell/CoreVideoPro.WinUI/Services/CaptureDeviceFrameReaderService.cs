@@ -233,6 +233,11 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         await MediaCaptureStartupGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            if (!CaptureDeviceSharedMemoryWriter.IsCurrentSession(deviceId, session.Token))
+            {
+                throw new OperationCanceledException("Capture reader was stopped before opening.");
+            }
+
             LaunchLog.Write($"capture: start gate entered {deviceId}");
             var telemetry = await session.StartAsync().ConfigureAwait(false);
             lock (_gate)
@@ -1025,8 +1030,15 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
         private void OnCaptureFailed(MediaCapture sender, MediaCaptureFailedEventArgs args)
         {
-            LaunchLog.Write($"capture: reader lost {_stableDeviceId}: 0x{args.Code:X8} {args.Message}");
-            ReportLoss();
+            try
+            {
+                LaunchLog.Write($"capture: reader lost {_stableDeviceId}: 0x{args.Code:X8} {args.Message}");
+                ReportLoss();
+            }
+            catch (Exception error)
+            {
+                LaunchLog.WriteException("capture: failure notification", error);
+            }
         }
 
         public void ReportLoss()

@@ -230,6 +230,43 @@ public class CaptureDeviceSharedMemoryWriterTests
         }
     }
 
+    [Fact]
+    public async Task InFlightRegistrationCannotLeaveAnUnregisterBehindItsSuccessor()
+    {
+        var deviceId = DeviceId();
+        var first = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var registrations = new List<string>();
+        var unregisters = new List<string>();
+        using var reader = new CaptureDeviceFrameReaderService();
+        var bridge = new CaptureBridgeLifecycle(reader,
+            mapping =>
+            {
+                registrations.Add(mapping.ShmName);
+                return registrations.Count == 1 ? release.Task : Task.CompletedTask;
+            },
+            id => { unregisters.Add(id); return Task.CompletedTask; });
+        try
+        {
+            Assert.True(bridge.TryPublish(BridgeFrame(deviceId, first)));
+            var stopping = bridge.StopAsync(deviceId, BridgeCaptureStopReason.OperatorDisconnect);
+            Assert.False(stopping.IsCompleted);
+            var replacement = CaptureDeviceSharedMemoryWriter.BeginSession(deviceId);
+            Assert.True(bridge.TryPublish(BridgeFrame(deviceId, replacement)));
+
+            release.TrySetResult();
+            await stopping;
+
+            Assert.Empty(unregisters);
+            Assert.Equal(CaptureDeviceSharedMemoryWriter.MappingFor(deviceId)?.ShmName, registrations.Last());
+        }
+        finally
+        {
+            release.TrySetResult();
+            await bridge.StopAsync(deviceId, BridgeCaptureStopReason.OperatorDisconnect);
+        }
+    }
+
     private static CaptureDeviceFrame BridgeFrame(string deviceId, long token) => new()
     {
         DeviceId = deviceId,
