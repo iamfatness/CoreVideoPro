@@ -202,9 +202,9 @@ internal static class OhgConformanceGoldens
             // rebinding inputs and re-rastering overlays at tick rate, which is the churn class this
             // repo's own shell has a documented fail-fast from." Read out: the setup traffic and
             // NOTHING after it. The trailing three quiet ticks must add zero lines — a golden that
-            // grew a tail here would be that churn class arriving through the adapter. (The second
-            // setGallery from `gallery.resetFromSlots` adds no status: report-once.)
+            // grew a tail here would be that churn class arriving through the adapter. The initial nameplates report
+            // the unsupported location once. The second setGallery adds no status.
             ["a tick that changes nothing sends nothing"] =
-                Sequence(SeatingPreamble, LookPreviewCue, EmptyBoxLook)
+                Sequence(SeatingPreamble, LookPreviewCue, WithNote(EmptyBoxLook))
         };
 }

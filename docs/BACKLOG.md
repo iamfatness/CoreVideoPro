@@ -421,6 +421,8 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 ## Unranked — show survival and operator findings
 
+- [#1088](https://github.com/iamfatness/CoreVideoPro/issues/1088): WinUI adapter conformance has a stale nameplate golden and Windows CI skips the test without a built show engine.
+
 - [#1114](https://github.com/iamfatness/CoreVideoPro/issues/1114): Owner-reported Graphics drag feedback. Keep private artwork visible and show completed native revisions while moving or resizing it.
 
 - [#968](https://github.com/iamfatness/CoreVideoPro/issues/968): intermittent decoded PCM gaps found during #960 full Studio crash qualification; blocks its audio-continuity evidence. Owner-authorized October 21 within active #960; retain failed trials.
