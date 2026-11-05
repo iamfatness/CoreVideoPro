@@ -86,6 +86,101 @@ class EmptyCapture final : public ICaptureDevice {
 };
 }
 
+namespace {
+void setBridgeSignal(Writer& writer, LONG signal) {
+  InterlockedExchange(reinterpret_cast<volatile LONG*>(writer.view + 12), signal);
+}
+
+VideoFrame awaitLiveness(ShmCapturePreparation& preparation, CaptureLivenessState state,
+    CaptureLossReason reason = CaptureLossReason::None) {
+  VideoFrame result;
+  if (!waitFor([&] {
+    const auto frames = preparation.latest();
+    if (frames.size() != 1 || frames[0].captureLiveness.state != state ||
+        frames[0].captureLiveness.reason != reason) {
+      return false;
+    }
+    result = frames[0];
+    return true;
+  })) {
+    throw std::runtime_error("capture liveness did not arrive");
+  }
+  return result;
+}
+}
+
+TEST(ShmCapturePreparation, LegacyZeroSignalWordStaysUnreported) {
+  Writer writer(64, 64);
+  ShmCapturePreparation preparation;
+  ASSERT_TRUE(preparation.registerBuffer("camera", writer.name, 64, 64));
+  writer.write(2, 10);
+  const auto frame = awaitColor(preparation, 10);
+  EXPECT_EQ(frame.captureLiveness.state, CaptureLivenessState::Unreported);
+  EXPECT_FALSE(frame.captureLiveness.cadenceTrusted);
+}
+
+TEST(ShmCapturePreparation, AdvancingLiveSamplesChangeTheObservationButHeldPicturesDoNot) {
+  Writer writer(64, 64);
+  ShmCapturePreparation preparation;
+  ASSERT_TRUE(preparation.registerBuffer("camera", writer.name, 64, 64));
+  setBridgeSignal(writer, 1);
+  writer.write(2, 11);
+  const auto first = awaitColor(preparation, 11);
+  ASSERT_EQ(first.captureLiveness.state, CaptureLivenessState::Live);
+  EXPECT_TRUE(first.captureLiveness.cadenceTrusted);
+  EXPECT_GT(first.captureLiveness.lastSampleNs, 0);
+  EXPECT_EQ(preparation.latest().at(0).captureLiveness.lastSampleNs, first.captureLiveness.lastSampleNs);
+  writer.write(4, 12);
+  const auto second = awaitColor(preparation, 12);
+  EXPECT_GT(second.captureLiveness.lastSampleNs, first.captureLiveness.lastSampleNs);
+}
+
+TEST(ShmCapturePreparation, LossAndStopWordsPublishWhilePixelWriteIsInProgress) {
+  Writer writer(64, 64);
+  ShmCapturePreparation preparation;
+  ASSERT_TRUE(preparation.registerBuffer("camera", writer.name, 64, 64));
+  setBridgeSignal(writer, 1);
+  writer.write(2, 11);
+  const auto first = awaitColor(preparation, 11);
+  InterlockedExchange(reinterpret_cast<volatile LONG*>(writer.view), 3);
+  setBridgeSignal(writer, 2);
+  const auto lost = awaitLiveness(preparation, CaptureLivenessState::Lost, CaptureLossReason::ShellReaderLost);
+  EXPECT_EQ(lost.frameId, first.frameId);
+  EXPECT_EQ(lost.pixels, first.pixels);
+  EXPECT_EQ(lost.captureLiveness.lastSampleNs, first.captureLiveness.lastSampleNs);
+  EXPECT_GT(lost.captureLiveness.lostAtNs, 0);
+  setBridgeSignal(writer, 3);
+  const auto stopped = awaitLiveness(preparation, CaptureLivenessState::Lost, CaptureLossReason::ShellStopped);
+  EXPECT_EQ(stopped.captureLiveness.lostAtNs, lost.captureLiveness.lostAtNs);
+  EXPECT_EQ(stopped.frameId, first.frameId);
+}
+
+TEST(ShmCapturePreparation, ReplacementRetainsLossUntilACompletedSampleArrives) {
+  Writer first(64, 64), replacement(64, 64);
+  ShmCapturePreparation preparation;
+  ASSERT_TRUE(preparation.registerBuffer("camera", first.name, 64, 64));
+  setBridgeSignal(first, 1);
+  first.write(2, 11);
+  const auto before = awaitColor(preparation, 11);
+  setBridgeSignal(first, 2);
+  const auto lost = awaitLiveness(preparation, CaptureLivenessState::Lost, CaptureLossReason::ShellReaderLost);
+
+  setBridgeSignal(replacement, 1);
+  ASSERT_TRUE(preparation.registerBuffer("camera", replacement.name, 64, 64));
+  const auto held = preparation.latest();
+  ASSERT_EQ(held.size(), 1u);
+  EXPECT_EQ(held[0].frameId, lost.frameId);
+  EXPECT_EQ(held[0].captureLiveness.state, CaptureLivenessState::Lost);
+
+  replacement.write(2, 22);
+  const auto recovered = awaitColor(preparation, 22);
+  EXPECT_NE(recovered.sourceEpoch, before.sourceEpoch);
+  EXPECT_EQ(recovered.captureLiveness.state, CaptureLivenessState::Live);
+  EXPECT_GT(recovered.captureLiveness.lastSampleNs, lost.captureLiveness.lostAtNs);
+}
+
+
+
 TEST(ShmCapturePreparation, HoldsImmutableRealPixelsAndRefusesAnExhaustedPool) {
   Writer writer(64, 64);
   ShmCapturePreparation preparation;

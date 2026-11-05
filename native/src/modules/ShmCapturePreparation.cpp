@@ -18,12 +18,22 @@
 #endif
 
 namespace corevideo::modules {
+namespace {
+constexpr size_t kBridgeSignalOffset = 12;
+enum class BridgeSignal : uint32_t { Unreported = 0, Live = 1, Lost = 2, Stopped = 3 };
+
+int64_t steadyNs(std::chrono::steady_clock::time_point time) {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
+}
+}  // namespace
+
 struct ShmCapturePreparation::Mapping {
   Request request;
   const uint8_t* view = nullptr;
   void* handle = nullptr;
   std::vector<std::shared_ptr<std::vector<uint8_t>>> pool;
   VideoFrame last;
+  CaptureLiveness liveness;
   uint32_t sequence = 0;
   bool seen = false;
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
@@ -52,6 +62,31 @@ struct ShmCapturePreparation::Mapping {
     return false;
 #endif
   }
+  BridgeSignal signal() const {
+    // Like the sequence word, this is an aligned 32-bit load from the shared
+    // header. Loss must be visible even if a writer stopped mid-pixel-copy.
+    return static_cast<BridgeSignal>(*reinterpret_cast<const volatile uint32_t*>(view + kBridgeSignalOffset));
+  }
+  bool observeLoss(BridgeSignal signal) {
+    if (signal != BridgeSignal::Lost && signal != BridgeSignal::Stopped) return false;
+    const auto reason = signal == BridgeSignal::Lost ? CaptureLossReason::ShellReaderLost
+                                                    : CaptureLossReason::ShellStopped;
+    if (liveness.state == CaptureLivenessState::Lost && liveness.reason == reason) return false;
+    if (liveness.state != CaptureLivenessState::Lost) {
+      liveness.lostAtNs = steadyNs(std::chrono::steady_clock::now());
+    }
+    liveness.state = CaptureLivenessState::Lost;
+    liveness.reason = reason;
+    return true;
+  }
+  void observeSample(BridgeSignal signal, int64_t sampleNs) {
+    if (signal == BridgeSignal::Unreported) {
+      liveness = {};
+    } else if (signal == BridgeSignal::Live && sampleNs > liveness.lostAtNs) {
+      liveness = {CaptureLivenessState::Live, true, sampleNs, 0, CaptureLossReason::None};
+    }
+  }
+
   bool released() const {
     return std::all_of(pool.begin(), pool.end(), [](const auto& p) { return p.use_count() == 1; });
   }
@@ -83,9 +118,12 @@ bool ShmCapturePreparation::registerBuffer(const std::string& id, const std::str
   Request request{id, name, width, height, nextGeneration_.fetch_add(1), bytes};
   if (entry != next->end()) {
     request.held = entry->held;
-    for (const auto& completed : *std::atomic_load(&completed_)) {
-      if (completed.generation == entry->generation && completed.frame.participantId == "capture:" + id)
-        request.held = completed.frame;
+    const auto ready = std::atomic_load(&completed_);
+    for (const auto& completed : *ready) {
+      if (completed.generation != entry->generation) continue;
+      if (completed.frame.hasPixels()) request.held = completed.frame;
+      else request.held.captureLiveness = completed.frame.captureLiveness;
+      break;
     }
   }
   if (entry == next->end()) next->push_back(std::move(request)); else *entry = std::move(request);
@@ -110,11 +148,17 @@ std::vector<VideoFrame> ShmCapturePreparation::latest() const {
   std::vector<VideoFrame> frames;
   frames.reserve(wanted->size());
   for (const auto& request : *wanted) {
-    auto completed = std::find_if(ready->begin(), ready->end(), [&](const auto& frame) {
-      return frame.frame.participantId == "capture:" + request.id && frame.generation == request.generation;
+    const auto completed = std::find_if(ready->begin(), ready->end(), [&](const auto& frame) {
+      return frame.generation == request.generation;
     });
-    if (completed != ready->end()) frames.push_back(completed->frame);
-    else if (request.held.hasPixels()) frames.push_back(request.held);
+    if (completed != ready->end() && completed->frame.hasPixels()) {
+      frames.push_back(completed->frame);
+    } else if (request.held.hasPixels()) {
+      frames.push_back(request.held);
+      if (completed != ready->end()) {
+        frames.back().captureLiveness = completed->frame.captureLiveness;
+      }
+    }
   }
   return frames;
 }
@@ -179,6 +223,7 @@ void ShmCapturePreparation::run() {
       auto mapping = std::make_unique<Mapping>(); mapping->request = request;
       // The desired registry owns the frozen fallback until replacement pixels
       // arrive. A mapping must not keep that retired generation alive itself.
+      mapping->liveness = request.held.captureLiveness;
       mapping->request.held = {};
       try {
         if (!mapping->open()) { ++failed; reason = "capture-mapping-unavailable"; continue; }
@@ -211,6 +256,7 @@ void ShmCapturePreparation::run() {
 #endif
     for (auto& [id, mapping] : active) {
       if (!mapping->view) continue;
+      if (mapping->observeLoss(mapping->signal())) changed = true;
       auto sequence = [&] { return *reinterpret_cast<const volatile uint32_t*>(mapping->view); };
       const auto first = sequence();
       std::atomic_thread_fence(std::memory_order_acquire);
@@ -223,7 +269,7 @@ void ShmCapturePreparation::run() {
       auto available = std::find_if(mapping->pool.begin(), mapping->pool.end(), [](const auto& p) { return p.use_count() == 1; });
       if (available == mapping->pool.end()) { ++busy; reason = "capture-pool-busy"; continue; }
       const auto copyStart = std::chrono::steady_clock::now();
-      const auto captureTime = std::chrono::duration_cast<std::chrono::nanoseconds>(copyStart.time_since_epoch()).count() / 100;
+      const auto sampleNs = steadyNs(copyStart);
       try { if (beforeCopy_) beforeCopy_(); }
       catch (...) { ++failed; reason = "capture-copy"; continue; }
       std::atomic_thread_fence(std::memory_order_acquire);
@@ -245,7 +291,10 @@ void ShmCapturePreparation::run() {
       frame.pixels = *available;
       frame.frameId = static_cast<int64_t>(++identity);
       frame.sourceEpoch = mapping->request.generation;
-      frame.captureTimestamp100ns = captureTime; // observation boundary, not sender-provided acquisition time
+      frame.captureTimestamp100ns = sampleNs / 100; // observation boundary, not sender-provided acquisition time
+      const auto signal = mapping->signal();
+      mapping->observeLoss(signal);
+      mapping->observeSample(signal, sampleNs);
       if (gpuRequested_) {
         auto token = std::make_shared<CpuSourceGpuView>();
         token->sourceId = frame.participantId; token->sourceEpoch = frame.sourceEpoch; token->frameId = frame.frameId;
@@ -269,8 +318,12 @@ void ShmCapturePreparation::run() {
     // Publish after all copies; the descriptor handoff never holds control_.
     if (changed || old->size() != active.size() || !retiring.empty()) {
       auto next = std::make_shared<Frames>();
-      for (const auto& [id, mapping] : active) if (mapping->last.hasPixels())
-        next->push_back({mapping->request.generation, mapping->last});
+      next->reserve(active.size());
+      for (const auto& [id, mapping] : active) {
+        auto frame = mapping->last;
+        frame.captureLiveness = mapping->liveness;
+        next->push_back({mapping->request.generation, std::move(frame)});
+      }
       std::shared_ptr<const Frames> immutable = std::move(next);
       std::atomic_store(&completed_, std::move(immutable));
     }
