@@ -604,6 +604,7 @@ issue exists yet for this row; one will be filed, labeled `backlog`, when the
 | Issue | Unranked finding |
 |---|---|
 | [#1141](https://github.com/iamfatness/CoreVideoPro/issues/1141) | Investigate the compiled camera receiver's wall-clock pacing assertion, reproduced on an unchanged previously qualified build. Preserve actual sample/pixel coverage and strict delivery gates. |
+| [#1143](https://github.com/iamfatness/CoreVideoPro/issues/1143) | Investigate the full-suite ISO late-frame drop and held-frame count mismatch; isolated current/prior-build reruns pass but do not explain the retained failed recording. Preserve strict output acceptance. |
 
 | Issue | Item |
 |---|---|
