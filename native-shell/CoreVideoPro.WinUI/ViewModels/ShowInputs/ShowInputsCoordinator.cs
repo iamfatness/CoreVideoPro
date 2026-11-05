@@ -57,6 +57,10 @@ public sealed class ShowInputsCoordinator
             action => { _host.RunOnUiThread(action); return true; }, snapshot =>
             {
                 MultiviewInputRows.ApplyRosterFact(snapshot);
+                foreach (var editor in ShowInputEditors)
+                {
+                    editor.ApplyCaptureDropout(snapshot.Sources.FirstOrDefault(source => source.SourceId == editor.SourceId));
+                }
                 foreach (var source in _host.SrtIngestSources)
                     source.ApplyRuntimeStatus(snapshot.CaptureDevices.FirstOrDefault(device => device.Id == source.DeviceId));
             });
@@ -88,6 +92,7 @@ public sealed class ShowInputsCoordinator
                 {
                     _previewEngineAvailable = false;
                     MultiviewInputRows.EngineStopped();
+                    foreach (var editor in ShowInputEditors) editor.ApplyCaptureDropout(null);
                     MultiviewInputRows.SetPreviewConsumerActive(false);
                     _ = _previewDemand.SetEngineAvailableAsync(false);
                 });
