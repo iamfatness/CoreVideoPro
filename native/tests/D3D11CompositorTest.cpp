@@ -896,6 +896,28 @@ TEST(D3D11Compositor, FailedSlateNameRendersAsASmallBottomLeftLabelNotAFullBand)
   EXPECT_TRUE(foundLabelPixel) << "expected at least one non-slate pixel (the name text) inside the label box";
 }
 
+TEST(D3D11Compositor, FailedCaptureDiscardsHeldPixelsForBothPolicies) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_TRUE(compositor);
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.width = 640;
+  plan.height = 360;
+  plan.layers.push_back({"camera", "participant-video", "capture:camera", "capture:camera",
+                         0, {0, 0, 1, 1}, 1});
+  const auto source = makeLeftRightBandFrame("capture:camera", 64, 64, 64, 64,
+                                            0xff00ff00u, 0xff00ff00u);
+  const auto live = renderPrepared(*compositor, plan, {source});
+  ASSERT_EQ(previewPixelRgba(live.preview, 80, 60), 0xff00ff00u);
+
+  plan.layers.front().sourceHealth = "failed";
+  plan.layers.front().sourceDisplayName = "QA camera";
+  for (const auto* policy : {"hold", "black"}) {
+    plan.layers.front().dropoutPolicy = policy;
+    const auto failed = renderPrepared(*compositor, plan, {source});
+    EXPECT_EQ(previewPixelRgba(failed.preview, 80, 60), corevideo::compositor::kFailedSlateRgba);
+  }
+}
+
 namespace {
 
 // GPU-gated mirrors of the stub-section helpers (that section is compiled only

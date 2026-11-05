@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO.MemoryMappedFiles;
+using System.Linq;
 using System.Threading;
 
 namespace CoreVideoPro.WinUI.Services;
@@ -13,16 +14,46 @@ namespace CoreVideoPro.WinUI.Services;
 /// which a base64-over-stdin channel could never sustain at 1080p60.
 ///
 /// Layout (seqlock): [0] uint32 sequence (even = stable, odd = writer mid-update),
-/// [4] uint32 width, [8] uint32 height, [12] uint32 reserved, [16..] BGRA bytes.
+/// [4] uint32 width, [8] uint32 height, [12] uint32 signal, [16..] BGRA bytes.
 /// The buffer name embeds the PID and dimensions so each process/resolution gets a
 /// fresh mapping (no stale-name collisions; clean re-map on resolution change).
 /// </summary>
 public static class CaptureDeviceSharedMemoryWriter
 {
+    private const int SignalOffset = 12;
     private const int HeaderBytes = 16;
     private static readonly object Gate = new();
     private static readonly Dictionary<string, Mapping> Maps = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, long> ActiveSessions = new(StringComparer.Ordinal);
     private static readonly int Pid = Environment.ProcessId;
+    private static long _nextToken;
+
+    public static long BeginSession(string deviceId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(deviceId);
+        lock (Gate)
+        {
+            var token = ++_nextToken;
+            ActiveSessions[deviceId] = token;
+            return token;
+        }
+    }
+
+    public static bool IsCurrentSession(string deviceId, long token)
+    {
+        lock (Gate)
+        {
+            return ActiveSessions.TryGetValue(deviceId, out var current) && current == token;
+        }
+    }
+
+    public static string[] TrackedDeviceIds()
+    {
+        lock (Gate)
+        {
+            return ActiveSessions.Keys.Union(Maps.Keys, StringComparer.Ordinal).ToArray();
+        }
+    }
 
     public readonly record struct WriteResult(bool MappingChanged, string ShmName, int Width, int Height);
 
@@ -53,11 +84,56 @@ public static class CaptureDeviceSharedMemoryWriter
         }
     }
 
+    public static LiveMapping? MappingFor(string deviceId)
+    {
+        lock (Gate)
+        {
+            return Maps.TryGetValue(deviceId, out var map)
+                ? new LiveMapping(deviceId, map.Name, map.Width, map.Height)
+                : null;
+        }
+    }
+
+    public readonly record struct Retirement(long SessionToken, long? MappingToken);
+
+    // Publish the terminal signal and fence old callbacks under the same gate.
+    // The mapping stays available until the owner releases this exact token.
+    public static Retirement? Retire(string deviceId, long? expectedToken, CaptureBridgeSignal signal)
+    {
+        lock (Gate)
+        {
+            Maps.TryGetValue(deviceId, out var map);
+            var token = ActiveSessions.TryGetValue(deviceId, out var active) ? active : map?.Token;
+            if (token is null || (expectedToken.HasValue && token != expectedToken))
+            {
+                return null;
+            }
+
+            ActiveSessions.Remove(deviceId);
+            long? mappingToken = null;
+            if (map is not null && (map.Token == token || !expectedToken.HasValue))
+            {
+                mappingToken = map.Token;
+                try
+                {
+                    map.Accessor.Write(SignalOffset, (uint)signal);
+                }
+                catch (Exception error)
+                {
+                    LaunchLog.WriteException($"capture: bridge signal {deviceId}", error);
+                }
+            }
+
+            return new Retirement(token.Value, mappingToken);
+        }
+    }
+
     private sealed class Mapping
     {
         public required MemoryMappedFile File;
         public required MemoryMappedViewAccessor Accessor;
         public required string Name;
+        public required long Token;
         public int Width;
         public int Height;
         public uint Sequence;
@@ -68,7 +144,7 @@ public static class CaptureDeviceSharedMemoryWriter
     /// needed). Returns MappingChanged=true when a new buffer was created, so the
     /// caller announces it to the core via register-capture-shm.
     /// </summary>
-    public static WriteResult Write(string deviceId, byte[]? bgra, int width, int height)
+    public static WriteResult Write(string deviceId, long token, byte[]? bgra, int width, int height)
     {
         if (string.IsNullOrEmpty(deviceId) || bgra is not { Length: > 0 } ||
             width <= 0 || height <= 0 || bgra.Length != (long)width * height * 4)
@@ -78,12 +154,17 @@ public static class CaptureDeviceSharedMemoryWriter
 
         lock (Gate)
         {
+            if (!ActiveSessions.TryGetValue(deviceId, out var current) || current != token)
+            {
+                return default;
+            }
+
             var changed = false;
-            if (!Maps.TryGetValue(deviceId, out var map) || map.Width != width || map.Height != height)
+            if (!Maps.TryGetValue(deviceId, out var map) || map.Token != token || map.Width != width || map.Height != height)
             {
                 DisposeMap(map);
                 Maps.Remove(deviceId);
-                map = CreateMap(deviceId, width, height);
+                map = CreateMap(deviceId, token, width, height);
                 if (map is null)
                 {
                     return default;
@@ -101,6 +182,7 @@ public static class CaptureDeviceSharedMemoryWriter
                 accessor.Write(4, (uint)width);
                 accessor.Write(8, (uint)height);
                 accessor.WriteArray(HeaderBytes, bgra, 0, bgra.Length);
+                accessor.Write(SignalOffset, (uint)CaptureBridgeSignal.Live);
                 Thread.MemoryBarrier();
                 map.Sequence += 2;                       // even: stable
                 accessor.Write(0, map.Sequence);
@@ -120,11 +202,11 @@ public static class CaptureDeviceSharedMemoryWriter
     /// the core holds its own view of the mapping and keeps re-emitting the last frame
     /// from it until told to let go (#758).
     /// </summary>
-    public static bool Remove(string deviceId)
+    public static bool Remove(string deviceId, long token)
     {
         lock (Gate)
         {
-            if (!Maps.TryGetValue(deviceId, out var map))
+            if (!Maps.TryGetValue(deviceId, out var map) || map.Token != token)
             {
                 return false;
             }
@@ -135,15 +217,15 @@ public static class CaptureDeviceSharedMemoryWriter
         }
     }
 
-    private static Mapping? CreateMap(string deviceId, int width, int height)
+    private static Mapping? CreateMap(string deviceId, long token, int width, int height)
     {
         try
         {
-            var name = $"CoreVideoCaptureShm_{Pid}_{Sanitize(deviceId)}_{width}x{height}";
+            var name = $"CoreVideoCaptureShm_{Pid}_{Sanitize(deviceId)}_{token}_{width}x{height}";
             long capacity = HeaderBytes + (long)width * height * 4;
             var file = MemoryMappedFile.CreateOrOpen(name, capacity, MemoryMappedFileAccess.ReadWrite);
             var accessor = file.CreateViewAccessor(0, capacity, MemoryMappedFileAccess.ReadWrite);
-            return new Mapping { File = file, Accessor = accessor, Name = name, Width = width, Height = height };
+            return new Mapping { File = file, Accessor = accessor, Name = name, Token = token, Width = width, Height = height };
         }
         catch
         {
