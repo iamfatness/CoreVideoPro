@@ -423,6 +423,11 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 - [#1114](https://github.com/iamfatness/CoreVideoPro/issues/1114): Owner-reported Graphics drag feedback. Keep private artwork visible and show completed native revisions while moving or resizing it.
 
+- [#1117](https://github.com/iamfatness/CoreVideoPro/issues/1117): Owner-run controlled YouTube chat acceptance. [Operator check](reference/graphics-youtube-live-check.md).
+- [#1118](https://github.com/iamfatness/CoreVideoPro/issues/1118): Proposed next social adapter. Moderated Twitch chat with deletion, user clear and room clear. [Provider design](superpowers/specs/2026-11-04-graphics-social-provider-followups.md) and [plan](superpowers/plans/2026-11-04-graphics-social-provider-followups.md).
+- [#1119](https://github.com/iamfatness/CoreVideoPro/issues/1119): Moderated X posts. Confirm project access, budget and deletion evidence before live use.
+- [#1120](https://github.com/iamfatness/CoreVideoPro/issues/1120): Moderated LinkedIn organization comments. Confirm Community Management access and selected post permissions.
+- [#1121](https://github.com/iamfatness/CoreVideoPro/issues/1121): Deterministic social moderation races, replay and source replacement.
 - [#1113](https://github.com/iamfatness/CoreVideoPro/issues/1113): Owner-directed Graphics Phase 3 Slice 6. Review and approve each social item before Show, starting with one public YouTube live chat. [Spec](superpowers/specs/2026-11-04-graphics-phase3-slice6-social-feeds.md) and [implementation plan](superpowers/plans/2026-11-04-graphics-phase3-slice6-social-feeds.md).
 
 - [#968](https://github.com/iamfatness/CoreVideoPro/issues/968): intermittent decoded PCM gaps found during #960 full Studio crash qualification; blocks its audio-continuity evidence. Owner-authorized October 21 within active #960; retain failed trials.
