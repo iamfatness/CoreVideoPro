@@ -46,6 +46,26 @@ public sealed class GraphicsSocialPlayout
     public Task<long> ConnectAsync() => ChangeAsync(_review.Connect);
     public Task DisconnectAsync() => ChangeAsync(() => { _review.Disconnect(); return true; });
     public Task ExpireAsync() => ChangeAsync(() => _review.Items);
+
+    internal Task<bool> ApplyAsync(long source, IReadOnlyList<SocialFeedEvent> events) => ChangeAsync(() =>
+    {
+        foreach (var item in events)
+        {
+            switch (item.Kind)
+            {
+                case SocialFeedEventKind.Text: _review.Receive(source, item.Id, item.Author, item.Text, item.AuthorId); break;
+                case SocialFeedEventKind.Remove: _review.Withdraw(source, item.Id); break;
+                case SocialFeedEventKind.Ban: _review.Ban(source, item.AuthorId); break;
+            }
+        }
+        return _review.IsCurrent(source);
+    });
+
+    internal Task DisconnectAsync(long source) => ChangeAsync(() =>
+    {
+        if (_review.IsCurrent(source)) _review.Disconnect();
+        return true;
+    });
     public Task<GraphicsSocialItem?> ReceiveAsync(long source, string id, string author, string message) =>
         ChangeAsync(() => _review.Receive(source, id, author, message));
     public Task WithdrawAsync(long source, string id) => ChangeAsync(() => { _review.Withdraw(source, id); return true; });

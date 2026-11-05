@@ -8,7 +8,10 @@ public readonly record struct GraphicsSocialItemKey(long Source, string Id, long
 
 public sealed record GraphicsSocialItem(
     GraphicsSocialItemKey Key, string Author, string Message, DateTimeOffset ReceivedAt,
-    GraphicsSocialDecision Decision);
+    GraphicsSocialDecision Decision)
+{
+    internal string AuthorId { get; init; } = "";
+}
 
 /// <summary>Session-only review state. Its console owner serializes callbacks, decisions and Show submission.</summary>
 public sealed class GraphicsSocialReview
@@ -19,6 +22,7 @@ public sealed class GraphicsSocialReview
     private readonly TimeSpan _lifetime;
     private readonly Dictionary<string, GraphicsSocialItem> _items = new(StringComparer.Ordinal);
     private readonly HashSet<string> _removed = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _banned = new(StringComparer.Ordinal);
     private long _source;
     private long _revision;
 
@@ -57,14 +61,15 @@ public sealed class GraphicsSocialReview
         IsConnected = false;
         _items.Clear();
         _removed.Clear();
+        _banned.Clear();
         _revision = 0;
     }
 
-    public GraphicsSocialItem? Receive(long source, string id, string author, string message)
+    public GraphicsSocialItem? Receive(long source, string id, string author, string message, string authorId = "")
     {
         var now = _utcNow();
         Expire(now);
-        if (!IsCurrent(source) || !ValidId(id) || _removed.Contains(id))
+        if (!IsCurrent(source) || !ValidId(id) || _removed.Contains(id) || _banned.Contains(authorId))
             return null;
 
         var current = _items.GetValueOrDefault(id);
@@ -77,13 +82,13 @@ public sealed class GraphicsSocialReview
             return null;
         }
 
-        if (current is not null && current.Author == normalizedAuthor && current.Message == normalizedMessage)
+        if (current is not null && current.Author == normalizedAuthor && current.Message == normalizedMessage && current.AuthorId == authorId)
             return current;
         if (current is null && _items.Count >= _capacity)
             return null;
 
         var item = new GraphicsSocialItem(new(source, id, ++_revision),
-            normalizedAuthor, normalizedMessage, current?.ReceivedAt ?? now, GraphicsSocialDecision.Pending);
+            normalizedAuthor, normalizedMessage, current?.ReceivedAt ?? now, GraphicsSocialDecision.Pending) { AuthorId = authorId };
         _items[id] = item;
         return item;
     }
@@ -92,6 +97,22 @@ public sealed class GraphicsSocialReview
     {
         if (IsCurrent(source) && ValidId(id))
             Remove(id);
+    }
+
+    internal void Ban(long source, string authorId)
+    {
+        if (!IsCurrent(source) || !ValidId(authorId)) return;
+        _banned.Add(authorId);
+        if (_banned.Count + _removed.Count > _removalCapacity)
+        {
+            Disconnect();
+            return;
+        }
+        foreach (var item in _items.Values.Where(item => item.AuthorId == authorId).ToArray())
+        {
+            Remove(item.Key.Id);
+            if (!IsConnected) break;
+        }
     }
 
     public bool Approve(GraphicsSocialItemKey key) => Decide(key, GraphicsSocialDecision.Approved);
@@ -116,7 +137,7 @@ public sealed class GraphicsSocialReview
             _items.TryGetValue(key.Id, out var item) && item.Key == key ? item : null;
     }
 
-    private bool IsCurrent(long source) => IsConnected && source == _source;
+    internal bool IsCurrent(long source) => IsConnected && source == _source;
 
     private void Expire(DateTimeOffset now)
     {
@@ -132,7 +153,7 @@ public sealed class GraphicsSocialReview
     {
         _items.Remove(id);
         _removed.Add(id);
-        if (_removed.Count > _removalCapacity)
+        if (_removed.Count + _banned.Count > _removalCapacity)
             Disconnect();
     }
 

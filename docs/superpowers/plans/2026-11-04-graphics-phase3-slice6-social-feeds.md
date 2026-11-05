@@ -12,7 +12,7 @@ Build the dedicated shell playout service using the existing native template and
 
 ## 3. Connect the YouTube adapter
 
-Use the documented Google video lookup and streaming transport with a fake transport, bounded framing and explicit cancellation. Map only text and invalidations. Test continuation, replay, delayed callbacks, authorization failure, quota/backoff, ended chats and malformed messages. Use the existing protected-secret store facility with a separate provider binding and exercise removal, credential scoping and redacted failures. Confirm no provider bytes enter diagnostics. Commit **Connect public YouTube live chat to social review**.
+Use the documented Google video lookup and paged chat with a fake transport, bounded responses, provider-paced polling and explicit cancellation. Map only text and invalidations. Test continuation, replay, delayed callbacks, authorization failure, quota/backoff, ended chats and malformed messages. Use the existing protected-secret store facility with a separate provider binding and exercise removal, credential scoping and redacted failures. Confirm no provider bytes enter diagnostics. Commit **Connect public YouTube live chat to social review**.
 
 ## 4. Operator review and qualification
 
