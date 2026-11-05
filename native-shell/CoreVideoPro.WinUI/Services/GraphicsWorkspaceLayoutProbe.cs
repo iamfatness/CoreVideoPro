@@ -901,6 +901,8 @@ internal static class GraphicsWorkspaceLayoutProbe
                     .SelectMany(child => Descendants(child).Prepend(child)).OfType<GraphicsSocialReviewDialog>().FirstOrDefault()) is { IsLoaded: true },
                     "Social review did not open from Operate.");
                 var panel = dialog!;
+                Require(Descendants(panel).OfType<TextBlock>().Any(text => text.Text == "Selected source\n" + studio.GraphicsSocialReview.SourceLabel),
+                    "The connected source is not pinned independently of editable connection inputs.");
                 var rows = Descendants(panel).OfType<ListView>().Single();
                 var approved = rows.Items.OfType<ListViewItem>().Single(row => row.Tag is GraphicsSocialItem item && item.Key == first.Key);
                 var pending = rows.Items.OfType<ListViewItem>().Single(row => row.Tag is GraphicsSocialItem item && item.Key.Id == "second");
@@ -912,6 +914,14 @@ internal static class GraphicsWorkspaceLayoutProbe
                 var approve = Button(panel, "Approve");
                 if (approve.IsEnabled) Invoke(approve);
                 await Eventually(() => show.IsEnabled, "The approved exact message could not be selected to Show.");
+                var input = Descendants(panel).OfType<TextBox>().Single(box => box.Header?.ToString() ==
+                    (provider == "Twitch" ? "Twitch channel name" : "Public YouTube video ID"));
+                var savedInput = input.Text;
+                input.Text = provider == "Twitch" ? "anotherchannel" : "aaaaaaaaaaa";
+                Require(Descendants(panel).OfType<TextBlock>().Any(text => text.Text == "Selected source\n" + studio.GraphicsSocialReview.SourceLabel)
+                    && show.IsEnabled && review.Items.All(item => item.Key.Source == source),
+                    "Editing the next connection input changed the current queue's source label or approval.");
+                input.Text = savedInput;
                 Require(Descendants(panel).OfType<TextBlock>().Any(text => text.Text.Contains(first.Message, StringComparison.Ordinal)),
                     "The private review did not show the text being approved.");
                 Require(Descendants(panel).OfType<TextBlock>().Any(text => text.Text.Contains(provider + " · " + first.Author, StringComparison.Ordinal)),

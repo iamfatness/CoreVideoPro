@@ -11,6 +11,7 @@ internal sealed class GraphicsSocialReviewDialog : ContentDialog
 {
     private readonly GraphicsSocialReviewViewModel _model;
     private readonly ComboBox _provider = new() { Header = "Provider", ItemsSource = new[] { "YouTube", "Twitch" }, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly TextBlock _source = Note("");
     private readonly TextBox _video = new() { Header = "Public YouTube video ID", MaxLength = 11 };
     private readonly PasswordBox _key = new() { Header = "YouTube Data API key", PlaceholderText = "Leave blank to reuse the local key", MaxLength = 128 };
     private readonly TextBox _channel = new() { Header = "Twitch channel name", MaxLength = 25 };
@@ -45,7 +46,13 @@ internal sealed class GraphicsSocialReviewDialog : ContentDialog
         _provider.SelectedItem = model.Provider;
         var content = new StackPanel { Spacing = 8 };
         content.Children.Add(Note("Review each message before approving it. Show approved is a separate action."));
-        content.Children.Add(_provider);
+        var providerRow = new Grid { ColumnSpacing = 12 };
+        providerRow.ColumnDefinitions.Add(new() { Width = new GridLength(160) });
+        providerRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        providerRow.Children.Add(_provider);
+        Grid.SetColumn(_source, 1);
+        providerRow.Children.Add(_source);
+        content.Children.Add(providerRow);
         var source = new Grid { ColumnSpacing = 8 };
         source.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         source.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
@@ -124,6 +131,7 @@ internal sealed class GraphicsSocialReviewDialog : ContentDialog
     private void Refresh()
     {
         var twitch = _model.Provider == "Twitch";
+        _source.Text = "Selected source\n" + _model.SourceLabel;
         _channel.Visibility = _client.Visibility = twitch ? Visibility.Visible : Visibility.Collapsed;
         _video.Visibility = _key.Visibility = twitch ? Visibility.Collapsed : Visibility.Visible;
         _authorization.Visibility = _model.DevicePrompt is null ? Visibility.Collapsed : Visibility.Visible;

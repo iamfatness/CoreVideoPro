@@ -38,6 +38,14 @@ internal sealed class GraphicsSocialReviewViewModel
     internal string Channel { get; private set; } = "";
     internal string TwitchClientId { get; private set; } = "";
     internal TwitchDevicePrompt? DevicePrompt { get; private set; }
+    internal string SourceLabel
+    {
+        get
+        {
+            var source = Provider == "Twitch" ? Channel : VideoId;
+            return source.Length > 0 ? Provider + " · " + source : Provider + " live chat";
+        }
+    }
     internal string Status { get; private set; } = "Disconnected. Connect a public YouTube livestream.";
     internal bool Running => _connection is not null;
     internal event EventHandler? Changed;
