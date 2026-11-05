@@ -380,16 +380,17 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         var generation = _modeGeneration;
         try
         {
-            await _host.TakeAsync();
+            var result = await _host.TakeAsync();
             if (generation != _modeGeneration) return;
             _pendingSceneId = null;
             _pendingBindingKey = null;
             _pendingBindingsApplied = false;
             _pendingSince = null;
-            if (!_host.IsMediaCoreRunning || !string.Equals(_host.ActiveSceneId, targetSceneId, StringComparison.Ordinal))
+            if (!result.Succeeded || !_host.IsMediaCoreRunning || !string.Equals(_host.ActiveSceneId, targetSceneId, StringComparison.Ordinal))
             {
                 ProductionMode = ProductionMode.Manual;
-                AutomationLastAction = "Automation paused � Take did not reach program";
+                AutomationLastAction = $"Automation paused - {result.Error ?? "Take did not reach program"}";
+                _host.CommandStatus = AutomationLastAction;
                 return;
             }
             var sceneName = _host.Scenes.FirstOrDefault(scene => scene.Id == targetSceneId)?.Name ?? targetSceneId;
