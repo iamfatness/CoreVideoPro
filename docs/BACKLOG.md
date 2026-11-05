@@ -425,6 +425,7 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 - [#1114](https://github.com/iamfatness/CoreVideoPro/issues/1114): Owner-reported Graphics drag feedback. Keep private artwork visible and show completed native revisions while moving or resizing it.
 
+- [#1125](https://github.com/iamfatness/CoreVideoPro/issues/1125): Windows CI intermittently exhausts telemetry consent file replacement retries under synthetic reader contention.
 - [#968](https://github.com/iamfatness/CoreVideoPro/issues/968): intermittent decoded PCM gaps found during #960 full Studio crash qualification; blocks its audio-continuity evidence. Owner-authorized October 21 within active #960; retain failed trials.
 - [#1106](https://github.com/iamfatness/CoreVideoPro/issues/1106): Graphics Phase 3 Slice 4. Typed per-row values and exact data revisions for Shot Layouts, with preflight and one guarded Take. [Spec](superpowers/specs/2026-11-04-graphics-phase3-slice4-shot-layouts.md) and [implementation plan](superpowers/plans/2026-11-04-graphics-phase3-slice4-shot-layouts.md).
 - [#1110](https://github.com/iamfatness/CoreVideoPro/issues/1110): Graphics Phase 3 Slice 5. Custom API push and pull, reconnect and safe publication. X, YouTube, Twitch and LinkedIn are social targets. Each item requires operator approval before air. Provider order is open. [Spec](superpowers/specs/2026-11-04-graphics-phase3-slice5-push-feeds.md) and [implementation plan](superpowers/plans/2026-11-04-graphics-phase3-slice5-push-feeds.md).
