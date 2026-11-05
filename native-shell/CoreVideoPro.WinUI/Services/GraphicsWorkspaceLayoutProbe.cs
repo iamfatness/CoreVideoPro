@@ -889,8 +889,8 @@ internal static class GraphicsWorkspaceLayoutProbe
                 var windowWidth = (int)width + 40;
                 var windowHeight = suffix == "1360x768" ? 768 : 900;
                 window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, windowWidth, windowHeight));
-                await Eventually(() => window.AppWindow.Size.Width == windowWidth &&
-                    window.AppWindow.Size.Height == windowHeight, $"Could not resize the isolated window to {suffix}.");
+                // Headless Windows can clamp the requested outer window to its desktop.
+                // Use the scenario's client budget and check the actual dialog viewport below.
                 page.Width = width; page.Height = height;
                 page.UpdateLayout();
                 Invoke(Button(page, "Social review…"));
@@ -916,12 +916,27 @@ internal static class GraphicsWorkspaceLayoutProbe
                 await Eventually(() => show.ActualHeight > 0, $"Show approved has no visible control at {suffix}.");
                 await ReviewImageWriter.SaveAsync(panel, Path.Combine(directory, $"graphics-social-review-{suffix}.png"));
                 var content = (ScrollViewer)panel.Content;
-                Require(content.ActualHeight > 0 && content.ActualHeight <= height - 100,
-                    $"Social review at {suffix} has a {content.ActualHeight:0}px content viewport.");
+                var showBottom = show.TransformToVisual(content).TransformPoint(new(0, 0)).Y + show.ActualHeight;
+                Require(content.ActualWidth > 0 && content.ActualWidth <= width &&
+                    content.ViewportHeight > 0 && content.ViewportHeight <= height - 100 &&
+                    showBottom <= content.ViewportHeight + 1,
+                    $"Social review at {suffix} has a {content.ActualWidth:0}×{content.ViewportHeight:0} viewport and Show ends at {showBottom:0}px.");
+
+                if (suffix == "1600x900")
+                {
+                    var edited = await review.ReceiveAsync(source, first.Key.Id, first.Author, "The provider edited this message.");
+                    Require(edited is not null && edited.Key != first.Key, "The edit did not create a fresh review revision.");
+                    await Eventually(() => rows.SelectedItem is null && !show.IsEnabled,
+                        "An edited message kept its previous selection or Show eligibility.");
+                    rows.SelectedItem = rows.Items.OfType<ListViewItem>().Single(row =>
+                        row.Tag is GraphicsSocialItem item && item.Key == edited!.Key);
+                    Require(approve.IsEnabled && !show.IsEnabled, "An edited message did not require fresh approval.");
+                }
                 panel.Hide();
                 await Eventually(() => Button(page, "Social review…").IsEnabled, "Social review did not close.");
                 dialog = null;
-                checks.Add($"Social review at {suffix} requires an approved selection before Show.");
+                var host = window.AppWindow.Size;
+                checks.Add($"Social review at {suffix} fits the dialog viewport and requires an approved selection before Show (host {host.Width}×{host.Height}).");
             }
         }
         finally
