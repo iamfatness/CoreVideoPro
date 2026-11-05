@@ -137,7 +137,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         if (_session.PreviewValidation is { Length: > 0 } invalid) {
             _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable(invalid); return;
         }
-        _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview()));
+        _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview()), continuous: _canvas.IsDragging);
         UpdatePreviewLease();
     }
     private void Refresh()

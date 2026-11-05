@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
@@ -13,35 +12,45 @@ public sealed class GradePreviewCoordinator : IDisposable
     private readonly ColorGradeEditorViewModel _editor;
     private readonly Action<Action> _dispatch;
     private readonly object _gate = new();
-    private readonly Timer _timer;
+    private readonly TimeProvider _time;
+    private readonly ITimer _timer;
     private Draft _draft;
     private Task _inFlight = Task.CompletedTask;
     private volatile bool _disposed;
-    private long _lastRevision = -1, _lastSent;
-    private sealed record Draft(long Revision, ColorGrade Grade, bool ScopesEnabled, bool ScopesOriginal, int HistogramMode, int WaveformMode, bool CompareOriginal, int ScopeView, GradeScopeRoi Roi, LowerThirdPreview? LowerThirdPreview);
+    private long _lastRevision = -1, _lastSent, _completedRevision = -1;
+    private sealed record Draft(long Revision, ColorGrade Grade, bool ScopesEnabled, bool ScopesOriginal, int HistogramMode, int WaveformMode, bool CompareOriginal, int ScopeView, GradeScopeRoi Roi, LowerThirdPreview? LowerThirdPreview, bool ContinuousGraphics);
     public GradePreviewCoordinator(IGradePreviewTransport bridge, ColorGradeEditorViewModel editor, Action<Action> dispatch)
+        : this(bridge, editor, dispatch, TimeProvider.System) { }
+
+    internal GradePreviewCoordinator(IGradePreviewTransport bridge, ColorGradeEditorViewModel editor,
+        Action<Action> dispatch, TimeProvider time)
     {
-        _bridge = bridge; _editor = editor; _dispatch = dispatch;
+        _bridge = bridge; _editor = editor; _dispatch = dispatch; _time = time;
         _draft = CaptureDraft();
         editor.PreviewRequested += OnDraftChanged;
         bridge.GradePreviewReceived += OnObservation;
         bridge.HealthChanged += OnHealth;
-        _timer = new Timer(_ => Tick(), null, 0, 100);
+        _timer = _time.CreateTimer(_ => Tick(), null, TimeSpan.Zero, TimeSpan.FromMilliseconds(100));
     }
     private void OnDraftChanged(object? sender, EventArgs e)
     {
         lock (_gate) _draft = CaptureDraft();
     }
     private Draft CaptureDraft() => new(_editor.Revision, _editor.CurrentGrade, _editor.AdvancedExpanded && _editor.ScopesEnabled,
-        _editor.ScopesOriginal, _editor.HistogramMode, _editor.WaveformMode, _editor.CompareOriginal, _editor.ScopeView, _editor.ScopeRoi, _editor.LowerThirdPreview);
+        _editor.ScopesOriginal, _editor.HistogramMode, _editor.WaveformMode, _editor.CompareOriginal, _editor.ScopeView, _editor.ScopeRoi, _editor.LowerThirdPreview, _editor.ContinuousGraphicsPreview);
     private void Tick()
     {
         lock (_gate)
         {
             if (_disposed || !_inFlight.IsCompleted) return;
-            if (_lastRevision == _draft.Revision && Stopwatch.GetElapsedTime(_lastSent).TotalMilliseconds < 500) return;
             var renew = _lastRevision == _draft.Revision;
-            _lastRevision = _draft.Revision; _lastSent = Stopwatch.GetTimestamp();
+            var sinceSend = _time.GetElapsedTime(_lastSent);
+            if (renew && sinceSend.TotalMilliseconds < 500) return;
+            // Native publishes only its admitted revision. Let that revision produce a frame
+            // before replacing it with the newest pointer edit. Bound the wait on failure.
+            if (!renew && _draft.ContinuousGraphics && _lastRevision > _completedRevision &&
+                sinceSend.TotalMilliseconds < 500) return;
+            _lastRevision = _draft.Revision; _lastSent = _time.GetTimestamp();
             _inFlight = SendAsync(_draft, true, renew);
         }
     }
@@ -62,14 +71,20 @@ public sealed class GradePreviewCoordinator : IDisposable
     }
     private void OnObservation(GradePreviewObservation observation)
     {
-        if (observation.InstanceId != _editor.InstanceId) return;
+        if (observation.InstanceId != _editor.InstanceId || observation.SourceId != _editor.SourceId) return;
+        lock (_gate)
+        {
+            if (observation.Revision == _lastRevision &&
+                (observation.Status == "unavailable" || (observation.Status == "ready" && observation.Texture is not null)))
+                _completedRevision = observation.Revision;
+        }
         _dispatch(() => { if (!_disposed) _editor.ObserveNativePreview(observation); });
     }
     private void OnHealth(MediaCoreHealth health)
     {
         if (health.Recovering || health.Stopped)
         {
-            lock (_gate) _lastRevision = -1;
+            lock (_gate) _lastRevision = _completedRevision = -1;
             _dispatch(() => { if (!_disposed) { _editor.ResetGradeAuthority(); _editor.SetNativeUnavailable("Native preview reconnecting."); } });
         }
     }

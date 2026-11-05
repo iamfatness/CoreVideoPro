@@ -171,7 +171,7 @@ public sealed partial class GraphicsDesignerControl : UserControl
             // Reissuing it would reset the native playback clock before a cycle could finish.
             if (_lastPreview is not { } last || !SamePreview(last, preview)) {
                 _lastPreview = preview;
-                _editor.SetLowerThirdPreview(new(null, Graphics: preview));
+                _editor.SetLowerThirdPreview(new(null, Graphics: preview), continuous: _canvas.IsDragging);
             }
             _previewOwner ??= _attached.CreateAppearancePreview(_editor);
         } else { _previewOwner?.Dispose(); _previewOwner = null; _lastPreview = null; }

@@ -22,6 +22,49 @@ public sealed class ColorGradeEditorViewModelTests
         editor.ObserveNativePreview(Ready(editor) with { InstanceId = "other" }); Assert.False(editor.HasPreview);
         editor.ObserveNativePreview(Ready(editor)); Assert.True(editor.HasPreview);
     }
+    [Fact]
+    public void GraphicsDragKeepsPixelsAndDisplaysSuccessiveCompletedFramesWhileEditsContinue()
+    {
+        var editor = new ColorGradeEditorViewModel("preview:lower-third", "Graphics", new() { Lut = "none" });
+        var draft = new NativeGraphicsPreview("broadcast", 1, System.Text.Json.JsonSerializer.SerializeToElement(new { }), System.Text.Json.JsonSerializer.SerializeToElement(new { }), new(), new());
+        editor.SetLowerThirdPreview(new(null, Graphics: draft));
+        var initial = editor.Revision;
+        editor.ObserveNativePreview(Ready(editor));
+        Assert.True(editor.HasPreview);
+
+        void Move(int x) => editor.SetLowerThirdPreview(new(null,
+            Graphics: draft with { Placement = new() { X = x } }), continuous: true);
+
+        Move(20);
+        var firstMove = editor.Revision;
+        Move(40);
+        var secondMove = editor.Revision;
+        Assert.True(editor.HasPreview);
+        editor.ObserveNativePreview(Ready(editor) with { Status = "preparing", Texture = null });
+        Assert.True(editor.HasPreview);
+
+        GradePreviewObservation Frame(long revision, int frame)
+        {
+            var ready = Ready(editor, revision);
+            return ready with { Texture = new() { SharedHandleHex = "0x1234", Width = 1920, Height = 1080, FrameNumber = frame } };
+        }
+
+        editor.ObserveNativePreview(Frame(firstMove, 20));
+        Assert.Equal(20, editor.NativeSurface.PendingSharedHandle!.FrameNumber);
+        Move(60);
+        editor.ObserveNativePreview(Frame(secondMove, 40));
+        editor.ObserveNativePreview(Frame(firstMove, 21));
+        Assert.Equal(40, editor.NativeSurface.PendingSharedHandle!.FrameNumber);
+
+        editor.SetLowerThirdPreview(new(null, Graphics: draft with { TemplateId = "compact-solid" }));
+        Assert.False(editor.HasPreview);
+        editor.ObserveNativePreview(Frame(secondMove, 41));
+        Assert.False(editor.HasPreview);
+        editor.ObserveNativePreview(Frame(editor.Revision, 80));
+        Assert.Equal(80, editor.NativeSurface.PendingSharedHandle!.FrameNumber);
+        Assert.True(initial < firstMove);
+    }
+
     [Fact] public void DraftAndOriginalComparisonDoNotChangeOnAirGradeButApplyDoes()
     {
         var editor = Editor(); var changes = 0; ColorGrade? saved = null;
