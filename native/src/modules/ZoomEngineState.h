@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,8 @@ struct ZoomEngineRuntimeSnapshot {
   bool rawMediaActive = false;
 };
 
+using ZoomParticipantDisplayNames = std::map<std::string, std::string>;
+
 class ZoomEngineRuntimeState {
  public:
   void apply(const ZoomEngineEvent& event);
@@ -86,6 +89,8 @@ class ZoomEngineRuntimeState {
 
   [[nodiscard]] ZoomEngineRuntimeSnapshot snapshot() const;
   [[nodiscard]] std::vector<ZoomEngineParticipant> floorParticipants() const;
+  // Immutable names from the last accepted roster, safe to read during ISO setup.
+  [[nodiscard]] std::shared_ptr<const ZoomParticipantDisplayNames> participantDisplayNames() const;
   // #1037: O(1) roster-change detection (snapshot() copies these verbatim).
   [[nodiscard]] std::uint64_t meetingGeneration() const { return meetingGeneration_; }
   [[nodiscard]] std::uint64_t rosterRevision() const { return rosterRevision_; }
@@ -141,6 +146,7 @@ class ZoomEngineRuntimeState {
   std::uint32_t activeSpeakerId_ = 0;
   std::uint32_t screenShareParticipantId_ = 0;
   std::map<std::uint32_t, ZoomEngineParticipant> participants_;
+  std::shared_ptr<const ZoomParticipantDisplayNames> participantDisplayNames_;
   std::uint64_t nextSourceGeneration_ = 0;
   std::uint64_t meetingGeneration_ = 0;
   std::uint64_t rosterRevision_ = 0;

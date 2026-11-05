@@ -16,11 +16,13 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 
 #include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 // #907: a latch the server never reaches must FAIL the test within a bound, not
@@ -967,6 +969,72 @@ void setServerTestEnv(const char* name, const char* value) {
 #endif
 }
 }  // namespace
+
+TEST(JsonRpcServer, SessionAndHealthUseOneZoomRosterPerResponse) {
+  using corevideo::core::SnapshotProjection;
+  using corevideo::modules::EngineMutexGuardrail;
+  using corevideo::rpc::Json;
+  setServerTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  setServerTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  ASSERT_TRUE(core.zoomEngineConfigured());
+  const auto event = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":1,"name":"Host"},{"id":2,"name":"Guest"}]})");
+  ASSERT_TRUE(event);
+  core.zoomEngineRuntimeForTest()->applyEngineEventForTest(*event);
+
+  struct ObservedProjection {
+    SnapshotProjection kind;
+    std::uint64_t engineAcquisitions;
+    Json response;
+  };
+  std::vector<ObservedProjection> assembled;
+  const auto guardBefore = EngineMutexGuardrail::forbiddenAcquisitions().load();
+  corevideo::rpc::JsonRpcServer server(core, {}, [&](const corevideo::core::CoreStateCapture& capture,
+      SnapshotProjection kind) {
+    const auto before = EngineMutexGuardrail::threadAcquisitions();
+    auto result = capture.assemble(kind);
+    assembled.push_back({kind, EngineMutexGuardrail::threadAcquisitions() - before, result});
+    return result;
+  });
+  std::istringstream input(
+      R"({"id":1,"type":"snapshot"})" "\n"
+      R"({"id":2,"type":"get-output-session"})" "\n"
+      R"({"id":3,"type":"get-output-health"})" "\n"
+      R"({"id":4,"type":"media-core-sync","commands":[]})" "\n");
+  std::ostringstream output;
+  server.run(input, output);
+
+  ASSERT_EQ(assembled.size(), 4u) << output.str();
+  EXPECT_EQ(assembled[0].kind, SnapshotProjection::Session);
+  EXPECT_EQ(assembled[1].kind, SnapshotProjection::Session);
+  EXPECT_EQ(assembled[2].kind, SnapshotProjection::Health);
+  EXPECT_EQ(assembled[3].kind, SnapshotProjection::Session);
+  for (const auto& projection : assembled) {
+    const bool isSession = projection.kind == SnapshotProjection::Session;
+    // Session also reads the independent subscription churn diagnostic.
+    EXPECT_EQ(projection.engineAcquisitions, isSession ? 2u : 1u)
+        << "engine mutex acquisitions: " << projection.engineAcquisitions;
+    const auto* zoom = projection.response.get("zoom");
+    const auto* evidence = zoom ? zoom->get("evidence") : nullptr;
+    ASSERT_TRUE(evidence);
+    EXPECT_EQ(evidence->getNumber("participantCount"), 2);
+    if (isSession) {
+      const auto* participants = projection.response.get("participants");
+      ASSERT_TRUE(participants && participants->isArray());
+      EXPECT_EQ(participants->asArray().size(), 2u);
+      EXPECT_EQ(projection.response.getNumber("rosterRevision"), 1);
+      const auto* health = projection.response.get("health");
+      const auto* healthZoom = health ? health->get("zoom") : nullptr;
+      ASSERT_TRUE(healthZoom);
+      EXPECT_EQ(healthZoom->stringify(), zoom->stringify());
+      const auto* realtime = projection.response.get("realtimeEvidence");
+      ASSERT_TRUE(realtime);
+      EXPECT_EQ(realtime->getNumber("zoomEngineForbiddenAcquisitions", -1), static_cast<double>(guardBefore));
+    }
+  }
+  EXPECT_EQ(EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore);
+}
 
 TEST(JsonRpcServer, SpineSyncAndZoomSnapshotRunTheirEngineWorkWithoutCoreMutex) {
   using corevideo::rpc::Json;

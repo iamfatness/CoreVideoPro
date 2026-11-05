@@ -10199,9 +10199,8 @@ TEST(MediaCoreRenderGather, IsoVideoDemandReachesTheEngineFromBeforeTheLock) {
   core.reset();
 }
 
-// #1037 C3: ISO display names come from the render tick's pre-read roster, so
-// starting a recording (a command, under coreMutex) never builds a full
-// engine snapshot under the engine mutex.
+// #1048 C3: an ISO recording can start between roster receipt and the next
+// render tick. Its names must use the new roster without taking the engine mutex.
 namespace {
 class IsoNameCapturingEncoder final : public corevideo::modules::IEncoderSink {
  public:
@@ -10224,7 +10223,7 @@ class IsoNameCapturingEncoder final : public corevideo::modules::IEncoderSink {
 };
 }  // namespace
 
-TEST(MediaCoreRenderGather, IsoDisplayNamesComeFromTheTickRosterNotAnEngineSnapshot) {
+TEST(MediaCoreRenderGather, IsoDisplayNamesFollowRosterChangesBeforeTheNextTick) {
   setTestEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
   auto modules = corevideo::modules::createStubModules();
   auto encoder = std::make_unique<IsoNameCapturingEncoder>();
@@ -10251,18 +10250,35 @@ TEST(MediaCoreRenderGather, IsoDisplayNamesComeFromTheTickRosterNotAnEngineSnaps
     std::lock_guard<std::mutex> lock(coreMutex);
     core->renderDisplayTick(-1, 0, std::move(inputs));
   }
+  const auto lateRoster = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":2,"participants":[{"id":1,"name":"Alice"},{"id":2,"name":""},{"id":3,"name":"Late Guest"}]})");
+  ASSERT_TRUE(lateRoster);
+  runtime->applyEngineEventForTest(*lateRoster);
+  runtime->applyEngineEventForTest(*event); // Delayed older roster must not replace the names.
+
   const corevideo::rpc::Json isoIds = corevideo::rpc::Json::Array{
-      std::string("zoom:1"), std::string("zoom:2"), std::string("zoom:3")};
+      std::string("zoom:1"), std::string("zoom:2"), std::string("zoom:3"), std::string("zoom:4")};
   const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
   {
     corevideo::modules::ForbidEngineMutexScope forbid("test.cmd");
     (void)core->applyCommand(corevideo::rpc::Json::Object{
         {"type", "start-recording-session"}, {"sessionId", "iso-names"}, {"isoSourceIds", isoIds}});
   }
+  EXPECT_EQ(capture->names.at("zoom:1"), "Alice");
+  EXPECT_EQ(capture->names.at("zoom:2"), "Zoom User 2");
+  EXPECT_EQ(capture->names.at("zoom:3"), "Late Guest");
+  EXPECT_EQ(capture->names.at("zoom:4"), "4");
+
+  // Leave clears the old roster even when no display tick has consumed it.
+  runtime->applyEngineEventForTest({corevideo::modules::ZoomEngineEventKind::Left});
+  {
+    corevideo::modules::ForbidEngineMutexScope forbid("test.cmd");
+    (void)core->applyCommand(corevideo::rpc::Json::Object{
+        {"type", "set-recording-targets"}, {"isoSourceIds", isoIds}});
+  }
+  EXPECT_EQ(capture->names.at("zoom:1"), "1");
+  EXPECT_EQ(capture->names.at("zoom:3"), "3");
   EXPECT_EQ(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore)
-      << "start-recording-session took the Zoom engine mutex to resolve ISO names";
-  EXPECT_EQ(capture->names["zoom:1"], "Alice");
-  EXPECT_EQ(capture->names["zoom:2"], "Zoom User 2") << "the snapshot's exact empty-name fallback";
-  EXPECT_EQ(capture->names["zoom:3"], "3") << "not in the roster: the bare id, as before";
+      << "ISO display name resolution took the Zoom engine mutex";
   core.reset();
 }
