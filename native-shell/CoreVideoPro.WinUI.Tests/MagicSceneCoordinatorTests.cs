@@ -144,12 +144,45 @@ public sealed class MagicSceneCoordinatorTests
         Assert.True(coordinator.AutomationPreferScreenShare);
         Assert.True(coordinator.AutomationLowerThirdsEnabled);
         Assert.True(coordinator.AutomationAutoAssignInputsEnabled);
-        Assert.True(coordinator.AutomationCaptionsEnabled);
+        Assert.False(coordinator.AutomationCaptionsEnabled);
         Assert.Equal(70, coordinator.AutomationConfidenceThreshold);
         Assert.Equal(4, coordinator.AutomationSwitchDelaySeconds);
         Assert.Equal(4, coordinator.AutomationPanelParticipantThreshold);
         Assert.Equal("Automation defaults restored", coordinator.AutomationLastAction);
         Assert.Equal("Automation defaults restored", host.CommandStatus);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AutoMode_NeverEnablesCaptionStripOrClearsExternalCaptionText(bool legacyEnable)
+    {
+        var (coordinator, host) = Build();
+        host.RoomVideoParticipantCount = 2;
+        host.CaptionText = "Operator supplied cue";
+        host.CaptionSpeaker = "Presenter";
+        coordinator.AutomationCaptionsEnabled = legacyEnable;
+        coordinator.ToggleAutomationCommand.Execute(null);
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.ResetAutomationDefaultsCommand.Execute(null);
+        coordinator.EvaluateAutomationPolicy();
+
+        Assert.False(coordinator.AutomationCaptionsEnabled);
+        Assert.Contains(("caption", false), host.GraphicPolicies);
+        Assert.DoesNotContain(("caption", true), host.GraphicPolicies);
+        Assert.Contains(("lower-third", true), host.GraphicPolicies);
+        Assert.Equal("Operator supplied cue", host.CaptionText);
+        Assert.Equal("Presenter", host.CaptionSpeaker);
+    }
+
+    [Fact]
+    public void LegacyCaptionEnable_IsRejectedWithoutAdvertisingAnEnabledFeature()
+    {
+        var (coordinator, host) = Build();
+        coordinator.AutomationCaptionsEnabled = true;
+        Assert.False(coordinator.AutomationCaptionsEnabled);
+        Assert.Contains("does not transcribe speech", host.CommandStatus);
+        Assert.Empty(host.GraphicPolicies);
     }
 
     // #767: the licence tier was never real (a mock panel with nothing behind it), so
@@ -507,6 +540,7 @@ public sealed class MagicSceneCoordinatorTests
         public bool FailTake { get; set; }
         public bool ThrowTake { get; set; }
         public int GraphicPolicyCalls { get; private set; }
+        public List<(string Kind, bool Enabled)> GraphicPolicies { get; } = [];
         public IReadOnlyList<NativeDirectorSlotBinding> PreviewBindings { get; private set; } = [];
 
         string IMagicSceneHost.CommandStatus
@@ -541,6 +575,7 @@ public sealed class MagicSceneCoordinatorTests
         public bool SetAutomationGraphic(string kind, bool enabled)
         {
             GraphicPolicyCalls++;
+            GraphicPolicies.Add((kind, enabled));
             return false;
         }
 
