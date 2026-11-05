@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
 const source = readFileSync(resolve(root, 'native/src/core/CoreStateCapture.cpp'), 'utf8');
-const start = source.indexOf('rpc::Json CoreStateCapture::sessionState() const {');
+const start = source.indexOf('rpc::Json CoreStateCapture::sessionState(');
 const end = source.indexOf('rpc::Json CoreStateCapture::health(', start);
 if (start < 0 || end < 0) throw Error('Cannot locate native sessionState()');
 const body = source.slice(start, end);
