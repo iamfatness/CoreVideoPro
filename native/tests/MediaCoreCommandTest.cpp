@@ -8415,11 +8415,6 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
   modules.compositor = std::move(ownedCompositor);
   corevideo::core::MediaCore mediaCore(std::move(modules));
   // capture:decklink-1 is connected with signal in the stub set (CaptureIngest tests).
-  // set-source-policy runs AFTER load-scene-graph in this batch, and every
-  // batch below keeps that order: loadSceneGraph clears sceneValidationWarnings_,
-  // so a rejection warning pushed before the scene command would be wiped
-  // before this test could ever see it (see the comment at the push site in
-  // MediaCore::setSourcePolicy).
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "cam"},
           {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
@@ -8436,22 +8431,17 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
               // non-empty) skipped it entirely; the new guard (!hasFillColor)
               // must still annotate it via the key rule's sourceId fallback.
               corevideo::rpc::Json::Object{{"sourceId", "orphan:test-1"}}}}},
-      // R2 (final review): a dropout POLICY is Zoom-only this slice — a
-      // capture:<id> id's policy is REFUSED (loudly), but its displayName is
-      // still adopted (the failed slate needs names for capture too).
+      // Legacy capture stores the preference while its adapter reports no liveness.
       corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "capture:decklink-1"},
                                    {"dropoutPolicy", "black"}, {"displayName", "Camera 1"}}});
   mediaCore.renderDisplayTick();
-  const auto& warningsAfterCaptureReject = mediaCore.sceneValidationWarningsForTest();
-  EXPECT_NE(std::find(warningsAfterCaptureReject.begin(), warningsAfterCaptureReject.end(),
-                       "set-source-policy: only zoom:<pid> sources take a dropout policy this slice (capture:decklink-1)"),
-            warningsAfterCaptureReject.end());
+  EXPECT_TRUE(mediaCore.sceneValidationWarningsForTest().empty());
   const auto& plan = compositor->lastPlan;
   const auto layer = std::find_if(plan.layers.begin(), plan.layers.end(),
       [](const auto& l) { return l.participantId == "capture:decklink-1"; });
   ASSERT_NE(layer, plan.layers.end());
   EXPECT_EQ(layer->sourceHealth, "producing");
-  EXPECT_EQ(layer->dropoutPolicy, "hold");  // policy refused for a non-zoom id: stays default
+  EXPECT_EQ(layer->dropoutPolicy, "hold");  // no liveness reported: legacy render behavior
   EXPECT_EQ(layer->sourceDisplayName, "Camera 1");  // name IS adopted for a non-zoom id
   // #535 slice 4a fix round 1: multiview tiles draw through the SAME
   // compositor path (renderMultiview), so a dead source must be identifiable
@@ -8473,15 +8463,20 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
   const auto state = mediaCore.sessionState();
   bool echoed = false;
   for (const auto& s : state.get("sources")->asArray()) {
-    if (s.getString("sourceId") == "capture:decklink-1") { echoed = true; EXPECT_EQ(s.getString("dropoutPolicy"), "hold"); EXPECT_EQ(s.getString("displayName"), "Camera 1"); }
+    if (s.getString("sourceId") == "capture:decklink-1") {
+      echoed = true;
+      EXPECT_EQ(s.getString("dropoutPolicy"), "black");
+      EXPECT_EQ(s.getString("displayName"), "Camera 1");
+      EXPECT_EQ(s.getString("liveness"), "unreported");
+      ASSERT_TRUE(s.get("dropoutPolicyApplies"));
+      EXPECT_FALSE(s.get("dropoutPolicyApplies")->asBool());
+    }
   }
   EXPECT_TRUE(echoed);
 
   // #535 slice 4a fix round 2 (finding 1): PRESENT-OR-KEEP. A re-sent
   // set-source-policy carrying only displayName (no dropoutPolicy field at
-  // all) must never reset the policy back to the "hold" default. Still true
-  // for a non-zoom id, whose policy is refused rather than accepted, but
-  // whose name keeps updating normally.
+  // all) must preserve the stored policy while the name keeps updating.
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
       {"type", "set-source-policy"}, {"sourceId", "capture:decklink-1"}, {"displayName", "Cam 1"}}});
   mediaCore.renderDisplayTick();
@@ -8489,8 +8484,17 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
   const auto keepLayer = std::find_if(keepPlan.layers.begin(), keepPlan.layers.end(),
       [](const auto& l) { return l.participantId == "capture:decklink-1"; });
   ASSERT_NE(keepLayer, keepPlan.layers.end());
-  EXPECT_EQ(keepLayer->dropoutPolicy, "hold");  // still refused/default for a non-zoom id
-  EXPECT_EQ(keepLayer->sourceDisplayName, "Cam 1");  // updated: displayName was present
+  EXPECT_EQ(keepLayer->dropoutPolicy, "hold");  // legacy adapter continues to hold
+  EXPECT_EQ(keepLayer->sourceDisplayName, "Cam 1");
+  const auto updated = mediaCore.sessionState();
+  const auto* sources = updated.get("sources");
+  ASSERT_TRUE(sources && sources->isArray());
+  const auto& rows = sources->asArray();
+  const auto updatedCamera = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+    return row.getString("sourceId") == "capture:decklink-1";
+  });
+  ASSERT_NE(updatedCamera, rows.end());
+  EXPECT_EQ(updatedCamera->getString("dropoutPolicy"), "black");
 
   // #535 slice 4a fix round 2 (finding 2): the rejection path is observable
   // (the exact warning), the rejected policy leaves the layer at the "hold"

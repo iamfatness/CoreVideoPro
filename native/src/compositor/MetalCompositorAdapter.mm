@@ -857,7 +857,10 @@ class MetalCompositor final : public ICompositor {
         // run after the frame resolution above and before drawLayer, which
         // branches solid-vs-textured on layer.frame — mirrors the D3D11/CPU
         // preview rule exactly.
-        if (!compositorLayerIsOverlay(layer.plan) && layer.frame != nullptr && frameHasContent(*layer.frame) &&
+        if (!compositorLayerIsOverlay(layer.plan) && compositor::suppressFrameFor(layer.plan.sourceHealth)) {
+          layer.frame = nullptr;
+          layer.color = compositor::kFailedSlateRgba;
+        } else if (!compositorLayerIsOverlay(layer.plan) && layer.frame != nullptr && frameHasContent(*layer.frame) &&
             compositor::blackOnStalled(layer.plan.sourceHealth, layer.plan.dropoutPolicy)) {
           layer.frame = nullptr;
           layer.color = compositor::kDropoutBlackRgba;

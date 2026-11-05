@@ -1,6 +1,7 @@
 #pragma once
 
-#include "core/SourceBus.h"
+#include "core/SourceHealth.h"
+#include "modules/Interfaces.h"
 
 #include <algorithm>
 
@@ -17,6 +18,13 @@ struct CaptureOnAirDecision {
   SourceHealth health;
   int64_t failInNs;
   bool policyApplies;
+};
+
+// Captured at ingest for both the render plan and later snapshot assembly.
+struct CaptureOnAirObservation {
+  CaptureOnAirDecision decision;
+  int64_t lastSampleAgeNs;
+  modules::CaptureLossReason reason;
 };
 
 inline CaptureOnAirDecision decideCaptureOnAir(const modules::CaptureLiveness& liveness, int64_t nowNs) {

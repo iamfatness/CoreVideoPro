@@ -29,6 +29,7 @@ class CaptureDeviceSource final : public ISource {
     frame.sourceGeneration = generation_;
     latest_ = std::move(frame);  // shared_ptr payload: no pixel copy
     hasFrame_ = true;
+    tombstoneOrder_ = 0;
     descriptor_.hasVideo = true;
     descriptor_.width = latest_.pixelWidth > 0 ? latest_.pixelWidth : latest_.i420Width;
     descriptor_.height = latest_.pixelHeight > 0 ? latest_.pixelHeight : latest_.i420Height;
@@ -57,9 +58,37 @@ class CaptureDeviceSource final : public ISource {
   }
   SourceIngestCounters counters() const override { return counters_; }
 
+  void endVideo() {
+    if (!hasFrame_) return;
+    const auto liveness = latest_.captureLiveness;
+    clearVideo();
+    if (liveness.state != modules::CaptureLivenessState::Unreported) {
+      latest_.captureLiveness = liveness;
+      tombstoneOrder_ = ++nextTombstone_;
+    }
+  }
+
+  std::uint64_t tombstoneOrder() const { return tombstoneOrder_; }
+
+  void recordOnAirObservation(int64_t nowNs) {
+    const auto& liveness = latest_.captureLiveness;
+    if (liveness.state == modules::CaptureLivenessState::Unreported) {
+      onAirObservation_.reset();
+      return;
+    }
+    const auto decision = tombstoneOrder_ == 0 ? decideCaptureOnAir(liveness, nowNs)
+        : CaptureOnAirDecision{CaptureOnAirPhase::Failed, SourceHealth::Failed, 0, true};
+    onAirObservation_ = CaptureOnAirObservation{
+        decision, (std::max)(int64_t{0}, nowNs - liveness.lastSampleNs), liveness.reason};
+  }
+
+  const std::optional<CaptureOnAirObservation>& onAirObservation() const { return onAirObservation_; }
+
   void clearVideo() {
     latest_ = {};
     hasFrame_ = false;
+    tombstoneOrder_ = 0;
+    onAirObservation_.reset();
     descriptor_.hasVideo = false;
     descriptor_.width = descriptor_.height = 0;
   }
@@ -84,6 +113,9 @@ class CaptureDeviceSource final : public ISource {
 
  private:
   inline static std::atomic<uint64_t> nextGeneration_{0};
+  inline static std::atomic<uint64_t> nextTombstone_{0};
+  std::uint64_t tombstoneOrder_ = 0;
+  std::optional<CaptureOnAirObservation> onAirObservation_;
   uint64_t generation_ = 0;
   SourceDescriptor descriptor_;
   modules::VideoFrame latest_;
