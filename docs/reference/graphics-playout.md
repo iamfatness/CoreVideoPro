@@ -357,7 +357,9 @@ name and what it shows (`{name}` for a variable, or its kind).
   anything below them is cut off.
 
 **Canvas (centre).** The native preview of the draft. Click a layer to select
-it, drag to move it, drag its corner to resize it. Moves and edge resizes
+it, drag to move it, drag its corner to resize it. The private canvas holds the last
+native frame during preparation and shows completed edits while you drag. Cue
+and Program keep their accepted revisions. Moves and edge resizes
 **snap** to the safe area and the centre lines (within 8 px), and the guide is
 drawn while they hold; **hold Ctrl to place freely**. Resizes that keep the
 aspect ratio (image layers, or Shift held), scaling the whole graphic, and

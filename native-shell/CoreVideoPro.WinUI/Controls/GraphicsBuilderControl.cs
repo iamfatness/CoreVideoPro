@@ -215,7 +215,7 @@ public sealed partial class GraphicsBuilderControl : UserControl
         if (_session.PreviewValidation is { Length: > 0 } invalid) { _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable(invalid); return; }
         if (!_suspended && _attached?.IsOverlaysTab == true) {
             // The core renders the private draft onto preview:lower-third; the lease pulls that surface into the canvas.
-            _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview()));
+            _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview()), continuous: _canvas.IsDragging);
             _previewOwner ??= _attached.CreateAppearancePreview(_editor);
         } else { _previewOwner?.Dispose(); _previewOwner = null; }
     }
