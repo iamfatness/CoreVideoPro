@@ -66,6 +66,11 @@ internal static class GraphicsWorkspaceLayoutProbe
                     $"Builder Add to playlist is outside the visible controls at {suffix}.");
                 checks.Add($"Builder preview at {suffix} fits at {preview.Width:0}x{preview.Height:0}.");
                 await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-builder-{suffix}.png"));
+                var pagePosition = save.TransformToVisual(page).TransformPoint(new(0, 0));
+                Require(pagePosition.X >= 0 && pagePosition.Y >= 0 &&
+                    pagePosition.X + save.ActualWidth <= page.ActualWidth + 1 &&
+                    pagePosition.Y + save.ActualHeight <= page.ActualHeight + 1,
+                    $"Builder Add to playlist at {suffix} ends at {pagePosition.Y + save.ActualHeight:0}px outside the {page.ActualHeight:0}px captured page.");
             }
             page.ClearValue(FrameworkElement.WidthProperty);
             page.ClearValue(FrameworkElement.HeightProperty);
@@ -117,6 +122,7 @@ internal static class GraphicsWorkspaceLayoutProbe
                 catalog=System.Text.Json.JsonSerializer.Deserialize<NativeGraphicsState>(await File.ReadAllTextAsync(catalogPath),new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))!.Templates.ToArray();
             studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=catalog});
             await Task.Delay(150);page.UpdateLayout();
+            await CheckPopulatedBuilderAsync(page, studio, template, checks, directory);
             var workspace = Descendants(page).OfType<GraphicsWorkspaceControl>().Single();
             await Eventually(()=>Descendants(workspace).OfType<Image>().Count(i=>Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(i).StartsWith("Show template reference: ",StringComparison.Ordinal) && i.Source is Microsoft.UI.Xaml.Media.Imaging.BitmapImage {PixelWidth:320})==4);
             foreach(var name in GraphicsShowStarters.All.Select(s=>s.Name)) {
@@ -253,6 +259,67 @@ internal static class GraphicsWorkspaceLayoutProbe
             await CheckAutomationEditingAsync(window, studio, checks);
         } finally { Environment.SetEnvironmentVariable("COREVIDEO_GRAPHICS_DOCUMENT_PATH",previousPath); }
     }
+    private static async Task CheckPopulatedBuilderAsync(OverlaysPage page, StudioViewModel studio,
+        NativeGraphicsTemplate template, List<string> checks, string directory)
+    {
+        var advanced = studio.GraphicsDesignAdvanced;
+        var width = page.Width;
+        var height = page.Height;
+        studio.GraphicsDesignAdvanced = false;
+        var installed = studio.GraphicsWorkspace.State?.Templates.SingleOrDefault(candidate =>
+            candidate.TemplateId == template.TemplateId && candidate.TemplateVersion == template.TemplateVersion)
+            ?? throw new InvalidOperationException("The builder capture look is absent from the observed catalog.");
+        studio.GraphicsWorkspace.Browse(installed);
+        var builder = Descendants(page).OfType<GraphicsBuilderControl>().Single();
+        ScrollViewer? form = null;
+        try
+        {
+            await Eventually(() => Descendants(builder).OfType<TextBox>().Any(box => box.Header?.ToString() == "Name"),
+                "The populated builder did not expose its private name field.");
+            Descendants(builder).OfType<TextBox>().Single(box => box.Header?.ToString() == "Name").Text = "Synthetic guest";
+            await Eventually(() => studio.GraphicsWorkspace.Draft?.Fields.GetProperty("name").GetString() == "Synthetic guest",
+                "The builder name input did not reach its private draft.");
+            Descendants(builder).OfType<TextBox>().Single(box => box.Header?.ToString() == "Title").Text = "Capture check";
+            await Eventually(() => studio.GraphicsWorkspace.Draft?.Fields.GetProperty("title").GetString() == "Capture check",
+                "The builder title input did not reach its private draft.");
+            form = Descendants(builder).OfType<ScrollViewer>().Single(scroll =>
+                scroll.Content is StackPanel && Descendants(scroll).OfType<TextBox>().Any(box => box.Header?.ToString() == "Names list (optional)"));
+            foreach (var (w, h, suffix) in new[] { (1320d, 640d, "1360x768"), (1560d, 772d, "1600x900") })
+            {
+                page.Width = w; page.Height = h; page.UpdateLayout();
+                form.ChangeView(null, 0, null, true);
+                await Eventually(() => form.VerticalOffset <= 1, "The builder inspector did not return to its first fields.");
+                await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-builder-populated-{suffix}.png"));
+                Require(form.ScrollableHeight > 0, "The populated builder fixture did not exercise its bounded inspector scroll area.");
+                form.ChangeView(null, form.ScrollableHeight, null, true);
+                await Eventually(() => form.VerticalOffset >= form.ScrollableHeight - 1, "The builder inspector did not expose its final fields.");
+                var finalInputs = Descendants(form).OfType<ComboBox>().Where(box => box.Header?.ToString() is "Hotkey" or "Hides after").ToArray();
+                Require(finalInputs.Length == 2, "The populated builder fixture is missing its final timing controls.");
+                foreach (var input in finalInputs)
+                {
+                    var point = input.TransformToVisual(form).TransformPoint(new(0, 0));
+                    Require(input.ActualHeight > 0 && point.Y >= 0 && point.Y + input.ActualHeight <= form.ViewportHeight + 1,
+                        $"Builder {input.Header} is not fully accessible after scrolling at {suffix}.");
+                }
+                var save = Button(builder, "Add to playlist");
+                var at = save.TransformToVisual(page).TransformPoint(new(0, 0));
+                Require(save.IsEnabled && at.X >= 0 && at.X + save.ActualWidth <= page.ActualWidth + 1 &&
+                    at.Y >= 0 && at.Y + save.ActualHeight <= page.ActualHeight + 1,
+                    $"Builder fixed Save action is clipped or disabled at {suffix}.");
+                await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-builder-bottom-{suffix}.png"));
+                checks.Add($"Populated builder at {suffix}: private fields render, final inspector fields scroll into view and the fixed Save action fits the captured page.");
+            }
+            Require(studio.GraphicsWorkspace.State?.Instances.Count == 0 && studio.GraphicsLibrary.Document.StudioLowerThird is null,
+                "Builder capture preparation created native instances or assigned a Studio look.");
+        }
+        finally
+        {
+            form?.ChangeView(null, 0, null, true);
+            page.Width = width; page.Height = height;
+            studio.GraphicsDesignAdvanced = advanced;
+        }
+    }
+
     /// <summary>Graphics Designer slice 2: the builder's "Open in Designer" with "Probe strap" selected (already the
     /// private draft) shows it in the Designer; then, at the 1360x768 and
     /// 1600x900 shell budgets (page 1320x640 and 1560x772): one surface, the seed's layer rows, every fixed action

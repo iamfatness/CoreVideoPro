@@ -278,6 +278,12 @@ Preserve the existing session while building; restart/rejoin for candidate valid
 
 ## Now — owner-accepted order (2026-10-08)
 
+Owner ranked the Graphics capture correction next on November 5.
+
+| Issue | Work |
+|---|---|
+| [#1135](https://github.com/iamfatness/CoreVideoPro/issues/1135) | Reproduce and correct unreadable Graphics builder review captures; preserve geometry evidence separately and inspect 1360×768 and 1600×900 images. |
+
 Owner-directed active stability work: [#960](https://github.com/iamfatness/CoreVideoPro/issues/960),
 reconnectable EngineHost with real opt-in WinUI/native consumer. This is one active
 item; dependent #961–#963 do not start concurrently.
