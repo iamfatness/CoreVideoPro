@@ -34,6 +34,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     private bool _evaluating;
     private bool _overlayPolicyDirty = true;
     private long _modeGeneration;
+    private (string Core, string Roster, bool Running, bool InMeeting)? _observedSession;
 
     [ObservableProperty]
     private ProductionMode _productionMode = ProductionMode.Manual;
@@ -61,8 +62,16 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     [ObservableProperty]
     private bool _automationAutoAssignInputsEnabled = true;
 
-    [ObservableProperty]
-    private bool _automationCaptionsEnabled = true;
+    public const string AutomaticCaptionsUnavailable =
+        "Automatic captions are unavailable: CoreVideo does not transcribe speech. Use explicit caption cues from a control client or the show engine.";
+
+    // Retain the legacy property for control-state compatibility, but never advertise
+    // an automatic caption source that does not exist (#1144).
+    public bool AutomationCaptionsEnabled
+    {
+        get => false;
+        set { if (value) _host.CommandStatus = AutomaticCaptionsUnavailable; }
+    }
 
     [ObservableProperty]
     private double _automationConfidenceThreshold = 70;
@@ -87,9 +96,19 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     public MagicSceneCoordinator(IMagicSceneHost host, Func<DateTimeOffset>? clock = null)
     {
         _host = host;
-        _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        var start = System.Diagnostics.Stopwatch.GetTimestamp();
+        _clock = clock ?? (() => DateTimeOffset.UnixEpoch + System.Diagnostics.Stopwatch.GetElapsedTime(start));
         _timer = host.CreateAutomationTimer(EvaluateAutomationPolicy);
     }
+
+    public CoreVideoPro.MediaCore.Models.NativeDirectorPolicy DirectorPolicy => new()
+    {
+        PreferScreenShare = AutomationPreferScreenShare,
+        PanelGuestThreshold = (int)Math.Round(AutomationPanelParticipantThreshold)
+    };
+
+    public string TimingSummary =>
+        $"Preview at {AutomationConfidenceThreshold:0}% confidence; automatic Take at {Math.Max(88, AutomationConfidenceThreshold):0}% after the longer of person stability and {AutomationSwitchDelaySeconds:0.#}s scene hold (share enter 2.5s / exit 3.5s).";
 
     private string RecommendedSceneName =>
         ProductionStateHelper.RecommendedSceneName(_host.Scenes, Recommendation.RecommendedSceneId);
@@ -193,6 +212,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
 
     private void EvaluateAutomationPolicyCore()
     {
+        ObserveAutomationSession();
         if (ProductionMode != ProductionMode.SetAndForget)
         {
             if (_timer.IsRunning)
@@ -214,25 +234,23 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
             _timer.Start();
         }
 
-        // A pending Take owns preview until its acknowledgment arrives. Snapshot
-        // recommendation churn must not change the scene under that transaction.
-        if (_takeInFlight) return;
-
         if (!_host.IsInMeeting || _host.RoomVideoParticipantCount == 0)
         {
-            _pendingSceneId = null;
-            _pendingSince = null;
+            ResetPendingCandidate();
             AutomationLastAction = "Waiting for meeting participants";
             return;
         }
 
         if (!_host.IsMediaCoreRunning)
         {
-            _pendingSceneId = null;
-            _pendingSince = null;
+            ResetPendingCandidate();
             AutomationLastAction = "Waiting for media core before changing scenes";
             return;
         }
+
+        // Keep Preview owned by the outstanding transport operation, but observe
+        // session loss above so its completion cannot revive stale Auto state.
+        if (_takeInFlight) return;
 
         if (_overlayPolicyDirty)
         {
@@ -242,37 +260,28 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
 
         if (Recommendation.Confidence <= 0 || Recommendation.Confidence < AutomationConfidenceThreshold)
         {
-            _pendingSceneId = null;
-            _pendingSince = null;
-            AutomationLastAction = $"Holding current scene - confidence {Recommendation.Confidence}% is below {AutomationConfidenceThreshold:0}%";
+            ResetPendingCandidate();
+            AutomationLastAction = Recommendation.Confidence <= 0 ? Recommendation.Reason
+                : $"Holding current scene - confidence {Recommendation.Confidence}% is below {AutomationConfidenceThreshold:0}%";
             return;
         }
 
         var targetSceneId = Recommendation.RecommendedSceneId;
         if (!_host.Scenes.Any(scene => scene.Id == targetSceneId))
         {
-            _pendingSceneId = null;
-            _pendingSince = null;
+            ResetPendingCandidate();
             AutomationLastAction = "Recommended scene is no longer available";
             return;
         }
         if (Recommendation.SlotBindings.Count == 0)
         {
+            ResetPendingCandidate();
             AutomationLastAction = $"Holding Program: no source to bind on Preview. {Recommendation.Reason}";
             return;
         }
         var now = _clock();
         var bindingDecision = _bindingHold.Evaluate(_host.ActiveSceneId, _lastTakenBindings,
             targetSceneId, Recommendation.SlotBindings, now);
-        if (!bindingDecision.Ready)
-        {
-            _pendingSceneId = null;
-            _pendingBindingKey = null;
-            _pendingBindingsApplied = false;
-            _pendingSince = null;
-            AutomationLastAction = $"Holding person bindings: {bindingDecision.ElapsedMs}/{bindingDecision.RequiredMs} ms";
-            return;
-        }
         var bindingKey = string.Join("|", Recommendation.SlotBindings.OrderBy(binding => binding.SlotIndex)
             .Select(binding => $"{binding.SlotIndex}:{binding.PersonId}:{binding.SourceId}"));
         var sceneHoldSeconds = DirectorBindingHoldPolicy.RequiredSceneHoldSeconds(
@@ -305,12 +314,17 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
             CuePreview(targetSceneId);
             if (!_host.ApplyPreviewBindings(targetSceneId, Recommendation.SlotBindings, out var bindingReason))
             {
-                _pendingSceneId = null;
-                _pendingBindingKey = null;
+                ResetPendingCandidate();
                 AutomationLastAction = $"Holding Program: Preview binding failed. {bindingReason}";
                 return;
             }
-            AutomationLastAction = $"Holding {RecommendedSceneName} for {sceneHoldSeconds:0.0}s before switching";
+            AutomationLastAction = $"Holding {RecommendedSceneName} for {Math.Max(sceneHoldSeconds, bindingDecision.RequiredMs / 1000.0):0.0}s before switching";
+            return;
+        }
+
+        if (!bindingDecision.Ready)
+        {
+            AutomationLastAction = $"Holding person bindings: {bindingDecision.ElapsedMs}/{bindingDecision.RequiredMs} ms (scene hold runs concurrently)";
             return;
         }
 
@@ -327,8 +341,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         CuePreview(targetSceneId);
         if (!_host.ApplyPreviewBindings(targetSceneId, Recommendation.SlotBindings, out var finalBindingReason))
         {
-            _pendingSceneId = null;
-            _pendingBindingKey = null;
+            ResetPendingCandidate();
             AutomationLastAction = $"Holding Program: Preview binding failed. {finalBindingReason}";
             return;
         }
@@ -341,7 +354,9 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         }
         else
         {
-            AutomationLastAction = $"{RecommendedSceneName} queued on preview";
+            AutomationLastAction = AutomationAutoTakeEnabled
+                ? $"{RecommendedSceneName} queued on preview; confidence {Recommendation.Confidence}% is below the 88% automatic Take minimum"
+                : $"{RecommendedSceneName} queued on preview; Auto-take is off";
             _host.CommandStatus = AutomationLastAction;
         }
     }
@@ -349,8 +364,13 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     private async Task TakeAutomationPreviewAsync(string targetSceneId,
         IReadOnlyList<CoreVideoPro.MediaCore.Models.NativeDirectorSlotBinding> takenBindings)
     {
-        if (_takeInFlight || !string.Equals(_host.PreviewSceneId, targetSceneId, StringComparison.Ordinal) || !_host.CanTake)
+        if (_takeInFlight || !string.Equals(_host.PreviewSceneId, targetSceneId, StringComparison.Ordinal))
         {
+            return;
+        }
+        if (!_host.CanTake)
+        {
+            AutomationLastAction = $"Holding Program: {RecommendedSceneName} is queued but Take is not ready";
             return;
         }
 
@@ -358,16 +378,18 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         var generation = _modeGeneration;
         try
         {
-            await _host.TakeAsync();
+            var result = await _host.TakeAsync();
+            ObserveAutomationSession();
             if (generation != _modeGeneration) return;
             _pendingSceneId = null;
             _pendingBindingKey = null;
             _pendingBindingsApplied = false;
             _pendingSince = null;
-            if (!_host.IsMediaCoreRunning || !string.Equals(_host.ActiveSceneId, targetSceneId, StringComparison.Ordinal))
+            if (!result.Succeeded || !_host.IsMediaCoreRunning || !string.Equals(_host.ActiveSceneId, targetSceneId, StringComparison.Ordinal))
             {
                 ProductionMode = ProductionMode.Manual;
-                AutomationLastAction = "Automation paused � Take did not reach program";
+                AutomationLastAction = $"Automation paused - {result.Error ?? "Take did not reach program"}";
+                _host.CommandStatus = AutomationLastAction;
                 return;
             }
             var sceneName = _host.Scenes.FirstOrDefault(scene => scene.Id == targetSceneId)?.Name ?? targetSceneId;
@@ -376,6 +398,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         }
         catch (Exception ex)
         {
+            ObserveAutomationSession();
             if (generation == _modeGeneration)
             {
                 ProductionMode = ProductionMode.Manual;
@@ -393,24 +416,11 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     {
         var changed = false;
         changed |= _host.SetAutomationGraphic("lower-third", AutomationLowerThirdsEnabled);
-        changed |= _host.SetAutomationGraphic("caption", AutomationCaptionsEnabled);
+        // Retire only the legacy automation-owned strip. Explicit caption cues and
+        // their text belong to the operator/show-engine, not scene automation.
+        changed |= _host.SetAutomationGraphic("caption", false);
 
         _host.RefreshProgramLowerThirdKeyPosition();
-
-        if (!AutomationCaptionsEnabled)
-        {
-            if (!string.IsNullOrEmpty(_host.CaptionText))
-            {
-                _host.CaptionText = string.Empty;
-                changed = true;
-            }
-
-            if (!string.IsNullOrEmpty(_host.CaptionSpeaker))
-            {
-                _host.CaptionSpeaker = string.Empty;
-                changed = true;
-            }
-        }
 
         if (changed)
         {
@@ -426,7 +436,6 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         AutomationPreferScreenShare = true;
         AutomationLowerThirdsEnabled = true;
         AutomationAutoAssignInputsEnabled = true;
-        AutomationCaptionsEnabled = true;
         AutomationConfidenceThreshold = 70;
         AutomationSwitchDelaySeconds = 4;
         AutomationPanelParticipantThreshold = 4;
@@ -475,8 +484,6 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         _host.ReapplyShowInputAutoAssign();
     }
 
-    partial void OnAutomationCaptionsEnabledChanged(bool value) => OnAutomationPolicyChanged();
-
     partial void OnAutomationConfidenceThresholdChanged(double value)
     {
         var clamped = Math.Clamp(value, 0, 100);
@@ -513,6 +520,27 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         OnAutomationPolicyChanged();
     }
 
+    private void ResetPendingCandidate()
+    {
+        _pendingSceneId = null;
+        _pendingBindingKey = null;
+        _pendingBindingsApplied = false;
+        _pendingSince = null;
+        _bindingHold.Reset();
+    }
+
+    private void ObserveAutomationSession()
+    {
+        var current = (_host.CoreEpoch, _host.RosterEpoch, _host.IsMediaCoreRunning, _host.IsInMeeting);
+        if (_observedSession == current) return;
+        _observedSession = current;
+        _modeGeneration++;
+        _lastTakenBindings = null;
+        ResetPendingCandidate();
+        if (ProductionMode == ProductionMode.SetAndForget)
+            AutomationLastAction = "Session changed - waiting for a fresh stable shot";
+    }
+
     private void OnAutomationPolicyChanged()
     {
         _overlayPolicyDirty = true;
@@ -520,6 +548,8 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         _pendingBindingKey = null;
         _pendingBindingsApplied = false;
         _pendingSince = null;
+        _bindingHold.Reset();
+        _host.RequestMediaCoreSync();
         _host.NotifyAutomationPolicySummaries();
         _host.RefreshProgramLowerThirdKeyPosition();
         _host.RefreshProductionReadouts();

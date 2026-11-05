@@ -50,7 +50,7 @@ jobs:
     # -> operator traffic -> record, and fails on request timeouts, an
     # over-budget render tick (the class that starves every command), a wall
     # missing its PGM/PVW cells, or a recording that writes nothing.
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       # The drill OPENS the recording to prove it is playable at program
@@ -124,7 +124,7 @@ jobs:
   # XCTest so it also runs on a machine with Command Line Tools only (no Xcode);
   # a suite that runs in CI but not on the developer's box finds bugs too late.
   mac-shell-tests:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Build shell

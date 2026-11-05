@@ -43,10 +43,13 @@ public interface IMagicSceneHost
 
     bool IsMediaCoreRunning { get; }
 
+    string CoreEpoch { get; }
+    string RosterEpoch { get; }
+
     // --- command status + take ---
     string CommandStatus { set; }
 
-    Task TakeAsync();
+    Task<CoreVideoPro.WinUI.ViewModels.Transport.TakeResult> TakeAsync();
 
     // --- scene refresh ---
     void SchedulePreviewRoutingRefresh();

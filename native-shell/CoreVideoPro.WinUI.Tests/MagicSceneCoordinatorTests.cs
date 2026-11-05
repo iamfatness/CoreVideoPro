@@ -17,6 +17,7 @@ public sealed class MagicSceneCoordinatorTests
     [
         new() { Id = "intro", Name = "Intro", Layout = "host-focus" },
         new() { Id = "interview", Name = "Interview", Layout = "two-up" },
+        new() { Id = "panel", Name = "Panel", Layout = "grid" },
         new() { Id = "speaker-slides", Name = "Speaker + Slides", Layout = "speaker-slides" }
     ];
 
@@ -37,6 +38,84 @@ public sealed class MagicSceneCoordinatorTests
         var host = new FakeMagicSceneHost { Scenes = Scenes };
         var coordinator = new MagicSceneCoordinator(host, clock);
         return (coordinator, host);
+    }
+
+    [Fact]
+    public void SerializedNativeShotWithCurrentPolicyCuesAndTakesTheIntendedGuests()
+    {
+        const string json = """{"recommendedSceneId":"interview","confidence":92,"rationale":"Two guests have the floor","policy":{"preferScreenShare":false,"panelGuestThreshold":4},"slotBindings":[{"slotIndex":0,"personId":"a","sourceId":"zoom:a"},{"slotIndex":1,"personId":"b","sourceId":"zoom:b"}]}""";
+        var native = System.Text.Json.JsonSerializer.Deserialize<NativeMediaCoreAutoProduction>(json,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 4;
+        host.CanTake = true;
+        coordinator.AutomationPreferScreenShare = false;
+        coordinator.Recommendation = ProductionStateHelper.BuildAutomationRecommendation(native,
+            Enumerable.Range(0, 4).Select(i => new Participant { Id = i.ToString() }).ToArray(), Scenes, false, 4);
+        coordinator.ToggleAutomationCommand.Execute(null);
+        Assert.Equal("intro", host.ActiveSceneId);
+        now = now.AddMilliseconds(1200);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal(new[] { "a", "b" }, host.PreviewBindings.Select(binding => binding.PersonId));
+        now = now.AddSeconds(4);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        Assert.Equal("interview", host.ActiveSceneId);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+    }
+
+    [Theory]
+    [InlineData("confidence")]
+    [InlineData("bindings")]
+    [InlineData("core")]
+    [InlineData("meeting")]
+    public void InterruptedPersonHoldMustEarnItsFullStabilityAgain(string interruption)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 2;
+        host.CanTake = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Recommendation("interview", 92);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddMilliseconds(1000);
+        if (interruption == "confidence") coordinator.Recommendation = Recommendation("interview", 0);
+        if (interruption == "bindings") coordinator.Recommendation = new AutoProductionState
+            { RecommendedSceneId = "interview", Confidence = 92, Reason = "no bindings", Action = "hold", SlotBindings = [] };
+        if (interruption == "core") host.IsMediaCoreRunning = false;
+        if (interruption == "meeting") host.IsInMeeting = false;
+        coordinator.EvaluateAutomationPolicy();
+        now = now.AddSeconds(20);
+        host.IsMediaCoreRunning = true;
+        host.IsInMeeting = true;
+        coordinator.Recommendation = Recommendation("interview", 92);
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(0, host.TakeAsyncCallCount);
+        Assert.Equal("interview", host.PreviewSceneId); // warm Preview while Program holds
+        Assert.Equal("intro", host.ActiveSceneId);
+        now = now.AddMilliseconds(1200);
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+    }
+
+    [Fact]
+    public void PolicyChangesRequestNativeSyncAndExplainTakeThreshold()
+    {
+        var (coordinator, host) = Build();
+        coordinator.AutomationPreferScreenShare = false;
+        Assert.Equal(1, host.SyncRequests);
+        Assert.False(coordinator.DirectorPolicy.PreferScreenShare);
+        coordinator.AutomationPanelParticipantThreshold = 7;
+        Assert.Equal(2, host.SyncRequests);
+        Assert.Equal(7, coordinator.DirectorPolicy.PanelGuestThreshold);
+        Assert.Contains("Take at 88%", coordinator.TimingSummary);
+        coordinator.AutomationConfidenceThreshold = 95;
+        Assert.Contains("Take at 95%", coordinator.TimingSummary);
     }
 
     [Fact]
@@ -144,12 +223,45 @@ public sealed class MagicSceneCoordinatorTests
         Assert.True(coordinator.AutomationPreferScreenShare);
         Assert.True(coordinator.AutomationLowerThirdsEnabled);
         Assert.True(coordinator.AutomationAutoAssignInputsEnabled);
-        Assert.True(coordinator.AutomationCaptionsEnabled);
+        Assert.False(coordinator.AutomationCaptionsEnabled);
         Assert.Equal(70, coordinator.AutomationConfidenceThreshold);
         Assert.Equal(4, coordinator.AutomationSwitchDelaySeconds);
         Assert.Equal(4, coordinator.AutomationPanelParticipantThreshold);
         Assert.Equal("Automation defaults restored", coordinator.AutomationLastAction);
         Assert.Equal("Automation defaults restored", host.CommandStatus);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AutoMode_NeverEnablesCaptionStripOrClearsExternalCaptionText(bool legacyEnable)
+    {
+        var (coordinator, host) = Build();
+        host.RoomVideoParticipantCount = 2;
+        host.CaptionText = "Operator supplied cue";
+        host.CaptionSpeaker = "Presenter";
+        coordinator.AutomationCaptionsEnabled = legacyEnable;
+        coordinator.ToggleAutomationCommand.Execute(null);
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.ResetAutomationDefaultsCommand.Execute(null);
+        coordinator.EvaluateAutomationPolicy();
+
+        Assert.False(coordinator.AutomationCaptionsEnabled);
+        Assert.Contains(("caption", false), host.GraphicPolicies);
+        Assert.DoesNotContain(("caption", true), host.GraphicPolicies);
+        Assert.Contains(("lower-third", true), host.GraphicPolicies);
+        Assert.Equal("Operator supplied cue", host.CaptionText);
+        Assert.Equal("Presenter", host.CaptionSpeaker);
+    }
+
+    [Fact]
+    public void LegacyCaptionEnable_IsRejectedWithoutAdvertisingAnEnabledFeature()
+    {
+        var (coordinator, host) = Build();
+        coordinator.AutomationCaptionsEnabled = true;
+        Assert.False(coordinator.AutomationCaptionsEnabled);
+        Assert.Contains("does not transcribe speech", host.CommandStatus);
+        Assert.Empty(host.GraphicPolicies);
     }
 
     // #767: the licence tier was never real (a mock panel with nothing behind it), so
@@ -246,7 +358,8 @@ public sealed class MagicSceneCoordinatorTests
         coordinator.ProductionMode = ProductionMode.SetAndForget;
         now = now.AddMilliseconds(7999);
         coordinator.EvaluateAutomationPolicy();
-        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal("intro", host.PreviewSceneId);
+        Assert.Equal("interview", host.ActiveSceneId);
         Assert.Equal(0, host.TakeAsyncCallCount);
         now = now.AddMilliseconds(1);
         coordinator.EvaluateAutomationPolicy();
@@ -367,6 +480,138 @@ public sealed class MagicSceneCoordinatorTests
         await host.DrainTakeAsync();
         Assert.Equal("Manual mode - automation is not changing scenes", coordinator.AutomationLastAction);
         Assert.Equal(1, host.TakeAsyncCallCount);
+    }
+
+    [Fact]
+    public void RejectedSameSceneTakePausesAndCanBeRetriedAfterOperatorResumes()
+    {
+        var (coordinator, host) = Build();
+        host.RoomVideoParticipantCount = 2;
+        host.CanTake = true;
+        host.FailTake = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Recommendation("intro", 90);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal("intro", host.ActiveSceneId);
+        Assert.Equal(ProductionMode.Manual, coordinator.ProductionMode);
+        Assert.Contains("test take rejected", coordinator.AutomationLastAction);
+        Assert.Equal(coordinator.AutomationLastAction, host.CommandStatus);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+
+        host.FailTake = false;
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(2, host.TakeAsyncCallCount);
+        Assert.Contains("taken by automation", coordinator.AutomationLastAction);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(2, host.TakeAsyncCallCount);
+    }
+
+    [Theory]
+    [InlineData("core")]
+    [InlineData("meeting")]
+    [InlineData("offline")]
+    [InlineData("leave")]
+    public void SessionChangeRebindsEvenWhenSceneAndPeopleIdsAreReused(string change)
+    {
+        var (coordinator, host) = Build();
+        host.RoomVideoParticipantCount = 2;
+        host.CanTake = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Recommendation("intro", 90);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+
+        if (change == "core") host.CoreEpoch = "core-2";
+        if (change == "meeting") host.RosterEpoch = "meeting-2";
+        if (change == "offline") host.IsMediaCoreRunning = false;
+        if (change == "leave") host.IsInMeeting = false;
+        coordinator.EvaluateAutomationPolicy();
+        host.IsMediaCoreRunning = true;
+        host.IsInMeeting = true;
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(2, host.TakeAsyncCallCount);
+        Assert.Equal(ProductionMode.SetAndForget, coordinator.ProductionMode);
+    }
+
+    [Theory]
+    [InlineData("intro", "interview", 4000)]
+    [InlineData("interview", "intro", 8000)]
+    [InlineData("intro", "intro", 4000)]
+    [InlineData("panel", "panel", 6000)]
+    [InlineData("intro", "speaker-slides", 2500)]
+    [InlineData("speaker-slides", "intro", 3500)]
+    public void PersonAndSceneHoldsShareOneDeadlineWhilePreviewWarms(string from, string to, int totalMs)
+    {
+        static AutoProductionState Shot(string scene, params string[] people) => new()
+        {
+            RecommendedSceneId = scene, Confidence = 95, Reason = "scripted conversation", Action = "hold",
+            SlotBindings = people.Select((id, slot) => new NativeDirectorSlotBinding
+                { SlotIndex = slot, PersonId = id, SourceId = "zoom:" + id }).ToArray()
+        };
+        var now = DateTimeOffset.UnixEpoch;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 4;
+        host.CanTake = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Shot(from, from == "panel" ? ["a", "b", "c"]
+            : from == "interview" ? ["a", "b"] : ["a"]);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddSeconds(10);
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+
+        coordinator.AutomationSwitchDelaySeconds = 4;
+        coordinator.Recommendation = Shot(to, to is "panel" or "interview" ? ["a", "b"] : ["b"]);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(to, host.PreviewSceneId);
+        Assert.Equal(coordinator.Recommendation.SlotBindings, host.PreviewBindings);
+        Assert.Equal(from, host.ActiveSceneId);
+        now = now.AddMilliseconds(totalMs - 1);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        now = now.AddMilliseconds(1);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(2, host.TakeAsyncCallCount);
+        Assert.Equal(to, host.ActiveSceneId);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task PriorSessionTakeCompletionCannotClaimSuccessOrPauseNewSession(bool observeBeforeCompletion, bool failed)
+    {
+        var (coordinator, host) = Build();
+        host.RoomVideoParticipantCount = 2;
+        host.CanTake = true;
+        host.HoldTakeAsync = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Recommendation("intro", 90);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+
+        host.CoreEpoch = "core-2";
+        if (observeBeforeCompletion) coordinator.EvaluateAutomationPolicy();
+        host.FailTake = failed;
+        await host.DrainTakeAsync();
+        Assert.Equal(ProductionMode.SetAndForget, coordinator.ProductionMode);
+        Assert.DoesNotContain("taken by automation", coordinator.AutomationLastAction);
+        host.HoldTakeAsync = false;
+        host.FailTake = false;
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(2, host.TakeAsyncCallCount);
+        Assert.Contains("taken by automation", coordinator.AutomationLastAction);
     }
 
     [Fact]
@@ -495,6 +740,9 @@ public sealed class MagicSceneCoordinatorTests
 
         public bool IsMediaCoreRunning { get; set; } = true;
 
+        public string CoreEpoch { get; set; } = "core-1";
+        public string RosterEpoch { get; set; } = "meeting-1";
+
         public string? CommandStatus { get; private set; }
 
         public string CaptionText { get; set; } = string.Empty;
@@ -507,6 +755,7 @@ public sealed class MagicSceneCoordinatorTests
         public bool FailTake { get; set; }
         public bool ThrowTake { get; set; }
         public int GraphicPolicyCalls { get; private set; }
+        public List<(string Kind, bool Enabled)> GraphicPolicies { get; } = [];
         public IReadOnlyList<NativeDirectorSlotBinding> PreviewBindings { get; private set; } = [];
 
         string IMagicSceneHost.CommandStatus
@@ -514,7 +763,7 @@ public sealed class MagicSceneCoordinatorTests
             set => CommandStatus = value;
         }
 
-        public async Task TakeAsync()
+        public async Task<CoreVideoPro.WinUI.ViewModels.Transport.TakeResult> TakeAsync()
         {
             TakeAsyncCallCount++;
             var target = PreviewSceneId;
@@ -525,6 +774,8 @@ public sealed class MagicSceneCoordinatorTests
                 await _pendingTake.Task;
             }
             if (!FailTake) ActiveSceneId = target;
+            return FailTake ? CoreVideoPro.WinUI.ViewModels.Transport.TakeResult.Failed("test take rejected")
+                : CoreVideoPro.WinUI.ViewModels.Transport.TakeResult.Success;
         }
 
         public async Task DrainTakeAsync()
@@ -541,6 +792,7 @@ public sealed class MagicSceneCoordinatorTests
         public bool SetAutomationGraphic(string kind, bool enabled)
         {
             GraphicPolicyCalls++;
+            GraphicPolicies.Add((kind, enabled));
             return false;
         }
 
@@ -566,7 +818,8 @@ public sealed class MagicSceneCoordinatorTests
 
         public void NotifyEnabledGraphicsChanged() { }
 
-        public void RequestMediaCoreSync() { }
+        public int SyncRequests { get; private set; }
+        public void RequestMediaCoreSync() => SyncRequests++;
 
         public void ReapplyShowInputAutoAssign() { }
 

@@ -569,6 +569,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   shellZoomRoster_ = core.shellZoomRoster_;
   sourcePolicies_ = core.sourcePolicies_;
   speakerFloor_ = core.speakerFloor_;
+  directorPolicy_ = core.directorPolicy_;
   takeRecords_ = core.takeRecords_;
   takeTransition_.operationId = core.takeTransition_.operationId;
   takeTransition_.revision = core.takeTransition_.revision;
@@ -2313,6 +2314,7 @@ rpc::Json CoreStateCapture::autoProductionState(const rpc::Json& engineCapture) 
       {"recommendedSceneId", recommendation.recommendedSceneId},
       {"confidence", recommendation.confidence},
       {"rationale", recommendation.rationale},
+      {"policy", directorPolicy_.json()},
       {"slotBindings", std::move(slotBindings)},
   };
 }
@@ -2607,7 +2609,7 @@ rpc::Json CoreStateCapture::audioMonitorControlState() const {
 
 DirectorRecommendation CoreStateCapture::recommendAutoProduction(const rpc::Json& capture) const {
   const auto nowMs = static_cast<std::uint64_t>(monotonicMs());
-  return recommendScene(deriveDirectorSignals(capture), speakerFloor_.snapshot(nowMs), nowMs);
+  return recommendScene(deriveDirectorSignals(capture), speakerFloor_.snapshot(nowMs), nowMs, directorPolicy_);
 }
 
 DirectorSignals CoreStateCapture::deriveDirectorSignals(const rpc::Json& capture) const {

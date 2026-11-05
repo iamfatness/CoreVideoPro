@@ -5,6 +5,17 @@ Live / Captivate playout model). This is the spec's Phase 0 plus the playlist ha
 of Phase 1 (`docs/titler-service-spec.md`); the designer, data binding beyond
 Sources text, crawls and external key/fill are later phases._
 
+## Reviewing layout captures
+
+The compiled layout probe's PNGs include the opaque Studio backdrop so
+translucent Fluent controls remain readable without depending on a viewer's
+alpha handling. The builder is captured before a look is selected and with a
+populated private fixture, including the scrolled lower inspector at 1360×768
+and 1600×900. Fixed Save actions must fit the full captured page. Inspect the
+images as well as the geometry report; these captures do not include native
+video pixels or establish installed preview behavior. See
+[Studio layout qualification](studio-layout-fit.md#opaque-review-images-1135).
+
 ## The operator model
 
 Three verbs, one list, nothing hidden:
