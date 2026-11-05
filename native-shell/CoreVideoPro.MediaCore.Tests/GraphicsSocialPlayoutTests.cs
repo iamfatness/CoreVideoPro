@@ -76,18 +76,21 @@ public sealed class GraphicsSocialPlayoutTests
     [InlineData("edit")]
     [InlineData("remove")]
     [InlineData("disconnect")]
+    [InlineData("provider-ban")]
     public async Task InvalidationWhilePreparingNeverSubmitsShow(string invalidation)
     {
         var fixture = new Fixture();
         var playout = fixture.Create();
         var source = await playout.ConnectAsync();
-        var item = (await playout.ReceiveAsync(source, "a", "Host", "Original"))!;
+        Assert.True(await playout.ApplyAsync(source, [new(SocialFeedEventKind.Text, "a", "host-id", "Host", "Original")]));
+        var item = Assert.Single(playout.Items);
         Assert.True(playout.Approve(item.Key));
         var show = playout.ShowAsync(item.Key);
         await fixture.Preparing.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Task invalidated = invalidation switch {
             "edit" => playout.ReceiveAsync(source, "a", "Host", "Changed"),
             "remove" => playout.WithdrawAsync(source, "a"),
+            "provider-ban" => playout.ApplyAsync(source, [new(SocialFeedEventKind.Ban, AuthorId: "host-id")]),
             _ => playout.DisconnectAsync()
         };
         fixture.FinishPreparation();
@@ -97,4 +100,68 @@ public sealed class GraphicsSocialPlayoutTests
             c.Body.GetProperty("action").GetString() == "show");
         Assert.Empty(fixture.State.Instances);
     }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ProviderModerationRetiresOnAirCardAndRejectsSameBatchReplay(bool banAuthor)
+    {
+        var kind = banAuthor ? SocialFeedEventKind.Ban : SocialFeedEventKind.Remove;
+        var fixture = new Fixture();
+        var playout = fixture.Create();
+        var source = await playout.ConnectAsync();
+        var reviewed = new SocialFeedEvent(SocialFeedEventKind.Text, "a", "host-id", "Host", "Reviewed message");
+        var other = new SocialFeedEvent(SocialFeedEventKind.Text, "b", "guest-id", "Guest", "Other message");
+        Assert.True(await playout.ApplyAsync(source, [reviewed, other]));
+        var card = playout.Items.Single(item => item.Key.Id == "a");
+        var untouched = playout.Items.Single(item => item.Key.Id == "b");
+        Assert.True(playout.Approve(card.Key));
+        Assert.True(playout.Approve(untouched.Key));
+        var show = playout.ShowAsync(card.Key);
+        await fixture.Preparing.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.FinishPreparation();
+        Assert.True((await show).Accepted);
+        Assert.True(playout.OnProgram);
+
+        var moderation = new SocialFeedEvent(kind, Id: "a", AuthorId: "host-id");
+        var otherReplay = reviewed with { Id = "new-id" };
+        Assert.True(await playout.ApplyAsync(source, [moderation, reviewed, otherReplay]));
+        Assert.False(playout.OnProgram);
+        Assert.Empty(fixture.State.Instances);
+        Assert.DoesNotContain(playout.Items, item => item.Key.Id == "a");
+        Assert.Equal(!banAuthor, playout.Items.Any(item => item.Key.Id == "new-id"));
+        Assert.Equal(GraphicsSocialDecision.Approved, playout.Items.Single(item => item.Key.Id == "b").Decision);
+        var commands = fixture.Commands.Count;
+        Assert.False((await playout.ShowAsync(card.Key)).Accepted);
+        Assert.Equal(commands, fixture.Commands.Count);
+    }
+
+    [Fact]
+    public async Task ReplacementDuringPreparationRejectsOldCallbacksAndStartsWithPendingReview()
+    {
+        var fixture = new Fixture();
+        var playout = fixture.Create();
+        var firstSource = await playout.ConnectAsync();
+        var first = (await playout.ReceiveAsync(firstSource, "id", "First host", "First message"))!;
+        Assert.True(playout.Approve(first.Key));
+        var show = playout.ShowAsync(first.Key);
+        await fixture.Preparing.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var replacement = playout.ConnectAsync();
+        fixture.FinishPreparation();
+        Assert.False((await show).Accepted);
+        var secondSource = await replacement;
+        var second = (await playout.ReceiveAsync(secondSource, "id", "Second host", "Second message"))!;
+
+        Assert.False(await playout.ApplyAsync(firstSource, [
+            new(SocialFeedEventKind.Remove, Id: "id"),
+            new(SocialFeedEventKind.Text, "ghost", "old-id", "Old host", "Late delivery")]));
+        await playout.DisconnectAsync(firstSource);
+        Assert.True(playout.IsConnected);
+        Assert.Equal(second, Assert.Single(playout.Items));
+        Assert.Equal(GraphicsSocialDecision.Pending, second.Decision);
+        Assert.False(playout.Approve(first.Key));
+        Assert.False((await playout.ShowAsync(second.Key)).Accepted);
+        Assert.DoesNotContain(fixture.Commands, command => command.Action == "graphics.instance.trigger" &&
+            command.Body.GetProperty("action").GetString() == "show");
+    }
+
 }
