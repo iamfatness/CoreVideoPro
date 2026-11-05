@@ -16,14 +16,15 @@ public sealed partial class GraphicsPlayoutControl
             Text = $"Data · published {binding.Revision} · loaded {source?.Revision.ToString() ?? "unavailable"}",
             TextWrapping = TextWrapping.Wrap
         });
-        var reload = StudioBrushes.GhostButton(binding.Remote ? "Refresh now" : "Load CSV / JSON…");
+        var push = binding.Remote && library.Document.Feeds.Any(feed => feed.Id == binding.SourceId && feed.Format == "wss");
+        var reload = StudioBrushes.GhostButton(binding.Remote ? push ? "Reconnect now" : "Refresh now" : "Load CSV / JSON…");
         if (binding.Remote && _attached is { } attached)
         {
             var feeds = attached.GraphicsFeeds;
             var feedStatus = new TextBlock { TextWrapping = TextWrapping.Wrap };
             void UpdateStatus()
             {
-                feedStatus.Text = GraphicsFeedStatusText.Describe(feeds.Status(binding.SourceId), source);
+                feedStatus.Text = GraphicsFeedStatusText.Describe(feeds.Status(binding.SourceId), source, push);
                 reload.IsEnabled = library.Document.Feeds.Any(feed => feed.Id == binding.SourceId && feed.Enabled);
             }
             EventHandler changed = (_, _) => UpdateStatus();

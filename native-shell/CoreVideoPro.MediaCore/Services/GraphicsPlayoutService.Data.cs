@@ -52,20 +52,47 @@ public sealed partial class GraphicsPlayoutService
             catch (InvalidDataException) { return GraphicsFeedStage.Rejected; }
 
             var result = await _library.StageFeedAsync(definition, data, receivedAt, cancellation);
-            if (result == GraphicsFeedStage.Rejected) return result;
-            var revision = _library.Document.DataSources.Single(source => source.Id == definition.Id).Revision;
-            foreach (var row in rows)
+            if (result != GraphicsFeedStage.Rejected)
+                await FollowRemoteFeedAsync(definition, cancellation);
+            return result;
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task<GraphicsFeedStage> StagePushSnapshotAsync(GraphicsFeedDefinition definition, GraphicsFeedSnapshot snapshot,
+        DateTimeOffset receivedAt, CancellationToken cancellation)
+    {
+        await _gate.WaitAsync(cancellation);
+        try
+        {
+            var result = await _library.StagePushSnapshotAsync(definition, snapshot, receivedAt, cancellation);
+            if (result == GraphicsFeedStage.Updated)
             {
-                cancellation.ThrowIfCancellationRequested();
-                if (!_library.Document.Feeds.Contains(definition)) break;
-                if (row.DataBinding is not { LiveFollow: true } binding || binding.Revision >= revision) continue;
-                try { Status = (await PublishData(row.Id, cancellation, waitForProgram: false)).Reason; }
-                catch (InvalidOperationException) { Status = "Feed saved. Program publication was interrupted."; }
-                Changed?.Invoke(this, EventArgs.Empty);
+                try { await FollowRemoteFeedAsync(definition, cancellation); }
+                catch (Exception ex) when (ex is not (OperationCanceledException or OutOfMemoryException))
+                {
+                    Status = "Feed saved. Program publication was interrupted.";
+                    Changed?.Invoke(this, EventArgs.Empty);
+                }
             }
             return result;
         }
         finally { _gate.Release(); }
+    }
+
+    private async Task FollowRemoteFeedAsync(GraphicsFeedDefinition definition, CancellationToken cancellation)
+    {
+        var revision = _library.Document.DataSources.Single(source => source.Id == definition.Id).Revision;
+        foreach (var row in Playlist.Where(row => row.DataBinding?.SourceId == definition.Id).ToArray())
+        {
+            cancellation.ThrowIfCancellationRequested();
+            if (!_library.Document.Feeds.Contains(definition)) break;
+            if (Row(row.Id)?.DataBinding is not { LiveFollow: true } binding ||
+                binding.SourceId != definition.Id || binding.Revision >= revision) continue;
+            try { Status = (await PublishData(row.Id, cancellation, waitForProgram: false)).Reason; }
+            catch (InvalidOperationException) { Status = "Feed saved. Program publication was interrupted."; }
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     public Task<NativeGraphicsOperationResult> StageDataAsync(string rowId, GraphicsDataBinding selectedBinding,
@@ -94,6 +121,7 @@ public sealed partial class GraphicsPlayoutService
 
     private async Task<NativeGraphicsOperationResult> PublishData(string rowId, CancellationToken cancellation, bool waitForProgram = true)
     {
+        cancellation.ThrowIfCancellationRequested();
         if (Row(rowId) is not { DataBinding: { } binding } row ||
             _library.Document.DataSources.FirstOrDefault(source => source.Id == binding.SourceId) is not { } source)
             return Refuse("This row has no local dataset.");
@@ -107,7 +135,7 @@ public sealed partial class GraphicsPlayoutService
         if (source.Revision != binding.Revision)
         {
             var published = row with { Fields = values, DataBinding = binding with { Revision = source.Revision } };
-            if (!await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(_library.Document.Playlist, published)))
+            if (!await _library.SavePlaylistAsync(GraphicsBuilder.Upsert(_library.Document.Playlist, published), cancellation: cancellation))
                 return Refuse(_library.Status);
         }
 

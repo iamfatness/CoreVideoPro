@@ -1,23 +1,38 @@
 using CoreVideoPro.MediaCore.Models;
+using System.Text.Json.Serialization;
 
 namespace CoreVideoPro.MediaCore.Services;
 
 public sealed record GraphicsFeedDefinition(string Id, string Name, string Format, string Endpoint, string KeyColumn,
     bool Enabled = false, int PollSeconds = 15, long Generation = 0)
 {
+    internal const int MaxActivePushFeeds = 4;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GraphicsFeedMapping? Mapping { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CredentialReference { get; init; }
+
     public bool Valid() => Id is not null && GraphicsPlaylistRow.ValidId(Id) &&
         Name is { Length: > 0 and <= 128 } && !string.IsNullOrWhiteSpace(Name) &&
-        Format is "sheets" or "rss" or "json" && KeyColumn is { Length: > 0 and <= 128 } &&
+        Format is "sheets" or "rss" or "json" or "custom-json" or "wss" && KeyColumn is { Length: > 0 and <= 128 } &&
+        (Mapping is null || Format == "custom-json" && Mapping.Valid()) &&
+        (CredentialReference is null || Format is ("custom-json" or "wss") &&
+            CredentialReference.Length == 32 && Guid.TryParseExact(CredentialReference, "N", out _)) &&
         (Format != "rss" || KeyColumn == "id") && PollSeconds is >= 5 and <= 300 && Generation >= 0 &&
         Endpoint is { Length: > 0 and <= 2048 } && Uri.TryCreate(Endpoint, UriKind.Absolute, out var uri) &&
-        uri.Scheme == Uri.UriSchemeHttps && uri.Port == 443 && uri.UserInfo.Length == 0 &&
+        uri.Scheme == (Format == "wss" ? "wss" : Uri.UriSchemeHttps) && uri.Port == 443 && uri.UserInfo.Length == 0 &&
         uri.Fragment.Length == 0 && uri.Host.Length > 0;
 }
 
-public enum GraphicsFeedStage { Updated, Unchanged, Rejected }
+public enum GraphicsFeedStage { Updated, Unchanged, Rejected, WatermarkAdvanced, StaleSequence }
 
 public sealed record GraphicsFeedStatus(string State = "disabled", DateTimeOffset? LastSuccess = null,
-    DateTimeOffset? NextCheck = null, string? Failure = null);
+    DateTimeOffset? NextCheck = null, string? Failure = null)
+{
+    public DateTimeOffset? LastRead { get; init; }
+    public DateTimeOffset? LastValidated { get; init; }
+    public long? AcceptedSequence { get; init; }
+}
 
 /// <summary>One poller per source, driven by its owning dispatcher. The commit
 /// delegate must also fence writes against the saved source generation.</summary>
@@ -43,7 +58,8 @@ public sealed class GraphicsFeedPoller(
         if (!definition.Valid()) throw new ArgumentException("Invalid graphics feed definition.", nameof(definition));
         if (_definition == definition) return;
         var lastSuccess = _definition is { } previous && previous.Endpoint == definition.Endpoint &&
-            previous.Format == definition.Format && previous.KeyColumn == definition.KeyColumn ? _status.LastSuccess : null;
+            previous.Format == definition.Format && previous.KeyColumn == definition.KeyColumn &&
+            previous.CredentialReference == definition.CredentialReference && previous.Mapping == definition.Mapping ? _status.LastSuccess : null;
         _definition = definition;
         _failures = 0;
         _status = definition.Enabled ? new("waiting", lastSuccess, EarliestCheck()) : new(LastSuccess: lastSuccess);
@@ -86,6 +102,7 @@ public sealed class GraphicsFeedPoller(
         }
         catch (OperationCanceledException) when (operation.IsCancellationRequested) { return; }
         catch (OperationCanceledException) { failure = "timeout"; }
+        catch (GraphicsFeedCredentialException) { failure = "credentials-required"; }
         catch (InvalidDataException) { failure = "invalid-data"; }
         catch (HttpRequestException) { failure = "unavailable"; }
         catch (IOException) { failure = "unavailable"; }

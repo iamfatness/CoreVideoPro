@@ -15,6 +15,9 @@ public sealed record GraphicsLocalData(GraphicsDataColumn[] Columns, GraphicsDat
     public const int MaxVisibleRows = 12;
     public const int MaxVisibleColumns = 8;
 
+    internal bool HasSameRows(GraphicsLocalData other) => Rows.Length == other.Rows.Length &&
+        Rows.Zip(other.Rows).All(pair => pair.First.Key == pair.Second.Key && pair.First.Cells.SequenceEqual(pair.Second.Cells));
+
     public static async Task<GraphicsLocalData> ReadAsync(string path, string? key, CancellationToken cancellation = default)
     {
         await using var input = File.OpenRead(path);

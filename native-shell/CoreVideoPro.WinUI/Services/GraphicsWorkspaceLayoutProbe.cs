@@ -348,28 +348,75 @@ internal static class GraphicsWorkspaceLayoutProbe
         Require(Button(page, "Data table…").ActualHeight > 0, "Design did not show the local data import entry.");
         Require(Button(page, "Data crawl…").ActualHeight > 0, "Design did not show the crawl import entry.");
         Require(Button(page, "Remote feeds…").ActualHeight > 0, "Design did not show remote feed configuration.");
-        var remote = await studio.GraphicsLibrary.SaveFeedAsync(new("probe-feed", "Probe HTTPS feed",
-            "json", "https://example.com/fixture", "id", Enabled: true));
+        var remote = await studio.GraphicsLibrary.SaveFeedAsync(new GraphicsFeedDefinition("probe-feed", "Probe HTTPS feed",
+            "custom-json", "https://example.com/fixture", "id", Enabled: true)
+        {
+            Mapping = new("/data/results", [new("id", "/id"), new("line", "/label")]),
+            CredentialReference = "177e7ce868d94c47af4eeb2736dd7bea"
+        });
         Require(remote is not null, "Could not save the isolated feed fixture.");
         var remoteData = GraphicsLocalData.Parse("id,line\na,First item", "csv", "id");
         Require(await studio.GraphicsLibrary.StageFeedAsync(remote!, remoteData, DateTimeOffset.UtcNow, default) == GraphicsFeedStage.Updated,
             "Could not stage the isolated feed fixture.");
         Require(await studio.GraphicsLibrary.SaveFeedAsync(remote! with { Enabled = false }) is not null,
             "Could not disable the isolated feed fixture.");
+        var push = await studio.GraphicsLibrary.SaveFeedAsync(new("probe-push", "Probe WebSocket feed",
+            "wss", "wss://example.com/fixture", "id", Enabled: true));
+        Require(push is not null, "Could not save the push feed fixture.");
+        var old = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var firstPush = GraphicsFeedSnapshot.Parse("""{"schemaVersion":1,"sequence":1,"rows":[{"id":"a","line":"First item"}]}"""u8, "id");
+        var secondPush = GraphicsFeedSnapshot.Parse("""{"schemaVersion":1,"sequence":2,"rows":[{"id":"a","line":"Staged push item"}]}"""u8, "id");
+        Require(await studio.GraphicsLibrary.StagePushSnapshotAsync(push!, firstPush, old, default) == GraphicsFeedStage.Updated &&
+            await studio.GraphicsLibrary.StagePushSnapshotAsync(push!, secondPush, old, default) == GraphicsFeedStage.Updated,
+            "Could not stage the isolated push fixture.");
         Invoke(Button(page, "Remote feeds…"));
         ContentDialog? feedDialog = null;
         await Eventually(() => (feedDialog = VisualTreeHelper.GetOpenPopupsForXamlRoot(page.XamlRoot)
             .Select(p => p.Child).Where(c => c is not null).SelectMany(c => Descendants(c).Prepend(c))
             .OfType<ContentDialog>().FirstOrDefault(dialog => dialog.Title?.ToString() == "Remote graphics feeds")) is { IsLoaded: true },
             "Remote feed settings did not open.");
+        var formats = Descendants(feedDialog!).OfType<ComboBox>().Single(control => control.Header?.ToString() == "Format");
+        Require(formats.Items.Contains("Custom API (pull)") && formats.Items.Contains("Custom API (push)"),
+            "Remote feed settings did not expose custom pull and push.");
         Require(Descendants(feedDialog!).OfType<ToggleSwitch>().Single(control => control.Header?.ToString() == "Enable polling").IsOn == false,
             "Saved disabled feed did not remain off.");
         Require(Descendants(feedDialog!).OfType<TextBlock>().Any(text => text.Text.Contains("Last successful check") &&
             text.Text.Contains("Accepted data age")), "Feed settings did not show freshness.");
         Require(Button(feedDialog!, "Create table…").IsEnabled && Button(feedDialog!, "Create crawl…").IsEnabled,
             "The accepted dataset cannot be bound to a table or crawl.");
+        var savedFeeds = Descendants(feedDialog!).OfType<ComboBox>().Single(control => control.Header?.ToString() == "Saved feeds");
+        var feedFields = Descendants(feedDialog!).OfType<ScrollViewer>().Single(control => control.Name == "RemoteFeedFields");
+        foreach (var (width, height, label) in new[] { (1360, 768, "1360x768"), (1600, 900, "1600x900"), (1920, 1080, "1080p") })
+        {
+            window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, width, height));
+            savedFeeds.SelectedIndex = 0;
+            feedFields.ChangeView(null, 0, null, true);
+            await Task.Delay(100);
+            await Eventually(() => Descendants(feedDialog!).OfType<TextBlock>()
+                .Any(text => text.Text == "Authorize this feed on this computer"), "Missing local credential status was not shown.");
+            Require(Descendants(feedDialog!).OfType<TextBox>().Any(control => control.Header?.ToString() == "Rows JSON Pointer" &&
+                control.Text == "/data/results" && control.ActualHeight > 0), "Custom pull mapping was not loaded.");
+            Require(Descendants(feedDialog!).OfType<TextBlock>().Any(text => text.Text.Contains("Mapping preview") &&
+                text.Text.Contains("First item") && text.ActualHeight > 0), "Accepted mapped row was not previewed.");
+            await ReviewImageWriter.SaveAsync(feedDialog!, Path.Combine(directory, $"graphics-custom-pull-{label}.png"));
+            feedFields.ChangeView(null, feedFields.ScrollableHeight, null, true);
+            await Eventually(() => feedFields.VerticalOffset > 0, "Custom pull fields could not be scrolled into view.");
+            var password = Descendants(feedDialog!).OfType<PasswordBox>().Single();
+            var offset = password.TransformToVisual(feedFields).TransformPoint(new(0, 0)).Y;
+            Require(offset >= 0 && offset + password.ActualHeight <= feedFields.ActualHeight + 1,
+                "The custom pull credential input could not be reached at " + label);
+            await ReviewImageWriter.SaveAsync(feedDialog!, Path.Combine(directory, $"graphics-custom-pull-details-{label}.png"));
+            savedFeeds.SelectedIndex = 1;
+            feedFields.ChangeView(null, 0, null, true);
+            await Task.Delay(80);
+            Require(Button(feedDialog!, "Reconnect now").IsEnabled, "Custom push does not expose Reconnect now.");
+            Require(Descendants(feedDialog!).OfType<TextBox>().Any(control => control.Header?.ToString() == "WSS feed URL" &&
+                control.ActualHeight > 0), "Custom push does not show a WSS endpoint.");
+            await ReviewImageWriter.SaveAsync(feedDialog!, Path.Combine(directory, $"graphics-custom-push-{label}.png"));
+        }
         await ReviewImageWriter.SaveAsync(feedDialog!, Path.Combine(directory, "graphics-feed-settings.png"));
         feedDialog!.Hide(); await Task.Delay(120);
+        window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, 1920, 1080));
         var data = GraphicsLocalData.Parse("id,player,score\na,Ada,9\nb,Bob,12", "csv", "id");
         var binding = new GraphicsDataBinding("probe-data", "id", ["player", "score"], "score", 4, 1);
         Require(await studio.GraphicsLibrary.SaveLocalDataAsync(binding.SourceId, "Probe scores", data) is not null,
@@ -431,10 +478,10 @@ internal static class GraphicsWorkspaceLayoutProbe
             await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-data-crawl-{label}.png"));
         }
         studio.GraphicsPlayout.Observe(new() { CoreEpoch = "probe-crawl" });
-        var remoteBinding = new GraphicsDataBinding("probe-feed", "id", ["line"], null, 8, 1) { Remote = true };
+        var remoteBinding = new GraphicsDataBinding("probe-push", "id", ["line"], null, 8, 1) { Remote = true };
         var remoteRow = row with
         {
-            Id = "probe-feed", Name = "Probe remote table", DataBinding = remoteBinding,
+            Id = "probe-push", Name = "Probe push table", DataBinding = remoteBinding,
             Fields = GraphicsDataTable.Fields(remoteData, remoteBinding)
         };
         Require(await studio.GraphicsLibrary.SavePlaylistAsync([crawl, remoteRow]), "Could not save the remote table and crawl rows.");
@@ -456,15 +503,18 @@ internal static class GraphicsWorkspaceLayoutProbe
             await Task.Delay(80);
             studio.GraphicsPlayout.Observe(remoteState);
             playout.Refresh(); page.UpdateLayout();
-            Require(!Button(playout, "Refresh now").IsEnabled &&
-                Button(playout, "Publish data").ActualHeight > 0, "Remote feed actions are unavailable or polling is enabled.");
+            Require(Button(playout, "Reconnect now").IsEnabled &&
+                Button(playout, "Publish data").ActualHeight > 0, "Push feed actions are unavailable.");
             Require(Descendants(playout).OfType<TextBlock>().Any(text => text.Text.Contains("Program data 1 · requested 2")) &&
-                Descendants(playout).OfType<TextBlock>().Any(text => text.Text.Contains("Accepted data age")),
+                Descendants(playout).OfType<TextBlock>().Any(text => text.Text.Contains("Feed stale") &&
+                    text.Text.Contains("Next retry") && text.Text.Contains("Accepted sequence · 2")) &&
+                Descendants(playout).OfType<TextBlock>().Any(text => text.Text.Contains("published 1 · loaded 2")),
                 "Remote table freshness and Program revision are missing.");
             await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"graphics-feed-operate-{label}.png"));
         }
         studio.GraphicsPlayout.Observe(new() { CoreEpoch = "probe-feed" });
         checks.Add("Remote feed settings and Operate show enabled state, freshness and Program versus requested data at all viewport sizes.");
+        checks.Add("Custom pull settings show accepted mapped values and missing credentials; custom push exposes reconnect and retry at all viewport sizes.");
         checks.Add("Operate exposes paused crawl controls and accepted and pending data revisions at all three viewport sizes.");
         if (studio.GraphicsWorkspace.State is { } graphics)
             studio.GraphicsWorkspace.Observe(graphics with { Templates = [.. graphics.Templates, new NativeGraphicsTemplate

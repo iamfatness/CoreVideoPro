@@ -1,23 +1,27 @@
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.WinUI.Services;
 using Microsoft.UI.Dispatching;
 
 namespace CoreVideoPro.WinUI.ViewModels;
 
-/// <summary>Owns remote feed polling for the lifetime of the show workspace.
+/// <summary>Owns remote feeds for the lifetime of the show workspace.
 /// Timer and persistence callbacks run on the same dispatcher as other graphics edits.</summary>
 internal sealed class GraphicsFeedViewModel : IDisposable
 {
     private readonly GraphicsWorkspaceLibrary _library;
     private readonly GraphicsPlayoutService _playout;
     private readonly DispatcherQueueTimer _timer;
-    private readonly GraphicsFeedTransport _transport = GraphicsFeedTransport.Create();
+    private readonly GraphicsFeedCredentialStore _credentials = new();
+    private readonly GraphicsFeedTransport _transport;
     private readonly Dictionary<string, GraphicsFeedPoller> _pollers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, GraphicsPushFeedCoordinator> _pushFeeds = new(StringComparer.Ordinal);
     private Dictionary<string, GraphicsFeedStatus> _statuses = new(StringComparer.Ordinal);
     private bool _disposed;
 
     internal GraphicsFeedViewModel(GraphicsWorkspaceLibrary library, GraphicsPlayoutService playout, DispatcherQueue dispatcher)
     {
         (_library, _playout) = (library, playout);
+        _transport = GraphicsFeedTransport.Create(ResolveCredential);
         _timer = dispatcher.CreateTimer();
         _timer.Interval = TimeSpan.FromSeconds(1);
         _timer.Tick += OnTick;
@@ -27,7 +31,19 @@ internal sealed class GraphicsFeedViewModel : IDisposable
 
     internal event EventHandler? Changed;
 
-    internal GraphicsFeedStatus Status(string id) => _pollers.TryGetValue(id, out var poller) ? poller.Status : new();
+    private string? ResolveCredential(GraphicsFeedDefinition definition) => _credentials.Resolve(_library.Document.ShowId, definition);
+
+    internal Task<bool> HasLocalCredentialAsync(GraphicsFeedDefinition definition) => Task.Run(() =>
+    {
+        try { return ResolveCredential(definition) is not null; }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
+    });
+
+    internal Task<GraphicsFeedDefinition?> SaveFeedAsync(GraphicsFeedDefinition definition, string? replacementBearer = null,
+        bool clearCredential = false) => _credentials.SaveAsync(_library, definition, replacementBearer, clearCredential);
+
+    internal GraphicsFeedStatus Status(string id) => _pushFeeds.TryGetValue(id, out var push) ? push.Status :
+        _pollers.TryGetValue(id, out var poller) ? poller.Status : new();
 
     internal void Start()
     {
@@ -37,9 +53,17 @@ internal sealed class GraphicsFeedViewModel : IDisposable
 
     internal void Refresh(string id)
     {
-        if (!_timer.IsRunning || !_pollers.TryGetValue(id, out var poller)) return;
-        poller.RefreshNow();
-        Poll(poller);
+        if (!_timer.IsRunning) return;
+        if (_pushFeeds.TryGetValue(id, out var push))
+        {
+            push.ReconnectNow();
+            push.Tick();
+        }
+        else if (_pollers.TryGetValue(id, out var poller))
+        {
+            poller.RefreshNow();
+            Poll(poller);
+        }
         PublishStatus();
     }
 
@@ -48,12 +72,13 @@ internal sealed class GraphicsFeedViewModel : IDisposable
     private void Synchronize()
     {
         if (_disposed) return;
-        foreach (var key in _pollers.Keys.Where(id => !_library.Document.Feeds.Any(feed => feed.Id == id)).ToArray())
+        var pullFeeds = _library.Document.Feeds.Where(feed => feed.Format != "wss").ToArray();
+        foreach (var key in _pollers.Keys.Where(id => !pullFeeds.Any(feed => feed.Id == id)).ToArray())
         {
             _pollers[key].Dispose();
             _pollers.Remove(key);
         }
-        foreach (var feed in _library.Document.Feeds)
+        foreach (var feed in pullFeeds)
         {
             if (!_pollers.TryGetValue(feed.Id, out var poller))
             {
@@ -63,12 +88,28 @@ internal sealed class GraphicsFeedViewModel : IDisposable
             }
             poller.Configure(feed);
         }
+        var pushFeeds = _library.Document.Feeds.Where(feed => feed.Format == "wss").ToArray();
+        foreach (var key in _pushFeeds.Keys.Where(id => !pushFeeds.Any(feed => feed.Id == id)).ToArray())
+        {
+            _pushFeeds[key].Dispose();
+            _pushFeeds.Remove(key);
+        }
+        foreach (var feed in pushFeeds)
+        {
+            if (!_pushFeeds.TryGetValue(feed.Id, out var push))
+            {
+                push = new(_playout.StagePushSnapshotAsync, TimeProvider.System, ResolveCredential);
+                _pushFeeds.Add(feed.Id, push);
+            }
+            push.Configure(feed, _library.Document.DataSources.FirstOrDefault(source => source.Id == feed.Id));
+        }
         PublishStatus();
     }
 
     private void OnTick(DispatcherQueueTimer sender, object args)
     {
         foreach (var poller in _pollers.Values.ToArray()) Poll(poller);
+        foreach (var push in _pushFeeds.Values.ToArray()) push.Tick();
         PublishStatus();
     }
 
@@ -86,7 +127,7 @@ internal sealed class GraphicsFeedViewModel : IDisposable
 
     private void PublishStatus()
     {
-        var next = _pollers.ToDictionary(pair => pair.Key, pair => pair.Value.Status, StringComparer.Ordinal);
+        var next = _pollers.Keys.Concat(_pushFeeds.Keys).ToDictionary(id => id, Status, StringComparer.Ordinal);
         if (next.Count == _statuses.Count && next.All(pair => _statuses.GetValueOrDefault(pair.Key) == pair.Value)) return;
         _statuses = next;
         Changed?.Invoke(this, EventArgs.Empty);
@@ -101,6 +142,8 @@ internal sealed class GraphicsFeedViewModel : IDisposable
         _library.Changed -= OnLibraryChanged;
         foreach (var poller in _pollers.Values) poller.Dispose();
         _pollers.Clear();
+        foreach (var push in _pushFeeds.Values) push.Dispose();
+        _pushFeeds.Clear();
         _transport.Dispose();
     }
 }

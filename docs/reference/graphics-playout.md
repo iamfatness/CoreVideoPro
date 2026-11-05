@@ -137,6 +137,44 @@ preparation leaves the accepted Program list playing.
 
 ## Remote graphics feeds
 
+### Custom APIs
+
+In **Remote feeds…**, choose **Custom API (pull)** for an HTTPS GET or
+**Custom API (push)** for a WSS producer. New feeds start disabled. Both
+require a public port 443 endpoint and a stable row key. Custom endpoints
+refuse redirects, URL credentials, query strings and fragments.
+
+For a pull feed, leave **Rows JSON Pointer** blank for a top-level array,
+or enter a path such as `/data/results`. Enter optional column mappings
+one per line, for example `team = /team/name`. Paths use JSON Pointer,
+including `~1` for a literal slash and `~0` for a literal tilde. The mapping
+preview shows values from the last accepted revision. Save and refresh
+to preview a new mapping before creating a table or crawl.
+
+For a push feed, the producer sends complete JSON text snapshots containing
+`schemaVersion` (1), a monotonically increasing `sequence`, and `rows`.
+The last accepted sequence is saved with the dataset. An identical replay
+confirms freshness, older data is ignored, and a sequence with conflicting
+data is rejected. A producer should repeat its current snapshot at least
+every 10 seconds. Four push feeds may be enabled in a show. Operate displays
+read, validated, accepted, loaded, published, and Program progress.
+**Reconnect now** uses the five-second connection floor. No accepted check
+for 30 seconds marks a feed stale, and 60 seconds on an idle connection
+triggers a retry.
+
+Custom endpoints can use an optional bearer token. Windows DPAPI protects
+the local credential, and the graphics document saves only its reference.
+Editing the endpoint clears the old binding. If a copied show needs
+authorization on this computer, enter a new token. The last accepted
+dataset and Program content remain available while a feed is unavailable.
+
+In Operate, use **Publish data** to apply a staged revision or opt the row
+into **Live follow feed updates**. A cued revision stays pinned through Take.
+Looping crawls adopt prepared content at their loop boundary, and single-pass
+crawls use the next published revision on their next Show or Cue.
+
+### Published Sheets, RSS and flat JSON
+
 Open **Graphics → Design → Remote feeds…**. Add a published Google Sheets CSV
 tab, an RSS 2.0 feed or an HTTPS JSON endpoint returning a flat array of objects.
 For Sheets, publish only a dedicated tab containing public data and use the CSV

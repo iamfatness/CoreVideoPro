@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -9,9 +10,10 @@ using System.Xml.Linq;
 namespace CoreVideoPro.MediaCore.Services;
 
 public sealed class GraphicsFeedTransport(
-    Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send, IDisposable? owner = null) : IDisposable
+    Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send, IDisposable? owner = null,
+    Func<GraphicsFeedDefinition, string?>? resolveCredential = null) : IDisposable
 {
-    public static GraphicsFeedTransport Create()
+    public static GraphicsFeedTransport Create(Func<GraphicsFeedDefinition, string?>? resolveCredential = null)
     {
         var client = new HttpClient(new SocketsHttpHandler
         {
@@ -19,11 +21,12 @@ public sealed class GraphicsFeedTransport(
             UseProxy = false,
             UseCookies = false,
             AutomaticDecompression = DecompressionMethods.None,
-            ConnectCallback = ConnectAsync,
+            ConnectCallback = (context, cancellation) => ConnectPublicAsync(context.DnsEndPoint,
+                Dns.GetHostAddressesAsync, DialAsync, cancellation),
             PooledConnectionLifetime = TimeSpan.FromMinutes(2),
             MaxConnectionsPerServer = 4
         }) { Timeout = Timeout.InfiniteTimeSpan };
-        return new((request, cancellation) => client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellation), client);
+        return new((request, cancellation) => client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellation), client, resolveCredential);
     }
 
     public void Dispose() => owner?.Dispose();
@@ -31,15 +34,25 @@ public sealed class GraphicsFeedTransport(
     public async Task<GraphicsLocalData> FetchAsync(GraphicsFeedDefinition feed, CancellationToken cancellation)
     {
         var target = ValidateEndpoint(feed);
-
+        var custom = feed.Format == "custom-json";
+        cancellation.ThrowIfCancellationRequested();
+        var bearer = custom && feed.CredentialReference is not null
+            ? await Task.Run(() => GraphicsFeedCredentials.Resolve(feed, resolveCredential), cancellation).ConfigureAwait(false)
+            : null;
 
         for (int hops = 0; ; hops++)
         {
+            cancellation.ThrowIfCancellationRequested();
             ValidateTarget(target);
             if (feed.Format == "sheets" && !IsGoogleSheetHost(target.IdnHost))
                 throw new InvalidDataException("The Sheets feed redirected to an unsupported host.");
             using var request = new HttpRequestMessage(HttpMethod.Get, target) { VersionPolicy = HttpVersionPolicy.RequestVersionExact };
-            using var response = await send(request, cancellation);
+            if (bearer is not null) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+            using var response = await SendAsync(request, custom, cancellation);
+            if (custom && (int)response.StatusCode is >= 300 and < 400)
+                throw new InvalidDataException("Custom graphics feeds do not follow redirects.");
+            if (custom && !response.IsSuccessStatusCode)
+                throw new HttpRequestException("The custom graphics feed request failed.", null, response.StatusCode);
             if ((int)response.StatusCode is 301 or 302 or 303 or 307 or 308)
             {
                 if (hops == 3 || response.Headers.Location is not { } location || !Uri.TryCreate(target, location, out var redirect))
@@ -53,6 +66,15 @@ public sealed class GraphicsFeedTransport(
         }
     }
 
+    private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, bool custom, CancellationToken cancellation)
+    {
+        try { return await send(request, cancellation); }
+        catch (HttpRequestException ex) when (custom)
+        {
+            throw new HttpRequestException("The custom graphics feed request failed.", null, ex.StatusCode);
+        }
+    }
+
     internal static Uri ValidateEndpoint(GraphicsFeedDefinition feed)
     {
         if (!feed.Valid() || !Uri.TryCreate(feed.Endpoint, UriKind.Absolute, out var target))
@@ -60,6 +82,15 @@ public sealed class GraphicsFeedTransport(
         ValidateTarget(target);
         if (feed.Format == "sheets") ValidatePublishedSheet(target);
         else if (target.Query.Length != 0) throw new InvalidDataException("Use a public feed URL without query parameters.");
+        return target;
+    }
+
+    internal static Uri ValidateWebSocketEndpoint(GraphicsFeedDefinition feed)
+    {
+        if (feed.Format != "wss" || !feed.Valid() || !Uri.TryCreate(feed.Endpoint, UriKind.Absolute, out var target) ||
+            target.Query.Length != 0)
+            throw new InvalidDataException("Use a public WSS feed URL without query parameters.");
+        ValidateTarget(target, "wss");
         return target;
     }
 
@@ -86,9 +117,9 @@ public sealed class GraphicsFeedTransport(
             throw new InvalidDataException("Use a published Google Sheets CSV link for one tab.");
     }
 
-    private static void ValidateTarget(Uri target)
+    private static void ValidateTarget(Uri target, string scheme = "https")
     {
-        if (!target.IsAbsoluteUri || target.Scheme != Uri.UriSchemeHttps || target.Port != 443 ||
+        if (!target.IsAbsoluteUri || target.Scheme != scheme || target.Port != 443 ||
             target.UserInfo.Length > 0 || target.Fragment.Length > 0 || target.AbsoluteUri.Length > 4096)
             throw new InvalidDataException("The feed destination is not permitted.");
         var host = target.IdnHost.TrimEnd('.');
@@ -108,14 +139,20 @@ public sealed class GraphicsFeedTransport(
         return addresses;
     }
 
-    private static async ValueTask<Stream> ConnectAsync(SocketsHttpConnectionContext context, CancellationToken cancellation)
+    internal static async ValueTask<Stream> ConnectPublicAsync(DnsEndPoint endpoint,
+        Func<string, CancellationToken, Task<IPAddress[]>> resolve,
+        Func<IPAddress[], int, CancellationToken, ValueTask<Stream>> dial, CancellationToken cancellation)
     {
-        var endpoint = context.DnsEndPoint;
-        var addresses = await ResolvePublicAsync(endpoint.Host, Dns.GetHostAddressesAsync, cancellation);
+        var addresses = await ResolvePublicAsync(endpoint.Host, resolve, cancellation).ConfigureAwait(false);
+        return await dial(addresses, endpoint.Port, cancellation).ConfigureAwait(false);
+    }
+
+    internal static async ValueTask<Stream> DialAsync(IPAddress[] addresses, int port, CancellationToken cancellation)
+    {
         var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
         try
         {
-            await socket.ConnectAsync(addresses, endpoint.Port, cancellation);
+            await socket.ConnectAsync(addresses, port, cancellation).ConfigureAwait(false);
             return new NetworkStream(socket, ownsSocket: true);
         }
         catch
@@ -176,12 +213,13 @@ public sealed class GraphicsFeedTransport(
     {
         string text;
         try { text = new UTF8Encoding(false, true).GetString(bytes).TrimStart('\uFEFF'); }
-        catch (DecoderFallbackException ex) { throw new InvalidDataException("Feed must be UTF-8.", ex); }
+        catch (DecoderFallbackException) { throw new InvalidDataException("Feed must be UTF-8."); }
         cancellation.ThrowIfCancellationRequested();
         var data = feed.Format switch
         {
             "rss" => ReadRss(text, cancellation),
             "sheets" => GraphicsLocalData.Parse(text, "csv", feed.KeyColumn),
+            "custom-json" => GraphicsFeedMapping.Normalize(text, feed.KeyColumn, feed.Mapping, cancellation),
             _ => GraphicsLocalData.Parse(text, "json", feed.KeyColumn)
         };
         cancellation.ThrowIfCancellationRequested();
