@@ -96,13 +96,14 @@ TEST(GraphicsRpcPixel, PrivateGraphicsPreviewRequiresExplicitNullAppearanceAndPr
   }
 }
 
-TEST(GraphicsCompositionPixel, ReviewedYouTubeCardRendersOnlyOnExplicitShowAndRetires) {
+TEST(GraphicsCompositionPixel, ReviewedSocialCardsRenderOnlyOnExplicitShowAndRetire) {
   using corevideo::rpc::Json;
+  for (const auto& templateId : {std::string("youtube-chat-card"), std::string("twitch-chat-card")}) {
   double now = 0;
   corevideo::graphics::GraphicsInstances graphics{"test-core", [&] { return now; }};
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_TRUE(compositor);
-  std::ifstream file(std::filesystem::path(COREVIDEO_REPO_ROOT) / "contracts" / "graphics-social" / "youtube-chat-card.json");
+  std::ifstream file(std::filesystem::path(COREVIDEO_REPO_ROOT) / "contracts" / "graphics-social" / (templateId + ".json"));
   ASSERT_TRUE(file.good());
   const std::string manifest((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
   int sequence = 0;
@@ -128,14 +129,14 @@ TEST(GraphicsCompositionPixel, ReviewedYouTubeCardRendersOnlyOnExplicitShowAndRe
   };
   const auto installed = [&] {
     const auto& templates = graphics.snapshot().get("templates")->asArray();
-    return std::any_of(templates.begin(), templates.end(), [](const auto& row) { return row.getString("templateId") == "youtube-chat-card"; });
+    return std::any_of(templates.begin(), templates.end(), [&](const auto& row) { return row.getString("templateId") == templateId; });
   };
   const auto instance = [&]() -> const Json& { return graphics.snapshot().get("instances")->asArray().front(); };
   const auto baseline = render();
   ASSERT_EQ(320u * 180 * 4, baseline.size());
   ASSERT_TRUE(command("graphics-template-install", {{"manifest", manifest}}));
   ASSERT_TRUE(advance(installed));
-  ASSERT_TRUE(command("graphics-instance-create", {{"templateId", "youtube-chat-card"}, {"templateVersion", 1},
+  ASSERT_TRUE(command("graphics-instance-create", {{"templateId", templateId}, {"templateVersion", 1},
     {"scope", "global"}, {"fields", Json::Object{{"author", "Reviewed author"}, {"message", "Reviewed message"}}}}));
   ASSERT_TRUE(command("graphics-instance-cue", {{"rideTake", false}}));
   ASSERT_TRUE(advance([&] { return instance().getNumber("cueRevision") == 1; }));
@@ -162,9 +163,17 @@ TEST(GraphicsCompositionPixel, ReviewedYouTubeCardRendersOnlyOnExplicitShowAndRe
   EXPECT_GT(ink(135, 142, true), 6);
   EXPECT_GT(ink(142, 150, false), 6);
   EXPECT_GT(ink(150, 163, false), 6);
+  // The moderation owner clears an on-air card through this same command.
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"action", "clear"}}));
+  EXPECT_EQ(baseline, render());
+  ASSERT_TRUE(command("graphics-instance-cue", {{"rideTake", false}}));
+  ASSERT_TRUE(advance([&] { return instance().getNumber("cueRevision") == 1; }));
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"action", "show"}, {"target", "cue"}}));
+  EXPECT_NE(baseline, render());
   now = 15000;
   EXPECT_EQ(baseline, render());
   EXPECT_TRUE(graphics.snapshot().get("instances")->asArray().empty());
+  }
 }
 
 TEST(GraphicsCompositionPixel, LocalScreenCaptureDrawFactsHonorPresentationSuppression) {

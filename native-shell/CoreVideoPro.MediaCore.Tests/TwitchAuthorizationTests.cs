@@ -7,6 +7,14 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class TwitchAuthorizationTests
 {
+    [Fact]
+    public async Task OversizedProviderResponseIsSanitizedAndFailsClosed()
+    {
+        using var transport = new TwitchHttpTransport((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) {
+            Content = new StringContent(new string('x', 1024 * 1024 + 1)) }));
+        var error = await Assert.ThrowsAsync<TwitchChatException>(() => transport.ValidateAsync(Tokens(new Clock()), CancellationToken.None));
+        Assert.Equal(TwitchChatFailure.Invalid, error.Failure);
+    }
     internal const string Client = "fixtureclient12345678";
     internal sealed class Clock : TimeProvider
     {

@@ -139,6 +139,7 @@ internal sealed class TwitchHttpTransport(
         }
         catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
         { throw new TwitchChatException(TwitchChatFailure.Retry); }
+        catch (InvalidDataException) { throw TwitchJson.Invalid(); }
         catch (Exception error) when (error is HttpRequestException or IOException)
         { throw new TwitchChatException(TwitchChatFailure.Retry); }
     }

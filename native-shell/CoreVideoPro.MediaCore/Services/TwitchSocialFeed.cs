@@ -32,7 +32,7 @@ public static class TwitchSocialFeed
                     var session = TwitchEventSubSession.Welcome(welcome, broadcaster, credentials.UserId);
                     foreach (var type in TwitchEventSubSession.RequiredTypes)
                         await authorization.Http.SubscribeAsync(session, type, broadcaster, credentials, cancellation).ConfigureAwait(false);
-                    source = await playout.ConnectAsync().ConfigureAwait(false);
+                    source = await playout.ConnectAsync("Twitch").ConfigureAwait(false);
                     report("Connected to Twitch live chat: " + channel + ".");
                     using var connected = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                     var reader = ReadAsync(socket, session, playout, source, connected.Token);

@@ -10,9 +10,15 @@ namespace CoreVideoPro.WinUI.Controls;
 internal sealed class GraphicsSocialReviewDialog : ContentDialog
 {
     private readonly GraphicsSocialReviewViewModel _model;
+    private readonly ComboBox _provider = new() { Header = "Provider", ItemsSource = new[] { "YouTube", "Twitch" }, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox _video = new() { Header = "Public YouTube video ID", MaxLength = 11 };
     private readonly PasswordBox _key = new() { Header = "YouTube Data API key", PlaceholderText = "Leave blank to reuse the local key", MaxLength = 128 };
-    private readonly ListView _messages = new() { Height = 115, SelectionMode = ListViewSelectionMode.Single };
+    private readonly TextBox _channel = new() { Header = "Twitch channel name", MaxLength = 25 };
+    private readonly TextBox _client = new() { Header = "Twitch public app Client ID", PlaceholderText = "Leave blank to reuse the saved sign-in", MaxLength = 128 };
+    private readonly TextBlock _code = Note("");
+    private readonly HyperlinkButton _activate = new() { Content = "Open Twitch activation", Padding = new Thickness(0) };
+    private readonly StackPanel _authorization = new() { Spacing = 2, Visibility = Visibility.Collapsed };
+    private readonly ListView _messages = new() { Height = 96, SelectionMode = ListViewSelectionMode.Single };
     private readonly TextBlock _status = Note("");
     private readonly TextBlock _content = new() { TextWrapping = TextWrapping.Wrap };
     private readonly Button _connect = StudioBrushes.GhostButton("Connect");
@@ -31,18 +37,28 @@ internal sealed class GraphicsSocialReviewDialog : ContentDialog
     {
         _model = model;
         XamlRoot = root;
-        Title = "Social review · YouTube live chat";
+        Title = "Social review";
         CloseButtonText = "Close";
         _video.Text = model.VideoId;
+        _channel.Text = model.Channel;
+        _client.Text = model.TwitchClientId;
+        _provider.SelectedItem = model.Provider;
         var content = new StackPanel { Spacing = 8 };
         content.Children.Add(Note("Review each message before approving it. Show approved is a separate action."));
+        content.Children.Add(_provider);
         var source = new Grid { ColumnSpacing = 8 };
         source.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         source.ColumnDefinitions.Add(new() { Width = new GridLength(2, GridUnitType.Star) });
         source.Children.Add(_video);
         Grid.SetColumn(_key, 1);
         source.Children.Add(_key);
+        source.Children.Add(_channel);
+        Grid.SetColumn(_client, 1);
+        source.Children.Add(_client);
         content.Children.Add(source);
+        _authorization.Children.Add(_code);
+        _authorization.Children.Add(_activate);
+        content.Children.Add(_authorization);
         content.Children.Add(Row(_connect, _disconnect, _clear));
         content.Children.Add(_status);
         content.Children.Add(_messages);
@@ -60,11 +76,19 @@ internal sealed class GraphicsSocialReviewDialog : ContentDialog
             RefreshSelection();
         };
         _video.TextChanged += (_, _) => RefreshSelection();
+        _channel.TextChanged += (_, _) => RefreshSelection();
+        _client.TextChanged += (_, _) => RefreshSelection();
+        _provider.SelectionChanged += async (_, _) => await RunAsync(async () =>
+        {
+            await _model.SelectProviderAsync(_provider.SelectedItem as string ?? "YouTube");
+            Refresh();
+        });
         _connect.Click += async (_, _) => await RunAsync(async () =>
         {
             var key = _key.Password.Trim();
             _key.Password = "";
-            await _model.ConnectAsync(_video.Text.Trim(), key);
+            if (_model.Provider == "Twitch") await _model.ConnectTwitchAsync(_channel.Text.Trim(), _client.Text.Trim());
+            else await _model.ConnectAsync(_video.Text.Trim(), key);
         });
         _disconnect.Click += async (_, _) => await DisconnectAsync();
         _clear.Click += async (_, _) => await RunAsync(async () =>
@@ -72,6 +96,7 @@ internal sealed class GraphicsSocialReviewDialog : ContentDialog
             await _model.ClearAsync();
             _key.Password = "";
             _video.Text = "";
+            _channel.Text = _client.Text = "";
         });
         _approve.Click += (_, _) => { if (_selected is { } item) _model.Decide(item.Key, approve: true); };
         _reject.Click += (_, _) => { if (_selected is { } item) _model.Decide(item.Key, approve: false); };
@@ -98,6 +123,12 @@ internal sealed class GraphicsSocialReviewDialog : ContentDialog
 
     private void Refresh()
     {
+        var twitch = _model.Provider == "Twitch";
+        _channel.Visibility = _client.Visibility = twitch ? Visibility.Visible : Visibility.Collapsed;
+        _video.Visibility = _key.Visibility = twitch ? Visibility.Collapsed : Visibility.Visible;
+        _authorization.Visibility = _model.DevicePrompt is null ? Visibility.Collapsed : Visibility.Visible;
+        _code.Text = _model.DevicePrompt is { } prompt ? "Twitch sign-in code: " + prompt.UserCode : "";
+        _activate.NavigateUri = _model.DevicePrompt?.VerificationUri;
         var items = _model.Playout.Items;
         if (!_items.SequenceEqual(items))
         {
@@ -110,7 +141,7 @@ internal sealed class GraphicsSocialReviewDialog : ContentDialog
                 _messages.Items.Clear();
                 foreach (var item in items)
                 {
-                    var entry = new ListViewItem { Content = $"{item.Author} · {item.Decision} · {item.ReceivedAt.ToLocalTime():t}", Tag = item };
+                    var entry = new ListViewItem { Content = $"{item.Provider} · {item.Author} · {item.Decision} · {item.ReceivedAt.ToLocalTime():t}", Tag = item };
                     _messages.Items.Add(entry);
                     if (item.Key == _selected?.Key) _messages.SelectedItem = entry;
                 }
@@ -124,13 +155,16 @@ internal sealed class GraphicsSocialReviewDialog : ContentDialog
 
     private void RefreshSelection()
     {
-        _content.Text = _selected is { } item ? item.Author + Environment.NewLine + item.Message : "Select one message to read it.";
+        _content.Text = _selected is { } item ? item.Provider + " · " + item.Author + Environment.NewLine + item.Message : "Select one message to read it.";
         var active = !_busy && !_disconnecting && _model.Playout.IsConnected;
         _approve.IsEnabled = _reject.IsEnabled = active && _selected?.Decision == GraphicsSocialDecision.Pending;
         _show.IsEnabled = active && _selected?.Decision == GraphicsSocialDecision.Approved;
         _withdraw.IsEnabled = active && _selected is not null;
         _hide.IsEnabled = !_busy && _model.Playout.OnProgram;
-        _connect.IsEnabled = !_busy && !_disconnecting && YouTubeSocialFeed.IsVideoId(_video.Text.Trim());
+        _connect.IsEnabled = !_busy && !_disconnecting && (_model.Provider == "Twitch"
+            ? TwitchAuthorization.IsChannel(_channel.Text.Trim()) && (_client.Text.Trim().Length == 0 || TwitchAuthorization.IsClientId(_client.Text.Trim()))
+            : YouTubeSocialFeed.IsVideoId(_video.Text.Trim()));
+        _provider.IsEnabled = !_busy && !_disconnecting;
         _clear.IsEnabled = !_busy && !_disconnecting;
         _disconnect.IsEnabled = !_disconnecting && (_model.Running || _model.Playout.IsConnected);
     }
@@ -141,7 +175,7 @@ internal sealed class GraphicsSocialReviewDialog : ContentDialog
         _busy = true;
         RefreshSelection();
         try { await action(); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or CryptographicException or InvalidOperationException or OperationCanceledException)
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or CryptographicException or InvalidOperationException or OperationCanceledException)
         { _status.Text = "Social review could not complete that action. Check the connection and retry."; }
         finally { _busy = false; RefreshSelection(); }
     }

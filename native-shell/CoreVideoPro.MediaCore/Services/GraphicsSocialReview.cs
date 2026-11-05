@@ -10,6 +10,7 @@ public sealed record GraphicsSocialItem(
     GraphicsSocialItemKey Key, string Author, string Message, DateTimeOffset ReceivedAt,
     GraphicsSocialDecision Decision)
 {
+    public string Provider { get; init; } = "YouTube";
     internal string AuthorId { get; init; } = "";
     internal long Order { get; init; }
 }
@@ -28,6 +29,7 @@ public sealed class GraphicsSocialReview
     private long _roomClear;
     private long _source;
     private long _revision;
+    private string _provider = "YouTube";
 
     public GraphicsSocialReview(Func<DateTimeOffset>? utcNow = null, int capacity = 200,
         int removalCapacity = 4096, TimeSpan? lifetime = null)
@@ -52,9 +54,13 @@ public sealed class GraphicsSocialReview
         }
     }
 
-    public long Connect()
+    public long Connect() => Connect("YouTube");
+
+    public long Connect(string provider)
     {
+        if (provider is not ("YouTube" or "Twitch")) throw new ArgumentException("Unsupported social provider.", nameof(provider));
         Disconnect();
+        _provider = provider;
         IsConnected = true;
         return ++_source;
     }
@@ -95,7 +101,7 @@ public sealed class GraphicsSocialReview
             return null;
 
         var item = new GraphicsSocialItem(new(source, id, ++_revision),
-            normalizedAuthor, normalizedMessage, current?.ReceivedAt ?? now, GraphicsSocialDecision.Pending) { AuthorId = authorId, Order = order };
+            normalizedAuthor, normalizedMessage, current?.ReceivedAt ?? now, GraphicsSocialDecision.Pending) { Provider = _provider, AuthorId = authorId, Order = order };
         _items[id] = item;
         return item;
     }

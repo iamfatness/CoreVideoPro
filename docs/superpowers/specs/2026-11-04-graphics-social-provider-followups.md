@@ -14,6 +14,18 @@ Start with plain-text messages from one selected channel. Prefer a registered pu
 
 Use the channel and message ID for review identity. Deduplicate delivery separately by the EventSub message ID. A single deletion withdraws its target. A user clear retires that user's pre-clear items. A room clear retires all pre-clear items. Keep a bounded ordering fence so an overlapping delivery cannot restore a cleared item. An unplanned disconnect can lose events and therefore invalidates the review generation. A provider-directed socket migration may preserve eligibility only if the replacement is verified and the subscription continuity is proven. Otherwise begin a new generation. Revocation or loss of a required moderation subscription stops Show. [WebSocket lifecycle](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/)
 
+### Twitch implementation decisions for owner review
+
+The first adapter clears review eligibility during planned server migration
+and reconnects to the canonical endpoint with fresh subscriptions. Continuity
+preservation is deferred until it is proven. The first on-air Twitch card is a
+separate bundled v1 template with fixed provider attribution, retaining the
+existing YouTube template unchanged. The socket caps a complete text message at
+64 KiB, deduplicates 4096 deliveries and permits three reconnect attempts.
+The shared review bounds remain 200 items, 15-minute expiry and 4096 removal
+or per-user ordering entries; overflow ends that generation. These are
+conservative first-adapter choices, subject to owner review.
+
 ## X posts
 
 Start with one selected, existing filtered-stream rule on an authorized project. Confirm project access, quota controls and an approved budget before any live test. Filter incoming events by the selected rule ID even if the provider connection carries multiple rules. Use the original post in the edit chain as the stable identity and the latest post ID as the provider version. An older version arriving out of order cannot replace a newer reviewed version. Verify latest visibility and version before Show. Connect a supported deletion and visibility change feed or establish a documented bounded revalidation path before offering the adapter. Stop on loss of that moderation evidence. Use the provider's display requirements as a separate release gate. [Filtered Stream](https://docs.x.com/x-api/posts/filtered-stream/introduction) · [Post Lookup](https://docs.x.com/x-api/posts/lookup/introduction) · [Compliance streams](https://docs.x.com/x-api/compliance/streams/introduction)
