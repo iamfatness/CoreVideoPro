@@ -8,6 +8,29 @@ namespace CoreVideoPro.Control.Tests;
 public sealed class HttpControlRouterTests
 {
     [Fact]
+    public async Task AutoDiagnosticIsAdditiveAndPreservesThePublishedDecision()
+    {
+        var surface = new FakeControlSurface { State = ControlState.Empty with
+        {
+            AutomationOn = true,
+            AutomationDiagnostic = new ControlAutomationDiagnostic
+            {
+                Sequence = 42, LastAction = "Holding Program: Take is not ready",
+                RecommendationSceneId = "panel", CanTake = false,
+                Bindings = [new(0, "guest-a", "zoom:guest-a")]
+            }
+        }};
+        var response = await new HttpControlRouter(surface).HandleAsync("GET", "/state", null);
+        using var document = JsonDocument.Parse(response.Body);
+        Assert.True(document.RootElement.GetProperty("automationOn").GetBoolean());
+        var diagnostic = document.RootElement.GetProperty("automationDiagnostic");
+        Assert.Equal(42, diagnostic.GetProperty("sequence").GetInt64());
+        Assert.Equal("panel", diagnostic.GetProperty("recommendationSceneId").GetString());
+        Assert.False(diagnostic.GetProperty("canTake").GetBoolean());
+        Assert.Equal("zoom:guest-a", diagnostic.GetProperty("bindings")[0].GetProperty("sourceId").GetString());
+    }
+
+    [Fact]
     public async Task NativeObservationFieldsAreAdditiveInHttpState()
     {
         var surface = new FakeControlSurface { State = new ControlState

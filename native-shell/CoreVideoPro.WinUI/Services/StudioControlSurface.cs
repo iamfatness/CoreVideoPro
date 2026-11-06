@@ -996,6 +996,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             AutoAssignInputs = _vm.AutomationAutoAssignInputsEnabled,
             AutoLowerThirds = _vm.AutomationLowerThirdsEnabled,
             AutoCaptions = _vm.AutomationCaptionsEnabled,
+            AutomationDiagnostic = _vm.MagicScene.Diagnostic,
             AudioMonitorOn = appliedMonitor?.MonitorEnabled ?? false,
             AudioMonitorVolume = appliedMonitor?.MonitorVolume ?? 0,
             AudioMonitorAuthorityEpoch = appliedMonitor?.MonitorControl?.AuthorityEpoch ?? string.Empty,

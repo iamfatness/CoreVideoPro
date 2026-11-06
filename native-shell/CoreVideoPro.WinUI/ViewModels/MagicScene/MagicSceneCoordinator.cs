@@ -207,7 +207,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         if (_evaluating) return;
         _evaluating = true;
         try { EvaluateAutomationPolicyCore(); }
-        finally { _evaluating = false; }
+        finally { _evaluating = false; PublishDiagnostic(); }
     }
 
     private void EvaluateAutomationPolicyCore()
@@ -409,6 +409,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         finally
         {
             _takeInFlight = false;
+            PublishDiagnostic();
         }
     }
 

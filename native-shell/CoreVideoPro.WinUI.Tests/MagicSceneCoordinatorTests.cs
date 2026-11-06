@@ -13,6 +13,40 @@ namespace CoreVideoPro.WinUI.Tests;
 /// </summary>
 public sealed class MagicSceneCoordinatorTests
 {
+    [Fact]
+    public void DiagnosticPreservesTheObservedHoldAndDoesNotActuateWhenRead()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 3;
+        host.CanTake = false;
+        coordinator.Recommendation = Recommendation("interview", 93);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddSeconds(5);
+        coordinator.EvaluateAutomationPolicy();
+        var held = Assert.IsType<CoreVideoPro.Control.ControlAutomationDiagnostic>(coordinator.Diagnostic);
+        Assert.Contains("Take is not ready", held.LastAction);
+        Assert.False(held.CanTake);
+        Assert.Equal("interview", held.PreviewSceneId);
+        Assert.Equal("intro", held.ActiveSceneId);
+        Assert.Equal(93, held.Confidence);
+        Assert.Equal(5000, held.PendingElapsedMs);
+        Assert.Equal(2, held.Bindings.Count);
+        Assert.Same(held, coordinator.Diagnostic);
+        Assert.Equal(0, host.TakeAsyncCallCount);
+
+        host.CanTake = true;
+        coordinator.EvaluateAutomationPolicy();
+        var taken = coordinator.Diagnostic!;
+        Assert.True(taken.Sequence > held.Sequence);
+        Assert.Equal("interview", taken.ActiveSceneId);
+        Assert.Contains("taken by automation", taken.LastAction);
+        Assert.False(taken.TakeInFlight);
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        Assert.Equal("intro", held.ActiveSceneId);
+        Assert.False(held.CanTake);
+    }
+
     private static readonly IReadOnlyList<Scene> Scenes =
     [
         new() { Id = "intro", Name = "Intro", Layout = "host-focus" },
@@ -480,6 +514,9 @@ public sealed class MagicSceneCoordinatorTests
         await host.DrainTakeAsync();
         Assert.Equal("Manual mode - automation is not changing scenes", coordinator.AutomationLastAction);
         Assert.Equal(1, host.TakeAsyncCallCount);
+        Assert.Equal("Manual", coordinator.Diagnostic!.Mode);
+        Assert.False(coordinator.Diagnostic.TakeInFlight);
+        Assert.Equal(coordinator.AutomationLastAction, coordinator.Diagnostic.LastAction);
     }
 
     [Fact]
