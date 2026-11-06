@@ -374,6 +374,21 @@ copy-change contention, recovered reads and original-deadline misses; held/slate
 pixels still fail continuity. See [the recovery contract and evidence limits](camera-reader-contention.md).
 A producer-process environment variable does not configure Frame Server.
 
+The compiled DLL round trip seeds an inactive history file before opening the
+reader. It exercises legacy reads first, then starts history on that same
+file. Creating the history file during the phase-crossing check would make
+the expected pixel order depend on the reader's one-second retry interval
+for a missing file.
+
+The request schedule uses absolute sample slots. A request that enters late can
+proceed immediately, and the following request waits for the time remaining
+until its slot. A pair of calls can therefore take less than 10 ms even at
+60 fps. Test the scheduled targets, waits and read deadlines with explicit
+100 ns ticks in `VirtualCameraRequestSchedule` tests. The compiled DLL
+round trip verifies actual Media Foundation samples, increasing PTS and both
+retained pixel identities across a publication boundary. Use the OS receiver
+continuity gate above for delivery timing qualification.
+
 For controlled Windows Frame Server qualification, explicitly build the excluded
 `corevideo-virtualcam-retry-qa` target in Release. It produces a separately named
 diagnostic DLL with publication retry enabled and logs `[vcam-retry-qa]` when a
