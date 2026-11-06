@@ -8,6 +8,21 @@
 
 using Cache = corevideo::graphics::PreparationCache<int, int, int>;
 namespace {
+// Pause a lookup while it owns the immutable map snapshot. This is distinct
+// from a returned Result lease: Entry ownership can outlive publication too.
+thread_local std::function<void()> onSnapshotKeyComparison;
+struct SnapshotKey {
+  int value;
+  bool operator==(const SnapshotKey&) const = default;
+  bool operator<(const SnapshotKey& other) const {
+    if (onSnapshotKeyComparison) {
+      auto callback = std::move(onSnapshotKeyComparison);
+      onSnapshotKeyComparison = {};
+      callback();
+    }
+    return value < other.value;
+  }
+};
 // mini-gtest throws on failed expectations. Release a blocked producer before
 // cache destruction even when an expectation fails, so a failing test terminates.
 struct ReleaseGate {
@@ -65,10 +80,46 @@ TEST(GraphicsPreparationCache, ActiveLeasesStayChargedAndPreventUnsafeEviction) 
   EXPECT_EQ(10, *held->asset);
   EXPECT_TRUE(cache.find(1));
   held.reset();
-  admit(cache, 2, 20, 60);
-  ASSERT_TRUE(eventually([&] { return bool(cache.find(2)); }));
+  // Admission is a bounded request, not a promise of preparation. A concurrent
+  // lookup can retain the just-retired map until it returns. Keep expressing
+  // demand as the render caller does, while that ownership retires.
+  ASSERT_TRUE(eventually([&] { return bool(cache.findOrRequest(2, 20, 60)); }));
   EXPECT_EQ(2, prepared.load());
   EXPECT_EQ(40u, cache.counters().residentBytes);
+  EXPECT_LE(cache.counters().highWaterBytes, 80u);
+}
+
+TEST(GraphicsPreparationCache, SnapshotReaderRemainsChargedUntilLaterDemandCanPrepare) {
+  using SnapshotCache = corevideo::graphics::PreparationCache<SnapshotKey, int, int>;
+  std::atomic<int> prepared{0};
+  SnapshotCache cache([&](int value) {
+    ++prepared; return SnapshotCache::Result{std::make_shared<int>(value), 40, ""};
+  }, 80, 4);
+  ASSERT_TRUE(eventually([&] { return bool(cache.findOrRequest({1}, 10, 60)); }));
+
+  std::promise<void> entered, release;
+  auto gate = release.get_future().share();
+  auto reader = std::async(std::launch::async, [&] {
+    onSnapshotKeyComparison = [&] { entered.set_value(); gate.wait(); };
+    return cache.find({2});
+  });
+  ReleaseGate unblock{release}; // release before the async future joins on failure
+  ASSERT_EQ(entered.get_future().wait_for(std::chrono::seconds(2)), std::future_status::ready);
+  ASSERT_TRUE(eventually([&] {
+    cache.findOrRequest({2}, 20, 60);
+    return cache.counters().admitted >= 2;
+  }));
+  ASSERT_TRUE(eventually([&] { return cache.counters().pendingBytes == 0; }));
+  EXPECT_EQ(prepared.load(), 1);
+  EXPECT_EQ(cache.counters().residentBytes, 40u);
+  EXPECT_FALSE(cache.find({1})); // retired, but still charged to the blocked snapshot
+  EXPECT_FALSE(cache.find({2}));
+  EXPECT_GE(cache.counters().refused, 1u);
+  unblock.release();
+  EXPECT_FALSE(reader.get());
+  ASSERT_TRUE(eventually([&] { return bool(cache.findOrRequest({2}, 20, 60)); }));
+  EXPECT_EQ(prepared.load(), 2);
+  EXPECT_EQ(cache.counters().residentBytes, 40u);
   EXPECT_LE(cache.counters().highWaterBytes, 80u);
 }
 
