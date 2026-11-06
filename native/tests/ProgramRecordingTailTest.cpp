@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#if defined(_WIN32)
+#if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 #include <windows.h>
 #include <mfapi.h>
 #include <mfidl.h>
