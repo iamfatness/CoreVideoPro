@@ -167,6 +167,23 @@ public sealed partial class StudioViewModel : IMagicSceneHost
 
     void IMagicSceneHost.RefreshProductionReadouts() => RefreshProductionReadouts();
 
+    void IMagicSceneHost.RefreshAutomationRecommendation()
+    {
+        var previous = MagicScene.Recommendation;
+        MagicScene.Recommendation = ProductionStateHelper.BuildAutomationRecommendation(
+            _bridge.LastSnapshot?.AutoProduction, RoomVideoParticipants, Scenes,
+            AutomationPreferScreenShare, (int)Math.Round(AutomationPanelParticipantThreshold));
+        var current = MagicScene.Recommendation;
+        if (previous.RecommendedSceneId == current.RecommendedSceneId &&
+            previous.Confidence == current.Confidence && previous.Reason == current.Reason &&
+            previous.Action == current.Action) return;
+        AutoProductionReadout = MagicScene.BuildAutoProductionReadout();
+        OnPropertyChanged(nameof(RecommendedSceneName));
+        OnPropertyChanged(nameof(RecommendedLayout));
+        OnPropertyChanged(nameof(RecommendedConfidence));
+        OnPropertyChanged(nameof(AutoProductionReason));
+    }
+
     void IMagicSceneHost.ApplyTransportAutomationState(ProductionMode mode) =>
         Transport.ApplyAutomationState(mode);
 

@@ -14,6 +14,38 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class MagicSceneCoordinatorTests
 {
     [Fact]
+    public void NativeDecisionAdvancesWithoutAnyStructuralRosterRefresh()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 8;
+        host.CanTake = true;
+        var latest = Recommendation("intro", 0);
+        coordinator.Recommendation = latest;
+        host.RefreshRecommendation = () => coordinator.Recommendation = latest;
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        latest = Recommendation("panel", 93);
+        coordinator.EvaluateAutomationPolicy();
+        now = now.AddSeconds(5);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal("panel", host.ActiveSceneId);
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        Assert.Equal(93, coordinator.Diagnostic!.Confidence);
+    }
+
+    [Fact]
+    public void MagicSceneReadsLatestDecisionWithoutStructuralRosterRefresh()
+    {
+        var (coordinator, host) = Build();
+        coordinator.Recommendation = Recommendation("intro", 0);
+        host.RefreshRecommendation = () => coordinator.Recommendation = Recommendation("interview", 93);
+        coordinator.RunMagicSceneCommand.Execute(null);
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal(2, host.PreviewBindings.Count);
+        Assert.Equal(0, host.TakeAsyncCallCount);
+    }
+
+    [Fact]
     public void DiagnosticPreservesTheObservedHoldAndDoesNotActuateWhenRead()
     {
         var now = DateTimeOffset.UtcNow;
@@ -850,6 +882,8 @@ public sealed class MagicSceneCoordinatorTests
         public void RefreshSceneItems() { }
 
         public void RefreshProductionReadouts() { }
+        public Action? RefreshRecommendation { get; set; }
+        public void RefreshAutomationRecommendation() => RefreshRecommendation?.Invoke();
 
         public void RefreshProgramLowerThirdKeyPosition() { }
 

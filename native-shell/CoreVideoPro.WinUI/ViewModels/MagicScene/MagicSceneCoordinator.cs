@@ -15,7 +15,8 @@ namespace CoreVideoPro.WinUI.ViewModels.MagicScene;
 /// the host) — <see cref="EvaluateAutomationPolicy"/> runs on the UI thread exactly as before,
 /// so the 0xc000027b churn/reentrancy rules are preserved. The DECISION logic still lives in
 /// the external <c>ProductionStateHelper</c>/<c>AutoProductionState</c> (fed via
-/// <see cref="Recommendation"/> from the snapshot-apply path); this type only sequences it.
+/// <see cref="Recommendation"/> refreshed from the latest native snapshot before each decision);
+/// this type only sequences it. Decision freshness must not depend on structural roster changes.
 /// </summary>
 public sealed partial class MagicSceneCoordinator : ObservableObject
 {
@@ -168,6 +169,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     [RelayCommand]
     private void RunMagicScene()
     {
+        _host.RefreshAutomationRecommendation();
         if (!_host.IsInMeeting)
         {
             _host.CommandStatus = "Magic Scene requires an active Zoom meeting";
@@ -212,6 +214,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
 
     private void EvaluateAutomationPolicyCore()
     {
+        _host.RefreshAutomationRecommendation();
         ObserveAutomationSession();
         if (ProductionMode != ProductionMode.SetAndForget)
         {

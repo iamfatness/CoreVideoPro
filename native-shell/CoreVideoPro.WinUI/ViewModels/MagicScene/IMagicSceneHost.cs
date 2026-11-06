@@ -59,6 +59,9 @@ public interface IMagicSceneHost
 
     void RefreshProductionReadouts();
 
+    // Cheap current decision refresh; independent of structural participant UI rebuilds.
+    void RefreshAutomationRecommendation();
+
     // --- transport ---
     void ApplyTransportAutomationState(ProductionMode mode);
 
