@@ -20,6 +20,8 @@ function Check([string]$Name, [scriptblock]$Body) {
 }
 function Assert($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 
+Check 'credential-safe production query failures' { & (Join-Path $PSScriptRoot 'outputs-drill-errors.test.ps1') }
+
 # ---------------------------------------------------------------- parameters
 Check 'defaults are valid' { $e = Test-DrillParameters -Seconds 1800 -Out 'D:\CoreVideo-QA\drills\x'; Assert ($e.Count -eq 0) ($e -join ';') }
 Check 'seconds below 60 and above 7200 are refused' {
