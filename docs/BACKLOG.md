@@ -16,6 +16,12 @@ Specifications and per-item execution/acceptance plans: [overnight reliability r
 | 2 | [#1158](https://github.com/iamfatness/CoreVideoPro/issues/1158) Graphics preparation, with separately tracked [#1157](https://github.com/iamfatness/CoreVideoPro/issues/1157) preview rejection | First record admission/eviction/producer state for the second asset and the complete RPC response for the rejected valid preview. Try controlled interleavings and the recorded suite context. Retain bounded residency, charged live leases, explicit-null validation, private Preview isolation and changing-pixel checks. | 75 min total: 45 min cache, 30 min preview response/reproduction. They are related investigation topics, **not an assumed shared cause**. Separate fixes/PRs if both require code. Unresolved evidence is an acceptable bounded outcome; a green isolated rerun is not closure. |
 | 3 | [#1137](https://github.com/iamfatness/CoreVideoPro/issues/1137) monitor retirement fixture | Force the transition between the fixture's two `gpuDone` reads; show whether it produces inconsistent completed/pending evidence. If confirmed, sample once and prove immutable reader evidence plus eventual idle sleep. Preserve the original TSAN failure and run the sanitizer check on the proposed commit. | 45 min. No blanket timeout increases or production worker changes without a reproduced runtime defect. First item to drop if build/reproduction costs exceed budget. |
 
+### Rehearsal prerequisite and new intake
+
+The four bounded fixes above are merged (#1161–#1164). Continue the authorized rehearsal/output work. [#1165](https://github.com/iamfatness/CoreVideoPro/issues/1165) is its required credential-safe harness prerequisite; specification: [drill error evidence](reference/drill-error-evidence-1165.md). No app binary change is included.
+
+Unranked intake: [#1166](https://github.com/iamfatness/CoreVideoPro/issues/1166), live rehearsal reproduces accepted lower-third Hide leaving the legacy graphic on Program when a Guest playlist row exists. Preserve this failed acceptance for the conditional next-batch triage.
+
 ### Eight-hour allocation
 
 | Elapsed window | Minutes | Deliverable |

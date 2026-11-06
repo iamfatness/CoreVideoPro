@@ -715,3 +715,11 @@ function Get-DrillSampleRow {
     snapshot = [ordered]@{ programFrame = $s.programFrame; programSourceAdmission = $s.programSourceAdmission }
   }
 }
+
+# Allowlisted failure evidence: neither request nor response text is accepted.
+function Format-DrillActionFailure([string]$Action, [int]$StatusCode = 0, [bool]$UnknownAction = $false) {
+  $safeAction = if ($Action -cmatch '^[a-zA-Z][a-zA-Z0-9.]{0,79}$') { $Action } else { 'control action' }
+  $status = if ($StatusCode -ge 100 -and $StatusCode -le 599) { "HTTP $StatusCode" } else { 'transport failure' }
+  $classification = if ($StatusCode -eq 400 -and $UnknownAction) { "Unknown action '$safeAction'. " } else { '' }
+  return "$safeAction failed ($status); ${classification}request and response details omitted from evidence."
+}
