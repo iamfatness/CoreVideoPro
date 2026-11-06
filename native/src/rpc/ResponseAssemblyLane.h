@@ -1,5 +1,7 @@
 #pragma once
 #include "core/CoreStateCapture.h"
+#include "core/BoundedAsyncLog.h"
+#include <chrono>
 #include <condition_variable>
 #include <thread>
 
@@ -15,6 +17,7 @@ class ResponseAssemblyLane {
     std::unique_ptr<core::CoreStateCapture> capture;
     core::SnapshotProjection kind = core::SnapshotProjection::Session;
     std::string field;
+    std::chrono::steady_clock::time_point submittedAt;
   };
   ResponseAssemblyLane(Assemble assemble, Deliver deliver)
       : assemble_(std::move(assemble)), deliver_(std::move(deliver)), worker_([this] { run(); }) {}
@@ -25,6 +28,7 @@ class ResponseAssemblyLane {
   }
   // Single producer, after waitForCapacity and after releasing coreMutex.
   void submit(Job job) {
+    job.submittedAt = std::chrono::steady_clock::now();
     { std::lock_guard lock(mutex_); pending_ = std::make_unique<Job>(std::move(job)); }
     ready_.notify_all();
   }
@@ -45,10 +49,20 @@ class ResponseAssemblyLane {
       }
       ready_.notify_all();
       try {
+        const auto started = std::chrono::steady_clock::now();
         auto projected = assemble_ ? assemble_(*job->capture, job->kind) : job->capture->assemble(job->kind);
         auto object = job->response.asObject();
         object.insert_or_assign(job->field, std::move(projected));
-        deliver_(Json(std::move(object)).stringify());
+        const auto projectedAt = std::chrono::steady_clock::now();
+        auto serialized = Json(std::move(object)).stringify();
+        const auto serializedAt = std::chrono::steady_clock::now();
+        deliver_(std::move(serialized));
+        const auto deliveredAt = std::chrono::steady_clock::now();
+        const auto us = [](auto elapsed) { return static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()); };
+        core::nativeVerboseLogf("[response-timing] assembly_queue_us=%lld project_us=%lld serialize_us=%lld enqueue_us=%lld\n",
+            us(started - job->submittedAt), us(projectedAt - started),
+            us(serializedAt - projectedAt), us(deliveredAt - serializedAt));
       } catch (const std::exception& e) {
         deliver_(Json(Json::Object{{"id", *job->response.get("id")}, {"ok", false},
           {"error", Json::Object{{"code", "response-assembly-failed"}, {"message", e.what()}}}}).stringify());

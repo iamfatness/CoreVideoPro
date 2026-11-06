@@ -116,29 +116,43 @@ TARGET_OUTPUT_FPS = 60.0
 MIN_LOAD_FPS = 59.5
 MAX_LOAD_RENDER_MS = 10.0
 MAX_DROPPED_FRAMES = 0
+NATIVE_TIMING_PREFIXES = ("[request-timing]", "[response-timing]", "[writer-timing]",
+                          "[req]", "[cmd]", "[response]", "[writer]", "[command-lock]",
+                          "[render]", "[lock-guardrail]", "[lock-hold-attribution]")
 
 
 class Core:
-    def __init__(self, path, env=None):
+    def __init__(self, path, env=None, evidence_path=None):
         self.proc = subprocess.Popen(
             [path], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, bufsize=1,
             env={**os.environ, **(env or {})})
         self.responses = {}
+        self.response_times = {}
+        self.evidence_path = evidence_path
+        self.started_at = time.monotonic()
+        self.request_evidence = []
+        self.evidence_truncated = 0
         self.events = []
         self.stderr = []
+        self.native_timing = []
+        self.native_timing_omitted = 0
         self.next_id = 1
         self.round_trips = []  # (type, seconds) per answered request
-        threading.Thread(target=self._read_stdout, daemon=True).start()
-        threading.Thread(target=self._read_stderr, daemon=True).start()
+        self.stdout_reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self.stdout_reader.start()
+        self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
+        self.stderr_reader.start()
 
     def _read_stdout(self):
         for line in self.proc.stdout:
+            received_at = time.monotonic()
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
             if obj.get("id"):
+                self.response_times[obj["id"]] = (received_at, time.monotonic())
                 self.responses[obj["id"]] = obj
             elif obj.get("type"):
                 self.events.append(obj)
@@ -146,30 +160,87 @@ class Core:
     def _read_stderr(self):
         for line in self.proc.stderr:
             self.stderr.append(line.rstrip())
+            if line.startswith(NATIVE_TIMING_PREFIXES):
+                if len(self.native_timing) < 512:
+                    self.native_timing.append({"observedMs": (time.monotonic() - self.started_at) * 1000,
+                                               "line": line.rstrip()})
+                else:
+                    self.native_timing_omitted += 1
 
-    def request(self, body, timeout=6.0):
+    def request(self, body, timeout=6.0, step=None):
         rid = f"drill-{self.next_id}"
         self.next_id += 1
         body = dict(body, id=rid)
-        started = time.time()
+        started = time.monotonic()
+        diagnostic_start = len(self.stderr)
         self.proc.stdin.write(json.dumps(body, separators=(",", ":")) + "\n")
         self.proc.stdin.flush()
         deadline = started + timeout
         # 1ms poll: this now measures OPERATOR RESPONSIVENESS (the round trip a
         # Take rides), so a 10ms poll would be most of the number being measured.
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             if rid in self.responses:
-                self.round_trips.append((body.get("type", "?"), time.time() - started))
+                finished = time.monotonic()
+                self.round_trips.append((body.get("type", "?"), finished - started))
+                self._observe_request(rid, body, step, started, finished, diagnostic_start, False)
                 return self.responses[rid]
             time.sleep(0.001)
+        self._observe_request(rid, body, step, started, time.monotonic(), diagnostic_start, True)
         return None
 
-    def sync(self, commands, elapsed_ms):
+    def _observe_request(self, rid, body, step, started, finished, diagnostic_start, timed_out):
+        if len(self.request_evidence) >= 4096:
+            self.evidence_truncated += 1
+            return
+        reader = self.response_times.get(rid)
+        diagnostics = [line for line in self.stderr[diagnostic_start:]
+                       if line.startswith(("[render]", "[lock-guardrail]", "[video-out]") + NATIVE_TIMING_PREFIXES)]
+        snapshot = self.responses.get(rid, {}).get("snapshot", {})
+        native_log = snapshot.get("nativeDiagnostics") if isinstance(snapshot, dict) else None
+        log_keys = ("logDropped", "logTruncated", "logSinkFailures", "logQueued")
+        native_log = {key: native_log.get(key) for key in log_keys} if isinstance(native_log, dict) else None
+        self.request_evidence.append({
+            "id": rid, "type": body.get("type", "?"), "step": step,
+            "commandTypes": [command.get("type", "?") for command in body.get("commands", [])],
+            "startMs": (started - self.started_at) * 1000,
+            "durationMs": (finished - started) * 1000, "timedOut": timed_out,
+            "readerReceivedMs": (reader[0] - started) * 1000 if reader else None,
+            "readerParseMs": (reader[1] - reader[0]) * 1000 if reader else None,
+            "callerAfterReaderMs": (finished - reader[1]) * 1000 if reader else None,
+            "diagnostics": diagnostics[-12:], "diagnosticsOmitted": max(0, len(diagnostics) - 12),
+            "nativeLog": native_log,
+        })
+
+    def sync(self, commands, elapsed_ms, step=None):
         return self.request({"type": "media-core-sync", "elapsedMs": elapsed_ms,
-                             "commands": commands})
+                             "commands": commands}, step=step)
 
     def kill(self):
         self.proc.kill()
+        self.proc.wait(timeout=10)
+        self.stdout_reader.join(timeout=1)
+        self.stderr_reader.join(timeout=1)
+        self.proc.stdin.close()
+        # Do not close a pipe underneath a still-running reader or wait forever
+        # on its stream lock. Preserve an incomplete-drain result instead.
+        if not self.stdout_reader.is_alive():
+            self.proc.stdout.close()
+        if not self.stderr_reader.is_alive():
+            self.proc.stderr.close()
+        if self.evidence_path:
+            os.makedirs(os.path.dirname(os.path.abspath(self.evidence_path)), exist_ok=True)
+            with open(self.evidence_path, "w", encoding="utf-8") as output:
+                json.dump({"clock": "monotonic", "commandP99LimitMs": MAX_COMMAND_P99_MS,
+                           "requestsOmitted": self.evidence_truncated,
+                           "requests": self.request_evidence,
+                           "nativeTiming": self.native_timing,
+                           "nativeTimingOmitted": self.native_timing_omitted,
+                           "stderrDrained": not self.stderr_reader.is_alive(),
+                           "stdoutDrained": not self.stdout_reader.is_alive(),
+                           "scope": "Caller/reader timing plus opt-in native phase durations; observedMs is stderr receipt time, not a native timestamp or request correlation; no command arguments"}, output, indent=2)
+            print(f"Command timing evidence: {self.evidence_path} ({self.evidence_truncated} omitted)")
+        for request in sorted(self.request_evidence, key=lambda row: row["durationMs"], reverse=True)[:5]:
+            print("Command timing: " + json.dumps(request, separators=(",", ":")))
 
 
 def route(route_id, index=0, capture=None):
@@ -259,6 +330,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seconds", type=float, default=40.0)
     parser.add_argument("--core", default=DEFAULT_CORE)
+    parser.add_argument("--evidence", default=os.path.join(REPO, "artifacts", "show-drill", "command-timing.json"))
     # The recorded-rate gate measures the MACHINE as much as the code, and a
     # shared CI runner cannot hold 60 Hz: measured on macos-14 across three
     # commits with identical code paths, the COMPOSITOR itself rendered 48.7,
@@ -286,14 +358,14 @@ def main():
         return 1
 
     failures = []
-    core = Core(args.core, env=load_env(args.load) if args.load else None)
+    core = Core(args.core, env=load_env(args.load) if args.load else None, evidence_path=args.evidence)
     time.sleep(1.5)
 
     # Production mode intentionally suppresses the frame/timing lines this
     # performance harness evaluates. Opt in through the same live command as
     # the Health switch so a green drill still proves the diagnostic path.
     diagnostics = core.sync(
-        [{"type": "set-verbose-diagnostics", "enabled": True}], 0)
+        [{"type": "set-verbose-diagnostics", "enabled": True}], 0, step="enable-diagnostics")
     if diagnostics is None:
         print("FAIL enabling verbose diagnostics timed out")
         core.kill()
@@ -301,7 +373,7 @@ def main():
 
     if args.load:
         joined = core.request({"type": "zoom-join", "payload": {
-            "meetingNumber": "1234567890", "displayName": "show-drill"}}, timeout=20.0)
+            "meetingNumber": "1234567890", "displayName": "show-drill"}}, timeout=20.0, step="synthetic-join")
         if joined is None:
             print("FAIL zoom-join timed out")
             core.kill()
@@ -313,7 +385,7 @@ def main():
 
     def step(name, commands, elapsed):
         nonlocal timeouts
-        response = core.sync(commands, elapsed)
+        response = core.sync(commands, elapsed, step=name)
         if response is None:
             timeouts += 1
             failures.append(f"{name}: request TIMED OUT")
