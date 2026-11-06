@@ -12,6 +12,7 @@ namespace corevideo::core {
 // This mutex is a leaf: no encoder, pixel conversion, or core callback under it.
 class IsoVideoIngress {
  public:
+  enum class Delivery { Direct, Worker };
   struct Counters {
     uint64_t distinctSubmitted = 0, duplicateRejected = 0, queueOverflowed = 0;
   };
@@ -20,8 +21,9 @@ class IsoVideoIngress {
   }
   void observe(const std::vector<std::string>& selected,
                const std::vector<modules::VideoFrame>& frames,
-               const std::vector<modules::VideoFrame>& cpuArrivals,
-               int64_t arrival100ns, bool independentZoom = false) {
+               std::vector<modules::VideoFrame> cpuArrivals,
+               int64_t arrival100ns, bool independentZoom = false,
+               Delivery delivery = Delivery::Direct) {
     std::unordered_set<std::string> ids;
     for (const auto& id : selected) ids.insert(canonical(id));
     std::unordered_set<std::string> liveIds;
@@ -37,12 +39,15 @@ class IsoVideoIngress {
       else ++it;
     }
     RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoLatest);
-    const auto admit = [&](const modules::VideoFrame& frame) {
+    const auto admit = [&](modules::VideoFrame frame) {
       if (!frame.hasPixels() && !frame.hasI420()) return;
       const auto id = canonical(frame.participantId);
       if (!ids.count(id) || id.rfind("media:", 0) == 0) return;
       RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoIngress);
-      latest_[id] = frame;
+      // Only the synchronous fallback reads latest(). The live ISO worker
+      // consumes the queue, so retaining another pixel owner here made the
+      // next render tick retire an already-encoded multi-megabyte buffer.
+      if (delivery == Delivery::Direct) latest_[id] = frame;
       RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoLatest);
       auto& counter = counters_[id];
       const auto prior = lastQueued_.find(id);
@@ -59,9 +64,9 @@ class IsoVideoIngress {
           if (it->sourceId == id) { pending_.erase(it); ++counter.queueOverflowed; break; }
         }
       }
-      modules::IsoSourceVideoFrame entry{id, {}, frame};
-      entry.timelineTimestamp100ns = frame.captureTimestamp100ns > 0
-          ? frame.captureTimestamp100ns : arrival100ns;
+      modules::IsoSourceVideoFrame entry{id, {}, std::move(frame)};
+      entry.timelineTimestamp100ns = entry.frame.captureTimestamp100ns > 0
+          ? entry.frame.captureTimestamp100ns : arrival100ns;
       pending_.push_back(std::move(entry));
       ++counter.distinctSubmitted;
       RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoQueue);
@@ -74,7 +79,10 @@ class IsoVideoIngress {
       const auto id = canonical(frame.participantId);
       if (!independentIds.count(id) && !(independentZoom && id.rfind("zoom:", 0) == 0)) admit(frame);
     }
-    for (const auto& frame : cpuArrivals) admit(frame);
+    // Transfer admitted arrivals all the way into the drain queue. Keeping
+    // this tick's vector as an extra owner could otherwise retire a payload
+    // on the render thread if the encoder consumed it before the tick ended.
+    for (auto& frame : cpuArrivals) admit(std::move(frame));
   }
   std::vector<modules::IsoSourceVideoFrame> latest(const std::vector<std::string>& selected) const {
     std::vector<modules::IsoSourceVideoFrame> result;
