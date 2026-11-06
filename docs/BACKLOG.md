@@ -1,5 +1,19 @@
 # CoreVideo Pro — ranked backlog
 
+## Active four-hour follow-on — November 5 23:48 to November 6 03:48 Eastern
+
+The owner-authorized conditional batch is triggered: the initial bounded work finished before 06:00 with four merged fixes, passing regression/package gates, and two failed output warmups. Output acceptance remains failed; the next batch addresses the observed causes. This section is the sole current queue and supersedes the completed investigation order below.
+
+| Order | Issue | Work and acceptance | Budget |
+|---|---|---|---|
+| 1 | [#1168](https://github.com/iamfatness/CoreVideoPro/issues/1168) | Reproduce stale missing-source eligibility after same-kind reassignment; repair the focused assignment path and prove eight actual ISO writers. [Spec](reference/drill-source-warmup-1168.md). Warmup alone failed and is not the fix. | 45 min |
+| 2 | [#1166](https://github.com/iamfatness/CoreVideoPro/issues/1166) | Fix Hide/toggle routing for the active lower-third authority with Guest playlist rows present; retain manual suppression and verify actual packaged output. [Spec](reference/lower-third-authority-1166.md). | 45 min |
+| 3 | [#1165](https://github.com/iamfatness/CoreVideoPro/issues/1165) | Complete CI/review of credential-safe harness prerequisite #1167; merge only after required checks. | Within baseline/handoff |
+
+Remaining allocation: baseline/spec reconciliation 15 min; matched package/regression 45 min; real rehearsal plus 30-minute output collection/judgment 60 min; evidence/issue reconciliation and exact configuration restoration 30 min (240 min total). No local build overlaps live output collection. The full gate remains #989/#1056/#517/#823; source geometry, physical webcam and registered-camera identity limits must be explicit. Do not waive missing frames or substitute counters for decoded output evidence.
+
+[First-batch evidence and limitations](qa/overnight-execution-2026-11-05.md). Fresh triage enumerated 131 open issues at 23:34 (uncapped result); #970 and #551 then closed against merged/current evidence, #1168 added. #618 remains dependent on private SDK hosted provisioning. Other issues were title-screened rather than exhaustively audited. No provider feature work, new designer or broad architecture changes in this batch.
+
 ## Active eight-hour session — November 5 into November 6, 2026
 
 Owner authorized specifications/plans followed by execution, including local app/device rehearsals, at **21:54 Eastern November 5**. The eight-hour endpoint is **05:54 Eastern November 6**. This section supersedes older dated queues for the active session. Use the supplied test meeting if populated; otherwise perform labeled local tests. Before 06:00 completion triggers a fresh four-hour issue-triage/spec/plan exercise. One primary issue per implementation PR; at most three active items; GPU/device workloads run serially.
