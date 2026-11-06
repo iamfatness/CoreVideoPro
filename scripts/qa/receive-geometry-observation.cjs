@@ -17,6 +17,9 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const state = await stateResponse.json();
     result.samples.push({ elapsedMs: Math.round(performance.now() - started), meetingState: s.meetingState,
       rosterEpoch: s.rosterEpoch, recording: state.recording, streaming: state.streaming,
+      recordingLifecycle: s.recording?.lifecycle,
+      writers: (s.recording?.streams || []).map(x => ({ kind: x.kind, sourceId: x.sourceId,
+        status: x.status, framesWritten: x.framesWritten, bytesWritten: x.bytesWritten })),
       sources: (s.sources || []).filter(x => x.kind === 'zoom' && /^\d+$/.test(x.sourceId)).map(x => ({
         id: x.sourceId, width: x.width, height: x.height, frames: x.framesIngested,
         ageMs: x.sinceLastNewFrameMs, dropped: x.droppedFrames })),
