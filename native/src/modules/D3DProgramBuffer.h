@@ -62,14 +62,29 @@ class D3DProgramBuffer {
     }
   }
   ~D3DProgramBuffer() {
-    { std::lock_guard<std::mutex> lock(mutex_); stopped_ = true; }
-    notifyChanged();
-    if (prepareThread_.joinable()) prepareThread_.join();
-    if (deliveryThread_.joinable()) deliveryThread_.join();
-    if (shellThread_.joinable()) shellThread_.join();
-    if (multiviewThread_.joinable()) multiviewThread_.join();
+    stop();
     if (wakeEvent_) ::CloseHandle(wakeEvent_);
     if (prepareTimer_) ::CloseHandle(prepareTimer_);
+  }
+  // Explicit owner teardown, never an inference from starvation. Join before
+  // other compositor owners retire, but retain textures/leases until destruction.
+  // Called by the owning thread, not from a buffer worker or delivery callback.
+  void stop() {
+    std::call_once(stopOnce_, [this] {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopped_ = true;
+        if (diagnostics_.status != "failed") diagnostics_.status = "stopping";
+      }
+      notifyChanged();
+      if (prepareThread_.joinable()) prepareThread_.join();
+      if (deliveryThread_.joinable()) deliveryThread_.join();
+      if (shellThread_.joinable()) shellThread_.join();
+      if (multiviewThread_.joinable()) multiviewThread_.join();
+      std::lock_guard<std::mutex> lock(mutex_);
+      diagnostics_.activeFrames = 0;
+      if (diagnostics_.status != "failed") diagnostics_.status = "stopped";
+    });
   }
   bool valid() const { return initialized_; }
   bool dimensions(int width, int height, int depth) const {
@@ -829,6 +844,7 @@ class D3DProgramBuffer {
   int width_, height_, depth_;
   bool initialized_ = false, stopped_ = false;
   mutable std::mutex mutex_;
+  std::once_flag stopOnce_;
   std::condition_variable changed_;
   ProgramBufferDiagnostics diagnostics_;
   std::vector<std::unique_ptr<Slot>> slots_;

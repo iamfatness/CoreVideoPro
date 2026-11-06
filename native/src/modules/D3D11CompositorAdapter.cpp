@@ -242,6 +242,7 @@ class D3D11Compositor final : public ICompositor {
   }
 
   ~D3D11Compositor() override {
+    stopProgramDelivery();
     gradeWorker_.reset();
     monitorWorker_.reset();
     auxiliaryMonitorWorker_.reset();
@@ -251,6 +252,16 @@ class D3D11Compositor final : public ICompositor {
     { std::lock_guard<std::mutex> lock(programBufferMutex_); programBuffer_.reset(); }
     releaseGraphicsKey();
     stopVcamTap();
+  }
+
+  void stopProgramDelivery() override {
+    // Render production has ceased. Stop the scheduled consumer before monitor
+    // cleanup can wait, without releasing textures those owners may still hold.
+    // currentProgramBuffer releases its mutex before callbacks are joined.
+    const auto buffer = currentProgramBuffer();
+    if (buffer) buffer->stop();
+    if (pendingComposition_ && pendingComposition_->buffer != buffer)
+      pendingComposition_->buffer->stop();
   }
 
   std::string rendererName() const override { return "d3d11"; }

@@ -58,6 +58,100 @@ struct D3DProgramBufferTestAccess {
 };
 }
 
+namespace {
+struct ProgramStopFixture {
+  corevideo::modules::ComPtrLite<ID3D11Device> device;
+  corevideo::modules::ComPtrLite<ID3D11DeviceContext> context;
+  corevideo::modules::ComPtrLite<ID3D11Texture2D> input;
+  ProgramStopFixture() {
+    ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, input.put())));
+  }
+  void submit(corevideo::modules::D3DProgramBuffer& buffer, int64_t slot = 0) {
+    corevideo::modules::ProgramFrame frame;
+    frame.frameNumber = slot + 1; frame.productionSlot = slot; frame.width = frame.height = 64;
+    frame.productionAnchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        (std::chrono::steady_clock::now() + std::chrono::milliseconds(100)).time_since_epoch()).count();
+    buffer.submit(context.get(), input.get(), std::move(frame), false);
+    context->Flush();
+  }
+};
+}
+
+TEST(D3DProgramBuffer, ExplicitStopPreservesRealMissesAndCeasesFurtherAdmission) {
+  using namespace corevideo::modules;
+  ProgramStopFixture fixture;
+  std::atomic<unsigned> callbacks{0};
+  auto buffer = std::make_unique<D3DProgramBuffer>(fixture.device.get(), 64, 64, 2, 1,
+      [&](const ProgramFrame&) { ++callbacks; });
+  ASSERT_TRUE(buffer->valid());
+  fixture.submit(*buffer);
+  ProgramFrame retained;
+  ASSERT_TRUE(buffer->take(retained, 2000));
+  const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!buffer->diagnostics().underruns && std::chrono::steady_clock::now() < limit)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(buffer->diagnostics().underruns > 0); // Actual active starvation remains a failure.
+  const auto before = buffer->diagnostics();
+  buffer->stop();
+  const auto stopped = buffer->diagnostics();
+  const auto callbackCount = callbacks.load();
+  EXPECT_TRUE(stopped.underruns >= before.underruns);
+  EXPECT_EQ(stopped.status, "stopped");
+  EXPECT_EQ(stopped.activeFrames, 0);
+  fixture.submit(*buffer, 100);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const auto after = buffer->diagnostics();
+  EXPECT_EQ(after.underruns, stopped.underruns);
+  EXPECT_EQ(after.produced, stopped.produced);
+  EXPECT_EQ(after.delivered, stopped.delivered);
+  EXPECT_EQ(callbacks.load(), callbackCount);
+  buffer->stop(); // A second owner stop and subsequent destructor are safe.
+  ASSERT_TRUE(retained.gpuOwner != nullptr);
+  std::weak_ptr<const void> resource = retained.gpuOwner;
+  buffer.reset();
+  EXPECT_FALSE(resource.expired());
+  retained = {};
+  EXPECT_TRUE(resource.expired());
+}
+
+TEST(D3DProgramBuffer, ExplicitStopWaitsForInFlightDeliveryCallback) {
+  using namespace corevideo::modules;
+  ProgramStopFixture fixture;
+  std::promise<void> entered, release;
+  auto enteredFuture = entered.get_future();
+  auto releaseFuture = release.get_future().share();
+  D3DProgramBuffer buffer(fixture.device.get(), 64, 64, 2, 1,
+      [&](const ProgramFrame&) { entered.set_value(); releaseFuture.wait(); });
+  ASSERT_TRUE(buffer.valid());
+  fixture.submit(buffer);
+  const bool callbackEntered = enteredFuture.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  if (!callbackEntered) { release.set_value(); buffer.stop(); }
+  ASSERT_TRUE(callbackEntered);
+  auto stopping = std::async(std::launch::async, [&] { buffer.stop(); });
+  const bool returnedEarly = stopping.wait_for(std::chrono::milliseconds(30)) == std::future_status::ready;
+  release.set_value(); // Always unblock the owned callback before any assertion.
+  stopping.get();
+  EXPECT_FALSE(returnedEarly);
+  EXPECT_EQ(buffer.diagnostics().status, "stopped");
+}
+
+TEST(D3DProgramBuffer, ExplicitStopDoesNotReclassifyAnExistingFailure) {
+  using namespace corevideo::modules;
+  ProgramStopFixture fixture;
+  D3DProgramBuffer buffer(fixture.device.get(), 64, 64, 2, 1, {});
+  ASSERT_TRUE(buffer.valid());
+  D3DProgramBufferTestAccess::fail(buffer);
+  buffer.stop();
+  EXPECT_EQ(buffer.diagnostics().status, "failed");
+  EXPECT_EQ(buffer.diagnostics().activeFrames, 0);
+}
+
 TEST(D3DProgramBuffer, MultiviewSelectsCurrentDeliveredPixelsWithoutAnExtraFrameOffset) {
   ProgramBufferTimerResolution timer;
   using namespace corevideo::modules;
