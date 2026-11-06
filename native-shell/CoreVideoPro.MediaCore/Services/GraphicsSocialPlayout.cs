@@ -10,12 +10,13 @@ public sealed class GraphicsSocialPlayout
     internal const string InstancePrefix = "social-review-";
     internal const string TemplateId = "youtube-chat-card";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    internal static readonly JsonElement CardDefinition = LoadCardDefinition();
+    internal static readonly JsonElement CardDefinition = LoadCardDefinition("YouTube");
+    internal static readonly JsonElement TwitchCardDefinition = LoadCardDefinition("Twitch");
 
-    private static JsonElement LoadCardDefinition()
+    private static JsonElement LoadCardDefinition(string provider)
     {
-        using var stream = typeof(GraphicsSocialPlayout).Assembly.GetManifestResourceStream("CoreVideoPro.Graphics.YouTubeChatCard.json")
-            ?? throw new InvalidOperationException("The bundled YouTube chat template is missing.");
+        using var stream = typeof(GraphicsSocialPlayout).Assembly.GetManifestResourceStream($"CoreVideoPro.Graphics.{provider}ChatCard.json")
+            ?? throw new InvalidOperationException("The bundled social chat template is missing.");
         return JsonSerializer.Deserialize<JsonElement>(stream);
     }
 
@@ -44,6 +45,7 @@ public sealed class GraphicsSocialPlayout
         Current(card.Epoch)?.Instances.Any(i => i.InstanceId == card.Id && GraphicsPlayoutService.IsOnProgram(i)) == true; } }
 
     public Task<long> ConnectAsync() => ChangeAsync(_review.Connect);
+    public Task<long> ConnectAsync(string provider) => ChangeAsync(() => _review.Connect(provider));
     public Task DisconnectAsync() => ChangeAsync(() => { _review.Disconnect(); return true; });
     public Task ExpireAsync() => ChangeAsync(() => _review.Items);
 
@@ -51,12 +53,7 @@ public sealed class GraphicsSocialPlayout
     {
         foreach (var item in events)
         {
-            switch (item.Kind)
-            {
-                case SocialFeedEventKind.Text: _review.Receive(source, item.Id, item.Author, item.Text, item.AuthorId); break;
-                case SocialFeedEventKind.Remove: _review.Withdraw(source, item.Id); break;
-                case SocialFeedEventKind.Ban: _review.Ban(source, item.AuthorId); break;
-            }
+            _review.Apply(source, item);
         }
         return _review.IsCurrent(source);
     });
@@ -83,20 +80,22 @@ public sealed class GraphicsSocialPlayout
             GraphicsSocialItem? item;
             lock (_gate) item = _review.Approved(key);
             if (item is null) return Refuse("Approve this exact message before showing it.");
+            var templateId = item.Provider == "Twitch" ? "twitch-chat-card" : TemplateId;
+            var cardDefinition = item.Provider == "Twitch" ? TwitchCardDefinition : CardDefinition;
             if (!await RetireAsync(invalidOnly: false)) return Refuse("The previous social graphic could not be cleared.");
             if (_observe() is not { CoreEpoch.Length: > 0 } state) return Refuse("Native Graphics is unavailable.");
             var epoch = state.CoreEpoch;
-            var template = state.Templates.FirstOrDefault(t => t.TemplateId == TemplateId && t.TemplateVersion == 1);
+            var template = state.Templates.FirstOrDefault(t => t.TemplateId == templateId && t.TemplateVersion == 1);
             if (template is null)
             {
                 var (installed, refusal) = await GraphicsTemplateInstall.RunAsync(
                     (action, body, ct) => Send(action, epoch, body, ct),
                     () => Current(epoch) ?? throw new InvalidOperationException("Native Graphics restarted."),
-                    _delay, () => _clock.GetUtcNow().UtcDateTime, CardDefinition.GetRawText(), "", TemplateId, 1, cancellation);
+                    _delay, () => _clock.GetUtcNow().UtcDateTime, cardDefinition.GetRawText(), "", templateId, 1, cancellation);
                 if (refusal is not null) return refusal;
                 template = installed;
             }
-            if (template?.Definition is not { } definition || !JsonElement.DeepEquals(definition, CardDefinition))
+            if (template?.Definition is not { } definition || !JsonElement.DeepEquals(definition, cardDefinition))
                 return Refuse("The native social graphic template could not be verified.");
 
             Task<NativeGraphicsOperationResult> create;
@@ -106,7 +105,7 @@ public sealed class GraphicsSocialPlayout
                 if (_review.Approved(key) is null) return Refuse("The message changed before Show.");
                 _card = attempted = new(key, epoch, InstancePrefix + Guid.NewGuid().ToString("N"));
                 create = Send("graphics.instance.create", epoch, new() {
-                    ["instanceId"] = attempted.Id, ["scope"] = "global", ["templateId"] = TemplateId,
+                    ["instanceId"] = attempted.Id, ["scope"] = "global", ["templateId"] = templateId,
                     ["templateVersion"] = 1, ["fields"] = new { item.Author, item.Message } }, CancellationToken.None);
             }
             var created = await create;

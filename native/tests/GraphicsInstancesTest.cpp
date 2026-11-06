@@ -114,7 +114,10 @@ TEST(GraphicsInstances, SocialReviewInstancesNeverRideTakeOrAcceptOrdinaryShow) 
 }
 
 TEST(GraphicsInstances, BundledSocialCardResolvesItsReviewedFields) {
-  std::ifstream file(std::string(COREVIDEO_REPO_ROOT) + "/contracts/graphics-social/youtube-chat-card.json");
+  for (const auto& provider : {std::string("YouTube"), std::string("Twitch")}) {
+  const auto id = provider == "Twitch" ? "twitch-chat-card" : "youtube-chat-card";
+  std::ifstream file(std::string(COREVIDEO_REPO_ROOT) + "/contracts/graphics-social/" + id + ".json");
+  ASSERT_TRUE(file.good()) << provider;
   std::ostringstream manifest;
   manifest << file.rdbuf();
   std::string error;
@@ -124,9 +127,10 @@ TEST(GraphicsInstances, BundledSocialCardResolvesItsReviewedFields) {
   ASSERT_TRUE(definition->resolve(Json::Object{{"author", "Reviewed author"}, {"message", "Reviewed message"}},
       Json::Object{}, drawing, error)) << error;
   ASSERT_EQ(4u, drawing.primitives.size());
-  EXPECT_EQ("YouTube live chat", drawing.primitives[1].text);
+  EXPECT_EQ(provider + " live chat", drawing.primitives[1].text);
   EXPECT_EQ("Reviewed author", drawing.primitives[2].text);
   EXPECT_EQ("Reviewed message", drawing.primitives[3].text);
+  }
 }
 
 TEST(GraphicsInstances, ManagedFamilySuppressesLegacyAndClearNeverRevealsTheOldKey) {

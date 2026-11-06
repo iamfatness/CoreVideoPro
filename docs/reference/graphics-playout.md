@@ -805,6 +805,53 @@ at 4096 UTF-8 bytes. The show stores the latest staged source and the
 materialized rows pinned to each playlist entry. Loading a file has no
 effect on Program by itself.
 
+## Twitch social review
+
+Open **Social review** in Operate and select **Twitch**. Enter one channel
+name and the public Client ID of a registered public Twitch app. Connect,
+then follow **Open Twitch activation** and enter the displayed code. This
+requests read-only chat access. Leave Client ID blank on a later connection
+to reuse the locally protected sign-in. No client secret or Zoom broker is
+used. **Clear local data** disconnects and erases that provider's stored
+credentials and session content.
+
+The list and selected text show their provider. Read the complete author and
+message, approve that exact version, then choose **Show approved** separately.
+Approval alone leaves Program unchanged. The native card contains fixed
+**Twitch live chat** attribution and ends after 15 seconds. Ordinary Take,
+Shot Layouts and generic controls cannot show these reserved social instances.
+Changing providers or shows clears the queue and its approvals.
+
+`TwitchSocialFeed` resolves the selected broadcaster and confirms four
+EventSub subscriptions against the authorized user and socket session before
+review opens: room clear, user clear, message deletion and messages.
+`TwitchEventSubSession` validates identities and bounds delivery deduplication.
+Nanosecond ordering fences reject delayed pre-clear messages, including IDs
+not seen before a clear. A user clear permits later messages from that user;
+it differs from YouTube's session-long author ban. The shared review owns
+200 messages, 15-minute item expiry and a 4096-entry removal/fence budget.
+Budget exhaustion clears eligibility instead of forgetting a removal.
+
+Every connection gap clears approvals and retires its card. This includes a
+planned Twitch server move: the adapter reconnects to the canonical endpoint
+and establishes fresh subscriptions. It does not claim migration continuity.
+Reconnect attempts are bounded to three. Revocation and identity mismatch stop
+review. The socket bounds each complete UTF-8 text message to 64 KiB and uses
+the negotiated keepalive deadline. Credential maintenance runs independently
+so an hourly validation cannot pause moderation delivery.
+
+`TwitchAuthorization` serializes refresh and commits the complete rotated
+access/refresh pair atomically before reuse. Startup and hourly validation
+check the public app, authorized user and `user:read:chat` scope. Credentials
+are DPAPI protected in the local provider store, outside the show document.
+Content, cursors and approval decisions are session-only. The bundled Twitch
+card is a separate trusted template; the existing YouTube v1 card is unchanged.
+
+[Provider qualification](graphics-twitch-live-check.md) still requires a registered public app and a controlled
+channel: verify real message deletion, user clear, room clear and authorization
+revocation, and inspect the resulting Program output. Fixture and native GPU
+checks alone do not establish that live qualification.
+
 ## Later (the spec's phases)
 
 Per-tile names in Tiles (#1073, native placement per tile rect), clocks and

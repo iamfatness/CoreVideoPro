@@ -16,9 +16,9 @@ internal sealed class YouTubeChatException(YouTubeChatFailure failure) : Excepti
     public YouTubeChatFailure Failure { get; } = failure;
 }
 
-internal enum SocialFeedEventKind { Text, Remove, Ban }
+internal enum SocialFeedEventKind { Text, Remove, Ban, ClearUser, ClearRoom }
 internal sealed record SocialFeedEvent(SocialFeedEventKind Kind, string Id = "", string AuthorId = "",
-    string Author = "", string Text = "");
+    string Author = "", string Text = "", long Order = 0);
 internal sealed record YouTubeChatPage(string Cursor, TimeSpan Interval, IReadOnlyList<SocialFeedEvent> Events);
 
 internal sealed class YouTubeChatTransport(

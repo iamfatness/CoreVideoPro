@@ -33,7 +33,8 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(studio.IsGraphicsPlayoutMode && Descendants(page).OfType<GraphicsPlayoutControl>().Single().Visibility == Visibility.Visible, "Graphics did not open in Playout mode");
             Require(Descendants(page).OfType<GraphicsOnAirStripControl>().Any(), "On Air strip is missing from the Graphics tab");
             Require(Descendants(page).OfType<GraphicsWorkspaceControl>().Single().Visibility == Visibility.Collapsed, "Design workspace is visible in Playout mode");
-            await CheckSocialReviewAsync(window, page, studio, checks, directory);
+            foreach (var provider in new[] { "YouTube", "Twitch" })
+                await CheckSocialReviewAsync(window, page, studio, checks, directory, provider);
             // Graphics Designer slice 1: one stored design (document only; no core needed to list it).
             var seedManifest = GraphicsDesignSeeds.Manifest("lower-third", "design-probe-strap-a1b2c3", 1, "Probe strap");
             var seedDefinition = System.Text.Json.JsonSerializer.SerializeToElement(seedManifest);
@@ -940,10 +941,11 @@ internal static class GraphicsWorkspaceLayoutProbe
         Require(stored=="Pending user edit","Disposed text binding wrote into the model");
         checks.Add("busy sessions retain pending input, retry once editable, avoid model echo and reject disposed callbacks");
     }
-    private static async Task CheckSocialReviewAsync(Window window, OverlaysPage page, StudioViewModel studio, List<string> checks, string directory)
+    private static async Task CheckSocialReviewAsync(Window window, OverlaysPage page, StudioViewModel studio, List<string> checks, string directory, string provider)
     {
+        await studio.GraphicsSocialReview.SelectProviderAsync(provider);
         var review = studio.GraphicsSocialReview.Playout;
-        var source = await review.ConnectAsync();
+        var source = await review.ConnectAsync(provider);
         var first = (await review.ReceiveAsync(source, "first", "Synthetic host", "A reviewed chat message stays private until Show."))!;
         await review.ReceiveAsync(source, "second", "Synthetic guest", "This message has no approval.");
         var priorWidth = page.Width;
@@ -966,6 +968,8 @@ internal static class GraphicsWorkspaceLayoutProbe
                     .SelectMany(child => Descendants(child).Prepend(child)).OfType<GraphicsSocialReviewDialog>().FirstOrDefault()) is { IsLoaded: true },
                     "Social review did not open from Operate.");
                 var panel = dialog!;
+                Require(Descendants(panel).OfType<TextBlock>().Any(text => text.Text == "Selected source\n" + studio.GraphicsSocialReview.SourceLabel),
+                    "The connected source is not pinned independently of editable connection inputs.");
                 var rows = Descendants(panel).OfType<ListView>().Single();
                 var approved = rows.Items.OfType<ListViewItem>().Single(row => row.Tag is GraphicsSocialItem item && item.Key == first.Key);
                 var pending = rows.Items.OfType<ListViewItem>().Single(row => row.Tag is GraphicsSocialItem item && item.Key.Id == "second");
@@ -977,11 +981,21 @@ internal static class GraphicsWorkspaceLayoutProbe
                 var approve = Button(panel, "Approve");
                 if (approve.IsEnabled) Invoke(approve);
                 await Eventually(() => show.IsEnabled, "The approved exact message could not be selected to Show.");
+                var input = Descendants(panel).OfType<TextBox>().Single(box => box.Header?.ToString() ==
+                    (provider == "Twitch" ? "Twitch channel name" : "Public YouTube video ID"));
+                var savedInput = input.Text;
+                input.Text = provider == "Twitch" ? "anotherchannel" : "aaaaaaaaaaa";
+                Require(Descendants(panel).OfType<TextBlock>().Any(text => text.Text == "Selected source\n" + studio.GraphicsSocialReview.SourceLabel)
+                    && show.IsEnabled && review.Items.All(item => item.Key.Source == source),
+                    "Editing the next connection input changed the current queue's source label or approval.");
+                input.Text = savedInput;
                 Require(Descendants(panel).OfType<TextBlock>().Any(text => text.Text.Contains(first.Message, StringComparison.Ordinal)),
                     "The private review did not show the text being approved.");
+                Require(Descendants(panel).OfType<TextBlock>().Any(text => text.Text.Contains(provider + " · " + first.Author, StringComparison.Ordinal)),
+                    "Provider attribution was not visible with the reviewed text.");
                 panel.UpdateLayout();
                 await Eventually(() => show.ActualHeight > 0, $"Show approved has no visible control at {suffix}.");
-                await ReviewImageWriter.SaveAsync(panel, Path.Combine(directory, $"graphics-social-review-{suffix}.png"));
+                await ReviewImageWriter.SaveAsync(panel, Path.Combine(directory, $"graphics-social-review-{provider.ToLowerInvariant()}-{suffix}.png"));
                 var content = (ScrollViewer)panel.Content;
                 var showBottom = show.TransformToVisual(content).TransformPoint(new(0, 0)).Y + show.ActualHeight;
                 Require(content.ActualWidth > 0 && content.ActualWidth <= width &&
@@ -1003,8 +1017,11 @@ internal static class GraphicsWorkspaceLayoutProbe
                 await Eventually(() => Button(page, "Social review…").IsEnabled, "Social review did not close.");
                 dialog = null;
                 var host = window.AppWindow.Size;
-                checks.Add($"Social review at {suffix} fits the dialog viewport and requires an approved selection before Show (host {host.Width}×{host.Height}).");
+                checks.Add($"{provider} social review at {suffix} fits the dialog viewport and requires an approved selection before Show (host {host.Width}×{host.Height}).");
             }
+            await studio.GraphicsSocialReview.SelectProviderAsync(provider == "Twitch" ? "YouTube" : "Twitch");
+            Require(!review.IsConnected && review.Items.Count == 0 && !review.Approve(first.Key),
+                "Provider replacement preserved approval from the old session.");
         }
         finally
         {

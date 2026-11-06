@@ -47,20 +47,26 @@ public sealed class GraphicsSocialPlayoutTests
         }
     }
 
-    [Fact]
-    public async Task ApprovalAloneIsPrivateAndShowUsesOnlyTheSelectedExactRevision()
+    [Theory]
+    [InlineData("YouTube")]
+    [InlineData("Twitch")]
+    public async Task ApprovalAloneIsPrivateAndShowUsesOnlyTheSelectedExactRevision(string provider)
     {
         var fixture = new Fixture();
+        if (provider == "Twitch") fixture.State = fixture.State with {
+            Templates = [fixture.State.Templates[0] with { TemplateId = "twitch-chat-card", Definition = GraphicsSocialPlayout.TwitchCardDefinition }] };
         var playout = fixture.Create();
-        var source = await playout.ConnectAsync();
+        var source = await playout.ConnectAsync(provider);
         var approved = (await playout.ReceiveAsync(source, "a", "Host", "First message"))!;
         var pending = (await playout.ReceiveAsync(source, "b", "Guest", "Second message"))!;
+        Assert.Equal(provider, approved.Provider);
         Assert.True(playout.Approve(approved.Key));
         Assert.False((await playout.ShowAsync(pending.Key)).Accepted);
         Assert.Empty(fixture.Commands);
         var show = playout.ShowAsync(approved.Key);
         await fixture.Preparing.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var create = fixture.Commands[0].Body;
+        Assert.Equal(provider == "Twitch" ? "twitch-chat-card" : "youtube-chat-card", create.GetProperty("templateId").GetString());
         Assert.Equal("First message", create.GetProperty("fields").GetProperty("message").GetString());
         Assert.False(fixture.Commands[1].Body.GetProperty("rideTake").GetBoolean());
         Assert.DoesNotContain(fixture.State.Instances, i => i.ProgramRevision > 0);
@@ -70,6 +76,63 @@ public sealed class GraphicsSocialPlayoutTests
         await playout.WithdrawAsync(source, "a");
         Assert.False(playout.OnProgram);
         Assert.Empty(fixture.State.Instances);
+    }
+
+    [Fact]
+    public async Task ProviderReplacementCannotReuseApprovalOrAcceptOldCallbacks()
+    {
+        var fixture = new Fixture();
+        var playout = fixture.Create();
+        var source = await playout.ConnectAsync("Twitch");
+        var item = (await playout.ReceiveAsync(source, "1234:a", "Host", "Reviewed Twitch message"))!;
+        Assert.True(playout.Approve(item.Key));
+        await playout.ConnectAsync("YouTube");
+        Assert.Null(await playout.ReceiveAsync(source, "1234:b", "Host", "Late Twitch callback"));
+        Assert.False((await playout.ShowAsync(item.Key)).Accepted);
+        Assert.Empty(fixture.Commands);
+        Assert.Empty(playout.Items);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task TwitchClearInvalidatesPreparationOrRetiresProgramAndFencesLateMessages(bool room, bool onAir)
+    {
+        var fixture = new Fixture();
+        fixture.State = fixture.State with { Templates = [fixture.State.Templates[0] with {
+            TemplateId = "twitch-chat-card", Definition = GraphicsSocialPlayout.TwitchCardDefinition }] };
+        var playout = fixture.Create();
+        var source = await playout.ConnectAsync("Twitch");
+        var message = new SocialFeedEvent(SocialFeedEventKind.Text, "1234:a", "5678", "Host", "Reviewed message", 100);
+        await playout.ApplyAsync(source, [message]);
+        var approved = Assert.Single(playout.Items);
+        Assert.True(playout.Approve(approved.Key));
+        var show = playout.ShowAsync(approved.Key);
+        await fixture.Preparing.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        if (onAir)
+        {
+            fixture.FinishPreparation();
+            Assert.True((await show).Accepted);
+            Assert.True(playout.OnProgram);
+        }
+        var clear = playout.ApplyAsync(source, [new(room ? SocialFeedEventKind.ClearRoom : SocialFeedEventKind.ClearUser,
+            AuthorId: "5678", Order: 200)]);
+        if (!onAir)
+        {
+            fixture.FinishPreparation();
+            Assert.False((await show).Accepted);
+            Assert.DoesNotContain(fixture.Commands, c => c.Action == "graphics.instance.trigger" && c.Body.GetProperty("action").GetString() == "show");
+        }
+        await clear;
+        Assert.False(playout.OnProgram);
+        Assert.Empty(fixture.State.Instances);
+        Assert.False(playout.Approve(approved.Key));
+        await playout.ApplyAsync(source, [message, message with { Id = "1234:late", Order = 199 }]);
+        Assert.Empty(playout.Items);
+        await playout.ApplyAsync(source, [message with { Id = "1234:new", Order = 201 }]);
+        Assert.Equal(GraphicsSocialDecision.Pending, Assert.Single(playout.Items).Decision);
     }
 
     [Theory]

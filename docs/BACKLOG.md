@@ -288,10 +288,11 @@ Preserve the existing session while building; restart/rejoin for candidate valid
 
 ## Now — owner-accepted order (2026-10-08)
 
-Owner-ranked QA corrections on November 5 (status remains in the linked issues).
+Owner-ranked work on November 5 (status remains in the linked issues).
 
 | Issue | Work |
 |---|---|
+| [#1118](https://github.com/iamfatness/CoreVideoPro/issues/1118) | Moderated Twitch chat next, using the [provider design](superpowers/specs/2026-11-04-graphics-social-provider-followups.md) and [test-first plan](superpowers/plans/2026-11-04-graphics-social-provider-followups.md). Each exact version needs approval and a separate Show. |
 | [#1131](https://github.com/iamfatness/CoreVideoPro/issues/1131) | Make virtual-camera fixture permissions and no-file cleanup self-contained, preserve private slot isolation and report cleanup failures explicitly. |
 | [#1135](https://github.com/iamfatness/CoreVideoPro/issues/1135) | Reproduce and correct unreadable Graphics builder review captures; preserve geometry evidence separately and inspect 1360×768 and 1600×900 images. |
 
@@ -448,7 +449,6 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 - [#1114](https://github.com/iamfatness/CoreVideoPro/issues/1114): Owner-reported Graphics drag feedback. Keep private artwork visible and show completed native revisions while moving or resizing it.
 
 - [#1117](https://github.com/iamfatness/CoreVideoPro/issues/1117): Owner-run controlled YouTube chat acceptance. [Operator check](reference/graphics-youtube-live-check.md).
-- [#1118](https://github.com/iamfatness/CoreVideoPro/issues/1118): Proposed next social adapter. Moderated Twitch chat with deletion, user clear and room clear. [Provider design](superpowers/specs/2026-11-04-graphics-social-provider-followups.md) and [plan](superpowers/plans/2026-11-04-graphics-social-provider-followups.md).
 - [#1119](https://github.com/iamfatness/CoreVideoPro/issues/1119): Moderated X posts. Confirm project access, budget and deletion evidence before live use.
 - [#1120](https://github.com/iamfatness/CoreVideoPro/issues/1120): Moderated LinkedIn organization comments. Confirm Community Management access and selected post permissions.
 - [#1121](https://github.com/iamfatness/CoreVideoPro/issues/1121): Deterministic social moderation races, replay and source replacement.
@@ -621,6 +621,7 @@ issue exists yet for this row; one will be filed, labeled `backlog`, when the
 |---|---|
 | [#1143](https://github.com/iamfatness/CoreVideoPro/issues/1143) | Investigate the full-suite ISO late-frame drop and held-frame count mismatch; isolated current/prior-build reruns pass but do not explain the retained failed recording. Preserve strict output acceptance. |
 | [#1157](https://github.com/iamfatness/CoreVideoPro/issues/1157) | Investigate a valid private Graphics preview request rejected during the full native run. Capture the RPC response and preserve explicit-null validation and pixel assertions. |
+| [#1158](https://github.com/iamfatness/CoreVideoPro/issues/1158) | Investigate the full-suite graphics cache failure after a lease is released. The isolated case passed. Preserve charged leases and bounded residency. |
 
 | Issue | Item |
 |---|---|

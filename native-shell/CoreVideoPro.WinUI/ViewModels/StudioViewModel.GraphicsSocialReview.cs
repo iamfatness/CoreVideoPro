@@ -12,6 +12,8 @@ internal sealed class GraphicsSocialReviewViewModel
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _timer;
     private readonly YouTubeChatCredentialStore _credentials = new();
+    private readonly TwitchChatCredentialStore _twitchCredentials = new();
+    private readonly TwitchAuthorization _twitchAuthorization;
     private CancellationTokenSource? _connection;
     private Task _feed = Task.CompletedTask;
     private string _showId;
@@ -21,6 +23,7 @@ internal sealed class GraphicsSocialReviewViewModel
     public GraphicsSocialReviewViewModel(GraphicsWorkspaceLibrary library, GraphicsSocialPlayout playout, DispatcherQueue dispatcher)
     {
         (_library, Playout, _dispatcher) = (library, playout, dispatcher);
+        _twitchAuthorization = TwitchAuthorization.Create(_twitchCredentials.Read, _twitchCredentials.Store, _twitchCredentials.Clear);
         _showId = library.Document.ShowId;
         _library.Changed += OnLibraryChanged;
         _timer = dispatcher.CreateTimer();
@@ -31,9 +34,57 @@ internal sealed class GraphicsSocialReviewViewModel
 
     internal GraphicsSocialPlayout Playout { get; }
     internal string VideoId { get; private set; } = "";
+    internal string Provider { get; private set; } = "YouTube";
+    internal string Channel { get; private set; } = "";
+    internal string TwitchClientId { get; private set; } = "";
+    internal TwitchDevicePrompt? DevicePrompt { get; private set; }
+    internal string SourceLabel
+    {
+        get
+        {
+            var source = Provider == "Twitch" ? Channel : VideoId;
+            return source.Length > 0 ? Provider + " · " + source : Provider + " live chat";
+        }
+    }
     internal string Status { get; private set; } = "Disconnected. Connect a public YouTube livestream.";
     internal bool Running => _connection is not null;
     internal event EventHandler? Changed;
+
+    internal async Task SelectProviderAsync(string provider)
+    {
+        if (provider is not ("YouTube" or "Twitch")) throw new ArgumentException("Unsupported provider.", nameof(provider));
+        if (Provider == provider) return;
+        await DisconnectAsync();
+        Provider = provider;
+        SetStatus("Disconnected. Connect one " + provider + " live chat.");
+    }
+
+    internal async Task ConnectTwitchAsync(string channel, string clientId)
+    {
+        if (!TwitchAuthorization.IsChannel(channel) || (clientId.Length > 0 && !TwitchAuthorization.IsClientId(clientId)))
+        {
+            SetStatus("Enter a Twitch channel name and a public app Client ID, or reuse the saved sign-in.");
+            return;
+        }
+        await _library.LoadAsync();
+        var requestedShow = _showId;
+        await DisconnectAsync();
+        if (_closed || requestedShow != _showId) return;
+        Provider = "Twitch";
+        Channel = channel.ToLowerInvariant();
+        TwitchClientId = clientId;
+        var connection = new CancellationTokenSource();
+        _connection = connection;
+        var generation = ++_generation;
+        SetStatus("Authorizing Twitch chat…");
+        _feed = RunFeedAsync((report, cancellation) => TwitchSocialFeed.RunAsync(Channel, clientId, _twitchAuthorization,
+            Playout, report, prompt => _dispatcher.TryEnqueue(() =>
+            {
+                if (_generation != generation) return;
+                DevicePrompt = prompt;
+                SetStatus("Enter the displayed code at Twitch to authorize read-only chat access.");
+            }), cancellation), Channel, connection, generation);
+    }
 
     internal async Task ConnectAsync(string videoId, string key)
     {
@@ -60,13 +111,15 @@ internal sealed class GraphicsSocialReviewViewModel
                 return;
             }
             VideoId = videoId;
+            Provider = "YouTube";
             var connection = new CancellationTokenSource();
             _connection = connection;
             var generation = ++_generation;
             SetStatus("Connecting to YouTube…");
-            _feed = RunFeedAsync(videoId, resolved, connection, generation);
+            _feed = RunFeedAsync((report, cancellation) => YouTubeSocialFeed.RunAsync(videoId, resolved, Playout, report, cancellation),
+                videoId, connection, generation);
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or CryptographicException or InvalidOperationException)
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or CryptographicException or InvalidOperationException)
         {
             SetStatus("The local YouTube key could not be saved. Check the key and local access.");
         }
@@ -77,6 +130,7 @@ internal sealed class GraphicsSocialReviewViewModel
         ++_generation;
         var connection = _connection;
         _connection = null;
+        DevicePrompt = null;
         connection?.Cancel();
         await Playout.DisconnectAsync();
         await _feed;
@@ -86,9 +140,17 @@ internal sealed class GraphicsSocialReviewViewModel
     internal async Task ClearAsync()
     {
         await DisconnectAsync();
-        await Task.Run(_credentials.Clear);
-        VideoId = "";
-        SetStatus("Local YouTube key and review data cleared.");
+        if (Provider == "Twitch")
+        {
+            await Task.Run(_twitchCredentials.Clear);
+            Channel = TwitchClientId = "";
+        }
+        else
+        {
+            await Task.Run(_credentials.Clear);
+            VideoId = "";
+        }
+        SetStatus("Local " + Provider + " credentials and review data cleared.");
     }
 
     internal void Decide(GraphicsSocialItemKey key, bool approve)
@@ -124,22 +186,29 @@ internal sealed class GraphicsSocialReviewViewModel
         _timer.Tick -= OnTick;
         try { await DisconnectAsync(); }
         catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException) { }
+        finally { _twitchAuthorization.Dispose(); }
     }
 
-    private async Task RunFeedAsync(string videoId, string key, CancellationTokenSource connection, int generation)
+    private async Task RunFeedAsync(Func<Action<string>, CancellationToken, Task> run, string source,
+        CancellationTokenSource connection, int generation)
     {
         try
         {
-            await YouTubeSocialFeed.RunAsync(videoId, key, Playout, status =>
-                _dispatcher.TryEnqueue(() => { if (_generation == generation) SetStatus($"{videoId} · {status}"); }), connection.Token);
+            await run(status => _dispatcher.TryEnqueue(() =>
+            {
+                if (_generation != generation) return;
+                if (Playout.IsConnected) DevicePrompt = null;
+                SetStatus($"{source} · {status}");
+            }), connection.Token);
         }
-        catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException)
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or CryptographicException or InvalidOperationException or OperationCanceledException)
         {
-            if (_generation == generation) SetStatus("YouTube review stopped. Reconnect to try again.");
+            if (_generation == generation) SetStatus("Social review stopped. Reconnect to try again.");
         }
         finally
         {
             if (ReferenceEquals(_connection, connection)) _connection = null;
+            if (_generation == generation) DevicePrompt = null;
             connection.Dispose();
             if (!_closed) Changed?.Invoke(this, EventArgs.Empty);
         }
