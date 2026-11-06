@@ -77,7 +77,12 @@ set that would empty the rail is applied only as far as one visible scene remain
 
 ### Getting a scene back
 
-- **New scene** (Sources tab, `+`) has a starter for every catalog layout: Solo (`host-focus`),
+- **New scene** (Sources tab, `+`) includes **CoreVideo Tiles · Auto-reflow wall**
+  (`dynamic-gallery`, #1199). It uses the shared naming dialog and creates one
+  editable Tiles wall on Preview, with core-owned eligible membership and no
+  duplicate participant routes. The existing `NewDynamicGalleryCommand` uses the
+  same starter/creation path. The wall remains a normal named scene in the list.
+- The same menu has a starter for every catalog layout: Solo (`host-focus`),
   Two people (`two-up`), Screen + presenter (`speaker-slides`), **Panel grid** (`smart-grid`,
   Inputs 1 to 6) and **Closing** (`outro`), `StarterSceneFactory`. Each binds stable Show
   Inputs, never the active speaker.

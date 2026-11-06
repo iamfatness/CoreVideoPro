@@ -12,6 +12,13 @@ public sealed partial class StudioViewModel
     [RelayCommand]
     private void NewScene(string? template) => TryCreateNamedScene(template, SuggestedSceneName(template), out _);
 
+    [RelayCommand]
+    private void NewDynamicGallery()
+    {
+        if (TryCreateNamedScene("tiles", SuggestedSceneName("tiles"), out _))
+            ActiveTab = StudioTab.Sources;
+    }
+
     public bool TryCreateNamedScene(string? template, string? name, out string? error)
     {
         error = SceneNamingPolicy.Validate(_scenes, null, name);
@@ -21,6 +28,7 @@ public sealed partial class StudioViewModel
         var scene = SceneNamingPolicy.WithName(starter, name!.Trim());
         _scenes.Add(scene);
         _sceneRoutes[id] = routes;
+        if (scene.DynamicGallery is not null) ReconcileDynamicGalleryRoutes(scene, routes);
         RefreshSceneItems();
         PreviewSceneId = id;
         CommandStatus = $"{scene.Name} created and queued on preview";

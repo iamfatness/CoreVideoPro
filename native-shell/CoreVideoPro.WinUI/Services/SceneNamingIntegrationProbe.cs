@@ -32,16 +32,18 @@ internal static class SceneNamingIntegrationProbe
         window.AppWindow.Resize(new Windows.Graphics.SizeInt32(1366, 768));
         await Eventually(() => page.IsLoaded && page.Workspace is not null);
         Require(page.FindName("RenameSceneButton") is Button, "Scene Builder has no Rename scene action (#1196)");
+        Require(((MenuFlyout)((Button)page.FindName("NewSceneButton")).Flyout).Items.OfType<MenuFlyoutItem>()
+            .Any(item => item.Tag as string == "tiles"), "New scene chooser has no CoreVideo Tiles starter (#1199)");
         var programId = studio.ActiveSceneId;
         var previewId = studio.PreviewSceneId;
         var count = studio.Scenes.Count;
 
-        async Task<ContentDialog> OpenCreate()
+        async Task<ContentDialog> OpenCreate(string template = "solo")
         {
             var button = (Button)page.FindName("NewSceneButton");
             var flyout = (MenuFlyout)button.Flyout;
             flyout.ShowAt(button);
-            var choice = flyout.Items.OfType<MenuFlyoutItem>().Single(item => item.Tag as string == "solo");
+            var choice = flyout.Items.OfType<MenuFlyoutItem>().Single(item => item.Tag as string == template);
             await Eventually(() => choice.IsLoaded);
             ((IInvokeProvider)new MenuFlyoutItemAutomationPeer(choice).GetPattern(PatternInterface.Invoke)).Invoke();
             return await OpenDialog(page.XamlRoot);
@@ -126,8 +128,37 @@ internal static class SceneNamingIntegrationProbe
             "Builder context rename targeted the selected scene instead of its row or changed Preview/Program");
         checks.Add("compiled Builder context menu renames its own row while preserving the selected Preview and on-air scene");
 
-        studio.NewDynamicGalleryCommand.Execute(null);
+        var beforeTilesCount = studio.Scenes.Count;
+        dialog = await OpenCreate("tiles");
+        Require(Descendants(dialog).OfType<TextBox>().Single(text => text.Name == "SceneNameField").Text == "CoreVideo Tiles",
+            "Tiles shortcut suggested a fixed-layout scene name");
+        Invoke(DialogButton(dialog, "CloseButton"));
+        await Eventually(() => FindDialog(page.XamlRoot) is null);
+        Require(studio.Scenes.Count == beforeTilesCount && studio.PreviewSceneId == namedId && studio.ActiveSceneId == programId,
+            "Cancelling the Tiles shortcut changed the show");
+        dialog = await OpenCreate("tiles");
+        Descendants(dialog).OfType<TextBox>().Single(text => text.Name == "SceneNameField").Text = "  Audience wall  ";
+        Invoke(DialogButton(dialog, "PrimaryButton"));
+        await Eventually(() => FindDialog(page.XamlRoot) is null && page.Workspace!.Items.Any(item => item.IsTilesWall));
         var wallId = studio.PreviewSceneId;
+        Require(studio.Scenes.Count == beforeTilesCount + 1 && studio.ActiveSceneId == programId &&
+            studio.PreviewScene is { Name: "Audience wall", Layout: "dynamic-gallery", DynamicGallery.AutoFill: true } &&
+            page.Workspace!.Items.Count == 1 && page.Workspace.Items[0].IsTilesWall,
+            "Tiles shortcut failed to create one editable auto-reflow wall on Preview without changing Program");
+        Require(store.Value.CustomScenes.Single(scene => scene.Id == wallId) is
+            { Name: "Audience wall", Layout: "dynamic-gallery", DynamicGallery.MembershipMode: "eligible", Routes.Count: 0 },
+            "Tiles shortcut did not persist the named wall or added duplicate participant routes");
+        studio.SelectSceneCommand.Execute(namedId);
+        studio.SelectSceneCommand.Execute(wallId);
+        await Eventually(() => page.Workspace!.Items.Any(item => item.IsTilesWall));
+        Require(studio.PreviewScene.Name == "Audience wall" && studio.ActiveSceneId == programId,
+            "Created Tiles scene could not be selected again without changing Program");
+        var inspector = (Pivot)page.FindName("InspectorTabs");
+        await Eventually(() => inspector.Items.Cast<PivotItem>().Select(item => item.Header?.ToString())
+            .SequenceEqual(new[] { "Layout", "Style", "Members", "Transform" }));
+        if (reviewDirectory is not null)
+            await ReviewImageWriter.SaveAsync(page, Path.Combine(reviewDirectory, "scene-tiles-shortcut.png"));
+        checks.Add("compiled Tiles starter supports naming and Cancel, creates one core-owned wall on Preview, exposes wall controls, persists and can be selected again");
         studio.ActiveSceneId = wallId;
         ((ITransportHost)studio).RefreshPreviewRoutingState();
         var liveGutter = studio.ProgramScene.DynamicGallery!.GutterPercent;
