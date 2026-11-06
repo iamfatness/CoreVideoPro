@@ -864,7 +864,7 @@ public sealed partial class MainWindow : Window
         TryShutdownStep("activation", ApplicationLifecycle.PrepareShutdown);
         TryShutdownStep("resource monitor", StopResourceMonitoring);
         TryShutdownStep("window chrome", () => WindowChromeService.ClearScheduledReapply(this));
-        TryShutdownStep("workspace detach", () => RootContent.ViewModel = null);
+        TryShutdownStep("workspace detach", () => RootContent.PrepareForShutdown());
         TryShutdownStep("UI preparation", () => ViewModel.PrepareForShutdown());
 
         var cleanupSucceeded = false;

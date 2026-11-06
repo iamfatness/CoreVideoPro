@@ -8,12 +8,14 @@ Specifications and acceptance: [resumed reliability work](reference/resumed-reli
 
 | Rank | State | Issue | Scope | Active effort estimate | Hosted/external time |
 |---|---|---|---|---|---|
-| 1 | Now | #1146 | Capture and reproduce Auto hold/Preview/Take failure, fix its actual cause, verify manual authority and no invented captions. | 120 min, range 90–210 | CI 30–50 min overlapped; populated meeting available subject to fresh check |
+| 1 | Done | #1146 | Reproduced stale shell decision, fixed and live-verified warm/cold; #1173 merged. Original host/share scenario acceptance remains tracked in the open issue. | About 25 min active, versus 120 allocated | Final CI completed while next items progressed |
 | 2 | Now | #1171 | Attribute actual 1080p-to-720p receive changes without lowering quality; distinguish application requests from SDK/provider behavior. | 90 min, range 60–150 | Controlled remote sender/account changes may be unavailable |
-| 3 | Now | #1172 | Remove overlapping Studio empty-state messages and verify compact/normal captures. | 45 min, range 25–60 | CI overlapped with next item |
-| 4 | Next | #919 | Fence deferred participant-list callbacks across window teardown; prove no stale XAML access. | 45 min, range 30–75 | Compiled lifetime probe and CI |
-| 5 | Reserve | #1074 | Qualify Tiles hold/recovery/video-off behavior through the real runtime; fix only demonstrated discrepancies. | 60 min, range 45–90 | Live remote interruption control may limit acceptance |
-| 6 | Conditional | #443 / #989 / #1056 | Matched camera/readiness preflight then full output test if prerequisites are met. Preserve NOT JUDGED when they are not. | 60 min, range 45–90 | 30 min measured run plus decode; camera identity/elevation prerequisite |
+| 3 | Done | #1172 | Single multiview placeholder; shell, negative/fixed compiled and hosted checks passed; #1175 merged. | Within 45 min allocation | CI overlapped with next work |
+| 4 | Now | #919 | Fence deferred participant-list callbacks across window teardown; prove no stale XAML access. | 45 min, range 30–75 | Compiled lifetime probe and CI |
+| 5 | Now | #1177 | Attribute and repair the newly observed Program recording misses beside long ISO-ingress holds; preserve quality and original failed evidence. | 90 min, range 60–150 | Controlled reproduction, native validation and comparable live test |
+| 6 | Reserve | #1074 | Qualify Tiles hold/recovery/video-off behavior through the real runtime; fix only demonstrated discrepancies. | 60 min, range 45–90 | Live remote interruption control may limit acceptance |
+| 7 | Conditional | #443 / #989 / #1056 | Matched camera/readiness preflight then full output test if prerequisites are met. Preserve NOT JUDGED when they are not. | 60 min, range 45–90 | 30 min measured run plus decode; camera identity/elevation prerequisite |
+| Intake | Later | #1178 | Attribute retained Mac show-drill p99 failure on unchanged native source without relaxing the gate. | Reforecast after log review | Hosted source/baseline comparison |
 
 Allocation baseline: 20 min baseline/planning, 120 Auto, 90 resolution, 45 empty-state, 45 teardown, 60 Tiles, 60 conditional output work, 40 validation/report/replenishment reserve = 480 min. These are adjustable allocations, not permission to stop after one fixed list. Use blocked conditional time for the next actionable issue. Owner-deferred #513, business/credential acquisition, public-provider posting and speculative feature expansion are not silently resumed.
 
