@@ -36,11 +36,14 @@ class IsoVideoIngress {
       if (!ids.count(it->first) || !liveIds.count(it->first)) it = latest_.erase(it);
       else ++it;
     }
+    RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoLatest);
     const auto admit = [&](const modules::VideoFrame& frame) {
       if (!frame.hasPixels() && !frame.hasI420()) return;
       const auto id = canonical(frame.participantId);
       if (!ids.count(id) || id.rfind("media:", 0) == 0) return;
+      RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoIngress);
       latest_[id] = frame;
+      RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoLatest);
       auto& counter = counters_[id];
       const auto prior = lastQueued_.find(id);
       const auto identity = std::make_pair(frame.sourceEpoch, frame.frameId);
@@ -48,6 +51,7 @@ class IsoVideoIngress {
         ++counter.duplicateRejected; return;
       }
       lastQueued_[id] = identity;
+      RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoIngress);
       size_t pending = 0;
       for (const auto& entry : pending_) if (entry.sourceId == id) ++pending;
       if (pending >= 4) {
@@ -60,6 +64,7 @@ class IsoVideoIngress {
           ? frame.captureTimestamp100ns : arrival100ns;
       pending_.push_back(std::move(entry));
       ++counter.distinctSubmitted;
+      RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoQueue);
     };
     // An independent CPU stream has its own identities and time. Never relabel
     // it with the newer GPU image's identity or collapse a batch to one slot.

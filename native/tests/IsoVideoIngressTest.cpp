@@ -1,6 +1,7 @@
 #include "core/IsoVideoIngress.h"
 #include "core/IsoDeparture.h"
 #include <gtest/gtest.h>
+#include <thread>
 
 namespace {
 corevideo::modules::VideoFrame picture(const std::string& id, int64_t sequence, uint64_t epoch = 1) {
@@ -38,6 +39,8 @@ TEST(IsoVideoIngress, ProductionObservationSeparatesSelectionAndLeafLockFromAdmi
   EXPECT_TRUE(phases.visited(Phase::IsoSelection));
   EXPECT_TRUE(phases.visited(Phase::IsoLockWait));
   EXPECT_TRUE(phases.visited(Phase::IsoIngress));
+  EXPECT_TRUE(phases.visited(Phase::IsoLatest));
+  EXPECT_TRUE(phases.visited(Phase::IsoQueue));
   EXPECT_EQ(ingress.drain(std::chrono::milliseconds(0)).size(), 1u);
   phases.begin();
   ingress.clear();
@@ -115,6 +118,31 @@ TEST(IsoVideoIngress, HoldsCompletedCpuViewBetweenArrivalsAndReleasesDisconnecte
   EXPECT_TRUE(ingress.drain(std::chrono::milliseconds(0)).empty());
   ingress.observe({"capture:screen"}, {}, {}, 3);
   EXPECT_TRUE(ingress.latest({"capture:screen"}).empty());
+}
+
+// Investigation fixture for #1177: identify the owner that retires an ISO
+// payload after the encoder has drained it. This is ownership evidence, not
+// a claimed fix or a timing acceptance test.
+TEST(IsoVideoIngress, RetainedPayloadRetiresDuringLatestReplacementOnTheCallingThread) {
+  corevideo::core::IsoVideoIngress ingress;
+  std::thread::id retiredOn;
+  bool replacing = false, retiredDuringReplacement = false;
+  auto old = picture("42", 1);
+  old.pixels = std::shared_ptr<const std::vector<uint8_t>>(
+      new std::vector<uint8_t>(16, 1), [&](const std::vector<uint8_t>* bytes) {
+        retiredOn = std::this_thread::get_id();
+        retiredDuringReplacement = replacing;
+        delete bytes;
+      });
+  ingress.observe({"42"}, {}, {old}, 1, true);
+  old.pixels.reset();
+  ingress.drain(std::chrono::milliseconds(0)).clear();
+  EXPECT_EQ(retiredOn, std::thread::id{});
+  replacing = true;
+  ingress.observe({"42"}, {}, {picture("42", 2)}, 2, true);
+  replacing = false;
+  EXPECT_EQ(retiredOn, std::this_thread::get_id());
+  EXPECT_TRUE(retiredDuringReplacement);
 }
 
 // #1030: the roster is the departure signal for Zoom ISO stems. Only a Zoom
