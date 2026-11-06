@@ -76,8 +76,15 @@ internal static class SceneNamingIntegrationProbe
             "Named creation changed the starter's source assignment");
         checks.Add("compiled New scene chooser validates blank/duplicate names, cancels without mutation and creates a named Unicode scene on Preview");
 
+        // #1197 separately tracks queued editor hydration changing the initial
+        // route mode before any rename. Qualify rename from a loaded, saved
+        // editor baseline, while retaining that earlier diagnostic failure.
+        await Eventually(() => page.Workspace!.Items.Any(item => item.ItemId == studio.WorkspaceRoutes()[0].Id));
+        await Task.Delay(250);
+        page.Workspace!.SaveCommand.Execute(null);
         var routesBeforeRename = System.Text.Json.JsonSerializer.Serialize(studio.WorkspaceRoutes());
-        var draftStatusBeforeRename = page.Workspace!.DraftStatus;
+        var draftStatusBeforeRename = page.Workspace.DraftStatus;
+        Require(draftStatusBeforeRename == "PREVIEW · Saved", "Rename fixture did not start from a saved scene");
         Invoke((Button)page.FindName("RenameSceneButton"));
         dialog = await OpenDialog(page.XamlRoot);
         field = Descendants(dialog).OfType<TextBox>().Single(text => text.Name == "SceneNameField");
@@ -97,7 +104,7 @@ internal static class SceneNamingIntegrationProbe
             "Renaming changed scene identity/selection or left the list stale");
         Require(System.Text.Json.JsonSerializer.Serialize(studio.WorkspaceRoutes()) == routesBeforeRename &&
             page.Workspace!.DraftStatus == draftStatusBeforeRename,
-            "Renaming changed ordinary scene routes or the draft's saved/unsaved state");
+            $"Renaming changed ordinary scene routes or the draft's saved/unsaved state: status '{draftStatusBeforeRename}' -> '{page.Workspace!.DraftStatus}'; routes before={routesBeforeRename}; after={System.Text.Json.JsonSerializer.Serialize(studio.WorkspaceRoutes())}");
         if (reviewDirectory is not null)
             await ReviewImageWriter.SaveAsync(page, Path.Combine(reviewDirectory, "scene-naming-builder.png"));
 
