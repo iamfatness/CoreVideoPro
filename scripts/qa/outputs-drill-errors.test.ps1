@@ -19,6 +19,9 @@ $message=''
 try { Invoke-DrillQuery 'zoom.join' @($url); throw 'unexpected success' } catch { $message=$_.Exception.Message }
 if ($message -match [regex]::Escape($secret) -or $message -match 'https://' -or $message -notmatch 'zoom.join failed \(HTTP 422\)') { throw "Unsafe or unhelpful error: $message" }
 if ((Format-DrillActionFailure $url 0) -notmatch '^control action failed \(transport failure\)') { throw 'Unsafe action text' }
+$unknown=Format-DrillActionFailure 'scene.list' 400 $true
+if (!(Test-DrillUnknownActionError $unknown)) { throw 'Older app capability fallback lost' }
+if (Test-DrillUnknownActionError (Format-DrillActionFailure 'scene.list' 422 $true)) { throw 'Unrelated refusal classified as unknown action' }
 $script:succeed=$true
 $r=Invoke-DrillQuery 'scene.list'
 if (!$r.ok -or $r.data -ne 'unchanged') { throw 'Success result changed' }
