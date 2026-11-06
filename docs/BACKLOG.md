@@ -1,5 +1,59 @@
 # CoreVideo Pro — ranked backlog
 
+## Active eight-hour session — November 5 into November 6, 2026
+
+Owner authorized specifications/plans followed by execution, including local app/device rehearsals, at **21:54 Eastern November 5**. The eight-hour endpoint is **05:54 Eastern November 6**. This section supersedes older dated queues for the active session. Use the supplied test meeting if populated; otherwise perform labeled local tests. Before 06:00 completion triggers a fresh four-hour issue-triage/spec/plan exercise. One primary issue per implementation PR; at most three active items; GPU/device workloads run serially.
+
+Specifications and per-item execution/acceptance plans: [overnight reliability runbook](qa/overnight-reliability-2026-11-05.md).
+
+**Outcome:** reduce demonstrated recording/Graphics risk, establish an honest Auto/device/output verdict on one integrated candidate, and leave a reproducible handoff. No new provider, presenter-clock, designer or architecture feature work in this window. Time allocations are investigation limits, not promises to fix unknown causes.
+
+### Now — three bounded work items
+
+| Order | Primary issue | Scope and done evidence | Limit / stop rule |
+|---|---|---|---|
+| 1 | [#1143](https://github.com/iamfatness/CoreVideoPro/issues/1143) ISO late-frame loss | Preserve the failed recording and diagnostics; reproduce queue admission at the late-frame/held-frame boundary with controlled scheduling. Distinguish suite interference from a production defect. A fix requires a failing-before/passing-after case, decoded identity/count evidence and zero unexplained dropped frames. | 105 min. If the cause is still unknown after 60 min, spend the remainder capturing a minimal reproducer and exact admission/queue evidence. Do not grow queues, relax held-frame accounting, or call an isolated passing retry a fix. |
+| 2 | [#1158](https://github.com/iamfatness/CoreVideoPro/issues/1158) Graphics preparation, with separately tracked [#1157](https://github.com/iamfatness/CoreVideoPro/issues/1157) preview rejection | First record admission/eviction/producer state for the second asset and the complete RPC response for the rejected valid preview. Try controlled interleavings and the recorded suite context. Retain bounded residency, charged live leases, explicit-null validation, private Preview isolation and changing-pixel checks. | 75 min total: 45 min cache, 30 min preview response/reproduction. They are related investigation topics, **not an assumed shared cause**. Separate fixes/PRs if both require code. Unresolved evidence is an acceptable bounded outcome; a green isolated rerun is not closure. |
+| 3 | [#1137](https://github.com/iamfatness/CoreVideoPro/issues/1137) monitor retirement fixture | Force the transition between the fixture's two `gpuDone` reads; show whether it produces inconsistent completed/pending evidence. If confirmed, sample once and prove immutable reader evidence plus eventual idle sleep. Preserve the original TSAN failure and run the sanitizer check on the proposed commit. | 45 min. No blanket timeout increases or production worker changes without a reproduced runtime defect. First item to drop if build/reproduction costs exceed budget. |
+
+### Eight-hour allocation
+
+| Elapsed window | Minutes | Deliverable |
+|---|---:|---|
+| 00:00–00:30 | 30 | Baseline: pin current main and CI state; record installed build/profile/devices and active outputs; retain previous installer and restore path. Reconcile the highest-confidence stale issue, #1133, against merged #1132 and its exact-head checks. Confirm remote test guests and source availability before promising the full soak. |
+| 00:30–02:15 | 105 | #1143 bounded diagnosis/fix above. |
+| 02:15–03:30 | 75 | #1158/#1157 bounded Graphics work above. |
+| 03:30–04:15 | 45 | #1137 fixture work, or overrun reserve for the first two items. |
+| 04:15–05:15 | 60 | Code freeze. Select only reviewed, passing changes; build the matched native/shell candidate, run the full production suite and relevant managed/compiled probes, and start exact-commit hosted checks. Keep failed candidates isolated. Save commit and executable hashes. |
+| 05:15–06:30 | 75 | Installed/local rehearsal: Auto 30 min (#1146); capture disconnect/reconnect and brief Tiles stalls 25 min (#758/#993/#1074); Graphics Cue/Show/Hide and four everyday operator tasks 20 min (#1076, #1157/#1158). Record actual Program/webcam identity and action timings. |
+| 06:30–07:30 | 60 | 15 min warm/setup, **30 min full-output workload**, 15 min finalize/judge: #517/#823/#1056/#989. No builds or unrelated GPU probes during the run. Use existing pixel-identity judges, not only counters or average FPS. |
+| 07:30–08:00 | 30 | Publish evidence and issue dispositions, list exact unresolved failures and next actions, restore the agreed installed state, and prepare the reviewed handoff. Publish a beta only if it was requested and every exact-commit/package gate actually completes within the remaining window. Otherwise leave a candidate with a precise pending-check list. |
+
+**Total: 480 minutes, sequential.** The integration block includes build/CI latency; hosted checks may continue during rehearsal, but local compilation must stop before measurement. If code work slips, remove #1137 first, then reduce the second Graphics investigation; protect the final rehearsal and output-test windows. Do not replace a failed test with repeated attempts until green. One causal change or new diagnostic may justify another bounded trial, with the original retained.
+
+### Rehearsal acceptance and dependencies
+
+- **Auto (#1146):** host plus three guests; sustained turns, backchannels, silence, solo/interview/panel, share start/stop, preference changes, disconnect/rejoin, rejected Take, manual override. Capture intended versus actual people on Preview, Program and webcam; no invented captions, duplicate person, host takeover of guest slots or stale-session cut. Measure time from native eligibility separately from speech onset. #668 is already closed; do not reopen it merely to count tonight's work.
+- **Devices/Tiles:** record a real capture unplug/replug with responsive commands and the configured dropout behavior; no fake fresh timestamps on stale pictures. For Tiles, current main already holds brief Zoom stalls for four seconds: verify stable slots during 1–3 s gaps, explicit held status, long-stall removal, immediate video-off/departure and recovery. Four seconds remains a working assumption under #427; do not silently retune it or claim network congestion as a proven root cause.
+- **Graphics:** Cue must stay private; explicit Show/Hide must act on the intended item; a failed preview must expose a useful reason. Time the four #1076 tasks and matching Hide/Clear from the same screen. Only call owner-usability acceptance passed when the owner performs the tasks; an agent rehearsal is technical evidence only.
+- **Full output gate:** the prescribed eight remote feeds plus webcam/screen workload needs actual available source content and confirmed received geometry. Observe Program recording, every selected ISO, registered OS camera and the configured stream simultaneously. Apply the current source-stall/tail-hold exception exactly as recorded in CLAUDE.md; no pipeline loss, unexplained repeats or reordering. Judge desktop UX separately with its established tolerance. A 30-minute run does not close the separate hour-scale idle-crash issue #513.
+- **Unavailable guests/devices:** after the first 30 min, use a labeled local generated-source/device preflight if the required meeting workload cannot be populated. Preserve the same time budget and leave real Zoom/full-load acceptance unverified. Never substitute generated or duplicated guests and call the remote workload passed.
+- Local rehearsals are authorized. Before changing the running app, establish that recording/streaming is not active and retain settings/registration. Do not broadcast publicly or send provider chat without the existing controlled-channel authorization and account access.
+
+### Next / deferred for this eight-hour session
+
+| Bucket | Issues | Treatment |
+|---|---|---|
+| Evidence/closure reconciliation | #1133; review #618 and #551 | #1133's supporting PR #1132 is merged and its issue comments already record passing exact-head checks. Verify the acceptance link before closing. #618 and #551 are candidates for source/evidence review, **not declared fixed by this audit**. Cap bookkeeping at the baseline block. |
+| Implemented, awaiting real behavior | #1146, #1074, #1076, #608, #989, #758/#993 | Reuse the rehearsal/soak above; verify current implementation before proposing more code. #608's superseding root-cause comment and merged #656 matter more than its original hypothesis. #989's merged #990 does not prove the full workload. |
+| Credentials or controlled provider access | #1136, #1117, #1118 | Hosted SDK build needs an approved private download source/secret; a local SDK is already a workable release path. YouTube/Twitch need controlled accounts/channel and live moderation events. No dependency on them for tonight's core reliability outcome. |
+| Public-release/business dependencies | #423, #424, #425, #426, #435, #437; #427 decisions | Certificate, redistribution answer, reference hardware, feedback/licensing choices and explicit policy decisions are not eight-hour coding promises. Track the actual external dependency. |
+| Feature expansion | #1139, #1119, #1120, #1041, #539 | Presenter/authoring expansion, X/LinkedIn, expanded multiview and MXL stay outside tonight's scope. |
+| Other open work | Remaining entries in the unranked inventory | Revalidate current code/evidence before ranking. A recent recurrence of source loss, a crash or output corruption discovered during baseline/rehearsal displaces lower-priority work; do not automatically restart an old investigation from its title. |
+
+Inventory and evidence coverage: [November 5 issue triage](qa/open-issue-triage-2026-11-05.md). That file is an unranked snapshot; this backlog remains the only work-order source. No issue is closed by a plan alone. Execution is owner-authorized; measured acceptance and release gates remain required.
+
+
 **Beta release blocker, November 5 — [#1154](https://github.com/iamfatness/CoreVideoPro/issues/1154):** migrate the two retired macos-14 CI jobs to macos-15 without changing tests or thresholds; required to complete the owner-authorized beta.
 
 **Owner-directed Auto timing completion, November 5 — [#1150](https://github.com/iamfatness/CoreVideoPro/issues/1150):** run continuous person/scene holds concurrently while Preview warms; retain readiness, confidence and manual-control gates. Installed conversation acceptance remains #668.
