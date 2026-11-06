@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -235,6 +236,25 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
   event.kind = kindForCommand(event.command);
   event.sourceUuid = parsed->getString("source_uuid");
   event.stage = parsed->getString("stage");
+  const auto integer = [&](const char* name) -> std::optional<int> {
+    const auto* value = parsed->get(name);
+    if (!value || !value->isNumber()) return std::nullopt;
+    const double number = value->asNumber();
+    if (!std::isfinite(number) || std::floor(number) != number ||
+        number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max())
+      return std::nullopt;
+    return static_cast<int>(number);
+  };
+  if (event.kind == ZoomEngineEventKind::Debug) {
+    event.sdkCode = integer("code");
+    const auto resolution = [&](const char* name) -> std::optional<int> {
+      auto value = integer(name);
+      return value && *value >= 0 && *value <= 2 ? value : std::nullopt;
+    };
+    event.resolution = resolution("resolution");
+    event.requestedResolution = resolution("requested");
+    event.actualResolution = resolution("actual");
+  }
   event.message = parsed->getString("msg", parsed->getString("message"));
   if (event.message == "meeting_failed" || event.message == "join_failed") {
     const auto reason = parsed->getString("reason");

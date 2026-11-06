@@ -97,6 +97,11 @@ struct ZoomEngineEvent {
   // unsubscribe_all) completes on the engine's command loop.
   bool rawMediaActive = false;
   std::vector<ZoomEngineParticipant> participants;
+  // Optional SDK subscription evidence. Missing/malformed is not success (zero).
+  std::optional<int> sdkCode;
+  std::optional<int> resolution;
+  std::optional<int> requestedResolution;
+  std::optional<int> actualResolution;
 };
 
 struct ZoomEngineRgbaFrame {

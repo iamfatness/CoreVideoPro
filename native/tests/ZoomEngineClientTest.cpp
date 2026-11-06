@@ -284,6 +284,26 @@ TEST(ZoomEngineClient, ParsesFailureAndDebugEvents) {
   EXPECT_FALSE(corevideo::modules::parseZoomEngineEvent("not-json").has_value());
 }
 
+TEST(ZoomEngineClient, SubscriptionEvidenceKeepsUnknownDistinctFromSdkSuccess) {
+  const auto success = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"debug","stage":"set_resolution","participant_id":42,"code":0,"resolution":2})");
+  ASSERT_TRUE(success);
+  EXPECT_EQ(success->sdkCode, 0);
+  EXPECT_EQ(success->resolution, 2);
+  const auto missing = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"debug","stage":"set_resolution","code":"0","resolution":99,"requested":1.5})");
+  ASSERT_TRUE(missing);
+  EXPECT_FALSE(missing->sdkCode.has_value());
+  EXPECT_FALSE(missing->resolution.has_value());
+  EXPECT_FALSE(missing->requestedResolution.has_value());
+  const auto fallback = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"debug","stage":"video_resolution_downgraded","requested":2,"actual":1})");
+  ASSERT_TRUE(fallback);
+  EXPECT_EQ(fallback->requestedResolution, 2);
+  EXPECT_EQ(fallback->actualResolution, 1);
+  EXPECT_FALSE(fallback->sdkCode.has_value());
+}
+
 TEST(ZoomEngineClient, MirrorsSharedMemoryNamesAndSizes) {
   EXPECT_EQ(corevideo::modules::zoomEngineVideoSharedMemoryName("source-123"), "ZoomObsPlugin_source-123");
   EXPECT_EQ(corevideo::modules::zoomEngineAudioSharedMemoryName("source-123"), "ZoomObsPlugin_source-123_audio");

@@ -1348,6 +1348,7 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
       {"cameraMaxResolution", cameraMaxResolution_},
       {"cameraMaxFps", cameraMaxFps_},
       {"lastDepartures", static_cast<double>(departures)},
+      {"sdkSubscriptionEvidence", state_.subscriptionSdkEvidence()},
       {"sources", sources},
   };
 }

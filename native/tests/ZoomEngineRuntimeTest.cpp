@@ -50,6 +50,23 @@ TEST(ZoomMeetingId, ReadsPwdTokenFromJoinUrl) {
       "https://example.zoom.us/j/1234567890?notpwd=abc").empty());
 }
 
+TEST(ZoomEngineRuntime, SubscriptionSnapshotExposesSdkResponsesSeparatelyFromRequests) {
+  corevideo::modules::ZoomEngineRuntime runtime;
+  const auto event = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"debug","stage":"set_resolution","participant_id":42,"source_uuid":"camera-42","code":7,"resolution":2})");
+  ASSERT_TRUE(event);
+  runtime.applyEngineEventForTest(*event);
+  const auto churn = runtime.subscriptionChurnState();
+  const auto* sdk = churn.get("sdkSubscriptionEvidence");
+  ASSERT_NE(sdk, nullptr);
+  const auto* events = sdk->get("events");
+  ASSERT_NE(events, nullptr);
+  ASSERT_EQ(events->asArray().size(), 1u);
+  EXPECT_EQ(events->asArray()[0].getNumber("sdkCode"), 7);
+  EXPECT_EQ(events->asArray()[0].getNumber("resolution"), 2);
+  EXPECT_EQ(churn.getNumber("subscribedCount"), 0);
+}
+
 void setEnv(const char* name, const char* value) {
 #if defined(_WIN32)
   _putenv_s(name, value);

@@ -3,6 +3,7 @@
 #include "modules/Interfaces.h"
 #include "modules/ZoomActiveSpeakerDirector.h"
 #include "modules/ZoomEngineClient.h"
+#include "modules/ZoomSubscriptionSdkEvidence.h"
 #include "rpc/Json.h"
 
 #include <cmath>
@@ -88,6 +89,7 @@ class ZoomEngineRuntimeState {
   void reset();
 
   [[nodiscard]] ZoomEngineRuntimeSnapshot snapshot() const;
+  [[nodiscard]] rpc::Json subscriptionSdkEvidence() const { return sdkEvidence_.json(); }
   [[nodiscard]] std::vector<ZoomEngineParticipant> floorParticipants() const;
   // Immutable names from the last accepted roster, safe to read during ISO setup.
   [[nodiscard]] std::shared_ptr<const ZoomParticipantDisplayNames> participantDisplayNames() const;
@@ -137,6 +139,7 @@ class ZoomEngineRuntimeState {
   void refreshFrameFreshness(double nowMs, double staleAfterMs);
 
  private:
+  ZoomSubscriptionSdkEvidence sdkEvidence_;
   void addWarning(const std::string& warning);
   void refreshSpeakerFrameReadiness();
 
