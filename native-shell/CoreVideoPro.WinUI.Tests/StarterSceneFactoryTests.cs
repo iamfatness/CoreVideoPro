@@ -7,6 +7,28 @@ namespace CoreVideoPro.WinUI.Tests;
 
 public sealed class StarterSceneFactoryTests
 {
+    [Fact]
+    public void TilesStarterPersistsCoreOwnedMembershipAndIsDistinctFromPanelGrid()
+    {
+        var (tiles, routes) = StarterSceneFactory.Create("custom-wall", "tiles", ["CoreVideo Tiles"]);
+        Assert.Equal("dynamic-gallery", tiles.Layout);
+        Assert.NotEqual("CoreVideo Tiles", tiles.Name);
+        Assert.NotNull(tiles.DynamicGallery);
+        Assert.True(tiles.DynamicGallery.AutoFill);
+        Assert.Equal("eligible", tiles.DynamicGallery.MembershipMode);
+        Assert.Empty(routes);
+        var restored = ScenePersistenceService.SceneFromPersisted(ScenePersistenceService.ToPersisted(tiles, routes));
+        Assert.Equal(tiles.Id, restored.Id);
+        Assert.Equal(tiles.Name, restored.Name);
+        Assert.Equal(16, restored.DynamicGallery!.MaxTiles);
+        var (panel, fixedRoutes) = StarterSceneFactory.Create("custom-panel", "panel-grid", []);
+        Assert.Null(panel.DynamicGallery);
+        Assert.Equal(6, fixedRoutes.Count);
+        var (secondWall, _) = StarterSceneFactory.Create("custom-wall-2", "tiles", []);
+        tiles.DynamicGallery.MaxTiles = 4;
+        Assert.Equal(16, secondWall.DynamicGallery!.MaxTiles);
+    }
+
     [Theory]
     [InlineData("solo", 1)]
     [InlineData("two-person", 2)]

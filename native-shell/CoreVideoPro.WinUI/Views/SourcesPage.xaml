@@ -77,6 +77,7 @@
                                 <MenuFlyoutItem Text="Solo · Input 1" Click="OnCreateNamedScene" Tag="solo"/>
                                 <MenuFlyoutItem Text="Two people · Inputs 1 and 2" Click="OnCreateNamedScene" Tag="two-person"/>
                                 <MenuFlyoutItem Text="Screen + presenter · Share and Input 1" Click="OnCreateNamedScene" Tag="screen-presenter"/>
+                                <MenuFlyoutItem Text="CoreVideo Tiles · Auto-reflow wall" Click="OnCreateNamedScene" Tag="tiles"/>
                                 <MenuFlyoutItem Text="Panel grid · Inputs 1 to 6" Click="OnCreateNamedScene" Tag="panel-grid"/>
                                 <MenuFlyoutItem Text="Closing · Input 1" Click="OnCreateNamedScene" Tag="closing"/>
                                 <MenuFlyoutSeparator/>

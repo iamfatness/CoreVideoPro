@@ -4334,31 +4334,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
-    private void NewDynamicGallery()
-    {
-        var newId = NewCustomSceneId();
-        var galleryNumber = _scenes.Count(scene => scene.DynamicGallery is not null) + 1;
-        var scene = new Scene
-        {
-            Id = newId,
-            Name = galleryNumber == 1 ? "CoreVideo Tiles" : $"CoreVideo Tiles {galleryNumber}",
-            Layout = "dynamic-gallery",
-            Automation = "Auto-reflow Zoom gallery",
-            DynamicGallery = new DynamicGallerySettings()
-        };
-
-        _scenes.Add(scene);
-        _sceneRoutes[newId] = [];
-        ReconcileDynamicGalleryRoutes(scene, _sceneRoutes[newId]);
-        RefreshSceneItems();
-        PreviewSceneId = newId;
-        ActiveTab = StudioTab.Sources;
-        CommandStatus = $"{scene.Name} created with {RoomVideoParticipants.Count} live Zoom sources";
-        SchedulePreviewRoutingRefresh();
-        SaveProductionOutputPreferences();
-    }
-
-    [RelayCommand]
     private void DuplicateScene(string? sceneId)
     {
         var source = _scenes.FirstOrDefault(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal));

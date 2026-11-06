@@ -2,7 +2,7 @@ using CoreVideoPro.WinUI.Models;
 
 namespace CoreVideoPro.WinUI.Services;
 
-/// <summary>New scenes bind show inputs, never whichever guest happens to be speaking.</summary>
+/// <summary>Fixed layouts bind show inputs; Tiles uses the core-owned auto-reflow wall.</summary>
 public static class StarterSceneFactory
 {
     public static (Scene Scene, List<SourceRoute> Routes) Create(
@@ -14,6 +14,7 @@ public static class StarterSceneFactory
         {
             "two-person" => ("Two people", "two-up"),
             "screen-presenter" => ("Screen + presenter", "speaker-slides"),
+            "tiles" => ("CoreVideo Tiles", "dynamic-gallery"),
             "panel-grid" => ("Panel grid", "smart-grid"),
             "closing" => ("Closing", "outro"),
             _ => ("Solo", "host-focus")
@@ -23,9 +24,13 @@ public static class StarterSceneFactory
             Id = id,
             Name = ScenePersistenceService.MakeUniqueSceneName(name, existingNames),
             Layout = layout,
-            Automation = "Custom canvas"
+            Automation = template == "tiles" ? "Auto-reflow Zoom gallery" : "Custom canvas",
+            DynamicGallery = template == "tiles" ? new DynamicGallerySettings() : null
         };
-        var routes = SceneRoutingService.GetStarterRoutes(scene).Select(route => route.Clone()).ToList();
+        // Tiles membership is composed by the core, not duplicate shell routes.
+        var routes = scene.DynamicGallery is null
+            ? SceneRoutingService.GetStarterRoutes(scene).Select(route => route.Clone()).ToList()
+            : new List<SourceRoute>();
         SceneCanvasLayoutService.EnsureCanvasRects(routes, layout);
         return (scene, routes);
     }
