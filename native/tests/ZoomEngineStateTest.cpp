@@ -13,6 +13,35 @@ corevideo::modules::ZoomEngineEvent eventFrom(const std::string& line) {
 
 }  // namespace
 
+TEST(ZoomEngineRuntimeState, RetainsBoundedSubscriptionResponsesWithoutChangingDelivery) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(R"({"cmd":"joined"})"), 0);
+  state.apply(eventFrom(R"({"cmd":"debug","stage":"auth","message":"secret"})"), 1);
+  state.apply(eventFrom(R"({"cmd":"debug","stage":"set_resolution","source_uuid":"camera-42","participant_id":42,"code":0,"resolution":2,"message":"must not retain"})"), 100);
+  state.apply(eventFrom(R"({"cmd":"debug","stage":"video_subscribe","source_uuid":"camera-42","participant_id":42,"code":0,"resolution":2})"), 101);
+  state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"camera-42","participant_id":42,"w":1280,"h":720})"), 102);
+  auto evidence = state.subscriptionSdkEvidence();
+  const auto* events = evidence.get("events");
+  ASSERT_NE(events, nullptr);
+  ASSERT_EQ(events->asArray().size(), 2u);
+  EXPECT_EQ(events->asArray()[0].getNumber("sdkCode"), 0);
+  EXPECT_EQ(events->asArray()[0].getNumber("resolution"), 2);
+  EXPECT_EQ(events->asArray()[0].getNumber("observedMonotonicMs"), 100);
+  EXPECT_EQ(events->asArray()[0].get("message"), nullptr);
+  // A successful 1080p request is not evidence that the SDK delivered 1080p.
+  ASSERT_EQ(state.snapshot().subscriptions.size(), 1u);
+  EXPECT_EQ(state.snapshot().subscriptions[0].width, 1280u);
+  for (int i = 0; i < 70; ++i)
+    state.apply(eventFrom(R"({"cmd":"debug","stage":"video_subscribe","code":7,"resolution":2})"), 200 + i);
+  evidence = state.subscriptionSdkEvidence();
+  EXPECT_EQ(evidence.get("events")->asArray().size(), 64u);
+  EXPECT_EQ(evidence.getNumber("dropped"), 8);
+  EXPECT_EQ(evidence.get("events")->asArray().front().getNumber("sequence"), 9);
+  state.apply(eventFrom(R"({"cmd":"left"})"), 300);
+  EXPECT_TRUE(state.subscriptionSdkEvidence().get("events")->asArray().empty());
+  EXPECT_EQ(state.subscriptionSdkEvidence().getNumber("dropped"), 0);
+}
+
 TEST(ZoomEngineRuntimeState, MapsEngineEventsToSpineRosterState) {
   corevideo::modules::ZoomEngineRuntimeState state;
 

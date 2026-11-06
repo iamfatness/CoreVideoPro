@@ -42,6 +42,7 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
       }
       break;
     case ZoomEngineEventKind::Joined:
+      sdkEvidence_.reset();
       meetingState_ = "in-meeting";
       events_.emplace_back("Zoom meeting joined.");
       break;
@@ -91,6 +92,7 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
           break;
         }
         if (event.meetingGeneration != meetingGeneration_) {
+          if (meetingGeneration_ != 0) sdkEvidence_.reset();
           subscriptionStats_.clear();
           speakerDirector_.reset();
           participants_.clear();
@@ -174,6 +176,9 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
       ++stats.audioPacketsReceived;
       break;
     }
+    case ZoomEngineEventKind::Debug:
+      sdkEvidence_.observe(event, nowMs);
+      break;
     default:
       break;
   }
@@ -287,6 +292,7 @@ void ZoomEngineRuntimeState::addWarning(const std::string& warning) {
 }
 
 void ZoomEngineRuntimeState::reset() {
+  sdkEvidence_.reset();
   meetingState_ = "idle";
   sdkAuthenticated_ = false;
   rawMediaActive_ = false;
