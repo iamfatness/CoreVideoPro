@@ -37,6 +37,7 @@
 //   COREVIDEO_FAKE_ENGINE_FPS            frame cadence (default 30; use 60 for
 //                                        the 1080p60 load the product targets)
 //   COREVIDEO_FAKE_ENGINE_LOG            optional path for a standalone diag log
+//   COREVIDEO_FAKE_PRIMARY_COLORS        "1": three distinct animated primary colors for Sources identity QA
 //   COREVIDEO_FAKE_AUTH_DELAY_MS         synthetic SDK auth stall (0 by default, max 60000)
 //   COREVIDEO_FAKE_JOIN_DELAY_MS         synthetic meeting join stall (0 by default, max 60000)
 //
@@ -472,6 +473,20 @@ static void produce_frame_locked(Target& t, uint64_t tick) {
                                 std::chrono::steady_clock::now() - g_clapInstant).count();
         diag("clap video pid=" + std::to_string(pid) + " frame=" +
              std::to_string(t.frame_count + 1) + " late_us=" + std::to_string(lateUs));
+    }
+
+    // Opt-in identity fixture for the actual Sources page. The normal moving
+    // gradient and clap fixtures are unchanged unless this QA mode is selected.
+    static const bool primaryColors = [] {
+        const char* value = std::getenv("COREVIDEO_FAKE_PRIMARY_COLORS");
+        return value && value[0] == '1';
+    }();
+    if (primaryColors) {
+        const auto channel = (pid - 101) % 3; // B, G, R; matches the presenter BGRA probe
+        const uint8_t luma[] = {41, 145, 82}, chromaU[] = {240, 54, 90}, chromaV[] = {110, 34, 240};
+        std::memset(yp, static_cast<uint8_t>(luma[channel] + static_cast<int>(tick % 17) - 8), y_len);
+        std::memset(up, chromaU[channel], y_len / 4);
+        std::memset(vp, chromaV[channel], y_len / 4);
     }
 
     // Sequence protocol: odd while writing, even when complete (reader rejects odd).
