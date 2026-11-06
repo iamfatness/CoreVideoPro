@@ -19,3 +19,22 @@ The original TSAN run failed `completedCopies == 1` without a data-race report. 
 ## Completion
 
 The actual bad interleaving is demonstrated and fixed; no production timing tolerance is widened. Tests verify progress and immutability against fixture constants. If the hypothesis is disproven, retain the counterevidence and do not manufacture a worker fix.
+
+## November 5 investigation result
+
+A gate now holds the first maintenance callback after it samples an incomplete
+GPU operation. The test observes the original immutable snapshot, changes the
+completion flag, then releases maintenance. With the original two reads, the
+callback publishes completed=0 but pending=false, so the owner correctly sleeps
+and never publishes completion. This forced schedule failed at the completion
+assertion; its patch and log are retained as `1137-forced-schedule-red.patch` and
+`1137-red-test.log` under `D:/CoreVideo-QA/overnight-20261105`.
+
+The fixture now samples completion once for both fields. The forced transition
+therefore leaves work pending for the next maintenance poll, which publishes
+completed=1 and then sleeps. All seven monitor-worker tests pass. Original
+snapshot immutability, copied sequence 7, one completed render and owner-thread
+maintenance/destruction remain asserted. Failure cleanup releases the gate
+before joining the worker. Production worker code and the completion backstop
+are unchanged. Full integrated Release and exact-head hosted TSAN remain pending;
+the Windows result is not a sanitizer claim.

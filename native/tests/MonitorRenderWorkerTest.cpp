@@ -355,7 +355,9 @@ TEST(MonitorRenderWorker, DisableAndShutdownCancelActiveDeadlineWorkWithoutDangl
 }
 
 TEST(MonitorRenderWorker, IdleRetirementPublishesImmutableReaderEvidenceOnItsOwnerAndThenSleeps) {
-  std::promise<void> rendered;
+  std::promise<void> rendered, firstSampled, resumeSample;
+  const auto sampleGate = resumeSample.get_future().share();
+  bool firstSample = true; // accessed only by the maintenance owner
   std::atomic<bool> gpuDone{false};
   std::atomic<unsigned> polls{0};
   std::thread::id renderOwner, maintenanceOwner, destroyedOn;
@@ -377,19 +379,31 @@ TEST(MonitorRenderWorker, IdleRetirementPublishesImmutableReaderEvidenceOnItsOwn
     MonitorRenderWorker::MaintenanceResult result;
     ProgramDisplayObservation reader;
     reader.readerEpoch = 9; reader.copies = 1; reader.state = "copied";
-    reader.completedCopies = gpuDone ? 1 : 0;
-    result.pending = !gpuDone; result.programDisplay = reader;
+    const bool completed = gpuDone.load();
+    reader.completedCopies = completed ? 1 : 0;
+    if (firstSample) {
+      firstSample = false;
+      firstSampled.set_value();
+      sampleGate.wait(); // force completion to change between the old two reads
+    }
+    result.pending = !completed; result.programDisplay = reader;
     return result;
   });
+  struct ReleaseSample {
+    std::promise<void>& promise;
+    bool released = false;
+    void release() { if (!released) { released = true; promise.set_value(); } }
+    ~ReleaseSample() { release(); }
+  } unblock{resumeSample}; // release before worker destruction if an assertion fails
   marker.reset(); // Backend ownership now belongs only to worker callbacks.
   MonitorRenderRequest request; request.sequence = 1; request.multiviewActive = true;
   worker->submit(std::move(request));
   ASSERT_TRUE(rendered.get_future().wait_for(std::chrono::seconds(2)) == std::future_status::ready);
-  const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (!worker->latest() && std::chrono::steady_clock::now() < limit)
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_EQ(firstSampled.get_future().wait_for(std::chrono::seconds(2)), std::future_status::ready);
   const auto old = worker->latest(); ASSERT_TRUE(old != nullptr);
   gpuDone = true;
+  unblock.release();
+  const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (worker->latest()->programDisplayReader.completedCopies == 0 && std::chrono::steady_clock::now() < limit)
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   EXPECT_EQ(worker->latest()->programDisplayReader.completedCopies, 1u);
