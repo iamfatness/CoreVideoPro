@@ -6,6 +6,8 @@ The November 6 packaged eight-ISO run retained one Program recording missing fra
 
 Native 88e97fea (content-identical to rebased #1174 f436f57b), shell af9f983a, RTX 4090/i7-14700K, two-frame Program buffer, hardware Program plus eight ISO writers, real meeting. Camera activation was refused by the existing registration mismatch; it is not qualified. Evidence lives under D:/CoreVideo-QA/resume-20261106; retain the original failed recording and log context.
 
+A second retained miss occurred at 09:10:21, beside a 14.756 ms render hold with 10.799 ms in ISO ingress. Multiple other long holds concentrate in the same phase with zero engine-mutex wait. The first instrumentation slice separates prefetched arrival transfer, selection preparation and ingress leaf-lock wait from admission/retirement, using the existing fixed-size render timing recorder. It changes no queue or delivery behavior. Do not identify pixel destruction or lock contention as the live cause until the narrower evidence distinguishes them.
+
 ## Contract
 
 ISO arrival transfer/admission must not hold Program rendering behind pixel copying, last-owner pixel destruction, device work or an encoder operation. Keep bounded ownership and preserve admitted ISO arrival identities/order. No source-quality reduction, buffer-depth increase, hidden drop, or startup/held-frame waiver. A moved operation must have a real production consumer and explicit shutdown/generation behavior.

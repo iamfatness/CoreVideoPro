@@ -26,6 +26,27 @@ TEST(IsoVideoIngress, CpuBatchKeepsItsOwnIdentitiesAndCaptureTimes) {
   EXPECT_EQ(result[1].timelineTimestamp100ns, converted[1].captureTimestamp100ns);
 }
 
+TEST(IsoVideoIngress, ProductionObservationSeparatesSelectionAndLeafLockFromAdmission) {
+  using corevideo::core::RenderTickPhases;
+  using Phase = RenderTickPhases::Phase;
+  corevideo::core::IsoVideoIngress ingress;
+  RenderTickPhases phases;
+  phases.begin();
+  RenderTickPhases::Scope scope(phases);
+  ingress.observe({"42"}, {}, {picture("42", 1)}, 1, true);
+  RenderTickPhases::markCurrent(Phase::IsoIngress);
+  EXPECT_TRUE(phases.visited(Phase::IsoSelection));
+  EXPECT_TRUE(phases.visited(Phase::IsoLockWait));
+  EXPECT_TRUE(phases.visited(Phase::IsoIngress));
+  EXPECT_EQ(ingress.drain(std::chrono::milliseconds(0)).size(), 1u);
+  phases.begin();
+  ingress.clear();
+  RenderTickPhases::markCurrent(Phase::IsoIngress);
+  EXPECT_TRUE(phases.visited(Phase::IsoLockWait));
+  EXPECT_TRUE(phases.visited(Phase::IsoIngress));
+  EXPECT_FALSE(phases.visited(Phase::IsoSelection));
+}
+
 TEST(IsoVideoIngress, IndependentZoomNeverFallsBackToAnOlderRenderPictureBetweenArrivalBatches) {
   corevideo::core::IsoVideoIngress ingress;
   auto delayedRender = picture("42", 2);

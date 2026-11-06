@@ -5653,6 +5653,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     FrameGroupCallTiming timing(TickPhase::R5CpuArrival);
     zoomEngineRuntime_->appendCpuVideoFrames(captureCpuFrames);
   }
+  markTickPhase(TickPhase::IsoTransfer);
   if ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
       !recordingIsoParticipantIds_.empty()) {
     isoVideoIngress_.observe(recordingIsoParticipantIds_, videoFrames, captureCpuFrames, monotonic100ns(),

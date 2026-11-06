@@ -16,7 +16,7 @@ Specifications and acceptance: [resumed reliability work](reference/resumed-reli
 | 6 | Reserve | #1074 | Existing hold/drop runtime tests are present; qualify actual GPU picture/black behavior without changing the four-second policy. | 45 min, range 30–75 | Live remote interruption control may limit acceptance |
 | 7 | Reserve | #903 | Preserve truthful monitor counters across mute/disable/reenable and observe suppression/priming/starvation without hiding raw failures. | 90 min, range 60–150 | Local endpoint/lifecycle rehearsal after native validation |
 | 8 | Conditional | #443 / #989 / #1056 | Matched camera/readiness preflight then full output test if prerequisites are met. Preserve failures and NOT JUDGED dependencies. | 60 min, range 45–90 | 30 min measured run plus decode; camera identity/elevation prerequisite |
-| Intake | Later | #1178 | Attribute retained Mac show-drill p99 failure on unchanged native source without relaxing the gate. | Reforecast after log review | Hosted source/baseline comparison |
+| Intake | Later | #1178 | Retain the Mac show-drill p99 failure on #1176 and attribute/reproduce it without relaxing the 100 ms gate. | Reforecast after retained-log review | Native/Mac sources unchanged in the Windows-only PR |
 
 Allocation baseline: 20 min baseline/planning, 120 Auto, 90 resolution, 45 empty-state, 45 teardown, 60 Tiles, 60 conditional output work, 40 validation/report/replenishment reserve = 480 min. These are adjustable allocations, not permission to stop after one fixed list. Use blocked conditional time for the next actionable issue. Owner-deferred #513, business/credential acquisition, public-provider posting and speculative feature expansion are not silently resumed.
 

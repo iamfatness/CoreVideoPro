@@ -36,7 +36,10 @@ class RenderTickPhases final : public LockHoldDetail {
     Gather,        // gatherSourceVideo + guest A/V trim
     StillsFloor,   // still media, cold media, floor observation
     R5CpuArrival,  // appendCpuVideoFrames (engine mutex, frame group)
-    IsoIngress,    // capture CPU take + ISO video ingress
+    IsoTransfer,   // move the prefetched CPU arrival batch into this tick
+    IsoSelection,  // selected/live source lookup preparation
+    IsoLockWait,   // wait for the ISO ingress leaf mutex
+    IsoIngress,    // ISO admission/retirement after the leaf mutex is acquired
     Plan,          // overlay, wall ages, plans, continuity, monitor submit
     Program,       // compositor render + delivery attribution
     Monitors,      // multiview + preview passes (or isolated monitor results)
@@ -48,7 +51,8 @@ class RenderTickPhases final : public LockHoldDetail {
   static const char* name(Phase phase) {
     static constexpr std::array<const char*, kPhaseCount> kNames{
         "setup", "r1-poll", "r2-decoded", "bus-tap", "capture-poll", "gather", "stills-floor",
-        "r5-cpu-arrival", "iso-ingress", "plan", "program", "monitors", "emit"};
+        "r5-cpu-arrival", "iso-transfer", "iso-selection", "iso-lock-wait", "iso-ingress",
+        "plan", "program", "monitors", "emit"};
     return kNames[static_cast<std::size_t>(phase)];
   }
 

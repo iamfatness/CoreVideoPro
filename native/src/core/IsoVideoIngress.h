@@ -1,5 +1,6 @@
 #pragma once
 #include "modules/Interfaces.h"
+#include "core/RenderTickPhases.h"
 #include <chrono>
 #include <condition_variable>
 #include <map>
@@ -26,7 +27,9 @@ class IsoVideoIngress {
     std::unordered_set<std::string> liveIds;
     for (const auto& frame : frames) liveIds.insert(canonical(frame.participantId));
     for (const auto& frame : cpuArrivals) liveIds.insert(canonical(frame.participantId));
+    RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoSelection);
     std::lock_guard<std::mutex> lock(mutex_);
+    RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoLockWait);
     // Keep a completed CPU view between conversion arrivals while that source
     // remains live. A disconnected or deselected source releases its lease.
     for (auto it = latest_.begin(); it != latest_.end();) {
@@ -90,6 +93,7 @@ class IsoVideoIngress {
   }
   void clear() {
     std::lock_guard<std::mutex> lock(mutex_);
+    RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoLockWait);
     latest_.clear(); pending_.clear(); lastQueued_.clear(); counters_.clear();
   }
   void notify() { ready_.notify_one(); }
