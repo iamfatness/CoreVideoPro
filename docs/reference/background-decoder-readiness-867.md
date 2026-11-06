@@ -1,0 +1,9 @@
+# Background decoder readiness in the transport regression — #867
+
+The background-only transport refusal regression waits for logical `live` state, then asserts one decoder was created. `MediaTransports` publishes that state before its asynchronous worker constructs the decoder. The retained November 6 Metal failure on #1192 repeats this assertion at line 9682, reporting no background pictures or restarts but omitting the actual created count. Earlier failures remain retained; their missing count prevents attributing each one to the same initiating condition.
+
+Use the real MediaCore/MediaTransports consumer with an injected factory whose construction is held behind a bounded test gate. Demonstrate that the source is logically Live while the constructor count is still zero, then release the worker and observe an actual first picture. This establishes the missing readiness guarantee without changing production scheduling or weakening the strict one-decoder assertion.
+
+The existing refusal test must wait for both Live and a real background picture before exercising pause/play. Preserve refusal reasons, unchanged transport state, unknown-asset diagnostics and the final exact constructor count. Include the observed count in failure output. A missing decoder must still fail its bounded readiness wait; duplicate construction must still fail the exact-count assertion.
+
+Implementation sequence: retain the hosted failure; add the controlled readiness regression and repair the existing wait; compile the actual native test executable; run a control that applies the old one-decoder expectation while construction is held, restore and run both focused cases plus the related MediaCore command regressions; submit for hosted Windows/Metal/stub checks. No arbitrary increase to performance limits, no retry-until-green and no production adapter change. Keep this test repair outside the frozen Windows beta; #941 remains held until its integrated checks pass.
