@@ -1636,7 +1636,12 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
         jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
                         buildThumbnail, !ref.lumaRangeProbed, processGeneration_, ref.sourceEpoch, ref.preparationLifetime, ref.sourceGeneration});
       // ISO has its own job/cursor. Missing or slow ISO must never freeze Program.
-      if (branch != VideoDrain::Latest && process_ && isoArrivalQueues_.contains(std::to_string(ref.participantId))) {
+      // The demand arms this exact camera UUID. Other streams for the same
+      // participant (share, or a retired auto stand-in) must not reuse its
+      // already-mapped ring/cursor and publish the same pictures again.
+      if (branch != VideoDrain::Latest && process_ &&
+          uuid == "participant-video-" + std::to_string(ref.participantId) + "-camera" &&
+          isoArrivalQueues_.contains(std::to_string(ref.participantId))) {
         auto& ring = isoRingReaders_.at(std::to_string(ref.participantId));
         if (!ring.region) {
           auto opened = std::make_unique<ShmRegion>();
