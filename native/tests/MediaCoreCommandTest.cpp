@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -9643,6 +9644,40 @@ TEST(MediaCoreCommand, AGenuinelyUnroutedClipIsStillReleasedAfterTheGrace) {
 // `media:` row, so the refusal comes from the LAST tier - and it must carry a
 // real reason naming the loop, never silently do nothing.
 // ---------------------------------------------------------------------------
+TEST(MediaCoreCommand, BackgroundTransportCanBeLiveBeforeDecoderConstruction) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  std::mutex factoryMutex;
+  std::condition_variable factoryReady;
+  bool releaseFactory = false;
+  modules.mediaDecoderFactory = [&]() -> std::unique_ptr<corevideo::modules::IMediaDecoder> {
+    std::unique_lock lock(factoryMutex);
+    // A failed assertion must not leave teardown waiting on an unbounded gate.
+    if (!factoryReady.wait_for(lock, std::chrono::seconds(3), [&] { return releaseFactory; })) return {};
+    lock.unlock();
+    return std::make_unique<CountingDecoder>();
+  };
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bBackgroundScene("scene-a", "load-scene-graph")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return slice3bTransportState(core, "background:bg") == "live";
+  }));
+  // #867: the old readiness predicate is true while construction is held.
+  EXPECT_EQ(CountingDecoder::created.load(), 0)
+      << "logical Live is not decoder readiness; created=" << CountingDecoder::created.load();
+  {
+    std::lock_guard lock(factoryMutex);
+    releaseFactory = true;
+  }
+  factoryReady.notify_all();
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("background:bg") > 0;
+  })) << "the released background decoder never produced its first picture";
+  EXPECT_EQ(CountingDecoder::created.load(), 1);
+}
+
 TEST(MediaCoreCommand, ATransportOnABackgroundOnlyAssetIsRefusedAndNamesTheLoop) {
   auto modules = corevideo::modules::createStubModules();
   CountingDecoder::resetAll();
@@ -9653,8 +9688,9 @@ TEST(MediaCoreCommand, ATransportOnABackgroundOnlyAssetIsRefusedAndNamesTheLoop)
   (void)core.applyCommands(corevideo::rpc::Json::Array{
       slice3bBackgroundScene("scene-a", "load-scene-graph")});
   ASSERT_TRUE(slice3bPumpUntil(core, [&] {
-    return slice3bTransportState(core, "background:bg") == "live";
-  })) << "the loop background never went live";
+    return slice3bTransportState(core, "background:bg") == "live" &&
+           CountingDecoder::lastFrameIdFor("background:bg") > 0;
+  })) << "the live loop background never produced its first picture; created=" << CountingDecoder::created.load();
   ASSERT_EQ(slice3bMediaSource(core.sessionState(), "media:bg"), nullptr)
       << "this asset must exist ONLY as background:bg for the test to exercise the last tier";
 
@@ -9680,7 +9716,8 @@ TEST(MediaCoreCommand, ATransportOnABackgroundOnlyAssetIsRefusedAndNamesTheLoop)
   // #867: this counter is process-global. If it ever reads 2 again, say WHICH source
   // restarted (loop restart vs a decoder opened outside this core) instead of a bare 2 vs 1.
   EXPECT_EQ(CountingDecoder::created.load(), 1)
-      << "background:bg decoder restarts=" << CountingDecoder::restartsFor("background:bg")
+      << "background:bg decoders created=" << CountingDecoder::created.load()
+      << " restarts=" << CountingDecoder::restartsFor("background:bg")
       << " first-frame-id-after-restart=" << CountingDecoder::firstFrameIdAfterRestartFor("background:bg")
       << " last-frame-id=" << CountingDecoder::lastFrameIdFor("background:bg");
 }
