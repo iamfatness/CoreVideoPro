@@ -793,6 +793,7 @@ if(BUILD_TESTING)
     tests/AsyncEncoderSinkTest.cpp
     tests/EncoderSessionReadPolicyTest.cpp
     tests/RecordingTrackWorkerTest.cpp
+    tests/ProgramRecordingTailTest.cpp
     tests/EncoderCapacityCacheTest.cpp
     tests/AsyncOutputSenderTest.cpp
     tests/IsolatedOutputSenderTest.cpp
