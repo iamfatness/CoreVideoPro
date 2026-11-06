@@ -25,3 +25,29 @@ At intended load: 61 real media pictures, zero dropped real video, one late plac
 A mutation that drops the late frame, collapses the gap, counts a held frame as real, or disables overflow accounting must fail a relevant assertion. Capture the evidence before deleting only test-owned files. No new timing tolerance, queue expansion or public claim of full workload acceptance is permitted on a test-only fix.
 
 If causality remains unknown at the backlog limit, deliver the instrumented failure and the smallest repeatable schedule, keep #1143 open, and proceed to the next bounded item.
+
+## November 5 investigation result
+
+The fixture submitted eleven returning pictures (late identity 5000 and resumed
+identities 5001–5010) to the default ten-picture FIFO without observing writer
+progress. A gated in-flight audio write reproduces this schedule deterministically:
+all eleven posts are accepted, identity 5000 is evicted, identities 5001–5010
+complete, and exactly one video drop is reported. This explains how the retained
+failure can lose the late picture; it does not identify the original writer's
+exact scheduling delay or establish a real-time workload regression.
+
+The placement fixture now observes completion of the late write and its held-slot
+placement before submitting the next ten pictures. No queue depth, production
+code, timestamp tolerance or final frame-count requirement changes. Explicit
+steady-state and startup drop-count assertions supplement the existing warning
+check. The controlled overflow case remains a separate regression test.
+
+Production Release checks in `D:/CoreVideo-QA/overnight-20261105`: all 14 writer
+tests passed; the late-frame case wrote 61 real pictures, zero drops, 27 holds,
+one behind-hold placement and 88 decoded samples with monotonic PTS. Adjacent
+video-stall, participant-departure and variable-rate timeline cases passed.
+A temporary mutation suppressing video-drop accounting made the new controlled
+overflow test fail; the writer header was restored byte-for-byte and all 14
+writer tests passed again. Full integrated suite qualification remains required
+before closing the issue. These are fixture/encoder checks, not installed
+eight-participant output qualification.
