@@ -1,5 +1,23 @@
 # CoreVideo Pro — ranked backlog
 
+## Active replenishing eight-hour window — November 6, 07:36–15:36 Eastern
+
+The owner explicitly resumed work, ranked Auto first, and authorized replenishing the next batch whenever work finishes early. This supersedes the completed batches below. A completed batch is not the stopping condition. Continue useful authorized work until 15:36 Eastern, unless the owner stops it or every remaining path is concretely blocked. Keep at most three Now items in flight; no subagents are authorized.
+
+Specifications and acceptance: [resumed reliability work](reference/resumed-reliability-2026-11-06.md). Record estimates versus actual active effort, validation time, hosted waiting and external dependencies separately. Reforecast after every item and at least hourly. Hosted CI runs while independent next-item work progresses; local builds/probes never overlap measured media workloads. If the reserve runs out, review current open issues and replenish this queue under the owner's explicit instruction; do not declare completion early.
+
+| Rank | State | Issue | Scope | Active effort estimate | Hosted/external time |
+|---|---|---|---|---|---|
+| 1 | Now | #1146 | Capture and reproduce Auto hold/Preview/Take failure, fix its actual cause, verify manual authority and no invented captions. | 120 min, range 90–210 | CI 30–50 min overlapped; populated meeting available subject to fresh check |
+| 2 | Next | #1171 | Attribute actual 1080p-to-720p receive changes without lowering quality; distinguish application requests from SDK/provider behavior. | 90 min, range 60–150 | Controlled remote sender/account changes may be unavailable |
+| 3 | Next | #1172 | Remove overlapping Studio empty-state messages and verify compact/normal captures. | 45 min, range 25–60 | CI overlapped with next item |
+| 4 | Next | #919 | Fence deferred participant-list callbacks across window teardown; prove no stale XAML access. | 45 min, range 30–75 | Compiled lifetime probe and CI |
+| 5 | Reserve | #1074 | Qualify Tiles hold/recovery/video-off behavior through the real runtime; fix only demonstrated discrepancies. | 60 min, range 45–90 | Live remote interruption control may limit acceptance |
+| 6 | Conditional | #443 / #989 / #1056 | Matched camera/readiness preflight then full output test if prerequisites are met. Preserve NOT JUDGED when they are not. | 60 min, range 45–90 | 30 min measured run plus decode; camera identity/elevation prerequisite |
+
+Allocation baseline: 20 min baseline/planning, 120 Auto, 90 resolution, 45 empty-state, 45 teardown, 60 Tiles, 60 conditional output work, 40 validation/report/replenishment reserve = 480 min. These are adjustable allocations, not permission to stop after one fixed list. Use blocked conditional time for the next actionable issue. Owner-deferred #513, business/credential acquisition, public-provider posting and speculative feature expansion are not silently resumed.
+
+
 ## Active four-hour follow-on — November 5 23:48 to November 6 03:48 Eastern
 
 The owner-authorized conditional batch is triggered: the initial bounded work finished before 06:00 with four merged fixes, passing regression/package gates, and two failed output warmups. Output acceptance remains failed; the next batch addresses the observed causes. This section is the sole current queue and supersedes the completed investigation order below.
