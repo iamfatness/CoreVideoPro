@@ -5653,10 +5653,13 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     FrameGroupCallTiming timing(TickPhase::R5CpuArrival);
     zoomEngineRuntime_->appendCpuVideoFrames(captureCpuFrames);
   }
+  markTickPhase(TickPhase::IsoTransfer);
   if ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
       !recordingIsoParticipantIds_.empty()) {
-    isoVideoIngress_.observe(recordingIsoParticipantIds_, videoFrames, captureCpuFrames, monotonic100ns(),
-        engineLive && modules::ZoomEngineRuntime::independentIsoVideoSupported());
+    isoVideoIngress_.observe(recordingIsoParticipantIds_, videoFrames, std::move(captureCpuFrames), monotonic100ns(),
+        engineLive && modules::ZoomEngineRuntime::independentIsoVideoSupported(),
+        videoOutputTickRunning_.load(std::memory_order_acquire)
+            ? IsoVideoIngress::Delivery::Worker : IsoVideoIngress::Delivery::Direct);
   } else { isoVideoIngress_.clear(); }
   markStage(s_stageIngestUs, 0);
   markTickPhase(TickPhase::IsoIngress);

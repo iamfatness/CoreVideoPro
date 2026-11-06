@@ -1,6 +1,8 @@
 #include "core/IsoVideoIngress.h"
 #include "core/IsoDeparture.h"
 #include <gtest/gtest.h>
+#include <thread>
+#include <future>
 
 namespace {
 corevideo::modules::VideoFrame picture(const std::string& id, int64_t sequence, uint64_t epoch = 1) {
@@ -24,6 +26,29 @@ TEST(IsoVideoIngress, CpuBatchKeepsItsOwnIdentitiesAndCaptureTimes) {
   EXPECT_EQ(result[0].frame.frameId, 10); EXPECT_EQ(result[1].frame.frameId, 11);
   EXPECT_EQ(result[0].timelineTimestamp100ns, converted[0].captureTimestamp100ns);
   EXPECT_EQ(result[1].timelineTimestamp100ns, converted[1].captureTimestamp100ns);
+}
+
+TEST(IsoVideoIngress, ProductionObservationSeparatesSelectionAndLeafLockFromAdmission) {
+  using corevideo::core::RenderTickPhases;
+  using Phase = RenderTickPhases::Phase;
+  corevideo::core::IsoVideoIngress ingress;
+  RenderTickPhases phases;
+  phases.begin();
+  RenderTickPhases::Scope scope(phases);
+  ingress.observe({"42"}, {}, {picture("42", 1)}, 1, true);
+  RenderTickPhases::markCurrent(Phase::IsoIngress);
+  EXPECT_TRUE(phases.visited(Phase::IsoSelection));
+  EXPECT_TRUE(phases.visited(Phase::IsoLockWait));
+  EXPECT_TRUE(phases.visited(Phase::IsoIngress));
+  EXPECT_TRUE(phases.visited(Phase::IsoLatest));
+  EXPECT_TRUE(phases.visited(Phase::IsoQueue));
+  EXPECT_EQ(ingress.drain(std::chrono::milliseconds(0)).size(), 1u);
+  phases.begin();
+  ingress.clear();
+  RenderTickPhases::markCurrent(Phase::IsoIngress);
+  EXPECT_TRUE(phases.visited(Phase::IsoLockWait));
+  EXPECT_TRUE(phases.visited(Phase::IsoIngress));
+  EXPECT_FALSE(phases.visited(Phase::IsoSelection));
 }
 
 TEST(IsoVideoIngress, IndependentZoomNeverFallsBackToAnOlderRenderPictureBetweenArrivalBatches) {
@@ -94,6 +119,107 @@ TEST(IsoVideoIngress, HoldsCompletedCpuViewBetweenArrivalsAndReleasesDisconnecte
   EXPECT_TRUE(ingress.drain(std::chrono::milliseconds(0)).empty());
   ingress.observe({"capture:screen"}, {}, {}, 3);
   EXPECT_TRUE(ingress.latest({"capture:screen"}).empty());
+}
+
+// Investigation fixture for #1177: identify the owner that retires an ISO
+// payload after the encoder has drained it. This is ownership evidence, not
+// a claimed fix or a timing acceptance test.
+TEST(IsoVideoIngress, RetainedPayloadRetiresDuringLatestReplacementOnTheCallingThread) {
+  corevideo::core::IsoVideoIngress ingress;
+  std::thread::id retiredOn;
+  bool replacing = false, retiredDuringReplacement = false;
+  auto old = picture("42", 1);
+  old.pixels = std::shared_ptr<const std::vector<uint8_t>>(
+      new std::vector<uint8_t>(16, 1), [&](const std::vector<uint8_t>* bytes) {
+        retiredOn = std::this_thread::get_id();
+        retiredDuringReplacement = replacing;
+        delete bytes;
+      });
+  ingress.observe({"42"}, {}, {old}, 1, true);
+  old.pixels.reset();
+  ingress.drain(std::chrono::milliseconds(0)).clear();
+  EXPECT_EQ(retiredOn, std::thread::id{});
+  replacing = true;
+  ingress.observe({"42"}, {}, {picture("42", 2)}, 2, true);
+  replacing = false;
+  EXPECT_EQ(retiredOn, std::this_thread::get_id());
+  EXPECT_TRUE(retiredDuringReplacement);
+}
+
+TEST(IsoVideoIngress, WorkerRetirementCannotBlockTheNextProducerAdmission) {
+  using Ingress = corevideo::core::IsoVideoIngress;
+  Ingress ingress;
+  std::promise<void> retired, release, drained, produced;
+  auto retiredReady = retired.get_future();
+  auto releaseReady = release.get_future().share();
+  auto drainedReady = drained.get_future();
+  auto producedReady = produced.get_future();
+  std::thread::id retiredOn;
+  auto frame = picture("42", 1);
+  frame.pixels = std::shared_ptr<const std::vector<uint8_t>>(
+      new std::vector<uint8_t>(16, 1), [&](const std::vector<uint8_t>* bytes) {
+        retiredOn = std::this_thread::get_id();
+        retired.set_value();
+        releaseReady.wait();
+        delete bytes;
+      });
+  std::vector<corevideo::modules::VideoFrame> arrivals;
+  arrivals.push_back(std::move(frame));
+  ingress.observe({"42"}, {}, std::move(arrivals), 1, true, Ingress::Delivery::Worker);
+  std::thread consumer([&] {
+    auto batch = ingress.drain(std::chrono::milliseconds(0));
+    drained.set_value();
+    batch.clear();
+  });
+  const auto consumerId = consumer.get_id();
+  drainedReady.wait();
+  std::thread producer([&] {
+    ingress.observe({"42"}, {}, {picture("42", 2)}, 2, true, Ingress::Delivery::Worker);
+    produced.set_value();
+  });
+  const bool retirementEntered = retiredReady.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  const bool producerIndependent = producedReady.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready;
+  // Release and join before assertions: the lightweight test runner throws
+  // on failed expectations, and even the deliberately broken control must exit.
+  release.set_value();
+  producer.join(); consumer.join();
+  EXPECT_TRUE(retirementEntered);
+  EXPECT_TRUE(producerIndependent) << "last-owner retirement held the next render admission";
+  EXPECT_EQ(retiredOn, consumerId);
+  EXPECT_TRUE(ingress.latest({"42"}).empty()) << "live delivery must not retain an unused latest picture";
+  const auto next = ingress.drain(std::chrono::milliseconds(0));
+  ASSERT_EQ(next.size(), 1u);
+  EXPECT_EQ(next[0].frame.frameId, 2);
+}
+
+TEST(IsoVideoIngress, WorkerHandoffPreservesOrderEpochBoundsAndClear) {
+  using Ingress = corevideo::core::IsoVideoIngress;
+  Ingress ingress;
+  const auto observe = [&](std::vector<corevideo::modules::VideoFrame> frames) {
+    ingress.observe({"42"}, {}, std::move(frames), 999, true, Ingress::Delivery::Worker);
+  };
+  observe({picture("42", 1), picture("42", 1), picture("42", 1, 2)});
+  auto first = ingress.drain(std::chrono::milliseconds(0));
+  ASSERT_EQ(first.size(), 2u);
+  EXPECT_EQ(first[0].frame.sourceEpoch, 1u);
+  EXPECT_EQ(first[1].frame.sourceEpoch, 2u);
+  EXPECT_EQ(first[0].timelineTimestamp100ns, 166667);
+  EXPECT_EQ(ingress.counters().at("zoom:42").duplicateRejected, 1u);
+  observe({picture("42", 2, 2), picture("42", 3, 2), picture("42", 4, 2),
+      picture("42", 5, 2), picture("42", 6, 2)});
+  auto bounded = ingress.drain(std::chrono::milliseconds(0));
+  ASSERT_EQ(bounded.size(), 4u);
+  for (size_t i = 0; i < bounded.size(); ++i) EXPECT_EQ(bounded[i].frame.frameId, static_cast<int64_t>(i + 3));
+  EXPECT_EQ(ingress.counters().at("zoom:42").queueOverflowed, 1u);
+  ingress.observe({}, {}, {picture("42", 7, 2)}, 1000, true, Ingress::Delivery::Worker);
+  EXPECT_TRUE(ingress.drain(std::chrono::milliseconds(0)).empty());
+  observe({picture("42", 8, 2)});
+  ingress.clear();
+  EXPECT_TRUE(ingress.drain(std::chrono::milliseconds(0)).empty());
+  EXPECT_TRUE(ingress.counters().empty());
+  observe({picture("42", 1)});
+  EXPECT_EQ(ingress.drain(std::chrono::milliseconds(0)).size(), 1u);
+  EXPECT_TRUE(ingress.latest({"42"}).empty());
 }
 
 // #1030: the roster is the departure signal for Zoom ISO stems. Only a Zoom
