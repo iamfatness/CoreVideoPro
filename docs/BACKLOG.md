@@ -20,6 +20,8 @@ Specifications and per-item execution/acceptance plans: [overnight reliability r
 
 The four bounded fixes above are merged (#1161–#1164). Continue the authorized rehearsal/output work. [#1165](https://github.com/iamfatness/CoreVideoPro/issues/1165) is its required credential-safe harness prerequisite; specification: [drill error evidence](reference/drill-error-evidence-1165.md). No app binary change is included.
 
+Additional output-rehearsal prerequisite: [#1168](https://github.com/iamfatness/CoreVideoPro/issues/1168), establish all requested remote source readiness before Record freezes eligible ISO selection; [specification and plan](reference/drill-source-warmup-1168.md). Preserve the initial seven-writer failure and verify every writer after start. This does not relax source geometry or delivery acceptance.
+
 Unranked intake: [#1166](https://github.com/iamfatness/CoreVideoPro/issues/1166), live rehearsal reproduces accepted lower-third Hide leaving the legacy graphic on Program when a Guest playlist row exists. Preserve this failed acceptance for the conditional next-batch triage.
 
 ### Eight-hour allocation
