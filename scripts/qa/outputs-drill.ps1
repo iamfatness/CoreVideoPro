@@ -63,14 +63,11 @@ function Invoke-DrillQuery([string]$Action, [object[]]$Arguments = @()) {
   try {
     Invoke-RestMethod "$api/invoke" -Method Post -ContentType application/json -Body $body -TimeoutSec 30
   } catch {
-    # The router answers 400 (bind) or 422 (the surface refused) with the reason
-    # in the body; Invoke-RestMethod's own message drops it. Keep action + reason.
-    $detail = $_.Exception.Message
-    $response = $_.Exception.Response
-    if ($response) {
-      try { $reader = New-Object IO.StreamReader($response.GetResponseStream()); $text = $reader.ReadToEnd(); if ($text) { $detail = "HTTP $([int]$response.StatusCode): $text" } } catch { }
-    }
-    throw "$Action $($body) failed: $detail"
+    # Request arguments and server errors can both contain meeting credentials.
+    # Evidence retains only the action and HTTP status, never arbitrary text.
+    $status = 0
+    try { $status = [int]$_.Exception.Response.StatusCode } catch { }
+    throw (Format-DrillActionFailure -Action $Action -StatusCode $status)
   }
 }
 function Get-DrillEnvelope { Invoke-RestMethod "$api/snapshot" -TimeoutSec 5 }
@@ -234,7 +231,7 @@ try {
   $env:COREVIDEO_DELIVERY_TRACE = '1'; $env:COREVIDEO_DELIVERY_TRACE_STAGES = 'all'
   $env:COREVIDEO_DELIVERY_TRACE_PATH = Join-Path $Out 'arrival-trace.bin'
   if ($ProbeMaxSessions -gt 0) { $env:COREVIDEO_ENCODER_PROBE_MAX_SESSIONS = [string]$ProbeMaxSessions }
-  $null = Start-Process -FilePath $launcher -WorkingDirectory $InstallRoot -WindowStyle Normal -PassThru
+  $null = Start-Process -FilePath $launcher -WorkingDirectory $InstallRoot -WindowStyle Hidden -PassThru
   $deadline = [DateTime]::UtcNow.AddSeconds(90)
   do {
     $found = @(Get-Process CoreVideoPro.WinUI -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $shellExe })
