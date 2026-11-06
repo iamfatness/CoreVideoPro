@@ -13689,7 +13689,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ProductionMode,
             AutomationLowerThirdsEnabled,
             _programLowerThirdAutomationSuppressed,
-            Graphics.Any(graphic => graphic.Enabled && graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase)));
+            LegacyLowerThirdVisibilityPolicy.HasEnabledGraphic(Graphics, _programLowerThirdAutomationSuppressed));
 
         if (source is null)
         {

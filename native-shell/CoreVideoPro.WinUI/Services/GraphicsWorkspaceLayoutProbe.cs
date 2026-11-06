@@ -243,8 +243,21 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(cueList.Items.Count==8 && studio.GraphicsWorkspace.SelectedId=="fixture-1","Clearing cue filters lost the selected cue ("+CueState()+")");
             checks.Add("Cue search and Program-scene filtering retain the selected private draft and restore all cue rows");
             using var control = new StudioControlSurface(studio, window.DispatcherQueue);
+            // #1166: playlist rows do not own the legacy key until authority migrates.
+            var previousPlaylist = studio.GraphicsLibrary.Document.Playlist;
+            Require(await studio.GraphicsLibrary.SavePlaylistAsync([new GraphicsPlaylistRow { Id = "legacy-hide-probe", Kind = GraphicsPlaylistRow.Guest, Name = "Guest" }]), "Could not seed Guest row for legacy Hide regression");
+            Require(studio.HasPlaylistGuestRow && !studio.ManagedLowerThirdAuthority, "Legacy/playlist regression precondition is missing");
+            studio.ProgramLowerThirdEnabled = true;
             var hidden = await control.InvokeAsync("graphics.lowerThird.set", new object?[] { false });
+            Require(hidden.Ok && !studio.ProgramLowerThirdEnabled, "Accepted Hide left the legacy lower third enabled when a Guest playlist row exists");
+            studio.ProgramLowerThirdEnabled = true;
+            Require(studio.LowerThirdIntentVisible, "Toggle ignored the visible legacy lower third under legacy authority");
+            var toggled = await control.InvokeAsync("graphics.lowerThird.toggle", Array.Empty<object?>());
+            Require(toggled.Ok && !studio.ProgramLowerThirdEnabled, "Toggle showed a playlist row instead of hiding the legacy key");
+            hidden = await control.InvokeAsync("graphics.lowerThird.set", new object?[] { false });
             Require(hidden.Ok,"Idempotent legacy Hide was rejected");
+            checks.Add("Hide and toggle target the legacy lower third even while Guest playlist rows exist");
+            Require(await studio.GraphicsLibrary.SavePlaylistAsync(previousPlaylist), "Could not restore isolated probe playlist");
             Invoke(Button(workspace,"Use in Studio"));
             await Eventually(()=>studio.GraphicsLibrary.Document.StudioLowerThird is not null && !studio.GraphicsLibrary.Busy);
             Require(studio.StudioAssignedLowerThirdLabel=="Guest introduction","Assigned look label did not update after explicit assignment");
