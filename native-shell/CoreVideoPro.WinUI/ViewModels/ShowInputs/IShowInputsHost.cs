@@ -34,6 +34,8 @@ public interface IShowInputsHost
     // --- ISO + auto-assign policy flags (read) ---
     bool IsoRecordingEnabled { get; }
 
+    bool RecordingRequested { get; }
+
     bool AutomationAutoAssignInputsEnabled { get; }
 
     // --- SRT ingest sources (stay bound on the god file; the add/remove command bodies move) ---
