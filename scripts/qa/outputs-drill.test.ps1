@@ -280,6 +280,25 @@ function New-Envelope([switch]$Stale, [string]$Recording = 'producing', [int]$Is
       zoomSubscriptionChurn = [pscustomobject]@{ sources = @() } } }
 }
 $plan = Get-DrillWorkloadPlan -WebcamSourceId 'capture:f4978a7f6d614c0d' -RecordingFolder 'D:\CoreVideo-QA\drills\t\recordings'
+Check 'remote pre-record warmup rejects a delayed eighth source, stale or sub-resolution delivery' {
+  $remotePlan = [pscustomobject]@{RemoteIds=@(1..8 | ForEach-Object { [string]$_ })}
+  $e=New-Envelope
+  $e.snapshot.zoomSubscriptionChurn.sources = @(1..7 | ForEach-Object { [pscustomobject]@{kind='participant-video';participantId=[string]$_;receivedWidth=1920;receivedHeight=1080;coreFramesIngested=100;lastCoreFrameAgeMs=10} })
+  $problems=@(Get-DrillRemoteWarmupProblems $e $remotePlan)
+  Assert ($problems.Count -eq 1 -and $problems[0] -match 'remote 8 ') 'missing last source not isolated'
+  $last=[pscustomobject]@{kind='participant-video';participantId='8';receivedWidth=1280;receivedHeight=720;coreFramesIngested=100;lastCoreFrameAgeMs=10}
+  $e.snapshot.zoomSubscriptionChurn.sources += $last
+  Assert (@(Get-DrillRemoteWarmupProblems $e $remotePlan).Count -eq 1) 'sub-resolution accepted'
+  $last.receivedWidth=1920;$last.receivedHeight=1080;$last.lastCoreFrameAgeMs=1000
+  Assert (@(Get-DrillRemoteWarmupProblems $e $remotePlan).Count -eq 1) 'stale source accepted'
+  $last.lastCoreFrameAgeMs=10
+  Assert (@(Get-DrillRemoteWarmupProblems $e $remotePlan).Count -eq 0) 'all-ready refused'
+  $e.ageMs=1000
+  Assert (@(Get-DrillRemoteWarmupProblems $e $remotePlan).Count -eq 1) 'stale envelope accepted'
+  Assert (@(Get-DrillRemoteWarmupProblems $null $remotePlan).Count -eq 1) 'missing envelope accepted'
+  Assert (@(Get-DrillRemoteWarmupProblems $null ([pscustomobject]@{RemoteIds=@()})).Count -eq 0) 'local-only run waits for remote'
+}
+
 Check 'readiness: a healthy local workload is ready' { $r = Test-DrillReadiness -Envelope (New-Envelope) -Plan $plan; Assert $r.Ready ($r.Reasons -join ';') }
 Check 'readiness: stale snapshot, idle ISO, silent/slow/warning stream, missing webcam are not ready' {
   Assert (-not (Test-DrillReadiness -Envelope (New-Envelope -Stale) -Plan $plan).Ready) 'stale'
