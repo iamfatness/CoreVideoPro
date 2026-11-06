@@ -207,9 +207,12 @@ void AsyncAudioMonitorOutput::run(const std::shared_ptr<State>& state) {
     {
       std::lock_guard<std::mutex> lock(state->mutex);
       if (state->generation == generation) {
+        const bool wasReady = state->ready;
         state->ready = desired && ready && published; state->pending = false;
         state->evidence = evidence;
-        if (desired && !state->ready) state->failedAt = std::chrono::steady_clock::now();
+        // Idle evidence refresh must not continually move the retry deadline.
+        if (desired && !state->ready && (configure || wasReady))
+          state->failedAt = std::chrono::steady_clock::now();
       }
     }
   }

@@ -9,7 +9,7 @@
 
 namespace {
 struct DeviceGate {
-  std::atomic<bool> blockStart{false}, blockRender{false}, blockStop{false};
+  std::atomic<bool> blockStart{false}, blockRender{false}, blockStop{false}, failStart{false};
   std::latch entered{1}, release{1};
   std::mutex mutex;
   std::vector<float> accepted;
@@ -31,6 +31,7 @@ class GatedMonitor final : public corevideo::modules::IAudioMonitorOutput {
   bool start(const std::string& id, int, int) override {
     if (gate_->blockStart.exchange(false)) { gate_->entered.count_down(); gate_->release.wait(); }
     { std::lock_guard<std::mutex> lock(gate_->mutex); gate_->started.push_back(id); }
+    if (gate_->failStart.exchange(false)) return false;
     id_ = id; active_ = true; gate_->delivery.beginEndpoint(); return true;
   }
   void stop() override {
@@ -69,6 +70,20 @@ template<typename Predicate> bool waitUntil(Predicate ready) {
   while (!ready() && std::chrono::steady_clock::now() < until) std::this_thread::sleep_for(std::chrono::milliseconds(1));
   return ready();
 }
+}
+
+TEST(AsyncAudioMonitorOutput, IdleEvidenceRefreshDoesNotPostponeFailedActivationRetry) {
+  auto gate = std::make_shared<DeviceGate>(); gate->failStart = true;
+  corevideo::modules::AsyncAudioMonitorOutput monitor(std::make_unique<GatedMonitor>(gate));
+  monitor.start("device", 48000, 2);
+  ASSERT_TRUE(waitUntil([&] { return !monitor.preparing(); }));
+  EXPECT_FALSE(monitor.active());
+  ASSERT_TRUE(waitUntil([&] {
+    monitor.start("device", 48000, 2);
+    return monitor.active();
+  }));
+  std::lock_guard<std::mutex> lock(gate->mutex);
+  EXPECT_EQ(gate->started.size(), 2u);
 }
 
 TEST(AsyncAudioMonitorOutput, ActivationDoesNotBlockControlAndLateOldDeviceCannotBecomeReady) {
