@@ -2,6 +2,8 @@
 #include "modules/Interfaces.h"
 #include "rpc/Json.h"
 #include "compositor/TilesPinnedLayout.h"
+#include "core/ComApartmentLifetime.h"
+#include "MonitorTestMode.h"
 
 #include <gtest/gtest.h>
 
@@ -252,11 +254,22 @@ class FrozenFrameIdCaptureDevice final : public corevideo::modules::ICaptureDevi
 // video-off / departure shape.
 class ControllableZoomSource final : public corevideo::core::ISource {
  public:
-  explicit ControllableZoomSource(std::string pid) {
+  explicit ControllableZoomSource(std::string pid, uint32_t rgba = 0x80808080) {
     descriptor_.sourceId = std::move(pid);
     descriptor_.kind = "zoom";
     descriptor_.width = descriptor_.height = 2;
     descriptor_.hasVideo = true;
+    setPicture(rgba);
+  }
+  void setPicture(uint32_t rgba) {
+    auto pixels = std::make_shared<std::vector<uint8_t>>(16);
+    for (size_t i = 0; i < pixels->size(); i += 4) {
+      (*pixels)[i] = static_cast<uint8_t>(rgba);
+      (*pixels)[i + 1] = static_cast<uint8_t>(rgba >> 8);
+      (*pixels)[i + 2] = static_cast<uint8_t>(rgba >> 16);
+      (*pixels)[i + 3] = static_cast<uint8_t>(rgba >> 24);
+    }
+    pixels_ = std::move(pixels);
   }
   void advance() { mode_ = Mode::Advance; }
   void freeze() { mode_ = Mode::Freeze; }
@@ -2209,3 +2222,84 @@ TEST(TilesNameLines, TheSceneLowerThirdAppearanceIsTheLook) {
   EXPECT_GT(line->rect.x, tile->rect.x + tile->rect.width * .3f);
   EXPECT_NEAR(line->rect.x + line->rect.width, tile->rect.x + tile->rect.width - 0.00741f / (16.f / 9.f), 1e-4f);
 }
+
+#if COREVIDEO_WITH_D3D11
+// #1074: inspect pixels drawn by D3D11 from the real source-bus/gather policy.
+// The synthetic tick clock drives membership; the bus's separate steady clock
+// drives black-picture policy, hence the explicit bounded real-time interval.
+TEST(TilesGpuPicture, HeldBlackRecoveryAndDepartureMatchTheActualPicture) {
+  corevideo::core::ComApartmentLifetime apartment;
+  corevideo::test::MonitorTestMode mode(false);
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_TRUE(modules.compositor);
+  mode.verify(*modules.compositor, "TilesGpuPicture");
+  auto blackGuest = std::make_shared<ControllableZoomSource>("1", 0xffff3020u);
+  auto holdGuest = std::make_shared<ControllableZoomSource>("2", 0xff20e040u);
+  MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({blackGuest, holdGuest});
+  loadWall(core, {"zoom:1", "zoom:2"});
+  const auto blackPolicy = corevideo::rpc::Json::parse(
+      R"({"type":"set-source-policy","sourceId":"zoom:1","dropoutPolicy":"black"})");
+  ASSERT_TRUE(blackPolicy);
+  (void)core.applyCommands({*blackPolicy});
+  const auto tick = [&](int count) {
+    for (int i = 0; i < count; ++i) (void)core.applyCommands(corevideo::rpc::Json::Array{});
+  };
+  const auto picture = [&](const std::string& id) -> uint32_t {
+    const auto* tile = findLayer(core.lastRenderPlanForTest(), "tile:zoom:" + id);
+    if (!tile) { ADD_FAILURE() << "No slot for " << id; return 0; }
+    const auto& frame = core.lastProgramFrameForTest();
+    EXPECT_EQ(frame.renderer, "d3d11");
+    const auto& preview = frame.preview;
+    if (preview.width <= 0 || preview.height <= 0 || preview.bgra.empty()) {
+      ADD_FAILURE() << "No actual D3D11 readback"; return 0;
+    }
+    const int x = std::clamp(static_cast<int>((tile->rect.x + tile->rect.width * .5f) * preview.width), 0, preview.width - 1);
+    const int y = std::clamp(static_cast<int>((tile->rect.y + tile->rect.height * .5f) * preview.height), 0, preview.height - 1);
+    const size_t offset = static_cast<size_t>((y * preview.width + x) * 4);
+    return (static_cast<uint32_t>(preview.bgra[offset + 3]) << 24) |
+        (static_cast<uint32_t>(preview.bgra[offset + 2]) << 16) |
+        (static_cast<uint32_t>(preview.bgra[offset + 1]) << 8) | preview.bgra[offset];
+  };
+  tick(10);
+  EXPECT_EQ(picture("1"), 0xffff3020u);
+  EXPECT_EQ(picture("2"), 0xff20e040u);
+  const auto original = core.lastRenderPlanForTest();
+  ASSERT_NE(findLayer(original, "tile:zoom:1"), nullptr);
+  ASSERT_NE(findLayer(original, "tile:zoom:2"), nullptr);
+
+  blackGuest->freeze(); holdGuest->freeze();
+  tick(100); // 1700 ms of actual production gather ticks; no age injection.
+  std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+  tick(1);
+  for (const auto& id : {"1", "2"}) {
+    const auto* held = findLayer(core.lastRenderPlanForTest(), std::string("tile:zoom:") + id);
+    ASSERT_NE(held, nullptr);
+    EXPECT_TRUE(held->tilesHeld);
+    const auto* before = findLayer(original, std::string("tile:zoom:") + id);
+    EXPECT_FLOAT_EQ(held->rect.x, before->rect.x);
+    EXPECT_FLOAT_EQ(held->rect.y, before->rect.y);
+    EXPECT_FLOAT_EQ(held->rect.width, before->rect.width);
+    EXPECT_FLOAT_EQ(held->rect.height, before->rect.height);
+  }
+  EXPECT_EQ(picture("1"), 0xff000000u) << "black policy must change actual pixels";
+  EXPECT_EQ(picture("2"), 0xff20e040u) << "hold policy must retain the guest picture";
+
+  blackGuest->setPicture(0xff3050ffu); blackGuest->advance();
+  holdGuest->setPicture(0xffe0c020u); holdGuest->advance();
+  tick(10);
+  EXPECT_EQ(picture("1"), 0xff3050ffu);
+  EXPECT_EQ(picture("2"), 0xffe0c020u);
+  ASSERT_NE(findLayer(core.lastRenderPlanForTest(), "tile:zoom:1"), nullptr);
+  EXPECT_FALSE(findLayer(core.lastRenderPlanForTest(), "tile:zoom:1")->tilesHeld);
+
+  blackGuest->freeze(); holdGuest->freeze();
+  tick(100);
+  blackGuest->gone(); tick(1);
+  EXPECT_EQ(findLayer(core.lastRenderPlanForTest(), "tile:zoom:1"), nullptr);
+  EXPECT_EQ(picture("2"), 0xffe0c020u);
+  tick(145); // 246 * 17 ms > four seconds since the last new frame.
+  EXPECT_EQ(findLayer(core.lastRenderPlanForTest(), "tile:zoom:2"), nullptr);
+}
+#endif
