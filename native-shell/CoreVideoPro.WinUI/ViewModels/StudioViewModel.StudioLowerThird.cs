@@ -40,18 +40,18 @@ public sealed partial class StudioViewModel
     public GraphicsPlaylistEntry? ProgramSubjectGuestEntry => GuestEntryFor(ProgramLowerThirdSubjectSourceId);
     /// <summary>Strip evidence (Stage C2): a lower-third chip is on Program. Never local intent.</summary>
     public bool GraphicsLowerThirdOnAir => GraphicsPlayout.LowerThirdOnAir;
-    /// <summary>What "LT is on" means for a toggle, by authority: the playlist strip when a Guest
-    /// row exists, managed instances under instances authority, else the legacy key.</summary>
-    public bool LowerThirdIntentVisible => HasPlaylistGuestRow ? GraphicsLowerThirdOnAir
-        : ManagedLowerThirdAuthority ? ManagedLowerThirdVisible : ProgramLowerThirdKey.IsVisible || ProgramLowerThirdEnabled;
+    /// <summary>Toggle follows the authority currently rendering Program. Merely adding
+    /// a Guest row does not replace a live legacy key.</summary>
+    public bool LowerThirdIntentVisible => ManagedLowerThirdAuthority
+        ? HasPlaylistGuestRow ? GraphicsLowerThirdOnAir : ManagedLowerThirdVisible
+        : ProgramLowerThirdKey.IsVisible || ProgramLowerThirdEnabled;
 
     public async Task<NativeGraphicsOperationResult> ApplyStudioLowerThirdIntentAsync(bool visible)
     {
         await GraphicsLibrary.LoadAsync();
-        if (HasPlaylistGuestRow) {
-            // Playlist route: Guest row of the Program subject. Authority flips to instances only
-            // after the first accepted Play In (see the plan's Risks); the legacy path stays
-            // reachable for shows without a playlist.
+        if (HasPlaylistGuestRow && (visible || ManagedLowerThirdAuthority)) {
+            // Show may adopt playlist authority after accepted Play In. Hide must target
+            // the current owner; a playlist no-op cannot hide a legacy key.
             var routed = await GraphicsPlayout.ApplyLowerThirdIntentAsync(visible, ProgramSubjectGuestEntry, ManagedLowerThirdAuthority,
                 _ => GraphicsWorkspace.SetAuthorityAsync("lower-third", "instances"));
             CommandStatus = routed.Reason;
@@ -66,6 +66,7 @@ public sealed partial class StudioViewModel
         if (ManagedLowerThirdAuthority) return await ApplyManagedLowerThirdIntentAsync(visible);
         if (current != visible) ToggleLegacyProgramLowerThird();
         var applied = ProgramLowerThirdEnabled;
+        if (applied == visible) _programLowerThirdAutomationSuppressed = !visible;
         return new() { Accepted = applied == visible, Reason = CommandStatus };
     }
 
