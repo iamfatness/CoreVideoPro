@@ -6,9 +6,11 @@ The original report described adjacent pictures and shifted thumbnails after rem
 
 ## Bounded implementation
 
-Add an opt-in verification mode to the existing offscreen source-video host. Use a dedicated native core, in-memory operator preferences, three independently named 1920x1080 synthetic SHM capture producers and the actual StudioWorkspace, source coordinator, source rows and GPU presenter. Each producer changes intensity while retaining a distinct primary-color identity. No real meeting, hardware capture, installed profile or public output is involved.
+Add an opt-in verification mode to the existing offscreen source-video host. Use a dedicated native core, in-memory operator preferences, three 1920x1080 synthetic Zoom sources and the actual StudioWorkspace, source coordinator, source rows and GPU presenter. An opt-in primary-color mode in the existing fake engine changes intensity while retaining each source's identity. Disable automatic stand-in subscriptions and use the real shell subscription command. No real meeting, hardware capture, installed profile or public output is involved.
 
-Exercise actual source-picker unassign/reassign commands, assignment swaps, Sources navigation away/back and capture unregister/reregister. Preserve row/control identity and unrelated assignments. Observe source identity, native surface keys, natural dimensions, presentation progress and decoded presenter probe pixels. Retain each phase and failures in a structured report. Existing one-pixel QA readback stays opt-in; add no production CPU pixels, subscriptions, locks or presenter ABI.
+Exercise actual source-picker unassign/reassign commands, assignment swaps, Sources navigation away/back and synthetic meeting leave/rejoin. Preserve row/control identity and unrelated assignments. Observe source identity, native surface keys, natural dimensions, presentation progress and decoded presenter probe pixels. Retain each phase and failures in a structured report. Existing one-pixel QA readback stays opt-in; add no production CPU pixels, subscriptions, locks or presenter ABI.
+
+The first capture-SHM fixture did not reach the identity assertions: SHM registration supplies pixels but deliberately delegates device enumeration to the physical adapter, so anonymous mappings have no real capture-catalog availability and correctly remain NO INCOMING. Both failures and their diagnostic reports are retained. Using the existing fake Zoom engine supplies actual protocol roster/availability and native pixels without fabricating a physical device's connected state. This is a fixture correction, not a demonstrated Sources product fix.
 
 ## Evidence and limits
 

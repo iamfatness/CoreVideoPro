@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.IO.MemoryMappedFiles;
 using System.Text.Json;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Controls;
@@ -16,52 +15,22 @@ namespace CoreVideoPro.WinUI.Services;
 
 internal sealed partial class SourceInspectVideoProbe
 {
-    // QA-only producer. Production capture and thumbnails retain GPU delivery.
-    private sealed class IdentitySource(int channel) : IAsyncDisposable
-    {
-        internal const int Width = 1920, Height = 1080;
-        internal string Id { get; } = "identity-" + channel;
-        internal string MappingName { get; } = "Local\\CoreVideo-Identity-" + Guid.NewGuid().ToString("N");
-        private readonly CancellationTokenSource _stop = new();
-        private MemoryMappedFile? _mapping;
-        private Task? _writer;
-        internal void Start()
-        {
-            _mapping = MemoryMappedFile.CreateNew(MappingName, 16 + Width * Height * 4);
-            var mapping = _mapping;
-            _writer = Task.Run(async () =>
-            {
-                using var view = mapping.CreateViewAccessor();
-                var pixels = new byte[Width * Height * 4];
-                view.Write(4, Width); view.Write(8, Height);
-                uint sequence = 0;
-                while (!_stop.IsCancellationRequested)
-                {
-                    var intensity = (byte)(160 + (sequence / 2) % 80);
-                    for (var i = 0; i < pixels.Length; i += 4)
-                    { pixels[i + channel] = intensity; pixels[i + 3] = 255; }
-                    sequence += 2;
-                    view.Write(0, sequence - 1);
-                    view.WriteArray(16, pixels, 0, pixels.Length);
-                    view.Write(0, sequence);
-                    await Task.Delay(33);
-                }
-            });
-        }
-        public async ValueTask DisposeAsync()
-        { _stop.Cancel(); if (_writer is not null) await _writer; _mapping?.Dispose(); _stop.Dispose(); }
-    }
-
     private async Task RunThumbnailIdentityAsync(string nativePath)
     {
         var phases = new List<object>();
         string? error = null;
-        var sources = Enumerable.Range(0, 3).Select(i => new IdentitySource(i)).ToArray();
+        var sources = Enumerable.Range(101, 3).Select(i => i.ToString()).ToArray();
+        var fakePath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(nativePath))!, "corevideo-zoom-engine-fake.exe");
+        if (!File.Exists(fakePath)) throw new FileNotFoundException("Owned synthetic engine required", fakePath);
         var supervisor = new MediaCoreSupervisor(new()
         {
             Command = Path.GetFullPath(nativePath), MaxRestarts = 0,
             Environment = new Dictionary<string, string>
-            { ["COREVIDEO_ISOLATE_MONITORS"] = "1", ["COREVIDEO_GPU_CAPTURE"] = "0" }
+            { ["COREVIDEO_ISOLATE_MONITORS"] = "1", ["COREVIDEO_GPU_CAPTURE"] = "0",
+              ["COREVIDEO_ZOOM_ENGINE_PATH"] = fakePath, ["COREVIDEO_FAKE_ENGINE_PARTICIPANTS"] = "3",
+              ["COREVIDEO_FAKE_ENGINE_RES"] = "2", ["COREVIDEO_FAKE_ENGINE_FPS"] = "60",
+              ["COREVIDEO_FAKE_NO_CHURN"] = "1", ["COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE"] = "0",
+              ["COREVIDEO_FAKE_PRIMARY_COLORS"] = "1" }
         });
         await using var bridge = new MediaCoreBridgeService(supervisor);
         var studio = new StudioViewModel(StudioStartupBootstrap.Create(
@@ -69,22 +38,16 @@ internal sealed partial class SourceInspectVideoProbe
         var window = new Window();
         try
         {
-            foreach (var source in sources) source.Start();
             await bridge.StartAsync();
-            foreach (var source in sources)
-                await bridge.RegisterCaptureShmAsync(source.Id, source.MappingName, IdentitySource.Width, IdentitySource.Height);
-            var devices = sources.Select(source => new CaptureDevice
-            {
-                Id = source.Id, Name = source.Id, NativeDeviceId = source.Id, Vendor = "uvc",
-                Inputs = [], SelectedInputId = "", ConnectionState = CaptureConnectionState.Connected
-            }).ToArray();
-            foreach (var device in devices) studio.CaptureDevices.Add(device);
+            await bridge.JoinZoomAsync("https://zoom.us/j/1234567890", "Owned source identity QA", false, sdkJwt: "synthetic");
+            await studio.ToggleEngineCommand.ExecuteAsync(null);
+            await Until(() => studio.RoomParticipantsForInputs.Count >= 3, 10000);
             void RefreshChoices()
-            { foreach (var input in studio.ShowInputEditors) input.RefreshSourceOptions([], devices); }
+            { foreach (var input in studio.ShowInputEditors) input.RefreshSourceOptions(studio.RoomParticipantsForInputs, studio.CaptureDevices); }
             RefreshChoices();
             using (ShowInputWriteScope.Enter("source-identity-probe"))
                 for (var i = 0; i < 3; i++)
-                { studio.ShowInputEditors[i].SelectedUnifiedSourceId = "capture:" + sources[i].Id; studio.ShowInputEditors[i].InShow = true; }
+                { studio.ShowInputEditors[i].SelectedUnifiedSourceId = "zoom:" + sources[i]; studio.ShowInputEditors[i].InShow = true; }
             var root = new StudioWorkspace { ViewModel = studio };
             window.Content = root;
             window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, 1600, 950));
@@ -100,10 +63,20 @@ internal sealed partial class SourceInspectVideoProbe
 
             async Task Observe(string phase, int?[] identities)
             {
-                await Until(() => hosts.Select((host, i) => identities[i] is null
+                try { await Until(() => hosts.Select((host, i) => identities[i] is null
                     ? !host.IsEffectivelyVisible && !rows[i].Input.Inspector.HasPreviewTile
                     : host.IsEffectivelyVisible && host.IsGpuPathActive &&
-                      host.SurfaceKey == "source-thumbnail:capture:" + sources[identities[i]!.Value].Id).All(v => v), 15000);
+                      host.SurfaceKey == "source-thumbnail:zoom:" + sources[identities[i]!.Value]).All(v => v), 15000); }
+                catch
+                {
+                    phases.Add(new { phase, ready = false, activeTab = studio.ActiveTab.ToString(),
+                        rows = rows.Take(3).Select((row, i) => new { row.Input.SourceId, row.Input.InShow,
+                            row.Input.Inspector.StatusLabel, row.Input.Inspector.HasPreviewTile,
+                            hosts[i].IsEffectivelyVisible, hosts[i].IsGpuPathActive, hosts[i].SurfaceKey,
+                            diagnostics = hosts[i].DiagnosticsForProbe }).ToArray(),
+                        nativeSources = bridge.LastSnapshot?.Sources });
+                    throw;
+                }
                 // The existing one-shot readback returns the last completed probe.
                 // Request a fresh sample and allow it to retire before judging a new binding.
                 foreach (var host in hosts) host.ReadPixelForProbe();
@@ -117,14 +90,14 @@ internal sealed partial class SourceInspectVideoProbe
                     {
                         if (identities[i] is not { } expected) continue;
                         var host = hosts[i];
-                        if (host.SurfaceKey != "source-thumbnail:capture:" + sources[expected].Id)
+                        if (host.SurfaceKey != "source-thumbnail:zoom:" + sources[expected])
                             throw new InvalidOperationException($"{phase}: row {i + 1} changed identity");
                         if (host.ReadPixelForProbe() is not { } pixel) continue;
                         values[i].Add(pixel);
                         var channels = new[] { (pixel & 255), (pixel >> 8) & 255, (pixel >> 16) & 255 };
-                        if (channels[expected] < 140 || channels.Where((_, c) => c != expected).Any(v => v > 15))
+                        if (channels[expected] < 140 || channels.Where((_, c) => c != expected).Any(v => v > 30))
                             throw new InvalidOperationException($"{phase}: row {i + 1} expected channel {expected}, presented {pixel:X8}");
-                        if (host.SurfaceState?.NaturalSourceWidth != IdentitySource.Width || host.SurfaceState.NaturalSourceHeight != IdentitySource.Height)
+                        if (host.SurfaceState?.NaturalSourceWidth != 1920 || host.SurfaceState.NaturalSourceHeight != 1080)
                             throw new InvalidOperationException($"{phase}: source dimensions changed");
                     }
                     await Task.Delay(30);
@@ -144,7 +117,7 @@ internal sealed partial class SourceInspectVideoProbe
                 RefreshChoices();
                 var picker = Descendants(rows[row]).OfType<SourceAssignmentPicker>().Single();
                 picker.PrepareMenu();
-                var label = rows[row].Input.UnifiedSourceOptions.Single(o => o.Value == "capture:" + sources[source].Id).Label;
+                var label = rows[row].Input.UnifiedSourceOptions.Single(o => o.Value == "zoom:" + sources[source]).Label;
                 var item = picker.SourceMenu.Items.OfType<MenuFlyoutSubItem>().SelectMany(g => g.Items.OfType<MenuFlyoutItem>()).Single(i => i.Text == label);
                 ((IInvokeProvider)new MenuFlyoutItemAutomationPeer(item).GetPattern(PatternInterface.Invoke)).Invoke();
                 rows[row].Input.InShow = true;
@@ -161,11 +134,12 @@ internal sealed partial class SourceInspectVideoProbe
             await Task.Delay(500);
             studio.ActiveTab = StudioTab.Inputs;
             await Observe("Sources reopened", [1, 0, 2]);
-            await bridge.UnregisterCaptureShmAsync(sources[1].Id);
-            await Until(() => !rows[0].Input.Inspector.HasPreviewTile, 10000);
-            phases.Add(new { phase = "first source disconnected", thumbnailCleared = true });
-            await bridge.RegisterCaptureShmAsync(sources[1].Id, sources[1].MappingName, IdentitySource.Width, IdentitySource.Height);
-            await Observe("source recovered without row replacement", [1, 0, 2]);
+            await bridge.LeaveZoomAsync();
+            await Until(() => rows.Take(3).All(row => !row.Input.Inspector.HasPreviewTile), 10000);
+            phases.Add(new { phase = "synthetic meeting departed", thumbnailsCleared = true });
+            await bridge.JoinZoomAsync("https://zoom.us/j/1234567890", "Owned source identity QA", false, sdkJwt: "synthetic");
+            if (!studio.ZoomCaptureSubscribed) await studio.ToggleEngineCommand.ExecuteAsync(null);
+            await Observe("new source lifetimes recovered without row replacement", [1, 0, 2]);
         }
         catch (Exception ex) { error = ex.ToString(); }
         finally
@@ -180,7 +154,6 @@ internal sealed partial class SourceInspectVideoProbe
                 window.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => drained.SetResult());
                 await drained.Task;
             }
-            foreach (var source in sources) await source.DisposeAsync();
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
             await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(new
             {
