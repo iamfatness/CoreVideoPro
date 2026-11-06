@@ -32,9 +32,8 @@ void checkProgramTail(int audioFrames, bool software) {
   auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
   ASSERT_TRUE(encoder);
   const auto directory = std::filesystem::temp_directory_path() /
-      ("corevideo-program-tail-1186-" + std::to_string(audioFrames) + (software ? "-software" : "-preferred"));
-  std::error_code error;
-  std::filesystem::remove_all(directory, error);
+      ("corevideo-program-tail-1186-" + std::to_string(GetCurrentProcessId()) + "-" +
+       std::to_string(GetTickCount64()) + "-" + std::to_string(audioFrames) + (software ? "-software" : "-preferred"));
   corevideo::modules::RecordingSessionRequest request;
   request.targetFolder = directory.string(); request.filenamePrefix = "tail";
   request.width = 320; request.height = 180; request.fps = 60;
