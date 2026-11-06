@@ -113,6 +113,25 @@ public sealed class ShowInputSlotViewModelTests
         Assert.False(editor.IsDisplayNameEditable);
     }
 
+    [Fact]
+    public void DirectCaptureReplacementPublishesCurrentAvailabilityAndRetainsDeviceOptions()
+    {
+        var slot = new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "absent" };
+        ShowInputSlotViewModel? editor = null;
+        var observed = new List<(string? Id, bool Missing)>();
+        editor = new ShowInputSlotViewModel(slot, () => observed.Add((editor!.SourceId, editor.IsSourceMissing)));
+        editor.RefreshSourceOptions([], [Device("live", "Live webcam", "uvc")]);
+        Assert.True(editor.IsSourceMissing);
+        observed.Clear();
+        editor.CaptureDeviceId = "live";
+        Assert.Equal(new[] { ((string?)"capture:live", false) }, observed);
+        Assert.Contains(editor.UnifiedSourceOptions, option => option.Value == "capture:live");
+        observed.Clear();
+        editor.CaptureDeviceId = "absent-again";
+        Assert.Equal(new[] { ((string?)"capture:absent-again", true) }, observed);
+        Assert.Equal("capture:absent-again", editor.SourceId); // Never silently substitute the live device.
+    }
+
     private static CaptureDevice Device(string id, string name, string vendor) =>
         new()
         {

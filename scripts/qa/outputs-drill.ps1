@@ -315,6 +315,23 @@ try {
     Start-Sleep -Milliseconds 200
   } while ($true)
   if (-not $alreadyLive) { Invoke-DrillAction 'transport.take' @() }
+  if ($plan.RemoteIds.Count) {
+    $sourceWarm = [IO.StreamWriter]::new((Join-Path $Out 'source-warmup.ndjson'), $false, [Text.UTF8Encoding]::new($false))
+    $sourceClock = [Diagnostics.Stopwatch]::StartNew(); $sourceStable = $null
+    try {
+      do {
+        $sourceProblems = @(Get-DrillRemoteWarmupProblems (Get-DrillEnvelope) $plan)
+        $sourceWarm.WriteLine((@{ utc = [DateTime]::UtcNow.ToString('o'); reasons = $sourceProblems } | ConvertTo-Json -Compress)); $sourceWarm.Flush()
+        if (-not $sourceProblems.Count) {
+          if ($null -eq $sourceStable) { $sourceStable = $sourceClock.Elapsed.TotalSeconds }
+          if ($sourceClock.Elapsed.TotalSeconds - $sourceStable -ge 30) { break }
+        } else { $sourceStable = $null }
+        if ($sourceClock.Elapsed.TotalSeconds -gt 300) { throw ('Remote sources not ready before Record: ' + ($sourceProblems -join '; ')) }
+        Start-Sleep -Seconds 1
+      } while ($true)
+    } finally { $sourceWarm.Dispose() }
+    Write-DrillLog 'All requested remotes ready before Record (30 s stable)'
+  }
   Write-DrillLog 'Program routed; starting outputs'
   Invoke-DrillAction 'transport.record.set' @($true)
   if ($plan.Stream) { Invoke-DrillAction 'transport.stream.set' @($true) }

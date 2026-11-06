@@ -723,3 +723,13 @@ function Format-DrillActionFailure([string]$Action, [int]$StatusCode = 0, [bool]
   $classification = if ($StatusCode -eq 400 -and $UnknownAction) { "Unknown action '$safeAction'. " } else { '' }
   return "$safeAction failed ($status); ${classification}request and response details omitted from evidence."
 }
+
+function Get-DrillRemoteWarmupProblems($Envelope, $Plan) {
+  if (-not $Plan.RemoteIds.Count) { return @() }
+  if (-not $Envelope.available -or $Envelope.ageMs -ge 1000 -or $null -eq $Envelope.snapshot) { return @('remote snapshot unavailable or stale') }
+  $problems = @()
+  foreach ($id in $Plan.RemoteIds) {
+    if (-not (Test-DrillRemoteLive1080 $Envelope.snapshot $id)) { $problems += "remote $id not live at 1920x1080 before Record" }
+  }
+  return $problems
+}

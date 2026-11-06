@@ -1147,6 +1147,33 @@ public sealed class ShowInputsCoordinatorTests
         Assert.Equal(["zoom:p1", "capture:cam"], coordinator.BuildIsoSourceTargets().SourceIds);
     }
 
+    [Fact]
+    public void SameKindReassignmentOfMissingGuestRefreshesIsoEligibilityWithoutRosterChurn()
+    {
+        var (coordinator, host) = Build();
+        host.IsoRecordingEnabled = true;
+        host.RoomParticipantsForInputs = Enumerable.Range(1, 8)
+            .Select(i => new Participant { Id = "p" + i, Name = "Guest " + i, Health = FeedHealth.Live }).ToArray();
+        coordinator.RefreshShowInputEditors(force: true);
+        var slots = coordinator.ShowInputEditors.Take(8).ToArray();
+        for (var i = 0; i < slots.Length; ++i) {
+            slots[i].SelectedUnifiedSourceId = "zoom:" + (i == 7 ? "absent-saved-guest" : "p" + (i + 1));
+            coordinator.IsoSelectedSourceIds.Add("zoom:p" + (i + 1));
+        }
+        coordinator.RefreshShowInputEditors(force: true);
+        Assert.True(slots[7].IsSourceMissing);
+        Assert.Equal(7, coordinator.BuildIsoSourceTargets().SourceIds.Count);
+        IReadOnlyList<string> deliveredTargets = [];
+        host.InputChanged = () => deliveredTargets = coordinator.BuildIsoSourceTargets().SourceIds.ToArray();
+        // Exactly input.assign's direct same-kind path, without a roster membership change.
+        slots[7].Kind = ShowInputKind.ZoomParticipant;
+        slots[7].ParticipantId = "p8";
+        Assert.Equal(8, deliveredTargets.Count); // Correct before any subsequent UI action.
+        slots[7].InShow = true;
+        Assert.False(slots[7].IsSourceMissing);
+        Assert.Equal(Enumerable.Range(1, 8).Select(i => "zoom:p" + i), coordinator.BuildIsoSourceTargets().SourceIds);
+    }
+
     // ---------------------------------------------------------------- fakes
 
     private sealed class FakeShowInputsHost : IShowInputsHost
@@ -1183,7 +1210,8 @@ public sealed class ShowInputsCoordinatorTests
 
         public string CommandStatus { set => LastCommandStatus = value; }
 
-        public void OnShowInputChanged() { }
+        public Action? InputChanged { get; set; }
+        public void OnShowInputChanged() { InputChanged?.Invoke(); }
 
         public void SetCaptureDeviceAudioSource(string? captureDeviceId, string? audioDeviceId) { }
 
