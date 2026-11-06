@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <map>
 
 namespace corevideo::core {
@@ -29,7 +30,8 @@ class GradePreviewController {
 
   bool configure(const rpc::Json& command, modules::CompositorColorGrade grade,
                  bool supported, Clock::time_point now = Clock::now(),
-                 std::optional<modules::CompositorOverlayContent> graphicsDraft = {}) {
+                 std::function<std::optional<modules::CompositorOverlayContent>(const rpc::Json&)> prepareDraft = {}) {
+    const rpc::Json* draftInput = nullptr;
     const auto id = command.getString("instanceId"), source = command.getString("sourceId");
     const auto number = command.getNumber("revision", -1);
     if (id.empty() || id.size() > 64 || source.empty() || source.size() > 256 ||
@@ -39,13 +41,15 @@ class GradePreviewController {
       const auto* style=preview->get("appearance");
       if (source!="preview:lower-third" || !style || (!style->isObject() && !style->isNull())) return false;
       modules::CompositorOverlayContent overlay;
-      if (const auto* graphics = preview->get("graphics"); graphics && !graphics->isNull() && !graphicsDraft) return false;
+      if (const auto* graphics = preview->get("graphics"); graphics && !graphics->isNull()) {
+        if (!prepareDraft) return false;
+        draftInput = graphics;
+      }
       if (const auto* graphics = preview->get("graphics")) {
         if (const auto* play = graphics->get("play"); play && !play->isNull())
           demand.playMode = play->getString("mode");
       }
-      if (graphicsDraft) overlay = std::move(*graphicsDraft);
-      else {
+      if (!draftInput) {
       if (!style->isNull()) {overlay.appearance=compositor::LowerThirdAppearance::parse(*style);if (!overlay.appearance.valid()) return false;}
       overlay.text=preview->getString("name","Example guest"); overlay.title=preview->getString("title","Producer");
       overlay.brandColor=preview->getString("brandColor","#44C1A1"); overlay.brandBackgroundColor=preview->getString("backgroundColor","#0C1118");
@@ -86,7 +90,6 @@ class GradePreviewController {
       if (active_.size() >= Capacity) {
         return emit({demand, 0, 0, 0, {}, "unavailable", "grade-preview-capacity"});
       }
-      active_.emplace(id, Entry{std::move(demand), now, now});
     } else {
       if (demand.revision < found->second.demand.revision) return true;
       // Equal revision is a lease refresh, never permission to replace a draft.
@@ -96,10 +99,23 @@ class GradePreviewController {
           !modules::colorGradesEqual(demand.grade, found->second.demand.grade) ||
           demand.scopesEnabled != found->second.demand.scopesEnabled || demand.scopesOriginal != found->second.demand.scopesOriginal || demand.compareOriginal != found->second.demand.compareOriginal ||
           !(demand.scopeRoi == found->second.demand.scopeRoi) || demand.histogramMode != found->second.demand.histogramMode || demand.waveformMode != found->second.demand.waveformMode || demand.scopeView != found->second.demand.scopeView)) return false;
-      if (demand.revision > found->second.demand.revision) {
-        found->second.demand = std::move(demand);
-        found->second.playStarted = now;
+      if (demand.revision == found->second.demand.revision) {
+        found->second.renewed = now;
+        return true;
       }
+    }
+    // Preparation can start a worker and replace its wanted revision. Validate
+    // the entire control envelope before those effects; unchanged lease renewals
+    // above retain their accepted draft without touching its compiler.
+    if (draftInput) {
+      auto graphicsDraft = prepareDraft(*draftInput);
+      if (!graphicsDraft) return false;
+      demand.lowerThirdPreview = std::move(*graphicsDraft);
+    }
+    if (found == active_.end()) active_.emplace(id, Entry{std::move(demand), now, now});
+    else {
+      found->second.demand = std::move(demand);
+      found->second.playStarted = now;
       found->second.renewed = now;
     }
     return true;

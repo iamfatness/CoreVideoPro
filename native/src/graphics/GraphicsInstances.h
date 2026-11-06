@@ -41,7 +41,7 @@ class GraphicsInstances {
   std::string unavailableLayoutCue(const std::string& owner, const std::vector<LayoutCue>& cues) const;
   bool commitLayoutTake(const std::string& owner, const std::vector<LayoutCue>& cues, bool playOutOthers);
   // Private monitor input, not an instance mutation, cue or Program revision.
-  std::optional<modules::CompositorOverlayContent> authoringPreview(const rpc::Json& draft);
+  std::optional<modules::CompositorOverlayContent> authoringPreview(const rpc::Json& draft, bool* busy = nullptr);
 
  private:
   struct Revision {

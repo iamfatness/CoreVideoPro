@@ -14,9 +14,10 @@ class GraphicsTemplateDraft {
   struct Publication { std::string key,error; std::shared_ptr<const GraphicsTemplate> definition; rpc::Json layout; };
   GraphicsTemplateDraft()=default;
   ~GraphicsTemplateDraft();
-  bool submit(std::string manifest,const std::string& expectedHash,std::shared_ptr<const GraphicsTemplate> parent,std::string& key,rpc::Json fields = {},rpc::Json brand = {},std::string packageRoot = {});
+  bool submit(std::string manifest,const std::string& expectedHash,std::shared_ptr<const GraphicsTemplate> parent,std::string& key,rpc::Json fields = {},rpc::Json brand = {},std::string packageRoot = {}, bool* busy = nullptr);
   std::shared_ptr<const Publication> poll() const { return std::atomic_load(&publication_); }
  private:
+  friend struct GraphicsTemplateDraftTestAccess;
   struct Request { std::string manifest,expectedHash,key,packageRoot; std::shared_ptr<const GraphicsTemplate> parent; rpc::Json fields,brand; };
   void run();
   std::mutex mutex_; std::condition_variable wake_; std::thread worker_;

@@ -62,7 +62,17 @@ TEST(GraphicsRpcPixel, PrivateGraphicsPreviewRequiresExplicitNullAppearanceAndPr
       // that incomplete envelope; do not weaken identity/revision validation.
       EXPECT_FALSE(server.handle(request).get("ok")->asBool());
       preview["appearance"]=Json{}; request["lowerThirdPreview"]=std::move(preview);
-      ASSERT_TRUE(server.handle(request).get("ok")->asBool());
+      auto accepted = server.handle(request);
+      const auto admissionDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (!accepted.get("ok")->asBool() && accepted.get("error") &&
+          accepted.get("error")->getString("code") == "grade-preview-overloaded" &&
+          std::chrono::steady_clock::now() < admissionDeadline) {
+        // The same valid revision can encounter bounded compiler admission.
+        // Protocol errors must fail immediately; only explicit backpressure retries.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        accepted = server.handle(request);
+      }
+      ASSERT_TRUE(accepted.get("ok")->asBool()) << templateId << ": " << accepted.stringify();
       Json event;
       const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(3);
       do {
