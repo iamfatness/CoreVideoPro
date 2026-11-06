@@ -344,6 +344,9 @@ class MediaCore {
   void setAudioTickScheduled100ns(int64_t scheduled100ns) {
     audioTickScheduled100ns_.store(scheduled100ns, std::memory_order_relaxed);
   }
+  void stopProgramDelivery() {
+    if (modules_.compositor) modules_.compositor->stopProgramDelivery();
+  }
   void reportVideoOutputWorkerStarted();
   void reportVideoOutputWorkerProgress(int64_t workNs);
   void setVideoOutputTickRunning(bool running) {

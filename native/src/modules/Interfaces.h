@@ -1401,6 +1401,9 @@ class ICompositor {
   // Startup-only configuration. Unsupported compositors report zero active
   // frames, so consumers must not introduce an unmatched audio delay.
   virtual void configureProgramBuffer(int /*frames*/) {}
+  // Terminal lifecycle barrier: call only after the render producer has joined.
+  // Stops scheduled delivery without releasing resources retained by consumers.
+  virtual void stopProgramDelivery() {}
   // Allocate startup resources before the render clock starts. No frames or
   // delivery timestamps may be produced by this call. Resize stays on render.
   virtual void prepareProgramBuffer(int /*width*/, int /*height*/) {}

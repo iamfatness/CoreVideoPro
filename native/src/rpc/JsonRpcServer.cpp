@@ -1389,6 +1389,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   if (renderThread.joinable()) {
     renderThread.join();
   }
+  // The render producer is gone. Stop its scheduled consumer now, before
+  // unrelated resource/output retirement can leave empty slots ticking.
+  mediaCore_.stopProgramDelivery();
   if (resourcePumpThread.joinable()) resourcePumpThread.join();
   if (programPreviewPumpThread.joinable()) programPreviewPumpThread.join();
   mediaCore_.setProgramPreviewPumpActive(false);
