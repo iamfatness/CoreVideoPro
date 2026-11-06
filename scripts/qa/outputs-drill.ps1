@@ -67,7 +67,14 @@ function Invoke-DrillQuery([string]$Action, [object[]]$Arguments = @()) {
     # Evidence retains only the action and HTTP status, never arbitrary text.
     $status = 0
     try { $status = [int]$_.Exception.Response.StatusCode } catch { }
-    throw (Format-DrillActionFailure -Action $Action -StatusCode $status)
+    # Preserve the old-app capability fallback without copying arbitrary errors.
+    $unknownAction = $false
+    if ($status -eq 400) {
+      $detail = [string]$_.ErrorDetails.Message
+      try { $reader = New-Object IO.StreamReader($_.Exception.Response.GetResponseStream()); $detail = $reader.ReadToEnd(); $reader.Dispose() } catch { }
+      $unknownAction = $detail -match "Unknown action '"
+    }
+    throw (Format-DrillActionFailure -Action $Action -StatusCode $status -UnknownAction $unknownAction)
   }
 }
 function Get-DrillEnvelope { Invoke-RestMethod "$api/snapshot" -TimeoutSec 5 }
