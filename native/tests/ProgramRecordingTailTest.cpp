@@ -60,10 +60,6 @@ void checkProgramTail(int audioFrames, bool software) {
   encoder->stopRecording();
   const auto final = encoder->session();
   ASSERT_TRUE(final.recordingError.empty()) << final.recordingError;
-  EXPECT_EQ(final.recordingVideoFrameCount, 6);
-  EXPECT_EQ(final.recordingVideoTailFrameCount, 0) << "close appended a duplicate Program identity";
-  EXPECT_EQ(final.recordingMuxVideoFrameCount, 6);
-  EXPECT_GE(final.recordingAudioSampleCount, audioFrames) << "accepted audio tail was truncated";
   if (software) EXPECT_EQ(final.programEncoderPath, "software");
   std::printf("[program-tail] file=%s software_requested=%d measured_path=%s audio_frames=%d\n",
       final.recordingArtifactPath.c_str(), software, final.programEncoderPath.c_str(), audioFrames);
@@ -98,6 +94,10 @@ void checkProgramTail(int audioFrames, bool software) {
     ASSERT_LE(pictures, 20);
   }
   EXPECT_EQ(pictures, 6);
+  EXPECT_EQ(final.recordingVideoFrameCount, 6);
+  EXPECT_EQ(final.recordingVideoTailFrameCount, 0) << "close appended a duplicate Program identity";
+  EXPECT_EQ(final.recordingMuxVideoFrameCount, 6);
+  EXPECT_GE(final.recordingAudioSampleCount, audioFrames) << "accepted audio tail was truncated";
   const auto expectedEnd = (std::max)(1'000'000LL, static_cast<LONGLONG>(audioFrames) * 10'000'000LL / 48000);
   EXPECT_NEAR(static_cast<double>(videoEnd), static_cast<double>(expectedEnd), 1000.0)
       << "final real sample did not retain the common endpoint";
