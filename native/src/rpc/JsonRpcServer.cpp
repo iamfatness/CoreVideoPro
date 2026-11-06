@@ -283,7 +283,7 @@ Json JsonRpcServer::handle(const Json& request) {
     bool overloaded = false;
     if (!mediaCore_.configureGradePreview(request, &overloaded))
       return overloaded
-          ? failure(id, "grade-preview-overloaded", "Grading preview event capacity is full; retry after pending events drain.")
+          ? failure(id, "grade-preview-overloaded", "Grading preview preparation or event capacity is busy; retry after pending work drains.")
           : failure(id, "protocol-error", "Invalid grading preview identity or revision.");
     return success(id, Json::Object{{"type", "grade-preview-control"}, {"accepted", true}});
   }
