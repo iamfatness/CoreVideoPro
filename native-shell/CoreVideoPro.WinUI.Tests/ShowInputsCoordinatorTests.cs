@@ -22,6 +22,42 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class ShowInputsCoordinatorTests
 {
     [Fact]
+    public void RecordingDepartureThenStreamStopKeepsTheOriginalTakeUntilRecordStop()
+    {
+        var (coordinator, host) = Build();
+        host.IsoRecordingEnabled = true;
+        host.RoomParticipantsForInputs = [new Participant { Id = "p1", Name = "Guest", Health = FeedHealth.Live }];
+        coordinator.RefreshShowInputEditors(force: true);
+        coordinator.ShowInputEditors[0].SelectedUnifiedSourceId = "zoom:p1";
+        coordinator.ShowInputEditors[0].IsoEnabled = true;
+        host.RecordingRequested = true;
+
+        IReadOnlyList<NativeMediaCoreCommand> Commands(bool streaming)
+        {
+            var targets = coordinator.BuildIsoSourceTargets();
+            return MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+            {
+                ActiveSceneId = "test", Recording = host.RecordingRequested, Streaming = streaming,
+                RecordingTargets = MediaCoreProductionSyncContext.DefaultRecordingTargets with
+                { IsoSourceIds = targets.SourceIds, IsoParticipantIds = targets.ParticipantIds }
+            });
+        }
+        var original = Commands(true).Single(c => c.Type == "start-recording-session");
+        host.RoomParticipantsForInputs = [];
+        coordinator.RefreshShowInputEditors(force: true);
+        var afterDeparture = Commands(false).Single(c => c.Type == "start-recording-session");
+        Assert.Equal(original.ExtensionData!["sessionId"].GetString(), afterDeparture.ExtensionData!["sessionId"].GetString());
+        Assert.Equal(new[] { "zoom:p1" }, afterDeparture.ExtensionData["isoSourceIds"].EnumerateArray().Select(id => id.GetString()));
+        host.RecordingRequested = false;
+        coordinator.ResetRecordingIsoSelection();
+        var stopped = Commands(false);
+        Assert.Contains(stopped, c => c.Type == "stop-recording-session");
+        Assert.DoesNotContain(stopped, c => c.Type == "start-recording-session");
+        host.RecordingRequested = true;
+        Assert.Empty(coordinator.BuildIsoSourceTargets().SourceIds);
+    }
+
+    [Fact]
     public void CaptureReadoutChangesInvalidateIsoWarningWithoutRosterRebuildOrEngineSync()
     {
         var bridge = new FakeMediaCoreBridge();
@@ -1190,6 +1226,8 @@ public sealed class ShowInputsCoordinatorTests
         public IReadOnlyList<MediaBinGroup> MediaBinGroups { get; set; } = [];
 
         public bool IsoRecordingEnabled { get; set; }
+
+        public bool RecordingRequested { get; set; }
 
         public bool AutomationAutoAssignInputsEnabled { get; set; }
 

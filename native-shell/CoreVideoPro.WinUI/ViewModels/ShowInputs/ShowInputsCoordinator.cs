@@ -36,6 +36,7 @@ public sealed class ShowInputsCoordinator
     private bool _previewVisible;
     private bool _previewEngineAvailable = true;
     private bool? _captureReadoutState;
+    private readonly RecordingIsoSelection _recordingIsoSelection = new();
 
     private bool _showInputRosterLoaded;
     private string _showInputEditorsSignature = "";
@@ -277,6 +278,7 @@ public sealed class ShowInputsCoordinator
         }
 
         var changed = enabled ? IsoSelectedSourceIds.Add(sourceId) : IsoSelectedSourceIds.Remove(sourceId);
+        _recordingIsoSelection.RefreshIntent();
         if (changed)
         {
             _host.SaveProductionOutputPreferences();
@@ -310,13 +312,18 @@ public sealed class ShowInputsCoordinator
     /// </summary>
     public (IReadOnlyList<string> SourceIds, IReadOnlyList<string> ParticipantIds) BuildIsoSourceTargets()
     {
-        var sourceIds = IsoSourceSelectionResolver.Resolve(
+        var sourceIds = _recordingIsoSelection.Resolve(
+            _host.RecordingRequested,
             _host.IsoRecordingEnabled,
             IsoSelectedSourceIds,
-            ComputeEligiblePresentIsoSourceIds());
+            ComputeEligiblePresentIsoSourceIds(),
+            ShowInputEditors.Where(editor => editor.ShowIsoToggle)
+                .Select(editor => editor.SourceId).OfType<string>());
         var participantIds = IsoSourceSelectionResolver.ToLegacyParticipantIds(sourceIds);
         return (sourceIds, participantIds);
     }
+
+    public void ResetRecordingIsoSelection() => _recordingIsoSelection.Reset();
 
     /// <summary>
     /// The currently ISO-eligible + present video-bearing source ids (`zoom:&lt;pid&gt;` /
