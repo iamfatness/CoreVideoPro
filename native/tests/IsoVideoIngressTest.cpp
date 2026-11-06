@@ -224,14 +224,30 @@ TEST(IsoVideoIngress, WorkerHandoffPreservesOrderEpochBoundsAndClear) {
 
 // #1030: the roster is the departure signal for Zoom ISO stems. Only a Zoom
 // participant missing from a KNOWN roster has departed; capture/media sources
-// never depart, and an empty roster (not joined, engine between processes) is
-// unknown, not "everyone left".
+// never depart. An explicitly known empty roster means everyone left.
 TEST(IsoDeparture, OnlyZoomSourcesMissingFromAKnownRosterHaveDeparted) {
   using corevideo::core::departedIsoSources;
   const std::vector<std::string> selected{"zoom:16778240", "zoom:33559552", "capture:cam-1", "media:clip"};
   const auto departed = departedIsoSources(selected, {"16778240", "99"});
   EXPECT_EQ(departed.size(), 1u);
   EXPECT_TRUE(departed.count("zoom:33559552"));
-  EXPECT_TRUE(departedIsoSources(selected, {}).empty());
+  EXPECT_EQ(departedIsoSources(selected, {}).size(), 2u);
   EXPECT_TRUE(departedIsoSources(selected, {"16778240", "33559552"}).empty());
+}
+
+TEST(IsoDeparture, UnavailableRosterCannotResurrectDepartedStems) {
+  using Ids = std::unordered_set<std::string>;
+  corevideo::core::IsoDepartureTracker tracker;
+  const std::vector<std::string> selected{"zoom:1", "zoom:2", "capture:cam", "media:clip"};
+  EXPECT_TRUE(tracker.observe(selected, std::nullopt).empty());
+  EXPECT_TRUE(tracker.observe(selected, Ids{"1", "2"}).empty());
+  EXPECT_EQ(tracker.observe(selected, Ids{"2"}), (Ids{"zoom:1"}));
+  EXPECT_EQ(tracker.observe(selected, std::nullopt), (Ids{"zoom:1"}));
+  EXPECT_EQ(tracker.observe(selected, Ids{}), (Ids{"zoom:1", "zoom:2"}));
+  EXPECT_EQ(tracker.observe(selected, std::nullopt), (Ids{"zoom:1", "zoom:2"}));
+  EXPECT_EQ(tracker.observe(selected, Ids{"1"}), (Ids{"zoom:2"}));
+  EXPECT_TRUE(tracker.observe({"zoom:1"}, std::nullopt).empty());
+  (void)tracker.observe(selected, Ids{});
+  tracker.clear();
+  EXPECT_TRUE(tracker.observe(selected, std::nullopt).empty());
 }
