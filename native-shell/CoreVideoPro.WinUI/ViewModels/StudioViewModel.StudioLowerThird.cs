@@ -31,8 +31,8 @@ public sealed partial class StudioViewModel
     }
 
     // ---- Graphics playout routing (issue #1076, Stage C1) --------------------------------
-    /// <summary>True when the Graphics playlist has a Guest row: every legacy lower-third input
-    /// (footer LT button, graphics.lowerThird.*, automation.lowerThirds.set) then routes into it.</summary>
+    /// <summary>True when the Graphics playlist has a Guest row available for Show.
+    /// Hide and toggle still follow the authority currently rendering Program.</summary>
     public bool HasPlaylistGuestRow => GraphicsPlayout.HasGuestRow;
     /// <summary>Canonical source id of the current Program lower-third subject (same resolver as the legacy key), or null.</summary>
     public string? ProgramLowerThirdSubjectSourceId => ResolveProgramLowerThirdSource(ProgramSceneRoutes)?.SourceId;
@@ -85,3 +85,4 @@ public sealed partial class StudioViewModel
         return result;
     }
 }
+
