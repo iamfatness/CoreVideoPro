@@ -119,11 +119,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
                 return;
             }
 
-            using (ShowInputWriteScope.Enter("operator-picker"))
-            {
-                _slot.ParticipantId = value;
-            }
-            OnSlotPropertyChanged();
+            ApplyDirectSourceAssignment(() => _slot.ParticipantId = value);
         }
     }
 
@@ -137,13 +133,27 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
                 return;
             }
 
-            using (ShowInputWriteScope.Enter("operator-picker"))
-            {
+            ApplyDirectSourceAssignment(() => {
                 _slot.CaptureDeviceId = value;
-            }
-            SyncAudioDeviceFromCaptureDevice();
-            OnSlotPropertyChanged();
+                SyncAudioDeviceFromCaptureDevice();
+            });
         }
+    }
+
+    // Direct assignments (including the control API) must refresh availability before
+    // publishing their changed callback. A same-kind replacement otherwise retains the
+    // old missing-source flag and silently excludes the new source from ISO targets.
+    private void ApplyDirectSourceAssignment(Action assign)
+    {
+        var wasSuppressed = _suppressChangedCallback;
+        _suppressChangedCallback = true;
+        try {
+            using var scope = ShowInputWriteScope.Enter("operator-picker");
+            assign();
+            RefreshSourceOptions(_participants, _captureDevices, _audioDevices, _mediaAssets);
+        } finally { _suppressChangedCallback = wasSuppressed; }
+        OnSlotPropertyChanged();
+        if (!wasSuppressed) _onChanged();
     }
 
     public string? AudioDeviceId
@@ -482,6 +492,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         _captureDevices = captureDevices;
         _audioDevices = audioDevices ?? [];
         _mediaAssets = mediaAssets ?? [];
+        var wasSuppressed = _suppressChangedCallback;
         _suppressChangedCallback = true;
         try
         {
@@ -517,7 +528,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         }
         finally
         {
-            _suppressChangedCallback = false;
+            _suppressChangedCallback = wasSuppressed;
         }
 
         OnPropertyChanged(nameof(SourceOptions));
