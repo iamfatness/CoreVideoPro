@@ -15,7 +15,7 @@ using Windows.Graphics;
 namespace CoreVideoPro.WinUI.Services;
 
 /// <summary>Owned GPU sources and offscreen real controls; never connects to an installed core.</summary>
-internal sealed partial class SourceInspectVideoProbe(string reportPath, string? corePath = null)
+internal sealed partial class SourceInspectVideoProbe(string reportPath, string? corePath = null, bool thumbnailIdentityOnly = false)
 {
     private sealed class Columns : ISourcesWorkspacePreferenceStore
     {
@@ -60,6 +60,7 @@ internal sealed partial class SourceInspectVideoProbe(string reportPath, string?
     internal async Task RunAsync()
     {
         Direct3D11InteropService.CollectProbeCounters = true;
+        if (thumbnailIdentityOnly && corePath is not null) { await RunThumbnailIdentityAsync(corePath); return; }
         if (corePath is not null) { await RunNativeAsync(corePath); return; }
         string? error = null;
         var samples = new List<object>();
