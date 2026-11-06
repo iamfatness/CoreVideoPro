@@ -636,6 +636,8 @@ target_link_libraries(corevideo-native PRIVATE corevideo_native)
 if(WIN32)
   add_executable(corevideo-webcam-framer-qa EXCLUDE_FROM_ALL ../tools/webcam-framer-worker-qa.cpp)
   target_link_libraries(corevideo-webcam-framer-qa PRIVATE corevideo_native)
+  add_executable(corevideo-monitor-evidence-qa EXCLUDE_FROM_ALL ../tools/monitor-evidence-qa.cpp)
+  target_link_libraries(corevideo-monitor-evidence-qa PRIVATE corevideo_native)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,27 @@ corevideo::modules::ZoomEngineEvent eventFrom(const std::string& line) {
 
 }  // namespace
 
+TEST(ZoomEngineRuntimeState, RosterKnowledgeDistinguishesExplicitEmptyFromLostEngine) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  EXPECT_FALSE(state.hasAuthoritativeRoster());
+  state.apply(eventFrom(R"({"cmd":"joined"})"), 0);
+  EXPECT_FALSE(state.hasAuthoritativeRoster());
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":42,"name":"test"}]})"), 1);
+  EXPECT_TRUE(state.hasAuthoritativeRoster());
+  state.apply(eventFrom(R"({"cmd":"left"})"), 2);
+  EXPECT_TRUE(state.hasAuthoritativeRoster());
+  EXPECT_TRUE(state.participantIds().empty());
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":42,"name":"stale"}]})"), 3);
+  EXPECT_TRUE(state.participantIds().empty());
+  state.apply(eventFrom(R"({"cmd":"error","stage":"engine_disconnected","message":"test"})"), 4);
+  EXPECT_FALSE(state.hasAuthoritativeRoster());
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":2,"roster_revision":1,"participants":[]})"), 5);
+  EXPECT_TRUE(state.hasAuthoritativeRoster());
+  EXPECT_TRUE(state.participantIds().empty());
+  state.reset();
+  EXPECT_FALSE(state.hasAuthoritativeRoster());
+}
+
 TEST(ZoomEngineRuntimeState, RetainsBoundedSubscriptionResponsesWithoutChangingDelivery) {
   corevideo::modules::ZoomEngineRuntimeState state;
   state.apply(eventFrom(R"({"cmd":"joined"})"), 0);

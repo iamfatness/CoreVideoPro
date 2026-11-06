@@ -1217,7 +1217,7 @@ std::string ZoomEngineRuntime::directedSpeakerId() {
 
 std::optional<std::vector<std::uint32_t>> ZoomEngineRuntime::rosterIdsIfConfigured() {
   std::lock_guard<EngineMutex> lock(mutex_);
-  if (config_.executablePath.empty()) return std::nullopt;
+  if (config_.executablePath.empty() || !state_.hasAuthoritativeRoster()) return std::nullopt;
   return state_.participantIds();
 }
 

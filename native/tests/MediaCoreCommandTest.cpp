@@ -9775,8 +9775,25 @@ TEST(MediaCoreIsoDeparture, RosterDropMarksTheIsoDepartedThroughTheGatherWithout
     EXPECT_TRUE(capture->lastDeparted["zoom:2"]) << "a roster drop must reach the ISO stem as departed";
   }
 
-  // They come back: no longer departed.
-  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":3,"participants":[{"id":1,"name":"Stays"},{"id":2,"name":"Leaves"}]})");
+  // The meeting ends. An authoritative empty roster must not resume silence
+  // for the participant already gone, or keep the final participant alive.
+  roster(R"({"cmd":"left"})");
+  core->renderAudioOutputTick(coreMutex);
+  {
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    EXPECT_TRUE(capture->lastDeparted["zoom:1"]);
+    EXPECT_TRUE(capture->lastDeparted["zoom:2"]);
+  }
+  // Losing the engine is not evidence of anyone returning.
+  roster(R"({"cmd":"error","stage":"engine_disconnected","message":"test"})");
+  core->renderAudioOutputTick(coreMutex);
+  {
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    EXPECT_TRUE(capture->lastDeparted["zoom:1"]);
+    EXPECT_TRUE(capture->lastDeparted["zoom:2"]);
+  }
+  // They come back under fresh roster evidence: no longer departed.
+  roster(R"({"cmd":"participants","meeting_generation":1,"roster_revision":4,"participants":[{"id":1,"name":"Stays"},{"id":2,"name":"Leaves"}]})");
   core->renderAudioOutputTick(coreMutex);
   {
     std::lock_guard<std::mutex> lock(capture->mutex);

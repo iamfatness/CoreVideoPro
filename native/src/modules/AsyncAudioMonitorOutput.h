@@ -20,6 +20,8 @@ class AsyncAudioMonitorOutput final : public IAudioMonitorOutput {
   std::string deviceName() const override;
   std::vector<std::string> warnings() const override;
   std::int64_t underrunCount() const override;
+  void setIntentionalSilence(bool) override;
+  MonitorDeliveryEvidence deliveryEvidence() const override;
   std::string resolvedEndpointId() const override;
   std::int64_t acceptedFrameCount() const override;
   std::int64_t droppedFrameCount() const override;

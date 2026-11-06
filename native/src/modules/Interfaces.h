@@ -1,5 +1,6 @@
 #pragma once
 #include "modules/SourceVideoDemand.h"
+#include "modules/MonitorDeliveryEvidence.h"
 #include "compositor/ScopeRoi.h"
 #include "compositor/LowerThirdAppearance.h"
 #include "graphics/GraphicsPreparedResource.h"
@@ -1652,10 +1653,18 @@ class IAudioMonitorOutput {
   [[nodiscard]] virtual bool deviceDeliveryObserved() const { return active(); }
   [[nodiscard]] virtual std::string deviceName() const = 0;
   [[nodiscard]] virtual std::vector<std::string> warnings() const = 0;
-  // Times the endpoint ran completely dry between fills (shared-mode WASAPI
-  // plays SILENCE into the gap — an audible glitch that was previously
-  // invisible to telemetry; audio overhaul spec R5). Defaulted for the stub.
+  // Raw times the endpoint ran dry between fills. WASAPI inserts silence;
+  // audibility depends on intent and content. Classification never deletes
+  // these events (audio overhaul spec R5). Defaulted for the stub.
   [[nodiscard]] virtual std::int64_t underrunCount() const { return 0; }
+  // Annotation only: never changes PCM, ring depth or endpoint ownership.
+  virtual void setIntentionalSilence(bool) {}
+  [[nodiscard]] virtual MonitorDeliveryEvidence deliveryEvidence() const {
+    MonitorDeliveryEvidence value;
+    value.rawEvents = underrunCount();
+    value.observedAt100ns = monitorEvidenceNow100ns();
+    return value; // legacy raw counter; event classification is unsupported
+  }
   // The RESOLVED endpoint id of the device actually opened (IMMDevice::GetId),
   // which differs from the requested id when "" resolved to the OS default.
   // Compared against loopback capture endpoints to detect the monitor feeding
