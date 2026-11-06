@@ -65,7 +65,8 @@ public sealed class ProductionOutputPreferences
     // id and applied after the custom scenes are restored. Absent = nothing
     // removed (byte-identical behavior for older files). Downgrade is safe: an
     // older build drops the field and the catalog scenes simply reappear.
-    public const int CurrentVersion = 16;
+    // v17 (#1196): scene names are metadata, including renamed catalog scenes.
+    public const int CurrentVersion = 17;
 
     private int _programBufferFrames = ProgramBufferPreference.DefaultFrames;
     public int ProgramBufferFrames
@@ -214,6 +215,7 @@ public sealed class ProductionOutputPreferences
     public List<PersistedScene> CustomScenes { get; set; } = [];
     // #1070 (v15): catalog scene ids the operator removed; see SceneCatalogPolicy.
     public List<string> RemovedCatalogSceneIds { get; set; } = [];
+    public Dictionary<string, string> SceneNames { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, ColorGrade> SourceGrades { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, GradeScopeRoi> ScopeRegions { get; set; } = new(StringComparer.Ordinal);
 

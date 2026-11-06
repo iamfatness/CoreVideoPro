@@ -71,6 +71,7 @@ internal sealed class OperatorSettingsProbe(string reportPath, bool streamDestin
             await CheckSourcesLayout(window, checks,Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
             await CheckLowerThirdText(window, checks);
             await CheckAdjustmentControls(window,checks,Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
+            await SceneNamingIntegrationProbe.CheckAsync(window, checks, Path.GetDirectoryName(Path.GetFullPath(reportPath)));
             await SceneWorkspaceIntegrationProbe.CheckAsync(window,checks,Path.GetDirectoryName(Path.GetFullPath(reportPath)));
         }
         catch (Exception ex) { error = ex.ToString(); }

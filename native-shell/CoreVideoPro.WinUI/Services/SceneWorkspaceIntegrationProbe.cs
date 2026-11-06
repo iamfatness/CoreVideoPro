@@ -31,6 +31,8 @@ internal static class SceneWorkspaceIntegrationProbe
         var page=new SourcesPage{ViewModel=studio};window.Content=page;
         window.AppWindow.Resize(new SizeInt32(1366,768));
         await Eventually(()=>page.IsLoaded && page.Workspace is not null);
+        Require(page.FindName("RenameSceneButton") is Button,
+            "Scene Builder has no discoverable Rename scene action (#1196)");
         var initialProgram = studio.ActiveSceneId;
         foreach (var template in new[] { "solo", "two-person", "screen-presenter" })
         {

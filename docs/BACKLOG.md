@@ -1,5 +1,15 @@
 # CoreVideo Pro — ranked backlog
 
+## Now — owner-reported scene naming blocker, November 6
+
+The owner explicitly ranked scene naming/renaming as high priority after testing the new beta. This supersedes the completed timed windows below. No subagents are authorized.
+
+| Order | Issue | Scope and acceptance |
+|---|---|---|
+| 1 | [#1196](https://github.com/iamfatness/CoreVideoPro/issues/1196) | Name new scenes and rename existing scenes through the real UI; persist names while preserving scene identity, contents, unsaved Preview edits and Program output. Specification and execution plan are in the issue. |
+
+The prior window is complete: beta `beta-2026-11-06-74495ad` is public; #867 and #941 are closed with merged fixes. #1178 remains open after merged diagnostic coverage, and #1180 remains held. Unranked intake: [#1195](https://github.com/iamfatness/CoreVideoPro/issues/1195), Metal GPU admission timeout handling; it does not displace #1196.
+
 ## Active replenishing eight-hour window — November 6, 07:36–15:36 Eastern
 
 The owner explicitly resumed work, ranked Auto first, and authorized replenishing the next batch whenever work finishes early. This supersedes the completed batches below. A completed batch is not the stopping condition. Continue useful authorized work until 15:36 Eastern, unless the owner stops it or every remaining path is concretely blocked. Keep at most three Now items in flight; no subagents are authorized.
