@@ -1,12 +1,14 @@
 # CoreVideo Pro — ranked backlog
 
-## Proposed eight-hour session — November 5 into November 6, 2026
+## Active eight-hour session — November 5 into November 6, 2026
 
-Owner requested an evaluated overnight backlog and explicitly allowed local app/device rehearsals. This is the proposed execution order for that session, measured from **T+00:00 when work starts**, not a claim that eight hours of work have started. On activation, this section takes precedence over the older dated queues below for this window. One primary issue per implementation PR; at most three active work items; execute GPU/device workloads serially. Existing issue acceptance criteria remain in force.
+Owner authorized specifications/plans followed by execution, including local app/device rehearsals, at **21:54 Eastern November 5**. The eight-hour endpoint is **05:54 Eastern November 6**. This section supersedes older dated queues for the active session. Use the supplied test meeting if populated; otherwise perform labeled local tests. Before 06:00 completion triggers a fresh four-hour issue-triage/spec/plan exercise. One primary issue per implementation PR; at most three active items; GPU/device workloads run serially.
+
+Specifications and per-item execution/acceptance plans: [overnight reliability runbook](qa/overnight-reliability-2026-11-05.md).
 
 **Outcome:** reduce demonstrated recording/Graphics risk, establish an honest Auto/device/output verdict on one integrated candidate, and leave a reproducible handoff. No new provider, presenter-clock, designer or architecture feature work in this window. Time allocations are investigation limits, not promises to fix unknown causes.
 
-### Planned Now — three bounded work items
+### Now — three bounded work items
 
 | Order | Primary issue | Scope and done evidence | Limit / stop rule |
 |---|---|---|---|
@@ -49,7 +51,7 @@ Owner requested an evaluated overnight backlog and explicitly allowed local app/
 | Feature expansion | #1139, #1119, #1120, #1041, #539 | Presenter/authoring expansion, X/LinkedIn, expanded multiview and MXL stay outside tonight's scope. |
 | Other open work | Remaining entries in the unranked inventory | Revalidate current code/evidence before ranking. A recent recurrence of source loss, a crash or output corruption discovered during baseline/rehearsal displaces lower-priority work; do not automatically restart an old investigation from its title. |
 
-Inventory and evidence coverage: [November 5 issue triage](qa/open-issue-triage-2026-11-05.md). That file is an unranked snapshot; this backlog remains the only work-order source. No issue is closed by this plan and no eight-hour run, merge or deployment is implied by writing it.
+Inventory and evidence coverage: [November 5 issue triage](qa/open-issue-triage-2026-11-05.md). That file is an unranked snapshot; this backlog remains the only work-order source. No issue is closed by a plan alone. Execution is owner-authorized; measured acceptance and release gates remain required.
 
 
 **Beta release blocker, November 5 — [#1154](https://github.com/iamfatness/CoreVideoPro/issues/1154):** migrate the two retired macos-14 CI jobs to macos-15 without changing tests or thresholds; required to complete the owner-authorized beta.

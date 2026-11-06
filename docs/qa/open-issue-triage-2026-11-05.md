@@ -1,7 +1,7 @@
 # Open-issue triage snapshot — November 5, 2026
 
 This is an **unranked inventory and evidence audit**, not a second work queue.
-The proposed eight-hour order is only in [BACKLOG](../BACKLOG.md#proposed-eight-hour-session--november-5-into-november-6-2026).
+The proposed eight-hour order is only in [BACKLOG](../BACKLOG.md#active-eight-hour-session--november-5-into-november-6-2026).
 
 ## Coverage and limits
 
