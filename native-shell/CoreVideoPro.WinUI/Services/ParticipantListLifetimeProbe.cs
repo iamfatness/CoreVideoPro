@@ -56,11 +56,19 @@ internal static class ParticipantListLifetimeProbe
             }
             finally { page.Unloaded -= OnUnloaded; }
         }
+        // Normal app shutdown detaches before Unloaded, with queued work possible.
+        page.ViewModel = replacement;
+        page.PrepareForShutdown();
+        var shutdownSentinel = new List<ParticipantListItem>();
+        list.ItemsSource = shutdownSentinel;
+        await DrainAsync(dispatcher);
+        if (!ReferenceEquals(list.ItemsSource, shutdownSentinel))
+            failures.Add("Participant list: queued work touched the list after shutdown preparation");
         // Leave no live XAML subscriber when the probe disposes its ViewModels.
         window.Content = null;
         await WaitUntilAsync(() => !page.IsLoaded, "Studio final unload failed");
         await DrainAsync(dispatcher);
-        checks.Add("Compiled participant list: six detach/reload cycles preserve unloaded ItemsSource, bind latest roster and reconnect notifications");
+        checks.Add("Compiled participant list: six detach/reload cycles preserve unloaded ItemsSource, bind latest roster and reconnect notifications; shutdown preparation invalidates pending work before Unloaded");
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, string failure)

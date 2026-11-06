@@ -102,6 +102,13 @@ public sealed partial class StudioWorkspace : UserControl
     /// drag region (the app draws its own top bar; no separate caption strip).</summary>
     public FrameworkElement TitleBarDragRegion => NavTitleBar;
 
+    internal void PrepareForShutdown()
+    {
+        // MainWindow detaches the ViewModel before XAML raises Unloaded.
+        _participantListRefresh.Deactivate();
+        ViewModel = null;
+    }
+
     private static void OnViewModelChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         var workspace = (StudioWorkspace)sender;
