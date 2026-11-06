@@ -82,7 +82,7 @@ jobs:
       # THE REAL GATE IS LOCAL, same as the loaded step below. Drop the flag the
       # day CI runs on a machine that can sustain 60 Hz.
       - name: Show drill
-        run: python3 scripts/mac-show-drill.py --seconds 25 --advisory-recorded-rate
+        run: python3 scripts/mac-show-drill.py --seconds 25 --advisory-recorded-rate --evidence artifacts/show-drill/command-timing.json
       # Production wall under load: synthetic 1080p60 Zoom feeds through the real
       # ingest path. Gates sustained fps, frame DELIVERY and coreMutex hold — the
       # class that made the port look slow for weeks.
@@ -109,7 +109,14 @@ jobs:
       # removal the day CI runs on a machine that can source 1.5GB/s.
       - name: Show drill (8x1080p60 load) — advisory, see comment
         continue-on-error: true
-        run: python3 scripts/mac-show-drill.py --load 8 --seconds 25
+        run: python3 scripts/mac-show-drill.py --load 8 --seconds 25 --evidence artifacts/show-drill/loaded-command-timing.json
+      - name: Retain command timing evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-show-command-timing
+          path: artifacts/show-drill/*command-timing.json
+          if-no-files-found: warn
 
   mac-shell-design-lint:
     runs-on: ubuntu-latest
