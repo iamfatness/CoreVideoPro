@@ -1072,6 +1072,7 @@ class MediaCore {
   // `zoom:<pid>`/`capture:<id>`, back-compat `isoParticipantIds` bare ids). The
   // canonical id + roster display name are resolved at request-build time.
   std::vector<std::string> recordingIsoParticipantIds_;
+  core::IsoDepartureTracker isoDepartureTracker_;
   double recordingStartedAtMs_ = 0;
   int recordingFailureCount_ = 0;
   int recordingRecoveryCount_ = 0;

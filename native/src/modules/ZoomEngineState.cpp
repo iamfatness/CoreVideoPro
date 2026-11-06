@@ -55,6 +55,7 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
       // identity so an older in-meeting snapshot cannot revive it in the shell.
       meetingGeneration_ = meetingGeneration;
       rosterRevision_ = rosterRevision > 0 ? rosterRevision + 1 : 0;
+      authoritativeRoster_ = true;
       events_.emplace_back("Zoom meeting left.");
       break;
     }
@@ -71,6 +72,7 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
       // shell read "not in a meeting" while live. Only pre-join errors are
       // join failures. A lost helper/IPC connection is fatal even mid-meeting.
       if (event.stage == "engine_disconnected") {
+        authoritativeRoster_ = false;
         meetingState_ = "error";
         sdkAuthenticated_ = false;
         rawMediaActive_ = false;
@@ -104,6 +106,7 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
         // cannot replace its state. Legacy engines remain accepted initially.
         break;
       }
+      authoritativeRoster_ = true;
       auto previous = std::move(participants_);
       participants_.clear();
       screenShareParticipantId_ = 0;
@@ -292,6 +295,7 @@ void ZoomEngineRuntimeState::addWarning(const std::string& warning) {
 }
 
 void ZoomEngineRuntimeState::reset() {
+  authoritativeRoster_ = false;
   sdkEvidence_.reset();
   meetingState_ = "idle";
   sdkAuthenticated_ = false;

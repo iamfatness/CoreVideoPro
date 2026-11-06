@@ -6683,13 +6683,12 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   // file forever and wedged its Media Foundation writer. The roster is the
   // departure signal (the same one the shell logs as roster-drop). It was read
   // by the caller BEFORE coreMutex; nothing here touches the engine mutex.
-  if (work.recordingActive && !recordingIsoParticipantIds_.empty() && prePolledRosterIds) {
-    const auto& rosterIds = *prePolledRosterIds;
+  if (work.recordingActive && !recordingIsoParticipantIds_.empty()) {
     std::vector<std::string> selected;
     selected.reserve(recordingIsoParticipantIds_.size());
     for (const auto& id : recordingIsoParticipantIds_) selected.push_back(normalizeIsoSourceId(id));
-    work.departedIsoSourceIds = core::departedIsoSources(selected, rosterIds);
-  }
+    work.departedIsoSourceIds = isoDepartureTracker_.observe(selected, prePolledRosterIds);
+  } else { isoDepartureTracker_.clear(); }
   // ISO-1: pick the selected sources' latest frames (snapshotted under coreMutex
   // above in the render gather) into the work item — zero-copy shared_ptr refs.
   // ONLY for the direct/test path. When a video tick is running it owns the ISO
