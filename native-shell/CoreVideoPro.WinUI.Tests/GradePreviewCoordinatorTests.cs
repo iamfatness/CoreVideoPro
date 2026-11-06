@@ -13,10 +13,12 @@ public sealed class GradePreviewCoordinatorTests
         public event Action<MediaCoreHealth>? HealthChanged;
         public readonly ConcurrentQueue<(long Revision, bool Enabled)> Commands = new();
         public readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool RefuseNext;
         public async Task SetGradePreviewAsync(string instanceId, string sourceId, long revision, bool enabled,
             MediaCoreColorGradeWire grade, CancellationToken cancellationToken = default)
         {
             Commands.Enqueue((revision, enabled));
+            if (enabled && RefuseNext) { RefuseNext = false; throw new InvalidOperationException("grade-preview-overloaded"); }
             if (enabled && revision == 0) await Release.Task;
         }
         public void Emit(GradePreviewObservation value) => GradePreviewReceived?.Invoke(value);
@@ -31,6 +33,23 @@ public sealed class GradePreviewCoordinatorTests
         while (!condition() && DateTime.UtcNow < end) await Task.Delay(10);
         Assert.True(condition(), "condition not reached within 30 s");
     }
+    [Fact] public void TemporaryAdmissionRefusalRetriesTheSameDraftAndAcceptsItsTexture()
+    {
+        var bridge = new Transport { RefuseNext = true };
+        bridge.Release.SetResult();
+        var editor = new ColorGradeEditorViewModel("preview:lower-third", "Graphics", new() { Lut = "none" });
+        var clock = new PreviewClock();
+        using var coordinator = new GradePreviewCoordinator(bridge, editor, action => action(), clock);
+        clock.Step(0);
+        var first = Assert.Single(bridge.Commands);
+        clock.Step(100);
+        Assert.Equal(2, bridge.Commands.Count);
+        Assert.Equal(first, bridge.Commands.Last());
+        bridge.Emit(new() { InstanceId = editor.InstanceId, SourceId = editor.SourceId, Revision = first.Revision,
+            Status = "ready", Texture = new() { SharedHandleHex = "0x1234", Width = 1920, Height = 1080 } });
+        Assert.True(editor.HasPreview);
+    }
+
     [Fact] public async Task CoalescesEditsAndSerializesCloseBehindPendingCommand()
     {
         var bridge = new Transport(); var editor = new ColorGradeEditorViewModel("p1", "Camera", new() { Lut = "none" });

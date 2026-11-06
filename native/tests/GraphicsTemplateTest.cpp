@@ -12,6 +12,15 @@
 #include <filesystem>
 #include <sstream>
 #include <cstdlib>
+#include <future>
+
+namespace corevideo::graphics {
+struct GraphicsTemplateDraftTestAccess {
+  static std::unique_lock<std::mutex> holdAdmission(GraphicsTemplateDraft& draft) {
+    return std::unique_lock<std::mutex>(draft.mutex_);
+  }
+};
+}
 
 using corevideo::graphics::GraphicsTemplate;
 using corevideo::graphics::GraphicsDrawing;
@@ -310,6 +319,40 @@ TEST(GraphicsTemplateDraft, PrivateCompilerCoalescesWithoutInstallingAndFencesHa
   while((!compiler->poll() || compiler->poll()->key!=key) && std::chrono::steady_clock::now()<until) std::this_thread::sleep_for(std::chrono::milliseconds(1));
   ASSERT_TRUE(compiler->poll());EXPECT_EQ("private-template-hash-mismatch",compiler->poll()->error);
   EXPECT_EQ(initial,installed.poll());
+}
+
+TEST(GraphicsTemplateDraft, AdmissionContentionIsRetryableAndInvalidInputIsNotBusy) {
+  using namespace corevideo::graphics;
+  GraphicsTemplateDraft draft;
+  const auto parent = GraphicsTemplate::corporateLowerThird();
+  const auto source = parent->document().stringify();
+  std::string hash;
+  static constexpr char digits[] = "0123456789abcdef";
+  for (auto byte : parent->hash()) { hash += digits[byte >> 4]; hash += digits[byte & 15]; }
+  auto lock = GraphicsTemplateDraftTestAccess::holdAdmission(draft);
+  auto attempt = std::async(std::launch::async, [&] {
+    bool busy = false; std::string key;
+    const bool accepted = draft.submit(source, hash, parent, key, {}, {}, {}, &busy);
+    return std::make_pair(accepted, busy);
+  });
+  const auto status = attempt.wait_for(std::chrono::seconds(2));
+  lock.unlock(); // Release before assertions/future destruction on every path.
+  ASSERT_EQ(status, std::future_status::ready);
+  const auto refused = attempt.get();
+  EXPECT_FALSE(refused.first);
+  EXPECT_TRUE(refused.second);
+  bool busy = true; std::string key;
+  EXPECT_FALSE(draft.submit("", hash, parent, key, {}, {}, {}, &busy));
+  EXPECT_FALSE(busy);
+  ASSERT_TRUE(draft.submit(source, hash, parent, key, {}, {}, {}, &busy));
+  EXPECT_FALSE(busy);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!draft.poll() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const auto published = draft.poll();
+  ASSERT_TRUE(published != nullptr);
+  EXPECT_EQ(published->key, key);
+  EXPECT_TRUE(published->definition != nullptr);
 }
 
 TEST(GraphicsTemplateRegistry, ThumbnailsAreExplicitWorkerProductsWithoutInstallingVersions) {

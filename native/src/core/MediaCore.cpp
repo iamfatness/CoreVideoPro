@@ -1212,14 +1212,11 @@ bool MediaCore::configureGradePreview(const rpc::Json& command, bool* overloaded
     if (!modules::readAdvancedGrade(*advanced, validated)) return false;
   }
   const auto refusedBefore = gradePreviews_.eventsRefused();
-  std::optional<modules::CompositorOverlayContent> graphicsDraft;
-  if (const auto* preview = command.get("lowerThirdPreview")) if (const auto* draft = preview->get("graphics"); draft && !draft->isNull()) {
-    graphicsDraft = graphicsInstances_.authoringPreview(*draft);
-    if (!graphicsDraft) return false;
-  }
+  bool draftBusy = false;
   const bool accepted = gradePreviews_.configure(command, grade ? readColorGrade(*grade) : modules::CompositorColorGrade{},
-      modules_.compositor->supportsGradePreview(), GradePreviewController::Clock::now(), std::move(graphicsDraft));
-  if (overloaded) *overloaded = !accepted && gradePreviews_.eventsRefused() != refusedBefore;
+      modules_.compositor->supportsGradePreview(), GradePreviewController::Clock::now(),
+      [this, &draftBusy](const rpc::Json& draft) { return graphicsInstances_.authoringPreview(draft, &draftBusy); });
+  if (overloaded) *overloaded = !accepted && (draftBusy || gradePreviews_.eventsRefused() != refusedBefore);
   return accepted;
 }
 rpc::Json MediaCore::applySourceGrade(const rpc::Json& command) {

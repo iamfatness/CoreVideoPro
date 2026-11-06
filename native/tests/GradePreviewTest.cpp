@@ -182,7 +182,8 @@ TEST(GradePreviewControl, PlayingDemandUsesTheTickClockAndThirtyHertzCadence) {
         {"lowerThirdPreview",J::Object{{"appearance",J{}},{"graphics",J::Object{{"play",play}}}}}};
   };
   const J play = J::Object{{"mode","in"},{"token",1}};
-  ASSERT_TRUE(control.configure(canvas(1, play), {}, true, t0, modules::CompositorOverlayContent{}));
+  const auto prepare = [](const J&) { return modules::CompositorOverlayContent{}; };
+  ASSERT_TRUE(control.configure(canvas(1, play), {}, true, t0, prepare));
   for (int i = 1; i <= 30; ++i) {
     control.tick({}, compositor, i, t0 + 34ms * i);
     EXPECT_EQ(1u, control.drain().size());
@@ -192,13 +193,87 @@ TEST(GradePreviewControl, PlayingDemandUsesTheTickClockAndThirtyHertzCadence) {
   ASSERT_EQ(1u, compositor.request.gradePreviews.size());
   EXPECT_EQ("in", compositor.request.gradePreviews[0].playMode);
   EXPECT_EQ(1020., compositor.request.gradePreviews[0].playElapsedMs);
-  ASSERT_TRUE(control.configure(canvas(2, play), {}, true, t0 + 1100ms, modules::CompositorOverlayContent{}));
+  ASSERT_TRUE(control.configure(canvas(2, play), {}, true, t0 + 1100ms, prepare));
   control.tick({}, compositor, 31, t0 + 1200ms);
   EXPECT_EQ(100., compositor.request.gradePreviews[0].playElapsedMs);
-  ASSERT_TRUE(control.configure(canvas(3, J{}), {}, true, t0 + 1200ms, modules::CompositorOverlayContent{}));
+  ASSERT_TRUE(control.configure(canvas(3, J{}), {}, true, t0 + 1200ms, prepare));
   for (int i = 1; i <= 9; ++i) {
     control.tick({}, compositor, 31 + i, t0 + 1200ms + 34ms * i);
     control.drain();
   }
   EXPECT_EQ(34, compositor.submissions);
+}
+
+TEST(GradePreviewControl, InvalidPrivateEnvelopeCannotStartDraftPreparation) {
+  using J = rpc::Json;
+  core::GradePreviewController control;
+  int preparations = 0;
+  const auto prepare = [&](const J&) {
+    ++preparations; return modules::CompositorOverlayContent{};
+  };
+  const auto now = core::GradePreviewController::Clock::now();
+  J::Object preview{{"graphics", J::Object{{"templateId", "centered-title"}}}};
+  J::Object request{{"instanceId", "designer"}, {"sourceId", "preview:lower-third"},
+      {"revision", 1}, {"lowerThirdPreview", preview}};
+  EXPECT_FALSE(control.configure(request, {}, true, now, prepare));
+  EXPECT_EQ(preparations, 0);
+  EXPECT_EQ(control.size(), 0u);
+  preview["appearance"] = 42; request["lowerThirdPreview"] = preview;
+  EXPECT_FALSE(control.configure(request, {}, true, now, prepare));
+  EXPECT_EQ(preparations, 0);
+  preview["appearance"] = J{}; request["lowerThirdPreview"] = preview;
+  request["revision"] = -1;
+  EXPECT_FALSE(control.configure(request, {}, true, now, prepare));
+  EXPECT_EQ(preparations, 0);
+  request["revision"] = 1;
+  request["sourceId"] = "wrong-source";
+  EXPECT_FALSE(control.configure(request, {}, true, now, prepare));
+  EXPECT_EQ(preparations, 0);
+  request["sourceId"] = "preview:lower-third";
+  request["histogramMode"] = 42;
+  EXPECT_FALSE(control.configure(request, {}, true, now, prepare));
+  EXPECT_EQ(preparations, 0);
+  request.erase("histogramMode");
+  EXPECT_TRUE(control.configure(request, {}, true, now, prepare));
+  EXPECT_EQ(preparations, 1);
+  EXPECT_EQ(control.size(), 1u);
+  EXPECT_TRUE(control.configure(request, {}, true, now, prepare)); // unchanged lease
+  EXPECT_EQ(preparations, 1);
+  preview["graphics"] = J::Object{{"templateId", "changed-without-revision"}};
+  request["lowerThirdPreview"] = preview;
+  EXPECT_FALSE(control.configure(request, {}, true, now, prepare));
+  EXPECT_EQ(preparations, 1);
+  request["instanceId"] = "other-designer";
+  EXPECT_FALSE(control.configure(request, {}, true, now, prepare));
+  EXPECT_EQ(preparations, 1);
+  request["instanceId"] = "designer";
+  request["revision"] = 2;
+  request["enabled"] = false;
+  EXPECT_TRUE(control.configure(request, {}, true, now, prepare));
+  EXPECT_EQ(preparations, 1);
+  EXPECT_EQ(control.size(), 0u);
+}
+
+TEST(GradePreviewControl, DraftPreparationRefusalPreservesTheAcceptedPreview) {
+  using J = rpc::Json;
+  core::GradePreviewController control;
+  PreviewCompositor compositor;
+  const auto now = core::GradePreviewController::Clock::now();
+  J::Object request{{"instanceId", "designer"}, {"sourceId", "preview:lower-third"}, {"revision", 1},
+      {"lowerThirdPreview", J::Object{{"appearance", J{}}, {"graphics", J::Object{{"templateId", "centered-title"}}}}}};
+  int preparations = 0;
+  const auto prepare = [&](const J&) -> std::optional<modules::CompositorOverlayContent> {
+    if (++preparations > 1) return {};
+    modules::CompositorOverlayContent overlay; overlay.text = "Accepted title"; return overlay;
+  };
+  ASSERT_TRUE(control.configure(request, {}, true, now, prepare));
+  request["revision"] = 2;
+  EXPECT_FALSE(control.configure(request, {}, true, now, prepare));
+  EXPECT_EQ(preparations, 2);
+  control.tick({}, compositor, 1, now);
+  ASSERT_EQ(compositor.request.gradePreviews.size(), 1u);
+  const auto& accepted = compositor.request.gradePreviews.front();
+  EXPECT_EQ(accepted.revision, 1);
+  ASSERT_TRUE(accepted.lowerThirdPreview.has_value());
+  EXPECT_EQ(accepted.lowerThirdPreview->text, "Accepted title");
 }

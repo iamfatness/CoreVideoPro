@@ -96,7 +96,8 @@ bool GraphicsInstances::validId(const std::string& value) {
   });
 }
 
-std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPreview(const Json& draft) {
+std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPreview(const Json& draft, bool* busy) {
+  if (busy) *busy = false;
   updateTemplates();
   if (!draft.isObject() || draft.asObject().size() > 9) return {};
   for (const auto& [key, _] : draft.asObject())
@@ -138,7 +139,7 @@ std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPre
     }
     if(!authoringCompiler_) authoringCompiler_=std::make_shared<GraphicsTemplateDraft>();
     std::string key;
-    if(!authoringCompiler_->submit(std::move(manifest),expected,revision.definition,key,revision.templateFields,revision.templateInput->brand,std::move(packageRoot))) return {};
+    if(!authoringCompiler_->submit(std::move(manifest),expected,revision.definition,key,revision.templateFields,revision.templateInput->brand,std::move(packageRoot),busy)) return {};
     authoringKey_=key;
     authoringInput_=Json::Object{{"templateId",templateId},{"templateVersion",int(version)},{"manifestHash",expected},{"fields",revision.templateFields},
       {"style",draft.get("style") ? *draft.get("style") : Json{Json::Object{}}}};

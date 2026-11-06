@@ -19,3 +19,35 @@ The full-run fixture failed its acceptance assertion before capturing the RPC re
 ## Acceptance
 
 Invalid requests still fail for the correct reason. Valid requests either have a documented actionable refusal or a verified private texture; changing text/revision changes actual pixel content. Program and native on-air instances remain unchanged. A mutation omitting null handling, publishing on Program, or returning an unchanged texture must fail. If investigation only improves failure diagnostics, report that accurately and leave the defect open.
+
+## November 5 investigation and implementation
+
+Built-in definitions are loaded synchronously, ruling out the initial template
+startup hypothesis. Two actual admission problems were found instead:
+
+- MediaCore prepared a graphics draft before the controller validated the
+  envelope. A deliberately missing `appearance` could start the compiler despite
+  the request being rejected, leaving its valid successor competing with that
+  work. A preparation-call counter fails deterministically with eager ordering.
+- The compiler's nonblocking admission could refuse a valid request on mutex
+  contention, but that was reported as a protocol error. A gated admission test
+  now distinguishes contention from malformed input without depending on timing.
+
+Preparation is now a lazy callback owned by the preview controller. Identity,
+appearance, scopes, capacity and revision checks run before preparation; a lease
+refresh keeps its accepted draft without recompiling, and a refused replacement
+keeps the previously accepted preview. Compiler contention propagates as the
+existing `grade-preview-overloaded` response with retry guidance. No native
+blocking/retry loop was added. The pixel fixture retries only that explicit
+response, retaining its exact request/revision; protocol errors still fail
+immediately with the full synthetic reply printed.
+
+Production Release checks passed: 11 controller tests, two compiler tests, two
+RPC/pixel tests (including changed-text shared textures and unchanged on-air
+instances), and four managed coordinator tests. The managed check proves the
+existing shell resends the same refused revision and accepts its later texture.
+Suppressing the busy classification made the gated test fail; restoration passed.
+Logs/TRX are under `D:/CoreVideo-QA/overnight-20261105/1157-*` and `test-results`.
+The original full-run reply was not recorded, so its exact error cannot be
+retrospectively identified. These are verified fixes to the reproduced admission
+paths; full integrated qualification remains pending.
