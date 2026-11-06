@@ -100,8 +100,7 @@ public sealed partial class ShowMultiviewHost : UserControl
     public ShowMultiviewHost()
     {
         InitializeComponent();
-        // Surface starts null — keep the host collapsed so only the EmptyState shows.
-        MultiviewSurfaceHost.Visibility = Visibility.Collapsed;
+        RefreshEmptyPresentation();
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
 
@@ -196,10 +195,7 @@ public sealed partial class ShowMultiviewHost : UserControl
     {
         if (sender is ShowMultiviewHost host)
         {
-            // Collapse the surface host until there's a multiview texture, so its internal
-            // "waiting for media engine" placeholder doesn't overlap the EmptyState message.
-            host.MultiviewSurfaceHost.Visibility =
-                args.NewValue is VideoSurfaceState ? Visibility.Visible : Visibility.Collapsed;
+            host.RefreshEmptyPresentation();
             // The canvas size (texture dims) drives the letterbox transform, so reposition when
             // the surface handle changes.
             host.PositionOverlay();
@@ -249,7 +245,7 @@ public sealed partial class ShowMultiviewHost : UserControl
     private void RebuildOverlay()
     {
         var tiles = MultiviewOverlayFormatting.SelectOverlayTiles(_tiles);
-        EmptyState.Visibility = tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        RefreshEmptyPresentation();
 
         for (var i = 0; i < tiles.Count; i++)
         {
@@ -265,6 +261,13 @@ public sealed partial class ShowMultiviewHost : UserControl
         }
 
         PositionOverlay();
+    }
+
+    private void RefreshEmptyPresentation()
+    {
+        var showAssignment = MultiviewEmptyStatePolicy.ShowAssignmentGuidance(_tiles.Count, Surface);
+        EmptyState.Visibility = showAssignment ? Visibility.Visible : Visibility.Collapsed;
+        MultiviewSurfaceHost.Visibility = showAssignment ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private Button EnsureOverlayButton(int index)

@@ -75,6 +75,8 @@ internal static class StudioWorkspaceLayoutProbe
                     if (point.X < -1 || point.Y < -1 || point.X + control.ActualWidth > width + 1 || point.Y + control.ActualHeight > height + 1)
                         failures.Add($"{width}x{height}: {name} falls outside Studio ({point.X:F0},{point.Y:F0},{control.ActualWidth:F0},{control.ActualHeight:F0})");
                 }
+                CheckMultiviewMessagePriority(page, failures, $"{width}x{height}");
+                checks.Add($"Multiview assignment, preparation, renderer failure and available-picture states are mutually exclusive at {width}x{height}");
                 await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"studio-{width}x{height}.png"));
                 checks.Add($"Full Studio: {controls.Length} footer actions contained, automation/transport disjoint, long assigned label bounded at {width}x{height}; raster scale {page.XamlRoot.RasterizationScale}; native video pixels excluded");
             }
@@ -156,6 +158,45 @@ internal static class StudioWorkspaceLayoutProbe
         }
         finally { Environment.SetEnvironmentVariable("COREVIDEO_GRAPHICS_DOCUMENT_PATH", previous); }
     }
+    private static void CheckMultiviewMessagePriority(FrameworkElement page, List<string> failures, string size)
+    {
+        var host = Descendants(page).OfType<Controls.ShowMultiviewHost>().Single();
+        var empty = (FrameworkElement)host.FindName("EmptyState");
+        var video = (Controls.VideoSurfaceHost)host.FindName("MultiviewSurfaceHost");
+        var originalSurface = host.Surface;
+        var originalTiles = host.TileRects;
+        var slate = Models.VideoSurfaceState.Slate(Models.VideoSurfaceKind.Multiview, "multiview", "Multiview");
+        void Expect(bool assignment, string scenario)
+        {
+            page.UpdateLayout();
+            if ((empty.Visibility == Visibility.Visible) != assignment ||
+                (video.Visibility == Visibility.Visible) == assignment)
+                failures.Add($"{size}: multiview {scenario} has conflicting or missing messages");
+        }
+        try
+        {
+            host.TileRects = [];
+            host.Surface = null;
+            Expect(true, "unassigned");
+            host.Surface = slate;
+            Expect(true, "empty preparation");
+            host.TileRects = [new MultiviewTile { SourceId = "test-source", Slot = 1, W = 1, H = 1 }];
+            Expect(false, "assigned preparation");
+            host.TileRects = [];
+            host.Surface = slate with { StatusLine = "Renderer failed", DetailLine = "Test renderer failure" };
+            Expect(false, "renderer failure");
+            if (video.StatusLine != "Renderer failed") failures.Add($"{size}: renderer failure text was lost");
+            host.Surface = slate.WithPreviewPixels(new byte[16], 2, 2);
+            Expect(false, "available picture");
+        }
+        finally
+        {
+            host.Surface = originalSurface;
+            host.TileRects = originalTiles;
+            page.UpdateLayout();
+        }
+    }
+
     private static bool Visible(FrameworkElement e)
     {
         for (DependencyObject? p = e; p is not null; p = VisualTreeHelper.GetParent(p))
