@@ -7219,6 +7219,8 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   const auto& localProgramTap = localBusTap("master");
 
   results.monitorIntentRevision = work.monitorIntentRevision;
+  if (modules_.monitorOutput)
+    modules_.monitorOutput->setIntentionalSilence(!work.audioMonitorEnabled || work.audioMonitorVolume <= 0.0);
   results.monitorFramesPlayedTotal = modules_.monitorOutput ? modules_.monitorOutput->acceptedFrameCount() : -1;
   results.monitorQueueDroppedFrames = modules_.monitorOutput ? modules_.monitorOutput->droppedFrameCount() : 0;
   if (!work.audioMonitorEnabled) {
@@ -7269,10 +7271,6 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                                      ? "Native audio monitor accepted no frames this tick; endpoint buffer may be full."
                                      : outputWarnings.back();
       }
-      // Cumulative device-dry gap count (spec R5): previously the endpoint
-      // playing silence between fills was audible but invisible to telemetry.
-      results.monitorUnderruns = modules_.monitorOutput->underrunCount();
-
       // Feedback guard (spec R6): the out-of-box config loopback-captures the
       // default render endpoint â€” if the monitor plays into that SAME endpoint,
       // its output re-enters the mix. Endpoint ids are GUID paths; compare
@@ -7300,6 +7298,13 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         }
       }
     }
+  }
+
+  // Raw device evidence remains measured in every intent state. Muting never
+  // substitutes a default zero, and the async owner supplies its actual age.
+  if (modules_.monitorOutput) {
+    results.monitorDeliveryEvidence = modules_.monitorOutput->deliveryEvidence();
+    results.monitorUnderruns = results.monitorDeliveryEvidence.rawEvents;
   }
 
   // BS.1770 master loudness over the program audio (routed master bus, else the
@@ -7585,6 +7590,7 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
     else audioMonitorFramesPlayed_ += results.monitorFramesPlayedDelta;
     audioMonitorQueueDroppedFrames_ = results.monitorQueueDroppedFrames;
     audioMonitorUnderruns_ = results.monitorUnderruns;
+    audioMonitorDeliveryEvidence_ = results.monitorDeliveryEvidence;
     audioMonitorFeedbackRisk_ = results.monitorFeedbackRisk;
   }
   if (results.recordingActive) {

@@ -271,8 +271,9 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
     }
 
     ring_.clear();
-    ringDryFrames_ = 0;
     ringDropFrames_ = 0;
+    counterEndpointId_ = resolvedEndpointId_;
+    deliveryEvidence_.beginEndpoint();
     renderRun_.store(true, std::memory_order_release);
     renderThread_ = std::thread([this] { renderLoop(); });
 
@@ -292,6 +293,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
     if (renderThread_.joinable()) {
       renderThread_.join();
     }
+    deliveryEvidence_.endEndpoint();
     if (client_ != nullptr && active_) {
       client_->Stop();
     }
@@ -343,7 +345,13 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
   std::vector<std::string> warnings() const override { return warnings_; }
   // Telemetry continuity: "underruns" now means ring-dry EVENTS (the device
   // asked for audio the worker had not produced yet).
-  std::int64_t underrunCount() const override { return ringDryEvents_.load(std::memory_order_relaxed); }
+  std::int64_t underrunCount() const override { return deliveryEvidence_.rawEvents(); }
+  void setIntentionalSilence(bool value) override { deliveryEvidence_.setSuppressed(value); }
+  MonitorDeliveryEvidence deliveryEvidence() const override {
+    auto value = deliveryEvidence_.snapshot(monitorEvidenceNow100ns());
+    value.endpointId = counterEndpointId_;
+    return value;
+  }
   std::string resolvedEndpointId() const override { return resolvedEndpointId_; }
 
  private:
@@ -547,9 +555,9 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
           ringPrimed = true;
         }
         const size_t real = ringPrimed ? ring_.pop(pullScratch_.data(), chunk) : 0;
+        deliveryEvidence_.observe(chunk, real, ringPrimed, monitorEvidenceNow100ns());
         if (ringPrimed && real < chunk) {
-          ringDryFrames_ += static_cast<int64_t>(chunk - real);
-          const auto events = ringDryEvents_.fetch_add(1, std::memory_order_relaxed) + 1;
+          const auto events = deliveryEvidence_.rawEvents();
           if (events == 1 || events % 200 == 0) {
             ::corevideo::core::nativeLogf("[monitor] ring dry #%lld (%u frames silence; device '%s')\n",
                          static_cast<long long>(events), chunk - static_cast<UINT32>(real), deviceName_.c_str());
@@ -721,8 +729,8 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
   std::atomic<bool> renderRun_{false};
   std::vector<float> pushScratch_;
   std::vector<float> pullScratch_;
-  std::atomic<int64_t> ringDryEvents_{0};
-  int64_t ringDryFrames_ = 0;
+  MonitorDeliveryRecorder deliveryEvidence_;
+  std::string counterEndpointId_;
   int64_t ringDropFrames_ = 0;
   IAudioClockAdjustment* clockAdjust_ = nullptr;
   std::string resolvedEndpointId_;

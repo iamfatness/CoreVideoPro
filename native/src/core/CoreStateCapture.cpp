@@ -61,6 +61,29 @@
 namespace corevideo::core {
 namespace {
 
+rpc::Json monitorDeliveryEvidenceJson(const modules::MonitorDeliveryEvidence& value) {
+  const auto now = modules::monitorEvidenceNow100ns();
+  return rpc::Json::Object{
+      {"classificationSupported", value.supported}, {"coherent", value.coherent},
+      {"epochScope", "native-process"},
+      {"backendEpoch", static_cast<double>(value.backendEpoch)},
+      {"lifecycleEpoch", static_cast<double>(value.lifecycleEpoch)},
+      {"endpointId", value.endpointId}, {"suppressionApplied", value.suppressionApplied},
+      {"phase", modules::monitorDeliveryPhaseName(value.phase)},
+      {"rawEvents", static_cast<double>(value.rawEvents)},
+      {"rawMissingFrames", static_cast<double>(value.rawMissingFrames)},
+      {"suppressedEvents", static_cast<double>(value.suppressedEvents)},
+      {"unexpectedEvents", static_cast<double>(value.unexpectedEvents)},
+      {"primingSilenceFrames", static_cast<double>(value.primingSilenceFrames)},
+      {"suppressedSilenceFrames", static_cast<double>(value.suppressedSilenceFrames)},
+      {"observedAt100ns", static_cast<double>(value.observedAt100ns)},
+      {"observationAgeMs", value.observedAt100ns > 0 && now >= value.observedAt100ns
+          ? static_cast<double>(now - value.observedAt100ns) / 10000.0 : -1.0},
+      {"lastEventAt100ns", static_cast<double>(value.lastEventAt100ns)},
+      {"lastEventLifecycleEpoch", static_cast<double>(value.lastEventLifecycleEpoch)},
+      {"lastEvent", modules::monitorDeliveryPhaseName(value.lastEvent)}};
+}
+
 rpc::Json recordingWriteQueueJson(const modules::RecordingWriteQueueEvidence& q) {
   if (!q.observed) return nullptr;
   return rpc::Json::Object{
@@ -482,6 +505,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   audioMonitorQueueDroppedFrames_ = core.audioMonitorQueueDroppedFrames_;
   audioMonitorStatus_ = core.audioMonitorStatus_;
   audioMonitorUnderruns_ = core.audioMonitorUnderruns_;
+  audioMonitorDeliveryEvidence_ = core.audioMonitorDeliveryEvidence_;
   audioMonitorVolume_ = core.audioMonitorVolume_;
   audioMonitorWarning_ = core.audioMonitorWarning_;
   audioRouteControl_ = core.audioRouteControl_;
@@ -1313,6 +1337,7 @@ rpc::Json CoreStateCapture::audioMixSessionState(const AudioOutputObservation& o
           {"monitorControl", audioMonitorControlState()},
           {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
           {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+      {"monitorDeliveryEvidence", monitorDeliveryEvidenceJson(audioMonitorDeliveryEvidence_)},
           {"monitorQueueDroppedFrames", static_cast<double>(audioMonitorQueueDroppedFrames_)},
           {"monitorIntentRevision", static_cast<double>(audioMonitorIntentRevision_)},
           {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
@@ -1348,6 +1373,7 @@ rpc::Json CoreStateCapture::audioMixSessionState(const AudioOutputObservation& o
         {"monitorControl", audioMonitorControlState()},
         {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
         {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+      {"monitorDeliveryEvidence", monitorDeliveryEvidenceJson(audioMonitorDeliveryEvidence_)},
           {"monitorQueueDroppedFrames", static_cast<double>(audioMonitorQueueDroppedFrames_)},
           {"monitorIntentRevision", static_cast<double>(audioMonitorIntentRevision_)},
         {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
@@ -1551,6 +1577,7 @@ rpc::Json CoreStateCapture::audioMixSessionState(const AudioOutputObservation& o
       {"monitorControl", audioMonitorControlState()},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
       {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+      {"monitorDeliveryEvidence", monitorDeliveryEvidenceJson(audioMonitorDeliveryEvidence_)},
           {"monitorQueueDroppedFrames", static_cast<double>(audioMonitorQueueDroppedFrames_)},
           {"monitorIntentRevision", static_cast<double>(audioMonitorIntentRevision_)},
       {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
@@ -1817,6 +1844,7 @@ rpc::Json CoreStateCapture::captureAudioSourcesState(const AudioOutputObservatio
       {"fallbackMonitorFrames", fallbackMonitorFrames},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
       {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+      {"monitorDeliveryEvidence", monitorDeliveryEvidenceJson(audioMonitorDeliveryEvidence_)},
           {"monitorQueueDroppedFrames", static_cast<double>(audioMonitorQueueDroppedFrames_)},
           {"monitorIntentRevision", static_cast<double>(audioMonitorIntentRevision_)},
       {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},

@@ -16,7 +16,6 @@ struct AsyncAudioMonitorOutput::State {
     std::uint64_t generation = 0;
     std::string name, endpoint;
     std::vector<std::string> warnings;
-    std::int64_t underruns = 0;
   };
   core::PublishedObservationStore<Facts> observations;
   struct Packet {
@@ -34,7 +33,10 @@ struct AsyncAudioMonitorOutput::State {
   std::uint64_t lastAcceptedGeneration = 0;
   int sampleRate = 48000, channels = 2;
   std::string deviceId;
-  std::int64_t accepted = 0, dropped = 0, underruns = 0;
+  std::int64_t accepted = 0, dropped = 0;
+  MonitorDeliveryEvidence evidence;
+  bool intentionalSilence = false;
+  std::uint64_t silenceRevision = 0;
   std::deque<Packet> packets;
   std::chrono::steady_clock::time_point failedAt{};
 };
@@ -111,6 +113,14 @@ bool AsyncAudioMonitorOutput::render(const float* pcm, int frames, int channels,
   }
   state_->changed.notify_one(); return true;
 }
+void AsyncAudioMonitorOutput::setIntentionalSilence(bool value) {
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (state_->intentionalSilence == value || state_->stopping) return;
+    state_->intentionalSilence = value; ++state_->silenceRevision;
+  }
+  state_->changed.notify_one();
+}
 void AsyncAudioMonitorOutput::run(const std::shared_ptr<State>& state) {
 #ifdef _WIN32
   DWORD taskIndex = 0;
@@ -118,26 +128,41 @@ void AsyncAudioMonitorOutput::run(const std::shared_ptr<State>& state) {
   if (task) ::AvSetMmThreadPriority(task, AVRT_PRIORITY_HIGH);
 #endif
   std::uint64_t applied = 0;
+  std::uint64_t appliedSilence = 0;
   for (;;) {
     State::Packet packet;
     std::uint64_t generation;
-    bool configure, desired;
+    bool configure, desired, intentionalSilence, hasPacket = false;
+    std::uint64_t silenceRevision;
+    MonitorDeliveryEvidence evidence;
     std::string id;
     int rate, channels;
     {
       std::unique_lock<std::mutex> lock(state->mutex);
-      state->changed.wait(lock, [&] { return state->stopping || applied != state->generation || !state->packets.empty(); });
+      // Device-dry evidence can advance with no submitted PCM (especially
+      // while muted). Refresh on the device owner; never query it from DSP.
+      state->changed.wait_for(lock, std::chrono::milliseconds(100), [&] {
+        return state->stopping || applied != state->generation ||
+            appliedSilence != state->silenceRevision || !state->packets.empty();
+      });
       if (state->stopping) break;
       generation = state->generation; configure = applied != generation;
       desired = state->desired; id = state->deviceId; rate = state->sampleRate; channels = state->channels;
-      if (!configure) { packet = std::move(state->packets.front()); state->packets.pop_front(); }
+      intentionalSilence = state->intentionalSilence; silenceRevision = state->silenceRevision;
+      evidence = state->evidence;
+      if (!configure && !state->packets.empty()) {
+        packet = std::move(state->packets.front()); state->packets.pop_front(); hasPacket = true;
+      }
     }
     bool ready = false;
     std::string name, endpoint;
     std::vector<std::string> warnings;
-    std::int64_t underruns = 0;
     bool accepted = false;
     try {
+      if (state->inner && appliedSilence != silenceRevision) {
+        state->inner->setIntentionalSilence(intentionalSilence);
+        appliedSilence = silenceRevision;
+      }
       if (configure) {
         if (state->inner) {
           state->inner->stop();
@@ -151,28 +176,29 @@ void AsyncAudioMonitorOutput::run(const std::shared_ptr<State>& state) {
           ready = desired && state->inner->start(id, rate, channels);
         }
         applied = generation;
-      } else if (packet.generation == generation &&
+      } else if (hasPacket && packet.generation == generation &&
                  std::chrono::steady_clock::now() - packet.queuedAt <= std::chrono::milliseconds(80)) {
         accepted = state->inner && state->inner->render(packet.pcm.data(), packet.frames, packet.channels, packet.volume);
       }
       if (state->inner) {
         ready = state->inner->active(); name = state->inner->deviceName();
         endpoint = state->inner->resolvedEndpointId(); warnings = state->inner->warnings();
-        underruns = state->inner->underrunCount();
+        auto measured = state->inner->deliveryEvidence();
+        if (measured.coherent) evidence = std::move(measured);
       }
     } catch (...) {
       warnings = {"Audio monitor device operation failed."}; applied = generation;
     }
     {
       std::lock_guard<std::mutex> lock(state->mutex);
-      if (!configure) {
+      if (hasPacket) {
         if (accepted) { state->accepted += packet.frames; state->lastAcceptedGeneration = generation; }
         else state->dropped += packet.frames;
       }
     }
     const bool published = state->observations.publish(generation, [&](auto& facts) {
       facts.generation = generation; facts.name = std::move(name); facts.endpoint = std::move(endpoint);
-      facts.warnings = std::move(warnings); facts.underruns = underruns;
+      facts.warnings = std::move(warnings);
       std::size_t bytes = sizeof(facts) + facts.name.capacity() + facts.endpoint.capacity() + 96;
       bytes += facts.warnings.capacity() * sizeof(std::string);
       for (const auto& warning : facts.warnings) bytes += warning.capacity() + 32;
@@ -182,7 +208,7 @@ void AsyncAudioMonitorOutput::run(const std::shared_ptr<State>& state) {
       std::lock_guard<std::mutex> lock(state->mutex);
       if (state->generation == generation) {
         state->ready = desired && ready && published; state->pending = false;
-        state->underruns = underruns;
+        state->evidence = evidence;
         if (desired && !state->ready) state->failedAt = std::chrono::steady_clock::now();
       }
     }
@@ -219,7 +245,10 @@ std::vector<std::string> AsyncAudioMonitorOutput::warnings() const {
   if (dropped) warnings.emplace_back("Audio monitor queue discarded " + std::to_string(dropped) + " sample-frames.");
   return warnings;
 }
-std::int64_t AsyncAudioMonitorOutput::underrunCount() const { std::lock_guard<std::mutex> lock(state_->mutex); return state_->underruns; }
+std::int64_t AsyncAudioMonitorOutput::underrunCount() const { std::lock_guard<std::mutex> lock(state_->mutex); return state_->evidence.rawEvents; }
+MonitorDeliveryEvidence AsyncAudioMonitorOutput::deliveryEvidence() const {
+  std::lock_guard<std::mutex> lock(state_->mutex); return state_->evidence;
+}
 std::int64_t AsyncAudioMonitorOutput::acceptedFrameCount() const { std::lock_guard<std::mutex> lock(state_->mutex); return state_->accepted; }
 std::int64_t AsyncAudioMonitorOutput::droppedFrameCount() const { std::lock_guard<std::mutex> lock(state_->mutex); return state_->dropped; }
 bool AsyncAudioMonitorOutput::deviceDeliveryObserved() const {
