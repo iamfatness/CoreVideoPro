@@ -2248,12 +2248,12 @@ TEST(TilesGpuPicture, HeldBlackRecoveryAndDepartureMatchTheActualPicture) {
   };
   const auto picture = [&](const std::string& id) -> uint32_t {
     const auto* tile = findLayer(core.lastRenderPlanForTest(), "tile:zoom:" + id);
-    if (!tile) { ADD_FAILURE() << "No slot for " << id; return 0; }
+    if (!tile) { EXPECT_TRUE(false) << "No slot for " << id; return 0; }
     const auto& frame = core.lastProgramFrameForTest();
     EXPECT_EQ(frame.renderer, "d3d11");
     const auto& preview = frame.preview;
     if (preview.width <= 0 || preview.height <= 0 || preview.bgra.empty()) {
-      ADD_FAILURE() << "No actual D3D11 readback"; return 0;
+      EXPECT_TRUE(false) << "No actual D3D11 readback"; return 0;
     }
     const int x = std::clamp(static_cast<int>((tile->rect.x + tile->rect.width * .5f) * preview.width), 0, preview.width - 1);
     const int y = std::clamp(static_cast<int>((tile->rect.y + tile->rect.height * .5f) * preview.height), 0, preview.height - 1);
@@ -2278,10 +2278,10 @@ TEST(TilesGpuPicture, HeldBlackRecoveryAndDepartureMatchTheActualPicture) {
     ASSERT_NE(held, nullptr);
     EXPECT_TRUE(held->tilesHeld);
     const auto* before = findLayer(original, std::string("tile:zoom:") + id);
-    EXPECT_FLOAT_EQ(held->rect.x, before->rect.x);
-    EXPECT_FLOAT_EQ(held->rect.y, before->rect.y);
-    EXPECT_FLOAT_EQ(held->rect.width, before->rect.width);
-    EXPECT_FLOAT_EQ(held->rect.height, before->rect.height);
+    EXPECT_NEAR(held->rect.x, before->rect.x, 1e-6);
+    EXPECT_NEAR(held->rect.y, before->rect.y, 1e-6);
+    EXPECT_NEAR(held->rect.width, before->rect.width, 1e-6);
+    EXPECT_NEAR(held->rect.height, before->rect.height, 1e-6);
   }
   EXPECT_EQ(picture("1"), 0xff000000u) << "black policy must change actual pixels";
   EXPECT_EQ(picture("2"), 0xff20e040u) << "hold policy must retain the guest picture";
