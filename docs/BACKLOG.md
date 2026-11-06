@@ -8,16 +8,19 @@ Specifications and acceptance: [resumed reliability work](reference/resumed-reli
 
 | Rank | State | Issue | Scope | Active effort estimate | Hosted/external time |
 |---|---|---|---|---|---|
-| 1 | Done | #1146 | Reproduced stale shell decision, fixed and live-verified warm/cold; #1173 merged. Original host/share scenario acceptance remains tracked in the open issue. | About 25 min active, versus 120 allocated | Final CI completed while next items progressed |
+| 1 | Done | #1146 | Stale shell recommendation reproduced, fixed and live-verified warm/cold; #1173 merged. Broader host/share acceptance remains in the open issue. | About 25 min active versus 120 allocated | Hosted checks overlapped next work |
 | 2 | Now | #1171 | Attribute actual 1080p-to-720p receive changes without lowering quality; distinguish application requests from SDK/provider behavior. | 90 min, range 60–150 | Controlled remote sender/account changes may be unavailable |
-| 3 | Done | #1172 | Single multiview placeholder; shell, negative/fixed compiled and hosted checks passed; #1175 merged. | Within 45 min allocation | CI overlapped with next work |
-| 4 | Now | #919 | Fence deferred participant-list callbacks across window teardown; prove no stale XAML access. | 45 min, range 30–75 | Compiled lifetime probe and CI |
-| 5 | Now | #1177 | Attribute and repair the newly observed Program recording misses beside long ISO-ingress holds; preserve quality and original failed evidence. | 90 min, range 60–150 | Controlled reproduction, native validation and comparable live test |
-| 6 | Reserve | #1074 | Qualify Tiles hold/recovery/video-off behavior through the real runtime; fix only demonstrated discrepancies. | 60 min, range 45–90 | Live remote interruption control may limit acceptance |
-| 7 | Conditional | #443 / #989 / #1056 | Matched camera/readiness preflight then full output test if prerequisites are met. Preserve NOT JUDGED when they are not. | 60 min, range 45–90 | 30 min measured run plus decode; camera identity/elevation prerequisite |
+| 3 | Done | #1172 | Single multiview placeholder; 1981 shell tests, negative/fixed compiled captures and all 17 hosted checks passed; #1175 merged. | Within the 45 min allocation | CI completed alongside live geometry work |
+| 4 | Now | #919 | Fence deferred participant-list callbacks across unload/reload and normal shutdown; #1176 draft. | 45 min, range 30–75 | Local compiled tests wait for the measured media run to finish |
+| 5 | Now | #1177 | Investigate the newly observed Program recording miss beside 11.6 ms of ISO ingress; preserve loss evidence and quality. [Spec](reference/program-iso-deadline-1177.md). | 90 min, range 60–150 | Controlled causal reproduction, native tests and comparable live recording |
+| 6 | Reserve | #1074 | Existing hold/drop runtime tests are present; qualify actual GPU picture/black behavior without changing the four-second policy. | 45 min, range 30–75 | Live remote interruption control may limit acceptance |
+| 7 | Reserve | #903 | Preserve truthful monitor counters across mute/disable/reenable and observe suppression/priming/starvation without hiding raw failures. | 90 min, range 60–150 | Local endpoint/lifecycle rehearsal after native validation |
+| 8 | Conditional | #443 / #989 / #1056 | Matched camera/readiness preflight then full output test if prerequisites are met. Preserve failures and NOT JUDGED dependencies. | 60 min, range 45–90 | 30 min measured run plus decode; camera identity/elevation prerequisite |
 | Intake | Later | #1178 | Attribute retained Mac show-drill p99 failure on unchanged native source without relaxing the gate. | Reforecast after log review | Hosted source/baseline comparison |
 
 Allocation baseline: 20 min baseline/planning, 120 Auto, 90 resolution, 45 empty-state, 45 teardown, 60 Tiles, 60 conditional output work, 40 validation/report/replenishment reserve = 480 min. These are adjustable allocations, not permission to stop after one fixed list. Use blocked conditional time for the next actionable issue. Owner-deferred #513, business/credential acquisition, public-provider posting and speculative feature expansion are not silently resumed.
+
+09:03 reforecast: roughly 6h33 remain. The new recorded output failure #1177 takes the freed #1172 slot under the owner's replenishment instruction. Allocate up to 150 minutes to attribution/fix/validation before reforecast, with #919 hosted work overlapping; reuse remaining capacity for the next unblocked reserve. No full-output pass is claimed from stable input geometry or successful writer startup.
 
 
 ## Active four-hour follow-on — November 5 23:48 to November 6 03:48 Eastern
