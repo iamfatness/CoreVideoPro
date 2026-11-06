@@ -6,8 +6,7 @@ public sealed partial class StudioViewModel
     [RelayCommand]
     private async Task ToggleProgramLowerThirdAsync()
     {
-        var visible = ManagedLowerThirdAuthority ? ManagedLowerThirdVisible : ProgramLowerThirdKey.IsVisible || ProgramLowerThirdEnabled;
-        await ApplyStudioLowerThirdIntentAsync(!visible);
+        await ApplyStudioLowerThirdIntentAsync(!LowerThirdIntentVisible);
     }
 
     private void ToggleLegacyProgramLowerThird()
