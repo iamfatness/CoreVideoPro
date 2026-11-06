@@ -21,3 +21,11 @@ Implement the smallest demonstrated ownership/ordering repair in a focused compo
 ## Acceptance and limits
 
 A causal reproduction must show the old path blocking the required owner and the corrected path preserving both its deadline independence and source identity/quality. The repeated live run must retain every observed miss rather than report only a favorable average. Stable geometry alone does not pass Program delivery. Any remaining missed frame keeps release qualification failed. OS-camera and full-workload acceptance remain separate, explicit prerequisites; do not infer them from an eight-ISO comparison.
+
+## Narrowed ownership repair
+
+The first ten-minute diagnostic retained eight actual 1080p feeds and zero reported writer drops, but reproduced admission holds up to 11.34 ms with negligible transfer/lock wait. The next five-minute diagnostic isolates retained-view replacement: at 10:00:31 Eastern, 9.355 ms of a 10.723 ms render hold was `iso-latest`, versus 18 microseconds for queue work. Its finalized Program wrote all 18,024 scheduled frames; this shorter pass does not erase the original two misses. ISO holds/tails remain unjudged until pixel comparison.
+
+`latest()` is only consumed when the live output worker is absent. The live path nevertheless retained that extra CPU-frame owner, so replacing an already-encoded frame could free its multi-megabyte buffer on the render caller. The repair distinguishes direct fallback from worker delivery. Worker delivery omits the unused retained view and moves admitted CPU arrivals into the existing drain queue; the direct fallback retains its previous view behavior. No additional thread, queue capacity, pixel copy or source policy is introduced.
+
+A controlled payload deleter blocks until explicitly released. The regression drains on the consumer and attempts the next producer admission while retirement is blocked. Restoring the old retained-view ownership must fail producer independence; corrected ownership must retire on the consumer and admit the next ordered frame. Preserve tests for duplicate rejection, source epochs, capture timestamps, the four-per-source bound, explicit overflow counts, deselection and clear. Overflow is still an output failure, not a newly excused delivery path. This change does not claim all render stalls or overload/shutdown retirement are eliminated.
