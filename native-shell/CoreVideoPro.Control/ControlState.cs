@@ -102,6 +102,7 @@ public sealed record ControlState
     public bool AutoAssignInputs { get; init; }
     public bool AutoLowerThirds { get; init; }
     public bool AutoCaptions { get; init; }
+    public ControlAutomationDiagnostic? AutomationDiagnostic { get; init; }
 
     public bool AudioMonitorOn { get; init; }
     public double AudioMonitorVolume { get; init; }

@@ -13,6 +13,72 @@ namespace CoreVideoPro.WinUI.Tests;
 /// </summary>
 public sealed class MagicSceneCoordinatorTests
 {
+    [Fact]
+    public void NativeDecisionAdvancesWithoutAnyStructuralRosterRefresh()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 8;
+        host.CanTake = true;
+        var latest = Recommendation("intro", 0);
+        coordinator.Recommendation = latest;
+        host.RefreshRecommendation = () => coordinator.Recommendation = latest;
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        latest = Recommendation("panel", 93);
+        coordinator.EvaluateAutomationPolicy();
+        now = now.AddSeconds(5);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal("panel", host.ActiveSceneId);
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        Assert.Equal(93, coordinator.Diagnostic!.Confidence);
+    }
+
+    [Fact]
+    public void MagicSceneReadsLatestDecisionWithoutStructuralRosterRefresh()
+    {
+        var (coordinator, host) = Build();
+        coordinator.Recommendation = Recommendation("intro", 0);
+        host.RefreshRecommendation = () => coordinator.Recommendation = Recommendation("interview", 93);
+        coordinator.RunMagicSceneCommand.Execute(null);
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal(2, host.PreviewBindings.Count);
+        Assert.Equal(0, host.TakeAsyncCallCount);
+    }
+
+    [Fact]
+    public void DiagnosticPreservesTheObservedHoldAndDoesNotActuateWhenRead()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 3;
+        host.CanTake = false;
+        coordinator.Recommendation = Recommendation("interview", 93);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddSeconds(5);
+        coordinator.EvaluateAutomationPolicy();
+        var held = Assert.IsType<CoreVideoPro.Control.ControlAutomationDiagnostic>(coordinator.Diagnostic);
+        Assert.Contains("Take is not ready", held.LastAction);
+        Assert.False(held.CanTake);
+        Assert.Equal("interview", held.PreviewSceneId);
+        Assert.Equal("intro", held.ActiveSceneId);
+        Assert.Equal(93, held.Confidence);
+        Assert.Equal(5000, held.PendingElapsedMs);
+        Assert.Equal(2, held.Bindings.Count);
+        Assert.Same(held, coordinator.Diagnostic);
+        Assert.Equal(0, host.TakeAsyncCallCount);
+
+        host.CanTake = true;
+        coordinator.EvaluateAutomationPolicy();
+        var taken = coordinator.Diagnostic!;
+        Assert.True(taken.Sequence > held.Sequence);
+        Assert.Equal("interview", taken.ActiveSceneId);
+        Assert.Contains("taken by automation", taken.LastAction);
+        Assert.False(taken.TakeInFlight);
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        Assert.Equal("intro", held.ActiveSceneId);
+        Assert.False(held.CanTake);
+    }
+
     private static readonly IReadOnlyList<Scene> Scenes =
     [
         new() { Id = "intro", Name = "Intro", Layout = "host-focus" },
@@ -480,6 +546,9 @@ public sealed class MagicSceneCoordinatorTests
         await host.DrainTakeAsync();
         Assert.Equal("Manual mode - automation is not changing scenes", coordinator.AutomationLastAction);
         Assert.Equal(1, host.TakeAsyncCallCount);
+        Assert.Equal("Manual", coordinator.Diagnostic!.Mode);
+        Assert.False(coordinator.Diagnostic.TakeInFlight);
+        Assert.Equal(coordinator.AutomationLastAction, coordinator.Diagnostic.LastAction);
     }
 
     [Fact]
@@ -813,6 +882,8 @@ public sealed class MagicSceneCoordinatorTests
         public void RefreshSceneItems() { }
 
         public void RefreshProductionReadouts() { }
+        public Action? RefreshRecommendation { get; set; }
+        public void RefreshAutomationRecommendation() => RefreshRecommendation?.Invoke();
 
         public void RefreshProgramLowerThirdKeyPosition() { }
 
