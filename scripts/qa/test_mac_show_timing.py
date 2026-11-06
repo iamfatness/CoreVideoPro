@@ -55,7 +55,10 @@ class CommandTiming(unittest.TestCase):
         row = self.core.request_evidence[-1]
         self.assertEqual(row["step"], "operator-take")
         self.assertEqual(row["commandTypes"], ["take"])
-        self.assertGreaterEqual(row["readerReceivedMs"], 140)
+        # Subtracting float monotonic timestamps can represent 140 ms as
+        # 139.999999897 ms. Round only nanosecond-scale representation noise;
+        # the independent 100 ms production gate below remains unchanged.
+        self.assertGreaterEqual(round(row["readerReceivedMs"], 6), 140)
         syncs = [duration for name, duration in self.core.round_trips if name == "media-core-sync"]
         self.assertEqual(len(syncs), 1)
         self.assertGreater(syncs[0] * 1000, drill.MAX_COMMAND_P99_MS)

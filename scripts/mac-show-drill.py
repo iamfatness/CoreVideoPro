@@ -138,7 +138,8 @@ class Core:
         self.native_timing_omitted = 0
         self.next_id = 1
         self.round_trips = []  # (type, seconds) per answered request
-        threading.Thread(target=self._read_stdout, daemon=True).start()
+        self.stdout_reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self.stdout_reader.start()
         self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
         self.stderr_reader.start()
 
@@ -216,7 +217,15 @@ class Core:
     def kill(self):
         self.proc.kill()
         self.proc.wait(timeout=10)
+        self.stdout_reader.join(timeout=1)
         self.stderr_reader.join(timeout=1)
+        self.proc.stdin.close()
+        # Do not close a pipe underneath a still-running reader or wait forever
+        # on its stream lock. Preserve an incomplete-drain result instead.
+        if not self.stdout_reader.is_alive():
+            self.proc.stdout.close()
+        if not self.stderr_reader.is_alive():
+            self.proc.stderr.close()
         if self.evidence_path:
             os.makedirs(os.path.dirname(os.path.abspath(self.evidence_path)), exist_ok=True)
             with open(self.evidence_path, "w", encoding="utf-8") as output:
@@ -226,6 +235,7 @@ class Core:
                            "nativeTiming": self.native_timing,
                            "nativeTimingOmitted": self.native_timing_omitted,
                            "stderrDrained": not self.stderr_reader.is_alive(),
+                           "stdoutDrained": not self.stdout_reader.is_alive(),
                            "scope": "Caller/reader timing plus opt-in native phase durations; observedMs is stderr receipt time, not a native timestamp or request correlation; no command arguments"}, output, indent=2)
             print(f"Command timing evidence: {self.evidence_path} ({self.evidence_truncated} omitted)")
         for request in sorted(self.request_evidence, key=lambda row: row["durationMs"], reverse=True)[:5]:
