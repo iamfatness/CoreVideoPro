@@ -96,6 +96,7 @@ class ZoomEngineRuntimeState {
   // #1037: O(1) roster-change detection (snapshot() copies these verbatim).
   [[nodiscard]] std::uint64_t meetingGeneration() const { return meetingGeneration_; }
   [[nodiscard]] std::uint64_t rosterRevision() const { return rosterRevision_; }
+  [[nodiscard]] bool hasAuthoritativeRoster() const { return authoritativeRoster_; }
   // #1030: the roster's SDK ids only (no participant copies).
   [[nodiscard]] std::vector<std::uint32_t> participantIds() const {
     std::vector<std::uint32_t> ids;
@@ -144,6 +145,7 @@ class ZoomEngineRuntimeState {
   void refreshSpeakerFrameReadiness();
 
   std::string meetingState_ = "idle";
+  bool authoritativeRoster_ = false;
   bool sdkAuthenticated_ = false;
   bool rawMediaActive_ = false;
   std::uint32_t activeSpeakerId_ = 0;

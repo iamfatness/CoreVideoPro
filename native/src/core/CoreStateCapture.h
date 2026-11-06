@@ -95,6 +95,7 @@ class CoreStateCapture {
   decltype(MediaCore::audioMonitorQueueDroppedFrames_) audioMonitorQueueDroppedFrames_;
   decltype(MediaCore::audioMonitorStatus_) audioMonitorStatus_;
   decltype(MediaCore::audioMonitorUnderruns_) audioMonitorUnderruns_;
+  decltype(MediaCore::audioMonitorDeliveryEvidence_) audioMonitorDeliveryEvidence_;
   decltype(MediaCore::audioMonitorVolume_) audioMonitorVolume_;
   decltype(MediaCore::audioMonitorWarning_) audioMonitorWarning_;
   decltype(MediaCore::audioRouteControl_) audioRouteControl_{""};
