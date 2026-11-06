@@ -104,6 +104,33 @@ identity and end-to-end receiver qualification remain separate spec slices.
 
 Tests redirect both SHM and the serve log using `COREVIDEO_VCAM_SHM_DIR`.
 
+### Native fixture directory and cleanup (#1131)
+
+`VirtualCameraTestDirectory` creates a fresh directory below the test process's
+temporary directory, with a protected, inheritable current-user FullControl
+DACL. It never reuses an existing directory. This gives the private parent
+delete-child permission even when the QA root grants only Modify. The production
+backing-file DACL remains read/write: do not add delete permission there or
+change production's never-unlink rule to fix a test.
+
+Static test setup checks directory creation, the environment override and the
+resolved slot. Any failure exits before tests run, with the stage, error code
+and private path; it never falls back to ProgramData. The override remains set
+through static teardown. Cleanup accepts only the four known private slot/log
+filenames and refuses a missing or reparse-point root. Delete failures report
+the actual Win32 code and path. The no-file and backing-file-swap preconditions
+assert successful cleanup explicitly; destructor cleanup reports failures
+without throwing during unwinding.
+
+For local qualification, set TEMP, TMP and COREVIDEO_VCAM_SHM_DIR below the QA
+evidence root before launching from `native/build-dev`. No manual FullControl
+adjustment to that root is needed. The restricted-parent regression constructs
+a Modify-only parent, verifies delete-child is denied there, then opens a real
+production-policy backing file in its fresh private child and verifies deletion.
+The compiled DLL receiver test still loads this build's DLL directly and checks
+actual MF samples, pixels and PTS without changing camera registration. This
+does not qualify registered OS-camera delivery or installed-app behavior.
+
 _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
 
 The program appears system-wide as **"CoreVideo Pro Camera"** at native **1080p60**.
@@ -154,7 +181,7 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
   toggled the camera, twice in one morning, each time 6 s after another agent's test
   exe was rebuilt. `virtualCameraShmDir()` now honors `COREVIDEO_VCAM_SHM_DIR`, and
   `VirtualCameraShmRoundtripTest.cpp` sets it at static-init time to a per-process
-  `%TEMP%\cvp-vcam-shm-test-<pid>` directory for the WHOLE test binary (the DLL reader,
+  fresh `%TEMP%\cvp-vcam-shm-test-<pid>-<tick>-<attempt>` directory for the WHOLE test binary (the DLL reader,
   the real publisher and the test writer all resolve through that one helper);
   `TheSuiteNeverResolvesTheProductionSlotPath` pins it. Production never sets the
   variable. Any new test that touches the slot inherits the redirect for free — never
@@ -346,6 +373,21 @@ orphaned-mapping reopen cadence. Serving logs distinguish writer-active and
 copy-change contention, recovered reads and original-deadline misses; held/slate
 pixels still fail continuity. See [the recovery contract and evidence limits](camera-reader-contention.md).
 A producer-process environment variable does not configure Frame Server.
+
+The compiled DLL round trip seeds an inactive history file before opening the
+reader. It exercises legacy reads first, then starts history on that same
+file. Creating the history file during the phase-crossing check would make
+the expected pixel order depend on the reader's one-second retry interval
+for a missing file.
+
+The request schedule uses absolute sample slots. A request that enters late can
+proceed immediately, and the following request waits for the time remaining
+until its slot. A pair of calls can therefore take less than 10 ms even at
+60 fps. Test the scheduled targets, waits and read deadlines with explicit
+100 ns ticks in `VirtualCameraRequestSchedule` tests. The compiled DLL
+round trip verifies actual Media Foundation samples, increasing PTS and both
+retained pixel identities across a publication boundary. Use the OS receiver
+continuity gate above for delivery timing qualification.
 
 For controlled Windows Frame Server qualification, explicitly build the excluded
 `corevideo-virtualcam-retry-qa` target in Release. It produces a separately named

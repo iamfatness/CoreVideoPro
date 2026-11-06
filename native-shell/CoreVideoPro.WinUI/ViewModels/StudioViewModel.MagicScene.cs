@@ -135,12 +135,15 @@ public sealed partial class StudioViewModel : IMagicSceneHost
 
     bool IMagicSceneHost.IsMediaCoreRunning => _bridge.Running;
 
+    string IMagicSceneHost.CoreEpoch => _bridge.LastSnapshot?.Graphics?.CoreEpoch ?? "";
+    string IMagicSceneHost.RosterEpoch => _bridge.LastSnapshot?.RosterEpoch ?? "";
+
     string IMagicSceneHost.CommandStatus
     {
         set => CommandStatus = value;
     }
 
-    Task IMagicSceneHost.TakeAsync() => _transportCoordinator.TakeAsync();
+    Task<Transport.TakeResult> IMagicSceneHost.TakeAsync() => _transportCoordinator.TakeAsync();
 
     void IMagicSceneHost.SchedulePreviewRoutingRefresh() => SchedulePreviewRoutingRefresh();
 

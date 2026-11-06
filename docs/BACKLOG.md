@@ -1,5 +1,15 @@
 # CoreVideo Pro — ranked backlog
 
+**Beta release blocker, November 5 — [#1154](https://github.com/iamfatness/CoreVideoPro/issues/1154):** migrate the two retired macos-14 CI jobs to macos-15 without changing tests or thresholds; required to complete the owner-authorized beta.
+
+**Owner-directed Auto timing completion, November 5 — [#1150](https://github.com/iamfatness/CoreVideoPro/issues/1150):** run continuous person/scene holds concurrently while Preview warms; retain readiness, confidence and manual-control gates. Installed conversation acceptance remains #668.
+
+**Owner-directed Auto completion, November 5 — [#1148](https://github.com/iamfatness/CoreVideoPro/issues/1148):** preserve Take failures for same-scene person changes. Follow with [#1149](https://github.com/iamfatness/CoreVideoPro/issues/1149) lifecycle recovery and the timing/rehearsal acceptance in #668. Owner requested completion of these remaining repairs.
+
+**Owner-directed Auto repair, November 5 — [#1146](https://github.com/iamfatness/CoreVideoPro/issues/1146):** keep native shot selection and bindings together, apply operator preferences inside the director, reset interrupted holds, and qualify actual Preview/Take outcomes. Preserve #668 guest identity/manual-control rules. Evidence and installed scenarios: [Auto director qualification](qa/auto-director-policy-2026-11-05.md). Caption defect #1144 remains separately scoped.
+
+**Owner-reported Auto defect, November 5 — [#1144](https://github.com/iamfatness/CoreVideoPro/issues/1144):** Auto creates an enabled caption strip without a transcription source. Remove unsupported enablement, reject legacy enable requests and preserve separately supplied caption cues. Broader Auto scene-choice quality remains a separate acceptance concern.
+
 **RC blocker, October 23 — [#1030](https://github.com/iamfatness/CoreVideoPro/issues/1030):** on the live show with beta-2026-10-23-1072a50 a Zoom ISO participant left mid-recording, Media Foundation throttling blocked his ISO's silence write forever, and the unbounded `closeWriters` join wedged the recording file-control lane for the rest of the show (second Record press failed; the core missed the shell's close grace). Fix PR [#1035](https://github.com/iamfatness/CoreVideoPro/pull/1035): sink-writer throttling disabled for Program and every ISO with held video frames replacing its back-pressure, no silence-fill for a departed participant (roster read outside coreMutex), bounded joins that abandon a stuck writer, and honest loss text. Detail in [iso-recording](reference/iso-recording.md). Acceptance still needs a live departure during a recording: the departed ISO finalizes at its real duration, the re-formed take starts, and Record works again without a restart.
 
 **Owner direction, October 23 — first release candidate:** the credibility PRs, the engine host (#965) and dependabot were merged and beta-2026-10-23-1072a50 was published WITHOUT a rerun of the 30-minute outputs soak (the test meeting had no remote feeds). The owner then asked for the open-issue inventory before a first RC and chose to start on the code-only items. Merged the same morning: [#1026](https://github.com/iamfatness/CoreVideoPro/pull/1026) (#863/#888 short installer staging root), [#1027](https://github.com/iamfatness/CoreVideoPro/pull/1027) (#551 regression test; the defect was already fixed by #833), [#1024](https://github.com/iamfatness/CoreVideoPro/pull/1024) (#443 `scripts/qa/outputs-drill.ps1`, never run live yet), [#1025](https://github.com/iamfatness/CoreVideoPro/pull/1025) (#1009 local recording without a meeting; changes the #732 crash-resume rule to resume unless the Zoom rejoin failed; owner confirmed the same afternoon). Still code-only and unstarted: #439 GPU-tier defaults (needs the tier policy), #445 teardown audit, #434/#436 production endpoints (need the URL and domain), #433 crash-dump key (owner said yes to HKLM; PR #1033 open, installed acceptance pending). #781 Frame Server refresh on upgrade: implemented on `codex/rc-781` (PR open; Setup stops a FrameServer instance still serving another CoreVideo camera DLL, exit 3 + warning if it cannot, real 64-bit `Inspect`); the live Stop probe and the installed upgrade acceptance are owner-run and pending.
@@ -278,16 +288,22 @@ Preserve the existing session while building; restart/rejoin for candidate valid
 
 ## Now — owner-accepted order (2026-10-08)
 
-Owner ranking, November 5:
+Owner-ranked work on November 5 (status remains in the linked issues).
 
 | Issue | Work |
 |---|---|
 | [#1118](https://github.com/iamfatness/CoreVideoPro/issues/1118) | Moderated Twitch chat next, using the [provider design](superpowers/specs/2026-11-04-graphics-social-provider-followups.md) and [test-first plan](superpowers/plans/2026-11-04-graphics-social-provider-followups.md). Each exact version needs approval and a separate Show. |
+| [#1131](https://github.com/iamfatness/CoreVideoPro/issues/1131) | Make virtual-camera fixture permissions and no-file cleanup self-contained, preserve private slot isolation and report cleanup failures explicitly. |
+| [#1135](https://github.com/iamfatness/CoreVideoPro/issues/1135) | Reproduce and correct unreadable Graphics builder review captures; preserve geometry evidence separately and inspect 1360×768 and 1600×900 images. |
 
 
 Owner-directed active stability work: [#960](https://github.com/iamfatness/CoreVideoPro/issues/960),
 reconnectable EngineHost with real opt-in WinUI/native consumer. This is one active
 item; dependent #961–#963 do not start concurrently.
+
+| Issue | Owner-ranked work |
+|---|---|
+| [#1141](https://github.com/iamfatness/CoreVideoPro/issues/1141) | Seed the compiled camera test's inactive history file before the reader opens, preserve sample and pixel checks, and verify pacing with fixed clock ticks. |
 
 Owner approved the [cross-subsystem isolation plan](reference/realtime-isolation-audit.md)
 on October 12. Start its first real status/observation consumer under #870,
@@ -600,6 +616,11 @@ issue exists yet for this row; one will be filed, labeled `backlog`, when the
 **Graphics qualification dependency — [#1010](https://github.com/iamfatness/CoreVideoPro/issues/1010):** local automatic introductions must read accepted native source labels after video reincarnation while refusing stale instance text. This is within the owner-requested #1007 local-source Graphics audit and fix; qualify the actual reconnect, not only a manual Show.
 
 ## Later — parked
+
+| Issue | Unranked finding |
+|---|---|
+| [#1143](https://github.com/iamfatness/CoreVideoPro/issues/1143) | Investigate the full-suite ISO late-frame drop and held-frame count mismatch; isolated current/prior-build reruns pass but do not explain the retained failed recording. Preserve strict output acceptance. |
+| [#1157](https://github.com/iamfatness/CoreVideoPro/issues/1157) | Investigate a valid private Graphics preview request rejected during the full native run. Capture the RPC response and preserve explicit-null validation and pixel assertions. |
 
 | Issue | Item |
 |---|---|

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/SpeakerFloor.h"
+#include "core/DirectorPolicy.h"
 
 namespace corevideo::core {
 
@@ -65,7 +66,8 @@ inline int clampDirectorConfidence(double value) {
 // alone cannot earn a box.
 inline DirectorRecommendation recommendScene(const DirectorSignals& signals,
                                               const std::vector<FloorPerson>& floor,
-                                              std::uint64_t nowMs) {
+                                              std::uint64_t nowMs,
+                                              const DirectorPolicy& policy = {}) {
   std::vector<FloorPerson> guests;
   std::vector<FloorPerson> hosts;
   std::map<std::string, FloorPerson> uniquePeople;
@@ -95,7 +97,7 @@ inline DirectorRecommendation recommendScene(const DirectorSignals& signals,
     result.slotBindings.push_back({static_cast<int>(result.slotBindings.size()), person.id, person.sourceId});
   };
   const double degradePenalty = std::min(8.0, signals.degradedCount * 2.0);
-  if (signals.screenShareActive) {
+  if (signals.screenShareActive && policy.preferScreenShare) {
     DirectorRecommendation result{"screen-share-priority", "speaker-slides",
         clampDirectorConfidence(96.0 + (signals.screenShareHasSharer ? 1.0 : -2.0) - degradePenalty),
         "Share surface leads; guest talker is the picture-in-picture."};
@@ -118,7 +120,9 @@ inline DirectorRecommendation recommendScene(const DirectorSignals& signals,
   if (scoredCount == 0) {
     return {"single-speaker", "intro", 0, "No guest has earned a talker slot yet."};
   }
-  if ((guests.size() >= 5 && scoredCount >= 1) || (guests.size() >= 3 && scoredCount >= 2)) {
+  const auto panelMinimum = static_cast<size_t>(std::clamp(policy.panelGuestThreshold, 2, 10));
+  if ((guests.size() >= (std::max)(size_t{5}, panelMinimum) && scoredCount >= 1) ||
+      (guests.size() >= panelMinimum && scoredCount >= 2)) {
     DirectorRecommendation result{"panel-discussion", "panel",
         clampDirectorConfidence(90.0 + (scoredCount >= 3 ? 3.0 : 0.0) - degradePenalty),
         "Guest floor supports a gallery."};

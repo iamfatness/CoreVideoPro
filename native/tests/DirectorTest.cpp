@@ -172,4 +172,63 @@ TEST(Director, StubSampleRosterCarriesNoInventedMeters) {
   }
 }
 
+
+TEST(DirectorPolicy, PreferencesChooseAnExecutableShotFromTheSameGuestFloor) {
+  DirectorSignals signals;
+  signals.screenShareActive = true;
+  std::vector<corevideo::core::FloorPerson> floor{
+      {.id="a", .sourceId="zoom:a", .hasVideo=true, .talkingNow=true, .lastSpokeAtMs=10'000, .score=5.0},
+      {.id="b", .sourceId="zoom:b", .hasVideo=true, .lastSpokeAtMs=9'000, .score=3.0},
+      {.id="c", .sourceId="zoom:c", .hasVideo=true, .lastSpokeAtMs=8'000, .score=1.0},
+      {.id="host", .sourceId="zoom:host", .isHost=true, .hasVideo=true, .talkingNow=true, .score=9.0}};
+  for (int threshold = 2; threshold <= 10; ++threshold) {
+    const auto result = recommendScene(signals, floor, 10'000, {false, threshold});
+    EXPECT_EQ(result.recommendedSceneId, threshold <= 3 ? "panel" : "interview");
+    ASSERT_EQ(result.slotBindings.size(), threshold <= 3 ? 3u : 2u);
+    EXPECT_EQ(result.slotBindings[0].personId, "a");
+    EXPECT_EQ(result.slotBindings[1].personId, "b");
+    EXPECT_GE(result.confidence, 88);
+    for (const auto& binding : result.slotBindings) EXPECT_NE(binding.personId, "host");
+    const auto share = recommendScene(signals, floor, 10'000, {true, threshold});
+    EXPECT_EQ(share.recommendedSceneId, "speaker-slides");
+    ASSERT_EQ(share.slotBindings.size(), 1u);
+    EXPECT_EQ(share.slotBindings[0].personId, "a");
+  }
+}
+
+TEST(DirectorPolicy, CameraCountAloneCannotForcePanelOrInventAnotherPerson) {
+  DirectorSignals signals;
+  std::vector<corevideo::core::FloorPerson> floor{
+      {.id="a", .sourceId="zoom:a", .hasVideo=true, .talkingNow=true, .lastSpokeAtMs=30'000, .score=5.0},
+      {.id="b", .sourceId="zoom:b", .hasVideo=true}};
+  const auto result = recommendScene(signals, floor, 30'000, {false, 2});
+  EXPECT_EQ(result.recommendedSceneId, "intro");
+  ASSERT_EQ(result.slotBindings.size(), 1u);
+  EXPECT_EQ(result.slotBindings[0].personId, "a");
+}
+
+TEST(DirectorPolicy, SerializedCommandAcknowledgesPolicyAndRefusesInvalidWholeUpdate) {
+  corevideo::core::MediaCore core;
+  const auto command = corevideo::rpc::Json::parse(
+      R"({"type":"set-director-policy","preferScreenShare":false,"panelGuestThreshold":7})");
+  ASSERT_TRUE(command.has_value());
+  const auto snapshot = core.applyCommand(*command);
+  const auto* recommendation = snapshot.get("autoProduction");
+  ASSERT_NE(recommendation, nullptr);
+  const auto* policy = recommendation->get("policy");
+  ASSERT_NE(policy, nullptr);
+  EXPECT_FALSE(policy->get("preferScreenShare")->asBool());
+  EXPECT_EQ(policy->getNumber("panelGuestThreshold"), 7);
+  for (const double invalid : {1.0, 11.0, 3.5}) {
+    const auto rejected = core.applyCommand(corevideo::rpc::Json::Object{
+        {"type", "set-director-policy"}, {"preferScreenShare", true}, {"panelGuestThreshold", invalid}});
+    const auto* unchanged = rejected.get("autoProduction")->get("policy");
+    EXPECT_FALSE(unchanged->get("preferScreenShare")->asBool());
+    EXPECT_EQ(unchanged->getNumber("panelGuestThreshold"), 7);
+  }
+  const auto partial = core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-director-policy"}, {"preferScreenShare", true}});
+  EXPECT_FALSE(partial.get("autoProduction")->get("policy")->get("preferScreenShare")->asBool());
+}
+
 }  // namespace

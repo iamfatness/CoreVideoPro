@@ -6,6 +6,7 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include "VirtualCameraTestDirectory.h"
 
 #include <cstdlib>  // std::getenv, _putenv_s
 #include <cstring>
@@ -53,26 +54,27 @@ namespace {
 // publisher both resolve the path through that one helper, so the redirect
 // covers every writer and reader in this binary.
 struct VcamShmTestIsolation {
-  std::string dir;
+  corevideo::test::VirtualCameraTestDirectory directory;
+  std::string dir = directory.path();
   bool armed = false;
 
   VcamShmTestIsolation() {
-    char tmp[MAX_PATH] = {};
-    const DWORD n = ::GetTempPathA(MAX_PATH, tmp);
-    std::string root = (n > 0 && n < MAX_PATH) ? std::string(tmp, n) : std::string("C:\\Temp\\");
-    if (!root.empty() && root.back() != '\\') root.push_back('\\');
-    dir = root + "cvp-vcam-shm-test-" + std::to_string(::GetCurrentProcessId());
-    ::CreateDirectoryA(dir.c_str(), nullptr);
-    armed = _putenv_s("COREVIDEO_VCAM_SHM_DIR", dir.c_str()) == 0;
+    if (!directory.ready()) fail(directory.stage(), directory.error());
+    const int error = _putenv_s("COREVIDEO_VCAM_SHM_DIR", dir.c_str());
+    if (error != 0) fail("environment-override", static_cast<DWORD>(error));
+    armed = virtualCameraShmFilePath() == dir + "\\vcam-frame.shm";
+    if (!armed) fail("resolved-path", ERROR_INVALID_NAME);
   }
-  ~VcamShmTestIsolation() {
-    ::DeleteFileA((dir + "\\vcam-frame.shm").c_str());
-    ::DeleteFileA((dir + "\\vcam-serve.log").c_str());
-    ::DeleteFileA((dir + "\\vcam-correlation-v1.shm").c_str());
-    ::DeleteFileA((dir + "\\vcam-history-v1.shm").c_str());
-    ::RemoveDirectoryA(dir.c_str());
-    _putenv_s("COREVIDEO_VCAM_SHM_DIR", "");
+  [[noreturn]] void fail(const char* stage, DWORD error) const {
+    std::fprintf(stderr, "[vcam-test-isolation] setup failed stage=%s code=%lu path=%s\n",
+        stage, static_cast<unsigned long>(error), dir.c_str());
+    std::fflush(stderr);
+    // Stop before ANY test can open a slot. Never continue with a production
+    // fallback when the redirect or private-directory setup failed.
+    std::exit(2);
   }
+  // Keep the override armed through static teardown too; it dies with this
+  // process. Clearing it here would reintroduce the production fallback.
 };
 
 const VcamShmTestIsolation kVcamShmTestIsolation;
@@ -99,6 +101,7 @@ struct ShmWriter {
   }
 
   bool open() {
+    if (!kVcamShmTestIsolation.armed || virtualCameraShmFilePath() != kVcamShmTestIsolation.dir + "\\vcam-frame.shm") return false;
     corevideo::modules::VirtualCameraCorrelationMapping invalidateOldCorrelation;
     invalidateOldCorrelation.start(false);
     file = openVirtualCameraShmFile(/*writer=*/true);
@@ -144,12 +147,82 @@ struct ShmWriter {
   ~ShmWriter() {
     closeHandles();
     if (deleteOnClose) {
-      ::DeleteFileA(virtualCameraShmFilePath().c_str());  // no stale slot for the next test
+      const auto cleanup = kVcamShmTestIsolation.directory.remove("vcam-frame.shm");
+      if (!cleanup.ok) corevideo::test::VirtualCameraTestDirectory::report(cleanup);
     }
   }
 };
 
+int deniedCleanupCalls = 0;
+BOOL WINAPI denyTestCleanup(LPCSTR) {
+  ++deniedCleanupCalls;
+  SetLastError(ERROR_ACCESS_DENIED);
+  return FALSE;
+}
+
 }  // namespace
+
+TEST(VirtualCameraShmRoundtrip, PrivateDirectoryCanDeleteBackingFilesUnderAModifyOnlyParent) {
+  struct Parent {
+    std::string path = kVcamShmTestIsolation.dir + "\\modify-only-parent";
+    bool created = false;
+    ~Parent() {
+      if (created && !RemoveDirectoryA(path.c_str()))
+        std::fprintf(stderr, "[vcam-test-cleanup] restricted-parent win32=%lu path=%s\n",
+            static_cast<unsigned long>(GetLastError()), path.c_str());
+    }
+  } parent;
+  // Generic read/write/execute + DELETE is Modify, without FILE_DELETE_CHILD.
+  corevideo::test::VcamTestDirectorySecurity security(L"GRGWGXSD");
+  ASSERT_NE(security.descriptor, nullptr) << security.error;
+  SECURITY_ATTRIBUTES attributes{static_cast<DWORD>(sizeof(SECURITY_ATTRIBUTES)), security.descriptor, FALSE};
+  ASSERT_TRUE(CreateDirectoryA(parent.path.c_str(), &attributes)) << GetLastError();
+  parent.created = true;
+  HANDLE denied = CreateFileA(parent.path.c_str(), FILE_DELETE_CHILD, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  const DWORD deniedError = denied == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+  if (denied != INVALID_HANDLE_VALUE) CloseHandle(denied);
+  ASSERT_EQ(denied, INVALID_HANDLE_VALUE) << "The regression parent unexpectedly allows delete-child.";
+  ASSERT_EQ(deniedError, static_cast<DWORD>(ERROR_ACCESS_DENIED));
+  {
+    corevideo::test::VirtualCameraTestDirectory child(parent.path);
+    ASSERT_TRUE(child.ready()) << child.stage() << ": " << child.error();
+    const auto filePath = child.path() + "\\vcam-frame.shm";
+    HANDLE file = openVirtualCameraShmFile(true, filePath);
+    ASSERT_NE(file, INVALID_HANDLE_VALUE);
+    CloseHandle(file);
+    const auto cleanup = child.remove("vcam-frame.shm");
+    ASSERT_TRUE(cleanup.ok) << "DeleteFileA win32=" << cleanup.error << " path=" << cleanup.path;
+    EXPECT_EQ(GetFileAttributesA(filePath.c_str()), INVALID_FILE_ATTRIBUTES);
+    EXPECT_EQ(GetLastError(), static_cast<DWORD>(ERROR_FILE_NOT_FOUND));
+  }
+  EXPECT_EQ(virtualCameraShmFilePath(), kVcamShmTestIsolation.dir + "\\vcam-frame.shm");
+}
+
+TEST(VirtualCameraShmRoundtrip, CleanupReportsTheActualWin32Failure) {
+  deniedCleanupCalls = 0;
+  const auto cleanup = kVcamShmTestIsolation.directory.remove("vcam-frame.shm", &denyTestCleanup);
+  EXPECT_FALSE(cleanup.ok);
+  EXPECT_EQ(cleanup.error, static_cast<DWORD>(ERROR_ACCESS_DENIED));
+  EXPECT_EQ(cleanup.path, virtualCameraShmFilePath());
+  EXPECT_EQ(deniedCleanupCalls, 1);
+}
+
+TEST(VirtualCameraShmRoundtrip, CleanupRejectsNamesOutsideThePrivateSlots) {
+  deniedCleanupCalls = 0;
+  const auto cleanup = kVcamShmTestIsolation.directory.remove("..\\vcam-frame.shm", &denyTestCleanup);
+  EXPECT_FALSE(cleanup.ok);
+  EXPECT_EQ(cleanup.error, static_cast<DWORD>(ERROR_INVALID_NAME));
+  EXPECT_EQ(deniedCleanupCalls, 0);
+}
+
+TEST(VirtualCameraShmRoundtrip, FailedDirectorySetupDoesNotChangeTheProcessRedirect) {
+  const auto before = virtualCameraShmFilePath();
+  corevideo::test::VirtualCameraTestDirectory failed(kVcamShmTestIsolation.dir + "\\absent-parent");
+  EXPECT_FALSE(failed.ready());
+  EXPECT_EQ(failed.error(), static_cast<DWORD>(ERROR_PATH_NOT_FOUND));
+  EXPECT_EQ(virtualCameraShmFilePath(), before);
+}
 
 TEST(VirtualCameraShmRoundtrip, PublicationPhaseCrossingRetainsTheNextPicture) {
   ShmWriter writer; ASSERT_TRUE(writer.open()); ASSERT_TRUE(writer.retainPublications());
@@ -260,6 +333,10 @@ TEST(VirtualCameraShmRoundtrip, AnAbandonedOddHistoryCannotFreezeAnOlderPublishe
 // to. Fails when virtualCameraShmDir() ignores COREVIDEO_VCAM_SHM_DIR.
 TEST(VirtualCameraShmRoundtrip, TheSuiteNeverResolvesTheProductionSlotPath) {
   ASSERT_TRUE(kVcamShmTestIsolation.armed);
+  ASSERT_TRUE(kVcamShmTestIsolation.directory.ready());
+  const auto attributes = GetFileAttributesA(kVcamShmTestIsolation.dir.c_str());
+  ASSERT_NE(attributes, INVALID_FILE_ATTRIBUTES);
+  EXPECT_EQ(attributes & FILE_ATTRIBUTE_REPARSE_POINT, 0u);
   const std::string resolved = virtualCameraShmFilePath();
   EXPECT_NE(resolved, productionVirtualCameraShmFilePath())
       << "the test suite resolved the PRODUCTION vcam slot; running it would "
@@ -400,6 +477,14 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
   ASSERT_TRUE(SUCCEEDED(session.mf));
   ShmWriter writer;
   ASSERT_TRUE(writer.open());
+  // Leave a stopped publisher's history file for the DLL to map on its first
+  // read. The first phase uses the legacy slot until history starts below.
+  // Creating the file late would make that transition depend on the reader's
+  // one-second retry interval for missing history files.
+  {
+    corevideo::modules::VirtualCameraHistoryWriter stoppedHistory;
+    ASSERT_TRUE(stoppedHistory.start(writer.file));
+  }
   std::vector<std::uint8_t> pixels(1920 * 1080 * 3 / 2, 42);
   writer.write(pixels, 1920, 1080);
   const auto logPath = corevideo::modules::virtualCameraShmDir() + "\\vcam-serve.log";
@@ -563,20 +648,34 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
   }
   EXPECT_EQ(received, requested.size());
   // Exercise the actual compiled DLL/event stream, not just the C++ reader:
-  // one producer phase crossing must deliver both original pixel identities.
+  // one producer phase crossing must deliver both original pixel identities
+  // with increasing PTS. VirtualCameraRequestSchedule tests cover pacing with
+  // fixed ticks because these calls can enter partway through a delivery slot.
   ASSERT_TRUE(writer.retainPublications());
   pixels[0] = 240; writer.write(pixels, 1920, 1080); EXPECT_EQ(receive(), 240);
   pixels[0] = 241; writer.write(pixels, 1920, 1080);
   pixels[0] = 242; writer.write(pixels, 1920, 1080);
-  const auto retainedStarted = std::chrono::steady_clock::now();
-  EXPECT_EQ(receive(), 241); EXPECT_EQ(receive(), 242);
-  EXPECT_GE(std::chrono::steady_clock::now() - retainedStarted, std::chrono::milliseconds(10));
+  const auto retainedPixel = receive();
+  EXPECT_EQ(retainedPixel, 241) << "retained pixel: " << retainedPixel;
+  const auto latestPixel = receive();
+  EXPECT_EQ(latestPixel, 242) << "latest pixel: " << latestPixel;
 }
 #endif
 
 TEST(VirtualCameraShmRoundtrip, NoRegionMeansNoFrame) {
+  // A preceding publication must not turn a failed deletion into a false
+  // no-file precondition. Reproduce it within this exact test, in a fresh process.
+  {
+    ShmWriter stale;
+    stale.deleteOnClose = false;
+    ASSERT_TRUE(stale.open());
+    stale.write(std::vector<std::uint8_t>(64 * 36 * 3 / 2, 0x31), 64, 36);
+  }
   // With no writer mapping alive, the reader reports "no frame" (not a crash).
-  ::DeleteFileA(virtualCameraShmFilePath().c_str());  // ensure no stale slot file
+  const auto cleanup = kVcamShmTestIsolation.directory.remove("vcam-frame.shm");
+  ASSERT_TRUE(cleanup.ok) << "no-file precondition: DeleteFileA win32=" << cleanup.error << " path=" << cleanup.path;
+  ASSERT_EQ(::GetFileAttributesA(cleanup.path.c_str()), INVALID_FILE_ATTRIBUTES);
+  ASSERT_EQ(GetLastError(), static_cast<DWORD>(ERROR_FILE_NOT_FOUND));
   SharedFrameReader reader;
   std::vector<std::uint8_t> out;
   int rw = 0, rh = 0;
@@ -653,7 +752,8 @@ TEST(VirtualCameraShmRoundtrip, ReaderSelfHealsAfterTheBackingFileIsSwapped) {
     ASSERT_TRUE(reader.readLatest(out, rw, rh));
     EXPECT_EQ(out, f1);
     first.closeHandles();
-    ::DeleteFileA(virtualCameraShmFilePath().c_str());  // swap: unlink the path
+    const auto cleanup = kVcamShmTestIsolation.directory.remove("vcam-frame.shm");
+    ASSERT_TRUE(cleanup.ok) << "swap precondition: DeleteFileA win32=" << cleanup.error << " path=" << cleanup.path;
   }
 
   ShmWriter second;  // NEW file object at the same path
@@ -693,7 +793,8 @@ TEST(VirtualCameraPublisher, StopLeavesTheShmSlotFileInPlace) {
             INVALID_FILE_ATTRIBUTES)
       << "stop() must NOT delete the vcam SHM file: readers hold it via "
          "FILE_SHARE_DELETE and delete orphans them (frozen frames / strobing)";
-  ::DeleteFileA(virtualCameraShmFilePath().c_str());  // test isolation only
+  const auto cleanup = kVcamShmTestIsolation.directory.remove("vcam-frame.shm");
+  ASSERT_TRUE(cleanup.ok) << "publisher fixture cleanup: DeleteFileA win32=" << cleanup.error << " path=" << cleanup.path;
 }
 #endif  // COREVIDEO_WITH_VIRTUALCAM
 
