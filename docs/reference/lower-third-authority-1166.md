@@ -1,0 +1,11 @@
+# Four-hour follow-on specification — lower-third authority (#1166)
+
+Observed on packaged c9ab4c55: graphics.lowerThird.set(false) accepts a playlist no-op while the native legacy lower third remains on-air. Guest playlist rows exist, but lower-third authority has not migrated to instances. This reproduces with Auto on and off.
+
+Specification: Show may adopt playlist authority through the existing accepted-show path. Hide and toggle must target the authority that currently owns Program, including a legacy key when playlist rows exist. A manual Hide suppresses later Auto lower-third enablement until a deliberate Show/rebuild action resets that intent. Private Cue and unrelated graphics remain unchanged. A successful no-op is valid only when the owning authority already has no visible lower third.
+
+Plan: reproduce the legacy-authority/playlist-present case through the actual routing consumer. Extract a focused authority/intent router if needed; keep new behavior out of StudioViewModel.cs. Cover legacy and instances, playlist present/absent, Show/Hide/toggle, rejected operations and manual suppression. Verify native output through packaged control and pixels/state, including Auto remaining active. Preserve the original failed evidence and do not replace it with unit-only acceptance.
+
+Acceptance: legacy graphic keys out after accepted Hide; toggle keys out rather than adopting/showing another row; Auto does not restore it; managed playlist Show/Hide retains its existing behavior and private isolation. Run targeted/full managed regression and compiled Graphics probe, then actual populated-meeting rehearsal.
+
+Risks: lowerThirdOnAir, nativeLowerThirdVisible and playlist strip describe different authorities; tests must inspect the active owner, not a convenient unrelated field. Native asynchronous key-out needs bounded observed completion. Owner usability remains independent.

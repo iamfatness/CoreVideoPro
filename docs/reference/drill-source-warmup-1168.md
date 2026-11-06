@@ -7,3 +7,11 @@ Specification: before Record or Stream starts, every declared remote must delive
 Plan: add a pure remote readiness function and pre-record wait; test missing last participant, lower resolution, stale evidence, missing snapshot and all-ready transition; retain the original failed recording. Rehearse the same frozen package with the revised harness and require eight writer identities before measurement. If the eighth is still absent, retain that result and investigate product selection rather than repeating until green.
 
 Acceptance: no output starts during incomplete remote readiness; the declared writer set is verified after start. Only actual successful eight-writer evidence can close the omission report. No physical webcam/full-workload acceptance is implied by a motion-clip run.
+
+## Reassignment investigation after failed prewarm
+
+The 96ec361b live trial reached 1080p on all eight sources for 30 seconds before Record and still omitted the eighth writer. Native isoSourceIds itself contains seven, so the first missing boundary is at or before shell target delivery. The saved slot 9 referenced an unavailable old participant. Control API input.assign sets Kind and ParticipantId; same-kind changes skip Kind refresh and ParticipantId does not recompute cached IsSourceMissing. The unified source picker does refresh it. This is a specific source lead requiring a red regression, not yet proof from a patched live build.
+
+Revised implementation plan: construct eight live participants with the eighth slot initially saved-unavailable, refresh once, then perform the same Kind/ParticipantId assignments as the API without roster churn. Assert all eight intended ISO targets and current availability; retain the old failure. Refresh availability for explicit participant/capture assignment using retained roster/device/media lists, without a per-snapshot collection rebuild. Cover missing-to-present and present-to-missing transitions, capture and media kinds, and unchanged saved intent. Rebuild the shell against the frozen native candidate and repeat the actual API assignment plus recording workload. Warmup remains useful defense but is not claimed as the causal fix.
+
+Done requires all eight actual writers in the packaged regression. Full 30-minute output delivery and physical webcam acceptance remain separate.
