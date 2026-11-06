@@ -22,7 +22,11 @@ for line in sys.stdin:
     request=json.loads(line)
     if request.get('type') == 'no-response': continue
     time.sleep(request.get('testDelay', 0))
-    print(json.dumps({'id': request['id'], 'ok': True}), flush=True)
+    response = {'id': request['id'], 'ok': True}
+    if request.get('nativeTimingCount'):
+        response['snapshot'] = {'nativeDiagnostics': dict(logDropped=3, logTruncated=1,
+            logSinkFailures=0, logQueued=2, secret='never-copy-native-snapshot')}
+    print(json.dumps(response), flush=True)
     if request.get('nativeTimingCount'):
         time.sleep(.02)  # diagnostic logger can arrive after the response reader
         for index in range(request['nativeTimingCount']):
@@ -97,6 +101,9 @@ class CommandTiming(unittest.TestCase):
         self.assertTrue(all(row["observedMs"] >= 0 and "flush_us=11" in row["line"]
                             for row in evidence["nativeTiming"]))
         self.assertNotIn("never-report-native-arguments", json.dumps(evidence))
+        self.assertNotIn("never-copy-native-snapshot", json.dumps(evidence))
+        self.assertEqual(evidence["requests"][-1]["nativeLog"],
+                         dict(logDropped=3, logTruncated=1, logSinkFailures=0, logQueued=2))
         self.assertEqual(len(self.core.round_trips), before + 1)
 
 

@@ -193,6 +193,10 @@ class Core:
         reader = self.response_times.get(rid)
         diagnostics = [line for line in self.stderr[diagnostic_start:]
                        if line.startswith(("[render]", "[lock-guardrail]", "[video-out]") + NATIVE_TIMING_PREFIXES)]
+        snapshot = self.responses.get(rid, {}).get("snapshot", {})
+        native_log = snapshot.get("nativeDiagnostics") if isinstance(snapshot, dict) else None
+        log_keys = ("logDropped", "logTruncated", "logSinkFailures", "logQueued")
+        native_log = {key: native_log.get(key) for key in log_keys} if isinstance(native_log, dict) else None
         self.request_evidence.append({
             "id": rid, "type": body.get("type", "?"), "step": step,
             "commandTypes": [command.get("type", "?") for command in body.get("commands", [])],
@@ -202,6 +206,7 @@ class Core:
             "readerParseMs": (reader[1] - reader[0]) * 1000 if reader else None,
             "callerAfterReaderMs": (finished - reader[1]) * 1000 if reader else None,
             "diagnostics": diagnostics[-12:], "diagnosticsOmitted": max(0, len(diagnostics) - 12),
+            "nativeLog": native_log,
         })
 
     def sync(self, commands, elapsed_ms, step=None):
