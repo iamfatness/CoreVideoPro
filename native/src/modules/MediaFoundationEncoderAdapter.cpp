@@ -782,7 +782,7 @@ class Mp4Writer {
   // reconcile, valid live takes ended with 0.4-1.7s A/V duration deltas.
   // Preserve content: pad a short audio tail with silence, or hold the last
   // real video buffer to the audio endpoint. No speech or real frame is cut.
-  bool reconcileTail(std::string& errorOut) {
+  bool reconcileTail(std::string& errorOut, bool extendPendingProgramPicture = false) {
     if (!writing_ || !audioConfigured_ || videoFrameCount_ <= 0 || audioPacketCount_ <= 0 ||
         !lastVideoBuffer_) {
       return true;
@@ -807,6 +807,21 @@ class Mp4Writer {
     }
 
     if (lastVideoEnd100ns_ < targetEnd100ns) {
+      if (extendPendingProgramPicture) {
+        // Program already retains its final real sample for variable durations.
+        // Extend that sample through the accepted audio tail instead of encoding
+        // a second copy of its picture. ISO source-hold semantics stay unchanged.
+        LONGLONG pts = 0;
+        HRESULT result = pendingVideoSample_ ? pendingVideoSample_->GetSampleTime(&pts) : E_UNEXPECTED;
+        if (SUCCEEDED(result) && targetEnd100ns <= pts) result = E_INVALIDARG;
+        if (SUCCEEDED(result)) result = pendingVideoSample_->SetSampleDuration(targetEnd100ns - pts);
+        if (FAILED(result)) {
+          errorOut = "extend pending Program picture through audio tail: " + hresultString(result);
+          return false;
+        }
+        lastVideoEnd100ns_ = targetEnd100ns;
+        return true;
+      }
       // One held sample is sufficient for VFR MP4: its PTS makes the previous
       // real frame persist through the delivery gap, and its nominal duration
       // lands the video endpoint on the shared audio endpoint.
@@ -2641,7 +2656,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   void finalizeProgram() {
     startupAudio_.clear();
     std::string programReconcileError;
-    if (!program_.reconcileTail(programReconcileError) && session_.recordingWarning.empty()) {
+    if (!program_.reconcileTail(programReconcileError, true) && session_.recordingWarning.empty()) {
       session_.recordingWarning =
           "Program recording could not align its A/V tail: " + programReconcileError + ".";
       session_.recordingStatus = "warning";
