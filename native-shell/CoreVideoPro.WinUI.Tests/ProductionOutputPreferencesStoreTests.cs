@@ -20,7 +20,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(loaded);
         Assert.True(migrated);
-        Assert.Equal(16, loaded!.Version);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, loaded!.Version);
         Assert.False(loaded.NdiOutputEnabled);
         Assert.Equal("Studio A", loaded.StreamNdiProgramName);
     }
@@ -246,7 +246,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(16, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(17, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Empty(migrated.VstInsertStates);
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
@@ -270,7 +270,7 @@ public sealed class ProductionOutputPreferencesStoreTests
             ProductionOutputPreferencesSerializer.Serialize(preferences));
 
         Assert.NotNull(roundTripped);
-        Assert.Equal(16, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(17, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal("black", roundTripped.SourceDropoutPolicies["zoom:16778240"]);
         Assert.Equal("hold", roundTripped.SourceDropoutPolicies["capture:cam0"]);
     }
@@ -291,7 +291,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(16, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(17, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Empty(migrated.SourceDropoutPolicies);
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
@@ -331,7 +331,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(16, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(17, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.False(migrated.IsoRecordingEnabled);
         Assert.Empty(migrated.IsoRecordingSourceIds);
@@ -372,7 +372,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(16, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(17, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Equal(ZoomAudioModePreference.PerGuestIsoValue, migrated.ZoomAudioMode);
         Assert.Equal(ZoomAudioMode.PerGuestIso, ZoomAudioModePreference.Parse(migrated.ZoomAudioMode));
@@ -906,6 +906,6 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.NotNull(v14);
         Assert.True(migrated);
         Assert.Empty(v14.RemovedCatalogSceneIds);
-        Assert.Equal(16, v14.Version);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, v14.Version);
     }
 }

@@ -375,6 +375,7 @@
                                                 CornerRadius="8"
                                                 Command="{x:Bind SelectCommand}"
                                                 CommandParameter="{x:Bind Id}">
+                                            <Button.ContextFlyout><MenuFlyout><MenuFlyoutItem Text="Rename scene" Tag="{x:Bind Id}" Click="OnRenameScene"/></MenuFlyout></Button.ContextFlyout>
                                             <Grid ColumnSpacing="8">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="28" />

@@ -4334,22 +4334,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
-    private void NewScene(string? template)
-    {
-        var newId = NewCustomSceneId();
-        var (scene, routes) = StarterSceneFactory.Create(newId, template, _scenes.Select(item => item.Name));
-
-        _scenes.Add(scene);
-        _sceneRoutes[newId] = routes;
-
-        RefreshSceneItems();
-        PreviewSceneId = newId;
-        CommandStatus = $"{scene.Name} created and queued on preview";
-        SchedulePreviewRoutingRefresh();
-        SaveProductionOutputPreferences();
-    }
-
-    [RelayCommand]
     private void NewDynamicGallery()
     {
         var newId = NewCustomSceneId();
@@ -4511,32 +4495,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OutputStatus = "Program updated";
             _ = TrySyncMediaCoreAsync();
         }
-    }
-
-    private void RenameScene(string sceneId, string name)
-    {
-        var index = _scenes.ToList().FindIndex(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal));
-        if (index < 0)
-        {
-            return;
-        }
-
-        var scene = _scenes[index];
-        _scenes[index] = new Scene
-        {
-            Id = scene.Id,
-            Name = name,
-            Layout = scene.Layout,
-            Automation = scene.Automation,
-            DurationLabel = scene.DurationLabel,
-            DynamicGallery = scene.DynamicGallery
-        };
-
-        OnPropertyChanged(nameof(ProgramScene));
-        OnPropertyChanged(nameof(PreviewScene));
-        OnPropertyChanged(nameof(ProgramSceneSummary));
-        OnPropertyChanged(nameof(PreviewSceneSummary));
-        OnPropertyChanged(nameof(SceneRailDisplaySummary));
     }
 
     // Take promotes Preview → Program. Because the compositor is always on, the program
@@ -12210,6 +12168,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 .ToList(),
             // v15 (#1070): catalog scenes the operator removed stay removed across launches.
             RemovedCatalogSceneIds = SceneCatalogPolicy.RemovedCatalogSceneIds(_scenes),
+            SceneNames = CaptureSceneNames(),
             // B2 (v6): the whole master rack — live settings, both A/B slots,
             // the active slot, and the operator's saved presets. The ACTIVE
             // slot's stored copy is refreshed from the live controls first so
@@ -12553,6 +12512,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // #1070: after the custom scenes are back (so the last-scene guard counts them),
         // drop the catalog scenes removed in an earlier session.
         ApplyPersistedCatalogSceneRemovals(preferences.RemovedCatalogSceneIds);
+        RestoreSceneNames(preferences.SceneNames);
 
         RefreshAudioMonitorBindings();
         RefreshSceneBackgroundSelection();

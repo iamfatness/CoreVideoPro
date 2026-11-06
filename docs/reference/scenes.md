@@ -25,6 +25,27 @@ Everything else is a **custom scene** (`custom-<8 hex>`): New scene, Duplicate, 
 canvas, CoreVideo Tiles. Two hidden `multiview-solo-a/b` scenes back the multiview
 double-click one-up; they never appear on the rail (`VisibleScenes`).
 
+## Naming (#1196)
+
+The Sources tab's **+** starter chooser asks for a name before creating a scene.
+**Rename** above the Scene Builder list renames the selected Preview scene; a
+**Rename scene** context menu on either the Builder row or Studio scene button
+targets that row's stable ID without cueing it. Blank and case-insensitive duplicate
+names are rejected; surrounding whitespace is trimmed. Cancel changes nothing.
+
+`SceneNamingDialog` uses `StudioViewModel.SceneNaming` and `SceneNamingPolicy`.
+Rename updates metadata only, including the saved draft and current Preview draft
+names. It must not call `UpdateScene`, commit route edits, refresh Auto policy or
+Take. Scene IDs, ordering, saved/unsaved content and Program routes stay unchanged.
+Preferences v17 stores `SceneNames` by ID for both catalog and custom scenes, after
+custom scene restoration and catalog removal. Restore applies the set together so
+two catalog scenes can exchange names without colliding with the initial defaults.
+
+`SceneNamingTests` covers validation and preference compatibility;
+`SceneNamingIntegrationProbe` runs the actual compiled dialogs, context menu,
+cancel/validation flows, on-air and draft isolation, and fresh-model restoration
+inside the isolated operator-settings probe.
+
 ## Removal (#1070, 2026-10-31)
 
 Owner, during live-show prep: "Not sure why we have scenes that can't be deleted. Intro -
