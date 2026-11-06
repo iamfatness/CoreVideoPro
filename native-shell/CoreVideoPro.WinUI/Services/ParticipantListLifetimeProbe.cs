@@ -22,6 +22,8 @@ internal static class ParticipantListLifetimeProbe
         var dispatcher = DispatcherQueue.GetForCurrentThread();
         for (var cycle = 0; cycle < 6; cycle++)
         {
+            page.ViewModel = original;
+            await DrainAsync(dispatcher);
             var sentinel = new List<ParticipantListItem>();
             var unloaded = false;
             void OnUnloaded(object sender, RoutedEventArgs args)
@@ -42,17 +44,19 @@ internal static class ParticipantListLifetimeProbe
                 if (!ReferenceEquals(list.ItemsSource, sentinel))
                     failures.Add($"Participant list cycle {cycle}: queued work touched the unloaded list");
 
-                // An unbound replacement must be picked up on the next load.
-                page.ViewModel = original;
+                // Cover both a replacement while detached and the same model
+                // surviving unload (which must reconnect its notifications).
+                var reloaded = cycle % 2 == 0 ? original : replacement;
+                page.ViewModel = reloaded;
                 window.Content = page;
                 await WaitUntilAsync(() => page.IsLoaded, "Studio did not reload");
                 await DrainAsync(dispatcher);
-                if (!ReferenceEquals(list.ItemsSource, original.ParticipantListItems))
+                if (!ReferenceEquals(list.ItemsSource, reloaded.ParticipantListItems))
                     failures.Add($"Participant list cycle {cycle}: reload did not bind the latest roster");
-                original.ActiveTab = StudioTab.Overlays;
+                reloaded.ActiveTab = StudioTab.Overlays;
                 if (((FrameworkElement)page.FindName("ProductionFooter")).Visibility != Visibility.Collapsed)
                     failures.Add($"Participant list cycle {cycle}: reload did not reconnect ViewModel notifications");
-                original.ActiveTab = StudioTab.Studio;
+                reloaded.ActiveTab = StudioTab.Studio;
             }
             finally { page.Unloaded -= OnUnloaded; }
         }
