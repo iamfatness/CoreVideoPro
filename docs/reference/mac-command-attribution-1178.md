@@ -1,0 +1,9 @@
+# Mac command response attribution — #1178
+
+Two real show-drill samples exceeded the 100 ms command-response gate: 135.9 ms on a Windows-only workspace PR and 240.4 ms on a Windows-guarded Tiles fixture PR. Neither changed the Mac media implementation. This narrows patch attribution but does not establish runner contention or a product cause. An infrastructure cancellation with zero executed steps is separate from these executed failures.
+
+The existing aggregate p99 loses the step identity, command types and timing boundary. Preserve bounded per-request evidence: relative monotonic start, caller-observed duration, response-reader timing, command type names, timeout outcome and nearby bounded diagnostic lines. Never serialize command arguments or whole snapshots into this report. Reader timing describes when Python received/parses a response, not native execution time. A reader delay cannot by itself prove OS scheduling contention.
+
+The existing 100 ms gate and request population remain unchanged. Generate an evidence artifact on success and failure, including early timeout returns. Hosted CI retains it even when the drill fails. Report any evidence truncation. Preserve the historical failed logs; a later green sample is not a repair or causal explanation.
+
+Validate with a controlled subprocess responding after a deliberate delay, a caller polling delay, and a missing response. The same measured request must still enter the aggregate gate population exactly once; timeouts remain failures. Run one instrumented hosted sample and compare the named slow step with contemporaneous evidence. Reproduce a demonstrated initiating condition before changing product code. If the cause remains unknown, keep the issue and blocked qualification visible rather than increasing the budget or claiming closure.
