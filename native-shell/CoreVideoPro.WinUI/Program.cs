@@ -13,6 +13,8 @@ public static class Program
         {
             var inspectProbe = args.Length == 2 && args[0] == "--verify-inspect-video";
             var inspectNativeProbe = args.Length == 3 && args[0] == "--verify-inspect-native";
+            var thumbnailIdentityProbe = args.Length == 3 && args[0] == "--verify-source-identities";
+            inspectNativeProbe |= thumbnailIdentityProbe;
             var runtimeProbe = args.Length == 2 && args[0] == "--verify-runtime";
             var engineHostStudioProbe = args.Length == 2 && args[0] == "--verify-engine-host-studio";
             var engineHostProbe = args.Length == 2 && args[0] == "--verify-engine-host";
@@ -57,7 +59,7 @@ public static class Program
                 var context = new DispatcherQueueSynchronizationContext(DispatcherQueue.GetForCurrentThread());
                 SynchronizationContext.SetSynchronizationContext(context);
                 if (engineHostStudioProbe) new App(null, engineHostStudioConfig: args[1]);
-                else if (inspectNativeProbe) new App(null, inspectProbe: new Services.SourceInspectVideoProbe(args[2], args[1]));
+                else if (inspectNativeProbe) new App(null, inspectProbe: new Services.SourceInspectVideoProbe(args[2], args[1], thumbnailIdentityProbe));
                 else if (inspectProbe) new App(null,inspectProbe: new Services.SourceInspectVideoProbe(args[1]));
                 else if (settingsProbe) new App(null, new Services.OperatorSettingsProbe(args[1], destinationProbe, graphicsProbe, studioProbe));
                 else if (gradeProbe) new App(null,gradeProbe: new Services.SourceGradeWorkspaceProbe(args[1],args[2]));
