@@ -117,7 +117,8 @@ MIN_LOAD_FPS = 59.5
 MAX_LOAD_RENDER_MS = 10.0
 MAX_DROPPED_FRAMES = 0
 NATIVE_TIMING_PREFIXES = ("[request-timing]", "[response-timing]", "[writer-timing]",
-                          "[req]", "[cmd]", "[response]", "[writer]", "[command-lock]")
+                          "[req]", "[cmd]", "[response]", "[writer]", "[command-lock]",
+                          "[render]", "[lock-guardrail]", "[lock-hold-attribution]")
 
 
 class Core:

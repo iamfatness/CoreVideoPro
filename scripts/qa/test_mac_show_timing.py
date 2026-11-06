@@ -18,6 +18,8 @@ REAL_SLEEP = time.sleep
 
 CHILD = """
 import json,sys,time
+print('[lock-hold-attribution] site=render.display-tick held_us=186117 phases_us=[program=185000] startup=1', file=sys.stderr, flush=True)
+print('[render] STALL lockWait=0ms render=289ms startup=1', file=sys.stderr, flush=True)
 for line in sys.stdin:
     request=json.loads(line)
     if request.get('type') == 'no-response': continue
@@ -42,6 +44,10 @@ class CommandTiming(unittest.TestCase):
                                REAL_POPEN([sys.executable, "-u", "-c", CHILD], **kw)):
             self.core = drill.Core("controlled-child", evidence_path=str(self.path))
         self.core.request({"type": "ping"})  # exclude process startup from delay attribution
+        deadline = time.monotonic() + 3
+        while len(self.core.stderr) < 2 and time.monotonic() < deadline:
+            REAL_SLEEP(.001)
+        self.assertGreaterEqual(len(self.core.stderr), 2)
 
     def tearDown(self):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -89,6 +95,9 @@ class CommandTiming(unittest.TestCase):
         self.assertEqual(len(self.core.round_trips), before + 1)
 
     def test_late_native_phases_are_retained_with_bounded_omissions(self):
+        # This test isolates the appendix cap from startup lines, which have
+        # their own real-reader regression below.
+        self.core.native_timing.clear()
         before = len(self.core.round_trips)
         self.core.request({"type": "media-core-sync", "nativeTimingCount": 600,
                            "secret": "never-report-native-arguments"})
@@ -108,6 +117,21 @@ class CommandTiming(unittest.TestCase):
         self.assertEqual(evidence["requests"][-1]["nativeLog"],
                          dict(logDropped=3, logTruncated=1, logSinkFailures=0, logQueued=2))
         self.assertEqual(len(self.core.round_trips), before + 1)
+
+    def test_render_attribution_before_first_request_is_retained(self):
+        deadline = time.monotonic() + 3
+        while not any('startup=1' in line and line.startswith('[render]')
+                      for line in self.core.stderr) and time.monotonic() < deadline:
+            REAL_SLEEP(.001)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.core.kill()
+        evidence = json.loads(self.path.read_text())
+        startup = [entry['line'] for entry in evidence['nativeTiming'] if 'startup=1' in entry['line']]
+        self.assertEqual(len(startup), 2)
+        self.assertTrue(any('phases_us=[program=185000]' in line for line in startup))
+        self.assertTrue(any('render=289ms' in line for line in startup))
+        self.assertEqual(evidence['nativeTimingOmitted'], 0)
+        self.assertTrue(evidence['stderrDrained'])
 
 
 if __name__ == "__main__":
