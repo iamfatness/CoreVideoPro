@@ -19,7 +19,7 @@ public sealed partial class StudioWorkspace : UserControl
 {
     private readonly DispatcherQueue? _dispatcher = DispatcherQueue.GetForCurrentThread();
     private StudioViewModel? _boundViewModel;
-    private bool _participantListRefreshScheduled;
+    private readonly ParticipantListRefreshScheduler _participantListRefresh;
     private DispatcherTimer? _headerClockTimer;
 
     public static readonly DependencyProperty ViewModelProperty =
@@ -32,6 +32,10 @@ public sealed partial class StudioWorkspace : UserControl
     public StudioWorkspace()
     {
         InitializeComponent();
+        _participantListRefresh = new ParticipantListRefreshScheduler(
+            (action, tag) => { if (_dispatcher is not null) UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, action, tag); },
+            () => ParticipantListView.ItemsSource = null,
+            () => ParticipantListView.ItemsSource = _boundViewModel?.ParticipantListItems);
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
         AttachGraphicsHotkeys();
@@ -98,13 +102,16 @@ public sealed partial class StudioWorkspace : UserControl
     /// drag region (the app draws its own top bar; no separate caption strip).</summary>
     public FrameworkElement TitleBarDragRegion => NavTitleBar;
 
-    private static void OnViewModelChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args) =>
-        ((StudioWorkspace)sender).BindViewModel(
-            (StudioViewModel?)args.NewValue,
-            (StudioViewModel?)args.OldValue);
+    private static void OnViewModelChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    {
+        var workspace = (StudioWorkspace)sender;
+        workspace.BindViewModel(workspace.IsLoaded ? (StudioViewModel?)args.NewValue : null, workspace._boundViewModel);
+    }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        _participantListRefresh.Activate();
+        BindViewModel(ViewModel, _boundViewModel);
         ScheduleParticipantListRefresh();
         StartHeaderClock();
         BeginCrashReportScan();
@@ -212,6 +219,7 @@ public sealed partial class StudioWorkspace : UserControl
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        _participantListRefresh.Deactivate();
         _headerClockTimer?.Stop();
         SetPreviewLayoutOverlayOpen(false);
         BindViewModel(null, _boundViewModel);
@@ -363,21 +371,7 @@ public sealed partial class StudioWorkspace : UserControl
 
     private void ScheduleParticipantListRefresh()
     {
-        if (_participantListRefreshScheduled || _dispatcher is null)
-        {
-            return;
-        }
-
-        _participantListRefreshScheduled = true;
-        UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
-        {
-            _participantListRefreshScheduled = false;
-            ParticipantListView.ItemsSource = null;
-            UiDispatch.Enqueue(_dispatcher, DispatcherQueuePriority.Low, () =>
-            {
-                ParticipantListView.ItemsSource = ViewModel?.ParticipantListItems;
-            }, "StudioWorkspace.participant-list.rebind");
-        }, "StudioWorkspace.participant-list.clear");
+        _participantListRefresh.Schedule();
     }
 
     // Owner: the room panel is redundant with the Sources tab. The X on the

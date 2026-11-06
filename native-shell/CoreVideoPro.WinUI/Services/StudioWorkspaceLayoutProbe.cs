@@ -153,6 +153,7 @@ internal static class StudioWorkspaceLayoutProbe
                 if(((FrameworkElement)page.FindName("ProductionFooter")).Visibility!=Visibility.Visible) failures.Add("Returning to Studio did not restore production controls");
                 checks.Add($"Graphics private workspace fits inside the complete {width}x{height} shell; returning to Studio restores its production controls");
             }
+            await ParticipantListLifetimeProbe.CheckAsync(window, page, studio, checks, failures);
             await File.WriteAllTextAsync(Path.Combine(directory, "geometry.json"), JsonSerializer.Serialize(new { metrics, failures }, new JsonSerializerOptions { WriteIndented = true }));
             if (failures.Count > 0) throw new InvalidOperationException(string.Join("; ", failures));
         }

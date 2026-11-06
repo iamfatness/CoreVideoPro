@@ -36,6 +36,10 @@ Execution: reproduce pending clear/rebind at teardown, add a focused generation/
 
 Acceptance: no stale clear or rebind after unload; a new lifetime still refreshes correctly; normal roster updates remain functional.
 
+Implementation contract: a focused UI-thread scheduler owns the active generation and coalesces the entire clear/rebind pair. Both callbacks validate their captured generation before touching the ListView; an old callback cannot clear a new lifetime's pending flag. Unload invalidates the generation before unsubscribing. Load reconnects the current ViewModel and schedules a fresh bind. Rebind resolves the latest roster, and a reentrant notification during binding schedules one further refresh. Exceptions still reach the existing tagged dispatcher logger, while the current pending flag is reset so later updates can recover. A dispatcher refusal during shutdown is harmless; a later lifetime starts with a fresh pending flag.
+
+Validation: deterministic queued-phase tests cover unload before clear and before rebind, old callbacks draining after reload, coalescing/latest roster, reentrant updates, teardown during clear, visible failures and dispatcher shutdown. The compiled workspace probe alternates immediate and queued detachment over six reload cycles, verifies the unloaded list is untouched, and checks both latest-roster binding and live ViewModel notifications after reload. Run the compiled probe against the old implementation as a negative control, then against the fixed implementation. No local build or UI probe overlaps measured live media.
+
 ## Tiles — #1074
 
 Specification: retain the current four-second held-slot behavior, immediate explicit video-off/departure handling and truthful picture/black labels. Do not retune the unresolved owner policy or claim a network cause from symptoms.
