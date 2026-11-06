@@ -621,6 +621,7 @@ issue exists yet for this row; one will be filed, labeled `backlog`, when the
 |---|---|
 | [#1143](https://github.com/iamfatness/CoreVideoPro/issues/1143) | Investigate the full-suite ISO late-frame drop and held-frame count mismatch; isolated current/prior-build reruns pass but do not explain the retained failed recording. Preserve strict output acceptance. |
 | [#1157](https://github.com/iamfatness/CoreVideoPro/issues/1157) | Investigate a valid private Graphics preview request rejected during the full native run. Capture the RPC response and preserve explicit-null validation and pixel assertions. |
+| [#1158](https://github.com/iamfatness/CoreVideoPro/issues/1158) | Investigate the full-suite graphics cache failure after a lease is released. The isolated case passed. Preserve charged leases and bounded residency. |
 
 | Issue | Item |
 |---|---|
