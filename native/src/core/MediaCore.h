@@ -1072,6 +1072,7 @@ class MediaCore {
   // `zoom:<pid>`/`capture:<id>`, back-compat `isoParticipantIds` bare ids). The
   // canonical id + roster display name are resolved at request-build time.
   std::vector<std::string> recordingIsoParticipantIds_;
+  core::IsoDepartureTracker isoDepartureTracker_;
   double recordingStartedAtMs_ = 0;
   int recordingFailureCount_ = 0;
   int recordingRecoveryCount_ = 0;
@@ -1254,6 +1255,7 @@ class MediaCore {
   int64_t audioMonitorQueueDroppedFrames_ = 0;
   std::uint64_t audioMonitorIntentRevision_ = 0;
   int64_t audioMonitorUnderruns_ = 0;  // cumulative device-dry gaps (spec R5)
+  modules::MonitorDeliveryEvidence audioMonitorDeliveryEvidence_;
   bool audioMonitorFeedbackRisk_ = false;  // monitor endpoint == loopback endpoint (spec R6)
   // C7b: latest per-source compressor GR (published from the worker; read by
   // the audioMixSession export under audioOutputMutex_).
@@ -1431,6 +1433,7 @@ class MediaCore {
     int64_t monitorQueueDroppedFrames = 0;
     std::uint64_t monitorIntentRevision = 0;
     int64_t monitorUnderruns = 0;  // cumulative device-dry gaps (spec R5)
+    modules::MonitorDeliveryEvidence monitorDeliveryEvidence;
     bool monitorFeedbackRisk = false;
     // C7b: per-source compressor gain reduction this tick (dB, >0 only).
     std::map<std::string, double> compGainReductionDbBySource;

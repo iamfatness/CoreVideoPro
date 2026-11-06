@@ -1,5 +1,6 @@
 #pragma once
 #include "modules/Interfaces.h"
+#include "core/RenderTickPhases.h"
 #include <chrono>
 #include <condition_variable>
 #include <map>
@@ -11,6 +12,7 @@ namespace corevideo::core {
 // This mutex is a leaf: no encoder, pixel conversion, or core callback under it.
 class IsoVideoIngress {
  public:
+  enum class Delivery { Direct, Worker };
   struct Counters {
     uint64_t distinctSubmitted = 0, duplicateRejected = 0, queueOverflowed = 0;
   };
@@ -19,25 +21,34 @@ class IsoVideoIngress {
   }
   void observe(const std::vector<std::string>& selected,
                const std::vector<modules::VideoFrame>& frames,
-               const std::vector<modules::VideoFrame>& cpuArrivals,
-               int64_t arrival100ns, bool independentZoom = false) {
+               std::vector<modules::VideoFrame> cpuArrivals,
+               int64_t arrival100ns, bool independentZoom = false,
+               Delivery delivery = Delivery::Direct) {
     std::unordered_set<std::string> ids;
     for (const auto& id : selected) ids.insert(canonical(id));
     std::unordered_set<std::string> liveIds;
     for (const auto& frame : frames) liveIds.insert(canonical(frame.participantId));
     for (const auto& frame : cpuArrivals) liveIds.insert(canonical(frame.participantId));
+    RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoSelection);
     std::lock_guard<std::mutex> lock(mutex_);
+    RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoLockWait);
     // Keep a completed CPU view between conversion arrivals while that source
     // remains live. A disconnected or deselected source releases its lease.
     for (auto it = latest_.begin(); it != latest_.end();) {
       if (!ids.count(it->first) || !liveIds.count(it->first)) it = latest_.erase(it);
       else ++it;
     }
-    const auto admit = [&](const modules::VideoFrame& frame) {
+    RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoLatest);
+    const auto admit = [&](modules::VideoFrame frame) {
       if (!frame.hasPixels() && !frame.hasI420()) return;
       const auto id = canonical(frame.participantId);
       if (!ids.count(id) || id.rfind("media:", 0) == 0) return;
-      latest_[id] = frame;
+      RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoIngress);
+      // Only the synchronous fallback reads latest(). The live ISO worker
+      // consumes the queue, so retaining another pixel owner here made the
+      // next render tick retire an already-encoded multi-megabyte buffer.
+      if (delivery == Delivery::Direct) latest_[id] = frame;
+      RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoLatest);
       auto& counter = counters_[id];
       const auto prior = lastQueued_.find(id);
       const auto identity = std::make_pair(frame.sourceEpoch, frame.frameId);
@@ -45,6 +56,7 @@ class IsoVideoIngress {
         ++counter.duplicateRejected; return;
       }
       lastQueued_[id] = identity;
+      RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoIngress);
       size_t pending = 0;
       for (const auto& entry : pending_) if (entry.sourceId == id) ++pending;
       if (pending >= 4) {
@@ -52,11 +64,12 @@ class IsoVideoIngress {
           if (it->sourceId == id) { pending_.erase(it); ++counter.queueOverflowed; break; }
         }
       }
-      modules::IsoSourceVideoFrame entry{id, {}, frame};
-      entry.timelineTimestamp100ns = frame.captureTimestamp100ns > 0
-          ? frame.captureTimestamp100ns : arrival100ns;
+      modules::IsoSourceVideoFrame entry{id, {}, std::move(frame)};
+      entry.timelineTimestamp100ns = entry.frame.captureTimestamp100ns > 0
+          ? entry.frame.captureTimestamp100ns : arrival100ns;
       pending_.push_back(std::move(entry));
       ++counter.distinctSubmitted;
+      RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoQueue);
     };
     // An independent CPU stream has its own identities and time. Never relabel
     // it with the newer GPU image's identity or collapse a batch to one slot.
@@ -66,7 +79,10 @@ class IsoVideoIngress {
       const auto id = canonical(frame.participantId);
       if (!independentIds.count(id) && !(independentZoom && id.rfind("zoom:", 0) == 0)) admit(frame);
     }
-    for (const auto& frame : cpuArrivals) admit(frame);
+    // Transfer admitted arrivals all the way into the drain queue. Keeping
+    // this tick's vector as an extra owner could otherwise retire a payload
+    // on the render thread if the encoder consumed it before the tick ended.
+    for (auto& frame : cpuArrivals) admit(std::move(frame));
   }
   std::vector<modules::IsoSourceVideoFrame> latest(const std::vector<std::string>& selected) const {
     std::vector<modules::IsoSourceVideoFrame> result;
@@ -90,6 +106,7 @@ class IsoVideoIngress {
   }
   void clear() {
     std::lock_guard<std::mutex> lock(mutex_);
+    RenderTickPhases::markCurrent(RenderTickPhases::Phase::IsoLockWait);
     latest_.clear(); pending_.clear(); lastQueued_.clear(); counters_.clear();
   }
   void notify() { ready_.notify_one(); }
