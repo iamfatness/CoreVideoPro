@@ -1150,3 +1150,42 @@ TEST(JsonRpcServer, SpineSyncAndZoomSnapshotRunTheirEngineWorkWithoutCoreMutex) 
   }
   EXPECT_GT(corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load(), guardBefore);
 }
+
+TEST(JsonRpcServer, TerminalShutdownStopsProgramDeliveryBeforeWriterRetirement) {
+  class ShutdownCompositor final : public corevideo::modules::ICompositor {
+   public:
+    std::atomic<bool> stopped{false}, renderedAfterStop{false}, rendering{false};
+    bool stoppedDuringRender = false;
+    std::string rendererName() const override { return "shutdown-observer"; }
+    corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan&,
+        const std::vector<corevideo::modules::VideoFrame>&) override {
+      rendering = true;
+      if (stopped) renderedAfterStop = true;
+      rendering = false;
+      return {};
+    }
+    void stopProgramDelivery() override {
+      stoppedDuringRender = rendering.load();
+      stopped = true;
+    }
+  };
+  auto modules = corevideo::modules::createStubModules();
+  auto compositor = std::make_unique<ShutdownCompositor>();
+  auto* observer = compositor.get();
+  modules.compositor = std::move(compositor);
+  corevideo::core::MediaCore core(std::move(modules));
+  bool writerStopped = false, deliveryStoppedBeforeWriter = false;
+  corevideo::rpc::JsonRpcServer::WriterWaitTestHooks hooks;
+  hooks.stop = [&](bool published) {
+    if (!published) { writerStopped = true; deliveryStoppedBeforeWriter = observer->stopped; }
+  };
+  corevideo::rpc::JsonRpcServer server(core, {}, {}, {}, hooks);
+  std::istringstream input("{\"id\":\"shutdown\",\"type\":\"get-output-health\"}\n");
+  std::ostringstream output;
+  server.run(input, output);
+  EXPECT_TRUE(writerStopped);
+  EXPECT_TRUE(deliveryStoppedBeforeWriter);
+  EXPECT_TRUE(observer->stopped.load());
+  EXPECT_FALSE(observer->stoppedDuringRender);
+  EXPECT_FALSE(observer->renderedAfterStop.load());
+}
