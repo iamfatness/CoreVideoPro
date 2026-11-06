@@ -90,6 +90,32 @@ TEST(RecordingTrackWorker, FileFifoAbsorbsStallAndPreservesCapturePts) {
   for (int i = 0; i < 10; ++i) EXPECT_EQ(written[i], 100 + i);
 }
 
+// #1143: the late-frame fixture used to enqueue 11 pictures into a ten-picture
+// FIFO. An in-flight audio write can keep every picture queued, so the late
+// picture is deterministically evicted regardless of its timestamp.
+TEST(RecordingTrackWorker, ElevenPictureBurstEvictsLatePictureFromTenPictureFifo) {
+  std::promise<void> entered, release;
+  auto gate = release.get_future().share();
+  std::vector<int> written;
+  RecordingTrackWorker writer([] {}, [] {}, 10, 96, 10, true);
+  writer.post(RecordingTrackWorker::Kind::Audio, [&] { entered.set_value(); gate.wait(); });
+  const auto ready = entered.get_future().wait_for(std::chrono::seconds(2));
+  writer.finishStartup();
+  for (int id = 5000; id <= 5010; ++id)
+    writer.post(RecordingTrackWorker::Kind::Video, [&, id] { written.push_back(id); });
+  const auto queued = writer.evidence();
+  // Release before assertions: a failed assertion must not strand the worker.
+  writer.close(); release.set_value(); writer.join();
+  ASSERT_EQ(ready, std::future_status::ready);
+  EXPECT_EQ(queued.acceptedVideo, 11u);
+  EXPECT_EQ(queued.queuedVideo, 10u);
+  EXPECT_EQ(queued.droppedVideo, 1u);
+  EXPECT_EQ(queued.startupDroppedVideo, 0u);
+  EXPECT_EQ(writer.evidence().completedVideo, 10u);
+  ASSERT_EQ(written.size(), 10u);
+  for (int i = 0; i < 10; ++i) EXPECT_EQ(written[i], 5001 + i);
+}
+
 TEST(RecordingTrackWorker, OverflowEvictsOnlyThisFilesOldestPictureAndAudioIsSampleBounded) {
   std::promise<void> entered, release, fastWritten;
   auto gate = release.get_future().share();

@@ -2553,6 +2553,23 @@ TEST(EncoderRecordingSession, MediaFoundationIsoFrameStampedBehindTheLastHeldFra
   auto late = makeIsoI420("zoom:1", 640, 360, 5000, 40);
   late.timelineTimestamp100ns = audioEnd - 18'000'000;
   encoder->submitIsoVideo({late});
+  // #1143: this is a timestamp-placement test, not an overload drill. The late
+  // picture plus ten resumed pictures exceeds the ten-picture FIFO if its
+  // owner is still writing audio. Observe completion (not merely dequeue)
+  // before submitting the next burst. Keep the exact final loss assertions.
+  bool lateCompleted = false;
+  const auto lateDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  do {
+    const auto progress = encoder->session();
+    if (progress.isoStreams.size() == 1) {
+      const auto& track = progress.isoStreams[0];
+      lateCompleted = track.writeQueue.completed == 52 && track.videoFramesPlacedAtHold == 1;
+      if (lateCompleted || track.writeQueue.dropped != 0) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  } while (std::chrono::steady_clock::now() < lateDeadline);
+  // One arming submission + 50 live pictures + one late picture completed.
+  ASSERT_TRUE(lateCompleted) << "late picture did not complete at the held boundary";
   // Then the camera runs normally again with its audio.
   for (int i = 1; i <= 10; ++i) {
     const int64_t at = audioEnd + i * kTick;
@@ -2623,6 +2640,8 @@ TEST(EncoderRecordingSession, MediaFoundationIsoFrameStampedBehindTheLastHeldFra
   EXPECT_GE(pts.size(), 61u + 25u) << "no held frames bridged the 30 s video stall";
   EXPECT_EQ(static_cast<size_t>(iso.heldVideoFrameCount), pts.size() - 61u);
   EXPECT_EQ(iso.videoFramesPlacedAtHold, 1);
+  EXPECT_EQ(iso.writeQueue.dropped, 0u);
+  EXPECT_EQ(iso.writeQueue.startupDropped, 0u);
   EXPECT_EQ(iso.warning.find("dropped video"), std::string::npos) << iso.warning;
   EXPECT_EQ(iso.videoFrameCount, 61) << "50 live + the late frame + 10 resumed";
   // The file still finalizes to its real end: A + 0.2 s of resumed media.
