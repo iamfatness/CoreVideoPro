@@ -49,23 +49,35 @@ async function take(scene) {
   await invoke('automation.toggle');
   const started = Date.now();
   let autoChangedProgram = false;
+  let transitionStarted = null;
   while (Date.now() - started < 60000) {
     const state = await read('/state');
     const native = (await read('/snapshot')).snapshot;
-    const ids = (state.nativeProgramVideoSources || []).filter(s => s.kind === 'participant-video').map(s => String(s.participantId));
+    // The last published frame can still be a dissolve when the transition clock
+    // already reports completed. Inspect that frame's layer identities as well.
+    const layers = native.programFrame?.videoSources || [];
+    const ids = layers.filter(s => s.kind === 'participant-video').map(s => String(s.participantId));
+    const transition = native.takeTransition;
+    const transitionFrame = layers.some(s => /^(take-in:|take-out:)/.test(s.layerId));
+    const settled = !transitionFrame && (!transition || ['idle', 'completed'].includes(transition.status));
+    if (settled) transitionStarted = null;
+    else transitionStarted ??= Date.now();
+    if (transitionStarted !== null && Date.now() - transitionStarted > Math.max(2000, (transition?.durationMs || 0) + 1500))
+      throw Error('Program transition failed to settle within its bounded allowance');
     const bindings = native.autoProduction?.slotBindings || [];
     const boundIds = bindings.map(b => String(b.personId));
-    const sample = {elapsedMs:Date.now()-started, automation:state.automationOn, captions:state.autoCaptions, shellScene:state.activeSceneId, nativeScene:state.nativeActiveSceneId, programIds:ids, rule:native.autoProduction?.ruleId, recommendation:native.autoProduction?.recommendedSceneId, bindings, diagnostic:state.automationDiagnostic, canTake:state.canTake, previewSceneId:state.previewSceneId, commandStatus:state.commandStatus};
+    const sample = {elapsedMs:Date.now()-started, automation:state.automationOn, captions:state.autoCaptions, shellScene:state.activeSceneId, nativeScene:native.sceneId, programIds:ids, layers, transition, settled, rule:native.autoProduction?.ruleId, recommendation:native.autoProduction?.recommendedSceneId, bindings, diagnostic:state.automationDiagnostic, canTake:state.canTake, previewSceneId:state.previewSceneId};
     result.samples.push(sample);
     if (state.autoCaptions) throw Error('Auto enabled nonexistent captions');
-    if (new Set(ids).size !== ids.length || ids.some(id => !remoteIds.has(id))) throw Error('Program has duplicate or ineligible remote binding');
+    if (settled && (new Set(ids).size !== ids.length || ids.some(id => !remoteIds.has(id)))) throw Error('Settled Program has duplicate or ineligible remote binding');
     if (new Set(boundIds).size !== boundIds.length || boundIds.some(id => !remoteIds.has(id))) throw Error('Recommendation has duplicate or ineligible remote binding');
-    if (state.activeSceneId !== baseline && state.nativeActiveSceneId === state.activeSceneId) autoChangedProgram = true;
+    if (settled && state.activeSceneId !== baseline && native.sceneId === state.activeSceneId) autoChangedProgram = true;
     await sleep(500);
   }
   check(autoChangedProgram, 'Auto changed Program and native confirmed the scene');
   check(result.samples.every(s => s.automation && !s.captions), 'Auto stayed active without captions');
-  check(result.samples.every(s => new Set(s.programIds).size === s.programIds.length), 'all observed Program participant identities unique');
+  const settledSamples = result.samples.filter(s => s.settled);
+  check(settledSamples.length > 0 && settledSamples.every(s => new Set(s.programIds).size === s.programIds.length), 'settled Program participant identities unique');
   check((await read('/state')).nativeLowerThirdVisible, 'legacy lower third was actually visible before Hide');
   await invoke('graphics.lowerThird.set', [false]);
   await sleep(3000);
