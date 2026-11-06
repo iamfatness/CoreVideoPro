@@ -242,6 +242,13 @@ class D3D11Compositor final : public ICompositor {
   }
 
   ~D3D11Compositor() override {
+    // Render production has ceased. Stop the scheduled consumer before monitor
+    // cleanup can wait, without releasing textures those owners may still hold.
+    // currentProgramBuffer releases its mutex before callbacks are joined.
+    const auto buffer = currentProgramBuffer();
+    if (buffer) buffer->stop();
+    if (pendingComposition_ && pendingComposition_->buffer != buffer)
+      pendingComposition_->buffer->stop();
     gradeWorker_.reset();
     monitorWorker_.reset();
     auxiliaryMonitorWorker_.reset();
