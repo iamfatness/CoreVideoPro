@@ -95,7 +95,10 @@ internal sealed partial class SourceInspectVideoProbe
                         if (host.ReadPixelForProbe() is not { } pixel) continue;
                         values[i].Add(pixel);
                         var channels = new[] { (pixel & 255), (pixel >> 8) & 255, (pixel >> 16) & 255 };
-                        if (channels[expected] < 140 || channels.Where((_, c) => c != expected).Any(v => v > 30))
+                        // Limited-range I420 plus the moving luma ramp leaves small
+                        // secondary components after conversion. These disjoint bands
+                        // distinguish the three primaries without demanding RGB zeros.
+                        if (channels[expected] < 180 || channels.Where((_, c) => c != expected).Any(v => v > 64))
                             throw new InvalidOperationException($"{phase}: row {i + 1} expected channel {expected}, presented {pixel:X8}");
                         if (host.SurfaceState?.NaturalSourceWidth != 1920 || host.SurfaceState.NaturalSourceHeight != 1080)
                             throw new InvalidOperationException($"{phase}: source dimensions changed");
