@@ -108,6 +108,24 @@ internal static class SceneNamingIntegrationProbe
         if (reviewDirectory is not null)
             await ReviewImageWriter.SaveAsync(page, Path.Combine(reviewDirectory, "scene-naming-builder.png"));
 
+        var builderTargetId = studio.Scenes.First(scene => !scene.Id.StartsWith("custom-", StringComparison.Ordinal)).Id;
+        Grid? builderRow = null;
+        await Eventually(() => (builderRow = Descendants(page).OfType<Grid>().FirstOrDefault(grid =>
+            grid.DataContext is SceneDisplayItem item && item.Id == builderTargetId && grid.ContextFlyout is MenuFlyout)) is not null);
+        var builderMenu = (MenuFlyout)builderRow!.ContextFlyout;
+        builderMenu.ShowAt(builderRow);
+        var builderRename = builderMenu.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Rename scene");
+        await Eventually(() => builderRename.IsLoaded);
+        ((IInvokeProvider)new MenuFlyoutItemAutomationPeer(builderRename).GetPattern(PatternInterface.Invoke)).Invoke();
+        dialog = await OpenDialog(page.XamlRoot);
+        Descendants(dialog).OfType<TextBox>().Single(text => text.Name == "SceneNameField").Text = "Builder opening desk";
+        Invoke(DialogButton(dialog, "PrimaryButton"));
+        await Eventually(() => FindDialog(page.XamlRoot) is null);
+        Require(studio.Scenes.Single(scene => scene.Id == builderTargetId).Name == "Builder opening desk" &&
+            studio.PreviewSceneId == namedId && studio.PreviewScene.Name == "Opening interview" && studio.ActiveSceneId == programId,
+            "Builder context rename targeted the selected scene instead of its row or changed Preview/Program");
+        checks.Add("compiled Builder context menu renames its own row while preserving the selected Preview and on-air scene");
+
         studio.NewDynamicGalleryCommand.Execute(null);
         var wallId = studio.PreviewSceneId;
         studio.ActiveSceneId = wallId;
