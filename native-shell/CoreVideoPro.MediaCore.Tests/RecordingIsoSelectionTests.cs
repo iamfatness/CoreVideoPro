@@ -13,6 +13,7 @@ public sealed class RecordingIsoSelectionTests
         Assert.Equal(new[] { "zoom:a", "zoom:b" }, selection.Resolve(true, true, selected, ["zoom:a", "zoom:b"], selected));
         Assert.Equal(new[] { "zoom:a", "zoom:b" }, selection.Resolve(true, true, selected, [], selected));
         Assert.Equal(new[] { "zoom:a", "zoom:b" }, selection.Resolve(true, true, selected, ["zoom:c", "zoom:b"], selected));
+        Assert.Equal(new[] { "zoom:a", "zoom:b" }, selection.Resolve(true, true, selected, ["zoom:c", "zoom:b"], selected.Append("zoom:unselected")));
         selection.RefreshIntent();
         Assert.Equal(selected, selection.Resolve(true, true, selected, ["zoom:c", "zoom:b"], selected));
     }

@@ -33,8 +33,9 @@ public sealed class RecordingIsoSelection
                 Reset();
                 return IsoSourceSelectionResolver.Resolve(enabled, selected, eligible);
             }
-            var assignedSet = assigned.ToHashSet(StringComparer.Ordinal);
             var selectedSet = selected.ToHashSet(StringComparer.Ordinal);
+            // Assigning an unrelated, unselected source is not an ISO edit.
+            var assignedSet = assigned.Where(selectedSet.Contains).ToHashSet(StringComparer.Ordinal);
             if (!_refreshIntent && _selected is not null && _selected.SetEquals(selectedSet)
                 && _assigned is not null && _assigned.SetEquals(assignedSet)) return _active;
             var candidates = _active.Where(assignedSet.Contains).Concat(eligible);
