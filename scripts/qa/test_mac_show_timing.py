@@ -23,6 +23,10 @@ for line in sys.stdin:
     if request.get('type') == 'no-response': continue
     time.sleep(request.get('testDelay', 0))
     print(json.dumps({'id': request['id'], 'ok': True}), flush=True)
+    if request.get('nativeTimingCount'):
+        time.sleep(.02)  # diagnostic logger can arrive after the response reader
+        for index in range(request['nativeTimingCount']):
+            print('[writer-timing] sojourn_us=7 flush_us=11 bytes=32', file=sys.stderr, flush=True)
 """
 
 
@@ -75,6 +79,24 @@ class CommandTiming(unittest.TestCase):
         self.core.request({"type": "media-core-sync"})
         self.assertEqual(len(self.core.request_evidence), 4096)
         self.assertEqual(self.core.evidence_truncated, 1)
+        self.assertEqual(len(self.core.round_trips), before + 1)
+
+    def test_late_native_phases_are_retained_with_bounded_omissions(self):
+        before = len(self.core.round_trips)
+        self.core.request({"type": "media-core-sync", "nativeTimingCount": 600,
+                           "secret": "never-report-native-arguments"})
+        deadline = time.monotonic() + 3
+        while len(self.core.native_timing) + self.core.native_timing_omitted < 600 and time.monotonic() < deadline:
+            REAL_SLEEP(.001)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.core.kill()
+        evidence = json.loads(self.path.read_text())
+        self.assertTrue(evidence["stderrDrained"])
+        self.assertEqual(len(evidence["nativeTiming"]), 512)
+        self.assertEqual(evidence["nativeTimingOmitted"], 88)
+        self.assertTrue(all(row["observedMs"] >= 0 and "flush_us=11" in row["line"]
+                            for row in evidence["nativeTiming"]))
+        self.assertNotIn("never-report-native-arguments", json.dumps(evidence))
         self.assertEqual(len(self.core.round_trips), before + 1)
 
 

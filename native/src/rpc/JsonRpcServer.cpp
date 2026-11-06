@@ -562,8 +562,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
             std::chrono::duration_cast<std::chrono::milliseconds>(wStart - enqueuedAt).count();
         output << message << '\n';
         output.flush();
+        const auto flushedAt = std::chrono::steady_clock::now();
         const auto flushMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 std::chrono::steady_clock::now() - wStart)
+                                 flushedAt - wStart)
                                  .count();
         // A response that sat >500ms before it could be written, or any single
         // write that blocked >200ms in flush(), means the stdout pipe is the
@@ -572,6 +573,12 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           ::corevideo::core::nativeLogf("[writer] %s sojourn=%lldms flush=%lldms bytes=%zu hiDepth=%zu loDepth=%zu\n",
                        isResponse ? "RESPONSE" : "frame", static_cast<long long>(sojournMs),
                        static_cast<long long>(flushMs), message.size(), hiDepth, loDepth);
+        }
+        if (isResponse) {
+          ::corevideo::core::nativeVerboseLogf("[writer-timing] sojourn_us=%lld flush_us=%lld bytes=%zu\n",
+              static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(wStart - enqueuedAt).count()),
+              static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(flushedAt - wStart).count()),
+              message.size());
         }
         lock.lock();
       }
@@ -1231,6 +1238,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         std::optional<Json> lockFreeResponse;
         std::optional<DeferredEngineSpine> deferredSpine;
         bool handledWithoutCore = false;
+        long long capacityWaitUs = 0, coreWaitUs = 0;
         if ((reqType == "zoom-leave" || reqType == "zoom-cancel") &&
             (!request->get("protocolVersion") || contracts::validateProtocolVersion(*request->get("protocolVersion")))) {
           std::lock_guard<std::mutex> lock(joinMx);
@@ -1273,8 +1281,13 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           response = std::move(*lockFreeResponse);
         } else {
           // Backpressure is admitted before acquiring the render lock.
+          const auto capacityStarted = std::chrono::steady_clock::now();
           assembly.waitForCapacity();
+          const auto capacityFinished = std::chrono::steady_clock::now();
           auto lock = lockCommandCore();
+          const auto coreAcquired = std::chrono::steady_clock::now();
+          capacityWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(capacityFinished - capacityStarted).count();
+          coreWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(coreAcquired - capacityFinished).count();
           // #1048: an over-budget command hold names its command type in the
           // [lock-hold-attribution] line (production; [command-lock] is verbose only).
           const CommandHoldDetail commandDetail(reqType);
@@ -1318,6 +1331,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto engineHalfMs = engineHalfUs / 1000;
         const auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(h1 - h0).count();
         const auto heldUs = std::chrono::duration_cast<std::chrono::microseconds>(h1 - h0).count();
+        ::corevideo::core::nativeVerboseLogf("[request-timing] type=%.80s queue_us=%lld capacity_us=%lld core_wait_us=%lld handle_us=%lld engine_us=%lld deferred=%u\n",
+            reqType.c_str(), static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(dequeuedAt - enqueuedAt).count()),
+            capacityWaitUs, coreWaitUs, static_cast<long long>(heldUs), engineHalfUs, capture ? 1u : 0u);
         if (heldUs > core::LockHoldGuardrail::kCommandHandleBudgetUs) {
           ::corevideo::core::nativeVerboseLogf("[command-lock] type=%.80s held_us=%lld engine_half_us=%lld capture_deferred=%u\n",
               reqType.c_str(), static_cast<long long>(heldUs), engineHalfUs, capture ? 1u : 0u);

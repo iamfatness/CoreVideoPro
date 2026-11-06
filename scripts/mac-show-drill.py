@@ -116,6 +116,8 @@ TARGET_OUTPUT_FPS = 60.0
 MIN_LOAD_FPS = 59.5
 MAX_LOAD_RENDER_MS = 10.0
 MAX_DROPPED_FRAMES = 0
+NATIVE_TIMING_PREFIXES = ("[request-timing]", "[response-timing]", "[writer-timing]",
+                          "[req]", "[cmd]", "[response]", "[writer]", "[command-lock]")
 
 
 class Core:
@@ -132,10 +134,13 @@ class Core:
         self.evidence_truncated = 0
         self.events = []
         self.stderr = []
+        self.native_timing = []
+        self.native_timing_omitted = 0
         self.next_id = 1
         self.round_trips = []  # (type, seconds) per answered request
         threading.Thread(target=self._read_stdout, daemon=True).start()
-        threading.Thread(target=self._read_stderr, daemon=True).start()
+        self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
+        self.stderr_reader.start()
 
     def _read_stdout(self):
         for line in self.proc.stdout:
@@ -153,6 +158,12 @@ class Core:
     def _read_stderr(self):
         for line in self.proc.stderr:
             self.stderr.append(line.rstrip())
+            if line.startswith(NATIVE_TIMING_PREFIXES):
+                if len(self.native_timing) < 512:
+                    self.native_timing.append({"observedMs": (time.monotonic() - self.started_at) * 1000,
+                                               "line": line.rstrip()})
+                else:
+                    self.native_timing_omitted += 1
 
     def request(self, body, timeout=6.0, step=None):
         rid = f"drill-{self.next_id}"
@@ -181,7 +192,7 @@ class Core:
             return
         reader = self.response_times.get(rid)
         diagnostics = [line for line in self.stderr[diagnostic_start:]
-                       if line.startswith(("[render]", "[lock-guardrail]", "[video-out]"))]
+                       if line.startswith(("[render]", "[lock-guardrail]", "[video-out]") + NATIVE_TIMING_PREFIXES)]
         self.request_evidence.append({
             "id": rid, "type": body.get("type", "?"), "step": step,
             "commandTypes": [command.get("type", "?") for command in body.get("commands", [])],
@@ -200,13 +211,17 @@ class Core:
     def kill(self):
         self.proc.kill()
         self.proc.wait(timeout=10)
+        self.stderr_reader.join(timeout=1)
         if self.evidence_path:
             os.makedirs(os.path.dirname(os.path.abspath(self.evidence_path)), exist_ok=True)
             with open(self.evidence_path, "w", encoding="utf-8") as output:
                 json.dump({"clock": "monotonic", "commandP99LimitMs": MAX_COMMAND_P99_MS,
                            "requestsOmitted": self.evidence_truncated,
                            "requests": self.request_evidence,
-                           "scope": "Caller/reader timing, not native execution attribution; no command arguments"}, output, indent=2)
+                           "nativeTiming": self.native_timing,
+                           "nativeTimingOmitted": self.native_timing_omitted,
+                           "stderrDrained": not self.stderr_reader.is_alive(),
+                           "scope": "Caller/reader timing plus opt-in native phase durations; observedMs is stderr receipt time, not a native timestamp or request correlation; no command arguments"}, output, indent=2)
             print(f"Command timing evidence: {self.evidence_path} ({self.evidence_truncated} omitted)")
         for request in sorted(self.request_evidence, key=lambda row: row["durationMs"], reverse=True)[:5]:
             print("Command timing: " + json.dumps(request, separators=(",", ":")))
