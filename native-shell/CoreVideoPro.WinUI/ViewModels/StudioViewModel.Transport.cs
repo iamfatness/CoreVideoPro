@@ -30,7 +30,11 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     [ObservableProperty]
     private bool _streamingRequested;
 
-    partial void OnRecordingRequestedChanged(bool value) => OnPropertyChanged(nameof(RecordingLabel));
+    partial void OnRecordingRequestedChanged(bool value)
+    {
+        if (!value) _showInputsCoordinator.ResetRecordingIsoSelection();
+        OnPropertyChanged(nameof(RecordingLabel));
+    }
     partial void OnStreamingRequestedChanged(bool value) => OnPropertyChanged(nameof(StreamingLabel));
 
     internal NativeMediaCoreStateSnapshot? NativeControlSnapshot => _bridge.Running ? _bridge.LastSnapshot : null;
