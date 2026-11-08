@@ -73,6 +73,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "transport.virtualcam.name.set",
         "scene.select", "scene.cueWithRoutes", "scene.route.set", "scene.list", "scene.restoreStarters", "scene.dynamicGallery.create", "view.setMode",
         "source.capture.online.set", "input.assign", "input.unassign", "input.name", "input.inShow.set", "source.dropout.set",
+        "media.rundown.load", "media.rundown.preview", "media.rundown.take",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
         "graphics.clock.control", "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
@@ -352,6 +353,16 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 }
                 _vm.SetViewModeCommand.Execute(viewMode);
                 return ControlInvokeResult.Success;
+
+            case "media.rundown.load":
+                return _vm.LoadVoltRundownClip(Str(args, 0));
+            case "media.rundown.preview":
+                return _vm.PreviewVoltRundownClip(Str(args, 0), Str(args, 1), Str(args, 2));
+            case "media.rundown.take":
+                var previewError = _vm.CheckVoltRundownPreview(Str(args, 0), Str(args, 1), Str(args, 2));
+                return previewError is null
+                    ? await RunTake(_vm.TakeCommand.CanExecute(null), _vm.TakeForControlAsync).ConfigureAwait(true)
+                    : ControlInvokeResult.Fail(previewError);
 
             // ---- Show inputs --------------------------------------------------------
             case "input.assign":
