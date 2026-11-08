@@ -20,7 +20,8 @@ public sealed record MediaBinGroupDescriptor(
 
 public static class MediaBinClassifier
 {
-    public static readonly string[] MediaAssetKinds = ["stinger", "lower-third", "audio-bed", "slate"];
+    public const string VoltRundownFolder = "Volt Rundown";
+    public static readonly string[] MediaAssetKinds = ["stinger", "lower-third", "audio-bed", "slate", "volt-rundown"];
 
     private static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -75,6 +76,12 @@ public static class MediaBinClassifier
 
     public static string? ClassifyFile(string relativePath, string fileName)
     {
+        if (relativePath.Replace('\\', '/').StartsWith(VoltRundownFolder + "/", StringComparison.OrdinalIgnoreCase) &&
+            Path.GetExtension(fileName).Equals(".mp4", StringComparison.OrdinalIgnoreCase))
+        {
+            return "volt-rundown";
+        }
+
         if (IsSlateAsset(relativePath, fileName))
         {
             return "slate";
@@ -157,6 +164,7 @@ public static class MediaBinClassifier
         "lower-third" => "Lower-third",
         "audio-bed" => "Audio bed",
         "slate" => "Slate",
+        "volt-rundown" => VoltRundownFolder,
         _ => kind
     };
 

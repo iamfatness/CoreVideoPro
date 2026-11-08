@@ -34,6 +34,7 @@ public sealed partial class TransportCoordinator
     private bool _recordingToggleInFlight;
     private bool _streamToggleInFlight;
     private bool _takeInFlight;
+    internal bool TakeInFlight => _takeInFlight;
     private string? _recordingPreviousSessionId;
 
     // Native observations can retain the previous take's terminal result while

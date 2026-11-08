@@ -9,6 +9,27 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class MediaBinServiceTests
 {
     [Fact]
+    public void LoadGroups_SeparatesVoltRundownCutsFromIncompleteRenders()
+    {
+        var root = Directory.CreateTempSubdirectory();
+        try
+        {
+            var bin = Directory.CreateDirectory(Path.Combine(root.FullName, "Volt Rundown"));
+            var working = Directory.CreateDirectory(Path.Combine(bin.FullName, ".volt-working"));
+            File.WriteAllBytes(Path.Combine(working.FullName, "partial.mp4"), [1]);
+            File.WriteAllBytes(Path.Combine(bin.FullName, "package-a123.mp4"), [1]);
+
+            var group = Assert.Single(new MediaBinService(root.FullName).LoadGroups());
+            Assert.Equal("Volt Rundown", group.Label);
+            Assert.Equal("package-a123", Assert.Single(group.Assets).Name);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public void ImportFiles_ProbesImageDimensionsForSceneFraming()
     {
         var tempFolder = Path.Combine(Path.GetTempPath(), $"corevideo-media-{Guid.NewGuid():N}");

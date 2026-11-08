@@ -125,6 +125,15 @@ public static class ControlActionRegistry
             new("view.setMode", "Set view mode", "Set the operator view (program/preview/program-preview/multiview); programPreview is accepted as a legacy alias.",
                 new[] { new ControlParam("mode", s, true, ViewModeContract.SupportedModes) }),
 
+            new("media.rundown.load", "Load Volt clip", "Refresh the local media bin and return the staged clip's source id.",
+                [new ControlParam("clip", s, true, "Staged clip key")]),
+            new("media.rundown.preview", "Preview Volt clip", "Cue a staged clip to a named scene route on Preview.",
+                [new ControlParam("clip", s, true, "Staged clip key"), new ControlParam("scene", s, true, "Scene id"),
+                 new ControlParam("route", s, false, "Route id; optional in a scene with one eligible route")]),
+            new("media.rundown.take", "Take Volt clip", "Take the specified staged clip when it is still on Preview.",
+                [new ControlParam("clip", s, true, "Staged clip key"), new ControlParam("scene", s, true, "Scene id"),
+                 new ControlParam("route", s, false, "Route id; optional in a scene with one eligible route")]),
+
             // ---- Show Inputs ------------------------------------------------------------
             new("input.assign", "Assign input", "Assign a source to a Show Input slot (1-10).",
                 new[]
