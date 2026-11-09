@@ -82,6 +82,23 @@ std::string canonicalVideoCodecName(const std::string& codec) {
   return "h264";
 }
 
+EncoderProbeKey recordingProbeKey(const RecordingSessionRequest& request) {
+  EncoderProbeKey key{
+      canonicalVideoCodecName(request.videoCodec.empty() ? "h264" : request.videoCodec),
+      request.width > 0 ? request.width : kDefaultWidth,
+      request.height > 0 ? request.height : kDefaultHeight,
+      request.fps > 0 ? request.fps : kDefaultFps};
+  // Use the largest known canvas for the shared Program and ISO encoder budget.
+  for (const auto& source : request.isoSources) {
+    if (source.targetWidth > 0 && source.targetHeight > 0 &&
+        int64_t{source.targetWidth} * source.targetHeight > int64_t{key.width} * key.height) {
+      key.width = source.targetWidth;
+      key.height = source.targetHeight;
+    }
+  }
+  return key;
+}
+
 // The input pixel format a writer accepts. Program keeps BGRA (RGB32); ISO Zoom
 // sources feed NV12 so raw I420 needs no CPU color-convert (spec §2b) — a cheap
 // plane interleave (below) runs on the async encoder thread, never a lock.
@@ -1281,6 +1298,8 @@ struct IsoWriterEntry {
   bool comInitialized = false;
   bool finalized = false;
   bool opened = false;
+  int targetWidth = 0;
+  int targetHeight = 0;
   // #482: the size this writer opened at. An MP4 video track has one size for
   // its lifetime, so later frames are conformed to this, never written at
   // whatever size they happen to arrive as.
@@ -1330,7 +1349,19 @@ void publishIsoTrack(IsoWriterEntry& entry) {
   entry.snapshot = std::move(status);
 }
 
-// Prepare a real source's native geometry without retaining its pixel payload.
+std::pair<int, int> isoWriterDimensions(const IsoWriterEntry& entry, const VideoFrame& frame) {
+  if (frame.hasI420()) {
+    // Zoom camera frames arrive as I420. Changes in delivered size do not
+    // invalidate a writer already prepared at the selected camera size.
+    if (entry.targetWidth > 0 && entry.targetHeight > 0) {
+      return {entry.targetWidth, entry.targetHeight};
+    }
+    return {frame.i420Width, frame.i420Height};
+  }
+  return {frame.pixelWidth, frame.pixelHeight};
+}
+
+// Prepare a real source's recording geometry without retaining its pixel payload.
 // Opening happens only on that file's worker, before the shared take begins.
 bool prepareIsoWriter(IsoWriterEntry& entry, int w, int h, VideoInput input,
                       const RecordingSessionRequest& request, bool resetPreparationFormat = false) {
@@ -1341,7 +1372,7 @@ bool prepareIsoWriter(IsoWriterEntry& entry, int w, int h, VideoInput input,
   std::string error;
   if (entry.opened && resetPreparationFormat) {
     // Still Preparing: no take samples have entered this file. Refresh a source
-    // whose native geometry changed while another selected source was unready.
+    // whose writer format changed while another selected source was unready.
     if (!entry.writer.finalize(&error, true)) {
       entry.failed = true;
       entry.warning = "ISO preparation reset failed for " + entry.displayName + ": " + error;
@@ -1350,8 +1381,8 @@ bool prepareIsoWriter(IsoWriterEntry& entry, int w, int h, VideoInput input,
     entry.opened = false;
   }
   if (!entry.opened) {
-    // Lazy open sized to this source's native frame (no scaling). Zoom I420
-    // → NV12 input; BGRA (capture, ISO-3) → RGB32 input.
+    // Open at the recording canvas. Zoom I420 uses NV12 input and is
+    // conformed as needed. BGRA capture uses RGB32 at its native size.
     // #286: the AAC audio stream MUST be added UP FRONT — before
     // BeginWriting — or AddStream fails 0xC00D36B2 and the ISO silently
     // becomes a track-less/audio-less file. ISO stems are uniformly 48kHz
@@ -1409,9 +1440,8 @@ void writeIsoVideo(IsoWriterEntry& entry, const IsoSourceVideoFrame& src,
     return;
   }
   std::string error;
-  if (!prepareIsoWriter(entry, haveI420 ? frame.i420Width : frame.pixelWidth,
-                        haveI420 ? frame.i420Height : frame.pixelHeight,
-                        haveI420 ? VideoInput::Nv12 : VideoInput::Bgra, request)) return;
+  const auto [width, height] = isoWriterDimensions(entry, frame);
+  if (!prepareIsoWriter(entry, width, height, haveI420 ? VideoInput::Nv12 : VideoInput::Bgra, request)) return;
   bool ok = false;
   entry.writeStallQa.beforeWrite(entry.sourceId, entry.videoFrameCount);
   if (haveI420) {
@@ -1603,11 +1633,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // sessions may take none at 4K60 — so the cache is keyed by the whole tuple
     // and the probe is refreshed (rate-limited, and skipped outright while a
     // recording is live) whenever the tuple changes.
-    EncoderCapacityCache::instance().prewarm(EncoderProbeKey{
-        canonicalVideoCodecName(request.videoCodec.empty() ? "h264" : request.videoCodec),
-        request.width > 0 ? request.width : kDefaultWidth,
-        request.height > 0 ? request.height : kDefaultHeight,
-        request.fps > 0 ? request.fps : kDefaultFps});
+    EncoderCapacityCache::instance().prewarm(recordingProbeKey(request));
   }
 
   OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) override {
@@ -1702,11 +1728,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       isoArmWait_ = {};
       if (!request_.isoSources.empty() || !request_.isoParticipantIds.empty() ||
           !session_.isoParticipantIds.empty()) {
-        isoArmWait_ = EncoderCapacityCache::instance().awaitProbe(EncoderProbeKey{
-            canonicalVideoCodecName(request_.videoCodec.empty() ? "h264" : request_.videoCodec),
-            request_.width > 0 ? request_.width : kDefaultWidth,
-            request_.height > 0 ? request_.height : kDefaultHeight,
-            request_.fps > 0 ? request_.fps : kDefaultFps});
+        isoArmWait_ = EncoderCapacityCache::instance().awaitProbe(recordingProbeKey(request_));
       }
       // A capacity probe transiently occupies hardware encoder sessions; it must
       // never compete with a live show for them.
@@ -2020,12 +2042,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       if (entry.worker && !muxEpoch_.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> preparationLock(epochMutex_);
         // Formats become fixed together when the last selected writer is ready.
-        // Until then, a changed source geometry invalidates its preparation.
+        // Until then, a changed writer format invalidates its preparation.
         if (preparedIsoTracks_.load(std::memory_order_acquire) != requiredIsoTracks_) {
           if (source.frame.hasI420() || source.frame.hasPixels()) {
             const bool i420 = source.frame.hasI420();
-            const int width = i420 ? source.frame.i420Width : source.frame.pixelWidth;
-            const int height = i420 ? source.frame.i420Height : source.frame.pixelHeight;
+            const auto [width, height] = isoWriterDimensions(entry, source.frame);
             const auto input = i420 ? VideoInput::Nv12 : VideoInput::Bgra;
             if (entry.prepared.load(std::memory_order_acquire) &&
                 (width != entry.preparationWidth || height != entry.preparationHeight || input != entry.preparationInput)) {
@@ -2297,7 +2318,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // telling anybody. `lookup()` is non-blocking by contract — this call site
     // runs on the command path — so a cold cache reports "pending" and we fall
     // back to exactly the old assumed numbers, loudly.
-    const EncoderProbeKey probeKey{canonicalVideoCodecName(codec), width, height, fps};
+    const auto probeKey = recordingProbeKey(request_);
     const auto probe = EncoderCapacityCache::instance().lookup(probeKey);
     const auto capacity = toIsoEncoderCapacity(probe, /*reservedForProgram=*/1);
     isoCapacitySummary_ = probe.describe();
@@ -2397,9 +2418,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       return;
     }
 
-    // ISO writers: pre-assign ISO-NN-<SafeName>.mp4 in selection order (the writer
-    // itself opens LAZILY at the source's first frame — no 0-byte tails, native
-    // size, NV12 for Zoom I420). #286 per-writer reset lives in Mp4Writer::open().
+    // Assign ISO-NN-<SafeName>.mp4 in selection order. Each writer opens after
+    // real pixels arrive, at the selected canvas for Zoom cameras or native size
+    // for other inputs.
     isoRequest_ = std::make_shared<const RecordingSessionRequest>(request_);
     isoWriters_.reserve(isoSel.size());
     std::map<std::string, int> nameCollisions;
@@ -2410,6 +2431,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       entry.sourceId = isoSel[i].sourceId;
       entry.displayName = isoSel[i].displayName.empty() ? isoSel[i].sourceId : isoSel[i].displayName;
       entry.hasAudio = isoSel[i].hasAudio;  // ISO-3: video-only for an unpaired capture source
+      entry.targetWidth = isoSel[i].targetWidth;
+      entry.targetHeight = isoSel[i].targetHeight;
       entry.encoderPath = isoPlacement[i].path;
       entry.encoderReason = isoPlacement[i].reason;
       std::string safe = sanitizeForFilename(entry.displayName, entry.sourceId);

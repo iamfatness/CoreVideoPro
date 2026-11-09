@@ -137,6 +137,13 @@ ZoomEngineRuntime::Config ZoomEngineRuntime::loadConfig() {
   return config;
 }
 
+std::pair<int, int> ZoomEngineRuntime::cameraMaxDimensions() const {
+  const int tier = cameraMaxResolution_.load(std::memory_order_relaxed);
+  if (tier == ZoomSubscriptionResolutionPolicy::k360P) return {640, 360};
+  if (tier == ZoomSubscriptionResolutionPolicy::k720P) return {1280, 720};
+  return {1920, 1080};
+}
+
 bool ZoomEngineRuntime::configured() const {
   // #1030: lock-free. MediaCore asks this under coreMutex on the sub-ms audio
   // gather; taking mutex_ there (held across event handling and the ingest
@@ -251,7 +258,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   }
   {
     std::lock_guard<EngineMutex> lock(mutex_);
-    cameraMaxResolution_ = cameraMax;
+    cameraMaxResolution_.store(cameraMax, std::memory_order_relaxed);
     cameraMaxFps_ = cameraMaxFps;
   }
 
@@ -488,7 +495,7 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
     // for new or resolution-changed entries (not every tick — see sentSubscriptions_).
     std::map<std::string, int> desired;
     // The 1080P concurrency cap is applied in the payload's (budget) order.
-    ZoomSubscriptionResolutionPolicy::Budget fullResolution(cameraMaxResolution_);
+    ZoomSubscriptionResolutionPolicy::Budget fullResolution(cameraMaxResolution_.load(std::memory_order_relaxed));
     for (const auto& request : subscriptions->asArray()) {
       const auto participantId = request.getString("participantId");
       if (participantId.empty()) {
@@ -1345,7 +1352,7 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
       {"fullResolutionCap",
        static_cast<double>(ZoomSubscriptionResolutionPolicy::kMaxConcurrentFullResolutionCameras)},
       {"fullResolutionDemoted", static_cast<double>(fullResolutionDemoted_)},
-      {"cameraMaxResolution", cameraMaxResolution_},
+      {"cameraMaxResolution", cameraMaxResolution_.load(std::memory_order_relaxed)},
       {"cameraMaxFps", cameraMaxFps_},
       {"lastDepartures", static_cast<double>(departures)},
       {"sdkSubscriptionEvidence", state_.subscriptionSdkEvidence()},

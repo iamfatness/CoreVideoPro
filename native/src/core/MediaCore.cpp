@@ -2765,11 +2765,15 @@ void MediaCore::configureEncoderRecordingRequest() {
   request.isoSources.clear();
   request.isoSources.reserve(recordingIsoParticipantIds_.size());
   const auto zoomNames = zoomEngineConfigured() ? zoomEngineRuntime_->participantDisplayNames() : nullptr;
+  const auto [zoomWidth, zoomHeight] = zoomEngineRuntime_->cameraMaxDimensions();
   for (const auto& rawId : recordingIsoParticipantIds_) {
     const std::string sourceId = normalizeIsoSourceId(rawId);
     // ISO-3: hasAudio is the capture audio-pairing decision — a pure-video
     // capture source gets a VIDEO-ONLY ISO (no all-silence AAC track).
-    request.isoSources.push_back({sourceId, resolveIsoDisplayName(sourceId, zoomNames.get()), isoSourceHasAudio(sourceId)});
+    const bool isZoomCamera = sourceId.rfind("zoom:", 0) == 0;
+    request.isoSources.push_back({sourceId, resolveIsoDisplayName(sourceId, zoomNames.get()),
+                                  isoSourceHasAudio(sourceId), isZoomCamera ? zoomWidth : 0,
+                                  isZoomCamera ? zoomHeight : 0});
   }
   request.width = recordingOutputWidth_ > 0 ? recordingOutputWidth_ : (lastProgramFrame_.width > 0 ? lastProgramFrame_.width : outputWidth_);
   request.height = recordingOutputHeight_ > 0 ? recordingOutputHeight_ : (lastProgramFrame_.height > 0 ? lastProgramFrame_.height : outputHeight_);

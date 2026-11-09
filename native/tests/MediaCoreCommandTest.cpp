@@ -10264,7 +10264,11 @@ class IsoNameCapturingEncoder final : public corevideo::modules::IEncoderSink {
  public:
   void configureRecording(const corevideo::modules::RecordingSessionRequest& request) override {
     names.clear();
-    for (const auto& source : request.isoSources) names[source.sourceId] = source.displayName;
+    sizes.clear();
+    for (const auto& source : request.isoSources) {
+      names[source.sourceId] = source.displayName;
+      sizes[source.sourceId] = {source.targetWidth, source.targetHeight};
+    }
   }
   corevideo::modules::OutputSession start(const std::vector<std::string>& destinations,
                                           const std::vector<std::string>&) override {
@@ -10275,6 +10279,7 @@ class IsoNameCapturingEncoder final : public corevideo::modules::IEncoderSink {
   void submit(const corevideo::modules::ProgramFrame&) override {}
   corevideo::modules::OutputSession session() const override { return session_; }
   std::map<std::string, std::string> names;
+  std::map<std::string, std::pair<int, int>> sizes;
 
  private:
   corevideo::modules::OutputSession session_;
@@ -10315,7 +10320,7 @@ TEST(MediaCoreRenderGather, IsoDisplayNamesFollowRosterChangesBeforeTheNextTick)
   runtime->applyEngineEventForTest(*event); // Delayed older roster must not replace the names.
 
   const corevideo::rpc::Json isoIds = corevideo::rpc::Json::Array{
-      std::string("zoom:1"), std::string("zoom:2"), std::string("zoom:3"), std::string("zoom:4")};
+      "zoom:1", "zoom:2", "zoom:3", "zoom:4", "capture:local-camera"};
   const auto guardBefore = corevideo::modules::EngineMutexGuardrail::forbiddenAcquisitions().load();
   {
     corevideo::modules::ForbidEngineMutexScope forbid("test.cmd");
@@ -10326,6 +10331,8 @@ TEST(MediaCoreRenderGather, IsoDisplayNamesFollowRosterChangesBeforeTheNextTick)
   EXPECT_EQ(capture->names.at("zoom:2"), "Zoom User 2");
   EXPECT_EQ(capture->names.at("zoom:3"), "Late Guest");
   EXPECT_EQ(capture->names.at("zoom:4"), "4");
+  EXPECT_EQ(capture->sizes.at("zoom:1"), (std::pair{1920, 1080}));
+  EXPECT_EQ(capture->sizes.at("capture:local-camera"), (std::pair{0, 0}));
 
   // Leave clears the old roster even when no display tick has consumed it.
   runtime->applyEngineEventForTest({corevideo::modules::ZoomEngineEventKind::Left});

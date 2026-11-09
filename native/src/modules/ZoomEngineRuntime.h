@@ -22,6 +22,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace corevideo::modules {
@@ -43,6 +44,8 @@ class ZoomEngineRuntime {
   ZoomEngineRuntime& operator=(const ZoomEngineRuntime&) = delete;
 
   [[nodiscard]] bool configured() const;
+  // Size selected at meeting join, independent of what the SDK delivers.
+  [[nodiscard]] std::pair<int, int> cameraMaxDimensions() const;
   [[nodiscard]] rpc::Json join(const rpc::Json& payload, const std::function<bool()>& cancelled = {});
   [[nodiscard]] rpc::Json leave();
   // Capture-off: stop raw media in the engine WITHOUT leaving the meeting.
@@ -241,7 +244,7 @@ class ZoomEngineRuntime {
   // Bus routes the last spine payload asked for at 1080P but the concurrency cap
   // held at 720P (#478 R4). Guarded by mutex_.
   int fullResolutionDemoted_ = 0;
-  int cameraMaxResolution_ = 2;  // captured once from each join payload
+  std::atomic<int> cameraMaxResolution_{2};  // captured once from each join payload
   int cameraMaxFps_ = 60;  // local camera playout ceiling, captured on join
   std::atomic<std::uint64_t> speakerEpoch_{0};
   // Operator opted in to raw capture (Studio "Engine On"). Raw recording /

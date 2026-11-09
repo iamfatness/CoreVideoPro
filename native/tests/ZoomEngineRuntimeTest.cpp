@@ -1876,6 +1876,7 @@ TEST(ZoomEngineRuntime, JoinCameraCeilingControlsTheSubscriptionKeyWithoutCueChu
     ASSERT_TRUE(fake->waitForSentLines(3, std::chrono::milliseconds(5000)));
     auto churn = runtime.subscriptionChurnState();
     EXPECT_EQ(churn.getNumber("cameraMaxResolution"), 0);
+    EXPECT_EQ(runtime.cameraMaxDimensions(), (std::pair{640, 360}));
     EXPECT_EQ(churn.getNumber("cameraMaxFps"), 30);
     const auto* camera = findChurnSource(churn, "participant-video-401-camera");
     const auto* share = findChurnSource(churn, "screen-share-402-share");

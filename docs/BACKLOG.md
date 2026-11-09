@@ -1,8 +1,14 @@
 # CoreVideo Pro — ranked backlog
 
-## Now — owner-reported Tiles scene shortcut, November 6
+## Now — Zoom ISO recording size, November 9
 
-The owner requested a quick Tiles scene option immediately after the scene naming fix. This is the next scene-management fix and supersedes the completed timed windows below. No subagents are authorized.
+| Order | Issue | Scope and acceptance |
+|---|---|---|
+| 1 | [#1203](https://github.com/iamfatness/CoreVideoPro/issues/1203) | Record Windows Zoom camera ISOs at the applied camera size from the start. Decode a 360p → 1080p → 360p take to verify the 1080p file retains HD detail when delivered. |
+
+## Completed — owner-reported Tiles scene shortcut, November 6
+
+The owner requested a quick Tiles scene option immediately after the scene naming fix. The fix merged in #1200. No subagents are authorized.
 
 | Order | Issue | Scope and acceptance |
 |---|---|---|
