@@ -1940,6 +1940,130 @@ TEST(EncoderRecordingSession, MediaFoundationIsoFormatChangeBeforeTakeDoesNotFin
   std::filesystem::remove_all(target, cleanupError);
 }
 
+TEST(EncoderRecordingSession, MediaFoundationZoomIsoRetainsSelectedSizeAndDecodedDetail) {
+  using namespace corevideo::modules;
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  ASSERT_TRUE(SUCCEEDED(MFStartup(MF_VERSION)));
+  struct ShutdownMediaFoundation {
+    ~ShutdownMediaFoundation() { MFShutdown(); }
+  } shutdown;
+
+  const std::array cameraSizes{std::pair{1920, 1080}, std::pair{1280, 720}, std::pair{640, 360}};
+  for (const auto& [width, height] : cameraSizes) {
+    auto encoder = createMediaFoundationEncoderSink();
+    ASSERT_TRUE(encoder);
+    encoder->enableIndependentIsoWriters();
+
+    namespace fs = std::filesystem;
+    const auto target = fs::temp_directory_path() /
+        ("corevideo-iso-selected-size-" + std::to_string(GetCurrentProcessId()) + "-" +
+         std::to_string(height));
+    RecordingSessionRequest request;
+    request.sessionId = "zoom-iso-selected-size";
+    request.targetFolder = target.string();
+    request.width = 640;
+    request.height = 360;
+    request.targetBitrateMbps = 18;
+    request.isoSources = {{"zoom:1", "Guest", false, width, height}};
+    encoder->configureRecording(request);
+    encoder->start({"recording"}, {});
+    encoder->submitIsoVideo({makeIsoI420("zoom:1", 640, 360, 0, 64)});
+
+    ProgramFrame program;
+    program.width = program.preview.width = request.width;
+    program.height = program.preview.height = request.height;
+    program.preview.bgra.assign(static_cast<size_t>(program.width) * program.height * 4, 64);
+    int64_t epoch = 0;
+    for (int attempt = 0; attempt < 500 && epoch == 0; ++attempt) {
+      program.frameNumber = attempt + 1;
+      encoder->submit(program);
+      const auto state = encoder->session();
+      ASSERT_TRUE(state.recordingError.empty()) << state.recordingError;
+      epoch = state.recordingMuxEpoch100ns;
+      if (!epoch) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_GT(epoch, 0);
+
+    for (int phase = 0; phase < 3; ++phase) {
+      const bool fullDetail = phase == 1;
+      for (int i = 0; i < 3; ++i) {
+        const int frameId = phase * 3 + i + 1;
+        auto picture = makeIsoI420("zoom:1", fullDetail ? width : 640, fullDetail ? height : 360,
+                                  frameId, phase == 0 ? 64 : 112);
+        if (fullDetail) {
+          // Alternating two-pixel bands are finer than a 360p encode of the
+          // 1080p image can retain, even if that encode is upscaled afterward.
+          auto pixels = std::make_shared<std::vector<uint8_t>>(*picture.frame.i420);
+          for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+              (*pixels)[static_cast<size_t>(y) * width + x] = (x / 2) % 2 ? 208 : 40;
+            }
+          }
+          picture.frame.i420 = std::move(pixels);
+        }
+        picture.timelineTimestamp100ns = epoch + (frameId - 1) * 333333LL;
+        encoder->submitIsoVideo({picture});
+      }
+    }
+
+    encoder->stopRecording();
+    const auto final = encoder->session();
+    ASSERT_EQ(final.isoStreams.size(), 1u) << final.recordingWarning;
+    ASSERT_TRUE(final.isoStreams[0].warning.empty()) << final.isoStreams[0].warning;
+    ASSERT_EQ(final.isoStreams[0].videoFrameCount, 9);
+    const auto isoPath = fs::path(final.isoStreams[0].path);
+    encoder.reset();
+
+    Microsoft::WRL::ComPtr<IMFSourceReader> reader;
+    ASSERT_TRUE(SUCCEEDED(MFCreateSourceReaderFromURL(isoPath.c_str(), nullptr, &reader)));
+    constexpr DWORD stream = MF_SOURCE_READER_FIRST_VIDEO_STREAM;
+    Microsoft::WRL::ComPtr<IMFMediaType> type;
+    ASSERT_TRUE(SUCCEEDED(reader->GetNativeMediaType(stream, 0, &type)));
+    UINT32 encodedWidth = 0, encodedHeight = 0;
+    ASSERT_TRUE(SUCCEEDED(MFGetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, &encodedWidth, &encodedHeight)));
+    ASSERT_EQ(encodedWidth, static_cast<UINT32>(width)) << encodedWidth << " != " << width;
+    ASSERT_EQ(encodedHeight, static_cast<UINT32>(height)) << encodedHeight << " != " << height;
+
+    type.Reset();
+    ASSERT_TRUE(SUCCEEDED(MFCreateMediaType(&type)));
+    ASSERT_TRUE(SUCCEEDED(type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)));
+    ASSERT_TRUE(SUCCEEDED(type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12)));
+    ASSERT_TRUE(SUCCEEDED(reader->SetCurrentMediaType(stream, nullptr, type.Get())));
+
+    int decoded = 0;
+    for (;;) {
+      DWORD flags = 0;
+      Microsoft::WRL::ComPtr<IMFSample> sample;
+      ASSERT_TRUE(SUCCEEDED(reader->ReadSample(stream, 0, nullptr, &flags, nullptr, &sample)));
+      if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+      ASSERT_TRUE(sample);
+      ASSERT_LT(decoded, 9);
+      Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
+      ASSERT_TRUE(SUCCEEDED(sample->ConvertToContiguousBuffer(&buffer)));
+      BYTE* pixels = nullptr;
+      DWORD length = 0;
+      ASSERT_TRUE(SUCCEEDED(buffer->Lock(&pixels, nullptr, &length)));
+      const bool enoughPixels = length >= static_cast<DWORD>(width * height);
+      int matched = 0;
+      if (enoughPixels) {
+        const auto* row = pixels + (height / 2) * width;
+        for (int x = 64; x < 160; ++x) {
+          int expected = decoded < 3 ? 64 : 112;
+          if (decoded >= 3 && decoded < 6) expected = (x / 2) % 2 ? 208 : 40;
+          if (std::abs(static_cast<int>(row[x]) - expected) <= 16) ++matched;
+        }
+      }
+      buffer->Unlock();
+      ASSERT_TRUE(enoughPixels);
+      ASSERT_GE(matched, 92) << height << "p, decoded frame " << decoded << ", matched " << matched;
+      ++decoded;
+    }
+    ASSERT_EQ(decoded, 9);
+    reader.Reset();
+    std::error_code cleanupError;
+    fs::remove_all(target, cleanupError);
+  }
+}
 TEST(EncoderRecordingSession, MediaFoundationIndependentIsoWritersDrainAudioVideoBeforeFinalize) {
   // Pin EXACTLY the capacity the product used to assume (8 sessions, Program owns
   // one) so the 8th ISO still has to spill — that spill is what this test is for.

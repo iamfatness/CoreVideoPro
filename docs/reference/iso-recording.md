@@ -313,10 +313,12 @@ ISO-4). What landed:
   sink) copies refs, never pixels. Any I420→NV12 interleave happens on the
   **AsyncEncoderSink writer thread** (`i420ToNv12` in `MediaFoundationEncoderAdapter.cpp`),
   never under a lock or the audio worker. The convert law holds.
-- **NV12 input path on `Mp4Writer`** (`VideoInput::Nv12`): Zoom I420 needs no CPU
-  color-convert — the writer opens LAZILY at the source's FIRST frame, sized to
-  that frame's native dims (no scaling), and picks NV12 input for `zoom:` sources
-  / RGB32(BGRA) for capture (ISO-3). Program keeps its BGRA path untouched.
+- **Windows Zoom camera ISOs** (#1203) open once real pixels arrive. The MP4
+  size comes from the camera setting applied at meeting join (1080p by default,
+  or the selected 720p or 360p). Delivered frames that differ in size are fit
+  to the recording canvas with their aspect ratio preserved on the ISO writer
+  thread. Matching frames only need I420-to-NV12 interleave. BGRA capture ISOs
+  still open at their source size.
 - **Per-`(sourceId,frameId)` PTS dedup** on the SAME epoch (`RecordingPtsClock::videoPtsForSource`):
   the audio worker re-submits every selected source's latest frame each tick, and
   each source advances on its own Zoom frameId, so a per-source last-frameId map

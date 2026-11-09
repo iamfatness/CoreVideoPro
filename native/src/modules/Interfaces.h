@@ -813,6 +813,9 @@ struct IsoSourceSelection {
   // Resolved in MediaCore from captureAudioSources_ at request-build time. When
   // false, the ISO writer opens WITHOUT an audio stream.
   bool hasAudio = true;
+  // Fixed recording canvas for a Zoom camera. Zero keeps source-native sizing.
+  int targetWidth = 0;
+  int targetHeight = 0;
 };
 
 struct RecordingSessionRequest {
