@@ -19,6 +19,7 @@ public sealed partial class StudioViewModel
             try { action(); }
             catch (Exception error) { LaunchLog.WriteException($"shutdown UI preparation: {step}", error); }
         }
+        Prepare("comms", ShutdownComms);
         Prepare("graphics feeds", () => _graphicsFeeds?.Dispose());
         Prepare("social review", () => _graphicsSocialShutdown = _graphicsSocialReview?.StopForShutdownAsync() ?? Task.CompletedTask);
         Prepare("Magic Scene", () => MagicScene.Stop());

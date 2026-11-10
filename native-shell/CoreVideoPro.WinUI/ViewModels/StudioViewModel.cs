@@ -1676,6 +1676,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _snapshotDelivery = new(action => _dispatcher.TryEnqueue(() =>
             UiDispatch.Run(_dispatcher, action, "ApplySnapshotChanged")), ApplySnapshotChanged);
         _bridge.SnapshotChanged += OnSnapshotChanged;
+        InitializeComms();
         _bridge.ZoomVideoFrameReceived += OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived += OnProgramSharedTextureReceived;
@@ -3905,6 +3906,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             OnPropertyChanged(name);
         }
+        OnActiveTabChangedForComms(value);
 
         if (value == StudioTab.Inputs)
         {

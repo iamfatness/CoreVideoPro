@@ -2,7 +2,7 @@ using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.MediaCore.Services;
 
-public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTransport, ISourcePreviewTransport
+public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTransport, ISourcePreviewTransport, IZoomCommsTransport
 {
     private readonly MediaCoreSupervisor _supervisor;
     private readonly MediaCoreSyncScheduler _syncScheduler = new();
@@ -54,6 +54,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
         _supervisor.StatusChanged += status => StatusChanged?.Invoke(status);
         _supervisor.ProfileChanged += profile =>
         {
+            // A new core has no talkback report yet: never let the old one keep a key lit.
+            ZoomCommsStateReceived?.Invoke(new ZoomCommsUpdate(null));
             ReleaseRosterBarrierForRespawnedCore();
             ProfileChanged?.Invoke(profile);
         };
@@ -62,6 +64,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
         _supervisor.ZoomRosterFactReceived += QueueRosterFact;
         _supervisor.ZoomVideoFrameReceived += frame => ZoomVideoFrameReceived?.Invoke(frame);
         _supervisor.ZoomSourceFormatReceived += fact => ZoomSourceFormatReceived?.Invoke(fact);
+        _supervisor.ZoomCommsStateReceived += update => ZoomCommsStateReceived?.Invoke(update);
         _supervisor.ProgramFramePreviewReceived += preview => ProgramFramePreviewReceived?.Invoke(preview);
         _supervisor.ProgramSharedTextureReceived += texture => ProgramSharedTextureReceived?.Invoke(texture);
         _supervisor.PreviewSharedTextureReceived += texture => PreviewSharedTextureReceived?.Invoke(texture);
@@ -80,6 +83,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
     public event Action<IsoOutputLifecycleFact>? OutputLifecycleChanged;
     public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
     public event Action<ZoomSourceFormatFact>? ZoomSourceFormatReceived;
+    public event Action<ZoomCommsUpdate>? ZoomCommsStateReceived;
+    public Task<ZoomCommsCommandResult> SendCommsAsync(string verb, IReadOnlyDictionary<string, object?> payload,
+        CancellationToken cancellationToken = default) => _supervisor.SendCommsAsync(verb, payload, cancellationToken);
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
     public event Action<ProgramSharedTexture>? PreviewSharedTextureReceived;

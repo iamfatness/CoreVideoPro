@@ -34,6 +34,7 @@ internal static class StudioTabPlumbing
         "media" => StudioTab.Media,
         "automation" => StudioTab.Automation,
         "ohgshow" => StudioTab.OhgShow,
+        "comms" => StudioTab.Comms,
         _ => StudioTab.Studio
     };
 

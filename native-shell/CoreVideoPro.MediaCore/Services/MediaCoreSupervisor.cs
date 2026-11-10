@@ -97,6 +97,8 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
     public event Action<RawCaptureSnapshot>? ZoomRosterFactReceived;
     public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
     public event Action<ZoomSourceFormatFact>? ZoomSourceFormatReceived;
+    /// <summary>Comms (Zoom talkback): the core's latest-wins comms report (State null = dropped).</summary>
+    public event Action<ZoomCommsUpdate>? ZoomCommsStateReceived;
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
     public event Action<ProgramSharedTexture>? PreviewSharedTextureReceived;
@@ -663,6 +665,27 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
     /// meeting. The returned snapshot carries the engine-reported
     /// <see cref="RawCaptureSnapshot.RawMediaActive"/>.
     /// </summary>
+    /// <summary>
+    /// Comms (Zoom talkback): one comms-* request. The core answers it without
+    /// coreMutex (the engine runtime validates and queues the engine line), so a
+    /// talk key never waits on a production sync. A refusal carries operator text.
+    /// </summary>
+    public async Task<ZoomCommsCommandResult> SendCommsAsync(string verb, IReadOnlyDictionary<string, object?> payload,
+        CancellationToken cancellationToken = default)
+    {
+        if (!ZoomCommsProtocol.Verbs.Contains(verb))
+            throw new ArgumentException($"Not a Comms verb: {verb}", nameof(verb));
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = verb,
+                ["payload"] = new Dictionary<string, object?>(payload)
+            },
+            cancellationToken, timeoutMs: 5000).ConfigureAwait(false);
+        using (response) return ZoomCommsProtocol.ParseReply(response);
+    }
+
     public async Task<RawCaptureSnapshot> StopZoomCaptureAsync(CancellationToken cancellationToken = default)
     {
         var response = await SendAsync(
@@ -1282,6 +1305,12 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
             if (rosterFact is not null)
             {
                 try { ZoomRosterFactReceived?.Invoke(rosterFact); } catch { }
+                continue;
+            }
+
+            if (ZoomCommsProtocol.TryParseStateLine(line, out var commsUpdate))
+            {
+                try { ZoomCommsStateReceived?.Invoke(commsUpdate); } catch { }
                 continue;
             }
 

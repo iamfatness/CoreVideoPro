@@ -672,6 +672,8 @@ public sealed partial class MainWindow : Window
         }
 
         WindowChromeService.Apply(this, _appWindow);
+        // Comms talk keys never stay held when the operator switches windows.
+        if (args.WindowActivationState == WindowActivationState.Deactivated) RootContent.ReleaseCommsKeys();
     }
 
     private void OnRootContentLoaded(object sender, RoutedEventArgs args)
