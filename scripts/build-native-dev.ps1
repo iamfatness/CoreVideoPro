@@ -18,10 +18,10 @@ function Resolve-DefaultZoomSdkDir {
   }
 
   $repoSdkCandidates = @(
-    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292\zoom-sdk-windows-7.0.5.39292\x64"),
-    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292\x64"),
-    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292\zoom-sdk-windows-7.0.5.39292"),
-    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292"),
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.1.5.43953\zoom-sdk-windows-7.1.5.43953\x64"),
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.1.5.43953\x64"),
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.1.5.43953\zoom-sdk-windows-7.1.5.43953"),
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.1.5.43953"),
     (Join-Path $repoRoot "ZoomSDK\x64")
   )
   foreach ($candidate in $repoSdkCandidates) {
@@ -34,7 +34,7 @@ function Resolve-DefaultZoomSdkDir {
     }
   }
 
-  return "C:\Users\walla\Downloads\zoom-sdk-windows-7.0.5.39292\zoom-sdk-windows-7.0.5.39292\x64"
+  return "C:\Users\walla\Downloads\zoom-sdk-windows-7.1.5.43953\zoom-sdk-windows-7.1.5.43953\x64"
 }
 
 if (-not $PSBoundParameters.ContainsKey("ZoomSdkDir")) {

@@ -1,6 +1,9 @@
 #pragma once
 
+#include "rpc/Json.h"
+
 #include <cstddef>
+#include <memory>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -74,6 +77,9 @@ enum class ZoomEngineEventKind {
   Audio,
   RawMediaStatus,
   Error,
+  // Comms (Zoom talkback): the engine's comms_state line, kept whole in
+  // `commsState` (snake_case, as sent) for the runtime to re-key.
+  CommsState,
 };
 
 struct ZoomEngineEvent {
@@ -97,6 +103,8 @@ struct ZoomEngineEvent {
   // unsubscribe_all) completes on the engine's command loop.
   bool rawMediaActive = false;
   std::vector<ZoomEngineParticipant> participants;
+  // CommsState only: the parsed engine line.
+  std::shared_ptr<const rpc::Json> commsState;
   // Optional SDK subscription evidence. Missing/malformed is not success (zero).
   std::optional<int> sdkCode;
   std::optional<int> resolution;

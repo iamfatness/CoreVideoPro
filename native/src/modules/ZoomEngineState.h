@@ -95,6 +95,8 @@ class ZoomEngineRuntimeState {
   [[nodiscard]] std::shared_ptr<const ZoomParticipantDisplayNames> participantDisplayNames() const;
   // #1037: O(1) roster-change detection (snapshot() copies these verbatim).
   [[nodiscard]] std::uint64_t meetingGeneration() const { return meetingGeneration_; }
+  // O(1) phase read for Comms gating (snapshot() copies the roster).
+  [[nodiscard]] const std::string& meetingState() const { return meetingState_; }
   [[nodiscard]] std::uint64_t rosterRevision() const { return rosterRevision_; }
   [[nodiscard]] bool hasAuthoritativeRoster() const { return authoritativeRoster_; }
   // #1030: the roster's SDK ids only (no participant copies).

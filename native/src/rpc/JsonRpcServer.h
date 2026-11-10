@@ -38,6 +38,9 @@ class JsonRpcServer {
   // #1048 C2: answers zoom-snapshot without coreMutex when an engine is
   // configured; nullopt sends the request down the locked path.
   [[nodiscard]] std::optional<Json> handleWithoutCore(const Json& request);
+  // Comms (Zoom talkback) comms-* requests: engine-runtime only, never
+  // coreMutex. nullopt for anything that is not a comms verb.
+  [[nodiscard]] std::optional<Json> handleCommsWithoutCore(const Json& request);
   [[nodiscard]] Json finishDeferredEngineSpine(const DeferredEngineSpine& deferred);
   [[nodiscard]] Json spineSyncResponse(const Json& id, const Json& snapshot) const;
   [[nodiscard]] Json success(const Json& id, Json::Object payload) const;

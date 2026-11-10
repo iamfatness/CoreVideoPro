@@ -19,7 +19,7 @@ Current native proof surface:
 | Node.js 22+ | `node --version` |
 | Visual Studio 2022+ or 2026+ (C++ workload) | `scripts/test-native.ps1` finds `VsDevCmd.bat` |
 | CMake | `cmake --version` |
-| Zoom Meeting SDK **7.0.5** x64 | Archive with `x64/h/zoom_sdk.h` and `x64/lib/sdk.lib` |
+| Zoom Meeting SDK **7.1.5** x64 | Archive with `x64/h/zoom_sdk.h` and `x64/lib/sdk.lib` |
 | FFmpeg runtime for RTMP (optional) | `ffmpeg.exe` on `PATH`, or `COREVIDEO_FFMPEG_BIN_DIR` points to a `bin` folder with `avformat*.dll` |
 
 ## 2. Stage Zoom SDK
@@ -27,9 +27,9 @@ Current native proof surface:
 ```powershell
 cd C:\path\to\CoreVideoPro
 # Repo-local SDK (auto-discovered when present):
-#   ZoomSDK\zoom-sdk-windows-7.0.5.39292\x64
+#   ZoomSDK\zoom-sdk-windows-7.1.5.43953\x64
 .\scripts\stage-zoom-sdk.ps1
-# Or override: $env:ZOOM_SDK_DIR = "C:\path\to\zoom-sdk-windows-7.0.5.39292\x64"
+# Or override: $env:ZOOM_SDK_DIR = "C:\path\to\zoom-sdk-windows-7.1.5.43953\x64"
 ```
 
 Staged target: `native-core/zoom-runtime/windows/x64`. Settings -> Zoom readiness should show SDK runtime checks passing after a dev build.

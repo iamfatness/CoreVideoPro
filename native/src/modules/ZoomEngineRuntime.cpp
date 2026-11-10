@@ -1,5 +1,6 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineRuntime.h"
+#include "modules/ZoomCommsRelay.h"
 #include "modules/ZoomHandoffCpuScope.h"
 #include "modules/ZoomIsoReadProfile.h"
 #include "modules/QaIsoIdentity.h"
@@ -398,6 +399,7 @@ rpc::Json ZoomEngineRuntime::leave() {
   closeVideoStreamsLocked();
   sentSubscriptions_.clear();  // a rejoin must re-subscribe from scratch
   resetSubscriptionChurnLocked();
+  clearCommsLocked();  // the engine's later reports are dropped until the rejoin
   ++fallbackTick_;
   return rawCaptureSnapshotLocked();
 }
@@ -730,7 +732,44 @@ std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
     events.push_back(std::move(*pendingRosterFact_));
     pendingRosterFact_.reset();
   }
+  // Comms: latest-wins, repeated each second while held (this lane may drop).
+  const double nowMs = runtimeElapsedMs();
+  if (commsDirty_ || (commsState_ && nowMs - commsLastEmitMs_ >= 1000.0)) {
+    commsDirty_ = false;
+    commsLastEmitMs_ = nowMs;
+    events.push_back(rpc::Json::Object{{"type", "zoom-comms-state"},
+                                       {"comms", commsState_ ? *commsState_ : rpc::Json(nullptr)}});
+  }
   return events;
+}
+
+void ZoomEngineRuntime::clearCommsLocked() {
+  if (!commsState_) return;
+  commsState_.reset();
+  commsDirty_ = true;  // one comms:null fact tells the shell to drop it
+}
+
+std::optional<rpc::Json> ZoomEngineRuntime::commsState() const {
+  std::lock_guard<EngineMutex> lock(mutex_);
+  return commsState_;
+}
+
+rpc::Json ZoomEngineRuntime::commsCommand(const std::string& type, const rpc::Json& payload) {
+  std::lock_guard<EngineMutex> lock(mutex_);
+  const bool inMeeting = state_.meetingState() == "in-meeting";
+  auto result = buildCommsEngineLine(type, payload, inMeeting, commsState_ ? &*commsState_ : nullptr);
+  if (!result.error.empty()) return rpc::Json::Object{{"ok", false}, {"error", result.error}};
+  if (!process_ || !process_->running()) {
+    // Nothing can be keyed without an engine, so a release has nothing to
+    // undo: it succeeds. Anything else says why.
+    const auto* on = payload.get("on");
+    const bool release = type == "comms-release-all" ||
+                         ((type == "comms-key" || type == "comms-latch") && on && on->isBool() && !on->asBool());
+    if (release) return rpc::Json::Object{{"ok", true}};
+    return rpc::Json::Object{{"ok", false}, {"error", "The Zoom engine is not running. Join a meeting first."}};
+  }
+  enqueueEngineSendLocked("comms", std::move(result.engineLine));
+  return rpc::Json::Object{{"ok", true}};
 }
 
 void ZoomEngineRuntime::setVideoConsumerDemand(const std::vector<SourceVideoDemand>& demands) {
@@ -893,6 +932,7 @@ bool ZoomEngineRuntime::ensureStarted(const std::function<bool()>& cancelled) {
     sentSubscriptions_.clear();
     resetSubscriptionChurnLocked();
     mediaStarted_ = false;
+    clearCommsLocked();
     client = std::make_shared<ZoomEngineProcessClient>();
     executablePath = config_.executablePath;
     connectTimeoutMs = config_.connectTimeoutMs;
@@ -980,12 +1020,23 @@ void ZoomEngineRuntime::reportEngineLossLocked(const std::string& message) {
   closeAudioStreamsLocked();
   closeVideoStreamsLocked();
   purgeQueuedEngineSendsLocked("helper connection lost");
+  clearCommsLocked();
   ::corevideo::core::nativeLogf("[zoom-engine] %s\n", message.c_str());
 }
 
 void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<std::uint64_t> generation) {
   std::lock_guard<EngineMutex> lock(mutex_);
   if (shuttingDown_ || restartBeforeJoin_ || (generation && *generation != processGeneration_)) return;
+  if (event.kind == ZoomEngineEventKind::CommsState) {
+    // Comms reports never touch the meeting/roster state machine.
+    if (event.commsState) {
+      if (auto comms = commsStateForNode(*event.commsState)) {
+        commsState_ = std::move(*comms);
+        commsDirty_ = true;
+      }
+    }
+    return;
+  }
   if (event.kind == ZoomEngineEventKind::Joined && !acceptJoinEvents_) {
     // An SDK callback may arrive after Leave was accepted. Keep the current
     // snapshot left and reassert leave rather than reviving capture.

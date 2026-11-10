@@ -40,6 +40,10 @@
 //   COREVIDEO_FAKE_PRIMARY_COLORS        "1": three distinct animated primary colors for Sources identity QA
 //   COREVIDEO_FAKE_AUTH_DELAY_MS         synthetic SDK auth stall (0 by default, max 60000)
 //   COREVIDEO_FAKE_JOIN_DELAY_MS         synthetic meeting join stall (0 by default, max 60000)
+//   COREVIDEO_FAKE_WEB_CLIENT_ID         id of the guest on the "web client" (no talkback); default the
+//                                        last baseline guest, 0 = none (Comms delta, Edge delta 8)
+//   COREVIDEO_FAKE_COMMS_ROLE            "attendee": the station is not host/co-host (Comms delta)
+//   COREVIDEO_FAKE_COMMS_UNSUPPORTED     "1": the meeting does not support talkback (Comms delta)
 //
 // Windows-focused; a minimal POSIX fallback keeps the file portable so the
 // CMake target stays green on the Linux stub build.
@@ -56,6 +60,7 @@
 #include "iso-video-ring.h"
 #include "iso-video-demand.h"
 #include "engine-writer.h"  // EngineIpc::init / EngineIpc::write (thread-safe)
+#include "fake-comms.h"     // Comms delta (Edge delta 8): talkback emulation
 
 #include <atomic>
 #include <chrono>
@@ -899,11 +904,34 @@ int main(int argc, char** argv) {
     std::thread churn(churn_loop);
     std::thread heartbeat(heartbeat_loop);
 
+    // Comms delta: talkback, over the shared comms core and a scripted SDK.
+    {
+        fakecomms::FakeRosterSource source;
+        source.in_meeting = [] { std::lock_guard<std::mutex> lk(g_mtx); return g_joined; };
+        source.roster = [] {
+            std::vector<zc::RosterMember> out;
+            std::lock_guard<std::mutex> lk(g_mtx);
+            for (const auto& p : g_roster) {
+                zc::RosterMember m;
+                m.user_id = p.id;
+                m.name = p.name;
+                m.supports_talkback = true;  // the comms side marks the web-client guest
+                out.push_back(std::move(m));
+            }
+            return out;
+        };
+        fakecomms::Start(std::move(source), static_cast<uint32_t>(101 + baseline - 1));
+    }
+
     std::string line;
     while (g_running.load(std::memory_order_acquire)) {
         if (!ipc_read_line(p2e, line)) break;  // EOF / pipe closed
         if (line.empty()) continue;
         diag("recv: " + line);
+
+        // Comms delta: comms_* first -- the dispatch below matches "quit",
+        // "join" and "leave" as substrings, and a device name may hold one.
+        if (fakecomms::HandleLine(line)) continue;
 
         if (line.find(IPC_CMD_QUIT) != std::string::npos) {
             g_running.store(false, std::memory_order_release);
@@ -919,6 +947,7 @@ int main(int argc, char** argv) {
 
         } else if (line.find(IPC_CMD_JOIN) != std::string::npos) {
             std::string meeting_id = json_str(line, "meeting_id");
+            fakecomms::SetStationName(json_str(line, "display_name"));
             EngineIpc::write(
                 R"({"cmd":"debug","stage":"join_received","meeting_id":")" +
                 json_escape(meeting_id) + "\"}");
@@ -1040,6 +1069,7 @@ int main(int argc, char** argv) {
     }
 
     g_running.store(false, std::memory_order_release);
+    fakecomms::Stop();
     if (producer.joinable()) producer.join();
     if (churn.joinable()) churn.join();
     if (heartbeat.joinable()) heartbeat.join();

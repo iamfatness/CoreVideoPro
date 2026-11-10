@@ -4,6 +4,7 @@
 #include "iso-video-demand.h"
 #include "engine-share.h"
 #include "engine-audio.h"
+#include "engine-comms.h"  // Comms delta (shared with Edge delta 7)
 #include <zoom_sdk.h>
 #include <auth_service_interface.h>
 #include <setting_service_interface.h>
@@ -1133,6 +1134,8 @@ public:
 #endif
 
     void onMeetingStatusChanged(ZOOMSDK::MeetingStatus status, int iResult) override {
+        // Comms: before anything below (resets mic ownership synchronously).
+        EngineComms::instance().on_meeting_status(static_cast<int>(status));
         EngineIpc::write(R"({"cmd":"debug","stage":"meeting_status","status":)" +
             std::to_string(static_cast<int>(status)) +
             R"(,"result":)" + std::to_string(iResult) + "}");
@@ -1414,6 +1417,9 @@ int main(int argc, char **argv)
     std::atomic<bool> running{true};
     std::string line;
 
+    // Comms (Zoom talkback), ticked from this thread's message pump.
+    EngineComms::instance().start(&meeting_svc);
+
     // Heartbeat: emit a ping every ~2s so the plugin can detect a hung-but-alive
     // engine (process running, pipe silent). Stop the loop if a write fails.
     std::thread heartbeat([&running]() {
@@ -1432,6 +1438,10 @@ int main(int argc, char **argv)
         if (!ipc_read_line(p2e, line)) break; // EOF or connection closed
 #endif
         if (line.empty()) continue;
+
+        // Comms: comms_* lines first -- the dispatch below matches "quit",
+        // "join" and "leave" as substrings, and a device name may hold one.
+        if (EngineComms::instance().handle_line(line)) continue;
 
         if (line.find(IPC_CMD_QUIT) != std::string::npos) {
             running = false;
@@ -1520,6 +1530,11 @@ int main(int argc, char **argv)
             const bool end_other_meeting =
                 line.find("\"end_other_meeting\":true") != std::string::npos;
             configuration_event.set_end_other_meeting(end_other_meeting);
+            // Comms: only a capture-only join (Edge) lets talkback install the
+            // silent virtual mic and unmute. Pro's joins never carry the flag, so
+            // the operator's meeting mic is left exactly as they set it.
+            EngineComms::instance().set_capture_only(
+                line.find("\"capture_only\":true") != std::string::npos);
             if (display_name.empty()) display_name = "CoreVideo Pro";
             EngineIpc::write(R"({"cmd":"debug","stage":"join_received","meeting_id":")" +
                 json_escape(meeting_id) + R"(","has_on_behalf_token":)" +
@@ -1647,6 +1662,10 @@ int main(int argc, char **argv)
     // Stop the heartbeat before tearing down the SDK / IPC.
     running.store(false, std::memory_order_release);
     if (heartbeat.joinable()) heartbeat.join();
+
+    // Comms: talkback threads (audio worker, TX pacer) are joined and any
+    // silent mic removed while the SDK is still fully alive.
+    EngineComms::instance().shutdown();
 
     if (meeting_svc) meeting_svc->Leave(ZOOMSDK::LEAVE_MEETING);
 

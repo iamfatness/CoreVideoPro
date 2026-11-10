@@ -89,3 +89,59 @@ process; do not commit or log them.
 This is a vendored copy, not a submodule. If the upstream capture engine changes,
 re-copy `engine/src/*` and `src/engine-ipc.h` and re-apply the include-path
 rewrites above. Keep this engine standalone so it stays portable to this app.
+
+## Comms (Zoom talkback) — shared verbatim with CoreVideo Edge
+
+Since 2026-11-09 the engine is also the **Comms** talkback station (design:
+CoreVideo Edge `docs/superpowers/specs/2026-11-09-comms-design.md`; Pro's
+contract: `docs/reference/comms-talkback.md`). Talkback is sent by a meeting
+participant that is host or co-host and the SDK is one participant per
+process, so it has to be this process.
+
+**Keep these files byte-identical with CoreVideo Edge's `native/zoom-engine/`**
+(ported from Edge `comms-engine` @ `28c06bc`): `engine/engine-comms.{h,cpp}`,
+`engine/comms/**` (ZComms @ `168a572`, see `engine/comms/PORTED.md`),
+`fake/fake-comms.{h,cpp}`, `third_party/miniaudio/miniaudio.h`. Fix them in
+one repo and copy to the other; the full delta description (Edge "delta 7"
+and "delta 8") lives in Edge's engine README and applies here unchanged.
+`main.cpp` and `fake/fake-engine.cpp` are NOT identical between the apps
+(Edge carries other deltas); the Comms hooks in them are:
+
+- `main.cpp`: `#include "engine-comms.h"`; `EngineComms::instance().start()`
+  before the command loop (100 ms timer on the SDK thread);
+  `handle_line()` FIRST for every line (the dispatch below matches
+  `quit`/`join`/`leave` as substrings, a device name may hold one);
+  `on_meeting_status()` as the first line of `onMeetingStatusChanged`;
+  `set_capture_only(line has "capture_only":true)` in the join handler;
+  `shutdown()` after the heartbeat stops and before `Leave`/`CleanUPSDK()`.
+- `fake/fake-engine.cpp`: the same core over a scripted talkback SDK
+  (`fakecomms::Start/HandleLine/SetStationName/Stop`), env knobs
+  `COREVIDEO_FAKE_WEB_CLIENT_ID`, `COREVIDEO_FAKE_COMMS_ROLE=attendee`,
+  `COREVIDEO_FAKE_COMMS_UNSUPPORTED=1`.
+
+**Pro difference that matters:** Pro's joins are never capture-only (the
+operator may speak in the meeting), so `comms/mic_guard` never installs the
+silent virtual mic and never unmutes. The operator's meeting mic is left
+exactly as they set it; talkback is silent while it is muted (ZComms law 1)
+and the state says so (`lamps.meeting_mic`, reason "Talkback is silent: …").
+Pro has no `enforce_capture_only()` (that is an Edge delta), so
+`EngineComms::owns_mic()` is unused here.
+
+New P2E lines: `comms_key {"slot":0..15|"all","on",["lease_ms"]}`,
+`comms_latch`, `comms_assign {"slot","participant_id","on"}`, `comms_mic`,
+`comms_sidetone_out`, `comms_sidetone`, `comms_tone`, `comms_gain`,
+`comms_release_all`. New E2P: `comms_state` (<= 10 Hz, only on change;
+meter-only changes at most every 250 ms). The media core relays them
+(`src/modules/ZoomCommsRelay`, `ZoomEngineRuntime::commsCommand`). Nothing in
+Comms calls into EngineVideo/EngineAudio/EngineShare; every tick is
+exception-fenced.
+
+Build: `COREVIDEO_COMMS_DIR` targets in `native/CMakeLists.txt`
+(`corevideo_comms_core` shared by real engine, fake and tests;
+`corevideo_comms_audio` = miniaudio mic chain, real engine only). The comms
+translation units compile with `NOMINMAX` (Edge builds with it globally).
+
+**Meeting SDK 7.1.5.43953** (was 7.0.5.39292): the talkback controller needs
+it. Pro's engine compiled and linked against 7.1.5 with no source change.
+Raw video/ISO on 7.1.5 is proven only against the fake validator and unit
+tests in this worktree; a live 7.1.5 take is still owed.

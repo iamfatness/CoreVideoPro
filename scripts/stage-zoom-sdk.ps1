@@ -18,7 +18,8 @@ $requiredFiles = @(
   @{ Id = "meeting-service-header"; RelativePath = "h\meeting_service_interface.h"; Purpose = "Meeting join/status service header." },
   @{ Id = "raw-video-api-header"; RelativePath = "h\rawdata\zoom_rawdata_api.h"; Purpose = "Raw media API entry points." },
   @{ Id = "raw-video-renderer-header"; RelativePath = "h\rawdata\rawdata_renderer_interface.h"; Purpose = "Raw participant video and share renderer callbacks." },
-  @{ Id = "raw-audio-header"; RelativePath = "h\rawdata\rawdata_audio_helper_interface.h"; Purpose = "Raw mixed and per-participant audio callbacks." }
+  @{ Id = "raw-audio-header"; RelativePath = "h\rawdata\rawdata_audio_helper_interface.h"; Purpose = "Raw mixed and per-participant audio callbacks." },
+  @{ Id = "talkback-header"; RelativePath = "h\meeting_service_components\meeting_talkback_ctrl_interface.h"; Purpose = "Talkback controller for Comms (Meeting SDK 7.1.5+)." }
 )
 
 function Resolve-DefaultZoomSdkDir {
@@ -27,10 +28,10 @@ function Resolve-DefaultZoomSdkDir {
   }
 
   $repoSdkCandidates = @(
-    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292"),
-    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292\zoom-sdk-windows-7.0.5.39292"),
-    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292\x64"),
-    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292\zoom-sdk-windows-7.0.5.39292\x64"),
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.1.5.43953"),
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.1.5.43953\zoom-sdk-windows-7.1.5.43953"),
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.1.5.43953\x64"),
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.1.5.43953\zoom-sdk-windows-7.1.5.43953\x64"),
     (Join-Path $repoRoot "ZoomSDK")
   )
   foreach ($candidate in $repoSdkCandidates) {
