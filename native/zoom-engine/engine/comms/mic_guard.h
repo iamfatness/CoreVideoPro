@@ -24,7 +24,16 @@
 //   - a synchronous install refusal costs nothing (we never unmuted), so it
 //     is retried every kRetryMs; only the first refusal is logged;
 //   - a non-capture-only join (an operator who speaks in the meeting) is never
-//     touched: no virtual mic, no unmute; their own mute state is reported.
+//     touched: no virtual mic, no unmute; their own mute state is reported --
+//     UNLESS the operator turned on PRIVATE COMMS (CoreVideo Pro, owner
+//     ruling 2026-11-10). Private: the operator's real mic is muted at once
+//     (Act::Mute) and then the capture-only path above runs unchanged (same
+//     licence check, unmute only after onMicInitialize, 5 s timeout, drop =
+//     revoke), so the room never hears them and they speak only through
+//     talkback. Private turned OFF: the virtual mic is removed and the
+//     operator is left MUTED (Act::Uninstall) -- never auto-unmuted; they
+//     unmute in Zoom themselves. Turning private on again retries afresh.
+//     A capture-only join (Edge) ignores private: it is always private.
 //
 // The caller performs the action Next() returns and reports install results.
 // owns() is what capture-only consults; the caller mirrors it into the
@@ -47,13 +56,18 @@ class MicGuard {
     bool in_meeting = false;
     bool can_talkback = false;  // controller && supported && host/co-host
     bool capture_only = true;   // Edge joins capture-only; Pro's operator does not
+    bool private_on = false;    // Pro's "Private comms" (no effect when capture_only)
     bool licence = false;       // HasRawdataLicense()
     bool initialised = false;   // the virtual mic's onMicInitialize .. onMicUninitialized
     bool self_muted = true;
     int64_t now_ms = 0;
   };
 
-  enum class Act { None, Install, Unmute, Revoke };
+  // Install: setExternalAudioSource(silent mic). Unmute: UnMuteAudio(self).
+  // Revoke: drop ownership, then MuteAudio(self). Mute: MuteAudio(self) (private
+  // comms, before anything is installed). Uninstall: drop ownership,
+  // setExternalAudioSource(nullptr), then MuteAudio(self) (private turned off).
+  enum class Act { None, Install, Unmute, Revoke, Mute, Uninstall };
 
   Act Next(const In& in);
   void InstallResult(bool ok, const std::string& detail, int64_t now_ms);
@@ -82,6 +96,7 @@ class MicGuard {
   bool logged_install_failure_ = false;
   bool logged_no_licence_ = false;
   bool logged_operator_muted_ = false;
+  bool private_was_on_ = false;  // last Next()'s private_on (transitions)
   int64_t installed_at_ms_ = 0;
   int64_t retry_at_ms_ = 0;
   int64_t next_unmute_ms_ = 0;

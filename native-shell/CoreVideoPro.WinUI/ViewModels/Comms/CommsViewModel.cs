@@ -95,6 +95,11 @@ public sealed partial class CommsViewModel : ObservableObject
     public const string WebClientWhy = "On the Zoom web client. Ask them to rejoin in the Zoom desktop app.";
 
     private readonly IZoomCommsTransport _transport;
+    private readonly Func<long> _clockMs;
+    private bool _privatePreference;
+    private long _privateSentAtMs = long.MinValue / 2;
+    /// <summary>A private re-send waits this long for the engine to report it.</summary>
+    public const long PrivateResendMs = 2000;
     private ZoomCommsState? _comms;
     private bool _inMeeting;
     private string? _meetingLabel;
@@ -105,9 +110,10 @@ public sealed partial class CommsViewModel : ObservableObject
     private bool _allHeld;
     private bool _applying;
 
-    public CommsViewModel(IZoomCommsTransport transport)
+    public CommsViewModel(IZoomCommsTransport transport, Func<long>? clockMs = null)
     {
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+        _clockMs = clockMs ?? (() => Environment.TickCount64);
         for (var i = 0; i < MeterSegments; i++)
             Meter.Add(new CommsMeterSegment { Tone = i == MeterSegments - 1 ? CommsTone.Hot : i >= 8 ? CommsTone.Armed : CommsTone.Ready });
     }
@@ -143,7 +149,7 @@ public sealed partial class CommsViewModel : ObservableObject
         get
         {
             if (!_inMeeting) return "Not in a meeting";
-            var room = _comms?.Room is string r ? $" · Room {r}" : "";
+            var room = (_comms?.Room is string r ? $" · Room {r}" : "") + (PrivateReported ? " · private comms" : "");
             return (_meetingLabel is { Length: > 0 } label ? label : "In meeting") + room;
         }
     }
@@ -217,6 +223,63 @@ public sealed partial class CommsViewModel : ObservableObject
     [RelayCommand] private Task GainDown() => SendGainAsync(-1);
     [RelayCommand] private Task GainUp() => SendGainAsync(+1);
 
+    // ------------------------------------------------------------ private comms
+
+    /// <summary>The operator's "Private comms" choice (persisted by the shell; OFF by
+    /// default so existing shows are unchanged). ON: the meeting mic becomes the silent
+    /// virtual mic and the operator speaks only through talkback. OFF: their own mic,
+    /// which talkback needs open; turning it off leaves them MUTED.</summary>
+    public bool PrivatePreference => _privatePreference;
+
+    /// <summary>What the engine applies (comms.private).</summary>
+    public bool PrivateReported => _comms?.Private == true;
+
+    public string PrivateHint => _privatePreference
+        ? "Private comms ON: the room never hears you; you speak only through talkback. Turn off to use your own meeting mic (you stay muted until you unmute)."
+        : "Private comms OFF: talkback uses your own meeting mic, which must be open (the room hears it too). Turn on so only talent hears you.";
+
+    /// <summary>Raised when the operator changes the preference (the shell persists it).</summary>
+    public event Action<bool>? PrivatePreferenceChanged;
+
+    /// <summary>Startup: the saved preference, without sending anything yet.</summary>
+    public void RestorePrivatePreference(bool on)
+    {
+        if (_privatePreference == on) return;
+        _privatePreference = on;
+        RaisePrivate();
+    }
+
+    [RelayCommand]
+    private Task TogglePrivate()
+    {
+        _privatePreference = !_privatePreference;
+        RaisePrivate();
+        PrivatePreferenceChanged?.Invoke(_privatePreference);
+        return _inMeeting ? SendPrivateAsync() : Task.CompletedTask;
+    }
+
+    private Task SendPrivateAsync()
+    {
+        _privateSentAtMs = _clockMs();
+        return SendAsync("comms-private", new() { ["on"] = _privatePreference });
+    }
+
+    // The engine forgets nothing within a process, but a new engine (rejoin, core
+    // restart) starts OFF: re-assert the preference whenever a report disagrees,
+    // at most once per PrivateResendMs (never a storm at the report rate).
+    private void ReconcilePrivate()
+    {
+        if (_comms is null || !_inMeeting || _comms.Private == _privatePreference) return;
+        if (_clockMs() - _privateSentAtMs < PrivateResendMs) return;
+        _ = SendPrivateAsync();
+    }
+
+    private void RaisePrivate()
+    {
+        OnPropertyChanged(nameof(PrivatePreference));
+        OnPropertyChanged(nameof(PrivateHint));
+    }
+
     // ------------------------------------------------------------ ops strip
 
     public string OpsLine => _comms?.Log.Count > 0 ? _comms.Log[^1] : "No comms events yet.";
@@ -262,6 +325,7 @@ public sealed partial class CommsViewModel : ObservableObject
         _comms = update.State;
         if (_comms is null) ReleaseAllLocal();
         Refresh();
+        ReconcilePrivate();
     }
 
     private void Refresh()
@@ -287,7 +351,7 @@ public sealed partial class CommsViewModel : ObservableObject
         nameof(AllHot), nameof(AllArmed), nameof(AllTone), nameof(AllText),
         nameof(SelectedMic), nameof(SelectedOutput), nameof(SidetoneOn), nameof(ToneOn),
         nameof(GainText), nameof(FramesSent), nameof(ChannelSends), nameof(Underruns), nameof(SendErrors), nameof(SendErrorsWarn),
-        nameof(MicDb), nameof(MicLevelName), nameof(OpsLine),
+        nameof(MicDb), nameof(MicLevelName), nameof(OpsLine), nameof(PrivateReported),
     ];
 
     private void RaiseDesk()

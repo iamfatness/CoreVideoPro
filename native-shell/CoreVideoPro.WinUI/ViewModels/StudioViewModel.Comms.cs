@@ -17,6 +17,7 @@ namespace CoreVideoPro.WinUI.ViewModels;
 public sealed partial class StudioViewModel
 {
     private DispatcherQueueTimer? _commsLeaseTimer;
+    private bool _restoredCommsPrivate;  // preferences load before InitializeComms
 
     public CommsViewModel Comms { get; private set; } = null!;
 
@@ -27,6 +28,8 @@ public sealed partial class StudioViewModel
     private void InitializeComms()
     {
         Comms = new CommsViewModel(_bridge);
+        Comms.RestorePrivatePreference(_restoredCommsPrivate);
+        Comms.PrivatePreferenceChanged += _ => SaveProductionOutputPreferences();
         Comms.ApplyMeeting(Settings.IsInMeeting, CommsViewModel.MeetingLabelFor(Settings.JoinMeetingUrl));
         Settings.PropertyChanged += OnSettingsChangedForComms;
         _bridge.ZoomCommsStateReceived += OnZoomCommsStateReceived;
@@ -55,6 +58,14 @@ public sealed partial class StudioViewModel
     {
         if (value != StudioTab.Comms && Comms is { AnyHeld: true }) _ = Comms.ReleaseAllAsync();
     }
+
+    private void RestoreCommsPrivate(bool on)
+    {
+        _restoredCommsPrivate = on;
+        Comms?.RestorePrivatePreference(on);
+    }
+
+    private bool CommsPrivateForSave() => Comms?.PrivatePreference ?? _restoredCommsPrivate;
 
     private void ShutdownComms()
     {

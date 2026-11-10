@@ -94,6 +94,11 @@ internal static class CommsPageProbe
         Require(!ReferenceEquals(armed.Background, Application.Current.Resources["StudioAirBrush"]), "A key with nobody listening shows on air");
         checks.Add("desk: 6 keys in an auto-fill grid; on air = StudioAirBrush, armed = warning outline, never red without a listener");
         await ReviewImageWriter.SaveAsync(host, Path.Combine(reviewDirectory, "comms-desk.png"));
+        var privateButton = Descendants(page).OfType<Button>().SingleOrDefault(b => b.Content as string == "Private comms");
+        Require(privateButton is not null && privateButton.ActualWidth > 0, "The Private comms toggle is missing from the strip");
+        Require(ReferenceEquals(privateButton!.BorderBrush, Application.Current.Resources["StudioBorderBrush"]), "Private comms does not read OFF by default");
+        Require(Microsoft.UI.Xaml.Automation.AutomationProperties.GetItemStatus(privateButton) == "off", "Private comms does not announce off");
+        checks.Add("strip carries a Private comms toggle, OFF by default and announced as such");
 
         vm.EditMode = true;
         vm.SettingsOpen = true;

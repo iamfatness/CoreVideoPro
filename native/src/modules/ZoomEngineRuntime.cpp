@@ -764,7 +764,8 @@ rpc::Json ZoomEngineRuntime::commsCommand(const std::string& type, const rpc::Js
     // undo: it succeeds. Anything else says why.
     const auto* on = payload.get("on");
     const bool release = type == "comms-release-all" ||
-                         ((type == "comms-key" || type == "comms-latch") && on && on->isBool() && !on->asBool());
+                         ((type == "comms-key" || type == "comms-latch" || type == "comms-private") && on &&
+                          on->isBool() && !on->asBool());
     if (release) return rpc::Json::Object{{"ok", true}};
     return rpc::Json::Object{{"ok", false}, {"error", "The Zoom engine is not running. Join a meeting first."}};
   }

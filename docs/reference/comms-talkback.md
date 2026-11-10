@@ -22,11 +22,24 @@ that receives video. Consequences:
 - Guests need the Zoom desktop/mobile client (web cannot receive talkback;
   they are listed as NO TALKBACK with the fix) and must be in the station's
   room (no cross-breakout delivery; this slice is not breakout-aware).
-- **Pro joins are never capture-only**: the operator may speak in the meeting,
-  so Comms never installs the silent virtual mic and never unmutes. Talkback is
-  delivered only while the meeting mic is OPEN (ZComms law 1); MTG MIC shows
-  it and the reason says "Talkback is silent: …" while it is muted. Edge
-  (capture-only) differs; see `native/zoom-engine/README.md` "Comms".
+- **Pro joins are never capture-only**, so the meeting mic follows the
+  operator's **Private comms** toggle (strip button; owner ruling 2026-11-10;
+  persisted as `ProductionOutputPreferences.CommsPrivate`, **OFF by default**):
+  - **OFF**: the operator's own mic is left exactly as they set it. Talkback is
+    delivered only while the meeting mic is OPEN (ZComms law 1), and the room
+    hears that mic too. MTG MIC shows it; a muted mic is said in the ops log.
+  - **ON**: the meeting mic becomes the never-fed silent virtual mic, exactly
+    Edge's capture-only path (`comms/mic_guard`): the operator is muted at once,
+    the virtual mic is installed only with `HasRawdataLicense()`, the mic is
+    unmuted ONLY after `onMicInitialize`, no initialise within 5 s = stay muted
+    with a "Talkback is silent: …" reason, a drop = release ownership then mute.
+    The room never hears the operator; they speak only through talkback.
+  - **ON -> OFF**: `setExternalAudioSource(nullptr)` and the operator is left
+    **MUTED**, never auto-unmuted; the ops log says so. A meeting ending also
+    removes the silent mic on a non-capture-only station.
+  - The shell re-sends the preference whenever a report disagrees (a new engine
+    starts OFF), at most once per 2 s. The state reports `private` (Edge, always
+    capture-only, always reports `true`; `comms-private` changes nothing there).
 - Comms failures never touch subscriptions, ISO, raw media or outputs.
 
 ## Data path
@@ -47,7 +60,7 @@ engine comms_state ──pipe──▶ ZoomEngineRuntime (re-keyed camelCase, he
    → ZoomCommsStateReceived → StudioViewModel (UI thread) → CommsViewModel.ApplyComms
 ```
 
-`comms-key`, `comms-latch` and `comms-release-all` are **urgent** in the core
+`comms-key`, `comms-latch`, `comms-release-all` and `comms-private` are **urgent** in the core
 mailbox (`CommandMailbox::urgent`) and on the EngineHost wire, so a key-up is
 never refused for capacity.
 
@@ -67,6 +80,7 @@ Edge's `CommsRelay` verbatim):
 | `comms-sidetone` / `comms-tone` | `{"on":bool}` |
 | `comms-gain` | `{"db":-20..20}` |
 | `comms-release-all` | `{}`: every held key and ALL CALL up; latches stay |
+| `comms-private` | `{"on":bool}`: Private comms (above). OFF is never refused |
 
 Answer: `{"ok":true,"type":<verb>}` or failure code `comms-refused` with the
 operator text in `error.message` (shown verbatim in the ops strip). Releasing
@@ -78,7 +92,7 @@ engine's last `comms_state` re-keyed to camelCase (Edge's state object:
 `channels[16]{slot,label,listeners,ready,keyed,latched,room,reachOk,reachDark}`,
 `roster[]{participantId,name,talkback,room,channels}`, `mic{device,devices,
 peakDbfs,gainDb,sidetone,sidetoneDevice,sidetoneDevices,tone}`,
-`stats{framesSent,channelSends,underruns,sendErrors}`, `log[]`).
+`stats{framesSent,channelSends,underruns,sendErrors}`, `log[]`, `private`).
 `"comms":null` = the report was dropped (Leave, engine gone, core restart);
 the shell then shows no key as live. Parsed by `ZoomCommsProtocol`.
 

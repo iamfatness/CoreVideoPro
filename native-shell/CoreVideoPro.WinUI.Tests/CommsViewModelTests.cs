@@ -404,6 +404,62 @@ public sealed class CommsViewModelTests
         Assert.Equal(0, changes);
     }
 
+    [Fact]
+    public async Task PrivateCommsIsOffByDefaultAndNothingIsSent()
+    {
+        var (vm, t) = Build(TwoPeople);
+        Assert.False(vm.PrivatePreference);
+        Assert.False(vm.PrivateReported);
+        await vm.LastSend;
+        Assert.DoesNotContain(t.Sent, s => s.Verb == "comms-private");
+    }
+
+    [Fact]
+    public async Task TogglingPrivateSendsItsVerbAndAsksTheShellToPersist()
+    {
+        var (vm, t) = Build(TwoPeople);
+        var saved = new List<bool>();
+        vm.PrivatePreferenceChanged += saved.Add;
+        await vm.TogglePrivateCommand.ExecuteAsync(null);
+        await vm.TogglePrivateCommand.ExecuteAsync(null);
+        Assert.Equal([("comms-private", """{"on":true}"""), ("comms-private", """{"on":false}""")], t.Sent);
+        Assert.Equal([true, false], saved);
+    }
+
+    [Fact]
+    public async Task PrivateIsReassertedWhenAReportDisagreesButNeverAtTheReportRate()
+    {
+        long now = 10_000;
+        var transport = new FakeTransport();
+        var vm = new CommsViewModel(transport, () => now);
+        vm.RestorePrivatePreference(true);  // saved ON; a fresh engine starts OFF
+        vm.ApplyMeeting(true, null);
+        Assert.Empty(transport.Sent);       // restoring sends nothing by itself
+        vm.ApplyComms(new ZoomCommsUpdate(Parse(TwoPeople)));
+        await vm.LastSend;
+        Assert.Equal([("comms-private", """{"on":true}""")], transport.Sent);
+        for (var i = 0; i < 10; i++) { now += 100; vm.ApplyComms(new ZoomCommsUpdate(Parse(TwoPeople))); }
+        Assert.Single(transport.Sent);      // 1 s of disagreeing reports: still one send
+        now += CommsViewModel.PrivateResendMs;
+        vm.ApplyComms(new ZoomCommsUpdate(Parse(TwoPeople)));
+        Assert.Equal(2, transport.Sent.Count);
+        vm.ApplyComms(new ZoomCommsUpdate(Parse(TwoPeople.Replace("\"log\":", "\"private\":true,\"log\":"))));
+        now += 10 * CommsViewModel.PrivateResendMs;
+        vm.ApplyComms(new ZoomCommsUpdate(Parse(TwoPeople.Replace("\"log\":", "\"private\":true,\"log\":"))));
+        Assert.Equal(2, transport.Sent.Count);  // agreed: quiet
+        Assert.True(vm.PrivateReported);
+        Assert.EndsWith("· private comms", vm.RailText);
+    }
+
+    [Fact]
+    public async Task OutsideAMeetingTheToggleOnlyRecordsTheChoice()
+    {
+        var (vm, t) = Build(inMeeting: false);
+        await vm.TogglePrivateCommand.ExecuteAsync(null);
+        Assert.True(vm.PrivatePreference);
+        Assert.Empty(t.Sent);
+    }
+
     [Theory]
     [InlineData("https://zoom.us/j/1234567890?pwd=abc", "Meeting 123 456 7890")]
     [InlineData("https://us02web.zoom.us/j/12345678901", "Meeting 123 4567 8901")]

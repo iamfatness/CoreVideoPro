@@ -118,3 +118,13 @@ TEST(CommsRelay, HoldLeaseAndReleaseAll) {
   EXPECT_EQ(r.error, std::string());  // never refused
   EXPECT_EQ(r.engineLine, std::string(R"({"cmd":"comms_release_all"})"));
 }
+
+TEST(CommsRelay, PrivateIsRelayedAndTurningItOffIsNeverRefused) {
+  const Json comms = availableComms();
+  auto r = buildCommsEngineLine("comms-private", parse(R"({"on":true})"), true, &comms);
+  EXPECT_EQ(r.engineLine, std::string(R"({"cmd":"comms_private","on":true})"));
+  EXPECT_EQ(buildCommsEngineLine("comms-private", parse(R"({"on":true})"), false, nullptr).error,
+            std::string("Join a meeting first."));
+  EXPECT_EQ(buildCommsEngineLine("comms-private", parse(R"({"on":false})"), false, nullptr).error, std::string());
+  EXPECT_FALSE(buildCommsEngineLine("comms-private", parse(R"({})"), true, &comms).error.empty());
+}

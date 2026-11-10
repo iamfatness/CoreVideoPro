@@ -111,6 +111,9 @@ struct CommsInputs {
   // Non-empty: talkback would be silent because the mic rule keeps our
   // meeting mic closed (MicGuard::blocked_reason). Becomes the reason.
   std::string mic_blocked;
+  // The station's mic mode as the engine applies it: capture-only (Edge) OR
+  // Pro's "Private comms" requested. Reported as comms_state.private.
+  bool private_mode = false;
   std::vector<zc::RosterMember> roster;  // everyone except this station
   int64_t now_ms = 0;
 };
@@ -143,6 +146,9 @@ class CommsCore {
   std::string StateJson(bool with_peak = true) const;
 
   bool available() const { return available_; }
+  // comms_private as last requested (survives meetings; the engine feeds
+  // MicGuard from it and reports CommsInputs::private_mode).
+  bool private_requested() const { return private_requested_; }
   const std::string& reason() const { return reason_; }
   uint32_t keys() const { return applied_keys_; }
   // Every HELD key and ALL CALL up; latches stay (they are deliberate).
@@ -189,6 +195,7 @@ class CommsCore {
   int64_t next_house_ms_ = 0;
 
   // Keying: latch per slot, operator hold per slot, ALL CALL hold.
+  bool private_requested_ = false;
   uint32_t latch_mask_ = 0;
   uint32_t hold_mask_ = 0;
   bool hold_all_ = false;

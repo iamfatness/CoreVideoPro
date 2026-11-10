@@ -200,7 +200,7 @@ phrase they quote.
 |---|---|
 | [`docs/reference/beta-release-runbook.md`](docs/reference/beta-release-runbook.md) | cutting, tagging or publishing a beta |
 | [`docs/reference/browser-sources.md`](docs/reference/browser-sources.md) | browser (URL) sources, WebView2 host |
-| [`docs/reference/comms-talkback.md`](docs/reference/comms-talkback.md) | the **Comms** page (Zoom talkback, the ZComms station): engine `EngineComms` kept byte-identical with CoreVideo Edge, core relay `ZoomCommsRelay` (comms-* answered lock-free, key-ups urgent), `zoom-comms-state` facts, `CommsViewModel` / `CommsPage` / `TalkKey`, leases + release-all, Pro joins never capture-only, on air = `StudioAirBrush`, `scripts/probe-comms.mjs` |
+| [`docs/reference/comms-talkback.md`](docs/reference/comms-talkback.md) | the **Comms** page (Zoom talkback, the ZComms station): engine `EngineComms` kept byte-identical with CoreVideo Edge, core relay `ZoomCommsRelay` (comms-* answered lock-free, key-ups urgent), `zoom-comms-state` facts, `CommsViewModel` / `CommsPage` / `TalkKey`, leases + release-all, the **Private comms** toggle (OFF default; ON = silent virtual mic via MicGuard, OFF leaves the operator muted), on air = `StudioAirBrush`, `scripts/probe-comms.mjs` |
 | [`docs/reference/core-on-air-policy.md`](docs/reference/core-on-air-policy.md) | handshake, Engine on, Record or Join gating; a stub adapter left in a real core |
 | [`docs/reference/core-restart-drill.md`](docs/reference/core-restart-drill.md) | core crash recovery, respawn, Zoom rejoin |
 | [`docs/reference/d3d-device-loss.md`](docs/reference/d3d-device-loss.md) | D3D devices, shared textures, device-removed handling |

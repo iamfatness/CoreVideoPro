@@ -19,6 +19,9 @@
 //   comms_sidetone     {"on":bool}
 //   comms_tone         {"on":bool}
 //   comms_gain         {"db":int -20..20}
+//   comms_private      {"on":bool}   Pro's "Private comms": the meeting mic becomes
+//                      the never-fed silent virtual mic (MicGuard); no effect on a
+//                      capture-only join, which is always private
 #pragma once
 
 #include <cstdint>
@@ -27,7 +30,7 @@
 
 namespace edgecomms {
 
-enum class CommsVerb { None, Key, Latch, Assign, Mic, SidetoneOut, Sidetone, Tone, Gain, ReleaseAll };
+enum class CommsVerb { None, Key, Latch, Assign, Mic, SidetoneOut, Sidetone, Tone, Gain, ReleaseAll, Private };
 
 struct CommsCommand {
   CommsVerb verb = CommsVerb::None;
@@ -182,6 +185,7 @@ inline CommsCommand ParseCommsCommand(const std::string& line) {
   else if (name == "comms_tone") c.verb = CommsVerb::Tone;
   else if (name == "comms_gain") c.verb = CommsVerb::Gain;
   else if (name == "comms_release_all") c.verb = CommsVerb::ReleaseAll;
+  else if (name == "comms_private") c.verb = CommsVerb::Private;
   else {
     c.error = "unknown comms command '" + name + "'";
     return c;
@@ -237,6 +241,7 @@ inline CommsCommand ParseCommsCommand(const std::string& line) {
       break;
     case CommsVerb::Sidetone:
     case CommsVerb::Tone:
+    case CommsVerb::Private:
       need_on();
       break;
     case CommsVerb::Gain: {

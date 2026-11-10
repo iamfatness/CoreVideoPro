@@ -305,6 +305,7 @@ struct State {
     std::vector<zc::RosterMember> roster;
     int64_t next_roster_ms = 0;
     bool silent_mic_ever = false;  // removed again at shutdown
+    bool silent_mic_set = false;   // setExternalAudioSource(&silent_mic) is in force now
     bool capture_only = true;      // from the join line (delta 1)
     bool pending_end = false;      // a status change arrived mid-tick
     edgecomms::MicGuard guard;
@@ -361,12 +362,29 @@ void revoke_mic(const char *why)
     flush_guard_log();
 }
 
+// Private comms off (or a non-capture-only meeting ending): the silent mic
+// stops being the meeting mic. Ownership first, then the source, then mute:
+// the operator's REAL mic is never unmuted on their behalf.
+void remove_silent_mic()
+{
+    auto &s = S();
+    if (!s.silent_mic_set) return;
+    s.silent_mic_set = false;
+    s.silent_mic.initialised.store(false);
+    auto *helper = ZOOMSDK::GetAudioRawdataHelper();
+    const int code = helper ? static_cast<int>(helper->setExternalAudioSource(nullptr)) : -1;
+    EngineIpc::write(R"({"cmd":"debug","stage":"comms_silent_mic_removed","code":)" + std::to_string(code) + "}");
+}
+
 void end_meeting()
 {
     auto &s = S();
     s.pending_end = false;
     g_owns_mic.store(false);
     s.guard.Reset();
+    // Private comms is per meeting in the SDK: a non-capture-only station must
+    // not carry the silent mic into a meeting where private is off.
+    if (!s.capture_only) remove_silent_mic();
     s.silent_mic.initialised.store(false);  // a new meeting must re-prove it
     if (s.core) s.core->DetachBank();  // the sink lets go first: no send after this
     if (s.adapter) {
@@ -418,6 +436,7 @@ void tick()
     in.now_ms = now;
     ZOOMSDK::IMeetingService *svc = s.meeting_svc ? *s.meeting_svc : nullptr;
     in.in_meeting = svc && svc->GetMeetingStatus() == ZOOMSDK::MEETING_STATUS_INMEETING;
+    in.private_mode = s.capture_only || s.core->private_requested();
     if (!in.in_meeting && (s.bank || s.adapter || s.guard.installed())) end_meeting();
 
     if (in.in_meeting) {
@@ -450,6 +469,7 @@ void tick()
         gi.in_meeting = true;
         gi.can_talkback = in.controller && in.supported && in.host_or_cohost && me;
         gi.capture_only = s.capture_only;
+        gi.private_on = s.core->private_requested();
         gi.licence = gi.can_talkback && !s.guard.installed() && ZOOMSDK::HasRawdataLicense();
         gi.initialised = s.silent_mic.initialised.load();
         gi.self_muted = !me || me->IsAudioMuted();
@@ -460,7 +480,7 @@ void tick()
             const ZOOMSDK::SDKError err =
                 helper ? helper->setExternalAudioSource(&s.silent_mic) : ZOOMSDK::SDKERR_UNINITIALIZE;
             const bool ok = err == ZOOMSDK::SDKERR_SUCCESS;
-            if (ok) s.silent_mic_ever = true;
+            if (ok) s.silent_mic_ever = s.silent_mic_set = true;
             s.guard.InstallResult(ok, "setExternalAudioSource " + std::to_string(static_cast<int>(err)), now);
             g_owns_mic.store(s.guard.owns());  // false: nothing is owned before onMicInitialize
             EngineIpc::write(R"({"cmd":"debug","stage":"comms_silent_mic","code":)" +
@@ -484,6 +504,14 @@ void tick()
         }
         case edgecomms::MicGuard::Act::Revoke:
             revoke_mic("virtual_mic_not_initialised");
+            break;
+        case edgecomms::MicGuard::Act::Mute:
+            revoke_mic("private_comms");
+            break;
+        case edgecomms::MicGuard::Act::Uninstall:
+            g_owns_mic.store(false);
+            remove_silent_mic();
+            revoke_mic("private_comms_off");
             break;
         case edgecomms::MicGuard::Act::None:
             break;

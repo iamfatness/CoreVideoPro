@@ -74,7 +74,7 @@ const Json* findRosterEntry(const Json* comms, double participantId) {
 bool isCommsVerb(const std::string& cmd) {
   return cmd == "comms-key" || cmd == "comms-latch" || cmd == "comms-assign" || cmd == "comms-mic" ||
          cmd == "comms-sidetone-out" || cmd == "comms-sidetone" || cmd == "comms-tone" || cmd == "comms-gain" ||
-         cmd == "comms-release-all";
+         cmd == "comms-release-all" || cmd == "comms-private";
 }
 
 CommsRelayResult buildCommsEngineLine(const std::string& cmd, const Json& c, bool inMeeting, const Json* lastComms) {
@@ -151,6 +151,14 @@ CommsRelayResult buildCommsEngineLine(const std::string& cmd, const Json& c, boo
     const auto on = boolField(c, "on");
     if (!on) { r.error = cmd + " needs \"on\" (true or false)."; return r; }
     if (!inMeeting) { r.error = "Join a meeting first."; return r; }
+    line.emplace("on", *on);
+  } else if (cmd == "comms-private") {
+    // The mic mode (Pro's "Private comms"; a capture-only station is always
+    // private and reports private:true whatever is asked). Turning it OFF is
+    // never refused; ON needs the meeting the engine runs in.
+    const auto on = boolField(c, "on");
+    if (!on) { r.error = "comms-private needs \"on\" (true or false)."; return r; }
+    if (*on && !inMeeting) { r.error = "Join a meeting first."; return r; }
     line.emplace("on", *on);
   } else if (cmd == "comms-gain") {
     const auto db = intField(c, "db");

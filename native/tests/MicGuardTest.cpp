@@ -173,3 +173,123 @@ TEST(MicGuard, NothingWithoutTalkbackAndLeavingDropsOwnership) {
   EXPECT_FALSE(g.owns());
   EXPECT_FALSE(g.installed());
 }
+
+// ---------------------------------------------------------------------------
+// Private comms (CoreVideo Pro, owner ruling 2026-11-10): a non-capture-only
+// station whose operator chose to speak ONLY through talkback.
+// ---------------------------------------------------------------------------
+
+namespace {
+MicGuard::In proOperator(int64_t now, bool privateOn, bool selfMuted) {
+  auto in = ready(now);
+  in.capture_only = false;
+  in.private_on = privateOn;
+  in.self_muted = selfMuted;
+  return in;
+}
+}  // namespace
+
+TEST(MicGuard, PrivateOffLeavesTheOperatorsMicAlone) {
+  MicGuard g;
+  auto in = proOperator(1000, false, false);
+  for (int i = 0; i < 20; ++i, in.now_ms += 100) EXPECT_TRUE(g.Next(in) == Act::None);
+  EXPECT_FALSE(g.installed());
+}
+
+TEST(MicGuard, PrivateOnMutesFirstThenRunsTheCaptureOnlyPath) {
+  MicGuard g;
+  auto in = proOperator(1000, true, false);  // operator was speaking to the room
+  EXPECT_TRUE(g.Next(in) == Act::Mute);      // the room stops hearing them at once
+  in.self_muted = true;
+  in.now_ms += 100;
+  EXPECT_TRUE(g.Next(in) == Act::Install);
+  g.InstallResult(true, "ok", in.now_ms);
+  for (int i = 0; i < 10; ++i) {  // installed, not initialised: never an unmute
+    in.now_ms += 100;
+    EXPECT_TRUE(g.Next(in) == Act::None);
+    EXPECT_FALSE(g.owns());
+  }
+  in.initialised = true;
+  in.now_ms += 100;
+  EXPECT_TRUE(g.Next(in) == Act::Unmute);  // only now, behind the silent mic
+  EXPECT_TRUE(g.owns());
+}
+
+TEST(MicGuard, PrivateNeedsTheRawDataLicenceAndTimesOutLikeCaptureOnly) {
+  MicGuard g;
+  auto in = proOperator(1000, true, true);
+  in.licence = false;
+  for (int i = 0; i < 10; ++i, in.now_ms += 100) EXPECT_TRUE(g.Next(in) == Act::None);
+  EXPECT_FALSE(g.blocked_reason().empty());
+  MicGuard h;
+  auto hin = proOperator(1000, true, true);
+  EXPECT_TRUE(h.Next(hin) == Act::Install);
+  h.InstallResult(true, "ok", hin.now_ms);
+  for (int i = 0; i < 60; ++i) { hin.now_ms += 100; EXPECT_FALSE(h.Next(hin) == Act::Unmute); }
+  EXPECT_TRUE(h.gave_up());
+  EXPECT_EQ(h.blocked_reason().rfind("Talkback is silent:", 0), size_t{0});
+}
+
+TEST(MicGuard, PrivateOffRemovesTheSilentMicAndNeverUnmutes) {
+  MicGuard g;
+  auto in = proOperator(1000, true, true);
+  installAndInit(g, in);
+  EXPECT_TRUE(g.Next(in) == Act::Unmute);
+  in.self_muted = false;  // open, behind the silent mic
+  in.private_on = false;
+  in.now_ms += 100;
+  EXPECT_TRUE(g.Next(in) == Act::Uninstall);  // source removed, operator muted
+  EXPECT_FALSE(g.owns());
+  EXPECT_FALSE(g.installed());
+  bool saidMuted = false;
+  for (const auto& line : g.TakeLog()) saidMuted |= line.find("left MUTED") != std::string::npos;
+  EXPECT_TRUE(saidMuted);
+  in.self_muted = true;
+  in.initialised = false;
+  for (int i = 0; i < 50; ++i) {  // muted from here on: nothing ever unmutes them
+    in.now_ms += 100;
+    const auto act = g.Next(in);
+    EXPECT_FALSE(act == Act::Unmute);
+    EXPECT_FALSE(act == Act::Install);
+  }
+}
+
+TEST(MicGuard, PrivateOffBeforeAnythingWasInstalledStillLeavesThemMuted) {
+  MicGuard g;
+  auto in = proOperator(1000, true, true);
+  in.licence = false;
+  g.Next(in);
+  in.private_on = false;
+  in.now_ms += 100;
+  EXPECT_TRUE(g.Next(in) == Act::Mute);
+  EXPECT_TRUE(g.blocked_reason().empty());
+}
+
+TEST(MicGuard, PrivateOnAgainRetriesAfterAGiveUp) {
+  MicGuard g;
+  auto in = proOperator(1000, true, true);
+  installAndInit(g, in);
+  g.Next(in);
+  EXPECT_TRUE(g.Dropped());  // Zoom dropped it: revoke, give up for the meeting
+  EXPECT_TRUE(g.gave_up());
+  in.private_on = false;
+  in.now_ms += 100;
+  g.Next(in);
+  in.private_on = true;
+  in.initialised = false;
+  in.now_ms += 100;
+  EXPECT_TRUE(g.Next(in) == Act::Install);  // a fresh attempt
+}
+
+TEST(MicGuard, ACaptureOnlyStationIgnoresPrivate) {
+  MicGuard g;
+  auto in = ready(1000);
+  in.private_on = true;
+  installAndInit(g, in);
+  EXPECT_TRUE(g.Next(in) == Act::Unmute);
+  in.private_on = false;  // Edge: always private; turning it off changes nothing
+  in.self_muted = false;
+  in.now_ms += 100;
+  EXPECT_TRUE(g.Next(in) == Act::None);
+  EXPECT_TRUE(g.owns());
+}

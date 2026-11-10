@@ -48,11 +48,36 @@ void MicGuard::InstallResult(bool ok, const std::string& detail, int64_t now_ms)
 }
 
 MicGuard::Act MicGuard::Next(const In& in) {
+  const bool private_turned_on = in.private_on && !private_was_on_;
+  const bool private_turned_off = !in.private_on && private_was_on_;
+  private_was_on_ = in.private_on;
   if (!in.in_meeting) {
     if (installed_ || owns_ || gave_up_ || !blocked_.empty()) Reset();
     return Act::None;
   }
-  if (!in.capture_only) {
+  if (!in.capture_only && private_turned_off) {
+    // Private comms off: take the silent mic away and leave the operator
+    // MUTED. Never unmute their real mic on their behalf.
+    const bool had_mic = installed_ || owns_;
+    Reset();
+    logged_operator_muted_ = true;  // this line says it
+    Log(had_mic ? "private comms off -- silent virtual mic removed; your meeting mic is left MUTED (unmute in "
+                  "Zoom to speak to the room; talkback needs it open)"
+                : "private comms off -- your meeting mic is left MUTED (unmute in Zoom to speak to the room; "
+                  "talkback needs it open)");
+    return had_mic ? Act::Uninstall : Act::Mute;
+  }
+  if (!in.capture_only && private_turned_on) {
+    // A fresh attempt: an earlier give-up (timeout, drop) does not stick.
+    Reset();
+    Log("private comms on -- your meeting mic is muted; the room never hears you, you speak only through "
+        "talkback");
+  }
+  if (!in.capture_only && in.private_on && !owns_ && !in.self_muted) {
+    // Private, nothing proven yet: the real mic must not reach the room.
+    return Act::Mute;
+  }
+  if (!in.capture_only && !in.private_on) {
     // An operator who speaks in the meeting keeps their own mic. Never
     // installed, never owned; only say when their mute silences talkback.
     if (in.can_talkback && in.self_muted && !logged_operator_muted_) {

@@ -183,6 +183,29 @@ try {
   await sleep(2500);
   check(commsFacts - factsBefore >= 2, `comms fact repeats while nothing changes (+${commsFacts - factsBefore} in 2.5 s)`);
 
+  // Private comms (Pro: the join is not capture-only, the operator's mic starts open).
+  check(comms.private === false, "private comms is OFF by default (operator's own mic)");
+  check(comms.lamps.meetingMic === true, "operator's own meeting mic is open (fake starts unmuted)");
+  r = await send("comms-private", { on: true });
+  check(ok(r), `comms-private on accepted${ok(r) ? "" : ` (${err(r)})`}`);
+  await waitFor((c) => c.private === true, 3000, "state reports private:true");
+  await waitFor((c) => c.log.some((l) => l.includes("silent virtual mic initialised")), 3000,
+    "the silent mic is installed and initialised before the mic opens");
+  await waitFor((c) => c.lamps.meetingMic === true && c.available === true, 3000, "meeting mic open again, behind the silent mic");
+  r = await send("comms-key", { slot: target, on: true, leaseMs: 1500 });
+  await waitFor((c) => c.channels[target].keyed, 2000, "talkback keys while private");
+  r = await send("comms-key", { slot: target, on: false });
+  r = await send("comms-private", { on: false });
+  check(ok(r), "comms-private off accepted");
+  await waitFor((c) => c.private === false && c.lamps.meetingMic === false, 3000,
+    "private off: silent mic removed and the operator left MUTED");
+  check(comms.log.some((l) => l.includes("left MUTED")), "the ops log says the operator is left muted");
+  await sleep(2500);
+  check(comms.lamps.meetingMic === false, "nothing unmutes the operator's real mic afterwards");
+  r = await send("comms-private", { on: true });
+  check(ok(r), "re-arming private is accepted");
+  await waitFor((c) => c.private === true && c.lamps.meetingMic === true, 4000, "private on again re-installs and opens behind the silent mic");
+
   r = await send("zoom-leave");
   check(ok(r), "zoom-leave accepted");
   await waitFor((c) => c === null, 5000, "comms dropped (comms:null) after leave");

@@ -948,6 +948,8 @@ int main(int argc, char** argv) {
         } else if (line.find(IPC_CMD_JOIN) != std::string::npos) {
             std::string meeting_id = json_str(line, "meeting_id");
             fakecomms::SetStationName(json_str(line, "display_name"));
+            // Pro joins are not capture-only (Edge's are): Private comms decides.
+            fakecomms::SetCaptureOnly(line.find("\"capture_only\":true") != std::string::npos);
             EngineIpc::write(
                 R"({"cmd":"debug","stage":"join_received","meeting_id":")" +
                 json_escape(meeting_id) + "\"}");

@@ -69,3 +69,12 @@ TEST(CommsProtocol, ReleaseAllAndHoldLeases) {
   EXPECT_FALSE(ParseCommsCommand(R"({"cmd":"comms_key","slot":2,"on":true,"lease_ms":-1})").error.empty());
   EXPECT_FALSE(ParseCommsCommand(R"({"cmd":"comms_key","slot":2,"on":true,"lease_ms":60001})").error.empty());
 }
+
+TEST(CommsProtocol, PrivateTakesABool) {
+  auto c = ParseCommsCommand(R"({"cmd":"comms_private","on":true})");
+  EXPECT_TRUE(c.verb == CommsVerb::Private);
+  EXPECT_TRUE(c.on);
+  EXPECT_TRUE(c.error.empty());
+  EXPECT_FALSE(ParseCommsCommand(R"({"cmd":"comms_private","on":"yes"})").error.empty());
+  EXPECT_FALSE(ParseCommsCommand(R"({"cmd":"comms_private"})").error.empty());
+}

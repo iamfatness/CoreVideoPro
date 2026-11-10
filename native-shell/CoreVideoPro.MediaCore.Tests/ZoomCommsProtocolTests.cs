@@ -11,7 +11,7 @@ public sealed class ZoomCommsProtocolTests
     public void VerbsAreEdgesPlusReleaseAll()
     {
         Assert.Equal(
-            ["comms-assign", "comms-gain", "comms-key", "comms-latch", "comms-mic", "comms-release-all",
+            ["comms-assign", "comms-gain", "comms-key", "comms-latch", "comms-mic", "comms-private", "comms-release-all",
              "comms-sidetone", "comms-sidetone-out", "comms-tone"],
             ZoomCommsProtocol.Verbs.Order(StringComparer.Ordinal));
     }
@@ -39,12 +39,16 @@ public sealed class ZoomCommsProtocolTests
         Assert.Equal("Not in a meeting.", u.State.Reason);
         Assert.Empty(u.State.Channels);
         Assert.Null(u.State.Mic.PeakDbfs);  // nothing unmeasured is invented
+        Assert.False(u.State.Private);
+        Assert.True(ZoomCommsProtocol.TryParseStateLine("""{"type":"zoom-comms-state","comms":{"available":true,"private":true}}""", out var p));
+        Assert.True(p.State!.Private);
     }
 
     [Theory]
     [InlineData("comms-key")]
     [InlineData("comms-latch")]
     [InlineData("comms-release-all")]
+    [InlineData("comms-private")]
     public void KeyUpsUseTheReservedLane(string type) =>
         Assert.True(EngineHostWire.IsUrgent(JsonSerializer.SerializeToElement(new { type })));
 

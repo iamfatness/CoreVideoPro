@@ -28,7 +28,10 @@ public sealed record ZoomCommsState(
     long ChannelSends,
     long Underruns,
     long SendErrors,
-    IReadOnlyList<string> Log);
+    IReadOnlyList<string> Log,
+    // Private comms applied by the engine: the meeting mic is the silent
+    // virtual mic (Pro's toggle, or a capture-only station, always private).
+    bool Private = false);
 
 /// <summary>One "zoom-comms-state" fact. <see cref="State"/> null = the core dropped
 /// the report (Leave, engine gone): the shell must stop showing any key as live.</summary>

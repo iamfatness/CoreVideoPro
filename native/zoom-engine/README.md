@@ -120,17 +120,24 @@ and "delta 8") lives in Edge's engine README and applies here unchanged.
   `COREVIDEO_FAKE_COMMS_UNSUPPORTED=1`.
 
 **Pro difference that matters:** Pro's joins are never capture-only (the
-operator may speak in the meeting), so `comms/mic_guard` never installs the
-silent virtual mic and never unmutes. The operator's meeting mic is left
-exactly as they set it; talkback is silent while it is muted (ZComms law 1)
-and the state says so (`lamps.meeting_mic`, reason "Talkback is silent: …").
-Pro has no `enforce_capture_only()` (that is an Edge delta), so
-`EngineComms::owns_mic()` is unused here.
+operator may speak in the meeting). `comms/mic_guard` installs the silent
+virtual mic only for a capture-only join OR when the operator turned on
+**Private comms** (`comms_private {"on":true}`, owner ruling 2026-11-10): then
+it mutes the operator first and runs the capture-only path unchanged (licence,
+unmute only after `onMicInitialize`, 5 s timeout, drop = revoke). Private OFF
+removes the virtual mic (`setExternalAudioSource(nullptr)`) and leaves the
+operator MUTED, never auto-unmuted (`MicGuard::Act::Uninstall`). Without
+private the operator's meeting mic is left exactly as they set it; talkback is
+silent while it is muted (ZComms law 1). `comms_state.private` reports
+capture_only || requested. Pro has no `enforce_capture_only()` (that is an Edge
+delta), so `EngineComms::owns_mic()` is unused here. The fake engine runs the
+real MicGuard over a scripted SDK (`COREVIDEO_FAKE_SILENT_MIC=never`,
+`COREVIDEO_FAKE_OPERATOR_MUTED=1`; `fakecomms::SetCaptureOnly` from the join).
 
 New P2E lines: `comms_key {"slot":0..15|"all","on",["lease_ms"]}`,
 `comms_latch`, `comms_assign {"slot","participant_id","on"}`, `comms_mic`,
 `comms_sidetone_out`, `comms_sidetone`, `comms_tone`, `comms_gain`,
-`comms_release_all`. New E2P: `comms_state` (<= 10 Hz, only on change;
+`comms_release_all`, `comms_private {"on"}`. New E2P: `comms_state` (<= 10 Hz, only on change;
 meter-only changes at most every 250 ms). The media core relays them
 (`src/modules/ZoomCommsRelay`, `ZoomEngineRuntime::commsCommand`). Nothing in
 Comms calls into EngineVideo/EngineAudio/EngineShare; every tick is

@@ -510,6 +510,11 @@ std::string CommsCore::Apply(const CommsCommand& c, int64_t now_ms) {
     case CommsVerb::ReleaseAll:
       ReleaseHolds();
       return {};
+    case CommsVerb::Private:
+      // Not gated on availability: it is the mic mode, and turning it OFF must
+      // always be possible. MicGuard performs and logs the transition.
+      private_requested_ = c.on;
+      return {};
     case CommsVerb::None: break;
   }
   return "unknown comms command";
@@ -611,6 +616,7 @@ std::string CommsCore::StateJson(bool with_peak) const {
   const bool tx = any_hearing && applied_keys_ != 0;
   std::string out = "{\"cmd\":\"comms_state\",\"available\":" + std::string(Bool(available_)) +
                     ",\"reason\":" + (available_ ? std::string("null") : Quoted(reason_)) +
+                    ",\"private\":" + Bool(in_.private_mode) +
                     ",\"lamps\":{\"link\":" + Bool(in_.in_meeting) + ",\"meeting_mic\":" + Bool(in_.in_meeting && in_.mic_open) +
                     ",\"channel\":" + Bool(any_ready) + ",\"tx\":" + Bool(tx) + "},\"room\":null,\"channels\":" + ch +
                     ",\"roster\":" + roster + ",\"mic\":" + mic + ",\"stats\":" + stats + ",\"log\":" + log + "}";

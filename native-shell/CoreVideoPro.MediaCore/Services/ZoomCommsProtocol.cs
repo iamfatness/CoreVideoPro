@@ -16,7 +16,7 @@ public static class ZoomCommsProtocol
     public static readonly IReadOnlySet<string> Verbs = new HashSet<string>(StringComparer.Ordinal)
     {
         "comms-key", "comms-latch", "comms-assign", "comms-mic",
-        "comms-sidetone-out", "comms-sidetone", "comms-tone", "comms-gain", "comms-release-all",
+        "comms-sidetone-out", "comms-sidetone", "comms-tone", "comms-gain", "comms-release-all", "comms-private",
     };
 
     public static bool TryParseStateLine(string line, out ZoomCommsUpdate update)
@@ -72,7 +72,8 @@ public static class ZoomCommsProtocol
                 hasMic ? SN(mic, "sidetoneDevice") : null, hasMic ? Strings(mic, "sidetoneDevices") : [], B(mic, "tone")),
             hasStats ? L(stats, "framesSent") : 0, hasStats ? L(stats, "channelSends") : 0,
             hasStats ? L(stats, "underruns") : 0, hasStats ? L(stats, "sendErrors") : 0,
-            Strings(cm, "log"));
+            Strings(cm, "log"),
+            B(cm, "private"));
     }
 
     /// <summary>The core's reply to a comms-* request.</summary>

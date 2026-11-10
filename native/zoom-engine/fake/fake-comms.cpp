@@ -4,6 +4,7 @@
 
 #include "comms_core.h"
 #include "comms_protocol.h"
+#include "mic_guard.h"
 #include "talkback_channels.h"
 #include "talkback_sdk.h"
 
@@ -242,6 +243,15 @@ struct State {
   std::unique_ptr<ScriptedTalkback> sdk;
   std::unique_ptr<zc::TalkbackChannels> bank;
   std::string station = "CoreVideo Edge";
+  // The meeting mic, simulated, driven by the real MicGuard.
+  bool capture_only = true;
+  bool silent_never_initialises = false;
+  bool operator_starts_muted = false;
+  edgecomms::MicGuard guard;
+  bool mic_meeting = false;  // per-meeting mic state below is initialised
+  bool self_muted = true;
+  bool silent_set = false;
+  int64_t silent_set_at = 0;
   edgecomms::CommsStateEmitter emitter;
   std::thread thread;
   std::atomic<bool> quit{false};
@@ -261,6 +271,12 @@ void TickLocked(State& s) {
   edgecomms::CommsInputs in;
   in.now_ms = NowMs();
   in.in_meeting = s.source.in_meeting && s.source.in_meeting();
+  in.private_mode = s.capture_only || s.core->private_requested();
+  if (!in.in_meeting && s.mic_meeting) {
+    s.mic_meeting = false;
+    s.guard.Reset();
+    if (!s.capture_only) s.silent_set = false;
+  }
   if (!in.in_meeting && s.bank) {
     s.core->DetachBank();
     s.sdk->SetEvents(nullptr);
@@ -277,7 +293,37 @@ void TickLocked(State& s) {
     in.controller = true;
     in.supported = s.supported;
     in.host_or_cohost = s.host;
-    in.mic_open = s.host && s.supported;  // the real engine opens it behind the silent mic
+    if (!s.mic_meeting) {
+      s.mic_meeting = true;
+      s.self_muted = s.capture_only || s.operator_starts_muted;
+    }
+    edgecomms::MicGuard::In gi;
+    gi.in_meeting = true;
+    gi.can_talkback = s.host && s.supported;
+    gi.capture_only = s.capture_only;
+    gi.private_on = s.core->private_requested();
+    gi.licence = true;
+    gi.initialised = s.silent_set && !s.silent_never_initialises && in.now_ms - s.silent_set_at >= 300;
+    gi.self_muted = s.self_muted;
+    gi.now_ms = in.now_ms;
+    switch (s.guard.Next(gi)) {
+      case edgecomms::MicGuard::Act::Install:
+        s.silent_set = true;
+        s.silent_set_at = in.now_ms;
+        s.guard.InstallResult(true, "", in.now_ms);
+        break;
+      case edgecomms::MicGuard::Act::Unmute: s.self_muted = false; break;
+      case edgecomms::MicGuard::Act::Revoke:
+      case edgecomms::MicGuard::Act::Mute: s.self_muted = true; break;
+      case edgecomms::MicGuard::Act::Uninstall:
+        s.silent_set = false;
+        s.self_muted = true;
+        break;
+      case edgecomms::MicGuard::Act::None: break;
+    }
+    for (auto& line : s.guard.TakeLog()) s.core->Log(line);
+    in.mic_blocked = s.guard.blocked_reason();
+    in.mic_open = !s.self_muted;
     if (s.source.roster) {
       in.roster = s.source.roster();
       for (auto& m : in.roster) m.supports_talkback = m.user_id != s.web_client_id;
@@ -301,6 +347,8 @@ void Start(FakeRosterSource source, uint32_t web_client_id) {
   if (const char* role = std::getenv("COREVIDEO_FAKE_COMMS_ROLE"))
     s.host = std::string(role) != "attendee";
   if (const char* u = std::getenv("COREVIDEO_FAKE_COMMS_UNSUPPORTED")) s.supported = u[0] != '1';
+  if (const char* m = std::getenv("COREVIDEO_FAKE_SILENT_MIC")) s.silent_never_initialises = std::string(m) == "never";
+  if (const char* o = std::getenv("COREVIDEO_FAKE_OPERATOR_MUTED")) s.operator_starts_muted = o[0] == '1';
   s.mic = std::make_unique<SyntheticMic>(&s.sink);
   s.core = std::make_unique<edgecomms::CommsCore>(s.mic.get(), &s.sink);
   s.thread = std::thread([] {
@@ -328,6 +376,12 @@ void SetStationName(const std::string& name) {
   State& s = S();
   std::lock_guard<std::mutex> lock(s.m);
   if (!name.empty()) s.station = name;
+}
+
+void SetCaptureOnly(bool capture_only) {
+  State& s = S();
+  std::lock_guard<std::mutex> lock(s.m);
+  s.capture_only = capture_only;
 }
 
 void Stop() {

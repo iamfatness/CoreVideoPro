@@ -317,6 +317,11 @@
                         Background="{x:Bind ViewModel.SettingsOpen, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-bg}"
                         BorderBrush="{x:Bind ViewModel.SettingsOpen, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-border}"
                         AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.SettingsOpen), Mode=OneWay}" />
+                <Button Content="Private comms" Style="{StaticResource CommsToggleButton}" Command="{x:Bind ViewModel.TogglePrivateCommand}"
+                        Background="{x:Bind ViewModel.PrivatePreference, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-bg}"
+                        BorderBrush="{x:Bind ViewModel.PrivatePreference, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-border}"
+                        AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.PrivatePreference), Mode=OneWay}"
+                        ToolTipService.ToolTip="{x:Bind ViewModel.PrivateHint, Mode=OneWay}" />
                 <Button Content="Leave" Style="{StaticResource CommsToggleButton}" Command="{x:Bind LeaveCommand, Mode=OneWay}"
                         ToolTipService.ToolTip="Leave the meeting (video too)" />
             </StackPanel>

@@ -15,7 +15,14 @@
 //     pacer uses: keyed channels count channel_sends, and the peak moves
 //     while keyed or while TONE is on (-60 dBFS "quiet room" otherwise);
 //   - COREVIDEO_FAKE_COMMS_ROLE=attendee: the station is not host/co-host;
-//     COREVIDEO_FAKE_COMMS_UNSUPPORTED=1: the meeting does not support it.
+//     COREVIDEO_FAKE_COMMS_UNSUPPORTED=1: the meeting does not support it;
+//   - the meeting mic runs the REAL MicGuard over a scripted SDK: install
+//     succeeds, the silent mic initialises ~0.3 s later
+//     (COREVIDEO_FAKE_SILENT_MIC=never: it never does, so the 5 s timeout
+//     shows), mute/unmute/uninstall act on a simulated self-mute. A
+//     capture-only join (the default, Edge) starts muted; otherwise the
+//     operator starts unmuted (COREVIDEO_FAKE_OPERATOR_MUTED=1: muted), and
+//     comms_private switches the station to the silent mic and back.
 #pragma once
 
 #include <cstdint>
@@ -37,6 +44,8 @@ void Start(FakeRosterSource source, uint32_t web_client_id);
 // True when `line` is a comms_* command (handled, whatever its validity).
 bool HandleLine(const std::string& line);
 void SetStationName(const std::string& name);
+// Per join (before the meeting starts): Edge joins capture-only; Pro does not.
+void SetCaptureOnly(bool capture_only);
 void Stop();
 
 }  // namespace fakecomms

@@ -376,3 +376,25 @@ TEST(CommsCore, AClosedMeetingMicIsTheReasonAndKeysAreRefused) {
   r.tick();
   EXPECT_TRUE(r.core.available());
 }
+
+TEST(CommsCore, PrivateIsTheRequestedMicModeAndTheStateReportsTheAppliedOne) {
+  Rig r;
+  r.bringUp();
+  EXPECT_FALSE(r.core.private_requested());
+  EXPECT_TRUE(r.state().get("private") != nullptr);
+  EXPECT_FALSE(r.state().get("private")->asBool(true));
+  // Not gated on availability: the mode must always be switchable.
+  r.in.host_or_cohost = false;
+  r.tick();
+  EXPECT_EQ(r.core.Apply(ParseCommsCommand(R"({"cmd":"comms_private","on":true})"), r.now), std::string());
+  EXPECT_TRUE(r.core.private_requested());
+  r.in.private_mode = true;  // what the engine applies (capture_only || requested)
+  r.tick();
+  EXPECT_TRUE(r.state().get("private")->asBool(false));
+  EXPECT_EQ(r.core.Apply(ParseCommsCommand(R"({"cmd":"comms_private","on":false})"), r.now), std::string());
+  EXPECT_FALSE(r.core.private_requested());
+  r.core.DetachBank();  // the request survives meetings
+  EXPECT_EQ(r.core.Apply(ParseCommsCommand(R"({"cmd":"comms_private","on":true})"), r.now), std::string());
+  r.core.DetachBank();
+  EXPECT_TRUE(r.core.private_requested());
+}

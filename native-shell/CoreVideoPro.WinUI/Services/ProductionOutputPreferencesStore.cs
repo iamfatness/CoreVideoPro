@@ -163,6 +163,9 @@ public sealed class ProductionOutputPreferences
     public bool MultiviewShowClock { get; set; }
     // #1076: Graphics tab mode, "playout" (default) or "design". UI preference only.
     public string? GraphicsMode { get; set; }
+    // Comms "Private comms": the meeting mic is the silent virtual mic and the
+    // operator speaks only through talkback. OFF by default (existing shows).
+    public bool CommsPrivate { get; set; }
     public Dictionary<string, string> SceneBackgroundAssetIds { get; set; } = new(StringComparer.Ordinal);
 
     // Operator-overridden display names, keyed by canonical source id
