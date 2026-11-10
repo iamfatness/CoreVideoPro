@@ -132,6 +132,13 @@ process goes with it (talkback ends with the participant).
 - End to end without Zoom: `scripts/probe-comms.mjs` drives the real core
   binary over stdio against `corevideo-zoom-engine-fake` (join, wait for the
   bank, key/latch/assign/tone, read the `zoom-comms-state` facts).
+- Rendered page: `CoreVideoPro.WinUI.exe --verify-comms-page <report.json>`
+  (`CommsPageProbe`, offscreen and never activated, no core) renders the real
+  `CommsPage` through not-in-meeting, not-host, desk and edit+settings states,
+  checks key count/width and the on-air/armed tokens, and writes
+  `comms-*.png` beside the report; part of `scripts/test-studio-layout.ps1`.
+  An `x:DataType` that disagrees with the bound item type fail-fasts this page
+  as `0xc000027b` (seen once in development with the ops history).
 - **Not proven**: real talkback against Zoom (needs a live meeting with this
   account as co-host and desktop-client guests), audio at the guest, the 7.1.5
   raw video/ISO path in a live take.
