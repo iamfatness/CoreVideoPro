@@ -28,6 +28,8 @@ public sealed class CoreObservationModel
     public JsonElement? AppliedControlRevision => Get("appliedControlRevision");
     public JsonElement? AudioRoutingMatrix => Get("audioRoutingMatrix");
     public JsonElement? AutoProduction => Get("autoProduction");
+    public JsonElement? ProgramBlackout => Get("programBlackout");
+    public JsonElement? ProgramBlackoutOpacity => Get("programBlackoutOpacity");
     public JsonElement? BrandKit => Get("brandKit");
     public JsonElement? BreakoutRoomId => Get("breakoutRoomId");
     public JsonElement? BreakoutRoomName => Get("breakoutRoomName");
@@ -125,6 +127,8 @@ public sealed class CoreObservationModel
         "appliedControlRevision" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "audioRoutingMatrix" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "autoProduction" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
+        "programBlackout" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
+        "programBlackoutOpacity" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "brandKit" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "breakoutRoomId" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "breakoutRoomName" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },

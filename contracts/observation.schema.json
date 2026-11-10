@@ -36,6 +36,16 @@
       "qualification": "include",
       "control": "include"
     },
+    "programBlackout": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "programBlackoutOpacity": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
     "brandKit": {
       "typed": "include",
       "qualification": "include",
