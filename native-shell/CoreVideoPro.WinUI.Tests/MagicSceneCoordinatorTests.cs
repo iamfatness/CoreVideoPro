@@ -102,8 +102,51 @@ public sealed class MagicSceneCoordinatorTests
     private static (MagicSceneCoordinator Coordinator, FakeMagicSceneHost Host) Build(Func<DateTimeOffset>? clock = null)
     {
         var host = new FakeMagicSceneHost { Scenes = Scenes };
-        var coordinator = new MagicSceneCoordinator(host, clock);
+        var coordinator = new MagicSceneCoordinator(host, clock, sceneAutomationAvailable: true);
         return (coordinator, host);
+    }
+
+    [Fact]
+    public void ReleaseConstructorCannotActivateLegacyAutomationThroughAnyEntryPoint()
+    {
+        var host = new FakeMagicSceneHost { Scenes = Scenes, RoomVideoParticipantCount = 4, CanTake = true };
+        var coordinator = new MagicSceneCoordinator(host);
+        coordinator.Recommendation = Recommendation("interview", 99);
+        coordinator.RunMagicSceneCommand.Execute(null);
+        coordinator.ToggleAutomationCommand.Execute(null);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        coordinator.AutomationAutoTakeEnabled = true;
+        coordinator.ResetAutomationDefaultsCommand.Execute(null);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(ProductionMode.Manual, coordinator.ProductionMode);
+        Assert.False(coordinator.AutomationAutoTakeEnabled);
+        Assert.Equal(0, host.Timer.StartCount);
+        Assert.Empty(host.PreviewBindings);
+        Assert.Equal("intro", host.PreviewSceneId);
+        Assert.Equal("intro", host.ActiveSceneId);
+        Assert.Equal(0, host.TakeAsyncCallCount);
+        Assert.Equal(0, host.GraphicPolicyCalls);
+        Assert.Contains("unavailable", coordinator.AutomationLastAction);
+    }
+
+    [Fact]
+    public async Task DisabledDirectorLeavesManualTakeAndItsStatusAloneAcrossRefreshes()
+    {
+        var host = new FakeMagicSceneHost { Scenes = Scenes, RoomVideoParticipantCount = 4, CanTake = true };
+        var coordinator = new MagicSceneCoordinator(host);
+        host.PreviewSceneId = "interview";
+        await host.TakeAsync();
+        ((IMagicSceneHost)host).CommandStatus = "Manual Take completed";
+        coordinator.Recommendation = Recommendation("panel", 99);
+        coordinator.EvaluateAutomationPolicy();
+        host.CoreEpoch = "restarted-core";
+        host.RosterEpoch = "new-meeting";
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal("interview", host.ActiveSceneId);
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal("Manual Take completed", host.CommandStatus);
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        Assert.Equal(0, host.Timer.StartCount);
     }
 
     [Fact]

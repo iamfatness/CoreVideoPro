@@ -864,6 +864,7 @@ if(BUILD_TESTING)
     tests/MonitorRenderFaultInjectionTest.cpp
     tests/MonitorRenderWorkerTest.cpp
     tests/GradePreviewTest.cpp
+    tests/ProgramBlackoutTest.cpp
     tests/AdvancedGradeTest.cpp
     tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp

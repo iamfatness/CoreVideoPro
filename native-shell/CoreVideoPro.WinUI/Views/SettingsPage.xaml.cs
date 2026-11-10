@@ -7,6 +7,12 @@ namespace CoreVideoPro.WinUI.Views;
 
 public sealed partial class SettingsPage : UserControl
 {
+    public void OpenHealth()
+    {
+        HealthSection.IsExpanded = true;
+        DispatcherQueue.TryEnqueue(() => HealthSection.StartBringIntoView());
+    }
+
     public SettingsPage()
     {
         InitializeComponent();

@@ -62,7 +62,7 @@ struct ShellPrefs: Codable, Equatable {
     var monitorVolume = 0.7
     var isoRecordingEnabled = false
     var isoSelectedSourceIds: [String] = []
-    var autoTakeEnabled = true
+    var autoTakeEnabled = false
     var autoConfidenceThreshold = 70.0
     var autoHoldSeconds = 4.0
     // Automation-tab policy (AutomationExtras.swift). OPTIONAL on purpose: a
@@ -116,7 +116,7 @@ struct ShellPrefs: Codable, Equatable {
         monitorVolume = v(.monitorVolume, 0.7)
         isoRecordingEnabled = v(.isoRecordingEnabled, false)
         isoSelectedSourceIds = v(.isoSelectedSourceIds, [])
-        autoTakeEnabled = v(.autoTakeEnabled, true)
+        autoTakeEnabled = false // Retired scene automation cannot be restored from preferences.
         autoConfidenceThreshold = v(.autoConfidenceThreshold, 70.0)
         autoHoldSeconds = v(.autoHoldSeconds, 4.0)
         lowerThirdName = v(.lowerThirdName, "")

@@ -2,7 +2,7 @@
 
 CoreVideo Pro is a **native desktop production studio for Windows and macOS** for building polished
 live shows, recordings, and streams from Zoom participants, cameras, screen capture and
-media: Magic Scene auto-layout, lower-thirds, graphics, audio leveling, and
+media: CoreVideo Tiles composition, lower-thirds, graphics, audio leveling, and
 multi-destination output, in a single operator console.
 
 **Work order lives in one place:** [`docs/BACKLOG.md`](docs/BACKLOG.md). This README is
@@ -93,7 +93,7 @@ the stream, every ISO writer and the camera publisher ran clean, and Program rec
 | | DeckLink / AJA | Not shipped: probe only ([#537](https://github.com/iamfatness/CoreVideoPro/issues/537)) |
 | **Media** | Local video and still playback with core-owned cue/live/pause | Shipped, not live-verified; ProRes fails to start in the installed build ([#473](https://github.com/iamfatness/CoreVideoPro/issues/473)); stutter reported ([#701](https://github.com/iamfatness/CoreVideoPro/issues/701)) |
 | **Compositor** | D3D11 Program/Preview/Multiview, per-source framing, borders, grade presets and curves, lower-thirds and graphics templates | Proven: Program render held every deadline in the soak (minimum slack 3.6 ms) |
-| | Set & Forget and Magic Scene automation driven by the core's slot bindings | Shipped, not live-verified: bound in [#1021](https://github.com/iamfatness/CoreVideoPro/pull/1021), unit-tested to the coordinator |
+| | Scene selection and Take | Manual control through Studio, keyboard and Stream Deck. Legacy Magic Scene and Set & Forget are excluded from the first release. |
 | | Captions | Not shipped: the controls were removed in #1021 because no caption source exists; `push-caption-cue` remains for external cue feeds |
 | **Audio** | Routing matrix, Program and ISO taps, BS.1770 meter, bus dynamics and limiter, WASAPI monitor output | Proven on live shows; recorded Program A/V skew measured near -20 ms, live monitor skew -46 ms after [#655](https://github.com/iamfatness/CoreVideoPro/pull/655) ([#652](https://github.com/iamfatness/CoreVideoPro/issues/652) open on the limit) |
 | | Per-participant audio delay | Not shipped ([#627](https://github.com/iamfatness/CoreVideoPro/issues/627)) |
@@ -180,7 +180,7 @@ The first fully useful milestone:
 
 1. Join Zoom.
 2. See clean participant feeds and metadata.
-3. Click Magic Scene.
+3. Compose the show with CoreVideo Tiles and cue the desired scene on Preview.
 4. Get a polished show with lower-thirds, graphics, audio leveling, and
    stream / local-recording / virtual-camera controls.
 

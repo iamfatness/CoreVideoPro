@@ -1,3 +1,4 @@
+#include "core/ProgramBlackout.h"
 #include "graphics/GraphicsResourceBudget.h"
 #include "compositor/CompositorLayout.h"
 #include "compositor/ColorGradeParams.h"
@@ -711,6 +712,32 @@ TEST(StubCompositor, TransparentChromaKeyLayerRevealsLowerLayer) {
 #endif
 
 #if COREVIDEO_WITH_D3D11
+TEST(D3D11Compositor, FadeToBlackProducesBlackPixelsAndRestoresHeldVideo) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_TRUE(compositor);
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.width = 640; plan.height = 360;
+  plan.layers.push_back({"camera", "participant-video", "zoom:camera", "camera", 0, {0,0,1,1}, 1});
+  auto source = makeLeftRightBandFrame("camera",64,36,64,36,0xffeeeeee,0xffeeeeee);
+  source.frameId = 7;
+  const auto baseline = compositor->render(plan,{source});
+  ASSERT_FALSE(baseline.preview.bgra.empty());
+  corevideo::core::ProgramBlackout fade;
+  fade.set(true); fade.advance(150);
+  auto half = plan; fade.append(half);
+  auto middle = compositor->render(half,{source});
+  auto pixel = previewPixelRgba(middle.preview,100,80);
+  EXPECT_GT(pixel & 255, 30u); EXPECT_LT(pixel & 255, 200u);
+  fade.advance(150);
+  auto black = plan; fade.append(black);
+  auto frame = compositor->render(black,{source});
+  ASSERT_FALSE(frame.preview.bgra.empty());
+  EXPECT_EQ(previewPixelRgba(frame.preview,100,80),0xff000000u);
+  fade.set(false); fade.advance(300);
+  auto restored = plan; fade.append(restored);
+  EXPECT_EQ(compositor->render(restored,{source}).preview.bgra, baseline.preview.bgra);
+}
+
 TEST(D3D11Compositor, FramingChangesHeldSourcePixelsWithoutReplacingTheSource) {
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_TRUE(compositor);

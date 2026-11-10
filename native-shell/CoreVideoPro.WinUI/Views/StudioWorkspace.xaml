@@ -52,9 +52,9 @@
             </Style>
 
             <Style x:Key="TakeButton" TargetType="Button" BasedOn="{StaticResource TransportButton}">
-                <Setter Property="Background" Value="#F0A85C" />
-                <Setter Property="BorderBrush" Value="Transparent" />
-                <Setter Property="Foreground" Value="#18110A" />
+                <Setter Property="Background" Value="#141A1E" />
+                <Setter Property="BorderBrush" Value="#F0A85C" />
+                <Setter Property="Foreground" Value="#E8F0EC" />
             </Style>
 
             <Style x:Key="MagicSceneButton" TargetType="Button">
@@ -180,10 +180,8 @@
                             BorderBrush="{x:Bind ViewModel.StudioTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.StudioTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="studio" />
-                    <TextBlock Text="Setup" FontSize="10" FontWeight="Bold"
-                               Foreground="{StaticResource StudioMutedBrush}"
-                               VerticalAlignment="Center" Margin="10,0,2,0" />
-                    <Button Content="Settings" Style="{StaticResource GhostButton}"
+
+                    <Button Content="Zoom" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.SettingsTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.SettingsTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.SettingsTabChrome.Foreground, Mode=OneWay}"
@@ -227,11 +225,7 @@
                             BorderBrush="{x:Bind ViewModel.MediaTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.MediaTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="media" />
-                    <Button Content="Automation" Style="{StaticResource GhostButton}"
-                            Background="{x:Bind ViewModel.AutomationTabChrome.Background, Mode=OneWay}"
-                            BorderBrush="{x:Bind ViewModel.AutomationTabChrome.BorderBrush, Mode=OneWay}"
-                            Foreground="{x:Bind ViewModel.AutomationTabChrome.Foreground, Mode=OneWay}"
-                            Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="automation" />
+                    <Button Content="Health" Click="OnOpenHealth" Style="{StaticResource GhostButton}"/>
                     <Button Content="OHG Show" Style="{StaticResource GhostButton}"
                             Visibility="{x:Bind ViewModel.OhgShowNavigationVisibility, Mode=OneWay}"
                             Background="{x:Bind ViewModel.OhgShowTabChrome.Background, Mode=OneWay}"
@@ -257,7 +251,7 @@
                         <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
                             <Ellipse Width="7" Height="7" VerticalAlignment="Center"
                                      Fill="{x:Bind ViewModel.CaptureDotBrush, Mode=OneWay}" />
-                            <TextBlock Text="ENGINE" CharacterSpacing="100" VerticalAlignment="Center" />
+                            <TextBlock Text="CAPTURE" CharacterSpacing="100" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
                     <Border Background="{x:Bind ViewModel.ZoomPillBackground, Mode=OneWay}"
@@ -308,7 +302,7 @@
             <Grid.ColumnDefinitions>
                 <!-- Design spec: Scenes ~250px, Participants ~240px. The prior
                      190px squeezed scene names to unreadable ellipsis. -->
-                <ColumnDefinition Width="250" MinWidth="220" MaxWidth="290" />
+                <ColumnDefinition Width="270" MinWidth="220" MaxWidth="290" />
                 <ColumnDefinition Width="*" MinWidth="360" />
                 <!-- Auto so the room panel collapses to zero width when hidden. -->
                 <ColumnDefinition Width="Auto" />
@@ -330,30 +324,6 @@
                                    Foreground="{StaticResource StudioTextBrush}" />
                     </StackPanel>
 
-                    <Grid Grid.Row="1" ColumnSpacing="6">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Border Background="#1F1710" BorderBrush="#F0A85C" BorderThickness="1" CornerRadius="6" Padding="8,5">
-                            <TextBlock FontSize="10" FontWeight="SemiBold" Foreground="#F0A85C"
-                                       TextTrimming="CharacterEllipsis"
-                                       ToolTipService.ToolTip="{x:Bind ViewModel.ProgramSceneSummary, Mode=OneWay}">
-                                <Run Text="PGM " />
-                                <Run Text="{x:Bind ViewModel.ProgramSceneSummary, Mode=OneWay}" />
-                            </TextBlock>
-                        </Border>
-                        <Border Grid.Column="1" Background="#122018" BorderBrush="{StaticResource StudioAccentBrush}"
-                                BorderThickness="1" CornerRadius="6" Padding="8,5">
-                            <TextBlock FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioAccentBrush}"
-                                       TextTrimming="CharacterEllipsis"
-                                       ToolTipService.ToolTip="{x:Bind ViewModel.PreviewSceneSummary, Mode=OneWay}">
-                                <Run Text="PVW " />
-                                <Run Text="{x:Bind ViewModel.PreviewSceneSummary, Mode=OneWay}" />
-                            </TextBlock>
-                        </Border>
-                    </Grid>
-
                     <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
                         <ItemsRepeater ItemsSource="{x:Bind ViewModel.SceneItems, Mode=OneWay}">
                             <ItemsRepeater.Layout>
@@ -362,76 +332,30 @@
                             <ItemsRepeater.ItemTemplate>
                                 <DataTemplate x:DataType="models:SceneDisplayItem">
                                     <Grid ColumnSpacing="6">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
-                                                Background="{x:Bind ItemBackgroundBrush, Mode=OneWay}"
-                                                BorderBrush="{x:Bind ItemBorderBrush, Mode=OneWay}"
-                                                Foreground="{StaticResource StudioTextBrush}"
-                                                BorderThickness="1" Padding="{x:Bind ItemPadding, Mode=OneWay}"
-                                                CornerRadius="8"
-                                                Command="{x:Bind SelectCommand}"
-                                                CommandParameter="{x:Bind Id}">
-                                            <Button.ContextFlyout><MenuFlyout><MenuFlyoutItem Text="Rename scene" Tag="{x:Bind Id}" Click="OnRenameScene"/></MenuFlyout></Button.ContextFlyout>
-                                            <Grid ColumnSpacing="8">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="28" />
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-                                                <Border Width="28" Height="28" CornerRadius="14"
-                                                        Background="{x:Bind SlotBadgeBackground, Mode=OneWay}">
-                                                    <TextBlock Text="{x:Bind SlotNumber}" FontWeight="Bold" FontSize="11"
-                                                               Foreground="{x:Bind SlotBadgeForeground, Mode=OneWay}"
-                                                               HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                                </Border>
-                                                <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
-                                                    <TextBlock Text="{x:Bind Name}"
-                                                               FontWeight="SemiBold"
-                                                               FontSize="12"
-                                                               TextWrapping="Wrap" MaxLines="2"
-                                                               TextTrimming="CharacterEllipsis"
-                                                               ToolTipService.ToolTip="{x:Bind Name}" />
-                                                    <TextBlock Text="{x:Bind MetaLabel}"
-                                                               FontSize="10"
-                                                               Foreground="{StaticResource StudioMutedBrush}"
-                                                               TextTrimming="CharacterEllipsis" />
-                                                </StackPanel>
-                                                <Border Grid.Column="2" Background="{x:Bind StatusBackgroundBrush, Mode=OneWay}"
-                                                        CornerRadius="4" Padding="6,3" VerticalAlignment="Center">
-                                                    <TextBlock Text="{x:Bind StatusLabel, Mode=OneWay}"
-                                                               FontSize="9" FontWeight="ExtraBold"
-                                                               Foreground="{x:Bind StatusForegroundBrush, Mode=OneWay}" />
-                                                </Border>
-                                            </Grid>
-                                        </Button>
-                                        <!-- S2: duplicate any scene into a new custom scene -->
-                                        <Button Grid.Column="1"
-                                                Width="32"
-                                                Height="32"
-                                                Padding="0"
-                                                VerticalAlignment="Center"
-                                                Style="{StaticResource GhostButton}"
-                                                Command="{x:Bind DuplicateCommand}"
-                                                CommandParameter="{x:Bind Id}"
-                                                ToolTipService.ToolTip="Duplicate scene">
-                                            <FontIcon Glyph="&#xE8C8;" FontSize="13" />
-                                        </Button>
-                                        <Button Grid.Column="2"
-                                                Width="32"
-                                                Height="32"
-                                                Padding="0"
-                                                VerticalAlignment="Center"
-                                                Style="{StaticResource GhostButton}"
-                                                Command="{x:Bind RemoveCommand}"
-                                                CommandParameter="{x:Bind Id}"
-                                                Visibility="{x:Bind RemoveButtonVisibility, Mode=OneWay}"
-                                                ToolTipService.ToolTip="Remove scene">
-                                            <FontIcon Glyph="&#xE74D;" FontSize="13" />
-                                        </Button>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="32"/></Grid.ColumnDefinitions>
+                                        <Border Background="{x:Bind ItemBackgroundBrush}" BorderBrush="{x:Bind ItemBorderBrush}" BorderThickness="1" CornerRadius="8">
+                                            <StackPanel>
+                                                <Button Background="Transparent" BorderThickness="0" Padding="8,10" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Command="{x:Bind SelectCommand}" CommandParameter="{x:Bind Id}">
+                                                    <Button.ContextFlyout><MenuFlyout>
+                                                        <MenuFlyoutItem Text="Rename scene" Tag="{x:Bind Id}" Click="OnRenameScene"/>
+                                                        <MenuFlyoutItem Text="Remove scene" Command="{x:Bind RemoveCommand}" CommandParameter="{x:Bind Id}" Visibility="{x:Bind RemoveButtonVisibility}"/>
+                                                    </MenuFlyout></Button.ContextFlyout>
+                                                    <Grid ColumnSpacing="7">
+                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                        <Border Width="28" Height="28" CornerRadius="14" Background="{x:Bind SlotBadgeBackground}"><TextBlock Text="{x:Bind SlotNumber}" Foreground="{x:Bind SlotBadgeForeground}" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="Bold"/></Border>
+                                                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
+                                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind Name}"/>
+                                                            <TextBlock Text="{x:Bind LayoutLabel}" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextTrimming="CharacterEllipsis"/>
+                                                        </StackPanel>
+                                                        <Border Grid.Column="2" Background="{x:Bind StatusBackgroundBrush}" CornerRadius="4" Padding="5,3" VerticalAlignment="Center"><TextBlock Text="{x:Bind StatusLabel}" Foreground="{x:Bind StatusForegroundBrush}" FontSize="9" FontWeight="Bold"/></Border>
+                                                    </Grid>
+                                                </Button>
+                                                <Button Tag="{x:Bind Id}" Click="OnEditTiles" Visibility="{x:Bind EditTilesVisibility}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="10,0,10,10" Background="#172B23" BorderBrush="#365345" BorderThickness="1" CornerRadius="6" Padding="10,6">
+                                                    <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE80A;" FontSize="14"/><TextBlock Text="Edit Tiles" FontSize="12" FontWeight="SemiBold"/></StackPanel>
+                                                </Button>
+                                            </StackPanel>
+                                        </Border>
+                                        <Button Grid.Column="1" Width="32" Height="32" Padding="0" VerticalAlignment="Top" Margin="0,10,0,0" Style="{StaticResource GhostButton}" Command="{x:Bind DuplicateCommand}" CommandParameter="{x:Bind Id}" ToolTipService.ToolTip="Duplicate scene"><FontIcon Glyph="&#xE8C8;" FontSize="13"/></Button>
                                     </Grid>
                                 </DataTemplate>
                             </ItemsRepeater.ItemTemplate>
@@ -447,35 +371,12 @@
                                 <TextBlock Text="Open Scene builder" />
                             </StackPanel>
                         </Button>
-                        <Border Background="#0C1118"
-                                BorderBrush="{StaticResource StudioBorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="6"
-                                Padding="8">
+                        <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8">
                             <StackPanel Spacing="5">
-                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                    <FontIcon Glyph="&#xEB9F;" FontSize="12"
-                                              Foreground="{StaticResource StudioAccentBrush}" />
-                                    <TextBlock Text="SuperSource background"
-                                               FontSize="10"
-                                               FontWeight="Bold"
-                                               Foreground="{StaticResource StudioAccentBrush}" />
-                                </StackPanel>
-                                <ComboBox ItemsSource="{x:Bind ViewModel.SuperSourceBackgroundOptions, Mode=OneWay}"
-                                          SelectedValue="{x:Bind ViewModel.PreviewSceneBackgroundAssetId, Mode=TwoWay}"
-                                          SelectedValuePath="Value"
-                                          DisplayMemberPath="Label"
-                                          HorizontalAlignment="Stretch" />
-                                <TextBlock Text="{x:Bind ViewModel.SuperSourceBackgroundSummary, Mode=OneWay}"
-                                           FontSize="9"
-                                           Foreground="{StaticResource StudioMutedBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                                <Button Content="Import background media"
-                                        Style="{StaticResource GhostButton}"
-                                        FontSize="10"
-                                        Padding="8,4"
-                                        HorizontalAlignment="Stretch"
-                                        Command="{x:Bind ViewModel.ImportMediaAssetsCommand}" />
+                                <TextBlock Text="Scene background" FontSize="11" FontWeight="SemiBold"/>
+                                <ComboBox PlaceholderText="No background" ItemsSource="{x:Bind ViewModel.SuperSourceBackgroundOptions, Mode=OneWay}" SelectedValue="{x:Bind ViewModel.PreviewSceneBackgroundAssetId, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label" HorizontalAlignment="Stretch">
+                                    <ComboBox.ContextFlyout><MenuFlyout><MenuFlyoutItem Text="Import background media" Command="{x:Bind ViewModel.ImportMediaAssetsCommand}"/></MenuFlyout></ComboBox.ContextFlyout>
+                                </ComboBox>
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -569,33 +470,8 @@
                                 <TextBlock Text="Pop out" />
                             </StackPanel>
                         </Button>
-                        <Button Grid.Column="5" Style="{StaticResource SceneBuilderCalloutButton}"
-                                Padding="10,4" FontSize="10" VerticalAlignment="Center"
-                                Command="{x:Bind ViewModel.OpenSceneBuilderCommand}">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <FontIcon Glyph="&#xE8F1;" FontSize="11" />
-                                <TextBlock Text="Scene builder" />
-                            </StackPanel>
-                        </Button>
-                        <Button Grid.Column="6" Style="{StaticResource GhostButton}"
-                                Width="122"
-                                Padding="8,4"
-                                Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
-                                ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdSourceLabel, Mode=OneWay}">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <ContentPresenter Width="18" Height="15"
-                                                  Content="L3"
-                                                  ContentTemplate="{StaticResource LowerThirdIconTemplate}"
-                                                  VerticalAlignment="Center"
-                                                  IsHitTestVisible="False" />
-                                <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdLabel, Mode=OneWay}"
-                                           FontSize="11"
-                                           FontWeight="Bold" />
-                                <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdStatus, Mode=OneWay}"
-                                           FontSize="10"
-                                           Foreground="{StaticResource StudioMutedBrush}" />
-                            </StackPanel>
-                        </Button>
+
+
                         <!-- Owner: room panel is redundant with Sources; show/hide toggle. -->
                         <ToggleButton Grid.Column="7"
                                       Padding="10,4" FontSize="10" VerticalAlignment="Center"
@@ -619,7 +495,7 @@
                     </Grid>
                 </Border>
 
-                <cvcontrols:GraphicsOnAirStripControl Grid.Row="1" Studio="{x:Bind ViewModel, Mode=OneWay}" />
+                <cvcontrols:GraphicsOnAirStripControl Grid.Row="1" Visibility="{x:Bind ViewModel.ShowGraphicsPanel, Mode=OneWay}" Studio="{x:Bind ViewModel, Mode=OneWay}" />
 
                 <Border Grid.Row="2" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
                     <Grid>
@@ -822,7 +698,7 @@
 
         <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
                 Visibility="{x:Bind ViewModel.IsSettingsTab, Mode=OneWay}">
-            <views:SettingsPage ViewModel="{x:Bind ViewModel.Settings, Mode=OneWay}" Studio="{x:Bind ViewModel, Mode=OneWay}" />
+            <views:SettingsPage x:Name="StudioSettingsPage" ViewModel="{x:Bind ViewModel.Settings, Mode=OneWay}" Studio="{x:Bind ViewModel, Mode=OneWay}" />
         </Border>
 
         <Border Grid.Row="2" Margin="12" Background="#101216" Padding="0"
@@ -869,44 +745,10 @@
                 Background="#11161A">
             <cvcontrols:StudioFooterLayoutPanel>
 
-                <!-- Left: Magic Scene + Set & Forget -->
-                <StackPanel x:Name="FooterAutomation" Orientation="Horizontal" Spacing="10" VerticalAlignment="Top">
-                    <Button Style="{StaticResource MagicSceneButton}" Width="128"
-                            Command="{x:Bind ViewModel.RunMagicSceneCommand}"
-                            IsEnabled="{x:Bind ViewModel.Transport.MagicSceneEnabled, Mode=OneWay}">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <FontIcon Glyph="&#xE734;" FontSize="18" />
-                            <StackPanel Spacing="1">
-                                <TextBlock Text="Magic Scene" FontWeight="Bold" FontSize="12" />
-                                <TextBlock Text="AI auto-direct" FontSize="10" FontWeight="Bold" Opacity="0.7" />
-                            </StackPanel>
-                        </StackPanel>
-                    </Button>
-
-                    <Button Style="{StaticResource AutomationToggleButton}" Width="190"
-                            Command="{x:Bind ViewModel.ToggleAutomationCommand}"
-                            Background="{x:Bind ViewModel.Transport.SetAndForgetButtonBackground, Mode=OneWay}"
-                            BorderBrush="{x:Bind ViewModel.Transport.SetAndForgetButtonBorder, Mode=OneWay}">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <FontIcon Glyph="&#xE945;" FontSize="18" />
-                            <StackPanel Spacing="1">
-                                <TextBlock Text="Set &amp; Forget" FontWeight="Bold" FontSize="12" />
-                                <TextBlock x:Name="AutomationStatusText" Text="{x:Bind ViewModel.Transport.AutomationStatusLabel, Mode=OneWay}"
-                                           FontSize="10" FontWeight="Bold" MaxWidth="82" TextTrimming="CharacterEllipsis"
-                                           ToolTipService.ToolTip="{x:Bind ViewModel.Transport.AutomationStatusLabel, Mode=OneWay}"
-                                           Foreground="{StaticResource StudioMutedBrush}" />
-                            </StackPanel>
-                            <Border Width="32" Height="18" CornerRadius="9"
-                                    Background="{x:Bind ViewModel.Transport.SetAndForgetToggleBackground, Mode=OneWay}"
-                                    Margin="4,0,0,0" VerticalAlignment="Center">
-                                <Ellipse Width="14" Height="14"
-                                         Fill="{x:Bind ViewModel.Transport.SetAndForgetThumbBrush, Mode=OneWay}"
-                                         Margin="{x:Bind ViewModel.Transport.SetAndForgetThumbMargin, Mode=OneWay}"
-                                         HorizontalAlignment="Left" VerticalAlignment="Center" />
-                            </Border>
-                        </StackPanel>
-                    </Button>
-
+                <!-- Manual graphics controls; legacy scene automation is excluded from release. -->
+                <StackPanel x:Name="FooterAutomation" Spacing="6" VerticalAlignment="Top">
+                    <TextBlock Text="GRAPHICS" Style="{StaticResource OutputStatLabel}"/>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
                     <!-- Keep the lower-third transport footprint fixed. Phase labels such
                          as "Building out" must not reflow the live control row. -->
                     <StackPanel Orientation="Horizontal" Spacing="0" Width="148">
@@ -915,14 +757,14 @@
                                 CornerRadius="8,0,0,8"
                                 Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
                                 ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdToolTip, Mode=OneWay}">
-                            <StackPanel Orientation="Horizontal" Spacing="10">
-                                <ContentPresenter Width="22" Height="18"
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <ContentPresenter Width="18" Height="18"
                                                   Content="L3"
                                                   ContentTemplate="{StaticResource LowerThirdIconTemplate}"
                                                   VerticalAlignment="Center"
                                                   IsHitTestVisible="False" />
                                 <StackPanel Spacing="1">
-                                    <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdLabel, Mode=OneWay}"
+                                    <TextBlock Text="Lower third"
                                                FontWeight="Bold" FontSize="12" />
                                     <TextBlock Text="{x:Bind ViewModel.GraphicsFooterLowerThirdStatus, Mode=OneWay}"
                                                FontSize="10" FontWeight="Bold"
@@ -995,122 +837,31 @@
                         </Button>
                     </StackPanel>
 
-                    <Border Padding="10,6" Width="96" CornerRadius="6"
-                            BorderThickness="1" BorderBrush="{StaticResource StudioBorderBrush}"
-                            ToolTipService.ToolTip="{x:Bind ViewModel.StudioAssignedLowerThirdDetail, Mode=OneWay}">
-                        <StackPanel Spacing="3">
-                            <TextBlock Text="Assigned look" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                            <TextBlock x:Name="AssignedLookLabel" Text="{x:Bind ViewModel.StudioAssignedLowerThirdLabel, Mode=OneWay}"
-                                       FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                        </StackPanel>
-                    </Border>
-
-                    <StackPanel Orientation="Horizontal" Spacing="3">
-                        <Button Style="{StaticResource AutomationToggleButton}"
-                                Width="80"
-                                Padding="9,8"
-                                Command="{x:Bind ViewModel.TogglePrimaryBrowserOverlayPreviewCommand}"
-                                IsEnabled="{x:Bind ViewModel.HasBrowserCaptureDevices, Mode=OneWay}"
-                                ToolTipService.ToolTip="{x:Bind ViewModel.StudioBrowserOverlayToolTip, Mode=OneWay}">
-                            <StackPanel Spacing="1">
-                                <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayPreviewButtonLabel, Mode=OneWay}"
-                                           FontWeight="Bold" FontSize="12" />
-                                <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayPreviewStatus, Mode=OneWay}"
-                                           FontSize="10" FontWeight="Bold"
-                                           Foreground="{StaticResource StudioMutedBrush}" />
-                            </StackPanel>
-                        </Button>
-
-                        <Button Style="{StaticResource AutomationToggleButton}"
-                                Width="100"
-                                Padding="9,8"
-                                Command="{x:Bind ViewModel.TogglePrimaryBrowserOverlayCommand}"
-                                IsEnabled="{x:Bind ViewModel.HasBrowserCaptureDevices, Mode=OneWay}"
-                                ToolTipService.ToolTip="{x:Bind ViewModel.StudioBrowserOverlayToolTip, Mode=OneWay}">
-                            <StackPanel Orientation="Horizontal" Spacing="7">
-                                <FontIcon Glyph="&#xE8A5;" FontSize="16" />
-                                <StackPanel Spacing="1">
-                                    <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayButtonLabel, Mode=OneWay}"
-                                               FontWeight="Bold" FontSize="12" />
-                                    <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayStatus, Mode=OneWay}"
-                                               FontSize="10" FontWeight="Bold"
-                                               Foreground="{StaticResource StudioMutedBrush}" />
-                                </StackPanel>
-                            </StackPanel>
-                        </Button>
-                    </StackPanel>
+                </StackPanel>
 
                 </StackPanel>
 
-                <!-- Keep all production actions on the same row and baseline. -->
-                <Grid x:Name="FooterTransport" Width="770" HorizontalAlignment="Center" VerticalAlignment="Top">
+                <StackPanel x:Name="FooterOutputs" Spacing="6" VerticalAlignment="Top">
+                    <TextBlock Text="OUTPUTS" Style="{StaticResource OutputStatLabel}"/>
                     <StackPanel x:Name="FooterOutputActions" Orientation="Horizontal" Spacing="8">
+
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                        <Button Style="{StaticResource TakeButton}" Width="122" MinHeight="48"
-                                CornerRadius="8,0,0,8"
-                                Command="{x:Bind ViewModel.TakeCommand}"
-                                IsEnabled="{x:Bind ViewModel.CanTake, Mode=OneWay}"
-                                ToolTipService.ToolTip="{x:Bind ViewModel.TakeToolTip, Mode=OneWay}">
-                            <StackPanel Orientation="Horizontal" Spacing="7">
-                                <TextBlock Text="Take" FontWeight="ExtraBold" FontSize="13" />
-                                <TextBlock Text="{x:Bind ViewModel.TakeTransitionLabel, Mode=OneWay}"
-                                           FontWeight="SemiBold"
-                                           FontSize="11"
-                                           Opacity="0.72"
-                                           VerticalAlignment="Center" />
-                            </StackPanel>
-                        </Button>
-                        <Button Style="{StaticResource TakeButton}" Width="34" MinHeight="48"
-                            AutomationProperties.Name="Choose Take transition"
-                                Padding="0"
-                                CornerRadius="0,8,8,0"
-                                BorderThickness="1,1,1,1"
-                                ToolTipService.ToolTip="Choose Take transition">
-                            <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
-                            <Button.Flyout>
-                                <MenuFlyout Placement="Top">
-                                    <MenuFlyoutItem Text="Cut"
-                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
-                                                    CommandParameter="cut" />
-                                    <MenuFlyoutItem Text="Fade"
-                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
-                                                    CommandParameter="fade" />
-                                    <MenuFlyoutItem Text="Dip"
-                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
-                                                    CommandParameter="dip" />
-                                    <MenuFlyoutItem Text="Wipe"
-                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
-                                                    CommandParameter="wipe" />
-                                </MenuFlyout>
-                            </Button.Flyout>
-                        </Button>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Spacing="0">
-                    <Button Width="132" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button Width="44" Padding="8" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             AutomationProperties.Name="Record"
+                            AutomationProperties.ItemStatus="{x:Bind ViewModel.RecordingLabel, Mode=OneWay}"
+                            ToolTipService.ToolTip="{x:Bind ViewModel.RecordingLabel, Mode=OneWay}"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.RecordButtonBorder, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.RecordButtonForeground, Mode=OneWay}">
-                        <StackPanel Spacing="1">
-                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
-                                <!-- Design: REC = pulsing red dot while recording. -->
-                                <cvcontrols:PulseDot Diameter="8" VerticalAlignment="Center"
-                                                     DotFill="{StaticResource StudioAirBrush}"
-                                                     Visibility="{x:Bind ViewModel.RecordingLiveDotVisibility, Mode=OneWay}" />
-                                <FontIcon Glyph="&#xE1CE;" FontSize="16"
-                                          Visibility="{x:Bind ViewModel.RecordIconVisibility, Mode=OneWay}" />
-                                <TextBlock Text="{x:Bind ViewModel.RecordingLabel, Mode=OneWay}" />
-                            </StackPanel>
-                            <TextBlock Text="{x:Bind ViewModel.CompactRecordingOutputLabel, Mode=OneWay}"
-                                       FontSize="10"
-                                       FontWeight="SemiBold"
-                                       Opacity="0.78"
-                                       TextTrimming="CharacterEllipsis"
-                                       HorizontalAlignment="Center" />
-                        </StackPanel>
+                        <Grid Width="26" Height="26">
+                            <Ellipse Width="22" Height="22" Stroke="#F05252" StrokeThickness="2"
+                                     Visibility="{x:Bind ViewModel.RecordIconVisibility, Mode=OneWay}"/>
+                            <Rectangle Width="14" Height="14" Fill="{x:Bind ViewModel.RecordButtonForeground, Mode=OneWay}" RadiusX="2" RadiusY="2"
+                                       Visibility="{x:Bind ViewModel.RecordingLiveDotVisibility, Mode=OneWay}"/>
+                        </Grid>
                     </Button>
-                    <Button Width="30" MinHeight="48" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
+                    <Button Width="24" MinHeight="48" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
                             AutomationProperties.Name="Recording output options"
                             ToolTipService.ToolTip="Recording output options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
@@ -1248,30 +999,24 @@
                     </Button>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <Button Width="132" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button Width="44" Padding="8" MinHeight="48" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="13" AutomationProperties.Name="Stream" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.StreamButtonForeground, Mode=OneWay}"
-                            ToolTipService.ToolTip="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}">
-                        <StackPanel Spacing="1">
-                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
-                                <!-- Design: LIVE = pulsing green dot while streaming. -->
-                                <cvcontrols:PulseDot Diameter="8" VerticalAlignment="Center"
-                                                     DotFill="{StaticResource StudioLiveBrush}"
-                                                     Visibility="{x:Bind ViewModel.Streaming, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
-                                <FontIcon Glyph="&#xE958;" FontSize="16" />
-                                <TextBlock Text="{x:Bind ViewModel.StreamingLabel, Mode=OneWay}" />
-                            </StackPanel>
-                            <TextBlock Text="{x:Bind ViewModel.CompactStreamOutputLabel, Mode=OneWay}"
-                                       FontSize="10"
-                                       FontWeight="SemiBold"
-                                       Opacity="0.78"
-                                       TextTrimming="CharacterEllipsis"
-                                       HorizontalAlignment="Center" />
-                        </StackPanel>
+                            ToolTipService.ToolTip="{x:Bind ViewModel.StreamingLabel, Mode=OneWay}"
+                            AutomationProperties.ItemStatus="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}">
+                        <Viewbox Width="26" Height="26">
+                            <Canvas Width="24" Height="24">
+                                <Path Stroke="{x:Bind ViewModel.StreamButtonForeground, Mode=OneWay}" StrokeThickness="1.8"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                      Data="M 5,3 C 0,7 0,15 5,19 M 19,3 C 24,7 24,15 19,19 M 8,6 C 5,9 5,13 8,16 M 16,6 C 19,9 19,13 16,16 M 12,13 L 12,22"/>
+                                <Ellipse Canvas.Left="9.5" Canvas.Top="8.5" Width="5" Height="5"
+                                         Stroke="{x:Bind ViewModel.StreamButtonForeground, Mode=OneWay}" StrokeThickness="1.8"/>
+                            </Canvas>
+                        </Viewbox>
                     </Button>
-                    <Button Width="30" MinHeight="48" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
+                    <Button Width="24" MinHeight="48" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
                             AutomationProperties.Name="Streaming output options"
                             ToolTipService.ToolTip="Streaming output options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
@@ -1365,22 +1110,21 @@
                     <!-- Virtual camera (virtual-camera-spec V4): output the program as a
                          system webcam Zoom/Teams/Meet can select. -->
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <ToggleButton Width="106" MinHeight="48" CornerRadius="8,0,0,8" Padding="8,4"
+                    <ToggleButton Width="44" MinHeight="48" CornerRadius="8,0,0,8" Padding="8,4"
                                   AutomationProperties.Name="Virtual camera"
                                   IsChecked="{x:Bind ViewModel.VirtualCameraEnabled, Mode=TwoWay}"
-                                  ToolTipService.ToolTip="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}">
-                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
-                            <FontIcon Glyph="&#xE960;" FontSize="14" />
-                            <StackPanel Spacing="1">
-                                <TextBlock Text="Virtual Cam" FontSize="11" FontWeight="Bold" />
-                                <TextBlock Text="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}"
-                                           Style="{StaticResource StudioMonoLabel}" FontSize="9"
-                                           TextTrimming="CharacterEllipsis" MaxWidth="70" />
-                            </StackPanel>
-                        </StackPanel>
+                                  ToolTipService.ToolTip="Virtual camera"
+                                  AutomationProperties.ItemStatus="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}">
+                        <Viewbox Width="26" Height="26">
+                        <Canvas Width="24" Height="24">
+                            <Ellipse Canvas.Left="4" Canvas.Top="1" Width="16" Height="16" Stroke="{StaticResource StudioTextBrush}" StrokeThickness="1.8"/>
+                            <Ellipse Canvas.Left="9" Canvas.Top="6" Width="6" Height="6" Stroke="{StaticResource StudioTextBrush}" StrokeThickness="1.8"/>
+                            <Path Data="M 12,17 L 12,21 M 5,22 L 19,22" Stroke="{StaticResource StudioTextBrush}" StrokeThickness="1.8"/>
+                        </Canvas>
+                        </Viewbox>
                     </ToggleButton>
                     <!-- V5: virtual camera options (mirror). -->
-                    <Button MinHeight="48" Width="30" CornerRadius="0,8,8,0" Padding="0" BorderThickness="1"
+                    <Button MinHeight="48" Width="24" CornerRadius="0,8,8,0" Padding="0" BorderThickness="1"
                              AutomationProperties.Name="Virtual camera options"
                              ToolTipService.ToolTip="Virtual camera options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
@@ -1415,22 +1159,15 @@
                          IsChecked is one-way; Click asks the ViewModel, so a refusal leaves the
                          tile off with the reason in its subtitle. -->
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <ToggleButton Width="92" MinHeight="48" CornerRadius="8,0,0,8" Padding="8,4"
+                    <ToggleButton Width="44" MinHeight="48" CornerRadius="8,0,0,8" Padding="8,4"
                                   AutomationProperties.Name="NDI output"
                                   IsChecked="{x:Bind ViewModel.NdiOutputEnabled, Mode=OneWay}"
                                   Click="OnNdiOutputTileClicked"
-                                  ToolTipService.ToolTip="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}">
-                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
-                            <FontIcon Glyph="&#xE968;" FontSize="14" />
-                            <StackPanel Spacing="1">
-                                <TextBlock Text="NDI" FontSize="11" FontWeight="Bold" />
-                                <TextBlock Text="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}"
-                                           Style="{StaticResource StudioMonoLabel}" FontSize="9"
-                                           TextTrimming="CharacterEllipsis" MaxWidth="56" />
-                            </StackPanel>
-                        </StackPanel>
+                                  ToolTipService.ToolTip="NDI output"
+                                  AutomationProperties.ItemStatus="{x:Bind ViewModel.NdiOutputStatusLabel, Mode=OneWay}">
+                        <TextBlock Text="NDI" FontSize="14" FontWeight="SemiBold"/>
                     </ToggleButton>
-                    <Button MinHeight="48" Width="30" CornerRadius="0,8,8,0" Padding="0" BorderThickness="1"
+                    <Button MinHeight="48" Width="24" CornerRadius="0,8,8,0" Padding="0" BorderThickness="1"
                              AutomationProperties.Name="NDI options"
                              ToolTipService.ToolTip="NDI options">
                         <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
@@ -1464,109 +1201,65 @@
                     </Button>
                     </StackPanel>
                     </StackPanel>
-                </Grid>
+                </StackPanel>
 
                 <!-- Right: OUTPUTS stats, mini-stats, clock, master audio -->
-                <ScrollViewer x:Name="FooterTelemetry" HorizontalScrollBarVisibility="Auto"
-                              VerticalScrollBarVisibility="Disabled" VerticalAlignment="Center">
-                    <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
-                        <Button Content="Details"
-                                AutomationProperties.Name="Output status details"
-                                Padding="8,4"
-                                MinWidth="0"
-                                MinHeight="0"
-                                FontSize="11"
-                                HorizontalAlignment="Stretch"
-                                Style="{StaticResource StudioGhostButton}">
+                <!-- Keep all production actions on the same row and baseline. -->
+                <StackPanel x:Name="FooterTransport" Orientation="Horizontal" Spacing="12" VerticalAlignment="Bottom" Padding="14,0,0,0" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1,0,0,0">
+                    <StackPanel Orientation="Horizontal" Spacing="0">
+                        <Button Style="{StaticResource TakeButton}" Width="84" Height="48" Padding="12,8" CornerRadius="8" Content="Take"
+                                Command="{x:Bind ViewModel.TakeCommand}" IsEnabled="{x:Bind ViewModel.CanTake, Mode=OneWay}"
+                                ToolTipService.ToolTip="Take Preview to Program (Ctrl+Enter)"/>
+                        <Button Style="{StaticResource TransportButton}" Width="128" Height="48" Padding="10,6" Margin="12,0,0,0" AutomationProperties.Name="Choose Take transition" ToolTipService.ToolTip="Choose Take transition">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{x:Bind ViewModel.TakeTransitionLabel, Mode=OneWay}" FontSize="12"/>
+                                <TextBlock Text="{x:Bind TransitionDuration(ViewModel.TakeTransitionMode), Mode=OneWay}" FontSize="11" Opacity="0.7"/>
+                                <FontIcon Glyph="&#xE70D;" FontSize="8"/>
+                            </StackPanel>
                             <Button.Flyout>
-                                <Flyout Placement="Top">
-                                    <StackPanel Width="420" MaxWidth="420" Spacing="8">
-                                        <TextBlock Text="Output status"
-                                                   FontSize="12"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{StaticResource StudioTextBrush}" />
-                                        <TextBlock Text="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}"
-                                                   TextWrapping="WrapWholeWords"
-                                                   IsTextSelectionEnabled="True"
-                                                   Foreground="{StaticResource StudioMutedBrush}" />
-                                    </StackPanel>
-                                </Flyout>
+                                <MenuFlyout Placement="Top">
+                                    <MenuFlyoutItem Text="Cut"
+                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
+                                                    CommandParameter="cut" />
+                                    <MenuFlyoutItem Text="Fade"
+                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
+                                                    CommandParameter="fade" />
+                                    <MenuFlyoutItem Text="Dip"
+                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
+                                                    CommandParameter="dip" />
+                                    <MenuFlyoutItem Text="Wipe"
+                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
+                                                    CommandParameter="wipe" />
+                                </MenuFlyout>
                             </Button.Flyout>
                         </Button>
+                    </StackPanel>
 
-                        <StackPanel Spacing="2" Width="96">
-                            <TextBlock Text="PROGRAM" Style="{StaticResource OutputStatLabel}" />
-                            <TextBlock Text="{x:Bind ViewModel.Transport.ProgramStatValue, Mode=OneWay}"
-                                       Style="{StaticResource OutputStatValue}" />
-                            <TextBlock x:Name="ProgramOutputHealth" Text="{x:Bind ViewModel.Transport.ProgramStatHealthLabel, Mode=OneWay}"
-                                       TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind ViewModel.Transport.ProgramStatHealthLabel, Mode=OneWay}"
-                                       FontSize="10" FontWeight="ExtraBold"
-                                       Foreground="{x:Bind ViewModel.Transport.ProgramStatHealthBrush, Mode=OneWay}" />
-                        </StackPanel>
-
-                        <StackPanel Spacing="2" Width="110" ToolTipService.ToolTip="Total frames reported by streaming destinations. Playback at the receiver is not verified.">
-                            <TextBlock Text="STREAM" Style="{StaticResource OutputStatLabel}" />
-                            <TextBlock Text="{x:Bind ViewModel.Transport.StreamStatValue, Mode=OneWay}"
-                                       Style="{StaticResource OutputStatValue}" />
-                            <TextBlock x:Name="StreamOutputHealth" Text="{x:Bind ViewModel.Transport.StreamStatHealthLabel, Mode=OneWay}"
-                                       TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind ViewModel.Transport.StreamStatHealthLabel, Mode=OneWay}"
-                                       FontSize="10" FontWeight="ExtraBold"
-                                       Foreground="{x:Bind ViewModel.Transport.StreamStatHealthBrush, Mode=OneWay}" />
-                        </StackPanel>
-
-                        <!-- #1074: collapsed unless the stream is in backpressure AND two or more
-                             Zoom feeds are stalled (1.5 s on-air rule) at once. Zero width in the
-                             normal footer. States the two facts; it does not claim a cause. -->
-                        <StackPanel Spacing="2" MaxWidth="236"
-                                    Visibility="{x:Bind ViewModel.Transport.StalledFeedsVisibility, Mode=OneWay}"
-                                    ToolTipService.ToolTip="{x:Bind ViewModel.Transport.StalledFeedsLabel, Mode=OneWay}">
-                            <TextBlock Text="FEEDS" Style="{StaticResource OutputStatLabel}" />
-                            <TextBlock x:Name="StalledFeedsStatus"
-                                       Text="{x:Bind ViewModel.Transport.StalledFeedsLabel, Mode=OneWay}"
-                                       TextWrapping="WrapWholeWords" MaxLines="2"
-                                       FontSize="10" FontWeight="ExtraBold"
-                                       Foreground="#F0A85C" />
-                        </StackPanel>
-
-                        <StackPanel Spacing="2" Width="110" ToolTipService.ToolTip="Frames written in the current or most recent recording session.">
-                            <TextBlock Text="RECORD" Style="{StaticResource OutputStatLabel}" />
-                            <TextBlock Text="{x:Bind ViewModel.Transport.RecordStatValue, Mode=OneWay}"
-                                       Style="{StaticResource OutputStatValue}" />
-                            <TextBlock x:Name="RecordOutputHealth" Text="{x:Bind ViewModel.Transport.RecordStatHealthLabel, Mode=OneWay}"
-                                       TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind ViewModel.Transport.RecordStatHealthLabel, Mode=OneWay}"
-                                       FontSize="10" FontWeight="ExtraBold"
-                                       Foreground="{x:Bind ViewModel.Transport.RecordStatHealthBrush, Mode=OneWay}" />
-                        </StackPanel>
-
-                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Top">
-                            <StackPanel Spacing="2" Width="98">
-                                <TextBlock Text="FRAME DROPS" Style="{StaticResource OutputStatLabel}" />
-                                <TextBlock Text="{x:Bind ViewModel.Transport.FrameDropsLabel, Mode=OneWay}"
-                                           Style="{StaticResource OutputStatValue}" />
-                            </StackPanel>
-                            <StackPanel Spacing="2" Width="60"
-                                        ToolTipService.ToolTip="Elapsed output session since recording or streaming first produced media. Includes retries; resets when all outputs end. Receiver playback is not verified.">
-                                <TextBlock Text="ELAPSED" Style="{StaticResource OutputStatLabel}" />
-                                <TextBlock Text="{x:Bind ViewModel.Transport.LiveClockLabel, Mode=OneWay}"
-                                           Style="{StaticResource OutputStatValue}" />
-                            </StackPanel>
-                        </StackPanel>
-
-                        <!-- Monitor toggle (the AUDIO PROOF debug readout was removed; the
-                             engine status stays on the tooltip). -->
-                        <ToggleButton Content="Monitor"
-                                      IsChecked="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}"
-                                      MinWidth="72"
-                                      MinHeight="30"
-                                      FontSize="12"
-                                      VerticalAlignment="Center"
-                                      ToolTipService.ToolTip="{x:Bind ViewModel.AudioMonitorStatus, Mode=OneWay}" />
-
-                        <Border MinWidth="292"
+                    <Button x:Name="FadeToBlackButton" Width="80" MinHeight="48" Padding="8,4"
+                            Command="{x:Bind ViewModel.ToggleProgramBlackoutCommand}"
+                            Background="Black" BorderThickness="2"
+                            BorderBrush="{x:Bind ViewModel.ProgramBlackoutBrush, Mode=OneWay}"
+                            AutomationProperties.Name="Fade to Black"
+                            AutomationProperties.ItemStatus="{x:Bind ViewModel.ProgramBlackoutLabel, Mode=OneWay}"
+                            ToolTipService.ToolTip="Fade Program video to black or restore it (Ctrl+Shift+B). Audio continues.">
+                        <!-- RC: intentionally blank black key; accessible name and status remain. -->
+                    </Button>
+                </StackPanel>
+                <ScrollViewer x:Name="FooterTelemetry" Padding="16,12" BorderThickness="0,1,0,0" BorderBrush="{StaticResource StudioBorderBrush}" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                    <Grid ColumnSpacing="16" MinHeight="54">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="110"/><ColumnDefinition Width="80"/><ColumnDefinition Width="130"/><ColumnDefinition Width="100"/><ColumnDefinition Width="100"/><ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="100"/><ColumnDefinition Width="112"/><ColumnDefinition Width="86"/>
+                        </Grid.ColumnDefinitions>
+<StackPanel Grid.Column="0" Width="110" Spacing="3" VerticalAlignment="Top"><TextBlock Text="PROGRAM" Style="{StaticResource OutputStatLabel}"/><TextBlock Text="{x:Bind ViewModel.Transport.ProgramStatValue, Mode=OneWay}" Style="{StaticResource OutputStatValue}"/><TextBlock x:Name="ProgramOutputHealth" Text="{x:Bind ViewModel.Transport.ProgramStatHealthLabel, Mode=OneWay}" Foreground="{x:Bind ViewModel.Transport.ProgramStatHealthBrush, Mode=OneWay}" FontSize="10" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind ViewModel.Transport.ProgramStatHealthLabel, Mode=OneWay}"/></StackPanel><StackPanel Grid.Column="1" Width="80" Spacing="3" VerticalAlignment="Top"><TextBlock Text="DROPPED" Style="{StaticResource OutputStatLabel}"/><TextBlock Text="{x:Bind ViewModel.Transport.FrameDropsLabel, Mode=OneWay}" Style="{StaticResource OutputStatValue}"/></StackPanel><StackPanel Grid.Column="2" Width="130" Spacing="3" VerticalAlignment="Top">
+    <TextBlock Text="FEEDS" Style="{StaticResource OutputStatLabel}"/>
+    <TextBlock Text="{x:Bind ViewModel.SetupProgressSummary, Mode=OneWay}" FontSize="12" TextWrapping="Wrap" MaxLines="2"/>
+    <TextBlock x:Name="StalledFeedsStatus" Text="{x:Bind ViewModel.Transport.StalledFeedsLabel, Mode=OneWay}" Visibility="{x:Bind ViewModel.Transport.StalledFeedsVisibility, Mode=OneWay}" FontSize="10" Foreground="#F0A85C" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind ViewModel.Transport.StalledFeedsLabel, Mode=OneWay}"/>
+</StackPanel><StackPanel Grid.Column="3" Width="100" Spacing="3" VerticalAlignment="Top"><TextBlock Text="RECORD" Style="{StaticResource OutputStatLabel}"/><TextBlock Text="{x:Bind ViewModel.Transport.RecordStatValue, Mode=OneWay}" Style="{StaticResource OutputStatValue}"/><TextBlock x:Name="RecordOutputHealth" Text="{x:Bind ViewModel.Transport.RecordStatHealthLabel, Mode=OneWay}" Foreground="{x:Bind ViewModel.Transport.RecordStatHealthBrush, Mode=OneWay}" FontSize="10" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind ViewModel.Transport.RecordStatHealthLabel, Mode=OneWay}"/></StackPanel><StackPanel Grid.Column="4" Width="100" Spacing="3" VerticalAlignment="Top"><TextBlock Text="STREAM" Style="{StaticResource OutputStatLabel}"/><TextBlock Text="{x:Bind ViewModel.Transport.StreamStatValue, Mode=OneWay}" Style="{StaticResource OutputStatValue}"/><TextBlock x:Name="StreamOutputHealth" Text="{x:Bind ViewModel.Transport.StreamStatHealthLabel, Mode=OneWay}" Foreground="{x:Bind ViewModel.Transport.StreamStatHealthBrush, Mode=OneWay}" FontSize="10" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind ViewModel.Transport.StreamStatHealthLabel, Mode=OneWay}"/></StackPanel>                        <Border Grid.Column="5" MinWidth="280"
                                 Padding="10,7"
-                                Background="#0C1118"
+                                Background="Transparent"
                                 BorderBrush="{StaticResource StudioBorderBrush}"
-                                BorderThickness="1"
+                                BorderThickness="1,0,0,0"
                                 CornerRadius="6">
                             <Grid ColumnSpacing="10">
                                 <Grid.ColumnDefinitions>
@@ -1588,7 +1281,7 @@
                                                    Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" />
                                         <cvcontrols:AudioLevelMeter Grid.Column="1"
                                                                     Level="{x:Bind ViewModel.Transport.MasterLevelLeft, Mode=OneWay}"
-                                                                    SegmentCount="24" />
+                                                                    SegmentCount="30" />
                                     </Grid>
                                     <Grid ColumnSpacing="7">
                                         <Grid.ColumnDefinitions>
@@ -1599,7 +1292,7 @@
                                                    Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" />
                                         <cvcontrols:AudioLevelMeter Grid.Column="1"
                                                                     Level="{x:Bind ViewModel.Transport.MasterLevelRight, Mode=OneWay}"
-                                                                    SegmentCount="24" />
+                                                                    SegmentCount="30" />
                                     </Grid>
                                 </StackPanel>
                                 <StackPanel Grid.Column="1" Spacing="2" MinWidth="88" VerticalAlignment="Center">
@@ -1615,11 +1308,10 @@
                                     <TextBlock Text="{x:Bind ViewModel.Transport.MasterVolumeLabel, Mode=OneWay}" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Right" />
                                 </StackPanel>
                             </Grid>
-                        </Border>
-
-
-                    </StackPanel>
-                </ScrollViewer>
+                        </Border><ToggleButton Grid.Column="6" Content="Monitor" IsChecked="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}" Height="36" VerticalAlignment="Center" ToolTipService.ToolTip="{x:Bind ViewModel.AudioMonitorStatus, Mode=OneWay}"/>
+<Button Grid.Column="7" Content="Audio mixer" Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="audio" Height="36" VerticalAlignment="Center" Style="{StaticResource StudioGhostButton}"/>
+<Button Grid.Column="8" Content="Health" Click="OnOpenHealth" Height="36" VerticalAlignment="Center" Style="{StaticResource StudioGhostButton}"/>
+</Grid></ScrollViewer>
             </cvcontrols:StudioFooterLayoutPanel>
         </Border>
 

@@ -57,9 +57,13 @@ public sealed class HttpControlRouterTests
 
         Assert.Equal(200, response.Status);
         Assert.Contains("transport.take", response.Body);
+        Assert.Contains("transport.ftb.toggle", response.Body);
+        Assert.Contains("transport.ftb.set", response.Body);
         Assert.Contains("scene.cueWithRoutes", response.Body);
         Assert.Contains("scene.route.set", response.Body);
-        Assert.Contains("automation.magic", response.Body);
+        Assert.DoesNotContain("automation.magic", response.Body);
+        Assert.DoesNotContain("automation.toggle", response.Body);
+        Assert.DoesNotContain("automation.autoTake.set", response.Body);
         Assert.Contains("/cvp/transport/take", response.Body);
     }
 
@@ -71,6 +75,7 @@ public sealed class HttpControlRouterTests
             State = ControlState.Empty with
             {
                 Recording = true,
+                ProgramBlackout = true,
                 ActiveSceneId = "interview",
                 ZoomAudioMode = "perGuestIso",
                 ProgramTruePeakDbfs = -8.5,
@@ -84,12 +89,29 @@ public sealed class HttpControlRouterTests
         Assert.Equal(200, response.Status);
         using var doc = JsonDocument.Parse(response.Body);
         Assert.True(doc.RootElement.GetProperty("recording").GetBoolean());
+        Assert.True(doc.RootElement.GetProperty("programBlackout").GetBoolean());
         Assert.Equal("interview", doc.RootElement.GetProperty("activeSceneId").GetString());
         Assert.Equal("perGuestIso", doc.RootElement.GetProperty("zoomAudioMode").GetString());
         Assert.Equal(-8.5, doc.RootElement.GetProperty("programTruePeakDbfs").GetDouble());
         var source = Assert.Single(doc.RootElement.GetProperty("audioSources").EnumerateArray());
         Assert.Equal("zoom:p-1", source.GetProperty("sourceId").GetString());
         Assert.Equal(-6.2, source.GetProperty("peakDbfs").GetDouble());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FadeToBlackSetRoutesBooleanIntentAndReportsNativeFailure(bool enabled)
+    {
+        var surface = new FakeControlSurface { Handler = (_, _) => ControlInvokeResult.Fail("core offline") };
+        var response = await new HttpControlRouter(surface).HandleAsync("POST", "/invoke",
+            JsonSerializer.Serialize(new { action = "transport.ftb.set", args = new[] { enabled } }));
+        var invocation = Assert.Single(surface.Invocations);
+        Assert.Equal("transport.ftb.set", invocation.ActionId);
+        Assert.Equal(enabled, invocation.Args[0]);
+        Assert.Contains("core offline", response.Body);
+        using var json = JsonDocument.Parse(response.Body);
+        Assert.False(json.RootElement.GetProperty("ok").GetBoolean());
     }
 
     [Fact]
@@ -166,6 +188,19 @@ public sealed class HttpControlRouterTests
         var response = await router.HandleAsync("POST", "/invoke", "{\"action\":\"input.name\",\"args\":[99,\"x\"]}");
         Assert.Equal(422, response.Status);
         Assert.Contains("slot out of range", response.Body);
+    }
+
+    [Theory]
+    [InlineData("automation.magic")]
+    [InlineData("automation.toggle")]
+    [InlineData("automation.autoTake.set")]
+    public async Task LegacySceneAutomationCannotBeInvokedBySavedRemoteButtons(string action)
+    {
+        var surface = new FakeControlSurface();
+        var router = new HttpControlRouter(surface);
+        var body = JsonSerializer.Serialize(new { action, args = new object[] { true } });
+        Assert.Equal(400, (await router.HandleAsync("POST", "/invoke", body)).Status);
+        Assert.Empty(surface.Invocations);
     }
 
     [Fact]

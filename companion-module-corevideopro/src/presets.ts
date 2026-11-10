@@ -7,6 +7,13 @@ const black = combineRgb(0, 0, 0)
 export function buildPresets(): CompanionPresetDefinitions {
 	const presets: CompanionPresetDefinitions = {}
 
+	presets['ftb'] = {
+		type: 'button', category: 'Transport', name: 'Fade to Black',
+		style: { text: 'FTB', size: '18', color: white, bgcolor: black },
+		steps: [{ down: [{ actionId: 'transport.ftb.toggle', options: {} }], up: [] }],
+		feedbacks: [{ feedbackId: 'programBlackout', options: {}, style: { text: 'BLACK', bgcolor: combineRgb(200, 40, 40) } }],
+	}
+
 	presets['take'] = {
 		type: 'button',
 		category: 'Transport',

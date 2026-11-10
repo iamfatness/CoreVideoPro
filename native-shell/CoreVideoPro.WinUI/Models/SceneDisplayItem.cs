@@ -13,7 +13,7 @@ public sealed class SceneDisplayItem
         new(Windows.UI.Color.FromArgb(255, 61, 220, 151));
 
     private static readonly SolidColorBrush ProgramBorder =
-        new(Windows.UI.Color.FromArgb(255, 240, 168, 92));
+        new(Windows.UI.Color.FromArgb(255, 192, 61, 65));
 
     private static readonly SolidColorBrush DefaultBackground =
         new(Windows.UI.Color.FromArgb(255, 16, 22, 30));
@@ -22,7 +22,7 @@ public sealed class SceneDisplayItem
         new(Windows.UI.Color.FromArgb(255, 18, 36, 30));
 
     private static readonly SolidColorBrush ProgramBackground =
-        new(Windows.UI.Color.FromArgb(255, 28, 24, 18));
+        new(Windows.UI.Color.FromArgb(255, 36, 21, 24));
 
     private static readonly SolidColorBrush SlotIdleBrush =
         new(Windows.UI.Color.FromArgb(255, 30, 40, 48));
@@ -48,6 +48,7 @@ public sealed class SceneDisplayItem
     public IRelayCommand<string>? DuplicateCommand { get; init; }
 
     public string Name => Scene.Name;
+    public Visibility EditTilesVisibility => Scene.DynamicGallery is not null ? Visibility.Visible : Visibility.Collapsed;
 
     public string LayoutLabel => string.IsNullOrWhiteSpace(Scene.Layout) ? "Custom" : Scene.Layout.Replace('-', ' ');
 
@@ -58,17 +59,17 @@ public sealed class SceneDisplayItem
     public string MetaLabel => $"{LayoutLabel} · {DurationLabel}";
 
     public string StatusLabel =>
-        IsOnProgram ? "PGM" : IsOnPreview ? "PVW" : "IDLE";
+        IsOnProgram ? "PROGRAM" : IsOnPreview ? "PREVIEW" : "IDLE";
 
     public Brush StatusBackgroundBrush =>
         IsOnProgram
-            ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 240, 168, 92))
+            ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 132, 43, 47))
             : IsOnPreview
                 ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 61, 220, 151))
                 : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 30, 40, 48));
 
     public Brush StatusForegroundBrush =>
-        IsOnProgram || IsOnPreview
+        IsOnPreview && !IsOnProgram
             ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 8, 14, 12))
             : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 184, 200, 192));
 

@@ -52,6 +52,9 @@ public static class ControlActionRegistry
             new("zoom.leave", "Leave Zoom", "Leave the current embedded Zoom meeting."),
 
             // ---- Transport --------------------------------------------------------------
+            new("transport.ftb.toggle", "Fade to Black", "Fade Program video to black or back in over 300 ms. Audio and output sessions continue."),
+            new("transport.ftb.set", "Set Fade to Black", "Set Program blackout; repeated identical requests do not reverse the fade.",
+                new[] { new ControlParam("enabled", b, true) }),
             new("transport.take", "Take", "Cut/transition Preview to Program."),
             new("transport.transition.set", "Set transition", "Set the Take transition (cut/fade/dip/wipe).",
                 new[] { new ControlParam("mode", s, true, "cut | fade | dip | wipe") }),
@@ -304,10 +307,6 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("on", b, true) }),
 
             // ---- Automation -------------------------------------------------------------
-            new("automation.magic", "Magic Scene", "Run the one-shot Magic Scene command using the current source roster."),
-            new("automation.toggle", "Automation toggle", "Toggle production automation on/off."),
-            new("automation.autoTake.set", "Auto-take", "Toggle automation auto-take.",
-                new[] { new ControlParam("on", b, true) }),
             new("automation.autoAssignInputs.set", "Auto-assign inputs", "Toggle auto-assigning roster participants to Show Inputs.",
                 new[] { new ControlParam("on", b, true) }),
             new("automation.lowerThirds.set", "Auto lower-thirds", "Toggle automation lower-thirds.",

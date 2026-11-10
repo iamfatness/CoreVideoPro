@@ -23,6 +23,11 @@ internal static class StudioWorkspaceLayoutProbe
         try
         {
             await using var studio = new StudioViewModel(StudioStartupBootstrap.Create(new InMemoryProductionOutputPreferencesStore(), startInteractiveServices: false));
+            studio.TryCreateNamedScene("tiles", "CoreVideo Tiles", out _);
+            var tilesSceneId = studio.PreviewSceneId;
+            var originalProgram = studio.ActiveSceneId;
+            studio.ActiveTab = CoreVideoPro.WinUI.Models.StudioTab.Studio;
+            studio.ShowGraphicsPanel = false;
             var page = new StudioWorkspace { ViewModel = studio, RequestedTheme = ElementTheme.Dark };
             window.Content = page;
             window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, 1920, 1080));
@@ -47,9 +52,10 @@ internal static class StudioWorkspaceLayoutProbe
                 if (Math.Min(a.X + automation.ActualWidth, t.X + transport.ActualWidth) - Math.Max(a.X, t.X) > 1 &&
                     Math.Min(a.Y + automation.ActualHeight, t.Y + transport.ActualHeight) - Math.Max(a.Y, t.Y) > 1)
                     failures.Add($"{width}x{height}: automation and transport overlap");
-                if (width >= 1600 && Math.Abs(a.Y - t.Y) > 1) failures.Add($"{width}x{height}: footer wrapped to two rows (automation y={a.Y:F0}, transport y={t.Y:F0}; footer {footer.ActualWidth:F0}px, automation {automation.DesiredSize.Width:F0}px, transport {transport.DesiredSize.Width:F0}px); owner ruling 2026-11-01 requires one row");
-                ((Microsoft.UI.Xaml.Controls.TextBlock)page.FindName("AssignedLookLabel")).Text = "Panel discussion · Quarterly customer leadership summit guest introduction";
-                foreach(var name in new[] {"ProgramOutputHealth","StreamOutputHealth","RecordOutputHealth","AutomationStatusText"})
+                if (width >= 1600 && Math.Abs(a.Y + automation.ActualHeight - t.Y - transport.ActualHeight) > 1) failures.Add($"{width}x{height}: footer wrapped to two rows (automation y={a.Y:F0}, transport y={t.Y:F0}; footer {footer.ActualWidth:F0}px, automation {automation.DesiredSize.Width:F0}px, transport {transport.DesiredSize.Width:F0}px); owner ruling 2026-11-01 requires one row");
+                studio.ProgramBlackoutLabel = "Restoring picture";
+                var savedHealth = new[] {"ProgramOutputHealth","StreamOutputHealth","RecordOutputHealth"}.ToDictionary(name => name, name => ((Microsoft.UI.Xaml.Controls.TextBlock)page.FindName(name)).Text);
+                foreach(var name in new[] {"ProgramOutputHealth","StreamOutputHealth","RecordOutputHealth"})
                     ((Microsoft.UI.Xaml.Controls.TextBlock)page.FindName(name)).Text="Waiting for destination connection and source readiness";
                 page.UpdateLayout();
                 var after=transport.TransformToVisual(page).TransformPoint(new(0,0));
@@ -59,10 +65,10 @@ internal static class StudioWorkspaceLayoutProbe
                 var actionRow = (FrameworkElement)page.FindName("FooterOutputActions");
                 var actionTop = actionRow.TransformToVisual(page).TransformPoint(new(0, 0)).Y;
                 if (Math.Abs(actionRow.ActualHeight - 48) > 1) failures.Add($"{width}x{height}: output actions are not a single 48px row");
-                if (Math.Abs(a.Y - t.Y) < 1 && Math.Abs(a.Y - actionTop) > 1) failures.Add($"{width}x{height}: adjacent automation and output action baselines differ");
+                if (Math.Abs(a.Y - t.Y) < 1 && Math.Abs(a.Y + automation.ActualHeight - actionTop - 48) > 1) failures.Add($"{width}x{height}: adjacent automation and output action baselines differ");
                 var telemetry = (FrameworkElement)page.FindName("FooterTelemetry");
                 var headings = Descendants(telemetry).OfType<Microsoft.UI.Xaml.Controls.TextBlock>()
-                    .Where(text => text.Text is "PROGRAM" or "STREAM" or "RECORD" or "FRAME DROPS" or "ELAPSED").ToArray();
+                    .Where(text => text.Text is "PROGRAM" or "STREAM" or "RECORD" or "DROPPED" or "FEEDS").ToArray();
                 var headingTops = headings.Select(text => text.TransformToVisual(page).TransformPoint(new(0, 0)).Y).ToArray();
                 if (headings.Length != 5 || headingTops.Max() - headingTops.Min() > 1) failures.Add($"{width}x{height}: telemetry headings have inconsistent baselines");
                 if (Descendants(footer).OfType<Microsoft.UI.Xaml.Controls.TextBlock>().Any(text => text.Text == "Outputs idle")) failures.Add("Redundant persistent output summary returned");
@@ -77,9 +83,24 @@ internal static class StudioWorkspaceLayoutProbe
                 }
                 CheckMultiviewMessagePriority(page, failures, $"{width}x{height}");
                 checks.Add($"Multiview assignment, preparation, renderer failure and available-picture states are mutually exclusive at {width}x{height}");
+                foreach (var entry in savedHealth) ((Microsoft.UI.Xaml.Controls.TextBlock)page.FindName(entry.Key)).Text = entry.Value;
+                studio.ProgramBlackoutLabel = "Fade to Black";
+                studio.Transport.ApplySnapshot(new NativeMediaCoreStateSnapshot(), false, false, "1080p60", false);
+                await Task.Delay(30); page.UpdateLayout();
                 await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"studio-{width}x{height}.png"));
-                checks.Add($"Full Studio: {controls.Length} footer actions contained, automation/transport disjoint, long assigned label bounded at {width}x{height}; raster scale {page.XamlRoot.RasterizationScale}; native video pixels excluded");
+                checks.Add($"Full Studio: {controls.Length} footer actions contained, automation/transport disjoint, FTB and status labels bounded at {width}x{height}; raster scale {page.XamlRoot.RasterizationScale}; native video pixels excluded");
             }
+            studio.EditTiles(tilesSceneId);
+            await Task.Delay(150); page.UpdateLayout();
+            var tilesPage = Descendants(page).OfType<SourcesPage>().Single();
+            if (studio.PreviewSceneId != tilesSceneId || studio.ActiveSceneId != originalProgram || tilesPage.Workspace?.IsWallSelected != true)
+                failures.Add("Edit Tiles did not open the selected wall while preserving Program");
+            checks.Add("Edit Tiles opens the chosen wall inspector without taking it to Program");
+            studio.ActiveTab = CoreVideoPro.WinUI.Models.StudioTab.Studio;
+            studio.ProgramBlackout = true; studio.ProgramBlackoutLabel = "BLACK · Restore";
+            await Task.Delay(30); page.UpdateLayout();
+            await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "studio-ftb-active.png"));
+            studio.ProgramBlackout = false; studio.ProgramBlackoutLabel = "Fade to Black";
             page.Width = 1424; page.Height = 860;
             foreach (var state in new[] { "preparing", "producing", "interrupted", "failed", "finalizing", "completed", "idle" })
             {

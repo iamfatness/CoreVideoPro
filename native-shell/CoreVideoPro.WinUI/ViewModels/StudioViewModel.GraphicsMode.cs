@@ -38,7 +38,7 @@ public sealed partial class StudioViewModel
     }
 
     /// <summary>The compact playlist column in the Studio tab (spec: right panel of the console).</summary>
-    [ObservableProperty] private bool _showGraphicsPanel = true;
+    [ObservableProperty] private bool _showGraphicsPanel;
 
     /// <summary>Design mode shows the template-first builder by default; the old workspace
     /// (show templates, saved cues and styles, packages, automation) sits behind "Cues &amp; automation".

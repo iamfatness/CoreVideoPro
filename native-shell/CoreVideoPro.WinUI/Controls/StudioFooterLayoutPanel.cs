@@ -4,45 +4,46 @@ using Windows.Foundation;
 
 namespace CoreVideoPro.WinUI.Controls;
 
-// Keep the existing automation, transport and telemetry groups intact. Decide
-// from measured content width, rather than the monitor size or display scale.
+// Graphics, outputs, manual transport at the right edge, then full-width telemetry.
+// Keep graphics and outputs together; spare space precedes the right-hand transport.
 public sealed class StudioFooterLayoutPanel : Panel
 {
-    private const double Gap = 8, RowGap = 6;
-    protected override Size MeasureOverride(Size availableSize)
+    private const double Gap = 12, RowGap = 12;
+    protected override Size MeasureOverride(Size available)
     {
-        if (Children.Count != 3) return base.MeasureOverride(availableSize);
-        Children[0].Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        Children[1].Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        Children[2].Measure(new Size(availableSize.Width, double.PositiveInfinity));
-        var left = Children[0].DesiredSize; var transport = Children[1].DesiredSize;
-        var stacked = left.Width + Gap + transport.Width > availableSize.Width;
-        var actionsHeight = stacked ? left.Height + RowGap + transport.Height : Math.Max(left.Height, transport.Height);
-        return new Size(double.IsInfinity(availableSize.Width) ? left.Width + Gap + transport.Width : availableSize.Width,
-            actionsHeight + RowGap + Children[2].DesiredSize.Height);
+        if (Children.Count != 4) return base.MeasureOverride(available);
+        for (var i = 0; i < 3; i++) Children[i].Measure(new(double.PositiveInfinity, double.PositiveInfinity));
+        Children[3].Measure(new(available.Width, double.PositiveInfinity));
+        var g = Children[0].DesiredSize; var o = Children[1].DesiredSize; var t = Children[2].DesiredSize;
+        var wrap = g.Width + t.Width + o.Width + Gap * 2 > available.Width;
+        var height = wrap ? g.Height + RowGap + Math.Max(t.Height, o.Height) : Math.Max(g.Height, Math.Max(t.Height, o.Height));
+        return new(double.IsInfinity(available.Width) ? g.Width + t.Width + o.Width + Gap * 2 : available.Width,
+            height + RowGap + Children[3].DesiredSize.Height);
     }
-
-    protected override Size ArrangeOverride(Size finalSize)
+    protected override Size ArrangeOverride(Size final)
     {
-        if (Children.Count != 3) return base.ArrangeOverride(finalSize);
-        var left = Children[0].DesiredSize; var transport = Children[1].DesiredSize;
-        var stacked = left.Width + Gap + transport.Width > finalSize.Width;
+        if (Children.Count != 4) return base.ArrangeOverride(final);
+        var g = Children[0].DesiredSize; var o = Children[1].DesiredSize; var t = Children[2].DesiredSize;
+        var wrap = g.Width + t.Width + o.Width + Gap * 2 > final.Width;
+        var rowHeight = Math.Max(t.Height, o.Height);
         double telemetryTop;
-        if (stacked)
+        if (wrap)
         {
-            Children[0].Arrange(new Rect(0, 0, finalSize.Width, left.Height));
-            Children[1].Arrange(new Rect(Math.Max(0, (finalSize.Width - transport.Width) / 2), left.Height + RowGap, transport.Width, transport.Height));
-            telemetryTop = left.Height + RowGap + transport.Height + RowGap;
+            Children[0].Arrange(new(0, 0, g.Width, g.Height));
+            var top = g.Height + RowGap;
+            Children[1].Arrange(new(0, top + rowHeight - o.Height, o.Width, o.Height));
+            Children[2].Arrange(new(Math.Max(o.Width + Gap, final.Width - t.Width), top + rowHeight - t.Height, t.Width, t.Height));
+            telemetryTop = top + rowHeight + RowGap;
         }
         else
         {
-            var height = Math.Max(left.Height, transport.Height);
-            Children[0].Arrange(new Rect(0, 0, left.Width, height));
-            var remaining = finalSize.Width - left.Width - Gap;
-            Children[1].Arrange(new Rect(left.Width + Gap + (remaining - transport.Width) / 2, 0, transport.Width, height));
-            telemetryTop = height + RowGap;
+            rowHeight = Math.Max(g.Height, rowHeight);
+            Children[0].Arrange(new(0, rowHeight - g.Height, g.Width, g.Height));
+            Children[1].Arrange(new(g.Width + Gap, rowHeight - o.Height, o.Width, o.Height));
+            Children[2].Arrange(new(final.Width - t.Width, rowHeight - t.Height, t.Width, t.Height));
+            telemetryTop = rowHeight + RowGap;
         }
-        Children[2].Arrange(new Rect(0, telemetryTop, finalSize.Width, Children[2].DesiredSize.Height));
-        return finalSize;
+        Children[3].Arrange(new(0, telemetryTop, final.Width, Children[3].DesiredSize.Height));
+        return final;
     }
 }

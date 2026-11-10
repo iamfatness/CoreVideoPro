@@ -273,7 +273,7 @@ try {
 
   # Workload (Prepare-LiveWorkload.ps1).
   if ($plan.RemoteIds.Count -and $e.snapshot.meetingState -ne 'in_meeting') { Invoke-DrillAction 'zoom.join' @($MeetingUrl); Write-DrillLog 'Joining the meeting' }
-  Invoke-DrillAction 'automation.autoTake.set' @($false)
+  # Scene auto-take is disabled by the first-release policy; no legacy command is advertised.
   Invoke-DrillAction 'automation.autoAssignInputs.set' @($false)
   if ($plan.EngineRequired) { Invoke-DrillAction 'transport.engine.set' @($true) }
   else { Write-DrillLog 'Local sources only: the Zoom capture engine stays off (transport.engine.set is refused outside a meeting)' }

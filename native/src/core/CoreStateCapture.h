@@ -178,6 +178,7 @@ class CoreStateCapture {
   decltype(MediaCore::renderedSceneAttributionTicks_) renderedSceneAttributionTicks_;
   decltype(MediaCore::routeCount_) routeCount_;
   decltype(MediaCore::sceneId_) sceneId_;
+  ProgramBlackout programBlackout_;
   decltype(MediaCore::shellActiveSpeakerId_) shellActiveSpeakerId_;
   decltype(MediaCore::shellScreenShareParticipantId_) shellScreenShareParticipantId_;
   decltype(MediaCore::shellZoomRoster_) shellZoomRoster_;

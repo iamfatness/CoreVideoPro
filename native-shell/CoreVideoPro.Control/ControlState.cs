@@ -53,6 +53,7 @@ public sealed record ControlState
     public bool Streaming { get; init; }
     public bool EngineOn { get; init; }
     public bool CanTake { get; init; }
+    public bool ProgramBlackout { get; init; }
     public bool LowerThirdOnAir { get; init; }
 
     public string ZoomStatus { get; init; } = string.Empty;

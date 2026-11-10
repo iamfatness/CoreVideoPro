@@ -1,5 +1,12 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner release-scope decision, November 9:** defer the legacy scene director
+tracked under [#668](https://github.com/iamfatness/CoreVideoPro/issues/668).
+Exclude Set & Forget and old Magic Scene from the first release, including
+background and remote activation. Preserve CoreVideo Tiles and manual Take.
+Implementation contract: [first-release scene control](reference/first-release-scene-control.md).
+This is a release exclusion, not completion of the deferred director's acceptance.
+
 ## Now — Zoom ISO recording size, November 9
 
 | Order | Issue | Scope and acceptance |

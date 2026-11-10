@@ -39,6 +39,7 @@ public sealed partial class StudioWorkspace : UserControl
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
         AttachGraphicsHotkeys();
+        AttachTransportHotkeys();
     }
 
     // ==== #1076 graphics hotkeys ====

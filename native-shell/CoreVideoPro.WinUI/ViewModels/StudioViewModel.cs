@@ -2099,11 +2099,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public Brush RecordButtonBackground => Recording
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 229, 72, 77))
-        : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 74, 32, 32));
+        : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 32, 38, 40));
 
     public Brush RecordButtonBorder => Recording
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 229, 72, 77))
-        : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 224, 90, 90));
+        : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 43, 51, 55));
 
     public Brush RecordButtonForeground => Recording
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 248, 248))
@@ -2111,11 +2111,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public Brush StreamButtonBackground => Streaming
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 61, 220, 151))
-        : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 30, 48, 64));
+        : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 32, 38, 40));
 
     public Brush StreamButtonBorder => Streaming
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 61, 220, 151))
-        : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 90, 159, 212));
+        : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 43, 51, 55));
 
     public Brush StreamButtonForeground => Streaming
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 7, 17, 14))
@@ -10578,6 +10578,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         // The compositor is always on, so surfaces always accept the latest program frame.
         _surfaces.OnMediaCoreSnapshot(snapshot);
+        ApplyProgramBlackoutSnapshot(snapshot);
         ApplyRtmpIngestSnapshot(snapshot);
         Tm("surfaces");
 
