@@ -36,8 +36,8 @@ The Windows Studio footer groups Graphics and Outputs on the left, Take/FTB on t
 health/audio row. Output option flyouts remain available. Edit Tiles on a Tiles
 scene cues that scene to Preview and opens its wall inspector; it never Takes.
 
-Ctrl+Enter invokes the existing Take command in Studio. Ctrl+Shift+B invokes FTB.
-Both shortcuts ignore text-entry controls. Existing graphics F-key mappings and
+Spacebar invokes the existing Take command in Studio; Ctrl+Enter remains an alternate.
+Ctrl+Shift+B invokes FTB. These shortcuts ignore text-entry controls. Existing graphics F-key mappings and
 remote `transport.take` remain unchanged. Companion discovers `transport.ftb.toggle`
 and `transport.ftb.set(enabled)` from the action manifest; its FTB preset lights
 from `programBlackout` feedback. Use the idempotent set action when retrying requests.
