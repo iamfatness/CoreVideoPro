@@ -7,6 +7,7 @@ export interface FlagSource {
 
 /** The boolean ControlState fields worth lighting a button. */
 export const FEEDBACK_FLAGS: { id: string; name: string; on: number; off?: number }[] = [
+	{ id: 'programBlackout', name: 'Program faded to black', on: combineRgb(200, 40, 40) },
 	{ id: 'recording', name: 'Recording active', on: combineRgb(200, 40, 40) },
 	{ id: 'streaming', name: 'Streaming active', on: combineRgb(200, 40, 40) },
 	{ id: 'engineOn', name: 'Capture engine on', on: combineRgb(40, 140, 60) },

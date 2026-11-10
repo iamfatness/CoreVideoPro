@@ -368,8 +368,9 @@ final class AppModel: ObservableObject {
     @Published var autoSceneId = ""
     @Published var autoConfidence = 0
     @Published var autoRationale = ""
-    @Published var autoDirectEnabled = false
-    @Published var autoTakeEnabled = true
+    static let sceneAutomationAvailable = false
+    @Published private(set) var autoDirectEnabled = false
+    @Published var autoTakeEnabled = false
     @Published var autoConfidenceThreshold = 70.0
     @Published var autoHoldSeconds = 4.0
     @Published var autoStatus = "Manual mode"
@@ -491,7 +492,7 @@ final class AppModel: ObservableObject {
         monitorVolume = prefs.monitorVolume
         isoRecordingEnabled = prefs.isoRecordingEnabled
         isoSelectedSourceIds = Set(prefs.isoSelectedSourceIds)
-        autoTakeEnabled = prefs.autoTakeEnabled
+        autoTakeEnabled = false // Ignore legacy saved auto-take intent in the first release.
         autoConfidenceThreshold = prefs.autoConfidenceThreshold
         autoHoldSeconds = prefs.autoHoldSeconds
         // Optional key: a prefs file written before this shipped decodes to nil
@@ -1875,12 +1876,13 @@ final class AppModel: ObservableObject {
     private var pendingAutoSince = Date.distantPast
 
     func setAutoDirect(enabled: Bool) {
-        autoDirectEnabled = enabled
+        autoDirectEnabled = enabled && Self.sceneAutomationAvailable
+        autoTakeEnabled = autoTakeEnabled && Self.sceneAutomationAvailable
         pendingAutoSceneId = ""
         autoTimer?.invalidate()
         autoTimer = nil
-        guard enabled else {
-            autoStatus = "Manual mode"
+        guard autoDirectEnabled else {
+            autoStatus = "Scene automation is unavailable in this release"
             evaluateAutomationLowerThird()  // retires an automation-owned key
             return
         }
@@ -1891,7 +1893,7 @@ final class AppModel: ObservableObject {
     }
 
     private func evaluateAutoDirect() {
-        guard autoDirectEnabled else { return }
+        guard Self.sceneAutomationAvailable && autoDirectEnabled else { return }
         // Overlay policy runs BEFORE the roster/confidence guards — the
         // MagicSceneCoordinator.EvaluateAutomationPolicy order. It is a no-op
         // unless the resolved program source actually changed.

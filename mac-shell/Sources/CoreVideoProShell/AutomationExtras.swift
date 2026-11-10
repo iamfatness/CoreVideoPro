@@ -124,12 +124,16 @@ extension AppModel {
 
     // ── Magic Scene (MagicSceneCoordinator.RunMagicScene, :112) ───────────────
 
-    var canRunMagicScene: Bool { !autoSceneId.isEmpty && recommendedScene != nil }
+    var canRunMagicScene: Bool { AppModel.sceneAutomationAvailable && !autoSceneId.isEmpty && recommendedScene != nil }
 
     /// Queues the director's recommendation onto PREVIEW — never program (the
     /// Windows command sets PreviewSceneId + SchedulePreviewRoutingRefresh; the
     /// mac equivalent of that refresh is the coalesced syncScenes()).
     func runMagicScene() {
+        guard Self.sceneAutomationAvailable else {
+            autoStatus = "Scene automation is unavailable in this release"
+            return
+        }
         guard meetingState == "in_meeting" || !roster.isEmpty else {
             autoStatus = "Magic Scene requires an active Zoom meeting"
             return
@@ -149,7 +153,7 @@ extension AppModel {
     /// The Windows defaults, verbatim: auto-take on, prefer screen share on,
     /// lower thirds on, confidence 70, hold 4s, panel at 4.
     func resetAutomationDefaults() {
-        autoTakeEnabled = true
+        autoTakeEnabled = Self.sceneAutomationAvailable
         autoConfidenceThreshold = 70
         autoHoldSeconds = 4
         autoExtras = AutomationExtrasState()

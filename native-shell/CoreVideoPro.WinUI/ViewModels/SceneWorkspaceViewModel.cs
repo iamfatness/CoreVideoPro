@@ -95,6 +95,7 @@ public sealed partial class SceneWorkspaceViewModel : ObservableObject, IDisposa
     {
         if (e.PropertyName == nameof(StudioViewModel.PreviewSceneId))
         { _sceneId = _studio.PreviewSceneId;_resetSavedFingerprint=true; _undo.Clear();_redo.Clear();_initialRects.Clear();Selected=null;UpdateHistory(); }
+        if (e.PropertyName == nameof(StudioViewModel.PendingTilesEditorSceneId)) Refresh();
         if (e.PropertyName is nameof(StudioViewModel.PreviewCanvasLayers) or nameof(StudioViewModel.PreviewSceneId)) Refresh();
         if(e.PropertyName is nameof(StudioViewModel.GalleryMembershipSummary) or nameof(StudioViewModel.GalleryMemberChoices)) RefreshMembers();
         if(e.PropertyName==nameof(StudioViewModel.ActiveSceneId))OnPropertyChanged(nameof(PreviewBadge));
@@ -109,6 +110,11 @@ public sealed partial class SceneWorkspaceViewModel : ObservableObject, IDisposa
         for (var i=0;i<desired.Count;i++)
         { var old=Items.IndexOf(desired[i]);if(old<0)Items.Insert(i,desired[i]);else if(old!=i)Items.Move(old,i); }
         Selected = Items.FirstOrDefault(l=>l.ItemId==selection) ?? Items.FirstOrDefault();
+        if (_studio.PendingTilesEditorSceneId == _studio.PreviewSceneId)
+        {
+            Selected = Items.FirstOrDefault(l => l.IsTilesWall) ?? Selected;
+            _studio.PendingTilesEditorSceneId = null;
+        }
         OnSelectedChanged(Selected);AddTilesCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(TransparentBackground));
         RefreshMembers();

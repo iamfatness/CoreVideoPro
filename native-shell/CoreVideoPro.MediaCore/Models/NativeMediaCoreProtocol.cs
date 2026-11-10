@@ -942,6 +942,8 @@ public sealed record NativeZoomGuestAvSyncAck
 
 public sealed record NativeMediaCoreStateSnapshot
 {
+    public bool? ProgramBlackout { get; init; }
+    public double ProgramBlackoutOpacity { get; init; }
     /// <summary>Latest admitted engine capture observation; absent peers remain unknown.</summary>
     public bool? RawMediaActive { get; init; }
     public AudioOwnerObservation? AudioObservation { get; init; }

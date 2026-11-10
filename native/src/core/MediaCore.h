@@ -1,4 +1,5 @@
 #pragma once
+#include "core/ProgramBlackout.h"
 #include "core/ResourceEventStaging.h"
 #include "graphics/GraphicsInstances.h"
 
@@ -911,6 +912,7 @@ class MediaCore {
   graphics::GraphicsInstances graphicsInstances_;
   double overlayAnimationClockMs_ = 0.0;
   TakeTransitionState takeTransition_;
+  ProgramBlackout programBlackout_;
   std::string outputProfileId_ = "canvas-1080p60";
   std::string outputResolution_ = "1920x1080";
   int outputWidth_ = 1920;

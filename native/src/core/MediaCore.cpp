@@ -1250,6 +1250,9 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     if (!modules_.compositor->supportsGraphicsInstances()) {
       commandProtocolFailures_.push_back("graphics-instance-backend-not-built");
     } else if (!graphicsInstances_.apply(command)) commandProtocolFailures_.push_back("graphics-request-refused");
+  } else if (type == "program-blackout") {
+    if (const auto* enabled = command.get("enabled"); enabled && enabled->isBool())
+      programBlackout_.set(enabled->asBool(), command.getNumber("durationMs", 300));
   } else if (type == "begin-take-transition") {
     beginTakeTransition(command);
   } else if (type == "load-scene-graph") {
@@ -4385,6 +4388,7 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
   graphicsInstances_.append(plan, false, videoFrames, graphics::GraphicsInstances::ScopePass::Scene);
   plan = applyTakeTransition(std::move(plan), videoFrames);
   graphicsInstances_.append(plan, false, videoFrames, graphics::GraphicsInstances::ScopePass::Global);
+  programBlackout_.append(plan);
   return plan;
 }
 
@@ -6101,6 +6105,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     if (avSyncWhiteProducedFrames_.size() > 32) avSyncWhiteProducedFrames_.pop_front();
   }
   advanceTakeTransition(static_cast<double>(frameIntervalMs));
+  programBlackout_.advance(static_cast<double>(frameIntervalMs));
   lastProducedFrameNumber_ = producedFrame.frameNumber;
   if (modules_.compositor->programBufferFrames() > 0) {
     // Rendering queues owned pixels; only scheduled delivery advances Program.

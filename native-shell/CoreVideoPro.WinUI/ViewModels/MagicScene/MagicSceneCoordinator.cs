@@ -21,6 +21,11 @@ namespace CoreVideoPro.WinUI.ViewModels.MagicScene;
 public sealed partial class MagicSceneCoordinator : ObservableObject
 {
     private readonly IMagicSceneHost _host;
+    // First-release scope: only isolated characterization tests can opt in.
+    // No settings, environment variable, license or control command enables this.
+    private readonly bool _sceneAutomationAvailable;
+    public const string SceneAutomationUnavailable =
+        "Scene automation is unavailable in this release. Use CoreVideo Tiles and manual Take.";
     private readonly IAutomationTimer _timer;
     private readonly Func<DateTimeOffset> _clock;
     private readonly DirectorBindingHoldPolicy _bindingHold = new();
@@ -95,8 +100,16 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         ProductionStateHelper.BuildAutomationRecommendation([], ProductionCatalog.Scenes);
 
     public MagicSceneCoordinator(IMagicSceneHost host, Func<DateTimeOffset>? clock = null)
+        : this(host, clock, sceneAutomationAvailable: false)
+    {
+    }
+
+    internal MagicSceneCoordinator(IMagicSceneHost host, Func<DateTimeOffset>? clock, bool sceneAutomationAvailable)
     {
         _host = host;
+        _sceneAutomationAvailable = sceneAutomationAvailable;
+        _automationAutoTakeEnabled = sceneAutomationAvailable;
+        _automationLowerThirdsEnabled = sceneAutomationAvailable;
         var start = System.Diagnostics.Stopwatch.GetTimestamp();
         _clock = clock ?? (() => DateTimeOffset.UnixEpoch + System.Diagnostics.Stopwatch.GetElapsedTime(start));
         _timer = host.CreateAutomationTimer(EvaluateAutomationPolicy);
@@ -153,6 +166,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     [RelayCommand]
     private void ToggleAutomation()
     {
+        if (!_sceneAutomationAvailable) { DisableSceneAutomation(); return; }
         ProductionMode = ProductionMode == ProductionMode.SetAndForget
             ? ProductionMode.Manual
             : ProductionMode.SetAndForget;
@@ -169,6 +183,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     [RelayCommand]
     private void RunMagicScene()
     {
+        if (!_sceneAutomationAvailable) { DisableSceneAutomation(); return; }
         _host.RefreshAutomationRecommendation();
         if (!_host.IsInMeeting)
         {
@@ -214,6 +229,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
 
     private void EvaluateAutomationPolicyCore()
     {
+        if (!_sceneAutomationAvailable) { DisableSceneAutomation(reportCommand: false); return; }
         _host.RefreshAutomationRecommendation();
         ObserveAutomationSession();
         if (ProductionMode != ProductionMode.SetAndForget)
@@ -459,6 +475,11 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
 
     partial void OnProductionModeChanged(ProductionMode value)
     {
+        if (!_sceneAutomationAvailable && value != ProductionMode.Manual)
+        {
+            DisableSceneAutomation();
+            return;
+        }
         _modeGeneration++;
         if (value != ProductionMode.SetAndForget) _timer.Stop();
         _pendingSceneId = null;
@@ -475,7 +496,11 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         OnPropertyChanged(nameof(AutoProductionReadout));
     }
 
-    partial void OnAutomationAutoTakeEnabledChanged(bool value) => OnAutomationPolicyChanged();
+    partial void OnAutomationAutoTakeEnabledChanged(bool value)
+    {
+        if (!_sceneAutomationAvailable && value) { AutomationAutoTakeEnabled = false; return; }
+        OnAutomationPolicyChanged();
+    }
 
     partial void OnAutomationPreferScreenShareChanged(bool value) => OnAutomationPolicyChanged();
 
@@ -531,6 +556,19 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         _pendingBindingsApplied = false;
         _pendingSince = null;
         _bindingHold.Reset();
+    }
+
+    private void DisableSceneAutomation(bool reportCommand = true)
+    {
+        _timer.Stop();
+        ResetPendingCandidate();
+        _lastTakenBindings = null;
+        ProductionMode = ProductionMode.Manual;
+        AutomationAutoTakeEnabled = false;
+        AutomationLastAction = SceneAutomationUnavailable;
+        MagicSceneStatus = SceneAutomationUnavailable;
+        if (reportCommand) _host.CommandStatus = SceneAutomationUnavailable;
+        RefreshTransportAutomationState();
     }
 
     private void ObserveAutomationSession()

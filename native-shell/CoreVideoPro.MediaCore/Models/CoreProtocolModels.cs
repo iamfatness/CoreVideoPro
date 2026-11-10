@@ -351,6 +351,8 @@ public sealed class RawParticipantEvent
 
 public sealed class NativeMediaCoreWireState
 {
+    public bool? ProgramBlackout { get; init; }
+    public double ProgramBlackoutOpacity { get; init; }
     public System.Text.Json.JsonElement? ProgramBuffer { get; init; }
     public NativeMediaCoreProgramFrame? ProgramFrame { get; init; }
     public NativeMediaCorePreviewScene? PreviewScene { get; init; }

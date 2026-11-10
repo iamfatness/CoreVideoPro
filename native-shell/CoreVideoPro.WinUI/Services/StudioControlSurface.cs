@@ -63,7 +63,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
     public static IReadOnlySet<string> SupportedActionIds { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         "zoom.join", "zoom.leave",
-        "transport.take", "transport.transition.set",
+        "transport.take", "transport.transition.set", "transport.ftb.toggle", "transport.ftb.set",
         "transport.record.toggle", "transport.record.set",
         "transport.stream.toggle", "transport.stream.set",
         "transport.stream.rtmp.configure", "transport.stream.srt.configure",
@@ -87,7 +87,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "multiview.layout.set", "multiview.tileCount.set",
         "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
-        "automation.magic", "automation.toggle", "automation.autoTake.set", "automation.autoAssignInputs.set",
+        "automation.autoAssignInputs.set",
         "automation.lowerThirds.set", "automation.captions.set",
         "browser.add", "browser.remove", "browser.reload",
         "settings.programBuffer.set",
@@ -251,6 +251,10 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                     : ControlInvokeResult.Fail(_vm.Settings.JoinStatus);
 
             // ---- Transport ----------------------------------------------------------
+            case "transport.ftb.toggle":
+                return await _vm.SetProgramBlackoutAsync(null);
+            case "transport.ftb.set":
+                return await _vm.SetProgramBlackoutAsync(Bool(args, 0));
             case "transport.take":
                 return await RunTake(_vm.TakeCommand.CanExecute(null), _vm.TakeForControlAsync).ConfigureAwait(true);
             case "transport.transition.set":
@@ -687,13 +691,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
 
             // ---- Automation ---------------------------------------------------------
             case "automation.magic":
-                return RunMagicScene(_vm.RunMagicSceneCommand);
             case "automation.toggle":
-                _vm.ToggleAutomationCommand.Execute(null);
-                return ControlInvokeResult.Success;
             case "automation.autoTake.set":
-                _vm.AutomationAutoTakeEnabled = Bool(args, 0);
-                return ControlInvokeResult.Success;
+                return ControlInvokeResult.Fail(CoreVideoPro.WinUI.ViewModels.MagicScene.MagicSceneCoordinator.SceneAutomationUnavailable);
             case "automation.autoAssignInputs.set":
                 _vm.AutomationAutoAssignInputsEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
@@ -990,6 +990,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             Streaming = _vm.Streaming,
             EngineOn = _vm.ZoomCaptureSubscribed,
             CanTake = _vm.CanTake,
+            ProgramBlackout = _vm.ProgramBlackout,
             // Under instances authority the strip's lower-third chip is the evidence (#1076 C2);
             // NativeLowerThirdVisible below stays the legacy key's own observation.
             LowerThirdOnAir = _vm.ManagedLowerThirdAuthority ? _vm.GraphicsLowerThirdOnAir : _vm.ProgramLowerThirdKey.IsVisible,
@@ -1219,17 +1220,6 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         }
         await command.ExecuteAsync(null).ConfigureAwait(true);
         return ControlInvokeResult.Success;
-    }
-
-    internal static ControlInvokeResult RunMagicScene(System.Windows.Input.ICommand command)
-    {
-        if (!command.CanExecute(null)) return ControlInvokeResult.Fail("Magic Scene is unavailable in the current state.");
-        try
-        {
-            command.Execute(null);
-            return ControlInvokeResult.Success;
-        }
-        catch (Exception ex) { return ControlInvokeResult.Fail($"Magic Scene failed: {ex.Message}"); }
     }
 
     internal static async Task<ControlInvokeResult> RunTake(bool canTake, Func<Task<TakeResult>> take)

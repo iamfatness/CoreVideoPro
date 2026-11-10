@@ -1,5 +1,11 @@
 # CoreVideo Pro Product Spec and MVP Plan
 
+> **First-release scope, November 9, 2026:** CoreVideo Tiles replaces legacy Magic
+> Scene composition. Set & Forget and legacy Magic Scene are excluded and cannot
+> be enabled. Scene selection and Take remain manual. Older automation promises
+> below are deferred vision, not release acceptance. See
+> [first-release scene control](docs/reference/first-release-scene-control.md).
+
 > **Implementation status (2026-06-21).** This document is the product vision and MVP
 > plan. The shipping architecture is a **WinUI 3 (.NET 9) shell embedding a React/TypeScript
 > operator UI over a C++20 media core**, **Windows-first** (macOS is a roadmap target, not

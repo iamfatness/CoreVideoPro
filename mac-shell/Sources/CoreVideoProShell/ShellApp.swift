@@ -239,7 +239,7 @@ struct HeaderBar: View {
             TabPill(tab: .studio)
             GroupLabel("Setup")
             ForEach([StudioTab.zoom, .sources, .scenes, .routing], id: \.self) { TabPill(tab: $0) }
-            ForEach([StudioTab.overlays, .audio, .media, .automation], id: \.self) {
+            ForEach([StudioTab.overlays, .audio, .media], id: \.self) {
                 TabPill(tab: $0)
             }
             GroupLabel("Diagnose")
@@ -1110,42 +1110,6 @@ struct TransportBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            // Magic Scene = auto-direct with auto-take, the one-tap AI pill.
-            Button {
-                model.autoTakeEnabled = true
-                model.setAutoDirect(enabled: !model.autoDirectEnabled)
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "sparkles").font(.system(size: 10))  // design-lint: allow
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("Magic Scene").font(.grotesk(11, .semibold))
-                        Text("AI auto-direct").font(.grotesk(8))
-                    }
-                }
-                .foregroundStyle(model.autoDirectEnabled ? .black : Studio.accent)
-                .padding(.horizontal, 10).padding(.vertical, 5)
-                .background(RoundedRectangle(cornerRadius: 8)
-                    .fill(model.autoDirectEnabled ? Studio.accent
-                          : Studio.accent.opacity(0.12)))
-                .overlay(RoundedRectangle(cornerRadius: 8)
-                    .stroke(Studio.accent.opacity(0.7), lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            HStack(spacing: 6) {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Set & Forget").font(.grotesk(10, .medium))
-                    Text("Automation \(model.autoDirectEnabled ? "On" : "Off")")
-                        .font(.grotesk(8)).foregroundStyle(Studio.secondary)
-                }
-                Toggle("", isOn: Binding(
-                    get: { model.autoDirectEnabled },
-                    set: { model.setAutoDirect(enabled: $0) }))
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .labelsHidden()
-            }
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
             HStack(spacing: 4) {
                 Text("LT")
                     .font(.grotesk(10, .bold))
@@ -2004,51 +1968,8 @@ struct AutomationPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Automation").font(.grotesk(14, .semibold))
-            Toggle("Set & Forget (auto-direct)", isOn: Binding(
-                get: { model.autoDirectEnabled },
-                set: { model.setAutoDirect(enabled: $0) }))
-            Toggle("Auto-take (off = queue on preview)", isOn: $model.autoTakeEnabled)
-                .disabled(!model.autoDirectEnabled)
-            HStack {
-                Text("Confidence ≥ \(Int(model.autoConfidenceThreshold))")
-                    .font(.grotesk(11))
-                Slider(value: $model.autoConfidenceThreshold, in: 0...100, step: 5)
-            }
-            HStack {
-                Text(String(format: "Hold %.0fs", model.autoHoldSeconds)).font(.grotesk(11))
-                Slider(value: $model.autoHoldSeconds, in: 0...30, step: 1)
-            }
-            Text(model.autoStatus)
-                .font(.plexMono(11))
-                .foregroundStyle(model.autoDirectEnabled ? Studio.accent : Studio.secondary)
-            Divider()
-            Text("SCENE INTELLIGENCE")
-                .font(.plexMono(10, .bold))
-                .foregroundStyle(Studio.secondary)
-            if model.autoSceneId.isEmpty {
-                Text("Director idle — recommendations appear once the meeting has participants.")
-                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
-            } else {
-                HStack {
-                    Text(model.autoSceneId)
-                        .font(.grotesk(13, .semibold))
-                    Text("\(model.autoConfidence)%")
-                        .font(.plexMono(11))
-                        .foregroundStyle(model.autoConfidence >= Int(model.autoConfidenceThreshold)
-                                         ? Studio.accent : Studio.secondary)
-                    Spacer()
-                    Text(model.autoRuleId)
-                        .font(.plexMono(9))
-                        .foregroundStyle(Studio.secondary)
-                }
-                Text(model.autoRationale)
-                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
-            }
-            // AutomationPage.xaml parity: Magic Scene, dynamic lower thirds,
-            // reset defaults, the scene-intelligence readouts, and the honest
-            // disabled block. Lives in AutomationExtras.swift.
-            AutomationExtrasSection()
+            Text("Manual production").font(.grotesk(14, .semibold))
+            Text("Scene automation is unavailable in this release. Compose your show and use manual Take.").font(.grotesk(12))
         }
         .modifier(StudioPanel())
     }

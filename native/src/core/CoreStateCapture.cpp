@@ -588,6 +588,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   renderedSceneAttributionTicks_ = core.renderedSceneAttributionTicks_;
   routeCount_ = core.routeCount_;
   sceneId_ = core.sceneId_;
+  programBlackout_ = core.programBlackout_;
   shellActiveSpeakerId_ = core.shellActiveSpeakerId_;
   shellScreenShareParticipantId_ = core.shellScreenShareParticipantId_;
   shellZoomRoster_ = core.shellZoomRoster_;
@@ -724,6 +725,8 @@ rpc::Json CoreStateCapture::sessionState(const rpc::Json& engineCapture) const {
   }
   rpc::Json::Object state{
       {"sceneId", sceneId_},
+      {"programBlackout", programBlackout_.enabled()},
+      {"programBlackoutOpacity", programBlackout_.opacity()},
       {"commandProtocolFailures", stringArray(commandProtocolFailures_)},
       {"routeCount", routeCount_},
       {"transformCount", transformCount_},

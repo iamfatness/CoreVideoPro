@@ -8,6 +8,21 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class NativeMediaCoreStateMapperTests
 {
     [Theory]
+    [InlineData(true, 0.5)]
+    [InlineData(false, 0.25)]
+    public void ProgramBlackoutRoundTripsNativeObservation(bool enabled, double opacity)
+    {
+        using var response = JsonDocument.Parse(JsonSerializer.Serialize(new { ok = true,
+            snapshot = new { health = (object?)null, profile = (object?)null, programBlackout = enabled, programBlackoutOpacity = opacity } }));
+        var wire = CoreProtocolParser.TryParseWireState(response);
+        Assert.NotNull(wire);
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(0, 0, wire);
+        Assert.Equal(enabled, snapshot.ProgramBlackout);
+        Assert.Equal(opacity, snapshot.ProgramBlackoutOpacity);
+        Assert.Null(new NativeMediaCoreStateSnapshot().ProgramBlackout);
+    }
+
+    [Theory]
     [InlineData("snapshot")]
     [InlineData("state")]
     public void PreviewSceneSurvivesRealWireParserAndMapper(string envelope)

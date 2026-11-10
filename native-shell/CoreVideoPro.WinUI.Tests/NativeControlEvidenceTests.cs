@@ -126,18 +126,6 @@ public sealed class NativeControlEvidenceTests
     }
 
     [Fact]
-    public void MagicApiInvokesTheExistingCommandOnlyWhenAvailable()
-    {
-        var available = false;
-        var calls = 0;
-        var command = new RelayCommand(() => calls++, () => available);
-        Assert.False(StudioControlSurface.RunMagicScene(command).Ok);
-        Assert.Equal(0, calls);
-        available = true;
-        Assert.True(StudioControlSurface.RunMagicScene(command).Ok);
-        Assert.Equal(1, calls);
-    }
-    [Fact]
     public void LastRenderedFrameRemainsDistinctFromAcknowledgedScene()
     {
         var snapshot = new NativeMediaCoreStateSnapshot
