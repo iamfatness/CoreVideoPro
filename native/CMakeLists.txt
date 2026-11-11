@@ -180,6 +180,7 @@ add_library(corevideo_native
   src/modules/ShmCapturePreparation.cpp
   src/modules/CpuSourcePreparation.cpp
   src/modules/ZoomEngineClient.cpp
+  src/modules/ZoomCommsRelay.cpp
   src/modules/ZoomEngineProcess.cpp
   src/modules/ZoomEngineRuntime.cpp
   src/modules/ZoomEngineState.cpp
@@ -655,11 +656,40 @@ endif()
 add_executable(corevideo-plugin-host plugin-host/plugin-host.cpp)
 set_target_properties(corevideo-plugin-host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
-add_executable(corevideo-zoom-engine-fake zoom-engine/fake/fake-engine.cpp)
+# Comms (Zoom talkback), ported from ZComms into zoom-engine/engine/comms (see
+# its PORTED.md; shared verbatim with CoreVideo Edge). The SDK-free core --
+# talkback channel ladder, eligibility, duck planner, pacer, the orchestration
+# in comms_core -- is shared by the real engine, the fake engine and the tests,
+# so all three run the same laws.
+set(COREVIDEO_COMMS_DIR zoom-engine/engine/comms)
+add_library(corevideo_comms_core STATIC
+  ${COREVIDEO_COMMS_DIR}/comms_core.cpp
+  ${COREVIDEO_COMMS_DIR}/mic_guard.cpp
+  ${COREVIDEO_COMMS_DIR}/talkback_sdk.cpp
+  ${COREVIDEO_COMMS_DIR}/talkback_channels.cpp
+  ${COREVIDEO_COMMS_DIR}/reach.cpp
+  ${COREVIDEO_COMMS_DIR}/room_plan.cpp
+  ${COREVIDEO_COMMS_DIR}/duck_plan.cpp
+  ${COREVIDEO_COMMS_DIR}/signal_gate.cpp
+  ${COREVIDEO_COMMS_DIR}/tx_pacer.cpp
+  ${COREVIDEO_COMMS_DIR}/frame_ring.cpp
+  ${COREVIDEO_COMMS_DIR}/frame_accumulator.cpp
+  ${COREVIDEO_COMMS_DIR}/envelope.cpp
+  ${COREVIDEO_COMMS_DIR}/limiter.cpp
+)
+target_include_directories(corevideo_comms_core PUBLIC ${COREVIDEO_COMMS_DIR})
+set_target_properties(corevideo_comms_core PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+if(NOT WIN32)
+  find_package(Threads REQUIRED)
+  target_link_libraries(corevideo_comms_core PUBLIC Threads::Threads)
+endif()
+
+add_executable(corevideo-zoom-engine-fake zoom-engine/fake/fake-engine.cpp zoom-engine/fake/fake-comms.cpp)
 target_include_directories(corevideo-zoom-engine-fake PRIVATE
   zoom-engine/shared
   zoom-engine/engine
 )
+target_link_libraries(corevideo-zoom-engine-fake PRIVATE corevideo_comms_core)
 if(WIN32)
   # IPC (named pipes) + SHM (file mappings) use only kernel32 (linked by default).
 elseif(UNIX AND NOT APPLE)
@@ -736,7 +766,28 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
       zoom-engine/engine/engine-video.cpp
       zoom-engine/engine/engine-audio.cpp
       zoom-engine/engine/engine-share.cpp
+      zoom-engine/engine/engine-comms.cpp
+      ${COREVIDEO_COMMS_DIR}/talkback_sdk_win.cpp
     )
+    # The Comms mic chain (miniaudio: WASAPI capture + sidetone). Real engine
+    # only. The MA_NO_* macros change miniaudio's struct layouts, so they are
+    # PUBLIC: every translation unit that sees miniaudio.h must see the same.
+    add_library(corevideo_comms_audio STATIC
+      ${COREVIDEO_COMMS_DIR}/devices.cpp
+      ${COREVIDEO_COMMS_DIR}/engine.cpp
+      ${COREVIDEO_COMMS_DIR}/miniaudio_impl.cpp
+    )
+    target_include_directories(corevideo_comms_audio PUBLIC ${COREVIDEO_COMMS_DIR} zoom-engine/third_party/miniaudio)
+    target_compile_definitions(corevideo_comms_audio PUBLIC MA_NO_DECODING MA_NO_ENCODING MA_NO_GENERATION MA_NO_ENGINE MA_NO_NODE_GRAPH)
+    target_link_libraries(corevideo_comms_audio PUBLIC corevideo_comms_core)
+    target_link_libraries(corevideo-zoom-engine PRIVATE corevideo_comms_audio)
+    # The ported comms headers call std::min/std::max after <windows.h>; Edge
+    # builds with NOMINMAX globally. Scoped to the comms translation units so
+    # the rest of the engine compiles exactly as before.
+    set_source_files_properties(
+      zoom-engine/engine/engine-comms.cpp ${COREVIDEO_COMMS_DIR}/talkback_sdk_win.cpp
+      PROPERTIES COMPILE_DEFINITIONS NOMINMAX)
+    target_compile_definitions(corevideo_comms_audio PRIVATE NOMINMAX)
     target_include_directories(corevideo-zoom-engine PRIVATE
       zoom-engine/engine
       zoom-engine/shared
@@ -939,7 +990,15 @@ if(BUILD_TESTING)
     tests/ZoomEngineRuntimeTest.cpp
     tests/ZoomEngineStateTest.cpp
   )
-  target_link_libraries(corevideo-native-tests PRIVATE corevideo_native)
+  target_link_libraries(corevideo-native-tests PRIVATE corevideo_native corevideo_comms_core)
+  # Comms: core relay, engine comms core/protocol, and ZComms' own tests for
+  # the ported pieces (tests/comms/test_util.h maps ZC_CHECK onto the shim).
+  target_sources(corevideo-native-tests PRIVATE
+    tests/CommsRelayTest.cpp tests/CommsCoreTest.cpp tests/CommsProtocolTest.cpp tests/MicGuardTest.cpp
+    tests/comms/ZCommsPortedTest.cpp tests/comms/test_talkback_channels.cpp tests/comms/test_talkback_eligibility.cpp
+    tests/comms/test_room_plan.cpp tests/comms/test_reach.cpp tests/comms/test_duck_plan.cpp
+    tests/comms/test_envelope.cpp tests/comms/test_limiter.cpp tests/comms/test_frame_accumulator.cpp
+    tests/comms/test_sample_ring.cpp tests/comms/test_frame_ring.cpp tests/comms/test_signal_gate.cpp)
   if(WIN32)
     target_sources(corevideo-native-tests PRIVATE tests/NativeMonitorPresenterTest.cpp)
     target_include_directories(corevideo-native-tests PRIVATE monitor-presenter)

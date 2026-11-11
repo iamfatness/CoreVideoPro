@@ -220,6 +220,12 @@
                             BorderBrush="{x:Bind ViewModel.AudioTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.AudioTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="audio" />
+                    <Button Content="Comms" Style="{StaticResource GhostButton}"
+                            Background="{x:Bind ViewModel.CommsTabChrome.Background, Mode=OneWay}"
+                            BorderBrush="{x:Bind ViewModel.CommsTabChrome.BorderBrush, Mode=OneWay}"
+                            Foreground="{x:Bind ViewModel.CommsTabChrome.Foreground, Mode=OneWay}"
+                            Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="comms"
+                            ToolTipService.ToolTip="Comms — talk to guests over Zoom talkback (needs host or co-host)" />
                     <Button Content="Media" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.MediaTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.MediaTabChrome.BorderBrush, Mode=OneWay}"
@@ -724,6 +730,12 @@
         <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
                 Visibility="{x:Bind ViewModel.IsAudioTab, Mode=OneWay}">
             <views:AudioPage ViewModel="{x:Bind ViewModel, Mode=OneWay}" />
+        </Border>
+
+        <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
+                Visibility="{x:Bind ViewModel.IsCommsTab, Mode=OneWay}">
+            <views:CommsPage x:Name="CommsPageHost" ViewModel="{x:Bind ViewModel.Comms, Mode=OneWay}"
+                             LeaveCommand="{x:Bind ViewModel.Settings.LeaveZoomCommand, Mode=OneWay}" />
         </Border>
 
         <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"

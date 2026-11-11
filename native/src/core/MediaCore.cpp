@@ -805,6 +805,13 @@ std::optional<rpc::Json> MediaCore::syncZoomEngineSpineUnlocked(const rpc::Json&
   return zoomEngineRuntime_->syncSpine(payload, elapsedMs);
 }
 
+rpc::Json MediaCore::zoomCommsCommandUnlocked(const std::string& type, const rpc::Json& payload) {
+  // zoomEngineRuntime_ is created once in the constructor and never reset.
+  if (!zoomEngineRuntime_ || !zoomEngineRuntime_->configured())
+    return rpc::Json::Object{{"ok", false}, {"error", "No Zoom engine is configured, so Comms is unavailable."}};
+  return zoomEngineRuntime_->commsCommand(type, payload);
+}
+
 std::optional<rpc::Json> MediaCore::zoomEngineSnapshotUnlocked() const {
   if (!zoomEngineRuntime_ || !zoomEngineRuntime_->configured()) return std::nullopt;
   return zoomEngineRuntime_->snapshot();

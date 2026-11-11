@@ -147,6 +147,7 @@ ZoomEngineEventKind kindForCommand(const std::string& command) {
   if (command == IPC_EVT_RAW_MEDIA_STATUS) return ZoomEngineEventKind::RawMediaStatus;
   if (command == "debug") return ZoomEngineEventKind::Debug;
   if (command == IPC_EVT_ERROR) return ZoomEngineEventKind::Error;
+  if (command == "comms_state") return ZoomEngineEventKind::CommsState;
   return ZoomEngineEventKind::Unknown;
 }
 
@@ -234,6 +235,10 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
   ZoomEngineEvent event;
   event.command = parsed->getString("cmd");
   event.kind = kindForCommand(event.command);
+  if (event.kind == ZoomEngineEventKind::CommsState) {
+    event.commsState = std::make_shared<const Json>(std::move(*parsed));
+    return event;
+  }
   event.sourceUuid = parsed->getString("source_uuid");
   event.stage = parsed->getString("stage");
   const auto integer = [&](const char* name) -> std::optional<int> {

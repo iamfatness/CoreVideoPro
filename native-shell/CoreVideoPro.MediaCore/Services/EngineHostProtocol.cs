@@ -53,7 +53,9 @@ public static class EngineHostWire
     }
 
     public static bool IsUrgentType(string? type) => type is "stop-recording-session" or "stop-encoder-session" or
-        "stop-program-output" or "zoom-leave" or "zoom-cancel" or "zoom-stop-capture";
+        "stop-program-output" or "zoom-leave" or "zoom-cancel" or "zoom-stop-capture" or
+        // Comms talk keys: a key-up must never queue behind ordinary work.
+        "comms-key" or "comms-latch" or "comms-release-all" or "comms-private";
 
     // Never let a mixed batch smuggle ordinary work into reserved capacity.
     public static bool IsUrgent(JsonElement payload)

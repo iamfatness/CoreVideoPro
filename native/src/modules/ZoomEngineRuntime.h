@@ -94,6 +94,14 @@ class ZoomEngineRuntime {
     return speakerEpoch_.load(std::memory_order_relaxed);
   }
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
+  // Comms (Zoom talkback, docs/reference/comms-talkback.md). One comms-*
+  // request from the shell: validated by ZoomCommsRelay against the meeting
+  // phase and the last engine report, then queued for the sender thread.
+  // Returns {"ok":true} or {"ok":false,"error":<operator text>}. Takes mutex_
+  // briefly; never touches coreMutex or the engine pipe.
+  [[nodiscard]] rpc::Json commsCommand(const std::string& type, const rpc::Json& payload);
+  // The last engine comms report, camelCase (nullopt until reported).
+  [[nodiscard]] std::optional<rpc::Json> commsState() const;
   // Optional CPU UI images are independent of full-resolution media ingestion.
   void setThumbnailDemand(bool enabled) { thumbnailDemand_.store(enabled, std::memory_order_relaxed); }
   // Returns the latest decoded BGRA frame per participant, carrying real pixels,
@@ -287,6 +295,16 @@ class ZoomEngineRuntime {
   // from the throttled BGRA thumbnail queue so format refresh adds no pixels.
   std::map<std::string, rpc::Json> pendingSourceFormatEvents_;
   std::optional<rpc::Json> pendingRosterFact_;
+  // Comms: the engine's last comms_state, re-keyed (guarded by mutex_). It
+  // rides drainFrameEvents as a latest-wins "zoom-comms-state" fact; that lane
+  // may drop under thumbnail pressure, so the fact is repeated every second
+  // while a report is held. Cleared (and a comms:null fact sent) on Leave and
+  // whenever the engine process goes away: a stale report must never keep a
+  // talk key looking live.
+  std::optional<rpc::Json> commsState_;
+  bool commsDirty_ = false;
+  double commsLastEmitMs_ = -1.0;
+  void clearCommsLocked();
 
   struct DecodedFrame {
     // Full-resolution I420 planes (Y + U + V tightly packed). The compositor

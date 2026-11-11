@@ -1676,6 +1676,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _snapshotDelivery = new(action => _dispatcher.TryEnqueue(() =>
             UiDispatch.Run(_dispatcher, action, "ApplySnapshotChanged")), ApplySnapshotChanged);
         _bridge.SnapshotChanged += OnSnapshotChanged;
+        InitializeComms();
         _bridge.ZoomVideoFrameReceived += OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived += OnProgramSharedTextureReceived;
@@ -3905,6 +3906,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             OnPropertyChanged(name);
         }
+        OnActiveTabChangedForComms(value);
 
         if (value == StudioTab.Inputs)
         {
@@ -12109,6 +12111,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MultiviewShowMeters = MultiviewShowMeters,
             MultiviewShowClock = MultiviewShowClock,
             GraphicsMode = GraphicsMode,
+            CommsPrivate = CommsPrivateForSave(),
             SceneBackgroundAssetIds = CaptureWorkspaceSavedBackgrounds(),
             SourceDisplayNames = _sourceDisplayNames.ToDictionary(
                 pair => pair.Key,
@@ -12416,6 +12419,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MultiviewShowMeters = preferences.MultiviewShowMeters;
         MultiviewShowClock = preferences.MultiviewShowClock;
         RestoreGraphicsMode(preferences.GraphicsMode);
+        RestoreCommsPrivate(preferences.CommsPrivate);
 
         _sceneBackgroundAssetIds.Clear();
         foreach (var pair in preferences.SceneBackgroundAssetIds)

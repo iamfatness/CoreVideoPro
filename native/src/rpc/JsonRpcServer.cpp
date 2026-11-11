@@ -12,6 +12,7 @@
 #include "core/ScopedVideoScheduling.h"
 #include "core/AnchoredFrameDeadlineTracker.h"
 #include "rpc/CommandMailbox.h"
+#include "modules/ZoomCommsRelay.h"
 #include "contracts/Lifecycle.h"
 #include "compositor/AdvancedGrade.h"
 #include <random>
@@ -109,6 +110,19 @@ Json JsonRpcServer::finishDeferredEngineSpine(const DeferredEngineSpine& deferre
   return spineSyncResponse(deferred.id, snapshot ? *snapshot : Json(nullptr));
 }
 
+std::optional<Json> JsonRpcServer::handleCommsWithoutCore(const Json& request) {
+  const std::string type = request.getString("type");
+  if (!modules::isCommsVerb(type)) return std::nullopt;  // the locked path answers unknown types
+  if (const auto* version = request.get("protocolVersion"); version && !contracts::validateProtocolVersion(*version))
+    return std::nullopt;
+  const Json* payload = request.get("payload");
+  const Json empty = Json::Object{};
+  const auto result = mediaCore_.zoomCommsCommandUnlocked(type, payload && payload->isObject() ? *payload : empty);
+  const auto* ok = result.get("ok");
+  if (!ok || !ok->asBool()) return failure(requestId(request), "comms-refused", result.getString("error"));
+  return success(requestId(request), Json::Object{{"type", type}});
+}
+
 std::optional<Json> JsonRpcServer::handleWithoutCore(const Json& request) {
   if (!hasType(request, "zoom-snapshot")) return std::nullopt;
   if (const auto* version = request.get("protocolVersion"); version && !contracts::validateProtocolVersion(*version))
@@ -139,6 +153,9 @@ Json JsonRpcServer::handle(const Json& request) {
   if (hasType(request, "ping")) {
     return success(id, Json::Object{{"type", "ping"}});
   }
+
+  // The live loop answers these before taking coreMutex; direct callers too.
+  if (auto comms = handleCommsWithoutCore(request)) return std::move(*comms);
 
   if (hasType(request, "zoom-media-spine-sync")) {
     const Json* payload = request.get("spinePayload");
@@ -1243,6 +1260,14 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
             (!request->get("protocolVersion") || contracts::validateProtocolVersion(*request->get("protocolVersion")))) {
           std::lock_guard<std::mutex> lock(joinMx);
           ++joinGeneration; // invalidate auth/spawn waits before applying Leave
+        }
+        if (reqType.rfind("comms-", 0) == 0) {
+          // Comms (Zoom talkback): a talk key must not wait on coreMutex. The
+          // engine runtime validates and queues the line under its own mutex;
+          // no CoreStateCapture, so no response-assembly slot either.
+          h0 = std::chrono::steady_clock::now();
+          lockFreeResponse = handleCommsWithoutCore(*request);
+          h1 = std::chrono::steady_clock::now();
         }
         if (reqType == "zoom-snapshot") {
           // #1048 C2: with an engine configured, zoom-snapshot is a pure engine

@@ -4,12 +4,12 @@ CoreVideo Pro's Windows helper must package the Zoom Meeting SDK beside the nati
 
 Verified local SDK archive:
 
-- Source: `C:\Users\walla\Downloads\zoom-sdk-windows-7.0.5.39292.zip`
-- Version: `7.0.5.39292`
+- Source: `C:\Users\walla\Downloads\zoom-sdk-windows-7.1.5.43953.zip`
+- Version: `7.1.5.43953`
 - Target architecture: `x64`
-- Runtime source: `zoom-sdk-windows-7.0.5.39292/x64/bin/*`
-- Headers: `zoom-sdk-windows-7.0.5.39292/x64/h/**/*`
-- Import library: `zoom-sdk-windows-7.0.5.39292/x64/lib/sdk.lib`
+- Runtime source: `zoom-sdk-windows-7.1.5.43953/x64/bin/*`
+- Headers: `zoom-sdk-windows-7.1.5.43953/x64/h/**/*`
+- Import library: `zoom-sdk-windows-7.1.5.43953/x64/lib/sdk.lib`
 - Helper runtime target: `native-core/zoom-runtime/windows/x64`
 
 Required files for the first real media-path spike:
@@ -52,7 +52,7 @@ Embedded OAuth identity (same broker as [CoreVideo plugin](https://github.com/ia
 Stage the SDK beside the helper target:
 
 ```powershell
-$env:ZOOM_SDK_DIR = "C:\path\to\zoom-sdk-windows-7.0.5.39292\x64"
+$env:ZOOM_SDK_DIR = "C:\path\to\zoom-sdk-windows-7.1.5.43953\x64"
 .\scripts\stage-zoom-sdk.ps1
 ```
 

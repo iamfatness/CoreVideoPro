@@ -375,7 +375,13 @@ public sealed partial class StudioWorkspace : UserControl
         {
             ScheduleParticipantListRefresh();
         }
+        // Comms keys are panel-scoped: focus the desk when its tab opens (our own window).
+        if (e.PropertyName == nameof(StudioViewModel.IsCommsTab) && _boundViewModel?.IsCommsTab == true)
+            _dispatcher?.TryEnqueue(() => CommsPageHost.FocusDesk());
     }
+
+    /// <summary>The window deactivated: every held Comms key goes up (MainWindow).</summary>
+    public void ReleaseCommsKeys() => CommsPageHost.ReleaseEverything();
 
     private void ScheduleParticipantListRefresh()
     {

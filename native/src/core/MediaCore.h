@@ -176,6 +176,9 @@ class MediaCore {
   // engine read made without coreMutex. nullopt = no engine (stub snapshot
   // reads coreMutex state: use zoomSnapshot()).
   [[nodiscard]] std::optional<rpc::Json> zoomEngineSnapshotUnlocked() const;
+  // Comms (Zoom talkback): one comms-* request, answered without coreMutex
+  // (the engine runtime takes only its own mutex). {"ok":bool,"error"?}.
+  [[nodiscard]] rpc::Json zoomCommsCommandUnlocked(const std::string& type, const rpc::Json& payload);
   // The stub (no engine) spine half; coreMutex state.
   [[nodiscard]] rpc::Json syncStubZoomSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();

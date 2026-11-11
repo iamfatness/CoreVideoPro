@@ -198,7 +198,8 @@ public enum StudioTab
     Audio,
     Media,
     Automation,
-    OhgShow
+    OhgShow,
+    Comms
 }
 
 // C5a: one slot in the selected channel's visible insert rack. Built-ins run

@@ -115,7 +115,11 @@ npm run build:native-dev          # build the dev native core (needs ZOOM_SDK_DI
 dotnet build native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -p:Platform=x64
 ```
 
-`ZOOM_SDK_DIR` must point at the staged Zoom SDK x64 dir for the full core. `npm run app`
+`ZOOM_SDK_DIR` must point at the staged Zoom SDK x64 dir for the full core: **Meeting
+SDK 7.1.5.43953** since Comms (talkback controller), e.g.
+`C:\Users\walla\Downloads\zoom-sdk-windows-7.1.5.43953\zoom-sdk-windows-7.1.5.43953\x64`.
+`scripts/stage-zoom-sdk.ps1` restages `native-core/zoom-runtime` (a 7.0.5 runtime lacks
+the talkback header, so it is replaced; do not copy an old worktree's runtime). `npm run app`
 runs `scripts/app.ps1`; the dev launcher is `scripts/run-studio.ps1` (now respects a
 pre-set `COREVIDEO_ZOOM_ENGINE_PATH`).
 
@@ -196,6 +200,7 @@ phrase they quote.
 |---|---|
 | [`docs/reference/beta-release-runbook.md`](docs/reference/beta-release-runbook.md) | cutting, tagging or publishing a beta |
 | [`docs/reference/browser-sources.md`](docs/reference/browser-sources.md) | browser (URL) sources, WebView2 host |
+| [`docs/reference/comms-talkback.md`](docs/reference/comms-talkback.md) | the **Comms** page (Zoom talkback, the ZComms station): engine `EngineComms` kept byte-identical with CoreVideo Edge, core relay `ZoomCommsRelay` (comms-* answered lock-free, key-ups urgent), `zoom-comms-state` facts, `CommsViewModel` / `CommsPage` / `TalkKey`, leases + release-all, the **Private comms** toggle (OFF default; ON = silent virtual mic via MicGuard, OFF leaves the operator muted), on air = `StudioAirBrush`, `scripts/probe-comms.mjs` |
 | [`docs/reference/core-on-air-policy.md`](docs/reference/core-on-air-policy.md) | handshake, Engine on, Record or Join gating; a stub adapter left in a real core |
 | [`docs/reference/core-restart-drill.md`](docs/reference/core-restart-drill.md) | core crash recovery, respawn, Zoom rejoin |
 | [`docs/reference/d3d-device-loss.md`](docs/reference/d3d-device-loss.md) | D3D devices, shared textures, device-removed handling |

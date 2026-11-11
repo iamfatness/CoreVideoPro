@@ -2337,3 +2337,90 @@ TEST(ZoomEngineRuntime, NormalReaderStopDoesNotReportHelperFailure) {
   EXPECT_EQ(runtime.snapshot().getString("meetingState"),"in_meeting");
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
+
+// ---------------------------------------------------------------------------
+// Comms (Zoom talkback, docs/reference/comms-talkback.md): the core relays the
+// shell's comms-* verbs to the engine and the engine's comms_state back.
+// ---------------------------------------------------------------------------
+
+namespace {
+corevideo::modules::ZoomEngineEvent commsStateEvent(const std::string& line) {
+  auto event = corevideo::modules::parseZoomEngineEvent(line);
+  return event ? *event : corevideo::modules::ZoomEngineEvent{};
+}
+
+std::vector<corevideo::rpc::Json> commsFacts(corevideo::modules::ZoomEngineRuntime& runtime) {
+  std::vector<corevideo::rpc::Json> out;
+  for (auto& event : runtime.drainFrameEvents())
+    if (event.getString("type") == "zoom-comms-state") out.push_back(event);
+  return out;
+}
+}  // namespace
+
+TEST(ZoomEngineRuntime, CommsStateIsReKeyedAndPushedOnceUntilItChanges) {
+  using namespace corevideo::modules;
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  {
+    ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+    EXPECT_TRUE(commsFacts(runtime).empty()) << "nothing until the engine reports";
+    const auto event = commsStateEvent(
+        R"({"cmd":"comms_state","available":true,"reason":null,"lamps":{"link":true,"meeting_mic":false,"channel":true,"tx":false},)"
+        R"("channels":[{"slot":0,"label":"Ana","listeners":1,"ready":true,"keyed":false,"latched":false,"room":null,"reach_ok":1,"reach_dark":0}]})");
+    ASSERT_EQ(event.kind, ZoomEngineEventKind::CommsState);
+    runtime.applyEngineEventForTest(event);
+    auto facts = commsFacts(runtime);
+    ASSERT_EQ(facts.size(), 1u);
+    const auto* comms = facts[0].get("comms");
+    ASSERT_NE(comms, nullptr);
+    EXPECT_TRUE(comms->get("cmd") == nullptr);
+    EXPECT_EQ(comms->get("lamps")->get("meetingMic")->asBool(true), false);
+    EXPECT_EQ(comms->get("channels")->asArray()[0].getNumber("reachOk"), 1.0);
+    EXPECT_TRUE(commsFacts(runtime).empty()) << "latest-wins: not repeated within a second";
+    EXPECT_TRUE(runtime.commsState().has_value());
+    // The meeting/roster state machine never sees a comms report.
+    EXPECT_EQ(runtime.snapshot().getString("meetingState"), "idle");
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+TEST(ZoomEngineRuntime, CommsVerbsAreGatedThenQueuedAsEngineLines) {
+  using namespace corevideo::modules;
+  using corevideo::rpc::Json;
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    // Not in a meeting: a key ON is refused with operator text; a release never is.
+    auto r = runtime.commsCommand("comms-key", Json::Object{{"slot", 0}, {"on", true}});
+    EXPECT_FALSE(r.get("ok")->asBool(true));
+    EXPECT_EQ(r.getString("error"), "Join a meeting first.");
+    r = runtime.commsCommand("comms-key", Json::Object{{"slot", 0}, {"on", false}});
+    EXPECT_TRUE(r.get("ok")->asBool(false));
+
+    runtime.applyEngineEventForTest({ZoomEngineEventKind::Joined});
+    // In the meeting but no report yet: unavailable, so a key ON is refused.
+    r = runtime.commsCommand("comms-key", Json::Object{{"slot", 0}, {"on", true}});
+    EXPECT_FALSE(r.get("ok")->asBool(true));
+    runtime.applyEngineEventForTest(commsStateEvent(R"({"cmd":"comms_state","available":true,"reason":null,"roster":[]})"));
+    r = runtime.commsCommand("comms-key", Json::Object{{"all", true}, {"on", true}});
+    EXPECT_TRUE(r.get("ok")->asBool(false)) << r.getString("error");
+    r = runtime.commsCommand("comms-gain", Json::Object{{"db", -6}});
+    EXPECT_TRUE(r.get("ok")->asBool(false));
+    ASSERT_TRUE(fake->waitForSentLines(3, std::chrono::milliseconds(5000)));
+    const auto lines = fake->sentLines();
+    EXPECT_EQ(lines[0], R"({"cmd":"comms_key","on":false,"slot":0})");
+    EXPECT_EQ(lines[1], R"({"cmd":"comms_key","on":true,"slot":"all"})");
+    EXPECT_EQ(lines[2], R"({"cmd":"comms_gain","db":-6})");
+
+    // Leave drops the report (a comms:null fact), so no stale key looks live.
+    (void)commsFacts(runtime);
+    (void)runtime.leave();
+    const auto facts = commsFacts(runtime);
+    ASSERT_EQ(facts.size(), 1u);
+    EXPECT_TRUE(facts[0].get("comms")->isNull());
+    EXPECT_FALSE(runtime.commsState().has_value());
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}

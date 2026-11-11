@@ -37,6 +37,9 @@ class CommandMailbox {
   static bool urgent(const Json& request) {
     const auto type = request.getString("type");
     if (type == "zoom-leave" || type == "zoom-cancel" || type == "zoom-stop-capture") return true;
+    // Comms talk keys: a key-up must never be refused for capacity.
+    if (type == "comms-key" || type == "comms-latch" || type == "comms-release-all" ||
+        type == "comms-private") return true;
     const auto* commands = request.get("commands");
     if (commands && commands->isArray()) {
       for (const auto& command : commands->asArray()) {

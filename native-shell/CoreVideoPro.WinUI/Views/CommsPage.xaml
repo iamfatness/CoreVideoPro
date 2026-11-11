@@ -1,0 +1,371 @@
+<!--
+  Comms: Zoom talkback from this app's own Zoom participant (docs/reference/comms-talkback.md).
+  Structure is the ZComms talkback station (owner 2026-11-09: "use the ZComms screen as the
+  model"): one grid of person cells where a cell IS a talk key, ALL CALL above it,
+  LATCH / EDIT TALENT / SETTINGS / LEAVE below, machine truth in lamps and a one-line ops
+  strip. Look is Pro's: StudioTheme tokens, Space Grotesk + IBM Plex Mono, OperatorTab
+  section borders and ghost buttons. On air = StudioAirBrush (Pro's on-air red).
+  Bound collections are synced in place (0xc000027b rules): cells and people change only on a
+  structure change, device pickers only when the device list changes.
+-->
+<UserControl
+    x:Class="CoreVideoPro.WinUI.Views.CommsPage"
+    x:Name="CommsRoot"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:CoreVideoPro.WinUI.Controls"
+    xmlns:conv="using:CoreVideoPro.WinUI.Converters"
+    xmlns:comms="using:CoreVideoPro.WinUI.ViewModels.Comms"
+    xmlns:views="using:CoreVideoPro.WinUI.Views"
+    IsTabStop="True"
+    UseSystemFocusVisuals="False">
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="ms-appx:///Views/OperatorTabResources.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <conv:CommsBrushConverter x:Key="CommsBrush" />
+
+            <Style x:Key="CommsLampDot" TargetType="Ellipse">
+                <Setter Property="Width" Value="8" />
+                <Setter Property="Height" Value="8" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+            </Style>
+            <Style x:Key="CommsToggleButton" TargetType="Button" BasedOn="{StaticResource OperatorGhostButton}">
+                <Setter Property="HorizontalAlignment" Value="Left" />
+                <Setter Property="MinWidth" Value="96" />
+            </Style>
+            <Style x:Key="CommsTalkKeyStyle" TargetType="controls:TalkKey">
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="VerticalContentAlignment" Value="Stretch" />
+                <Setter Property="BorderThickness" Value="2" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="Padding" Value="14,12" />
+                <Setter Property="MinHeight" Value="72" />
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid RowSpacing="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ================================================= status rail -->
+        <Grid Grid.Row="0" Padding="0,0,0,12" ColumnSpacing="16"
+              BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,0,0,1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Comms" Style="{StaticResource OperatorSectionTitle}" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.RailText, Mode=OneWay}" Style="{StaticResource StudioMonoValue}"
+                       Foreground="{StaticResource StudioTextSecondaryBrush}" VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis" />
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal" Spacing="6" ToolTipService.ToolTip="In the meeting"
+                            AutomationProperties.Name="LINK lamp" AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.LampLink), Mode=OneWay}">
+                    <Ellipse Style="{StaticResource CommsLampDot}" Fill="{x:Bind ViewModel.LampLink, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=lamp}" />
+                    <TextBlock Text="LINK" Style="{StaticResource StudioMonoTag}" VerticalAlignment="Center"
+                               Foreground="{x:Bind ViewModel.LampLink, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=lamp-text}" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="6"
+                            ToolTipService.ToolTip="This participant's meeting audio is open. Zoom delivers talkback only while it is."
+                            AutomationProperties.Name="Meeting mic lamp" AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.LampMic), Mode=OneWay}">
+                    <Ellipse Style="{StaticResource CommsLampDot}" Fill="{x:Bind ViewModel.LampMic, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=lamp}" />
+                    <TextBlock Text="MTG MIC" Style="{StaticResource StudioMonoTag}" VerticalAlignment="Center"
+                               Foreground="{x:Bind ViewModel.LampMic, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=lamp-text}" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="6" ToolTipService.ToolTip="At least one talkback channel is ready"
+                            AutomationProperties.Name="Channel lamp" AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.LampChannel), Mode=OneWay}">
+                    <Ellipse Style="{StaticResource CommsLampDot}" Fill="{x:Bind ViewModel.LampChannel, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=lamp}" />
+                    <TextBlock Text="CHANNEL" Style="{StaticResource StudioMonoTag}" VerticalAlignment="Center"
+                               Foreground="{x:Bind ViewModel.LampChannel, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=lamp-text}" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="6" ToolTipService.ToolTip="Sending to a channel someone is in"
+                            AutomationProperties.Name="TX lamp" AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.LampTx), Mode=OneWay}">
+                    <Ellipse Style="{StaticResource CommsLampDot}" Fill="{x:Bind ViewModel.LampTx, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=lamp}" />
+                    <TextBlock Text="TX" Style="{StaticResource StudioMonoTag}" VerticalAlignment="Center"
+                               Foreground="{x:Bind ViewModel.LampTx, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=lamp-text}" />
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+
+        <!-- ================================================= desk -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Padding="0,16,8,16" Spacing="12">
+
+                <StackPanel Visibility="{x:Bind ViewModel.NotInMeeting, Mode=OneWay}" Spacing="8" HorizontalAlignment="Center"
+                            Margin="0,48,0,0" MaxWidth="480">
+                    <TextBlock Text="Not in a meeting" Style="{StaticResource StudioSectionTitle}" HorizontalAlignment="Center" />
+                    <TextBlock Style="{StaticResource StudioBody}" TextAlignment="Center"
+                               Text="Join from the Zoom page. Talkback comes up once this account is in the meeting as host or co-host." />
+                </StackPanel>
+
+                <TextBlock Visibility="{x:Bind ViewModel.Waiting, Mode=OneWay}" Style="{StaticResource StudioBody}"
+                           HorizontalAlignment="Center" Margin="0,48,0,0"
+                           Text="Waiting for the Zoom engine's talkback report…" />
+
+                <StackPanel Visibility="{x:Bind ViewModel.Unavailable, Mode=OneWay}" Spacing="8" HorizontalAlignment="Center"
+                            Margin="0,48,0,0" MaxWidth="520">
+                    <FontIcon Glyph="&#xE7BA;" FontSize="20" Foreground="{StaticResource StudioWarningBrush}" HorizontalAlignment="Center" />
+                    <TextBlock Text="Talkback is not up" Style="{StaticResource StudioSectionTitle}" HorizontalAlignment="Center" />
+                    <TextBlock Text="{x:Bind ViewModel.UnavailableText, Mode=OneWay}" TextAlignment="Center" TextWrapping="WrapWholeWords" />
+                    <TextBlock Style="{StaticResource StudioBody}" TextAlignment="Center"
+                               Visibility="{x:Bind ViewModel.HostHintVisible, Mode=OneWay}"
+                               Text="Ask the meeting host to make this account host or co-host. Video keeps working meanwhile." />
+                </StackPanel>
+
+                <!-- ALL CALL -->
+                <controls:TalkKey x:Name="AllCallKey" Style="{StaticResource CommsTalkKeyStyle}" MinHeight="56"
+                                  Visibility="{x:Bind ViewModel.DeskVisible, Mode=OneWay}"
+                                  Background="{x:Bind ViewModel.AllTone, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=cell-bg}"
+                                  BorderBrush="{x:Bind ViewModel.AllTone, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=cell-border}"
+                                  Foreground="{x:Bind ViewModel.AllTone, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=cell-fg}"
+                                  Pressed="OnAllPressed" Released="OnAllReleased"
+                                  AutomationProperties.Name="{x:Bind ViewModel.AllText, Mode=OneWay}"
+                                  ToolTipService.ToolTip="Hold to talk to everyone on a channel (Space)">
+                    <TextBlock Text="{x:Bind ViewModel.AllText, Mode=OneWay}" Style="{StaticResource StudioMonoTag}" FontSize="13"
+                               CharacterSpacing="240" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Foreground="{x:Bind ViewModel.AllTone, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=cell-fg}" />
+                </controls:TalkKey>
+
+                <TextBlock Visibility="{x:Bind ViewModel.EmptyDeskVisible, Mode=OneWay}" Style="{StaticResource StudioBody}"
+                           HorizontalAlignment="Center" Margin="0,16" Text="{x:Bind ViewModel.EmptyDeskText, Mode=OneWay}" />
+
+                <!-- the grid: a cell IS a key -->
+                <ItemsRepeater x:Name="CellGrid" ItemsSource="{x:Bind ViewModel.Cells, Mode=OneWay}"
+                               Visibility="{x:Bind ViewModel.GridVisible, Mode=OneWay}">
+                    <ItemsRepeater.Layout>
+                        <UniformGridLayout MinItemWidth="200" MinItemHeight="72" MinRowSpacing="8" MinColumnSpacing="8"
+                                           ItemsStretch="Fill" />
+                    </ItemsRepeater.Layout>
+                    <ItemsRepeater.ItemTemplate>
+                        <DataTemplate x:DataType="comms:CommsCellViewModel">
+                            <controls:TalkKey Style="{StaticResource CommsTalkKeyStyle}" Tag="{x:Bind}"
+                                              Background="{x:Bind Tone, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=cell-bg}"
+                                              BorderBrush="{x:Bind Tone, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=cell-border}"
+                                              Pressed="OnCellPressed" Released="OnCellReleased"
+                                              AutomationProperties.Name="{x:Bind AutomationName, Mode=OneWay}">
+                                <Grid ColumnSpacing="8" RowSpacing="4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="{x:Bind Name, Mode=OneWay}" FontSize="14" FontWeight="SemiBold"
+                                               TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind Name, Mode=OneWay}"
+                                               Foreground="{x:Bind Tone, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=cell-fg}" />
+                                    <TextBlock Grid.Column="1" Text="{x:Bind KeyHint, Mode=OneWay}" Style="{StaticResource StudioMonoTag}"
+                                               Visibility="{x:Bind KeyHintVisible, Mode=OneWay}" ToolTipService.ToolTip="Digit key"
+                                               Foreground="{x:Bind Tone, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=cell-fg}" />
+                                    <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{x:Bind StateText, Mode=OneWay}"
+                                               FontFamily="{StaticResource StudioMonoFont}" FontSize="11" TextTrimming="CharacterEllipsis"
+                                               Foreground="{x:Bind Tone, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=cell-fg}" />
+                                </Grid>
+                            </controls:TalkKey>
+                        </DataTemplate>
+                    </ItemsRepeater.ItemTemplate>
+                </ItemsRepeater>
+
+                <!-- edit talent: one row per person, one chip per channel -->
+                <Border Style="{StaticResource OperatorSectionBorder}" Visibility="{x:Bind ViewModel.EditVisible, Mode=OneWay}">
+                    <StackPanel Spacing="4">
+                        <Grid>
+                            <TextBlock Text="TALENT" Style="{StaticResource StudioMonoLabel}" />
+                            <TextBlock Text="CHANNEL: CLICK A NUMBER TO PUT SOMEONE ON IT" Style="{StaticResource StudioMonoLabel}"
+                                       HorizontalAlignment="Right" />
+                        </Grid>
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.People, Mode=OneWay}">
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="comms:CommsPersonViewModel">
+                                    <Border BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,1,0,0" Padding="0,8,0,4">
+                                        <Grid ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Spacing="2" VerticalAlignment="Center">
+                                                <TextBlock Text="{x:Bind Name, Mode=OneWay}" TextTrimming="CharacterEllipsis"
+                                                           ToolTipService.ToolTip="{x:Bind Name, Mode=OneWay}" />
+                                                <TextBlock Style="{StaticResource StudioBody}" Visibility="{x:Bind NoTalkback, Mode=OneWay}"
+                                                           Text="On the Zoom web client. Ask them to rejoin in the Zoom desktop app." />
+                                            </StackPanel>
+                                            <ItemsRepeater Grid.Column="1" Width="560" ItemsSource="{x:Bind Chips, Mode=OneWay}"
+                                                           Visibility="{x:Bind Talkback, Mode=OneWay}">
+                                                <ItemsRepeater.Layout>
+                                                    <UniformGridLayout MinItemWidth="32" MinItemHeight="32" MinRowSpacing="4" MinColumnSpacing="4" />
+                                                </ItemsRepeater.Layout>
+                                                <ItemsRepeater.ItemTemplate>
+                                                    <DataTemplate x:DataType="comms:CommsChipViewModel">
+                                                        <Button Content="{x:Bind Text}" Command="{x:Bind Command}" Width="32" Height="32" Padding="0"
+                                                                CornerRadius="6" BorderThickness="1" FontFamily="{StaticResource StudioMonoFont}" FontSize="11"
+                                                                Background="{x:Bind On, Converter={StaticResource CommsBrush}, ConverterParameter=chip-bg}"
+                                                                Foreground="{x:Bind On, Converter={StaticResource CommsBrush}, ConverterParameter=chip-fg}"
+                                                                BorderBrush="{x:Bind Busy, Converter={StaticResource CommsBrush}, ConverterParameter=busy-border}"
+                                                                ToolTipService.ToolTip="{x:Bind Tip}" AutomationProperties.Name="{x:Bind Tip}" />
+                                                    </DataTemplate>
+                                                </ItemsRepeater.ItemTemplate>
+                                            </ItemsRepeater>
+                                            <Border Grid.Column="1" Visibility="{x:Bind NoTalkback, Mode=OneWay}" Padding="8,4"
+                                                    CornerRadius="6" Background="{StaticResource StudioSurfaceBrush}" VerticalAlignment="Center">
+                                                <TextBlock Text="NO TALKBACK" Style="{StaticResource StudioMonoTag}"
+                                                           Foreground="{StaticResource StudioTextSecondaryBrush}" />
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+                    </StackPanel>
+                </Border>
+
+                <TextBlock Visibility="{x:Bind ViewModel.DeskVisible, Mode=OneWay}" Style="{StaticResource OperatorSummary}"
+                           HorizontalAlignment="Center"
+                           Text="Hold a cell to talk · 1–9 key the first nine · Space = ALL CALL · LATCH makes presses stick" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ================================================= settings drawer -->
+        <Border Grid.Row="2" Style="{StaticResource OperatorSectionBorder}" Margin="0,0,0,8"
+                Visibility="{x:Bind ViewModel.SettingsOpen, Mode=OneWay}">
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="6">
+                    <TextBlock Text="MICROPHONE" Style="{StaticResource StudioMonoLabel}" />
+                    <ComboBox x:Name="MicPicker" ItemsSource="{x:Bind ViewModel.Mics, Mode=OneWay}"
+                              SelectedItem="{x:Bind ViewModel.SelectedMic, Mode=OneWay}" SelectionChanged="OnMicChosen"
+                              HorizontalAlignment="Stretch" AutomationProperties.Name="Talkback microphone" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="6">
+                    <TextBlock Text="SIDETONE OUTPUT" Style="{StaticResource StudioMonoLabel}" />
+                    <ComboBox x:Name="OutputPicker" ItemsSource="{x:Bind ViewModel.Outputs, Mode=OneWay}"
+                              SelectedItem="{x:Bind ViewModel.SelectedOutput, Mode=OneWay}" SelectionChanged="OnOutputChosen"
+                              HorizontalAlignment="Stretch" AutomationProperties.Name="Sidetone output" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="6">
+                    <TextBlock Text="PROCESSING" Style="{StaticResource StudioMonoLabel}" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="Sidetone" Style="{StaticResource CommsToggleButton}" Command="{x:Bind ViewModel.SidetoneCommand}"
+                                Background="{x:Bind ViewModel.SidetoneOn, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-bg}"
+                                BorderBrush="{x:Bind ViewModel.SidetoneOn, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-border}"
+                                AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.SidetoneOn), Mode=OneWay}"
+                                ToolTipService.ToolTip="Hear your own voice in the sidetone output" />
+                        <Button Content="Tone" Style="{StaticResource CommsToggleButton}" Command="{x:Bind ViewModel.ToneCommand}"
+                                Background="{x:Bind ViewModel.ToneOn, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-bg}"
+                                BorderBrush="{x:Bind ViewModel.ToneOn, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-border}"
+                                AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.ToneOn), Mode=OneWay}"
+                                ToolTipService.ToolTip="Replace the microphone with a 700 Hz tone through the whole live chain" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Button Content="−" Style="{StaticResource OperatorGhostButton}" MinWidth="40" HorizontalAlignment="Left"
+                                Command="{x:Bind ViewModel.GainDownCommand}" AutomationProperties.Name="Gain down" />
+                        <TextBlock Text="{x:Bind ViewModel.GainText, Mode=OneWay}" Style="{StaticResource StudioMonoValue}" MinWidth="56"
+                                   TextAlignment="Center" VerticalAlignment="Center" />
+                        <Button Content="+" Style="{StaticResource OperatorGhostButton}" MinWidth="40" HorizontalAlignment="Left"
+                                Command="{x:Bind ViewModel.GainUpCommand}" AutomationProperties.Name="Gain up" />
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Grid.Column="3" Spacing="2" MinWidth="200">
+                    <TextBlock Text="STATION" Style="{StaticResource StudioMonoLabel}" />
+                    <Grid><TextBlock Text="Frames sent" Style="{StaticResource StudioBody}" />
+                        <TextBlock Text="{x:Bind ViewModel.FramesSent, Mode=OneWay}" Style="{StaticResource StudioMonoValue}" HorizontalAlignment="Right" /></Grid>
+                    <Grid><TextBlock Text="Channel sends" Style="{StaticResource StudioBody}" />
+                        <TextBlock Text="{x:Bind ViewModel.ChannelSends, Mode=OneWay}" Style="{StaticResource StudioMonoValue}" HorizontalAlignment="Right" /></Grid>
+                    <Grid><TextBlock Text="Underruns" Style="{StaticResource StudioBody}" />
+                        <TextBlock Text="{x:Bind ViewModel.Underruns, Mode=OneWay}" Style="{StaticResource StudioMonoValue}" HorizontalAlignment="Right" /></Grid>
+                    <Grid><TextBlock Text="Send errors" Style="{StaticResource StudioBody}" />
+                        <TextBlock Text="{x:Bind ViewModel.SendErrors, Mode=OneWay}" Style="{StaticResource StudioMonoValue}" HorizontalAlignment="Right"
+                                   Foreground="{x:Bind ViewModel.SendErrorsWarn, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=warn-text}" /></Grid>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ================================================= strip -->
+        <Grid Grid.Row="3" Padding="0,10" ColumnSpacing="8" Visibility="{x:Bind ViewModel.DeskVisible, Mode=OneWay}"
+              BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,1,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Latch" Style="{StaticResource CommsToggleButton}" Command="{x:Bind ViewModel.ToggleLatchModeCommand}"
+                        Background="{x:Bind ViewModel.LatchMode, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-bg}"
+                        BorderBrush="{x:Bind ViewModel.LatchMode, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-border}"
+                        AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.LatchMode), Mode=OneWay}"
+                        ToolTipService.ToolTip="Presses toggle a channel on and off instead of talking while held" />
+                <Button Content="Edit talent" Style="{StaticResource CommsToggleButton}" Command="{x:Bind ViewModel.ToggleEditCommand}"
+                        Background="{x:Bind ViewModel.EditMode, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-bg}"
+                        BorderBrush="{x:Bind ViewModel.EditMode, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-border}"
+                        AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.EditMode), Mode=OneWay}" />
+                <Button Content="Settings" Style="{StaticResource CommsToggleButton}" Command="{x:Bind ViewModel.ToggleSettingsCommand}"
+                        Background="{x:Bind ViewModel.SettingsOpen, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-bg}"
+                        BorderBrush="{x:Bind ViewModel.SettingsOpen, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-border}"
+                        AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.SettingsOpen), Mode=OneWay}" />
+                <Button Content="Private comms" Style="{StaticResource CommsToggleButton}" Command="{x:Bind ViewModel.TogglePrivateCommand}"
+                        Background="{x:Bind ViewModel.PrivatePreference, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-bg}"
+                        BorderBrush="{x:Bind ViewModel.PrivatePreference, Mode=OneWay, Converter={StaticResource CommsBrush}, ConverterParameter=toggle-border}"
+                        AutomationProperties.ItemStatus="{x:Bind views:CommsPage.OnOff(ViewModel.PrivatePreference), Mode=OneWay}"
+                        ToolTipService.ToolTip="{x:Bind ViewModel.PrivateHint, Mode=OneWay}" />
+                <Button Content="Leave" Style="{StaticResource CommsToggleButton}" Command="{x:Bind LeaveCommand, Mode=OneWay}"
+                        ToolTipService.ToolTip="Leave the meeting (video too)" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="8"
+                        AutomationProperties.Name="{x:Bind ViewModel.MicLevelName, Mode=OneWay}"
+                        ToolTipService.ToolTip="{x:Bind ViewModel.MicLevelName, Mode=OneWay}">
+                <TextBlock Text="MIC" Style="{StaticResource StudioMonoLabel}" VerticalAlignment="Center" />
+                <ItemsRepeater ItemsSource="{x:Bind ViewModel.Meter, Mode=OneWay}" VerticalAlignment="Center">
+                    <ItemsRepeater.Layout>
+                        <StackLayout Orientation="Horizontal" Spacing="2" />
+                    </ItemsRepeater.Layout>
+                    <ItemsRepeater.ItemTemplate>
+                        <DataTemplate x:DataType="comms:CommsMeterSegment">
+                            <Border Width="6" Height="16" CornerRadius="1"
+                                    Background="{x:Bind Tone, Converter={StaticResource CommsBrush}, ConverterParameter=meter}"
+                                    Opacity="{x:Bind views:CommsPage.SegmentOpacity(Lit), Mode=OneWay}" />
+                        </DataTemplate>
+                    </ItemsRepeater.ItemTemplate>
+                </ItemsRepeater>
+            </StackPanel>
+        </Grid>
+
+        <!-- ================================================= ops strip: latest event, click for history -->
+        <Button Grid.Row="4" Style="{StaticResource StudioGhostButton}" CornerRadius="0" BorderThickness="0,1,0,0"
+                HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="0,6" MinHeight="32"
+                Command="{x:Bind ViewModel.ToggleOpsCommand}"
+                AutomationProperties.Name="Comms event log" ToolTipService.ToolTip="Click for the event history">
+            <StackPanel Spacing="2">
+                <TextBlock Text="{x:Bind ViewModel.Error, Mode=OneWay}" Visibility="{x:Bind ViewModel.ErrorVisible, Mode=OneWay}"
+                           Foreground="{StaticResource StudioAirBrush}" TextWrapping="Wrap" FontWeight="Normal" FontSize="12" />
+                <TextBlock Text="{x:Bind ViewModel.OpsLine, Mode=OneWay}" Visibility="{x:Bind ViewModel.OpsLineVisible, Mode=OneWay}"
+                           FontFamily="{StaticResource StudioMonoFont}" FontSize="11" FontWeight="Normal"
+                           Foreground="{StaticResource StudioTextSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                <ScrollViewer MaxHeight="180" Visibility="{x:Bind ViewModel.OpsOpen, Mode=OneWay}">
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.OpsLines, Mode=OneWay}">
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="comms:CommsOpsEntry">
+                                <TextBlock Text="{x:Bind Text}" FontFamily="{StaticResource StudioMonoFont}" FontSize="11" FontWeight="Normal"
+                                           Foreground="{StaticResource StudioTextSecondaryBrush}" TextWrapping="Wrap" />
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                </ScrollViewer>
+            </StackPanel>
+        </Button>
+    </Grid>
+</UserControl>
