@@ -9,7 +9,7 @@ param([Parameter(Mandatory=$true)][string]$Installer,
 $ErrorActionPreference = 'Stop'
 $installerPath = (Resolve-Path -LiteralPath $Installer).Path
 $releaseId = [IO.Path]::GetFileNameWithoutExtension($installerPath).Replace('CoreVideoPro-Setup-', '')
-if ($releaseId -notmatch '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { throw 'Unexpected installer name.' }
+if ($releaseId -notmatch '^(?:(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+|v[0-9]+\.[0-9]+\.[0-9]+)$') { throw 'Unexpected installer name.' }
 $registryPath = "HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall/CoreVideoPro-$releaseId"
 $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) "CoreVideo Pro $releaseId.lnk"
 $startFolder = Join-Path ([Environment]::GetFolderPath('Programs')) "CoreVideo Pro $releaseId"

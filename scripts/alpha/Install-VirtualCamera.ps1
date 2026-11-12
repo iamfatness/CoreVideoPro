@@ -70,7 +70,7 @@ function Get-InstallerLogIdentity {
     $marker = Join-Path $app '.corevideo-prerelease-install'
     if (Test-Path -LiteralPath $marker -PathType Leaf) {
         $release = (Get-Content -LiteralPath $marker -Raw).Trim()
-        if ($release -match '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { return $release }
+        if ($release -match '^(?:(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+|v[0-9]+\.[0-9]+\.[0-9]+)$') { return $release }
     }
     $leaf = [IO.Path]::GetFileName($app)
     if ($leaf -match '^[a-zA-Z0-9._-]+$') { return $leaf }

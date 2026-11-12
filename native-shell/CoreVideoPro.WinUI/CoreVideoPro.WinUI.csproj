@@ -13,12 +13,12 @@
     <!-- None = unpackaged dev/launch; override with -p:WindowsPackageType=MSIX for demo MSIX packs -->
     <WindowsPackageType>None</WindowsPackageType>
     <ApplicationTitle>CoreVideo Pro</ApplicationTitle>
-    <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
+    <ApplicationDisplayVersion>1.0.0</ApplicationDisplayVersion>
     <!-- Stamp the assembly with the same display version so the unpackaged
          shell (WindowsPackageType=None) can report its real version to the D4
          update check; packaged runs read the package identity instead. -->
     <Version>$(ApplicationDisplayVersion)</Version>
-    <ApplicationVersion>100</ApplicationVersion>
+    <ApplicationVersion>10000</ApplicationVersion>
     <EnableMsixTooling>true</EnableMsixTooling>
     <AppxPackageSigningEnabled Condition="'$(WindowsPackageType)' == 'MSIX'">false</AppxPackageSigningEnabled>
     <GenerateAppxPackageOnBuild Condition="'$(WindowsPackageType)' == 'MSIX'">true</GenerateAppxPackageOnBuild>

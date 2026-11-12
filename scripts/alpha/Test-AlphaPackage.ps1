@@ -4,11 +4,11 @@ $ErrorActionPreference = 'Stop'
 $nodePin = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'node-runtime.json') -Raw | ConvertFrom-Json
 $path = (Resolve-Path -LiteralPath $Archive).Path
 $archiveName = [IO.Path]::GetFileNameWithoutExtension($path)
-if ($archiveName -notmatch '^CoreVideoPro-win-x64-((alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+)$') {
+if ($archiveName -notmatch '^CoreVideoPro-win-x64-((?:(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+|v[0-9]+\.[0-9]+\.[0-9]+))$') {
     throw 'Unexpected prerelease archive name.'
 }
 $releaseId = $Matches[1]
-$channel = $Matches[2].ToLowerInvariant()
+$channel = if ($releaseId.StartsWith('v')) { 'release' } else { $Matches[2].ToLowerInvariant() }
 $channelTitle = (Get-Culture).TextInfo.ToTitleCase($channel)
 $expected = ((Get-Content -LiteralPath ($path + '.sha256') -Raw).Trim() -split '\s+')[0]
 if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected) { throw 'Package checksum mismatch.' }

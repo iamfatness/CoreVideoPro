@@ -113,7 +113,7 @@ function Get-PreviousInstallationPlan {
         throw 'New installation is not committed; previous installations must remain.'
     }
     foreach ($key in Get-ChildItem -LiteralPath $RegistryRoot) {
-        if ($key.PSChildName -notmatch '^CoreVideoPro-((alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+)$') { continue }
+        if ($key.PSChildName -notmatch '^CoreVideoPro-((?:(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+|v[0-9]+\.[0-9]+\.[0-9]+))$') { continue }
         $id = $Matches[1]
         if ($id -eq $currentId) { continue }
         $app = Join-Path $root $id
@@ -172,7 +172,7 @@ function Get-OwnedInstallMetadataNames {
         '.corevideo-prerelease-install', 'build-manifest.json', 'previous-installations-cleanup.json')
 }
 
-$script:ReleaseIdPattern = '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$'
+$script:ReleaseIdPattern = '^(?:(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+|v[0-9]+\.[0-9]+\.[0-9]+)$'
 $script:RuntimeFilePattern = '^(ffmpeg\.exe|(?:avcodec|avdevice|avfilter|avformat|avutil|swscale|swresample)-[0-9]+\.dll|notices/ffmpeg/(?:LICENSE[^/]*|COPYING[^/]*|NOTICE[^/]*|README[^/]*|download-provenance\.txt|installed-files\.txt))$'
 
 # Residual version folders: direct children of the install root that look like a release,

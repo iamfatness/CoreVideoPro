@@ -37,8 +37,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:BETA_TAG -notmatch '^beta-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-f0-9]{7}$' -or
+          # A stable release (vX.Y.Z) is qualified the same way as a beta; only its payload root differs.
+          if ($env:BETA_TAG -notmatch '^(beta-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-f0-9]{7}|v[0-9]+\.[0-9]+\.[0-9]+)$' -or
               $env:BETA_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Invalid beta identity.' }
+          $payloadRoot = if ($env:BETA_TAG.StartsWith('v')) { 'CoreVideoPro-Release' } else { 'CoreVideoPro-Beta' }
+          Add-Content $env:GITHUB_ENV "PAYLOAD_ROOT=$payloadRoot"
           if ((git rev-parse HEAD).Trim() -ne $env:BETA_COMMIT) { throw 'Checkout identity mismatch.' }
           $release = gh release view $env:BETA_TAG --repo $env:GITHUB_REPOSITORY --json tagName,targetCommitish,isDraft | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $release.targetCommitish -ne $env:BETA_COMMIT -or
@@ -69,8 +72,8 @@ jobs:
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $archive))
           try {
-            $node = $zip.GetEntry('CoreVideoPro-Beta/node/node.exe')
-            if (-not $node) { throw 'Archive entry CoreVideoPro-Beta/node/node.exe not found; entry names must use forward slashes (#1047).' }
+            $node = $zip.GetEntry("$env:PAYLOAD_ROOT/node/node.exe")
+            if (-not $node) { throw "Archive entry $env:PAYLOAD_ROOT/node/node.exe not found; entry names must use forward slashes (#1047)." }
             [IO.Compression.ZipFileExtensions]::ExtractToFile($node, (Join-Path $PWD 'artifacts/beta-package/node.exe'))
           } finally { $zip.Dispose() }
           & scripts/alpha/Test-AlphaNodePackaging.ps1 -NodeExe artifacts/beta-package/node.exe
@@ -121,7 +124,7 @@ jobs:
           $installerLogs = Join-Path $env:LOCALAPPDATA 'CoreVideoPro/installer-logs'
           if (Test-Path $installerLogs) { Copy-Item $installerLogs (Join-Path $work 'installer-logs') -Recurse }
           Expand-Archive "artifacts/beta-package/CoreVideoPro-win-x64-$env:BETA_TAG.zip" (Join-Path $work 'payload')
-          $app = Join-Path $work 'payload/CoreVideoPro-Beta'
+          $app = Join-Path $work "payload/$env:PAYLOAD_ROOT"
           # NSIS is 32-bit: reproduce its actual PowerShell host on the disposable
           # runner and retain stdout/stderr that the rolled-back UI cannot show.
           $hostPath = Join-Path $env:WINDIR 'SysWOW64/WindowsPowerShell/v1.0/powershell.exe'

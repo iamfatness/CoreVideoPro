@@ -8,8 +8,9 @@ param(
     [string]$NodeExe = ''
 )
 $ErrorActionPreference = 'Stop'
-if ($ReleaseId -notmatch '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { throw 'Use alpha-YYYY-MM-DD-build or beta-YYYY-MM-DD-build as ReleaseId.' }
-$channel = $Matches[1].ToLowerInvariant()
+if ($ReleaseId -notmatch '^(?:(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+|v[0-9]+\.[0-9]+\.[0-9]+)$') { throw 'Use alpha-YYYY-MM-DD-build, beta-YYYY-MM-DD-build or vMAJOR.MINOR.PATCH (a stable release) as ReleaseId.' }
+# A stable release (vX.Y.Z) is the "release" channel; prereleases carry their channel in the ID.
+$channel = if ($ReleaseId.StartsWith('v')) { 'release' } else { $Matches[1].ToLowerInvariant() }
 $channelTitle = (Get-Culture).TextInfo.ToTitleCase($channel)
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $publish = (Resolve-Path -LiteralPath $PublishDirectory).Path
@@ -107,7 +108,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'alpha/Install-MediaRuntime.ps1'
 foreach ($helper in @('Install-VirtualCamera.ps1','VirtualCameraRegistration.psm1','CameraUserSession.ps1','Remove-OwnedShortcuts.ps1','Install-CrashDumps.ps1','Refresh-FrameServer.ps1','Remove-PreviousInstallations.ps1','PreviousInstallations.psm1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "alpha/$helper") -Destination $app
 }
-$testerGuide = if ($channel -eq 'beta') { 'docs/beta-tester-guide.md' } else { 'docs/alpha-tester-guide.md' }
+$testerGuide = switch ($channel) { 'release' { 'docs/release-guide.md' } 'beta' { 'docs/beta-tester-guide.md' } default { 'docs/alpha-tester-guide.md' } }
 Copy-Item -LiteralPath (Join-Path $repoRoot $testerGuide) -Destination (Join-Path $app 'README.md')
 $notices = Join-Path $app 'notices'
 New-Item -ItemType Directory -Path $notices -Force | Out-Null

@@ -57,7 +57,7 @@ function Test-OwnedLegacyCamera {
     $marker = Join-Path $directory '.corevideo-prerelease-install'
     if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $false }
     $release = (Get-Content -LiteralPath $marker -Raw).Trim()
-    if ($release -notmatch '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { return $false }
+    if ($release -notmatch '^(?:(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+|v[0-9]+\.[0-9]+\.[0-9]+)$') { return $false }
     if ($OwnerSid -notmatch '^S-1-5-21-[0-9]+-[0-9]+-[0-9]+-[0-9]+$') { return $false }
     $user = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::Users, [Microsoft.Win32.RegistryView]::Registry64)
     try {
