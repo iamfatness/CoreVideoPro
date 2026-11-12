@@ -108,6 +108,15 @@ try {
     Assert (($plan | Where-Object directory -eq $linked).status -eq 'retained') 'Junction candidate accepted.'
     Assert (Test-Path (Join-Path $current 'app.exe')) 'Junction test altered current install.'
 
+    # A stable release (vX.Y.Z) retires beta installs, and a later beta retires the release.
+    $stable = New-Fixture 'v1.0.0'
+    $stableArguments = @{CurrentDirectory=$stable;InstallRoot=$fixtureRoot;RegistryRoot=$registryRoot;RunningPaths=@()}
+    $stablePlan = @(Get-PreviousInstallationPlan @stableArguments)
+    Assert (($stablePlan | Where-Object directory -eq $current).status -eq 'ready') 'Stable release did not plan to retire a beta install.'
+    Assert (-not ($stablePlan | Where-Object directory -eq $stable)) 'Stable release planned to retire itself.'
+    $betaPlan = @(Get-PreviousInstallationPlan @arguments)
+    Assert (($betaPlan | Where-Object directory -eq $stable).status -eq 'ready') 'A beta install did not plan to retire the stable release.'
+
     Remove-Item -LiteralPath (Join-Path $current '.corevideo-prerelease-install')
     $refused = $false
     try { Get-PreviousInstallationPlan @arguments | Out-Null } catch { $refused = $true }

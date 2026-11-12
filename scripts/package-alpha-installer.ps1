@@ -19,7 +19,7 @@ if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notm
 }
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $archiveName = [IO.Path]::GetFileNameWithoutExtension($archivePath)
-if ($archiveName -notmatch '^CoreVideoPro-win-x64-((alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+)$') { throw 'Unexpected prerelease archive name.' }
+if ($archiveName -notmatch '^CoreVideoPro-win-x64-((?:(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+|v[0-9]+\.[0-9]+\.[0-9]+))$') { throw 'Unexpected prerelease archive name.' }
 $archiveReleaseId = $Matches[1]
 # Cheap preconditions first, so a refusal never stages 600 MB or leaves directories behind.
 $output = Join-Path (Split-Path -Parent $archivePath) "CoreVideoPro-Setup-$archiveReleaseId.exe"
@@ -50,15 +50,18 @@ if ($longest -and $longest.FullName.Length -gt $MaxStagedPathLength) {
     throw "Staged path is $($longest.FullName.Length) characters (limit $MaxStagedPathLength); NSIS would fail to open it. Use a shorter -StagingRoot. Offending path: $($longest.FullName)"
 }
 Write-Host "Longest staged path: $($longest.FullName.Length) characters"
-$payload = @(Get-ChildItem -LiteralPath $work -Directory | Where-Object { $_.Name -match '^CoreVideoPro-(Alpha|Beta)$' })
-if ($payload.Count -ne 1) { throw 'Archive must contain exactly one CoreVideoPro Alpha or Beta payload root.' }
+$payload = @(Get-ChildItem -LiteralPath $work -Directory | Where-Object { $_.Name -match '^CoreVideoPro-(Alpha|Beta|Release)$' })
+if ($payload.Count -ne 1) { throw 'Archive must contain exactly one CoreVideoPro Alpha, Beta or Release payload root.' }
 $payload = $payload[0].FullName
 $manifest = Get-Content -LiteralPath (Join-Path $payload 'build-manifest.json') -Raw | ConvertFrom-Json
 $releaseId = $manifest.releaseId
-if ($releaseId -notmatch '^(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+$') { throw 'Invalid release ID.' }
+if ($releaseId -notmatch '^(?:(alpha|beta)-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+|v[0-9]+\.[0-9]+\.[0-9]+)$') { throw 'Invalid release ID.' }
 if ($releaseId -ne $archiveReleaseId) { throw 'Manifest release ID does not match the archive name.' }
-$channel = $Matches[1].ToLowerInvariant()
+$channel = if ($releaseId.StartsWith('v')) { 'release' } else { $Matches[1].ToLowerInvariant() }
 $channelTitle = (Get-Culture).TextInfo.ToTitleCase($channel)
+# A stable release reads as plain "CoreVideo Pro" with its semantic version; prereleases keep 0.1.0.0.
+$productName = if ($channel -eq 'release') { 'CoreVideo Pro' } else { "CoreVideo Pro $channelTitle" }
+$productVersion = if ($channel -eq 'release') { $releaseId.Substring(1) + '.0' } else { '0.1.0.0' }
 if ((Split-Path -Leaf $payload) -ne "CoreVideoPro-$channelTitle") { throw 'Payload root does not match the manifest channel.' }
 $redistVersion = [version]((Get-Item -LiteralPath $redistPath).VersionInfo.FileVersion -replace '[^0-9.].*$', '')
 if ($redistVersion -lt [version]$manifest.vcRuntimeVersion) { throw 'VC redistributable is older than the packaged native runtime.' }
@@ -87,6 +90,8 @@ $defines = @(
     '!define RELEASE_ID "' + $releaseId + '"'
     '!define CHANNEL "' + $channel + '"'
     '!define CHANNEL_TITLE "' + $channelTitle + '"'
+    '!define PRODUCT_NAME "' + $productName + '"'
+    '!define PRODUCT_VERSION "' + $productVersion + '"'
     '!define PAYLOAD "' + (Escape-Nsis $payload) + '"'
     '!define OUTPUT "' + (Escape-Nsis $output) + '"'
     '!define VC_REDIST "' + (Escape-Nsis $redistPath) + '"'

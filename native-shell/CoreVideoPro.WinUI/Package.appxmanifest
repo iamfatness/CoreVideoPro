@@ -9,7 +9,7 @@
   <Identity
     Name="CoreVideoPro.WinUI"
     Publisher="CN=CoreVideo Pro Dev"
-    Version="0.1.0.0" />
+    Version="1.0.0.0" />
 
   <Properties>
     <DisplayName>CoreVideo Pro</DisplayName>

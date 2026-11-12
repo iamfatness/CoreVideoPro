@@ -53,3 +53,26 @@ control API, sends no input, and checks four things in a real meeting:
 - talking causes no subscription churn, meters are live, and the snapshot is fresh.
 
 Run it on the previous build first, then on the new one.
+
+## Stable releases (`vX.Y.Z`, first cut v1.0.0 on 2026-11-11)
+
+A stable release uses this same local, unsigned path with a semantic-version ID instead of a
+dated beta ID. Owner ruling 2026-11-11: ship 1.0 unsigned now and sign in a later patch once a
+certificate exists.
+
+- Bump first: `npm run bump:version -- <major|minor|patch>` sets `package.json`, the csproj
+  `ApplicationDisplayVersion` and the appxmanifest identity (the shell's file and product
+  version), and rolls `CHANGELOG.md`. Merge that to main, then build and package from the merged
+  commit so `sourceCommit`, `applicationCommit` and `packagingCommit` all name the tag commit.
+- `scripts/package-alpha.ps1 -ReleaseId v1.0.0 …`: the ID `vX.Y.Z` selects the **release**
+  channel. The payload root is `CoreVideoPro-Release`, the packaged README is
+  `docs/release-guide.md`, the installer's product name is plain "CoreVideo Pro" with file
+  version `X.Y.Z.0`, and its pages drop the "rehearsals and testing" wording while still saying
+  the app is not code-signed. Every script that validates a release ID (packaging, installer
+  test, camera registration, previous-install retirement) accepts both forms, so installing a
+  release retires beta installs and a later beta retires the release.
+- `Beta package qualification` accepts a `vX.Y.Z` tag; publish with `gh release create <tag>
+  --latest --target <sha>` (not `--prerelease`).
+- **Pushing a `v*` tag also starts `release.yml`**, the signed MSIX pipeline. Without signing
+  secrets and `ZOOM_SDK_URL` it fails by design, never silently. Cancel that run and say why in
+  the release notes until signing exists.

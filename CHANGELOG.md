@@ -8,6 +8,12 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- 
+
+## [1.0.0] - 2026-11-11
+
+### Added
+
 - **NDI output independent of streaming.** NDI has its own on/off (`NdiOutputEnabled`, preferences
   v16; the old stream NDI tick does not carry over), a Studio footer tile and a Settings switch,
   and runs without Stream or Record. Stream validation, start proof, readout and the close guard

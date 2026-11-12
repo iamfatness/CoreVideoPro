@@ -16,8 +16,9 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 Icon "${PAYLOAD}\Assets\AppIcon.ico"
 UninstallIcon "${PAYLOAD}\Assets\AppIcon.ico"
-VIProductVersion "0.1.0.0"
-VIAddVersionKey /LANG=1033 "ProductName" "CoreVideo Pro ${CHANNEL_TITLE}"
+VIProductVersion "${PRODUCT_VERSION}"
+VIAddVersionKey /LANG=1033 "ProductName" "${PRODUCT_NAME}"
+VIAddVersionKey /LANG=1033 "ProductVersion" "${PRODUCT_VERSION}"
 VIAddVersionKey /LANG=1033 "FileDescription" "CoreVideo Pro ${RELEASE_ID} Setup"
 VIAddVersionKey /LANG=1033 "FileVersion" "${RELEASE_ID}"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "CoreVideo Pro"
@@ -29,10 +30,17 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "CoreVideo Pro"
 ; fix. Beta testers will do exactly the same. The version-named shortcut stays,
 ; but only in the Start menu.
 !define STABLE_SHORTCUT_NAME "CoreVideo Pro"
-!define MUI_WELCOMEPAGE_TEXT "Install this Windows ${CHANNEL} for your account.$\r$\n$\r$\nThe app is unsigned. Use it for rehearsals and testing before an irreplaceable production.$\r$\n$\r$\nSetup requests administrator approval for the virtual camera, for Windows crash-dump settings (so crashes can be diagnosed) and, if needed, Microsoft's VC runtime. You may be asked more than once. To load the new camera, Setup may restart the Windows camera service: close apps that use a camera first. First app launch downloads its verified media runtime. Close this version before uninstalling."
+!if "${CHANNEL}" == "release"
+!define WELCOME_INTRO "Install CoreVideo Pro ${RELEASE_ID} for your account.$\r$\n$\r$\nThis release is not yet code-signed, so Windows may show an unknown-publisher warning.$\r$\n$\r$\n"
+!define FINISH_CHANNEL_NOTE ""
+!else
+!define WELCOME_INTRO "Install this Windows ${CHANNEL} for your account.$\r$\n$\r$\nThe app is unsigned. Use it for rehearsals and testing before an irreplaceable production.$\r$\n$\r$\n"
+!define FINISH_CHANNEL_NOTE " This ${CHANNEL} is for testing and feedback."
+!endif
+!define MUI_WELCOMEPAGE_TEXT "${WELCOME_INTRO}Setup requests administrator approval for the virtual camera, for Windows crash-dump settings (so crashes can be diagnosed) and, if needed, Microsoft's VC runtime. You may be asked more than once. To load the new camera, Setup may restart the Windows camera service: close apps that use a camera first. First app launch downloads its verified media runtime. Close this version before uninstalling."
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_TEXT "CoreVideo Pro is installed. Open its desktop or Start menu shortcut to begin.$\r$\n$\r$\nFirst launch requires internet access to download the verified media runtime. This ${CHANNEL} is for testing and feedback.$\r$\n$\r$\nUninstall removes delivered files and shortcuts, while preserving settings, recordings, and downloaded media."
+!define MUI_FINISHPAGE_TEXT "CoreVideo Pro is installed. Open its desktop or Start menu shortcut to begin.$\r$\n$\r$\nFirst launch requires internet access to download the verified media runtime.${FINISH_CHANNEL_NOTE}$\r$\n$\r$\nUninstall removes delivered files and shortcuts, while preserving settings, recordings, and downloaded media."
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
