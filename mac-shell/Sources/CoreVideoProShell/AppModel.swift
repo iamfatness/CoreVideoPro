@@ -589,7 +589,27 @@ final class AppModel: ObservableObject {
         lastSavedPrefs = prefs
     }
 
+    /// True once start() has run its setup. start() is reached from the main
+    /// window's .onAppear, and a second main-window view (File > New Window, or a
+    /// Dock reopen after the main window was closed) would otherwise re-restore
+    /// prefs over live state, add a second autosave timer and launch a second core
+    /// while orphaning the first. Everything start() sets up happens once per process.
+    private(set) var didStart = false
+    /// Test seam: replaces start()'s setup body so the once-only gate can be
+    /// exercised without launching a core or reading the operator's files.
+    var startBodyForTesting: (() -> Void)?
+
     func start() {
+        guard !didStart else {
+            ShellLog.write("start: already started; ignoring repeat call from a new main-window view")
+            return
+        }
+        didStart = true
+        if let body = startBodyForTesting { body(); return }
+        performStart()
+    }
+
+    private func performStart() {
         refreshMediaBin()
         restorePrefs()
         // Local control API (Companion / Stream Deck): 127.0.0.1:8011 by default.

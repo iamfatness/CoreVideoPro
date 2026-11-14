@@ -1570,6 +1570,23 @@ enum ShellTests {
     }
 
 
+    /// File > New Window and Dock-reopen after closing the main window both mint a
+    /// new main-window view whose .onAppear calls start() again. A second run
+    /// re-restored prefs over live state, doubled the autosave timer and launched a
+    /// second core, orphaning the first (possibly mid-recording). Everything start()
+    /// sets up must happen exactly once per process.
+    @MainActor
+    private static func testStartRunsItsSetupExactlyOncePerProcess() {
+        let model = AppModel()
+        var runs = 0
+        model.startBodyForTesting = { runs += 1 }
+        model.start()
+        model.start()
+        model.start()
+        expectEqual(runs, 1, "start() runs its setup (prefs restore, timers, bridge launch) once")
+        expect(model.didStart, "the model records that it has started")
+    }
+
     private static func testBridgeAppExitClosesStdinAndGivesTheCoreAGraceBeforeTerminating() {
         // /bin/cat exits on stdin EOF, like the core (it finalizes on EOF).
         let polite = MediaCoreBridge(corePath: "/bin/cat", environmentExtras: [:])
@@ -2709,6 +2726,8 @@ enum ShellTests {
             ("control/server-auth-wire", testControlServerAuthOverTheWire),
             ("control/server-real-model", testControlServerDrivesTheRealModel),
             ("control/state-stream-throttle", testControlStateStreamIsAThrottleNotADebounce),
+            ("control/state-stream-event-tracking", testControlStateStreamDeliversDuringEventTracking),
+            ("lifecycle/start-is-idempotent", testStartRunsItsSetupExactlyOncePerProcess),
             ("control/ws-origin-rule", testControlWebSocketOriginRule),
             ("control/ws-slow-client-dropped", testControlSlowWebSocketClientIsDropped),
         ]

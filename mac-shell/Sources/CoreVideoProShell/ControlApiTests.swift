@@ -776,6 +776,28 @@ extension ShellTests {
         sink.cancel()
     }
 
+    /// Menu tracking, live resize and the .terminateLater quit window run the main
+    /// run loop in a NON-default mode. RunLoop.main as a Combine scheduler only fires
+    /// in .default, so WebSocket feedback froze exactly while the operator was
+    /// holding a menu open or the app was finishing a recording on quit.
+    @MainActor
+    static func testControlStateStreamDeliversDuringEventTracking() {
+        let source = PassthroughSubject<Int, Never>()
+        let count = Box<Int>()
+        count.value = 0
+        let sink = ControlApiHost.stateChangeStream(source).sink { _ in count.value = (count.value ?? 0) + 1 }
+        let end = Date().addingTimeInterval(0.6)
+        var i = 0
+        while Date() < end {
+            source.send(i); i += 1
+            RunLoop.main.run(mode: .eventTracking, before: Date().addingTimeInterval(0.02))
+        }
+        let during = count.value ?? 0
+        expect(during >= 3, "state pushes keep flowing while the run loop is in eventTracking mode (got \(during))")
+        spin(until: { false }, limit: 0.3)
+        sink.cancel()
+    }
+
     @MainActor
     static func testControlWebSocketOriginRule() {
         let surface = FakeSurface()

@@ -248,10 +248,13 @@ final class ControlApiHost {
     /// Coalesces model change notifications for the /ws push. A debounce would be
     /// starved forever by a source that never goes quiet for 100 ms; a latest-value
     /// throttle emits at most every 100 ms and always delivers the last value.
+    /// Scheduled on DispatchQueue.main, not RunLoop.main: RunLoop.main only fires in
+    /// the .default mode, so pushes froze during menu tracking, live resize and the
+    /// .terminateLater quit window. The main queue is serviced in every common mode.
     static func stateChangeStream<P: Publisher>(_ source: P) -> AnyPublisher<Void, Never>
     where P.Failure == Never {
         source.map { _ in () }
-            .throttle(for: .milliseconds(100), scheduler: RunLoop.main, latest: true)
+            .throttle(for: .milliseconds(100), scheduler: DispatchQueue.main, latest: true)
             .eraseToAnyPublisher()
     }
 

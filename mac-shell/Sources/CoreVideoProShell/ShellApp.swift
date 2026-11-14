@@ -33,6 +33,19 @@ final class ShellAppDelegate: NSObject, NSApplicationDelegate {
             return host.handleQuitRequest()
         }
     }
+
+    // Dock click / `reopen` AppleEvent. The main window is single-instance: bring
+    // the existing one forward; only when it has been CLOSED does one get made,
+    // and that one shares the same AppModel (start() is once-per-process).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        MainActor.assumeIsolated {
+            switch MainWindowTracker.reopenAction(otherWindowsVisible: flag) {
+            case .broughtForward: return false
+            case .openedMain: return false
+            case .letSwiftUIOpenMain: return true
+            }
+        }
+    }
 }
 
 @main
@@ -68,9 +81,16 @@ struct ShellApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("CoreVideo Pro") {
+        // The console is SINGLE-INSTANCE. A WindowGroup (kept so closing the
+        // console does not quit a recording app, and the quit prompt can fall back
+        // to its panel) would otherwise mint a second console on File > New Window
+        // or on an external URL; New Window is removed below, external events are
+        // routed to the existing window, and Dock reopen is handled in the delegate.
+        WindowGroup("CoreVideo Pro", id: MainWindowTracker.sceneId) {
             RootView()
                 .environmentObject(model)
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+                .modifier(MainWindowOpenerRegistration())
                 .onAppear {
                     ShellAppDelegate.quitHost = model
                     model.start()
@@ -79,6 +99,10 @@ struct ShellApp: App {
                 .onOpenURL { url in model.handleOAuthCallback(url) }
                 .frame(minWidth: 1360, minHeight: 860)
                 .studioChrome()
+        }
+        .commands {
+            // No File > New Window (⌘N): there is exactly one console.
+            CommandGroup(replacing: .newItem) {}
         }
 
         // POP-OUTS — `Window`, not `WindowGroup`. WindowGroup mints a NEW window
@@ -97,6 +121,7 @@ struct ShellApp: App {
         Window("Multiviewer", id: PopoutWindow.multiview) {
             MultiviewerCanvas(isPopout: true)
                 .environmentObject(model)
+                .modifier(MainWindowOpenerRegistration())
                 .padding(8)
                 .frame(minWidth: 640, minHeight: 400)
                 .studioChrome()
@@ -105,6 +130,7 @@ struct ShellApp: App {
         Window("Program / Preview", id: PopoutWindow.busMonitor) {
             BusMonitorPopout()
                 .environmentObject(model)
+                .modifier(MainWindowOpenerRegistration())
                 .frame(minWidth: 720, minHeight: 260)
                 .studioChrome()
         }
@@ -114,6 +140,7 @@ struct ShellApp: App {
         Window("Color Grade", id: PopoutWindow.colorGrade) {
             ColorGradePane()
                 .environmentObject(model)
+                .modifier(MainWindowOpenerRegistration())
                 .frame(minWidth: 420, minHeight: 320)
                 .studioChrome()
         }
@@ -121,6 +148,7 @@ struct ShellApp: App {
         Window("Audio Mixer", id: PopoutWindow.audioMixer) {
             AudioPane(isPopout: true)
                 .environmentObject(model)
+                .modifier(MainWindowOpenerRegistration())
                 .frame(minWidth: 900, minHeight: 520)
                 .studioChrome()
         }
@@ -274,6 +302,35 @@ enum MainWindowTracker {
         guard let window else { return }
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Scene id of the single console window.
+    static let sceneId = "main"
+    /// Opens the console scene; registered by every window's view so the Dock
+    /// handler can reach SwiftUI's openWindow while only a pop-out is on screen.
+    static var openMain: (() -> Void)?
+
+    enum ReopenAction: Equatable { case broughtForward, openedMain, letSwiftUIOpenMain }
+
+    /// The console exists (visible or minimized) -> bring it forward, never a new
+    /// one. It was closed while a pop-out is still up -> open the ONE console
+    /// (SwiftUI does nothing when any window is visible). Nothing on screen ->
+    /// SwiftUI's default reopen makes the one console.
+    static func reopenAction(otherWindowsVisible: Bool) -> ReopenAction {
+        if isAvailable { bringForward(); return .broughtForward }
+        if otherWindowsVisible, let openMain { openMain(); return .openedMain }
+        return .letSwiftUIOpenMain
+    }
+}
+
+struct MainWindowOpenerRegistration: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            let open = openWindow
+            MainWindowTracker.openMain = { open(id: MainWindowTracker.sceneId) }
+        }
     }
 }
 
