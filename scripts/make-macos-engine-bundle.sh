@@ -55,6 +55,9 @@ done
 OUT_DIR="${OUT_DIR:-$BUILD_DIR}"
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(node -p "require('$SRC_DIR/package.json').version" 2>/dev/null || echo 0.0.0)"
+# Same scheme as the shell app (make-macos-shell-bundle.sh): release builds
+# pass the app's build number down; standalone runs keep the old value.
+BUILD_NUMBER="${COREVIDEO_BUILD_NUMBER:-$VERSION}"
 
 APP="$OUT_DIR/$APP_NAME"
 rm -rf "$APP"
@@ -73,7 +76,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>corevideo-zoom-engine</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleVersion</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>NSCameraUsageDescription</key><string>CoreVideo Pro captures Zoom meeting video.</string>
     <key>NSMicrophoneUsageDescription</key><string>CoreVideo Pro captures Zoom meeting audio.</string>
