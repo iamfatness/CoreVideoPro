@@ -183,8 +183,20 @@ struct ShellPrefs: Codable, Equatable {
             : "a field survives encode but NOT decode — it is missing from init(from:)"
     }
 
-    static let path = NSHomeDirectory()
+    /// The operator's real preferences file. Never touched by a test run.
+    static let realPath = NSHomeDirectory()
         + "/Library/Application Support/CoreVideoPro/shell-preferences.json"
+
+    /// Structural isolation: under COREVIDEO_SHELL_TESTS or COREVIDEO_SHELL_SELFCHECK
+    /// every load/save goes to a per-process temp file, so no harness run (CI or
+    /// local) can read or replace the operator's saved scenes and settings.
+    static let path: String = {
+        let env = ProcessInfo.processInfo.environment
+        guard env["COREVIDEO_SHELL_TESTS"] != nil
+                || env["COREVIDEO_SHELL_SELFCHECK"] != nil else { return realPath }
+        let dir = NSTemporaryDirectory() + "corevideo-shell-harness-\(getpid())"
+        return dir + "/shell-preferences.json"
+    }()
 
     static func load() -> ShellPrefs {
         guard let data = FileManager.default.contents(atPath: path),

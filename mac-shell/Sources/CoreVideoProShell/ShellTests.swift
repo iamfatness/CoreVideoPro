@@ -1011,6 +1011,21 @@ enum ShellTests {
     }
 
     @MainActor
+    private static func testHarnessNeverTouchesRealPrefs() {
+        expect(ShellPrefs.path != ShellPrefs.realPath, "harness prefs path is not the real path")
+        expect(ShellPrefs.path.hasPrefix(NSTemporaryDirectory()), "harness prefs live under the temp dir")
+        let real = FileManager.default.attributesOfItemOrNil(ShellPrefs.realPath)
+        let model = sceneEditModel()
+        model.duplicateScene("s1")
+        _ = model.deleteScene("s3")
+        model.newScene(layout: "single")
+        model.saveScenes()
+        expect(FileManager.default.fileExists(atPath: ShellPrefs.path), "saves went to the harness path")
+        let after = FileManager.default.attributesOfItemOrNil(ShellPrefs.realPath)
+        expect(real == after, "real prefs file untouched by scene saves")
+    }
+
+    @MainActor
     private static func testSceneEditorNeverTargetsProgram() {
         let model = sceneEditModel()
         expectEqual(model.sceneEditTargetId ?? "<nil>", "s1", "editor targets Preview")
@@ -1250,6 +1265,7 @@ enum ShellTests {
             ("scenes/rename-policy", testSceneRenameValidationIsTheWindowsPolicy),
             ("scenes/duplicate-copies-all", testSceneDuplicateCopiesEveryField),
             ("scenes/delete-refusals", testSceneDeleteRefusesOnAirAndLast),
+            ("scenes/harness-prefs-isolated", testHarnessNeverTouchesRealPrefs),
             ("scenes/editor-never-program", testSceneEditorNeverTargetsProgram),
         ]
         for (name, body) in cases {
@@ -1266,5 +1282,13 @@ enum ShellTests {
         }
         print("\(checks) shell checks run, \(failures.count) failed.")
         exit(1)
+    }
+}
+
+private extension FileManager {
+    /// Existence + mtime + size of a file, nil when absent (isolation guard).
+    func attributesOfItemOrNil(_ path: String) -> String? {
+        guard let a = try? attributesOfItem(atPath: path) else { return nil }
+        return "\(a[.modificationDate] as? Date ?? .distantPast)|\(a[.size] as? Int ?? -1)"
     }
 }
