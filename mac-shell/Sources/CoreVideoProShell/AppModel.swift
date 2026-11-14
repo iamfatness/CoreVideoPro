@@ -2076,11 +2076,11 @@ final class AppModel: ObservableObject {
     }
 
     private func pushScenes() async {
-        guard let bridge else { return }
+        guard bridge != nil || quitRequestForTesting != nil else { return }
         let batch = sceneSyncBatch()
         guard !batch.isEmpty else { return }
         do {
-            _ = try await bridge.request([
+            _ = try await outputRequest([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
                 "commands": batch,
             ])
@@ -2157,8 +2157,13 @@ final class AppModel: ObservableObject {
         previewSceneId = target
         syncScenes()
         if autoTakeEnabled {
-            Task { await self.take() }
-            autoStatus = "Took \(target) (\(autoRuleId))"
+            autoStatus = "Taking \(target) (\(autoRuleId))…"
+            Task { @MainActor in
+                switch await self.take() {
+                case .success: self.autoStatus = "Took \(target) (\(self.autoRuleId))"
+                case .failed(let why): self.autoStatus = "Take of \(target) failed — \(why)"
+                }
+            }
         } else {
             autoStatus = "Queued \(target) on preview"
         }

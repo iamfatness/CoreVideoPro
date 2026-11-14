@@ -1907,6 +1907,7 @@ enum ShellTests {
         spin(until: { !core.bodies.isEmpty }, limit: 0.08)
         expectEqual(core.bodies.count, 1, "Take reached the core inside the 120 ms debounce")
         spin(until: { false }, limit: 0.3)
+        expectEqual(core.bodies.count, 1, "the pending debounced sync was cancelled, not sent after the Take")
     }
 
     @MainActor
@@ -1914,6 +1915,7 @@ enum ShellTests {
         let core = FakeTakeCore()
         core.failure = "native rejected scene"
         let model = takeModel(core)
+        let syncsBefore = model.sceneSyncRequestCount
         let box = runTake(model)
         let expected = "Take was not confirmed; previous local Program restored. "
             + "Verify live output before retrying. native rejected scene"
@@ -1921,6 +1923,8 @@ enum ShellTests {
         expectEqual(model.takeStatus, expected, "status carries the same text")
         expectEqual(model.programSceneId, "s2", "Program restored")
         expectEqual(model.previewSceneId, "s1", "Preview retained for retry")
+        expectEqual(model.sceneSyncRequestCount, syncsBefore + 2,
+                    "Take counted once, and the rollback requested a reconcile sync")
         core.failure = nil
         let retry = runTake(model)
         expectEqual(retry.result, .success, "retry succeeds")
