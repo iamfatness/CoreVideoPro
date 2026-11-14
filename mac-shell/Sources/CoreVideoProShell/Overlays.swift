@@ -122,15 +122,19 @@ extension AppModel {
     }
 
     /// Windows StudioViewModel.ApplyBrandOverlayDefaults (:1060): "manual" is a
-    /// no-op; "all-off" turns every graphic off; any other value leaves them as
-    /// they are. The Mac's only keyed graphic is the lower third, so all-off
-    /// retires it (the same two-step build-out the Hide button uses) when it is
-    /// up. Runs only on a brand-kit apply, never on an ordinary sync.
+    /// no-op; "all-off" disables every GRAPHICS ROW; anything else leaves them.
+    /// It never touches the operator's MANUAL lower third: on Windows that key
+    /// is independent (StudioViewModel.cs:13851 ShouldEnableProgramLowerThird =
+    /// manuallyEnabled || graphicLowerThirdEnabled || ...). The Mac has no
+    /// Graphics rows yet (the graphics backend is a later milestone), so today
+    /// all-off is a deliberate no-op here. When graphics rows exist, all-off
+    /// disables THEM in this function — still never the manual lower third.
+    /// Runs only on a brand-kit apply, never on an ordinary sync.
     @MainActor
     func applyBrandOverlayDefaults(_ behavior: String) {
         switch behavior {
         case "all-off":
-            if lowerThirdOnAirCount > 0 { hideLowerThird() }
+            break  // graphics rows only; none exist on the Mac yet
         default:  // "manual" and every other value leave graphics unchanged
             break
         }

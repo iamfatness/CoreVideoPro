@@ -726,6 +726,8 @@ enum DiagnosticsSelfCheck {
 
     /// Entry point for the env-var harness run.
     static func runAndExit() -> Never {
+        // Before anything can load or save prefs: refuse a non-isolated run.
+        ShellHarness.requireIsolatedPrefsOrExit()
         var failures = run()
         // Prefs round-trip rides the same harness: a field that encodes but
         // never decodes silently drops an operator's setting, which is the same

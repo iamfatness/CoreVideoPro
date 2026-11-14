@@ -8,6 +8,7 @@
 // status row with the MASTER meter. Palette from App.xaml.
 
 import AppKit
+import Combine
 import IOSurface
 import SwiftUI
 
@@ -238,6 +239,87 @@ struct RootView: View {
         }
         .background(Studio.background)
         .overlay { QuitConfirmation() }
+        // Identifies THE main window for the quit prompt (not windows.first,
+        // which can be a pop-out).
+        .background(MainWindowReader())
+    }
+}
+
+// ── Quit prompt placement (final review IMPORTANT 7) ─────────────────────────
+// The confirmation is mounted in RootView, so it can only be answered while the
+// main window is on screen. The WindowGroup app keeps running with that window
+// closed; then the same design-system view is hosted in its own panel.
+
+@MainActor
+enum MainWindowTracker {
+    private static weak var window: NSWindow?
+
+    static func track(_ candidate: NSWindow?) {
+        if let candidate { window = candidate }
+    }
+
+    static var isAvailable: Bool {
+        guard let window else { return false }
+        return window.isVisible || window.isMiniaturized
+    }
+
+    static func bringForward() {
+        guard let window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+    }
+}
+
+struct MainWindowReader: NSViewRepresentable {
+    final class Probe: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            MainWindowTracker.track(window)
+        }
+    }
+
+    func makeNSView(context: Context) -> NSView { Probe() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+@MainActor
+enum QuitPromptPanel {
+    private static var panel: NSPanel?
+    private static var watch: AnyCancellable?
+
+    static func show(model: AppModel) {
+        if let panel {
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
+        let host = NSHostingController(
+            rootView: QuitConfirmation(standalone: true).environmentObject(model))
+        let created = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 200),
+                              styleMask: [.titled, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        created.titleVisibility = .hidden
+        created.titlebarAppearsTransparent = true
+        created.isReleasedWhenClosed = false
+        created.level = .modalPanel
+        created.contentViewController = host
+        created.center()
+        created.makeKeyAndOrderFront(nil)
+        panel = created
+        // Close once nothing is pending (Keep running). Checked on the next
+        // turn: confirm flips the prompt off and the finishing notice on.
+        watch = model.$quitPromptVisible.combineLatest(model.$quitFinishing)
+            .sink { [weak model] _, _ in
+                DispatchQueue.main.async {
+                    guard let model, !model.quitPromptVisible, !model.quitFinishing else { return }
+                    close()
+                }
+            }
+    }
+
+    static func close() {
+        panel?.orderOut(nil)
+        panel = nil
+        watch = nil
     }
 }
 
@@ -245,11 +327,17 @@ struct RootView: View {
 // alert). Keep running is the default action (Return / Esc).
 struct QuitConfirmation: View {
     @EnvironmentObject var model: AppModel
+    /// Hosted in its own panel (main window closed): no dimming scrim.
+    var standalone = false
 
     var body: some View {
         if model.quitPromptVisible || model.quitFinishing {
             ZStack {
-                Color.black.opacity(0.55).ignoresSafeArea()
+                if standalone {
+                    Studio.background.ignoresSafeArea()
+                } else {
+                    Color.black.opacity(0.55).ignoresSafeArea()
+                }
                 VStack(alignment: .leading, spacing: 14) {
                     Text(model.quitFinishing ? "Finishing your files" : "Stop outputs and quit?")
                         .font(.grotesk(16, .semibold))

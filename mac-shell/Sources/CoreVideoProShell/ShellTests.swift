@@ -12,6 +12,7 @@
 // rather than toward coverage percentage. Every case below maps to a real defect
 // that reached the owner in a live session or shipped to main.
 
+import Combine
 import Foundation
 
 enum ShellTests {
@@ -1065,12 +1066,29 @@ enum ShellTests {
         expect(real == after, "real prefs file untouched by scene saves")
     }
 
+    private static func testHarnessPredicateIsOneAndAbortsOnRealPrefs() {
+        expect(ShellHarness.detect(in: ["COREVIDEO_SHELL_TESTS": "1"]), "TESTS is a harness run")
+        expect(ShellHarness.detect(in: ["COREVIDEO_SHELL_SELFCHECK": "1"]),
+               "SELFCHECK is a harness run (the shell log must not be written)")
+        expect(!ShellHarness.detect(in: [:]), "a normal launch is not")
+        expect(ShellHarness.isActive, "this run is a harness run")
+        expect(ShellHarness.prefsIsolationFailure(path: "/x/real.json", realPath: "/x/real.json") != nil,
+               "prefs resolving to the real file is an abort")
+        expect(ShellHarness.prefsIsolationFailure(path: ShellPrefs.path, realPath: ShellPrefs.realPath) == nil,
+               "this run's prefs are isolated")
+    }
+
     @MainActor
     private static func testSceneEditorNeverTargetsProgram() {
         let model = sceneEditModel()
         expectEqual(model.sceneEditTargetId ?? "<nil>", "s1", "editor targets Preview")
         model.previewSceneId = ""
         expect(model.sceneEditTargetId == nil, "empty Preview -> no edit target (not Program)")
+        // Preview == Program (the on-air row clicked, or the one-scene launch
+        // fallback): the editor must not target the live scene.
+        model.previewSceneId = model.programSceneId
+        expect(model.sceneEditTargetId == nil, "Preview == Program -> no edit target (on air)")
+        model.previewSceneId = ""
         // The Program scene graph is identical before and after an editor-less state.
         let programBefore = model.buildRoutes(for: "s2", isProgram: true).count
         _ = model.deleteScene("s3")
@@ -1384,43 +1402,48 @@ enum ShellTests {
         }
     }
 
+    /// CONTROLLER RULING (final review): Windows ApplyBrandOverlayDefaults
+    /// disables Graphics rows only; the manual lower third is independent
+    /// (StudioViewModel.cs:13851 ShouldEnableProgramLowerThird = manuallyEnabled
+    /// || ...). The Mac has no Graphics rows yet, so all-off must leave an
+    /// on-air manual lower third alone, on a brand-kit apply AND a brand edit.
     @MainActor
-    private static func testBrandDefaultAllOffRetiresTheLowerThird() {
+    private static func testBrandDefaultAllOffLeavesTheManualLowerThirdAlone() {
         for phase in ["on-air", "building-in"] {
             let (model, seen) = brandDefaultsModel("all-off", phase: phase)
             model.pushBrandKitNow()
             expect(seen().contains { ($0["type"] as? String) == "set-brand-kit" },
                    "brand kit still goes out (\(phase))")
-            expect(lowerThirdHides(seen()),
-                   "all-off on a brand-kit apply retires the \(phase) lower third")
+            expect(!lowerThirdHides(seen()), "all-off does not retire the manual \(phase) lower third")
             spin()
-            expectEqual(hiddenAcks(seen()), 1,
-                        "second step: the hidden ack is sent once when nothing intervenes (\(phase))")
+            expectEqual(hiddenAcks(seen()), 0, "no hidden ack either (\(phase))")
+            expectEqual(model.lowerThirdPhase, phase, "the phase is untouched (\(phase))")
         }
-        let (hidden, seenHidden) = brandDefaultsModel("all-off", phase: "hidden")
-        hidden.pushBrandKitNow()
-        expect(!lowerThirdHides(seenHidden()), "all-off with nothing up sends no retire")
+        let (edited, seenEdited) = brandDefaultsModel("all-off", phase: "on-air")
+        edited.overlays.brandName = "Acme"
+        edited.applyBrandKit()               // the coalesced brand-edit path
+        spin(0.45)
+        expect(seenEdited().contains { ($0["type"] as? String) == "set-brand-kit" }, "the edit pushed the kit")
+        expect(!lowerThirdHides(seenEdited()) && hiddenAcks(seenEdited()) == 0,
+               "a brand-kit edit with all-off never takes the manual lower third off air")
     }
 
+    /// The manual Hide's two-step retire: idempotent while in flight, and a
+    /// Show inside the window cancels the pending hidden ack.
     @MainActor
-    private static func testBrandDefaultRetireIsIdempotentAndShowWins() {
-        // A second brand-kit apply inside the window (snapshot still says on-air)
-        // must not start a second build-out or a second ack.
-        let (twice, seenTwice) = brandDefaultsModel("all-off", phase: "on-air")
-        twice.pushBrandKitNow()
-        twice.pushBrandKitNow()
-        expectEqual(buildOuts(seenTwice()), 1, "repeated retire sends one building-out")
+    private static func testLowerThirdRetireIsIdempotentAndShowWins() {
+        let (twice, seenTwice) = brandDefaultsModel("manual", phase: "on-air")
+        twice.hideLowerThird()
+        twice.hideLowerThird()
+        expectEqual(buildOuts(seenTwice()), 1, "repeated Hide sends one building-out")
         spin()
-        expectEqual(hiddenAcks(seenTwice()), 1, "repeated retire sends one hidden ack")
-        // After the retire completes, a later apply on a re-shown key retires again.
-        twice.lowerThirdPhase = "on-air"
-        twice.pushBrandKitNow()
-        expectEqual(buildOuts(seenTwice()), 2, "a retire after the first completed is allowed")
+        expectEqual(hiddenAcks(seenTwice()), 1, "repeated Hide sends one hidden ack")
+        twice.hideLowerThird()
+        expectEqual(buildOuts(seenTwice()), 2, "a Hide after the first completed is allowed")
         spin()
 
-        // Show inside the window: the pending hidden ack must not follow.
-        let (shown, seenShown) = brandDefaultsModel("all-off", phase: "on-air")
-        shown.pushBrandKitNow()
+        let (shown, seenShown) = brandDefaultsModel("manual", phase: "on-air")
+        shown.hideLowerThird()
         shown.showLowerThird()
         spin()
         expectEqual(hiddenAcks(seenShown()), 0, "Show inside the retire window cancels the hidden ack")
@@ -1582,29 +1605,52 @@ enum ShellTests {
         expect(Date().timeIntervalSince(started) < 3, "one deadline covers the whole flow, hung stop included")
     }
 
-    /// Scripted core: records the command types it is sent, answers snapshots whose
-    /// recording lifecycle advances stopping -> completed after a stop.
+    /// Scripted core: records every command it is sent (types AND bodies) and
+    /// answers snapshots from a small recording lifecycle: a start makes it
+    /// `live`; a stop (or `markStopping`) walks it through `stopState` to
+    /// `completed`. `liveAfterStopPolls` answers that many post-stop requests
+    /// (the stop's own ack counts as one) with `live` still — a poll issued
+    /// before the stop landed core-side.
     private final class FakeQuitCore: @unchecked Sendable {
         private let lock = NSLock()
-        private var _commands: [String] = [], _polls = 0, stopped = false, _hang = false
+        private var _commands: [String] = [], _sent: [[String: Any]] = []
+        private var _polls = 0, stopped = false, started = false, _hang = false
         var completeAfterPolls = 2
+        var liveAfterStopPolls = 0
+        var stopState = "stopping"
         var commands: [String] { lock.lock(); defer { lock.unlock() }; return _commands }
+        var sent: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return _sent }
         var hang: Bool { get { lock.lock(); defer { lock.unlock() }; return _hang }
                          set { lock.lock(); _hang = newValue; lock.unlock() } }
+        /// The core already saw a stop before the scenario begins.
+        func markStopping() { lock.lock(); stopped = true; _polls = 0; lock.unlock() }
         func handle(_ body: [String: Any]) async throws -> [String: Any] {
             if hang { try? await Task.sleep(nanoseconds: 30_000_000_000) }
+            return respond(body)
+        }
+        private func respond(_ body: [String: Any]) -> [String: Any] {
             lock.lock(); defer { lock.unlock() }
-            let cmds = (body["commands"] as? [[String: Any]] ?? []).compactMap { $0["type"] as? String }
+            let raw = body["commands"] as? [[String: Any]] ?? []
+            let cmds = raw.compactMap { $0["type"] as? String }
             _commands += cmds
+            _sent += raw
+            if cmds.contains("start-recording-session") { started = true; stopped = false }
             if cmds.contains("stop-recording-session") { stopped = true; _polls = 0 }
-            var state = "producing"
+            var state = started ? "live" : "producing"
             if stopped {
                 _polls += 1
-                state = _polls > completeAfterPolls ? "completed" : "stopping"
+                if _polls <= liveAfterStopPolls {
+                    state = "live"
+                } else {
+                    state = _polls > liveAfterStopPolls + completeAfterPolls ? "completed" : stopState
+                }
             }
-            let lifecycle: [String: Any] = ["sessionId": "s", "desiredActive": !stopped, "state": state,
+            return ["ok": true, "snapshot": Self.snapshot(state: state, desired: !stopped)]
+        }
+        static func snapshot(state: String, desired: Bool) -> [String: Any] {
+            let lifecycle: [String: Any] = ["sessionId": "s", "desiredActive": desired, "state": state,
                                             "health": "healthy", "finalized": state == "completed"]
-            return ["ok": true, "snapshot": ["recording": ["lifecycle": lifecycle]] as [String: Any]]
+            return ["recording": ["lifecycle": lifecycle] as [String: Any]]
         }
     }
 
@@ -1628,13 +1674,32 @@ enum ShellTests {
         while !condition(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
     }
 
+    /// Drives the operator's REAL Record start (intent through recordingCommands)
+    /// and waits for its acknowledgement to be finished.
+    @MainActor
+    private static func startRecordingThroughTheRealPath(_ model: AppModel, _ core: FakeQuitCore) {
+        model.toggleRecording()
+        spin(until: { core.commands.contains("start-recording-session") }, limit: 3)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))   // let finish() land
+        model.applySnapshotForTesting(FakeQuitCore.snapshot(state: "live", desired: true))
+    }
+
     @MainActor
     private static func testQuitFlowStopsInOrderAndFinishesAtTheTerminalSnapshot() {
         let core = FakeQuitCore()
+        // The first poll after the stop still says `recording` (issued before
+        // the stop landed core-side). A stop that bypassed recordingCommands
+        // left the policy's intent ON, and that poll re-flipped it.
+        core.liveAfterStopPolls = 2   // the stop's own ack + the first quit poll
         let (model, replies) = quitModel(core: core, timeout: 15)
-        model.recordingStatus = "recording"
-        model.recordingDesired = true
         model.streamingDesired = true
+        startRecordingThroughTheRealPath(model, core)
+        expect(model.recordingDesired && model.recordingStatus == "recording",
+               "intent primed through the real start path")
+        var history: [Bool] = []
+        let watch = model.$recordingDesired.dropFirst().sink { history.append($0) }
+        defer { watch.cancel() }
+        let before = core.commands.count
         expect(model.handleQuitRequest() == .terminateLater, "live outputs defer the quit")
         expect(model.quitPromptVisible, "the confirmation is shown")
         expect(model.handleQuitRequest() == .terminateCancel, "a second quit while asking is cancelled, never forced")
@@ -1643,12 +1708,137 @@ enum ShellTests {
         spin(until: { !replies().isEmpty }, limit: 5)
         expectEqual(replies(), [true], "exactly one reply, to terminate")
         expect(Date().timeIntervalSince(t0) < 3, "finishes when the terminal snapshot arrives, far before the 15 s bound")
-        expectEqual(core.commands.filter { $0 != "" }, ["start-program-output", "stop-recording-session"],
+        expectEqual(Array(core.commands.dropFirst(before)), ["start-program-output", "stop-recording-session"],
                     "stream stop first, then the recording stop")
         expectEqual(model.recordingStatus, "completed", "the direct poll applied the terminal snapshot")
+        expect(!history.contains(true),
+               "recording intent never re-arms after the quit stop (a post-stop `recording` poll included): \(history)")
         expect(!model.recordingDesired, "recording intent stays off after the quit stop")
         expect(!model.quitFinishing, "the finishing state is cleared")
         expect(!model.warnings.contains { $0.contains("did not finish") }, "no false timeout warning")
+    }
+
+    private static func recordingDestinations(_ sent: [[String: Any]]) -> [[String]] {
+        sent.filter { ($0["type"] as? String) == "start-program-output" }
+            .map { $0["destinations"] as? [String] ?? ["<missing>"] }
+    }
+
+    /// Final-review CRITICAL 1: Stop Rec, then Cmd-Q while the shell still reads
+    /// `finalizing` with a stream up. The stream stop must not ask the core for
+    /// a "recording" destination (the core no longer owns it and would open a
+    /// NEW session folder that nothing ever stops).
+    @MainActor
+    private static func testQuitWhileFinalizingNeverReopensARecording() {
+        let core = FakeQuitCore()
+        core.markStopping()
+        core.stopState = "finalizing"
+        let (model, replies) = quitModel(core: core, timeout: 5)
+        model.recordingStatus = "finalizing"
+        model.recordingDesired = false
+        model.streamingDesired = true
+        expect(model.handleQuitRequest() == .terminateLater, "a live stream asks")
+        model.confirmQuit()
+        spin(until: { !replies().isEmpty }, limit: 6)
+        expectEqual(replies(), [true], "the quit completes")
+        expect(!recordingDestinations(core.sent).contains { $0.contains("recording") },
+               "no start-program-output carries a recording destination: \(recordingDestinations(core.sent))")
+        expectEqual(core.commands, ["stop-encoder-session"],
+                    "the stream stop is the operator's stop; no second recording stop while finalizing")
+    }
+
+    /// Whole-branch quit: ISO take armed, roster emptied mid-take, stream up,
+    /// operator stops the recording, then quits. Asserts EXACTLY what reached the
+    /// wire, in order, and that no ISO re-arms from presence afterwards.
+    @MainActor
+    private static func testWholeBranchQuitAfterStoppingAnIsoTakeWithAStreamUp() {
+        let core = FakeQuitCore()
+        core.stopState = "finalizing"
+        core.completeAfterPolls = 3
+        let (model, replies) = quitModel(core: core, timeout: 5)
+        func guest(_ id: String) -> RosterParticipant {
+            RosterParticipant(id: id, name: id, hasVideo: true, muted: false, talking: false, assigned: true)
+        }
+        model.roster = [guest("a"), guest("b")]
+        model.assignSlot(1, kind: "zoom", sourceId: "a", name: "a")
+        model.assignSlot(2, kind: "zoom", sourceId: "b", name: "b")
+        model.toggleSlotIso(1)
+        model.toggleSlotIso(2)
+        model.streamingDesired = true            // stream up
+        startRecordingThroughTheRealPath(model, core)
+        model.roster = []                        // transient roster loss mid-take (#1183)
+        model.toggleRecording()                  // operator stops the recording
+        spin(until: { core.commands.contains("stop-recording-session") }, limit: 3)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        model.applySnapshotForTesting(FakeQuitCore.snapshot(state: "finalizing", desired: false))
+        expectEqual(model.recordingStatus, "finalizing", "the shell still shows the file finishing")
+        expect(!model.recordingDesired, "operator intent is off")
+        model.roster = [guest("a"), guest("b")]  // presence returns before the quit
+        expect(model.handleQuitRequest() == .terminateLater, "stream + finalizing asks")
+        model.confirmQuit()
+        spin(until: { !replies().isEmpty }, limit: 6)
+        expectEqual(replies(), [true], "the quit completes")
+        expectEqual(core.commands, ["start-program-output", "set-recording-targets", "start-recording-session",
+                                    "stop-recording-session", "stop-encoder-session"],
+                    "exactly: the take's start trio, the operator's stop, the quit's stream stop")
+        let starts = core.sent.filter { ($0["type"] as? String) == "start-program-output" }
+        expectEqual(starts.count, 1, "only the take's own start-program-output was sent")
+        expectEqual(starts.first?["destinations"] as? [String] ?? [], ["recording", "rtmp"],
+                    "the take started recording alongside the live stream")
+        expectEqual(starts.first?["isoSourceIds"] as? [String] ?? [], ["zoom:a", "zoom:b"], "the take armed both ISOs")
+        expect(!model.warnings.contains { $0.contains("did not finish") }, "finished, no timeout")
+    }
+
+    /// Windows CanSetRecording refuses while _outputsClosing: once Stop-and-quit
+    /// is running, the Record / Stream buttons change nothing.
+    @MainActor
+    private static func testOutputTogglesRefuseWhileQuitting() {
+        let core = FakeQuitCore()
+        core.hang = true
+        let (model, replies) = quitModel(core: core, timeout: 0.5)
+        model.streamingDesired = true            // a stream-only quit
+        _ = model.handleQuitRequest()
+        model.confirmQuit()
+        expect(model.quitFinishing, "the quit flow is running")
+        model.toggleRecording()
+        expect(!model.recordingDesired, "Record is refused while quitting (no new take starts)")
+        model.toggleStreaming()
+        expect(model.streamingDesired, "Stream is refused while quitting (intent unchanged)")
+        spin(until: { !replies().isEmpty }, limit: 6)
+    }
+
+    /// Final-review IMPORTANT 7: Cmd-Q with the main window closed must still
+    /// show something the operator can answer, and a repeat Cmd-Q re-presents it.
+    @MainActor
+    private static func testQuitPromptIsAlwaysAnswerable() {
+        let core = FakeQuitCore()
+        let (model, _) = quitModel(core: core)
+        var shown: [QuitPromptPlacement] = []
+        model.quitPresentForTesting = { shown.append($0) }
+        model.recordingStatus = "recording"
+        model.recordingDesired = true
+        model.mainWindowAvailableForTesting = false
+        expect(model.handleQuitRequest() == .terminateLater, "live recording asks")
+        expectEqual(shown, [.fallbackPanel], "no main window: the prompt goes in its own panel")
+        expect(model.handleQuitRequest() == .terminateCancel, "a repeat quit is not a force-exit")
+        expectEqual(shown, [.fallbackPanel, .fallbackPanel], "a repeat quit re-presents the pending prompt")
+        model.cancelQuit()
+        model.mainWindowAvailableForTesting = true
+        shown = []
+        _ = model.handleQuitRequest()
+        expectEqual(shown, [.mainWindow], "with the main window available the prompt shows there")
+        model.cancelQuit()
+        // While outputs finish there is nothing to answer: a repeat quit does
+        // not re-open a prompt (the finishing notice is already up).
+        shown = []
+        model.mainWindowAvailableForTesting = false
+        core.hang = true
+        model.quitFinishTimeout = 0.3
+        _ = model.handleQuitRequest()
+        model.confirmQuit()
+        shown = []
+        expect(model.handleQuitRequest() == .terminateCancel, "a quit while finishing is ignored")
+        expectEqual(shown, [.fallbackPanel], "the finishing notice is brought forward, never a second prompt")
+        spin(until: { !model.quitFinishing }, limit: 4)
     }
 
     @MainActor
@@ -1709,6 +1899,8 @@ enum ShellTests {
 
     @MainActor
     static func runAndExit() -> Never {
+        // Before ANY test: a run whose prefs resolve to the real file aborts.
+        ShellHarness.requireIsolatedPrefsOrExit()
         failures = []
         checks = 0
 
@@ -1763,9 +1955,9 @@ enum ShellTests {
             ("iso/preflight-unobserved", testIsoPreflightNeverWarnsOnAnUnobservedState),
             ("overlays/brand-kit-payload", testBrandKitCommandCarriesOnlyWhatTheCoreApplies),
             ("overlays/old-prefs-decode", testOldOverlayPrefsWithRemovedFieldsStillDecode),
-            ("overlays/brand-default-all-off", testBrandDefaultAllOffRetiresTheLowerThird),
+            ("overlays/brand-default-all-off-leaves-manual", testBrandDefaultAllOffLeavesTheManualLowerThirdAlone),
             ("overlays/brand-default-noops", testBrandDefaultManualAndUnknownAreNoOps),
-            ("overlays/brand-default-retire-race", testBrandDefaultRetireIsIdempotentAndShowWins),
+            ("overlays/lower-third-retire-race", testLowerThirdRetireIsIdempotentAndShowWins),
             ("overlays/brand-default-options", testBrandDefaultOptionsAreWindows),
             ("overlays/brand-default-not-on-sync", testBrandDefaultsAreNotRerunBySyncs),
             ("scenes/rename-keeps-fields", testSceneRenameKeepsEveryOtherField),
@@ -1773,6 +1965,7 @@ enum ShellTests {
             ("scenes/duplicate-copies-all", testSceneDuplicateCopiesEveryField),
             ("scenes/delete-refusals", testSceneDeleteRefusesOnAirAndLast),
             ("scenes/harness-prefs-isolated", testHarnessNeverTouchesRealPrefs),
+            ("harness/one-predicate-and-abort", testHarnessPredicateIsOneAndAbortsOnRealPrefs),
             ("scenes/editor-never-program", testSceneEditorNeverTargetsProgram),
             ("meters/observation-thresholds", testAudioObservationThresholdsAreWindows),
             ("meters/warning-recovers", testMeterWarningFollowsSnapshotAgeAndRecovers),
@@ -1782,6 +1975,10 @@ enum ShellTests {
             ("quit/bridge-app-exit", testBridgeAppExitClosesStdinAndGivesTheCoreAGraceBeforeTerminating),
             ("quit/deadline-hung-stop", testQuitDeadlineHoldsWhenAStopRequestHangs),
             ("quit/flow-order-terminal", testQuitFlowStopsInOrderAndFinishesAtTheTerminalSnapshot),
+            ("quit/finalizing-never-reopens-recording", testQuitWhileFinalizingNeverReopensARecording),
+            ("quit/whole-branch-iso-stream-stop-quit", testWholeBranchQuitAfterStoppingAnIsoTakeWithAStreamUp),
+            ("quit/toggles-refused-while-quitting", testOutputTogglesRefuseWhileQuitting),
+            ("quit/prompt-always-answerable", testQuitPromptIsAlwaysAnswerable),
             ("quit/cancel", testQuitCancelRepliesFalseOnceAndSendsNothing),
             ("quit/idle", testQuitIdleQuitsImmediately),
             ("quit/dead-core", testQuitWithADeadCoreFinishesImmediately),

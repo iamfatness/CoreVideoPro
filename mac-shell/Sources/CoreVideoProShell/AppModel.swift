@@ -422,6 +422,9 @@ final class AppModel: ObservableObject {
     /// the "core is gone" answer when that path is replaced, and the timings.
     var quitRequestForTesting: ((JSONObject, TimeInterval) async throws -> JSONObject)?
     var quitCoreGoneForTesting = false
+    /// Test seams for where the quit prompt is presented (production: nil).
+    var quitPresentForTesting: ((QuitPromptPlacement) -> Void)?
+    var mainWindowAvailableForTesting: Bool?
     var quitFinishTimeout = QuitGuardPolicy.finishTimeout
     var quitCoreGrace = QuitGuardPolicy.coreExitGrace
     var quitPollInterval: TimeInterval = 0.1
@@ -1732,9 +1735,12 @@ final class AppModel: ObservableObject {
 
     /// The scene the Scenes tab edits: the PREVIEW scene only. With Preview
     /// empty there is nothing to edit — it never falls back to Program, which
-    /// is live (#1196: editing must not change what is on air).
+    /// is live (#1196: editing must not change what is on air). Preview ==
+    /// Program (the on-air rail row clicked, or the one-scene launch fallback)
+    /// is the on-air scene too, so it is no target either.
     var sceneEditTargetId: String? {
-        previewSceneId.isEmpty ? nil : previewSceneId
+        if previewSceneId.isEmpty || previewSceneId == programSceneId { return nil }
+        return previewSceneId
     }
 
     /// SceneNamingPolicy.Validate: blank, or another scene's name
@@ -2192,7 +2198,8 @@ final class AppModel: ObservableObject {
     }
 
     func toggleStreaming() {
-        guard let bridge else { return }
+        guard bridge != nil || quitRequestForTesting != nil else { return }
+        guard !quitFinishing else { return }   // outputs are closing (quit)
         if streamingDesired {
             streamingDesired = false
             let commands: [JSONObject] = isRecordingActive
@@ -2200,7 +2207,7 @@ final class AppModel: ObservableObject {
                 : [["type": "stop-encoder-session",
                     "reason": "Streaming stopped by operator."]]
             Task {
-                _ = try? await bridge.request([
+                _ = try? await self.outputRequest([
                     "type": "media-core-sync", "elapsedMs": elapsedMs(),
                     "commands": commands,
                 ])
@@ -2217,7 +2224,7 @@ final class AppModel: ObservableObject {
         streamingDesired = true
         Task {
             do {
-                _ = try await bridge.request([
+                _ = try await outputRequest([
                     "type": "media-core-sync", "elapsedMs": elapsedMs(),
                     "commands": [startProgramOutput(recording: isRecordingActive,
                                                     streaming: true)],
@@ -2584,15 +2591,28 @@ final class AppModel: ObservableObject {
         case .quitNow: return .terminateNow
         case .ask:
             quitPromptVisible = true
-            if quitReplyForTesting == nil {
-                // Bring the window forward so the dialog is seen.
-                NSApplication.shared.activate(ignoringOtherApps: true)
-                NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
-            }
+            presentQuitPrompt()
             return .terminateLater
         case .ignore:
-            NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
+            // A repeat quit while asking or finishing re-presents what is
+            // pending, so the operator always has something visible to answer.
+            presentQuitPrompt()
             return .terminateCancel
+        }
+    }
+
+    /// Shows the pending prompt (or the finishing notice) where it can be seen:
+    /// the main RootView window when it is on screen, otherwise a standalone
+    /// design-system panel. Never `windows.first` (a pop-out, or nothing).
+    private func presentQuitPrompt() {
+        let available = mainWindowAvailableForTesting ?? MainWindowTracker.isAvailable
+        let placement = QuitPromptPresenterPolicy.placement(mainWindowAvailable: available)
+        if let seam = quitPresentForTesting { seam(placement); return }
+        guard quitReplyForTesting == nil else { return }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        switch placement {
+        case .mainWindow: MainWindowTracker.bringForward()
+        case .fallbackPanel: QuitPromptPanel.show(model: self)
         }
     }
 
@@ -2609,8 +2629,8 @@ final class AppModel: ObservableObject {
     /// the stdin-EOF grace.
     func confirmQuit() {
         guard quitGate.confirm() else { return }
+        quitFinishing = true        // before the prompt flips off: the panel stays up
         quitPromptVisible = false
-        quitFinishing = true
         let recordingWasLive = QuitGuardPolicy.recordingLive(quitOutputs)
         let streamWasLive = QuitGuardPolicy.streamLive(quitOutputs)
         ShellLog.write("quit: stopping outputs recording=\(recordingWasLive) stream=\(streamWasLive)")
@@ -2685,6 +2705,18 @@ final class AppModel: ObservableObject {
         return try await bridge.request(body, timeout: timeout)
     }
 
+    /// The operator's Record/Stream buttons go through here so the harness can
+    /// drive the REAL start/stop paths (intent bookkeeping included) through the
+    /// same seam the quit flow uses. Production: the bridge, default timeout.
+    private func outputRequest(_ body: JSONObject) async throws -> JSONObject {
+        if let seam = quitRequestForTesting { return try await seam(body, 6) }
+        guard let bridge else { throw BridgeError.notRunning }
+        return try await bridge.request(body)
+    }
+
+    /// Test seam: feed a snapshot through the real read path.
+    func applySnapshotForTesting(_ snapshot: JSONObject) { applySnapshot(snapshot) }
+
     private func replyToQuit(_ shouldTerminate: Bool) {
         if let seam = quitReplyForTesting { seam(shouldTerminate); return }
         NSApplication.shared.reply(toApplicationShouldTerminate: shouldTerminate)
@@ -2700,7 +2732,12 @@ final class AppModel: ObservableObject {
         var ok = true
         if stream {
             streamingDesired = false
-            let commands: [JSONObject] = recording
+            // Keep recording in the destination set ONLY while the operator still
+            // wants it (toggleStreaming's rule). A stop already in flight
+            // (finalizing/stopping, intent off) must NOT be re-requested: the
+            // core no longer owns it and would open a NEW session that nothing
+            // ever stops (final review CRITICAL 1).
+            let commands: [JSONObject] = recording && recordingDesired
                 ? [startProgramOutput(recording: true, streaming: false)]
                 : [["type": "stop-encoder-session", "reason": "Streaming stopped on quit."]]
             do {
@@ -2730,14 +2767,16 @@ final class AppModel: ObservableObject {
     }
 
     func toggleRecording() {
-        guard let bridge else { return }
+        guard bridge != nil || quitRequestForTesting != nil else { return }
+        // Windows CanSetRecording: no Record/Stop while outputs are closing.
+        guard !quitFinishing else { return }
         let operation = recordingCommands.begin()
         let stop = operation.stop
         recordingDesired = recordingCommands.desired
         Task {
             do {
                 if stop {
-                    _ = try await bridge.request([
+                    _ = try await outputRequest([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(),
                         "commands": [["type": "stop-recording-session"]],
                     ])
@@ -2745,9 +2784,12 @@ final class AppModel: ObservableObject {
                     // Arm the encoder ONLY here: start-program-output flips the
                     // core into per-tick full readbacks (by design, for the
                     // encoder feed) — armed-at-startup starved the RPC thread.
-                    let folder = (NSSearchPathForDirectoriesInDomains(
-                        .moviesDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory())
-                        + "/CoreVideoPro"
+                    // The in-binary harness never creates folders in ~/Movies.
+                    let folder = ShellHarness.isActive
+                        ? NSTemporaryDirectory() + "corevideo-shell-harness-\(getpid())/recordings"
+                        : (NSSearchPathForDirectoriesInDomains(
+                            .moviesDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory())
+                            + "/CoreVideoPro"
                     // The core refuses (loudly) rather than mkdir -p'ing.
                     try? FileManager.default.createDirectory(
                         atPath: folder, withIntermediateDirectories: true)
@@ -2761,7 +2803,7 @@ final class AppModel: ObservableObject {
                         rawMediaActive: lastZoomSnapshot["rawMediaActive"] as? Bool) {
                         pushWarning(warning)
                     }
-                    _ = try await bridge.request([
+                    _ = try await outputRequest([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(),
                         "commands": [
                             startProgramOutput(recording: true, streaming: streamingDesired),
@@ -3046,7 +3088,8 @@ enum ShellLog {
         let line = "\(Date()) \(message)\n"
         print("shell: \(message)")
         // The in-binary harness must never touch the operator's real log.
-        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TESTS"] != nil { return }
+        // Cached harness predicate (tests AND selfcheck), not an env read per line.
+        if ShellHarness.isActive { return }
         if let handle = FileHandle(forWritingAtPath: path) {
             handle.seekToEndOfFile()
             handle.write(Data(line.utf8))

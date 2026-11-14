@@ -85,6 +85,19 @@ struct QuitGate {
     mutating func reset() { phase = .idle }
 }
 
+/// Where the quit prompt is shown.
+enum QuitPromptPlacement: Equatable { case mainWindow, fallbackPanel }
+
+enum QuitPromptPresenterPolicy {
+    /// The in-app prompt lives in RootView, so it can only be answered there
+    /// while that window is on screen (visible or miniaturized — it is
+    /// restored). With the main window closed (the WindowGroup app keeps
+    /// running) the prompt goes in its own panel: never nowhere.
+    static func placement(mainWindowAvailable: Bool) -> QuitPromptPlacement {
+        mainWindowAvailable ? .mainWindow : .fallbackPanel
+    }
+}
+
 enum QuitFinishOutcome: Equatable { case finished, timedOut }
 
 enum QuitFlow {
