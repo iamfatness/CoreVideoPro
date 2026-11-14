@@ -21,7 +21,7 @@ included, before anything is packaged, and stops the release on any failure (or 
 `realtime` test is listed at all).
 
 1. Run the release on a quiet machine (no other build, soak or drill running).
-2. Pass: the script prints `core ctest: 100% tests passed, 0 tests failed ...` and the
+2. Pass: the script prints `core ctest: 100% tests passed out of N (realtime label: Total Tests: 1)` and the
    `manifest.json` `coreTests` entry shows `realtimeIncluded: true`. A failed or skipped
    realtime test blocks the release; do not re-run with the label excluded.
 

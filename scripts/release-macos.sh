@@ -143,7 +143,10 @@ CTEST_LOG="$WORK/ctest-core.log"
 if ! ctest --test-dir "$CORE_BUILD" -j 6 --output-on-failure 2>&1 | tee "$CTEST_LOG"; then
     die "native ctest failed on the release core build (see output above); release stopped"
 fi
-CTEST_SUMMARY="$(grep -E 'tests passed, [0-9]+ tests failed' "$CTEST_LOG" | tail -1)"
+# ctest prints "100% tests passed out of N" (all green) or "NN% tests passed,
+# M tests failed out of N"; both contain "% tests passed".
+CTEST_SUMMARY="$(grep -E '% tests passed' "$CTEST_LOG" | tail -1 || true)"
+[ -n "$CTEST_SUMMARY" ] || die "could not read the ctest summary from $CTEST_LOG"
 REALTIME_SUMMARY="$(ctest --test-dir "$CORE_BUILD" -N -L realtime | grep -E '^Total Tests' || true)"
 # A gate that silently ran zero realtime tests is no gate.
 case "$REALTIME_SUMMARY" in
