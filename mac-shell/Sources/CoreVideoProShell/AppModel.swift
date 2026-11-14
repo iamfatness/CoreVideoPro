@@ -1071,6 +1071,11 @@ final class AppModel: ObservableObject {
     var brandSyncTask: Task<Void, Never>?
     /// Test seam: sees every overlay command before it goes to the bridge.
     var overlayCommandObserver: ((JSONObject) -> Void)?
+    /// Retire bookkeeping for hideLowerThird (see cancelPendingLowerThirdRetire).
+    var lowerThirdRetireGeneration = 0
+    var lowerThirdRetireInFlight = false
+    /// Test seam: shortens the build-out settle delay.
+    var lowerThirdSettleOverrideNs: UInt64?
     /// How many keyed graphics are on air (the WinUI "N on air" readout).
     var lowerThirdOnAirCount: Int {
         (lowerThirdPhase == "on-air" || lowerThirdPhase == "building-in") ? 1 : 0
@@ -2373,6 +2378,7 @@ final class AppModel: ObservableObject {
 
     func showLowerThird() {
         guard !lowerThirdName.isEmpty else { return }
+        cancelPendingLowerThirdRetire()
         // building-in only — the core auto-advances to on-air itself.
         sendOverlay([
             "type": "set-overlay-asset", "overlayId": "key:lower-third",
@@ -2385,7 +2391,20 @@ final class AppModel: ObservableObject {
         ])
     }
 
+    /// A show (or a newer retire) supersedes a retire whose hidden ack has not
+    /// been sent yet: that ack would otherwise land on the freshly shown key.
+    func cancelPendingLowerThirdRetire() {
+        lowerThirdRetireGeneration += 1
+        lowerThirdRetireInFlight = false
+    }
+
     func hideLowerThird() {
+        // Idempotent while a retire is in flight: a second building-out would
+        // restart the native build-out and a second ack would race the first.
+        guard !lowerThirdRetireInFlight else { return }
+        lowerThirdRetireInFlight = true
+        lowerThirdRetireGeneration += 1
+        let generation = lowerThirdRetireGeneration
         // Two-step retire: shell-timed build-out, then the hidden ack (an
         // enabled:false WITHOUT keyPhase:"hidden" would start a second native
         // build-out — the WinUI RunLowerThirdKeyOutAsync shape).
@@ -2400,10 +2419,14 @@ final class AppModel: ObservableObject {
         ])
         // Wait the operator's OWN build-out time (plus a little) before the
         // retire ack, or a long build-out is cut off mid-animation.
-        let settle = UInt64(max(50, overlays.buildOutMs) + 40) * 1_000_000
+        let settle = lowerThirdSettleOverrideNs
+            ?? UInt64(max(50, overlays.buildOutMs) + 40) * 1_000_000
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: settle)
-            self?.sendOverlay([
+            // Skip the ack if a show or a newer retire moved the generation.
+            guard let self, self.lowerThirdRetireGeneration == generation else { return }
+            self.lowerThirdRetireInFlight = false
+            self.sendOverlay([
                 "type": "set-overlay-asset", "overlayId": "key:lower-third",
                 "text": "", "position": "lower-third", "enabled": false,
                 "keyPhase": "hidden", "buildInMs": 250, "buildOutMs": 200,

@@ -241,6 +241,7 @@ extension AppModel {
         guard autoLowerThirdSourceId != source.id else { return }  // un-forced refresh
 
         autoLowerThirdSourceId = source.id
+        cancelPendingLowerThirdRetire()
         sendOverlay([
             "type": "set-overlay-asset", "overlayId": "key:lower-third",
             "text": source.name, "position": "lower-third", "enabled": true,

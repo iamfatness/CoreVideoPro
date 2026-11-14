@@ -1314,9 +1314,27 @@ enum ShellTests {
         model.overlays.defaultOverlayBehavior = behavior
         model.lowerThirdPhase = phase
         model.lowerThirdName = "Guest"
+        model.lowerThirdSettleOverrideNs = 5_000_000  // 5ms, not the real build-out wait
         var seen: [JSONObject] = []
         model.overlayCommandObserver = { seen.append($0) }
         return (model, { seen })
+    }
+
+    /// Lets the main-actor settle Task run (the harness has no async context).
+    @MainActor
+    private static func spin(_ seconds: Double = 0.15) {
+        RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    private static func hiddenAcks(_ cmds: [JSONObject]) -> Int {
+        cmds.filter {
+            ($0["overlayId"] as? String) == "key:lower-third"
+                && ($0["keyPhase"] as? String) == "hidden"
+        }.count
+    }
+
+    private static func buildOuts(_ cmds: [JSONObject]) -> Int {
+        cmds.filter { ($0["keyPhase"] as? String) == "building-out" }.count
     }
 
     private static func lowerThirdHides(_ cmds: [JSONObject]) -> Bool {
@@ -1335,6 +1353,9 @@ enum ShellTests {
                    "brand kit still goes out (\(phase))")
             expect(lowerThirdHides(seen()),
                    "all-off on a brand-kit apply retires the \(phase) lower third")
+            spin()
+            expectEqual(hiddenAcks(seen()), 1,
+                        "second step: the hidden ack is sent once when nothing intervenes (\(phase))")
         }
         let (hidden, seenHidden) = brandDefaultsModel("all-off", phase: "hidden")
         hidden.pushBrandKitNow()
@@ -1342,8 +1363,42 @@ enum ShellTests {
     }
 
     @MainActor
+    private static func testBrandDefaultRetireIsIdempotentAndShowWins() {
+        // A second brand-kit apply inside the window (snapshot still says on-air)
+        // must not start a second build-out or a second ack.
+        let (twice, seenTwice) = brandDefaultsModel("all-off", phase: "on-air")
+        twice.pushBrandKitNow()
+        twice.pushBrandKitNow()
+        expectEqual(buildOuts(seenTwice()), 1, "repeated retire sends one building-out")
+        spin()
+        expectEqual(hiddenAcks(seenTwice()), 1, "repeated retire sends one hidden ack")
+        // After the retire completes, a later apply on a re-shown key retires again.
+        twice.lowerThirdPhase = "on-air"
+        twice.pushBrandKitNow()
+        expectEqual(buildOuts(seenTwice()), 2, "a retire after the first completed is allowed")
+        spin()
+
+        // Show inside the window: the pending hidden ack must not follow.
+        let (shown, seenShown) = brandDefaultsModel("all-off", phase: "on-air")
+        shown.pushBrandKitNow()
+        shown.showLowerThird()
+        spin()
+        expectEqual(hiddenAcks(seenShown()), 0, "Show inside the retire window cancels the hidden ack")
+        expect(seenShown().contains { ($0["keyPhase"] as? String) == "building-in" },
+               "the show itself went out")
+    }
+
+    @MainActor
+    private static func testBrandDefaultOptionsAreWindows() {
+        expectEqual(AppModel.defaultOverlayBehaviors, ["all-off", "manual"],
+                    "Default overlay options match Windows BrandDefaultOverlayBehaviorOptions")
+        expectEqual(OverlaysState().defaultOverlayBehavior, "all-off",
+                    "default matches Windows ProductionCatalog.BrandKit (all-off)")
+    }
+
+    @MainActor
     private static func testBrandDefaultManualAndUnknownAreNoOps() {
-        for behavior in ["manual", "restore-last", "lower-third-only", "bogus"] {
+        for behavior in ["manual", "bogus"] {
             let (model, seen) = brandDefaultsModel(behavior, phase: "on-air")
             model.pushBrandKitNow()
             expect(!lowerThirdHides(seen()), "\(behavior) leaves an enabled overlay enabled")
@@ -1420,6 +1475,8 @@ enum ShellTests {
             ("overlays/old-prefs-decode", testOldOverlayPrefsWithRemovedFieldsStillDecode),
             ("overlays/brand-default-all-off", testBrandDefaultAllOffRetiresTheLowerThird),
             ("overlays/brand-default-noops", testBrandDefaultManualAndUnknownAreNoOps),
+            ("overlays/brand-default-retire-race", testBrandDefaultRetireIsIdempotentAndShowWins),
+            ("overlays/brand-default-options", testBrandDefaultOptionsAreWindows),
             ("overlays/brand-default-not-on-sync", testBrandDefaultsAreNotRerunBySyncs),
             ("scenes/rename-keeps-fields", testSceneRenameKeepsEveryOtherField),
             ("scenes/rename-policy", testSceneRenameValidationIsTheWindowsPolicy),

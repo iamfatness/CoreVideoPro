@@ -83,7 +83,7 @@ struct OverlaysState: Codable, Equatable {
 
 extension AppModel {
     static let buildMsRange: ClosedRange<Double> = 50...2000
-    static let defaultOverlayBehaviors = ["all-off", "restore-last", "lower-third-only"]
+    static let defaultOverlayBehaviors = ["all-off", "manual"]  // Windows BrandDefaultOverlayBehaviorOptions
 
     /// Pushes the brand kit. Coalesced: colour pickers and text fields emit a
     /// change per keystroke/drag, and one request per delta is what starved the
