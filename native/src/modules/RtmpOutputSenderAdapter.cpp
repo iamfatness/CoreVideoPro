@@ -40,6 +40,10 @@
 #include <utility>
 #include <vector>
 
+#if !defined(_WIN32)
+#include "modules/PosixExecutableLocator.h"
+#endif
+
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -403,7 +407,7 @@ std::filesystem::path currentExecutableDirectory() {
     buffer.resize(buffer.size() * 2);
   }
 #else
-  return {};
+  return posix_exec::currentExecutableDirectory();
 #endif
 }
 
@@ -440,15 +444,12 @@ std::string resolveFfmpegExecutable(const std::string& configuredBinDirectory) {
     return resolved;
   }
 #else
-  if (const char* pathEnv = std::getenv("PATH"); pathEnv && *pathEnv) {
-    std::stringstream pathStream(pathEnv);
-    std::string entry;
-    while (std::getline(pathStream, entry, ':')) {
-      const auto candidate = std::filesystem::path(entry) / executableName;
-      if (fileExists(candidate)) {
-        return candidate.string();
-      }
-    }
+  // PATH, then the Homebrew/MacPorts bin dirs: a Finder/Dock launch inherits
+  // launchd's PATH, which never contains them (PosixExecutableLocator.h).
+  if (auto found = posix_exec::findOnPathThenFallbacks(
+          executableName, std::getenv("PATH"), posix_exec::defaultFfmpegFallbackDirectories());
+      !found.empty()) {
+    return found;
   }
 #endif
   return {};

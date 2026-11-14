@@ -1045,6 +1045,11 @@ if(BUILD_TESTING)
     COREVIDEO_WITH_AJA=$<BOOL:${COREVIDEO_WITH_AJA}>
     COREVIDEO_WITH_UVC=$<BOOL:${COREVIDEO_WITH_UVC}>)
   target_include_directories(corevideo-native-tests PRIVATE tests/share-sdk zoom-engine/engine zoom-engine/shared plugin-host virtualcam-dll)
+  # POSIX-only ffmpeg discovery (modules/PosixExecutableLocator.h); Windows
+  # resolves ffmpeg on its own unchanged path, so the test is not built there.
+  if(NOT WIN32)
+    target_sources(corevideo-native-tests PRIVATE tests/PosixExecutableLocatorTest.cpp)
+  endif()
   if(GTest_FOUND)
     target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_USE_SYSTEM_GTEST=1)
     target_link_libraries(corevideo-native-tests PRIVATE GTest::gtest)
