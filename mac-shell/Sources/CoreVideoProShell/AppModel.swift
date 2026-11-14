@@ -588,9 +588,21 @@ final class AppModel: ObservableObject {
                     }
                 }
             }
+            // Proof-shot only: COREVIDEO_SHELL_QUITPANEL=1 raises the main-window-closed
+            // quit panel and snapshots THAT panel at its real size (clipping check).
+            let quitPanelProof = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_QUITPANEL"] == "1"
+            if quitPanelProof {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                    guard let self else { return }
+                    self.quitPromptVisible = true
+                    QuitPromptPanel.show(model: self)
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
-                if let window = NSApplication.shared.windows.first,
-                   let view = window.contentView,
+                let target: NSView? = quitPanelProof
+                    ? QuitPromptPanel.proofView
+                    : NSApplication.shared.windows.first?.contentView
+                if let view = target,
                    let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                     view.cacheDisplay(in: view.bounds, to: bitmap)
                     if let data = bitmap.representation(using: .png, properties: [:]) {

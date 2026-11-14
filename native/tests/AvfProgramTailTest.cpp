@@ -1,6 +1,6 @@
 // #1186 on Mac: does the Program file end with its final picture and an A/V tail
 // that agrees, or does the video track stop short of the audio?
-#if COREVIDEO_WITH_AVF_ENCODER
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_AVF_ENCODER
 #include <gtest/gtest.h>
 
 #include <chrono>

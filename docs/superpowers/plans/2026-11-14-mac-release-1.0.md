@@ -125,3 +125,21 @@ double Cmd-Q, main window closed), stream-quit, real camera ISO frame count, Zoo
 join under hardened runtime (signed build), TCC prompts appear once and persist across
 updates, Companion Take/FTB from a Stream Deck, 1080p60 frame delivery on the owner's Mac
 (`scripts/mac-show-drill.py --load 8`, per CLAUDE.md north star), a full show rehearsal.
+
+### Task 8: Top navigation matches Windows 1.0 (owner report 2026-11-14)
+
+Owner: "The menu at the top seems out of date vs the windows port." Windows 1.0
+(`StudioWorkspace.xaml` ~141-245): ONE "Produce" group, in order Studio, Zoom (opens the
+`settings` page), Sources (`inputs`), Scenes, Routing, Graphics (the `overlays` page,
+relabelled), Audio, Comms, Media, Health (direct action — first-release-scene-control.md:
+"Zoom and Health are direct top navigation actions"), OHG Show. Mac today: three groups
+(Produce / Setup / Diagnose) with Overlays, Diagnose and a separate Settings tab.
+Align the Mac nav to Windows: one group, Windows order and labels; "Overlays" → "Graphics"
+(same tab content — Mac graphics designer/operate is a later release); "Diagnose" →
+"Health"; Comms and OHG Show omitted (not on Mac in 1.0 — no disabled placeholders that
+imply otherwise unless Windows shows disabled items); decide Settings placement by reading
+how Windows reaches the content of the Mac Settings tab (Windows' Zoom = settings page) —
+port the Windows structure if the Mac Zoom/Settings content maps cleanly, otherwise keep
+Settings as the trailing item and record why. Keep tab ids/prefs/snapshot-harness tab names
+working (`COREVIDEO_SHELL_TAB` aliases for old names). Tests: nav model order/labels;
+harness tab aliases. Snapshot PNGs at 1360/1920 compared with Windows.

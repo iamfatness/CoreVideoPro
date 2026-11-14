@@ -294,8 +294,16 @@ with open(sys.argv[1], "w") as f:
 PY
 # Publish: only now does anything replace the previous output in dist/.
 mkdir -p "$(dirname "$OUT")"
-rm -rf "$OUT"
-mv "$PUB" "$OUT"
+# Never delete the previous release before the new one is in place: move it
+# aside, publish, then discard it. A failed mv restores the old directory.
+OLD="$OUT.previous.$$"
+[ -e "$OUT" ] && mv "$OUT" "$OLD"
+if ! mv "$PUB" "$OUT"; then
+    [ -e "$OLD" ] && mv "$OLD" "$OUT"
+    echo "ERROR: could not publish $PUB to $OUT" >&2
+    exit 1
+fi
+rm -rf "$OLD"
 DMG="$OUT/$DMG_NAME"
 cat "$OUT/manifest.json"
 [ "$NOTARIZE" = "1" ] || echo "NOTE: --skip-notarize build; NOT distributable"

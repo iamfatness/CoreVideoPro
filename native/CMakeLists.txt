@@ -994,7 +994,7 @@ if(BUILD_TESTING)
     tests/ZoomEngineStateTest.cpp
   )
   target_link_libraries(corevideo-native-tests PRIVATE corevideo_native corevideo_comms_core)
-  if(COREVIDEO_WITH_AVF_ENCODER)
+  if(COREVIDEO_WITH_AVF_ENCODER AND NOT COREVIDEO_STUB)  # frameworks are only linked in the non-stub config
     # AVAssetReader decode helper for the Mac ISO recording pixel tests.
     target_sources(corevideo-native-tests PRIVATE tests/AvfMp4Decode.mm)
     set_source_files_properties(tests/AvfMp4Decode.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")

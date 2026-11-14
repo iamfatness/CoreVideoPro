@@ -120,7 +120,7 @@ TEST(AvfCaptureArrival, HeldPictureKeepsItsArrivalIdentitySoItIsRecordedOnce) {
   EXPECT_EQ(held.i420Width, 64);
 }
 
-#if COREVIDEO_WITH_AVF_ENCODER
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_AVF_ENCODER
 // The real recorder end to end: camera deliveries -> ISO arrival queue -> ingress
 // -> AVFoundation ISO writer -> decoded MP4. 10 s of 30 fps camera.
 TEST(AvfCaptureArrival, IsoMp4HoldsOneFramePerCameraDeliveryOver10Seconds) {

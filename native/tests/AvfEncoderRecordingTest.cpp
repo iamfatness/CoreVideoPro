@@ -3,7 +3,7 @@
 // returns null (adapter compiled out) the tests log + early-return green —
 // the repo's skip idiom (the vendored gtest has no GTEST_SKIP).
 
-#if COREVIDEO_WITH_AVF_ENCODER
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_AVF_ENCODER
 
 #include <gtest/gtest.h>
 

@@ -293,6 +293,8 @@ struct MainWindowReader: NSViewRepresentable {
 enum QuitPromptPanel {
     private static var panel: NSPanel?
     private static var watch: AnyCancellable?
+    /// Proof-shot only (COREVIDEO_SHELL_QUITPANEL): the panel's content view.
+    static var proofView: NSView? { panel?.contentView }
 
     static func show(model: AppModel) {
         if let panel {
@@ -372,6 +374,9 @@ struct QuitConfirmation: View {
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
                 .onExitCommand { if !model.quitFinishing { model.cancelQuit() } }
             }
+            // The standalone panel sizes to its content, so give the 420pt card real
+            // margins (it was flush to the panel edge, its border clipped).
+            .frame(minWidth: standalone ? 470 : nil, minHeight: standalone ? 240 : nil)
             .transition(.opacity)
         }
     }

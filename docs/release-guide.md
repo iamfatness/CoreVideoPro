@@ -38,6 +38,21 @@ keeping your settings, recordings and downloaded media.
    MacPorts (`/opt/local/bin`) installs automatically, including when the app
    is opened from Finder or the Dock. Local recording does not need FFmpeg.
 
+### First-run permissions (Mac)
+
+CoreVideo Pro asks once for each of these, then remembers the answer, including
+after you install an update:
+
+- **Camera** for camera sources.
+- **Microphone** for audio inputs.
+- **Screen Recording** for screen and window sources (macOS may ask you to quit
+  and reopen the app after you allow it).
+
+If you dismissed a prompt, turn it back on under System Settings > Privacy &
+Security. Sign in with Zoom from the Zoom tab before your first meeting (see
+below). Control from Bitfocus Companion is covered in its own section further
+down.
+
 ## Before your first show
 
 - Sign in with Zoom. Sign-in uses the CoreVideo broker at
@@ -74,6 +89,29 @@ On the Mac, the control API provides Take, Fade to Black, Record, Stream and
 scene select (`transport.take`, `transport.ftb.set`/`toggle`, `transport.record.*`,
 `transport.stream.*`, `scene.select`, `scene.list`). If the port is already in
 use, the app shows a warning and keeps running without remote control.
+
+## Cut a Mac release (maintainers)
+
+One-time setup on the release Mac, so notarization can run unattended:
+
+```
+xcrun notarytool store-credentials "CoreVideo Plugin" --team-id 42394L3353
+```
+
+Then, from a clean tree on the release branch:
+
+```
+scripts/release-macos.sh --skip-notarize   # rehearsal: dist/macos/<v>-UNNOTARIZED/
+scripts/release-macos.sh                   # release:   dist/macos/<v>/
+```
+
+The rehearsal builds and signs everything but submits nothing to Apple, and its
+output is named `-UNNOTARIZED` so it cannot be mistaken for a release. The real run
+notarizes and staples the app and the DMG, verifies them, and only then moves the
+result into `dist/macos/<v>/` (DMG, `.sha256` and `manifest.json`); a previous
+good release is kept if any step fails. It needs the Zoom macOS SDK
+(`ZOOM_SDK_DIR`) and the Developer ID identity in the login keychain. Before
+publishing, work through `docs/qa/macos-1.0-owner-acceptance.md`.
 
 ## Report a problem
 
