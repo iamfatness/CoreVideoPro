@@ -33,6 +33,31 @@ keeping your settings, recordings and downloaded media.
   co-host, and talent on the Zoom desktop or mobile app (the web client cannot
   receive talkback). Turn on **Private comms** if the room must never hear you.
 
+## Control CoreVideo Pro from Bitfocus Companion
+
+CoreVideo Pro serves a local control API on **port 8011** (HTTP and WebSocket) on
+Windows and on the Mac. It starts with the app and listens on `127.0.0.1` only.
+In `companion-module-corevideopro`, add a connection and set:
+
+- **Host**: `127.0.0.1` when Companion runs on the same computer, otherwise the
+  Mac's address (for example `studio.local` or its LAN IP).
+- **HTTP port**: `8011` (or the value of `COREVIDEO_HTTP_PORT` if you set one).
+- **Bearer token**: leave blank on the same computer. For a LAN connection, set
+  the same value you launched CoreVideo Pro with as `COREVIDEO_CONTROL_TOKEN`.
+
+To let another computer reach a Mac, launch CoreVideo Pro with
+`COREVIDEO_HTTP_LAN=1` and a non-empty `COREVIDEO_CONTROL_TOKEN`
+from a terminal (for example
+`COREVIDEO_HTTP_LAN=1 COREVIDEO_CONTROL_TOKEN=<secret> <path to>/CoreVideoProShell`).
+Without a token the app refuses to listen beyond loopback. The connection shows
+green once Companion's WebSocket opens, and its action list is read from the
+app's `/manifest`.
+
+On the Mac, the control API provides Take, Fade to Black, Record, Stream and
+scene select (`transport.take`, `transport.ftb.set`/`toggle`, `transport.record.*`,
+`transport.stream.*`, `scene.select`, `scene.list`). If the port is already in
+use, the app shows a warning and keeps running without remote control.
+
 ## Report a problem
 
 Include the version (for example `v1.0.0`), Windows version, CPU and GPU, the

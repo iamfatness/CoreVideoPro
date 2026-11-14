@@ -2676,6 +2676,9 @@ enum ShellTests {
             ("control/server-end-to-end", testControlServerEndToEnd),
             ("control/server-auth-wire", testControlServerAuthOverTheWire),
             ("control/server-real-model", testControlServerDrivesTheRealModel),
+            ("control/state-stream-throttle", testControlStateStreamIsAThrottleNotADebounce),
+            ("control/ws-origin-rule", testControlWebSocketOriginRule),
+            ("control/ws-slow-client-dropped", testControlSlowWebSocketClientIsDropped),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)

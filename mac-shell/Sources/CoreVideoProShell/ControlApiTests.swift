@@ -8,6 +8,7 @@
 // HttpSnapshotRouteTests, CoreSnapshotObserverTests and
 // SupportBundleLogRedactorTests; the auth cases of HttpControlServerTests.
 
+import Combine
 import Foundation
 import Network
 
@@ -554,6 +555,7 @@ extension ShellTests {
         expect(body.contains("scene:solo") && !body.contains("SECRETKEY99"), "served through the redactor")
         expect(!ControlApiHost.shouldAutoStart(environment: ["COREVIDEO_SHELL_TESTS": "1"]), "never auto-starts in the test harness")
         expect(!ControlApiHost.shouldAutoStart(environment: ["COREVIDEO_SHELL_SELFCHECK": "1"]), "never auto-starts in selfcheck")
+        expect(!ControlApiHost.shouldAutoStart(environment: ["COREVIDEO_SHELL_SNAPSHOT": "/tmp/x.png"]), "never auto-starts in a snapshot proof run")
         expect(ControlApiHost.shouldAutoStart(environment: [:]), "auto-starts with the app")
     }
 
@@ -591,6 +593,8 @@ extension ShellTests {
         let connection: NWConnection
         let box = Box<String>()
         private var received = Data()
+        private let lock = NSLock()
+        var soFar: String { lock.lock(); defer { lock.unlock() }; return String(decoding: received, as: UTF8.self) }
         init(port: UInt16) {
             connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
         }
@@ -606,7 +610,7 @@ extension ShellTests {
         }
         private func read() {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, complete, error in
-                if let data { received.append(data) }
+                if let data { lock.lock(); received.append(data); lock.unlock() }
                 if complete || error != nil { box.value = String(decoding: received, as: UTF8.self) }
                 else { read() }
             }
@@ -750,6 +754,83 @@ extension ShellTests {
                       headers: ["Content-Type": "application/json", "Authorization": "bearer s3cret"])
         expectEqual(ok.status, 200, "authorized POST")
         expectEqual(surface.invocations.count, 1, "authorized POST invokes once")
+    }
+
+    /// A source that fires every 20 ms for 0.6 s never goes quiet for 100 ms:
+    /// debounce emits nothing until it stops, a throttle keeps pushing.
+    @MainActor
+    static func testControlStateStreamIsAThrottleNotADebounce() {
+        let source = PassthroughSubject<Int, Never>()
+        let count = Box<Int>()
+        count.value = 0
+        let sink = ControlApiHost.stateChangeStream(source).sink { _ in count.value = (count.value ?? 0) + 1 }
+        let end = Date().addingTimeInterval(0.6)
+        var i = 0
+        while Date() < end {
+            source.send(i); i += 1
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        let during = count.value ?? 0
+        expect(during >= 3, "a never-quiet source still pushes while it runs (got \(during))")
+        spin(until: { false }, limit: 0.3)
+        sink.cancel()
+    }
+
+    @MainActor
+    static func testControlWebSocketOriginRule() {
+        let surface = FakeSurface()
+        surface.observation = ControlSnapshotObservation(state: coreSnapshot, receivedAt: Date())
+        let router = ControlRouter(surface: surface)
+        func upgrade(_ query: String, origin: Bool) -> Data {
+            Data(("GET /ws\(query) HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+                + (origin ? "Origin: http://studio.local\r\n" : "") + "\r\n").utf8)
+        }
+        let (tokenServer, started) = startServer(router, ControlServerOptions(port: 0, host: "127.0.0.1", authToken: "s3cret"))
+        defer { tokenServer.stop() }
+        guard case .success(let port)? = started else { expect(false, "token server starts"); return }
+        func status(_ payload: Data) -> String {
+            let client = RawClient(port: port)
+            client.run(payload)
+            spin(until: { !client.soFar.isEmpty }, limit: 2)
+            client.connection.cancel()
+            return String(client.soFar.prefix(12))
+        }
+        expectEqual(status(upgrade("?token=s3cret", origin: true)), "HTTP/1.1 101", "browser WS with a valid token is allowed")
+        expectEqual(status(upgrade("?token=wrong", origin: true)), "HTTP/1.1 401", "browser WS with a wrong token is 401")
+        let (openServer, openStarted) = startServer(router, ControlServerOptions(port: 0, host: "127.0.0.1", authToken: nil))
+        defer { openServer.stop() }
+        guard case .success(let openPort)? = openStarted else { expect(false, "open server starts"); return }
+        let client = RawClient(port: openPort)
+        client.run(upgrade("", origin: true))
+        spin(until: { client.box.value != nil }, limit: 2)
+        client.connection.cancel()
+        expect((client.box.value ?? "").hasPrefix("HTTP/1.1 403"), "Origin with NO token configured (open mode) is refused")
+    }
+
+    /// A client that never reads must be dropped once its outbound queue is
+    /// over the cap, not grow without bound.
+    @MainActor
+    static func testControlSlowWebSocketClientIsDropped() {
+        let surface = FakeSurface()
+        surface.observation = ControlSnapshotObservation(state: coreSnapshot, receivedAt: Date())
+        let (server, started) = startServer(ControlRouter(surface: surface), ControlServerOptions(port: 0, host: "127.0.0.1", authToken: nil))
+        defer { server.stop() }
+        guard case .success(let port)? = started else { expect(false, "server starts"); return }
+        let slow = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        slow.stateUpdateHandler = { state in
+            if case .ready = state {
+                let req = "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+                slow.send(content: Data(req.utf8), completion: .contentProcessed { _ in })   // and never receive
+            }
+        }
+        slow.start(queue: DispatchQueue(label: "control-test-slow"))
+        spin(until: { server.webSocketClientCount == 1 }, limit: 3)
+        expectEqual(server.webSocketClientCount, 1, "the slow client is connected")
+        let big = #"{"pad":""# + String(repeating: "x", count: 60_000) + #""}"#
+        for _ in 0..<600 { server.broadcastState(big) }
+        spin(until: { server.webSocketClientCount == 0 }, limit: 5)
+        expectEqual(server.webSocketClientCount, 0, "a client that never reads is dropped at the outbound cap")
+        slow.cancel()
     }
 
     @MainActor

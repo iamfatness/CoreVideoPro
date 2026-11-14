@@ -241,7 +241,18 @@ extension AppModel {
 @MainActor
 final class ControlApiHost {
     nonisolated static func shouldAutoStart(environment: [String: String]) -> Bool {
-        !ShellHarness.detect(in: environment)
+        // Snapshot proof runs render the window and exit; they must not open a port.
+        !ShellHarness.detect(in: environment) && environment["COREVIDEO_SHELL_SNAPSHOT"] == nil
+    }
+
+    /// Coalesces model change notifications for the /ws push. A debounce would be
+    /// starved forever by a source that never goes quiet for 100 ms; a latest-value
+    /// throttle emits at most every 100 ms and always delivers the last value.
+    static func stateChangeStream<P: Publisher>(_ source: P) -> AnyPublisher<Void, Never>
+    where P.Failure == Never {
+        source.map { _ in () }
+            .throttle(for: .milliseconds(100), scheduler: RunLoop.main, latest: true)
+            .eraseToAnyPublisher()
     }
 
     private var server: ControlHttpServer?
@@ -268,9 +279,8 @@ final class ControlApiHost {
                 }
             }
         }
-        // Windows debounces StateChanged through a feedback timer; push only real changes.
-        changes = model.objectWillChange
-            .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
+        // Windows coalesces StateChanged through a feedback timer; push only real changes.
+        changes = Self.stateChangeStream(model.objectWillChange)
             .sink { [weak self, weak model] _ in
                 guard let self, let model,
                       let json = ControlJSON.encode(AppModelControlSurface.state(model).dictionary),

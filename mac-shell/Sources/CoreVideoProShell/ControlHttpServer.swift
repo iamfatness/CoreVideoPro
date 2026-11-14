@@ -20,7 +20,9 @@
 //   - Hardening 2: on a loopback bind the Host header must name loopback, which
 //     defeats DNS rebinding (a hostile name re-pointed at 127.0.0.1).
 //   - Hardening 3: a WebSocket upgrade carrying an Origin header (i.e. from a
-//     browser) is refused. Companion's `ws` client sends none.
+//     browser) is refused when no token is configured (open loopback mode);
+//     with a token, browsers authenticate via ?token= and are allowed.
+//     Companion's `ws` client sends no Origin.
 //
 // BOUNDS: request head <= 16 KiB, body <= 64 KiB (Content-Length only; chunked is
 // refused), whole request within 10 s, <= 64 concurrent connections, WebSocket
@@ -407,6 +409,9 @@ final class ControlHttpServer: @unchecked Sendable {
         return .listenFailed("could not listen on \(options.displayEndpoint): \(error)")
     }
 
+    /// Per-WebSocket-client cap on unsent outbound bytes.
+    static let maxPendingOutboundBytes = 1 << 20
+
     func stop() {
         queue.sync {
             stopped = true
@@ -415,6 +420,11 @@ final class ControlHttpServer: @unchecked Sendable {
             for connection in connections.values { connection.close() }
             connections.removeAll()
         }
+    }
+
+    /// Number of open /ws clients (tests, diagnostics).
+    var webSocketClientCount: Int {
+        queue.sync { connections.values.filter { $0.isWebSocket && !$0.isFinished }.count }
     }
 
     /// Pushes a ControlState JSON to every open /ws client (Windows BroadcastAsync).
@@ -448,6 +458,7 @@ final class ControlHttpServer: @unchecked Sendable {
         private var head: ControlRequestHead?
         private var bodyOffset = 0
         private(set) var isWebSocket = false
+        var isFinished: Bool { finished }
         private var finished = false
         /// Set once the request is handed to the router: later bytes never dispatch again.
         private var dispatched = false
@@ -544,7 +555,10 @@ final class ControlHttpServer: @unchecked Sendable {
                                          isWebSocketUpgrade: isWs, queryToken: head.query["token"]) {
                 return (401, "Unauthorized")
             }
-            if isWs && head.headers["origin"] != nil { return (403, "Forbidden") }
+            // A browser can't set Authorization on a WebSocket, so a token holder
+            // (?token=) is allowed through. With no token (open loopback mode) any
+            // web page could reach the socket, so an Origin header is refused.
+            if isWs && head.headers["origin"] != nil && !options.hasToken { return (403, "Forbidden") }
             if head.method == "POST" && ControlRouter.normalize(head.path) == "/invoke" {
                 let type = (head.headers["content-type"] ?? "").split(separator: ";").first
                     .map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
@@ -598,9 +612,23 @@ final class ControlHttpServer: @unchecked Sendable {
             }
         }
 
+        /// Bytes handed to the socket but not yet written out (queue only).
+        private var pendingBytes = 0
+
+        /// Queues a frame. A client whose unsent backlog passes the cap (it is
+        /// not reading) is closed rather than letting the queue grow unbounded.
         func send(_ data: Data) {
             guard !finished else { return }
-            nw.send(content: data, completion: .contentProcessed { _ in })
+            if pendingBytes + data.count > ControlHttpServer.maxPendingOutboundBytes {
+                ShellLog.write("control: dropping a slow WebSocket client (outbound backlog over cap)")
+                return close()
+            }
+            pendingBytes += data.count
+            let size = data.count
+            nw.send(content: data, completion: .contentProcessed { [weak self] _ in
+                guard let self, let queue = self.server?.queue else { return }
+                queue.async { self.pendingBytes -= size }
+            })
         }
 
         private func respond(_ status: Int, _ body: String) {

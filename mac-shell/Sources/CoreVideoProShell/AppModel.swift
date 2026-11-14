@@ -2965,6 +2965,8 @@ final class AppModel: ObservableObject {
             } else {
                 ShellLog.write("quit: outputs finished")
             }
+            // Stop the control server before the core goes away, not only at willTerminate.
+            controlApi.stop()
             let exited = await bridge?.stopForAppExit(grace: quitCoreGrace) ?? true
             ShellLog.write("quit: core \(exited ? "exited on EOF" : "terminated after grace")")
             quitFinishing = false
