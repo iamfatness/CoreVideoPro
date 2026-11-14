@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "modules/Interfaces.h"
+#include "modules/IsoFrameConform.h"
 #include "modules/RecordingArtifactNaming.h"
 #include "modules/RecordingPtsClock.h"
 
@@ -116,6 +117,11 @@ class AvfMp4Writer {
                                    sourcePixelBufferAttributes:adaptorAttrs];
     return true;
   }
+
+  // The size this writer opened at (even-aligned for NV12). An MP4 video track
+  // has one size for its lifetime, so later frames are conformed to it.
+  int openedWidth() const { return width_; }
+  int openedHeight() const { return height_; }
 
   bool ensureAudioStream(int channels, int sampleRate, int audioBitrateKbps,
                          std::string& errorOut) {
@@ -463,30 +469,37 @@ class AVFoundationEncoderSink final : public IEncoderSink {
         continue;  // same frame resubmitted this tick
       }
       std::string error;
-      if (!entry.opened) {
-        // Lazy open at the source's FIRST frame, sized to its native dims.
-        const int width = isI420 ? frame.i420Width : frame.pixelWidth;
-        const int height = isI420 ? frame.i420Height : frame.pixelHeight;
-        if (!entry.writer->open(entry.status.path, width, height, request_.fps,
-                                request_.targetBitrateMbps, request_.videoCodec, error,
-                                isI420 ? VideoInput::Nv12 : VideoInput::Bgra) ||
-            (entry.hasAudio &&
-             !entry.writer->ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) ||
-            !entry.writer->beginWriting(error)) {
-          entry.failed = true;
-          entry.status.warning = "ISO writer open failed: " + error;
-          raiseWarning("ISO " + entry.status.displayName + ": " + entry.status.warning);
-          continue;
-        }
-        entry.opened = true;
-        entry.status.trackOpen = true;
+      if (!entry.opened && !openIsoWriter(entry, frame, error)) {
+        continue;
       }
       bool ok = false;
       if (isI420) {
-        i420ToNv12(frame.i420->data(), frame.i420Width & ~1, frame.i420Height & ~1,
-                   entry.nv12Scratch);
-        ok = entry.writer->writeVideoNv12(entry.nv12Scratch.data(), frame.i420Width & ~1,
-                                          frame.i420Height & ~1, *pts, error);
+        const int openedW = entry.writer->openedWidth();
+        const int openedH = entry.writer->openedHeight();
+        if (frame.i420Width != openedW || frame.i420Height != openedH) {
+          // #482 / #1203: aspect-preserving, centred, legal-black letterbox —
+          // never a crop of the top-left corner.
+          conformI420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height, openedW,
+                            openedH, entry.nv12Scratch);
+        } else {
+          i420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height, entry.nv12Scratch);
+        }
+        ok = entry.writer->writeVideoNv12(entry.nv12Scratch.data(), openedW, openedH, *pts, error);
+      } else if (frame.pixelWidth != entry.writer->openedWidth() ||
+                 frame.pixelHeight != entry.writer->openedHeight()) {
+        // Same ruling as Windows: no BGRA scaler exists, so a size change after
+        // open is refused loudly rather than silently cropped/padded.
+        if (!entry.loggedSizeChange) {
+          entry.loggedSizeChange = true;
+          entry.status.warning = "ISO " + entry.status.displayName + " (" + source.sourceId +
+                                 ") changed size " + std::to_string(frame.pixelWidth) + "x" +
+                                 std::to_string(frame.pixelHeight) + " after its writer opened at " +
+                                 std::to_string(entry.writer->openedWidth()) + "x" +
+                                 std::to_string(entry.writer->openedHeight()) +
+                                 "; frames at the new size are not recorded.";
+          raiseWarning(entry.status.warning);
+        }
+        continue;
       } else {
         ok = entry.writer->writeVideo(frame.pixels->data(), frame.pixelWidth, frame.pixelHeight,
                                       frame.pixelStride, *pts, error);
@@ -648,6 +661,8 @@ class AVFoundationEncoderSink final : public IEncoderSink {
         IsoWriterEntry entry;
         entry.writer = std::make_unique<AvfMp4Writer>();
         entry.hasAudio = selection.hasAudio;
+        entry.targetWidth = selection.targetWidth;
+        entry.targetHeight = selection.targetHeight;
         entry.status.sourceId = selection.sourceId;
         entry.status.displayName = selection.displayName;
         char number[8];
@@ -752,9 +767,39 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     bool hasAudio = false;
     bool opened = false;
     bool failed = false;
+    bool loggedSizeChange = false;
+    int targetWidth = 0;   // selected canvas for a Zoom camera; 0 = source-native
+    int targetHeight = 0;
     std::vector<uint8_t> nv12Scratch;
     std::vector<float> stereoScratch;
   };
+
+  // Lazily open one ISO writer when its first real frame arrives. A Zoom camera
+  // (target size selected at join, #1203) opens at that size regardless of the
+  // first frame's size; any other source opens at its native frame size.
+  bool openIsoWriter(IsoWriterEntry& entry, const VideoFrame& frame, std::string& error) {
+    const bool isI420 = frame.hasI420();
+    int width = isI420 ? frame.i420Width : frame.pixelWidth;
+    int height = isI420 ? frame.i420Height : frame.pixelHeight;
+    if (isI420 && entry.targetWidth > 0 && entry.targetHeight > 0) {
+      width = entry.targetWidth;
+      height = entry.targetHeight;
+    }
+    if (!entry.writer->open(entry.status.path, width, height, request_.fps,
+                            request_.targetBitrateMbps, request_.videoCodec, error,
+                            isI420 ? VideoInput::Nv12 : VideoInput::Bgra) ||
+        (entry.hasAudio &&
+         !entry.writer->ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) ||
+        !entry.writer->beginWriting(error)) {
+      entry.failed = true;
+      entry.status.warning = "ISO writer open failed: " + error;
+      raiseWarning("ISO " + entry.status.displayName + ": " + entry.status.warning);
+      return false;
+    }
+    entry.opened = true;
+    entry.status.trackOpen = true;
+    return true;
+  }
 
   RecordingSessionRequest request_;
   OutputSession session_;

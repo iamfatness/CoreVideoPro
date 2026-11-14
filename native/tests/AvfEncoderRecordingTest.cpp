@@ -7,12 +7,15 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include "AvfMp4Decode.h"
 #include "modules/Interfaces.h"
 
 namespace {
@@ -336,6 +339,99 @@ TEST(AvfEncoderRecording, IsoPerSourceDedupSkipsResubmittedFrames) {
   const auto session = encoder->session();
   ASSERT_EQ(session.isoStreams.size(), 1u);
   EXPECT_EQ(session.isoStreams[0].videoFrameCount, 1);
+  fs::remove_all(dir);
+}
+
+// I420 frame whose bottom-right quadrant is white and everything else dark grey.
+VideoFrame isoQuadrantI420(const std::string& sourceId, int64_t frameId, int width, int height) {
+  VideoFrame frame;
+  frame.participantId = sourceId;
+  frame.frameId = frameId;
+  frame.i420Width = width;
+  frame.i420Height = height;
+  const size_t yLen = static_cast<size_t>(width) * height;
+  auto planes = std::make_shared<std::vector<uint8_t>>(yLen + yLen / 2, 128);
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      (*planes)[static_cast<size_t>(y) * width + x] = (x >= width / 2 && y >= height / 2) ? 235 : 60;
+    }
+  }
+  frame.i420 = std::move(planes);
+  return frame;
+}
+
+// #1203 (Windows 219ca1db): a Zoom camera ISO opens at the SELECTED resolution,
+// not at whatever its first frame happens to be, and later frames of another
+// size are scaled (aspect-fit), never cropped.
+TEST(AvfEncoderRecording, ZoomIsoOpensAtSelectedSizeAndScalesLaterFramesWithoutCropping) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("iso-selected-size");
+  auto request = testRequest(dir.string());
+  IsoSourceSelection guest;
+  guest.sourceId = "zoom:1";
+  guest.displayName = "Guest";
+  guest.hasAudio = false;
+  guest.targetWidth = 1280;
+  guest.targetHeight = 720;
+  request.isoSources = {guest};
+  encoder->configureRecording(request);
+  (void)encoder->start({"recording"}, {"zoom:1"});
+
+  // First delivered frame is 640x360 (a guest still on a low tier), the rest 1080p.
+  for (int i = 1; i <= 12; ++i) {
+    encoder->submit(frameWithFullBgra(i, 640, 360));
+    const bool low = i == 1;
+    encoder->submitIsoVideo({{"zoom:1", "Guest",
+                              isoQuadrantI420("zoom:1", i, low ? 640 : 1920, low ? 360 : 1080)}});
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+  }
+  encoder->stopRecording();
+  const auto session = encoder->session();
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  ASSERT_TRUE(session.isoStreams[0].warning.empty()) << session.isoStreams[0].warning;
+  ASSERT_GT(session.isoStreams[0].videoFrameCount, 2);
+
+  const auto decoded = corevideo::testing::decodeMp4VideoToBgra(session.isoStreams[0].path);
+  ASSERT_TRUE(decoded.error.empty()) << decoded.error;
+  EXPECT_EQ(decoded.width, 1280);
+  EXPECT_EQ(decoded.height, 720);
+  ASSERT_GT(decoded.frames.size(), 2u);
+  ASSERT_EQ(decoded.width, 1280);
+  const auto& last = decoded.frames.back();
+  const auto luma = [&](int x, int y) {
+    const size_t o = (static_cast<size_t>(y) * decoded.width + x) * 4u;
+    return (last[o] + last[o + 1] + last[o + 2]) / 3;
+  };
+  // The white quadrant survives the scale (it is absent under a top-left crop).
+  EXPECT_GT(luma(960, 540), 180) << "bottom-right quadrant missing: frame was cropped";
+  EXPECT_LT(luma(320, 180), 110) << "top-left quadrant should stay dark";
+  EXPECT_LT(luma(960, 180), 110);
+  EXPECT_LT(luma(320, 540), 110);
+  fs::remove_all(dir);
+}
+
+// Windows ruling: no BGRA scaler, so a size change after open is refused with a
+// named warning instead of being cropped into the file.
+TEST(AvfEncoderRecording, BgraIsoSizeChangeAfterOpenIsRefusedNotCropped) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("iso-bgra-resize");
+  auto request = isoRequest(dir.string());
+  request.isoSources = {request.isoSources[1]};  // capture:cam1 (BGRA, video-only)
+  encoder->configureRecording(request);
+  (void)encoder->start({"recording"}, {"capture:cam1"});
+  encoder->submitIsoVideo({{"capture:cam1", "Bob Jones", isoBgraFrame("capture:cam1", 1)}});
+  auto bigger = isoBgraFrame("capture:cam1", 2);
+  bigger.pixelWidth = 512;
+  bigger.pixelHeight = 288;
+  bigger.pixelStride = 512 * 4;
+  bigger.pixels = std::make_shared<std::vector<uint8_t>>(512u * 288u * 4u, 0x80);
+  encoder->submitIsoVideo({{"capture:cam1", "Bob Jones", bigger}});
+  encoder->stopRecording();
+  const auto session = encoder->session();
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  EXPECT_EQ(session.isoStreams[0].videoFrameCount, 1);
+  EXPECT_NE(session.isoStreams[0].warning.find("changed size 512x288"), std::string::npos)
+      << session.isoStreams[0].warning;
   fs::remove_all(dir);
 }
 

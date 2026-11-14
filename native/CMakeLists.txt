@@ -992,6 +992,11 @@ if(BUILD_TESTING)
     tests/ZoomEngineStateTest.cpp
   )
   target_link_libraries(corevideo-native-tests PRIVATE corevideo_native corevideo_comms_core)
+  if(COREVIDEO_WITH_AVF_ENCODER)
+    # AVAssetReader decode helper for the Mac ISO recording pixel tests.
+    target_sources(corevideo-native-tests PRIVATE tests/AvfMp4Decode.mm)
+    set_source_files_properties(tests/AvfMp4Decode.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  endif()
   # Comms: core relay, engine comms core/protocol, and ZComms' own tests for
   # the ported pieces (tests/comms/test_util.h maps ZC_CHECK onto the shim).
   target_sources(corevideo-native-tests PRIVATE
