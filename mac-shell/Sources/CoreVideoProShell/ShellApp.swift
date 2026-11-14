@@ -1278,25 +1278,38 @@ struct TransportBar: View {
                           lit: model.lowerThirdPhase != "hidden")
             Spacer()
             Text(outputsLabel).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+            if !model.takeStatus.isEmpty {
+                Text(model.takeStatus).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+                    .lineLimit(1).truncationMode(.tail).frame(maxWidth: 260)
+            }
             // Take — amber, the director's commit button.
             Button {
-                model.take()
+                Task { await model.take() }
             } label: {
                 HStack(spacing: 4) {
                     Text("Take").font(.grotesk(12, .bold))
-                    Text("Cut").font(.grotesk(9))
+                    Text(model.takeTransitionLabel).font(.grotesk(9))
                         .foregroundStyle(Studio.onAccent.opacity(0.7))
                 }
                 .foregroundStyle(Studio.onAccent)
                 .padding(.horizontal, 14).padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 8).fill(
-                    model.previewSceneId.isEmpty
-                        || model.previewSceneId == model.programSceneId
-                        ? Studio.amber.opacity(0.35) : Studio.amber))
+                    model.canTake ? Studio.amber : Studio.amber.opacity(0.35)))
             }
             .buttonStyle(.plain)
-            .disabled(model.previewSceneId.isEmpty
-                      || model.previewSceneId == model.programSceneId)
+            .disabled(!model.canTake)
+            .help("Take Preview to Program using \(model.takeTransitionLabel), then swap the previous Program back to Preview.")
+            // Cut / Fade — Windows footer flyout ("Instant" vs "· 300 ms").
+            Picker("", selection: Binding(
+                get: { model.takeTransitionMode == "cut" ? "cut" : "fade" },
+                set: { model.setTakeTransition($0) })) {
+                Text("Cut").tag("cut")
+                Text("Fade").tag("fade")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("Cut is instant; Fade is 300 ms.")
             // Record — red outline with format subtitle.
             Button {
                 model.toggleRecording()

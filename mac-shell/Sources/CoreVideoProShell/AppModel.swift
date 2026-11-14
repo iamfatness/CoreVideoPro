@@ -1888,14 +1888,120 @@ final class AppModel: ObservableObject {
         syncScenes()
     }
 
-    func take() {
-        // There is no `take` wire command: Take = swap the two scene ids and
-        // resend both scene graphs in one batch (TransportCoordinator shape).
-        guard !previewSceneId.isEmpty, previewSceneId != programSceneId else { return }
+    /// Session-only like Windows (`_takeTransitionMode`, not persisted).
+    @Published var takeTransitionMode = "fade"
+    @Published var takeStatus = ""
+    @Published private(set) var takeInFlight = false
+    private var takeRevision = 0
+
+    enum TakeResult: Equatable {
+        case success
+        case failed(String)
+    }
+
+    /// Windows `NormalizeTakeTransitionMode`: cut/dip/wipe pass, anything else is fade.
+    static func normalizeTakeTransitionMode(_ mode: String?) -> String {
+        switch mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "cut": return "cut"
+        case "dip": return "dip"
+        case "wipe": return "wipe"
+        default: return "fade"
+        }
+    }
+
+    /// Windows `SetTakeTransition`: normalize, then announce.
+    func setTakeTransition(_ mode: String?) {
+        takeTransitionMode = Self.normalizeTakeTransitionMode(mode)
+        takeStatus = "Take transition set to \(takeTransitionLabel)"
+    }
+
+    var takeTransitionLabel: String {
+        switch takeTransitionMode {
+        case "cut": return "Cut"
+        case "dip": return "Dip"
+        case "wipe": return "Wipe"
+        default: return "Fade"
+        }
+    }
+
+    /// Windows `CanTake` (StudioViewModel.cs:4275) minus the Shot Layout and
+    /// draft terms Mac has no equivalent of, plus the coordinator's in-flight
+    /// guard. Deliberately NOT gated on `quitFinishing`: Windows CanTake has no
+    /// quit term (only Record/Stream do).
+    var canTake: Bool {
+        !takeInFlight
+            && scenes.contains { $0.id == previewSceneId }
+            && scenes.contains { $0.id == programSceneId }
+            && previewSceneId != programSceneId
+    }
+
+    /// The one Take entry (button, and later keyboard / Companion): a port of
+    /// `TransportCoordinator.TakeAsync`. Swaps Program/Preview, sends
+    /// `begin-take-transition` first in the SAME media-core-sync batch as the
+    /// scene graphs (no 120 ms debounce), and rolls both ids back when the core
+    /// rejects or the request fails, unless the operator has edited them since
+    /// (the #286 rule: newer edits are preserved, never clobbered).
+    @discardableResult
+    func take() async -> TakeResult {
+        if takeInFlight { return .failed("A Take is already in progress.") }
+        takeInFlight = true
+        defer { takeInFlight = false }
+        let previousProgram = programSceneId
         let taken = previewSceneId
-        previewSceneId = programSceneId
+        guard scenes.contains(where: { $0.id == taken }),
+              scenes.contains(where: { $0.id == previousProgram }) else {
+            let unavailable = "Take unavailable - select an available Preview scene."
+            takeStatus = unavailable
+            return .failed(unavailable)
+        }
+        guard taken != previousProgram else {
+            let same = "Take unavailable - Preview is already on Program."
+            takeStatus = same
+            return .failed(same)
+        }
+        previewSceneId = previousProgram
         programSceneId = taken
-        syncScenes()
+        sceneSyncTask?.cancel()           // the Take batch carries the full current state
+        sceneSyncRequestCount += 1
+        guard bridge != nil || quitRequestForTesting != nil else {
+            let offline = "Program selected locally; Take was not sent because the media core is offline."
+            takeStatus = offline
+            return .failed(offline)
+        }
+        takeRevision += 1
+        let transition: JSONObject = [
+            "type": "begin-take-transition",
+            "operationId": UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(),
+            "revision": takeRevision,
+            "mode": Self.normalizeTakeTransitionMode(takeTransitionMode),
+            "durationMs": 300,
+            "direction": "left-to-right",
+            "dipColor": "#000000",
+        ]
+        let batch = sceneSyncBatch(transition: transition)
+        do {
+            _ = try await outputRequest([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": batch,
+            ])
+            takeStatus = "Program updated"
+            return .success
+        } catch {
+            let untouched = programSceneId == taken && previewSceneId == previousProgram
+            let failure: String
+            if untouched {
+                programSceneId = previousProgram
+                previewSceneId = taken
+                syncScenes()              // reconcile the core with the restored scenes
+                failure = "Take was not confirmed; previous local Program restored. "
+                    + "Verify live output before retrying. \(error.localizedDescription)"
+            } else {
+                failure = "Take was not confirmed; newer local edits preserved. "
+                    + "Verify live output. \(error.localizedDescription)"
+            }
+            takeStatus = failure
+            pushWarning(failure)
+            return .failed(failure)
+        }
     }
 
     private var sceneSyncTask: Task<Void, Never>?
@@ -1941,9 +2047,11 @@ final class AppModel: ObservableObject {
         syncScenes()
     }
 
-    private func pushScenes() async {
-        guard let bridge else { return }
+    /// The scene-graph half of a sync. A Take prepends `begin-take-transition`
+    /// (Windows BuildSyncCommands: the transition leads the batch).
+    private func sceneSyncBatch(transition: JSONObject? = nil) -> [JSONObject] {
         var commands: [JSONObject] = []
+        if let transition { commands.append(transition) }
         if !programSceneId.isEmpty {
             var graph: JSONObject = [
                 "type": "load-scene-graph", "sceneId": programSceneId,
@@ -1964,7 +2072,12 @@ final class AppModel: ObservableObject {
             }
             commands.append(preview)
         }
-        let batch = Self.appendSourcePolicies(to: commands, slots: slots)
+        return Self.appendSourcePolicies(to: commands, slots: slots)
+    }
+
+    private func pushScenes() async {
+        guard let bridge else { return }
+        let batch = sceneSyncBatch()
         guard !batch.isEmpty else { return }
         do {
             _ = try await bridge.request([
@@ -2044,7 +2157,7 @@ final class AppModel: ObservableObject {
         previewSceneId = target
         syncScenes()
         if autoTakeEnabled {
-            take()
+            Task { await self.take() }
             autoStatus = "Took \(target) (\(autoRuleId))"
         } else {
             autoStatus = "Queued \(target) on preview"

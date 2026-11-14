@@ -1806,6 +1806,190 @@ enum ShellTests {
         spin(until: { !replies().isEmpty }, limit: 6)
     }
 
+
+    // ── Take is a real transition with rollback (audit §3/§4) ────────────────
+    // Windows: TransportCoordinatorTests Take_DoubleInvocationWhileAwaitingSync-
+    // DoesNotSwapBack / Take_FailureRestoresPriorProgramAndRetainsPreviewForRetry;
+    // MediaCoreCommandBuilder.BuildSyncCommands puts begin-take-transition first.
+
+    private final class FakeTakeCore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _bodies: [[String: Any]] = []
+        private var _hold = false, _failure: String?
+        var bodies: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return _bodies }
+        var hold: Bool { get { lock.lock(); defer { lock.unlock() }; return _hold }
+                         set { lock.lock(); _hold = newValue; lock.unlock() } }
+        var failure: String? { get { lock.lock(); defer { lock.unlock() }; return _failure }
+                               set { lock.lock(); _failure = newValue; lock.unlock() } }
+        private func record(_ body: [String: Any]) { lock.lock(); _bodies.append(body); lock.unlock() }
+        func handle(_ body: [String: Any]) async throws -> [String: Any] {
+            record(body)
+            while hold { try? await Task.sleep(nanoseconds: 5_000_000) }
+            if let failure { throw BridgeError.remote(failure) }
+            return ["ok": true]
+        }
+        func types(_ index: Int = 0) -> [String] {
+            ((bodies[index]["commands"] as? [[String: Any]]) ?? []).compactMap { $0["type"] as? String }
+        }
+    }
+
+    @MainActor
+    private static func takeModel(_ core: FakeTakeCore) -> AppModel {
+        let model = sceneEditModel()   // Program s2, Preview s1
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.status = .connected(renderer: "test")
+        return model
+    }
+
+    @MainActor
+    private static func runTake(_ model: AppModel, wait: Bool = true) -> TakeBox {
+        let box = TakeBox()
+        Task { @MainActor in box.result = await model.take() }
+        if wait { spin(until: { box.result != nil }, limit: 3) }
+        return box
+    }
+
+    final class TakeBox { var result: AppModel.TakeResult? }
+
+    @MainActor
+    private static func testTakeBatchOrderAndFields() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        let box = runTake(model)
+        expectEqual(box.result, .success, "Take succeeds")
+        expectEqual(core.bodies.count, 1, "Take is ONE media-core-sync request")
+        guard core.bodies.count == 1 else { return }
+        let types = core.types()
+        expectEqual(types.first ?? "", "begin-take-transition", "the transition leads the batch")
+        let load = types.firstIndex(of: "load-scene-graph") ?? -1
+        expect(load > 0, "load-scene-graph follows begin-take-transition")
+        expect(types.contains("set-preview-scene"), "preview rides the same batch")
+        let cmds = core.bodies[0]["commands"] as? [[String: Any]] ?? []
+        let t = cmds[0]
+        expectEqual(t["mode"] as? String ?? "", "fade", "default mode is fade")
+        expectEqual(t["durationMs"] as? Int ?? -1, 300, "300 ms")
+        expectEqual(t["direction"] as? String ?? "", "left-to-right", "direction")
+        expectEqual(t["dipColor"] as? String ?? "", "#000000", "dip colour")
+        expect(!(t["operationId"] as? String ?? "").isEmpty, "operation id present")
+        expect(t["revision"] as? Int != nil, "revision present")
+        expectEqual(cmds[load]["sceneId"] as? String ?? "", "s1", "the taken scene loads as Program")
+        expectEqual(model.programSceneId, "s1", "Program is the taken scene")
+        expectEqual(model.previewSceneId, "s2", "Preview is the previous Program")
+        expectEqual(model.takeStatus, "Program updated", "Windows success status")
+    }
+
+    @MainActor
+    private static func testTakeTransitionPickerAndNormalizer() {
+        expectEqual(AppModel().takeTransitionMode, "fade", "default Fade")
+        expectEqual(AppModel.normalizeTakeTransitionMode(nil), "fade", "nil -> fade")
+        expectEqual(AppModel.normalizeTakeTransitionMode(" CUT "), "cut", "trim + case")
+        expectEqual(AppModel.normalizeTakeTransitionMode("dip"), "dip", "dip kept")
+        expectEqual(AppModel.normalizeTakeTransitionMode("wipe"), "wipe", "wipe kept")
+        expectEqual(AppModel.normalizeTakeTransitionMode("zoom"), "fade", "unknown -> fade")
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        model.setTakeTransition("cut")
+        expectEqual(model.takeStatus, "Take transition set to Cut", "Windows picker status")
+        _ = runTake(model)
+        guard let body = core.bodies.first else { expect(false, "Cut Take sent"); return }
+        let cmds = body["commands"] as? [[String: Any]] ?? []
+        expectEqual(cmds.first?["mode"] as? String ?? "", "cut", "Cut picked -> mode cut")
+        model.setTakeTransition("bogus")
+        expectEqual(model.takeTransitionMode, "fade", "picker normalizes")
+    }
+
+    @MainActor
+    private static func testTakeBypassesTheSceneDebounce() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        model.syncScenes()                     // a debounced sync is pending
+        _ = runTake(model, wait: false)
+        spin(until: { !core.bodies.isEmpty }, limit: 0.08)
+        expectEqual(core.bodies.count, 1, "Take reached the core inside the 120 ms debounce")
+        spin(until: { false }, limit: 0.3)
+    }
+
+    @MainActor
+    private static func testTakeFailureRestoresProgramAndPreview() {
+        let core = FakeTakeCore()
+        core.failure = "native rejected scene"
+        let model = takeModel(core)
+        let box = runTake(model)
+        let expected = "Take was not confirmed; previous local Program restored. "
+            + "Verify live output before retrying. native rejected scene"
+        expectEqual(box.result, .failed(expected), "failed with the Windows rollback text")
+        expectEqual(model.takeStatus, expected, "status carries the same text")
+        expectEqual(model.programSceneId, "s2", "Program restored")
+        expectEqual(model.previewSceneId, "s1", "Preview retained for retry")
+        core.failure = nil
+        let retry = runTake(model)
+        expectEqual(retry.result, .success, "retry succeeds")
+        expectEqual(model.programSceneId, "s1", "retry takes")
+    }
+
+    @MainActor
+    private static func testTakeRollbackRefusedWhenNewerEditsLanded() {
+        let core = FakeTakeCore()
+        core.hold = true
+        core.failure = "gone"
+        let model = takeModel(core)
+        let box = runTake(model, wait: false)
+        spin(until: { !core.bodies.isEmpty }, limit: 2)
+        model.previewSceneId = "s3"            // operator re-cues while the Take is pending
+        core.hold = false
+        spin(until: { box.result != nil }, limit: 3)
+        expectEqual(box.result, .failed("Take was not confirmed; newer local edits preserved. "
+                                        + "Verify live output. gone"), "Windows preserved-edits text")
+        expectEqual(model.previewSceneId, "s3", "the newer cue is kept")
+        expectEqual(model.programSceneId, "s1", "Program is not clobbered")
+    }
+
+    @MainActor
+    private static func testSecondTakeWhileInFlightIsRefused() {
+        let core = FakeTakeCore()
+        core.hold = true
+        let model = takeModel(core)
+        let first = runTake(model, wait: false)
+        spin(until: { !core.bodies.isEmpty }, limit: 2)
+        expect(!model.canTake, "Take is disabled while one is in flight")
+        let second = runTake(model)
+        expectEqual(second.result, .failed("A Take is already in progress."), "refused")
+        expectEqual(core.bodies.count, 1, "no second request")
+        expectEqual(model.programSceneId, "s1", "no swap back")
+        expectEqual(model.previewSceneId, "s2", "preview not swapped back")
+        core.hold = false
+        spin(until: { first.result != nil }, limit: 3)
+        expectEqual(first.result, .success, "first completes")
+        expect(model.canTake, "Take is available again once the first completed")
+    }
+
+    @MainActor
+    private static func testTakeRefusalsAndOffline() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        model.previewSceneId = "ghost"
+        let box = runTake(model)
+        expectEqual(box.result, .failed("Take unavailable - select an available Preview scene."),
+                    "unavailable Preview refused")
+        expect(core.bodies.isEmpty, "nothing sent")
+        expectEqual(model.programSceneId, "s2", "Program untouched")
+        // Offline: no bridge and no seam.
+        let offline = sceneEditModel()
+        let off = runTake(offline)
+        expectEqual(off.result, .failed("Program selected locally; Take was not sent because the media core is offline."),
+                    "offline is not reported as on-air success")
+        expectEqual(offline.programSceneId, "s1", "Windows keeps the local selection offline")
+    }
+
+    @MainActor
+    private static func testTakeIsNotBlockedByTheQuitGuard() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        model.quitFinishing = true     // Windows CanTake has no quit term (only Record/Stream do)
+        expect(model.canTake, "CanTake ignores the quit guard")
+        expectEqual(runTake(model).result, .success, "Take still runs")
+    }
+
     /// Final-review IMPORTANT 7: Cmd-Q with the main window closed must still
     /// show something the operator can answer, and a repeat Cmd-Q re-presents it.
     @MainActor
@@ -1979,6 +2163,14 @@ enum ShellTests {
             ("quit/whole-branch-iso-stream-stop-quit", testWholeBranchQuitAfterStoppingAnIsoTakeWithAStreamUp),
             ("quit/toggles-refused-while-quitting", testOutputTogglesRefuseWhileQuitting),
             ("quit/prompt-always-answerable", testQuitPromptIsAlwaysAnswerable),
+            ("take/batch-order-fields", testTakeBatchOrderAndFields),
+            ("take/picker-normalizer", testTakeTransitionPickerAndNormalizer),
+            ("take/bypasses-debounce", testTakeBypassesTheSceneDebounce),
+            ("take/failure-rollback", testTakeFailureRestoresProgramAndPreview),
+            ("take/rollback-refused-newer-edits", testTakeRollbackRefusedWhenNewerEditsLanded),
+            ("take/in-flight-refused", testSecondTakeWhileInFlightIsRefused),
+            ("take/refusals-offline", testTakeRefusalsAndOffline),
+            ("take/not-blocked-by-quit", testTakeIsNotBlockedByTheQuitGuard),
             ("quit/cancel", testQuitCancelRepliesFalseOnceAndSendsNothing),
             ("quit/idle", testQuitIdleQuitsImmediately),
             ("quit/dead-core", testQuitWithADeadCoreFinishesImmediately),

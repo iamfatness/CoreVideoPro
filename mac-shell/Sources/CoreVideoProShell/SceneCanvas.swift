@@ -49,10 +49,9 @@ struct ScenesPane: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                Button("Take") { model.take() }
+                Button("Take") { Task { await model.take() } }
                     .buttonStyle(AccentButtonStyle())
-                    .disabled(model.previewSceneId.isEmpty
-                              || model.previewSceneId == model.programSceneId)
+                    .disabled(!model.canTake)
             }
             HStack(spacing: 8) {
                 Text("Name").font(.grotesk(12)).foregroundStyle(Studio.secondary)
