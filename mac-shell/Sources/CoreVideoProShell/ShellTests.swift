@@ -1480,8 +1480,8 @@ enum ShellTests {
         let probe = QuitProbe()
         let outcome = runBlocking {
             await QuitFlow.finishOutputs(
-                stop: { probe.stop(landing: true) },
-                isFinished: { probe.check(finishedAfter: 3) },
+                stop: { _ in probe.stop(landing: true) },
+                isFinished: { _ in probe.check(finishedAfter: 3) },
                 timeout: 5, poll: 0.01)
         }
         expectEqual(outcome, .finished, "finishes once terminal evidence arrives")
@@ -1495,8 +1495,8 @@ enum ShellTests {
         let started = Date()
         let outcome = runBlocking {
             await QuitFlow.finishOutputs(
-                stop: { probe.stop(landing: false) },
-                isFinished: { probe.check(finishedAfter: Int.max) },
+                stop: { _ in probe.stop(landing: false) },
+                isFinished: { _ in probe.check(finishedAfter: Int.max) },
                 timeout: 0.35, poll: 0.01, resendEvery: 0.1)
         }
         expectEqual(outcome, .timedOut, "never-terminal outputs end in a bounded timeout")
@@ -1527,6 +1527,144 @@ enum ShellTests {
         let graceful = runBlocking { await stubborn.stopForAppExit(grace: 0.4) }
         expect(!graceful, "a core that ignores EOF is reported as terminated after the grace")
         expect(Date().timeIntervalSince(t1) < 3, "the grace is bounded")
+    }
+
+
+    private static func testQuitDeadlineHoldsWhenAStopRequestHangs() {
+        let started = Date()
+        let outcome = runBlocking {
+            await QuitFlow.finishOutputs(
+                stop: { _ in try? await Task.sleep(nanoseconds: 30_000_000_000); return true },
+                isFinished: { _ in true },
+                timeout: 0.4, poll: 0.01)
+        }
+        expectEqual(outcome, .timedOut, "a hung stop cannot extend the wait")
+        expect(Date().timeIntervalSince(started) < 3, "one deadline covers the whole flow, hung stop included")
+    }
+
+    /// Scripted core: records the command types it is sent, answers snapshots whose
+    /// recording lifecycle advances stopping -> completed after a stop.
+    private final class FakeQuitCore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _commands: [String] = [], _polls = 0, stopped = false, _hang = false
+        var completeAfterPolls = 2
+        var commands: [String] { lock.lock(); defer { lock.unlock() }; return _commands }
+        var hang: Bool { get { lock.lock(); defer { lock.unlock() }; return _hang }
+                         set { lock.lock(); _hang = newValue; lock.unlock() } }
+        func handle(_ body: [String: Any]) async throws -> [String: Any] {
+            if hang { try? await Task.sleep(nanoseconds: 30_000_000_000) }
+            lock.lock(); defer { lock.unlock() }
+            let cmds = (body["commands"] as? [[String: Any]] ?? []).compactMap { $0["type"] as? String }
+            _commands += cmds
+            if cmds.contains("stop-recording-session") { stopped = true; _polls = 0 }
+            var state = "producing"
+            if stopped {
+                _polls += 1
+                state = _polls > completeAfterPolls ? "completed" : "stopping"
+            }
+            let lifecycle: [String: Any] = ["sessionId": "s", "desiredActive": !stopped, "state": state,
+                                            "health": "healthy", "finalized": state == "completed"]
+            return ["ok": true, "snapshot": ["recording": ["lifecycle": lifecycle]] as [String: Any]]
+        }
+    }
+
+    @MainActor
+    private static func quitModel(core: FakeQuitCore, timeout: TimeInterval = 15)
+        -> (AppModel, replies: () -> [Bool]) {
+        let model = AppModel()
+        let box = RepliesBox()
+        model.quitReplyForTesting = { box.values.append($0) }
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.quitFinishTimeout = timeout
+        model.quitCoreGrace = 0.1
+        model.quitPollInterval = 0.01
+        model.status = .connected(renderer: "test")
+        return (model, { box.values })
+    }
+
+    @MainActor
+    private static func spin(until condition: () -> Bool, limit: TimeInterval) {
+        let end = Date().addingTimeInterval(limit)
+        while !condition(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    }
+
+    @MainActor
+    private static func testQuitFlowStopsInOrderAndFinishesAtTheTerminalSnapshot() {
+        let core = FakeQuitCore()
+        let (model, replies) = quitModel(core: core, timeout: 15)
+        model.recordingStatus = "recording"
+        model.recordingDesired = true
+        model.streamingDesired = true
+        expect(model.handleQuitRequest() == .terminateLater, "live outputs defer the quit")
+        expect(model.quitPromptVisible, "the confirmation is shown")
+        expect(model.handleQuitRequest() == .terminateCancel, "a second quit while asking is cancelled, never forced")
+        let t0 = Date()
+        model.confirmQuit()
+        spin(until: { !replies().isEmpty }, limit: 5)
+        expectEqual(replies(), [true], "exactly one reply, to terminate")
+        expect(Date().timeIntervalSince(t0) < 3, "finishes when the terminal snapshot arrives, far before the 15 s bound")
+        expectEqual(core.commands.filter { $0 != "" }, ["start-program-output", "stop-recording-session"],
+                    "stream stop first, then the recording stop")
+        expectEqual(model.recordingStatus, "completed", "the direct poll applied the terminal snapshot")
+        expect(!model.recordingDesired, "recording intent stays off after the quit stop")
+        expect(!model.quitFinishing, "the finishing state is cleared")
+        expect(!model.warnings.contains { $0.contains("did not finish") }, "no false timeout warning")
+    }
+
+    @MainActor
+    private static func testQuitCancelRepliesFalseOnceAndSendsNothing() {
+        let core = FakeQuitCore()
+        let (model, replies) = quitModel(core: core)
+        model.recordingStatus = "recording"
+        model.recordingDesired = true
+        _ = model.handleQuitRequest()
+        model.cancelQuit()
+        model.cancelQuit()
+        expectEqual(replies(), [false], "Keep running replies false exactly once")
+        expect(core.commands.isEmpty, "nothing is stopped")
+        expect(model.handleQuitRequest() == .terminateLater, "the next quit asks again")
+        model.cancelQuit()
+    }
+
+    @MainActor
+    private static func testQuitIdleQuitsImmediately() {
+        let core = FakeQuitCore()
+        let (model, replies) = quitModel(core: core)
+        expect(model.handleQuitRequest() == .terminateNow, "idle quits at once")
+        expect(replies().isEmpty && !model.quitPromptVisible, "no prompt, no reply to await")
+    }
+
+    @MainActor
+    private static func testQuitWithADeadCoreFinishesImmediately() {
+        let core = FakeQuitCore()
+        let (model, replies) = quitModel(core: core, timeout: 15)
+        model.recordingStatus = "interrupted"
+        model.recordingDesired = true
+        model.quitCoreGoneForTesting = true
+        _ = model.handleQuitRequest()
+        let t0 = Date()
+        model.confirmQuit()
+        spin(until: { !replies().isEmpty }, limit: 5)
+        expectEqual(replies(), [true], "a dead core still lets the quit complete")
+        expect(Date().timeIntervalSince(t0) < 2, "no 15 s wait on a core that cannot write anything")
+        expect(core.commands.isEmpty, "no stop is sent to a dead core")
+        expect(!model.warnings.contains { $0.contains("did not finish") }, "no false timeout warning")
+    }
+
+    @MainActor
+    private static func testQuitDeadlineIsHonouredWhenTheCoreHangs() {
+        let core = FakeQuitCore()
+        core.hang = true
+        let (model, replies) = quitModel(core: core, timeout: 0.5)
+        model.recordingStatus = "recording"
+        model.recordingDesired = true
+        _ = model.handleQuitRequest()
+        let t0 = Date()
+        model.confirmQuit()
+        spin(until: { !replies().isEmpty }, limit: 6)
+        expectEqual(replies(), [true], "a hung core cannot hold the quit forever")
+        expect(Date().timeIntervalSince(t0) < 3, "the bounded wait ends near its deadline")
+        expect(model.warnings.contains { $0.contains("did not finish") }, "the timeout is loud")
     }
 
     @MainActor
@@ -1601,6 +1739,12 @@ enum ShellTests {
             ("quit/one-prompt", testQuitGateAllowsOnePromptAtATime),
             ("quit/stop-then-wait", testQuitFinishStopsThenWaitsForTerminalEvidence),
             ("quit/bridge-app-exit", testBridgeAppExitClosesStdinAndGivesTheCoreAGraceBeforeTerminating),
+            ("quit/deadline-hung-stop", testQuitDeadlineHoldsWhenAStopRequestHangs),
+            ("quit/flow-order-terminal", testQuitFlowStopsInOrderAndFinishesAtTheTerminalSnapshot),
+            ("quit/cancel", testQuitCancelRepliesFalseOnceAndSendsNothing),
+            ("quit/idle", testQuitIdleQuitsImmediately),
+            ("quit/dead-core", testQuitWithADeadCoreFinishesImmediately),
+            ("quit/core-hang-deadline", testQuitDeadlineIsHonouredWhenTheCoreHangs),
             ("quit/timeout-resend", testQuitFinishTimesOutLoudlyAndResendsAStopThatDidNotLand),
         ]
         for (name, body) in cases {
@@ -1645,3 +1789,5 @@ private final class QuitProbe: @unchecked Sendable {
 }
 
 private final class QuitProbeResult<T>: @unchecked Sendable { var value: T? }
+
+private final class RepliesBox { var values: [Bool] = [] }

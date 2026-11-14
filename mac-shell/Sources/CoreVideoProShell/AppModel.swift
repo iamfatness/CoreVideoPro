@@ -418,6 +418,13 @@ final class AppModel: ObservableObject {
     /// Test seam: replaces the real stop/finish/shutdown so the flow can be driven
     /// without a core. Production leaves it nil.
     var quitReplyForTesting: ((Bool) -> Void)?
+    /// Test seams (production leaves them at their defaults): the request path,
+    /// the "core is gone" answer when that path is replaced, and the timings.
+    var quitRequestForTesting: ((JSONObject, TimeInterval) async throws -> JSONObject)?
+    var quitCoreGoneForTesting = false
+    var quitFinishTimeout = QuitGuardPolicy.finishTimeout
+    var quitCoreGrace = QuitGuardPolicy.coreExitGrace
+    var quitPollInterval: TimeInterval = 0.1
     private var syncTimer: Timer?
     private var zoomTimer: Timer?
     private var startedAt = Date()
@@ -2576,9 +2583,11 @@ final class AppModel: ObservableObject {
         case .quitNow: return .terminateNow
         case .ask:
             quitPromptVisible = true
-            // Bring the window forward so the dialog is seen.
-            NSApplication.shared.activate(ignoringOtherApps: true)
-            NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
+            if quitReplyForTesting == nil {
+                // Bring the window forward so the dialog is seen.
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
+            }
             return .terminateLater
         case .ignore:
             NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
@@ -2594,8 +2603,9 @@ final class AppModel: ObservableObject {
         replyToQuit(false)
     }
 
-    /// "Stop and quit": stop streams, then the recording, wait (bounded) for the
-    /// truthful terminal lifecycle, then retire the core with the stdin-EOF grace.
+    /// "Stop and quit": stop streams, then the recording, wait (bounded by ONE
+    /// deadline) for the truthful terminal lifecycle, then retire the core with
+    /// the stdin-EOF grace.
     func confirmQuit() {
         guard quitGate.confirm() else { return }
         quitPromptVisible = false
@@ -2603,39 +2613,75 @@ final class AppModel: ObservableObject {
         let recordingWasLive = QuitGuardPolicy.recordingLive(quitOutputs)
         let streamWasLive = QuitGuardPolicy.streamLive(quitOutputs)
         ShellLog.write("quit: stopping outputs recording=\(recordingWasLive) stream=\(streamWasLive)")
+        let timeout = quitFinishTimeout
         Task { @MainActor in
             var baseline = Int.max   // set when the stop lands; only later snapshots count
             let outcome = await QuitFlow.finishOutputs(
-                stop: { @MainActor [weak self] in
+                stop: { @MainActor [weak self] remaining in
                     guard let self else { return true }
                     let landed = await self.sendQuitStops(recording: recordingWasLive,
-                                                          stream: streamWasLive)
+                                                          stream: streamWasLive,
+                                                          budget: remaining)
                     if landed { baseline = self.snapshotSequence }
                     return landed
                 },
-                isFinished: { @MainActor [weak self] in
-                    guard let self, self.snapshotSequence > baseline else { return false }
+                isFinished: { @MainActor [weak self] remaining in
+                    guard let self else { return true }
+                    // A missing or exited core can write nothing more: terminal
+                    // (Windows treats core exit as the end of the wait).
+                    if self.quitCoreGone { return true }
+                    // Poll a snapshot directly. The 0.5 s syncTimer is default-mode
+                    // only and does not fire while AppKit holds a .terminateLater.
+                    do {
+                        let response = try await self.quitRequest(
+                            ["type": "media-core-sync", "elapsedMs": self.elapsedMs(),
+                             "commands": []], timeout: min(2, max(0.1, remaining)))
+                        if let snapshot = response["snapshot"] as? JSONObject {
+                            self.applySnapshot(snapshot)
+                        }
+                    } catch {
+                        if self.quitCoreGone { return true }
+                        if case BridgeError.notRunning = error { return true }
+                        if case BridgeError.processExited = error { return true }
+                    }
+                    guard self.snapshotSequence > baseline else { return false }
                     let recordingDone = !recordingWasLive
                         || QuitGuardPolicy.recordingTerminal(self.recordingStatus)
                     let streamDone = !streamWasLive
                         || !QuitGuardPolicy.streamLive(
                             QuitOutputs(streamStatus: self.streamStatus))
                     return recordingDone && streamDone
-                })
+                },
+                timeout: timeout, poll: quitPollInterval)
             if outcome == .timedOut {
                 let message = "quit: outputs did not finish within "
-                    + "\(Int(QuitGuardPolicy.finishTimeout)) s; quitting anyway"
+                    + "\(String(format: "%g", timeout)) s; quitting anyway"
                 ShellLog.write(message)
                 pushWarning(message)
             } else {
                 ShellLog.write("quit: outputs finished")
             }
-            let exited = await bridge?.stopForAppExit(grace: QuitGuardPolicy.coreExitGrace) ?? true
+            let exited = await bridge?.stopForAppExit(grace: quitCoreGrace) ?? true
             ShellLog.write("quit: core \(exited ? "exited on EOF" : "terminated after grace")")
             quitFinishing = false
             quitGate.reset()
             replyToQuit(true)
         }
+    }
+
+    private var quitCoreGone: Bool {
+        if quitRequestForTesting != nil { return quitCoreGoneForTesting }
+        if bridge == nil { return true }
+        switch status {
+        case .exited, .failed: return true
+        default: return false
+        }
+    }
+
+    private func quitRequest(_ body: JSONObject, timeout: TimeInterval) async throws -> JSONObject {
+        if let seam = quitRequestForTesting { return try await seam(body, timeout) }
+        guard let bridge else { throw BridgeError.notRunning }
+        return try await bridge.request(body, timeout: timeout)
     }
 
     private func replyToQuit(_ shouldTerminate: Bool) {
@@ -2644,9 +2690,12 @@ final class AppModel: ObservableObject {
     }
 
     /// The same transport stops the operator's buttons send: streams first, then
-    /// the recording session. True when every needed stop was accepted.
-    private func sendQuitStops(recording: Bool, stream: Bool) async -> Bool {
-        guard let bridge else { return true }   // no core: nothing left to stop
+    /// the recording session, each bounded by what is left of the quit deadline.
+    /// True when every needed stop was accepted.
+    private func sendQuitStops(recording: Bool, stream: Bool, budget: TimeInterval) async -> Bool {
+        if quitCoreGone { return true }   // no core: nothing left to stop
+        let deadline = Date().addingTimeInterval(budget)
+        func left(_ cap: TimeInterval) -> TimeInterval { min(cap, max(0.1, deadline.timeIntervalSinceNow)) }
         var ok = true
         if stream {
             streamingDesired = false
@@ -2654,21 +2703,27 @@ final class AppModel: ObservableObject {
                 ? [startProgramOutput(recording: true, streaming: false)]
                 : [["type": "stop-encoder-session", "reason": "Streaming stopped on quit."]]
             do {
-                _ = try await bridge.request([
+                _ = try await quitRequest([
                     "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": commands,
-                ], timeout: 15)
+                ], timeout: left(15))
             } catch { ok = false }
         }
         // Already stopping/finalizing: the stop landed on an earlier attempt.
         let recordingInFlight = ["stopping", "finalizing"].contains(recordingStatus)
         if recording, !recordingInFlight {
-            recordingDesired = false
+            let operation = recordingCommands.beginStop()
+            recordingDesired = recordingCommands.desired
             do {
-                _ = try await bridge.request([
+                _ = try await quitRequest([
                     "type": "media-core-sync", "elapsedMs": elapsedMs(),
                     "commands": [["type": "stop-recording-session", "reason": "Quit."]],
-                ], timeout: 30)
-            } catch { ok = false }
+                ], timeout: left(30))
+                recordingCommands.finish(operation, failed: false)
+            } catch {
+                recordingCommands.finish(operation, failed: true)
+                ok = false
+            }
+            recordingDesired = recordingCommands.desired
         }
         return ok
     }
@@ -2989,6 +3044,8 @@ enum ShellLog {
     static func write(_ message: String) {
         let line = "\(Date()) \(message)\n"
         print("shell: \(message)")
+        // The in-binary harness must never touch the operator's real log.
+        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TESTS"] != nil { return }
         if let handle = FileHandle(forWritingAtPath: path) {
             handle.seekToEndOfFile()
             handle.write(Data(line.utf8))

@@ -34,6 +34,17 @@ struct RecordingCommandPolicy {
         return operation
     }
 
+    /// A stop that must go out whatever the observed status says (quit): it uses
+    /// the same intent bookkeeping as `begin()` but can never become a start.
+    mutating func beginStop() -> Operation {
+        generation &+= 1
+        let operation = Operation(token: generation, stop: true, previousDesired: desired)
+        pending = generation
+        desired = false
+        awaitingStartProgress = false
+        return operation
+    }
+
     // Returns false for a completion superseded by a later command or exit.
     @discardableResult
     mutating func finish(_ operation: Operation, failed: Bool) -> Bool {

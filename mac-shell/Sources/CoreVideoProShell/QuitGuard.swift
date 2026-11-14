@@ -88,27 +88,65 @@ struct QuitGate {
 enum QuitFinishOutcome: Equatable { case finished, timedOut }
 
 enum QuitFlow {
-    /// Sends the stops, then waits for `isFinished` (fresh terminal evidence) up
-    /// to `timeout`. A stop that threw is retried once a second while it is
-    /// still unfinished (Windows: a stop that did not land is re-sent).
+    /// Runs `op` but gives up after `seconds`; nil means the deadline won. The
+    /// operation is not cancellable (a bridge request cannot be), so it is left to
+    /// finish on its own and its late result is dropped.
+    static func race<T: Sendable>(_ seconds: TimeInterval,
+                                  _ op: @escaping @Sendable () async -> T) async -> T? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+            let once = OnceBox()
+            Task {
+                let value = await op()
+                if once.claim() { continuation.resume(returning: value) }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+                if once.claim() { continuation.resume(returning: nil) }
+            }
+        }
+    }
+
+    private final class OnceBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var taken = false
+        func claim() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if taken { return false }
+            taken = true
+            return true
+        }
+    }
+
+    /// Sends the stops, then waits for `isFinished` (fresh terminal evidence).
+    /// ONE deadline covers the whole flow: every stop and every evidence check is
+    /// raced against the time that remains, and each is told that remainder so it
+    /// can bound its own request. A stop that did not land is re-sent once a
+    /// second while still unfinished (Windows: re-sent while intent is set).
     static func finishOutputs(
-        stop: @escaping @Sendable () async -> Bool,
-        isFinished: @escaping @Sendable () async -> Bool,
+        stop: @escaping @Sendable (_ remaining: TimeInterval) async -> Bool,
+        isFinished: @escaping @Sendable (_ remaining: TimeInterval) async -> Bool,
         timeout: TimeInterval = QuitGuardPolicy.finishTimeout,
         poll: TimeInterval = 0.1,
         resendEvery: TimeInterval = 1.0
     ) async -> QuitFinishOutcome {
         let started = Date()
-        var stopLanded = await stop()
-        var lastSend = Date()
-        while true {
-            if stopLanded, await isFinished() { return .finished }
-            if Date().timeIntervalSince(started) >= timeout { return .timedOut }
+        func remaining() -> TimeInterval { timeout - Date().timeIntervalSince(started) }
+        var stopLanded = false
+        var lastSend = Date.distantPast
+        while remaining() > 0 {
             if !stopLanded, Date().timeIntervalSince(lastSend) >= resendEvery {
-                stopLanded = await stop()
+                let budget = remaining()
                 lastSend = Date()
+                stopLanded = await race(budget) { await stop(budget) } ?? false
+            } else if stopLanded {
+                let budget = remaining()
+                if budget > 0, await race(budget, { await isFinished(budget) }) == true {
+                    return .finished
+                }
             }
-            try? await Task.sleep(nanoseconds: UInt64(poll * 1_000_000_000))
+            if remaining() <= 0 { break }
+            try? await Task.sleep(nanoseconds: UInt64(min(poll, max(0, remaining())) * 1_000_000_000))
         }
+        return .timedOut
     }
 }
