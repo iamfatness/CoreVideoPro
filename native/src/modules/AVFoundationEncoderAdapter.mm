@@ -65,6 +65,8 @@ class AvfMp4Writer {
             VideoInput videoInput = VideoInput::Bgra) {
     (void)codec;  // H.264-only, matching the product default
     finalize();
+    lastVideoPts100ns_ = 0;
+    lastAudioEnd100ns_ = 0;
     inputKind_ = videoInput;
     if (inputKind_ == VideoInput::Nv12) {
       width &= ~1;  // NV12 needs even luma dims (mirrors the MF writer)
@@ -207,6 +209,7 @@ class AvfMp4Writer {
     }
     CVPixelBufferUnlockBaseAddress(buffer, 0);
     const BOOL appended = [adaptor_ appendPixelBuffer:buffer withPresentationTime:ptsToTime(pts100ns)];
+    if (appended) holdLastVideo(buffer);
     CVPixelBufferRelease(buffer);
     if (!appended) {
       errorOut = std::string("appendPixelBuffer failed: ") +
@@ -214,6 +217,7 @@ class AvfMp4Writer {
       return false;
     }
     ++videoFrameCount_;
+    lastVideoPts100ns_ = pts100ns;
     return true;
   }
 
@@ -270,6 +274,7 @@ class AvfMp4Writer {
     }
     CVPixelBufferUnlockBaseAddress(buffer, 0);
     const BOOL appended = [adaptor_ appendPixelBuffer:buffer withPresentationTime:ptsToTime(pts100ns)];
+    if (appended) holdLastVideo(buffer);
     CVPixelBufferRelease(buffer);
     if (!appended) {
       errorOut = std::string("appendPixelBuffer (NV12) failed: ") +
@@ -277,6 +282,7 @@ class AvfMp4Writer {
       return false;
     }
     ++videoFrameCount_;
+    lastVideoPts100ns_ = pts100ns;
     return true;
   }
 
@@ -356,12 +362,52 @@ class AvfMp4Writer {
     }
     ++audioPacketCount_;
     audioSampleCount_ += frameCount;
+    lastAudioEnd100ns_ = pts100ns + static_cast<int64_t>(frameCount) * kHundredNsPerSecond / audioSampleRate_;
     return true;
+  }
+
+  // #1186 (Windows 03ebd1c3 reconcileTail): a stalled video or audio feed must not
+  // leave one track ending earlier than the other. A short audio tail is padded
+  // with silence; a short video tail holds the final real picture through the
+  // audio endpoint. Nothing recorded is cut.
+  void reconcileTail() {
+    if (!writing_ || !audioConfigured_ || videoFrameCount_ <= 0 || audioPacketCount_ <= 0) return;
+    const int64_t frameDuration = kHundredNsPerSecond / fps_;
+    std::string ignored;
+    if (lastVideoPts100ns_ > lastAudioEnd100ns_ + 2 * frameDuration) {
+      const int64_t gapFrames = (lastVideoPts100ns_ - lastAudioEnd100ns_) * audioSampleRate_ / kHundredNsPerSecond;
+      if (gapFrames > 0 && writeAudioSilence(gapFrames, lastAudioEnd100ns_, ignored)) {
+        // lastAudioEnd100ns_ advanced by writeAudio.
+      }
+    }
+    // Under two frame periods is ordinary thread skew between the video and audio
+    // feeds, not a stall.
+    if (lastAudioEnd100ns_ > lastVideoPts100ns_ + 2 * frameDuration && lastVideoBuffer_ &&
+        videoInput_.readyForMoreMediaData) {
+      // One held sample re-presents the final real picture after its own frame
+      // period; the session end then stretches it to the audio endpoint.
+      const int64_t holdPts = lastAudioEnd100ns_;
+      if ([adaptor_ appendPixelBuffer:lastVideoBuffer_ withPresentationTime:ptsToTime(holdPts)]) {
+        lastVideoPts100ns_ = holdPts;
+        [writer_ endSessionAtSourceTime:ptsToTime(lastAudioEnd100ns_)];
+      }
+    }
+  }
+
+  void holdLastVideo(CVPixelBufferRef buffer) {
+    CVPixelBufferRetain(buffer);
+    if (lastVideoBuffer_) CVPixelBufferRelease(lastVideoBuffer_);
+    lastVideoBuffer_ = buffer;
+  }
+  void dropHeldVideo() {
+    if (lastVideoBuffer_) CVPixelBufferRelease(lastVideoBuffer_);
+    lastVideoBuffer_ = nullptr;
   }
 
   bool finalize(std::string* errorOut = nullptr) {
     bool finalized = true;
     if (writer_ && writing_) {
+      reconcileTail();
       [videoInput_ markAsFinished];
       if (audioInput_) {
         [audioInput_ markAsFinished];
@@ -384,6 +430,7 @@ class AvfMp4Writer {
       const auto size = std::filesystem::file_size(path_, ec);
       bytesWritten_ = ec ? 0 : static_cast<int64_t>(size);
     }
+    dropHeldVideo();
     writer_ = nil;
     videoInput_ = nil;
     audioInput_ = nil;
@@ -418,6 +465,9 @@ class AvfMp4Writer {
   int64_t videoFrameCount_ = 0;
   int64_t audioPacketCount_ = 0;
   int64_t audioSampleCount_ = 0;
+  int64_t lastVideoPts100ns_ = 0;
+  int64_t lastAudioEnd100ns_ = 0;
+  CVPixelBufferRef lastVideoBuffer_ = nullptr;
   int64_t bytesWritten_ = 0;
 };
 

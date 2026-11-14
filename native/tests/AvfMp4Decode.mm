@@ -40,6 +40,41 @@ double mp4DurationSeconds(const std::string& path) {
   return longest;
 }
 
+Mp4Extents mp4TrackExtents(const std::string& path) {
+  Mp4Extents out;
+  @autoreleasepool {
+    AVURLAsset* asset =
+        [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]]
+                            options:nil];
+    for (AVMediaType type in @[ AVMediaTypeVideo, AVMediaTypeAudio ]) {
+      NSArray<AVAssetTrack*>* tracks = loadTracks(asset, type);
+      if (tracks.count == 0) continue;
+      NSError* error = nil;
+      AVAssetReader* reader = [AVAssetReader assetReaderWithAsset:asset error:&error];
+      if (!reader) continue;
+      // nil settings = compressed samples, so PTS/duration are the container's own.
+      AVAssetReaderTrackOutput* output =
+          [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:tracks[0] outputSettings:nil];
+      [reader addOutput:output];
+      if (![reader startReading]) continue;
+      Mp4TrackExtent& extent = (type == AVMediaTypeVideo) ? out.video : out.audio;
+      extent.present = true;
+      extent.trackEnd = CMTimeGetSeconds(CMTimeRangeGetEnd(tracks[0].timeRange));
+      while (CMSampleBufferRef sample = [output copyNextSampleBuffer]) {
+        const double pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample));
+        const CMTime duration = CMSampleBufferGetDuration(sample);
+        const double dur = CMTIME_IS_VALID(duration) ? CMTimeGetSeconds(duration) : 0;
+        if (extent.samples == 0) extent.firstPts = pts;
+        extent.lastPts = pts;
+        extent.end = pts + dur;
+        extent.samples += static_cast<size_t>(CMSampleBufferGetNumSamples(sample));
+        CFRelease(sample);
+      }
+    }
+  }
+  return out;
+}
+
 DecodedMp4Video decodeMp4VideoToBgra(const std::string& path) {
   DecodedMp4Video out;
   @autoreleasepool {
