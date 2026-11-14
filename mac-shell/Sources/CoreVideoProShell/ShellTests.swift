@@ -1038,6 +1038,69 @@ enum ShellTests {
                     "Program routes unchanged")
     }
 
+
+    // ── #870: meters say aging / stale when the audio observation ages ───────
+
+    @MainActor
+    private static func testAudioObservationThresholdsAreWindows() {
+        // AudioObservationPolicy.cs: <=250 fresh, <=1000 aging, else stale.
+        let obs = AudioObservation(sequence: 3, status: "fresh", ageMs: 0)
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        func state(_ elapsedMs: Double) -> String {
+            AudioObservationPolicy.state(obs, receivedAt: t0, now: t0.addingTimeInterval(elapsedMs / 1000))
+        }
+        expectEqual(state(250), "fresh", "250 ms is fresh")
+        expectEqual(state(251), "aging", "251 ms is aging")
+        expectEqual(state(1000), "aging", "1000 ms is aging")
+        expectEqual(state(1001), "stale", "1001 ms is stale")
+        // Owner age is carried, not reset by receipt.
+        let owned = AudioObservation(sequence: 3, status: "fresh", ageMs: 50)
+        expectEqual(AudioObservationPolicy.state(owned, receivedAt: t0,
+                    now: t0.addingTimeInterval(0.19)), "fresh", "50+190 fresh")
+        expectEqual(AudioObservationPolicy.state(owned, receivedAt: t0,
+                    now: t0.addingTimeInterval(0.21)), "aging", "50+210 aging")
+        expectEqual(AudioObservationPolicy.state(
+            AudioObservation(sequence: 4, status: "stale", ageMs: 2000), receivedAt: t0, now: t0),
+                    "stale", "published age past 1 s is stale at receipt")
+        expectEqual(AudioObservationPolicy.state(
+            AudioObservation(sequence: 0, status: "unobserved", ageMs: 0), receivedAt: t0, now: t0),
+                    "unobserved", "sequence 0 is unobserved")
+        expectEqual(AudioObservationPolicy.warning(
+            AudioObservation(sequence: 4, status: "stale", ageMs: 2000), receivedAt: t0, now: t0) ?? "",
+                    "meters stale \u{2014} last values held", "stale wording is Windows")
+        expectEqual(AudioObservationPolicy.warning(
+            AudioObservation(sequence: 1, status: "aging", ageMs: 500), receivedAt: t0, now: t0) ?? "",
+                    "meters aging", "aging wording is Windows")
+        expectEqual(AudioObservationPolicy.warning(
+            AudioObservation(sequence: 0, status: "unobserved", ageMs: 0), receivedAt: t0, now: t0) ?? "",
+                    "awaiting measured audio", "unobserved wording is Windows")
+        expect(AudioObservationPolicy.warning(obs, receivedAt: t0, now: t0) == nil, "fresh: no warning")
+    }
+
+    @MainActor
+    private static func testMeterWarningFollowsSnapshotAgeAndRecovers() {
+        let model = AppModel()
+        let t0 = Date(timeIntervalSince1970: 5_000)
+        func snap(_ seq: Int, _ ageMs: Double, level: Int = 60) -> [String: Any] {
+            ["audioObservation": ["sequence": seq, "ageMs": ageMs, "status": "fresh"],
+             "audioMixSession": ["masterLevel": level]]
+        }
+        expect(model.meterWarning(now: t0) == nil, "legacy/no envelope: no warning")
+        model.observeAudioObservation(snap(1, 20), now: t0)
+        expect(model.meterWarning(now: t0) == nil, "fresh observation: levels shown clean")
+        expect(model.meterWarning(now: t0.addingTimeInterval(0.5)) == "meters aging",
+               "no new snapshot for 500 ms: aging")
+        expect(model.meterWarning(now: t0.addingTimeInterval(2)) ==
+               "meters stale \u{2014} last values held", "no new snapshot for 2 s: stale")
+        model.observeAudioObservation(snap(2, 3000), now: t0.addingTimeInterval(2))
+        expect(model.meterWarning(now: t0.addingTimeInterval(2)) ==
+               "meters stale \u{2014} last values held", "core-published age past 1 s: stale")
+        model.observeAudioObservation(snap(3, 10), now: t0.addingTimeInterval(2.1))
+        expect(model.meterWarning(now: t0.addingTimeInterval(2.1)) == nil, "fresh again: recovers")
+        model.observeAudioObservation(["audioMixSession": [:]], now: t0.addingTimeInterval(2.2))
+        expect(model.meterWarning(now: t0.addingTimeInterval(9)) == nil, "envelope gone: no warning")
+    }
+
     // ── #1188: output start/stop mid-take must not shrink the armed ISO set ──
 
     @MainActor
@@ -1267,6 +1330,8 @@ enum ShellTests {
             ("scenes/delete-refusals", testSceneDeleteRefusesOnAirAndLast),
             ("scenes/harness-prefs-isolated", testHarnessNeverTouchesRealPrefs),
             ("scenes/editor-never-program", testSceneEditorNeverTargetsProgram),
+            ("meters/observation-thresholds", testAudioObservationThresholdsAreWindows),
+            ("meters/warning-recovers", testMeterWarningFollowsSnapshotAgeAndRecovers),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)

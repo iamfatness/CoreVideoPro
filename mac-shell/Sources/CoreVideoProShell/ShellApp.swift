@@ -1369,6 +1369,11 @@ struct OutputsStatusRow: View {
                     Text(lufsLabel).font(.plexMono(11, .semibold))
                 }
                 MeterBar(level: model.masterLevel).frame(width: 170)
+                TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                    if let warning = model.meterWarning(now: context.date) {
+                        Text(warning).font(.plexMono(8, .bold)).foregroundStyle(Studio.amber)
+                    }
+                }
             }
             if !peakLabel.isEmpty {
                 Text(peakLabel).font(.plexMono(9))

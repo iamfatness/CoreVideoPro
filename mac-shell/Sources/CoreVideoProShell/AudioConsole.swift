@@ -380,8 +380,17 @@ struct MasterLufsRail: View {
                 Text("LUFS").font(.grotesk(13, .semibold))
                 Text(lufsLabel).font(.grotesk(24, .semibold))
             }
-            Text(model.masterLevel > 0 ? "Live" : "Standing by")
-                .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+            // #870: the clock re-evaluates the observation age between snapshots,
+            // so a stalled audio worker cannot leave held meters looking live.
+            TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                if let warning = model.meterWarning(now: context.date) {
+                    Text(warning).font(.grotesk(11, .medium)).foregroundStyle(Studio.amber)
+                        .multilineTextAlignment(.center)
+                } else {
+                    Text(model.masterLevel > 0 ? "Live" : "Standing by")
+                        .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                }
+            }
             HStack(spacing: 6) {
                 SegmentedMeter(level: model.masterLevel).frame(width: 12, height: 170)
                 SegmentedMeter(level: model.masterLevel).frame(width: 12, height: 170)

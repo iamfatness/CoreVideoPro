@@ -325,6 +325,9 @@ final class AppModel: ObservableObject {
     @Published var vstChannelSelection: [String: String] = [:]  // stripId -> "vst:<name>"
     @Published var vstParamLocal: [UInt32: Double] = [:]        // held during a drag only
     let vstScratch = VstScratch()  // debounce task + quiet-window bookkeeping
+    // #870: the core's audioObservation envelope + when the shell received it.
+    @Published var audioObservation: AudioObservation?
+    var audioObservationReceivedAt = Date()
     @Published var shortTermLufs = -120.0
     @Published var truePeakDbfs = -120.0
     @Published var limiterActive = false
@@ -739,11 +742,21 @@ final class AppModel: ObservableObject {
         applyZoom(snapshot)
     }
 
+    func observeAudioObservation(_ snapshot: JSONObject, now: Date = Date()) {
+        audioObservation = AudioObservation(snapshot)
+        audioObservationReceivedAt = now
+    }
+
+    /// Words for the meters when the audio observation is aging/stale (nil = live).
+    func meterWarning(now: Date = Date()) -> String? {
+        AudioObservationPolicy.warning(audioObservation, receivedAt: audioObservationReceivedAt, now: now)
+    }
+
     private func applySnapshot(_ snapshot: JSONObject) {
         // Keep the last NON-EMPTY snapshot: a failed/empty sync must not blank
         // the Diagnose surface (an operator reads it hardest right when the
         // core is unhappy).
-        if !snapshot.isEmpty { lastSnapshot = snapshot }
+        if !snapshot.isEmpty { lastSnapshot = snapshot; observeAudioObservation(snapshot) }
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         clockText = formatter.string(from: Date())
