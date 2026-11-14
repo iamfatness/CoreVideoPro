@@ -242,6 +242,8 @@ struct RootView: View {
         // Identifies THE main window for the quit prompt (not windows.first,
         // which can be a pop-out).
         .background(MainWindowReader())
+        .onAppear { model.syncTransportHotkeys() }
+        .onChange(of: model.selectedTab) { _ in model.syncTransportHotkeys() }
     }
 }
 
@@ -256,6 +258,11 @@ enum MainWindowTracker {
 
     static func track(_ candidate: NSWindow?) {
         if let candidate { window = candidate }
+    }
+
+    static func isMain(_ candidate: NSWindow?) -> Bool {
+        guard let candidate, let window else { return false }
+        return candidate === window
     }
 
     static var isAvailable: Bool {
@@ -1310,6 +1317,21 @@ struct TransportBar: View {
             .labelsHidden()
             .fixedSize()
             .help("Cut is instant; Fade is 300 ms.")
+            // Fade to Black — RC key: black fill, no visible text, red outline when
+            // black is selected. The label lives in help/accessibility only.
+            Button {
+                Task { await model.toggleProgramBlackout() }
+            } label: {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.black)
+                    .frame(width: 34, height: 26)
+                    .overlay(RoundedRectangle(cornerRadius: 6)
+                        .stroke(model.programBlackout ? Studio.red : Studio.border,
+                                lineWidth: model.programBlackout ? 2 : 1))
+            }
+            .buttonStyle(.plain)
+            .help("\(model.programBlackoutLabel) (⌘⇧B). Fades Program video over 300 ms; audio continues.")
+            .accessibilityLabel(model.programBlackoutLabel)
             // Record — red outline with format subtitle.
             Button {
                 model.toggleRecording()

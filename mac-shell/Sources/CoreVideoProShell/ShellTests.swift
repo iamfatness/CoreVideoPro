@@ -13,6 +13,7 @@
 // that reached the owner in a live session or shipped to main.
 
 import Combine
+import AppKit
 import Foundation
 
 enum ShellTests {
@@ -1994,6 +1995,257 @@ enum ShellTests {
         expectEqual(runTake(model).result, .success, "Take still runs")
     }
 
+    // ── Fade to Black (audit §2) + keyboard Take/FTB (audit §5) ──────────────
+    // Windows: StudioViewModel.ProgramBlackout.cs (SetProgramBlackoutAsync,
+    // ApplyProgramBlackoutSnapshot); Views/StudioWorkspace.TransportHotkeys.cs.
+
+    private final class FakeFtbCore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _bodies: [[String: Any]] = []
+        private var _hold = false
+        var pollSnapshot: [String: Any] = ["programBlackout": false, "programBlackoutOpacity": 0.0]
+        /// nil = echo the requested target; otherwise this snapshot comes back.
+        var commandSnapshot: [String: Any]?
+        var failure: String?
+        private func record(_ body: [String: Any]) { lock.lock(); _bodies.append(body); lock.unlock() }
+        var bodies: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return _bodies }
+        var hold: Bool { get { lock.lock(); defer { lock.unlock() }; return _hold }
+                         set { lock.lock(); _hold = newValue; lock.unlock() } }
+        func handle(_ body: [String: Any]) async throws -> [String: Any] {
+            record(body)
+            let commands = (body["commands"] as? [[String: Any]]) ?? []
+            guard let ftb = commands.first(where: { $0["type"] as? String == "program-blackout" })
+            else { return ["snapshot": pollSnapshot] }
+            while hold { try? await Task.sleep(nanoseconds: 5_000_000) }
+            if let failure { throw BridgeError.remote(failure) }
+            if let commandSnapshot { return ["snapshot": commandSnapshot] }
+            let target = ftb["enabled"] as? Bool ?? false
+            return ["snapshot": ["programBlackout": target, "programBlackoutOpacity": target ? 1.0 : 0.0]]
+        }
+        var commands: [[String: Any]] {
+            bodies.flatMap { ($0["commands"] as? [[String: Any]]) ?? [] }
+                .filter { $0["type"] as? String == "program-blackout" }
+        }
+    }
+
+    @MainActor
+    private static func ftbModel(_ core: FakeFtbCore) -> AppModel {
+        let model = sceneEditModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.status = .connected(renderer: "test")
+        return model
+    }
+
+    @MainActor
+    private static func runFtb(_ model: AppModel, _ enabled: Bool? = nil, wait: Bool = true) -> FtbBox {
+        let box = FtbBox()
+        Task { @MainActor in box.result = await model.setProgramBlackout(enabled) }
+        if wait { spin(until: { box.result != nil }, limit: 3) }
+        return box
+    }
+
+    final class FtbBox { var result: AppModel.BlackoutResult? }
+
+    @MainActor
+    private static func testFtbSendsTheWireCommandAndAppliesTheEcho() {
+        let core = FakeFtbCore()
+        let model = ftbModel(core)
+        let box = runFtb(model)
+        expectEqual(box.result, .success, "toggle from clear succeeds")
+        expectEqual(core.commands.count, 1, "one program-blackout command")
+        let command = core.commands.first ?? [:]
+        expectEqual(command["type"] as? String, "program-blackout", "wire type")
+        expectEqual(command["enabled"] as? Bool, true, "toggle from clear targets black")
+        expectEqual(command["durationMs"] as? Int, 300, "300 ms fade")
+        expect(model.programBlackout, "the echoed snapshot is applied")
+        expectEqual(model.programBlackoutLabel, "BLACK · Restore", "settled black label")
+        expectEqual(model.takeStatus, "Fading Program to black — audio continues", "Windows status")
+        // Toggle back: pressing again restores.
+        core.pollSnapshot = ["programBlackout": true, "programBlackoutOpacity": 1.0]
+        let back = runFtb(model)
+        expectEqual(back.result, .success, "toggle from black succeeds")
+        expectEqual(core.commands.last?["enabled"] as? Bool, false, "toggle from black targets clear")
+        expectEqual(model.takeStatus, "Restoring Program picture", "Windows restore status")
+        expect(!model.programBlackout, "restored")
+        // Explicit set is idempotent-friendly (remote set action later).
+        let set = runFtb(model, true)
+        expectEqual(set.result, .success, "explicit set")
+        expectEqual(core.commands.last?["enabled"] as? Bool, true, "explicit target wins over toggle")
+    }
+
+    @MainActor
+    private static func testFtbAdmissionRefusals() {
+        // Offline: no bridge and no seam.
+        let offline = sceneEditModel()
+        expectEqual(runFtb(offline).result, .failed("FTB unavailable: media core is offline."),
+                    "offline refused")
+        // Older core: snapshot without a boolean programBlackout.
+        let core = FakeFtbCore()
+        core.pollSnapshot = ["recording": [:]]
+        let model = ftbModel(core)
+        expectEqual(runFtb(model).result, .failed("This media core does not support Fade to Black."),
+                    "no observation: rejected rather than implying success")
+        expect(core.commands.isEmpty, "no command sent to an older core")
+        core.pollSnapshot = ["programBlackout": "yes"]
+        expectEqual(runFtb(model).result, .failed("This media core does not support Fade to Black."),
+                    "non-bool observation rejected")
+        expect(core.commands.isEmpty, "still nothing sent")
+    }
+
+    @MainActor
+    private static func testFtbRequiresTheEchoAndReportsFailure() {
+        let core = FakeFtbCore()
+        core.commandSnapshot = ["programBlackout": false, "programBlackoutOpacity": 0.0]
+        let model = ftbModel(core)
+        expectEqual(runFtb(model).result, .failed("Media core did not acknowledge FTB."),
+                    "an echo that disagrees with the target is not success")
+        expect(!model.programBlackout, "state follows the snapshot, not the intent")
+        core.commandSnapshot = [:]   // missing observation also fails
+        expectEqual(runFtb(model).result, .failed("Media core did not acknowledge FTB."),
+                    "missing echo fails")
+        core.commandSnapshot = nil
+        core.failure = "boom"
+        let failed = runFtb(model)
+        guard case .failed(let why)? = failed.result else { expect(false, "request failure surfaced"); return }
+        expect(why.hasPrefix("FTB unavailable: "), "failure is worded like Windows: \(why)")
+        expect(model.takeStatus.hasPrefix("FTB unavailable: "), "status shows it")
+        core.failure = nil
+        expectEqual(runFtb(model).result, .success, "in-flight flag cleared after a failure")
+    }
+
+    @MainActor
+    private static func testFtbInFlightGuard() {
+        let core = FakeFtbCore()
+        core.hold = true
+        let model = ftbModel(core)
+        let first = runFtb(model, wait: false)
+        spin(until: { !core.commands.isEmpty }, limit: 2)
+        let second = runFtb(model)
+        expectEqual(second.result, .failed("FTB command is already in progress."), "second refused")
+        expectEqual(core.commands.count, 1, "no second command")
+        core.hold = false
+        spin(until: { first.result != nil }, limit: 3)
+        expectEqual(first.result, .success, "first completes")
+    }
+
+    @MainActor
+    private static func testFtbLabelsFromOpacity() {
+        // Windows ApplyProgramBlackoutSnapshot, case for case.
+        expectEqual(AppModel.programBlackoutLabel(blackout: true, opacity: 0.4), "Fading to black", "fading")
+        expectEqual(AppModel.programBlackoutLabel(blackout: true, opacity: 0.998), "Fading to black", "<.999")
+        expectEqual(AppModel.programBlackoutLabel(blackout: true, opacity: 0.999), "BLACK · Restore", "settled")
+        expectEqual(AppModel.programBlackoutLabel(blackout: true, opacity: 1), "BLACK · Restore", "full")
+        expectEqual(AppModel.programBlackoutLabel(blackout: false, opacity: 0.5), "Restoring picture", "restoring")
+        expectEqual(AppModel.programBlackoutLabel(blackout: false, opacity: 0.002), "Restoring picture", ">.001")
+        expectEqual(AppModel.programBlackoutLabel(blackout: false, opacity: 0.001), "Fade to Black", "clear")
+        expectEqual(AppModel.programBlackoutLabel(blackout: false, opacity: 0), "Fade to Black", "clear 0")
+        expectEqual(AppModel.programBlackoutLabel(blackout: nil, opacity: 0.9), "Fade to Black", "unobserved")
+        let model = AppModel()
+        expectEqual(model.programBlackoutLabel, "Fade to Black", "a new session starts clear")
+        expect(!model.programBlackout, "no preference engages FTB")
+        model.applySnapshotForTesting(["programBlackout": true, "programBlackoutOpacity": 0.5])
+        expect(model.programBlackout, "snapshot sets black")
+        expectEqual(model.programBlackoutLabel, "Fading to black", "label tracks the snapshot")
+        // Another scene Take does not release the blackout (core owns it; shell just observes).
+        model.applySnapshotForTesting(["programBlackout": true, "programBlackoutOpacity": 1.0])
+        expectEqual(model.programBlackoutLabel, "BLACK · Restore", "settled")
+        model.applySnapshotForTesting(["programBlackout": false, "programBlackoutOpacity": 0.5])
+        expectEqual(model.programBlackoutLabel, "Restoring picture", "restoring")
+        model.applySnapshotForTesting(["recording": [:]])   // no observation -> not black
+        expect(!model.programBlackout, "a snapshot without the field reads as not black (Windows == true)")
+    }
+
+    @MainActor
+    private static func testTakeWhileBlackDoesNotReleaseTheBlackout() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        model.applySnapshotForTesting(["programBlackout": true, "programBlackoutOpacity": 1.0])
+        expectEqual(runTake(model).result, .success, "Take while black succeeds")
+        expect(!core.types().contains("program-blackout"), "Take never sends a blackout command")
+        expect(model.programBlackout, "still black after Take")
+    }
+
+    private static func key(_ kind: TransportKeyEvent.Kind, _ mods: TransportKeyEvent.Modifiers = [],
+                            studio: Bool = true, text: Bool = false, repeating: Bool = false) -> TransportKeyDecision {
+        TransportKeys.decide(TransportKeyEvent(kind: kind, modifiers: mods, isRepeat: repeating,
+                                               isStudioTab: studio, isTextEntryFocus: text))
+    }
+
+    private static func testTransportKeyRouting() {
+        // Space (Windows OnTransportPreviewKeyDown).
+        expectEqual(key(.space), .take, "Space takes")
+        expectEqual(key(.space, repeating: true), .swallow, "held Space is consumed but fires once")
+        expectEqual(key(.space, studio: false), .ignore, "Studio tab only")
+        expectEqual(key(.space, text: true), .ignore, "text entry keeps its Space")
+        for mod in [TransportKeyEvent.Modifiers.command, .shift, .option, .control] {
+            expectEqual(key(.space, mod), .ignore, "any modifier on Space is ignored: \(mod)")
+        }
+        // Cmd+Return (Windows Ctrl+Enter accelerator).
+        expectEqual(key(.returnKey, .command), .alternateTake, "Cmd+Return is the alternate Take")
+        expectEqual(key(.returnKey), .ignore, "bare Return is nothing")
+        expectEqual(key(.returnKey, [.command, .shift]), .ignore, "extra modifier is not the accelerator")
+        expectEqual(key(.returnKey, .command, text: true), .ignore, "text entry ignored")
+        expectEqual(key(.returnKey, .command, studio: false), .ignore, "Studio only")
+        expectEqual(key(.returnKey, .command, repeating: true), .swallow, "held accelerator does not re-fire")
+        // Cmd+Shift+B (Windows Ctrl+Shift+B).
+        expectEqual(key(.b, [.command, .shift]), .toggleBlackout, "Cmd+Shift+B is FTB")
+        expectEqual(key(.b, .command), .ignore, "Cmd+B alone is not FTB")
+        expectEqual(key(.b, [.command, .shift, .option]), .ignore, "exact modifier set")
+        expectEqual(key(.b, [.command, .shift], text: true), .ignore, "text entry ignored")
+        expectEqual(key(.b, [.command, .shift], studio: false), .ignore, "Studio only")
+        expectEqual(key(.b, [.command, .shift], repeating: true), .swallow, "no FTB flapping on key repeat")
+        expectEqual(key(.other, .command), .ignore, "other keys untouched")
+    }
+
+    @MainActor
+    private static func testTransportKeyTextEntryDetection() {
+        let field = NSTextField(frame: .zero)
+        let editor = NSTextView(frame: .zero)
+        let button = NSButton(frame: .zero)
+        let secure = NSSecureTextField(frame: .zero)
+        expect(TransportKeys.isTextEntry(field), "NSTextField is text entry")
+        expect(TransportKeys.isTextEntry(editor), "the field editor (NSTextView) is text entry")
+        expect(TransportKeys.isTextEntry(secure), "secure field is text entry")
+        expect(!TransportKeys.isTextEntry(button), "a focused button is NOT text entry (Space still Takes)")
+        expect(!TransportKeys.isTextEntry(nil), "no responder")
+    }
+
+    @MainActor
+    private static func testTransportKeyHandlerCallsTheRealCommands() {
+        let ftb = FakeFtbCore()
+        let model = ftbModel(ftb)
+        var takes = 0
+        // Space with Take unavailable is still consumed and never fires a Take.
+        model.previewSceneId = model.programSceneId
+        expect(!model.canTake, "precondition: Take unavailable")
+        let consumed = model.handleTransportKey(
+            TransportKeyEvent(kind: .space, modifiers: [], isRepeat: false, isStudioTab: true, isTextEntryFocus: false),
+            takeOverride: { takes += 1 })
+        expect(consumed, "Space is consumed even when Take is unavailable")
+        expectEqual(takes, 0, "no Take fired while unavailable")
+        // Available: routes into take().
+        let core = FakeTakeCore()
+        let takeModel = takeModel(core)
+        let spaceEvent = TransportKeyEvent(kind: .space, modifiers: [], isRepeat: false,
+                                           isStudioTab: true, isTextEntryFocus: false)
+        expect(takeModel.handleTransportKey(spaceEvent), "Space handled")
+        spin(until: { !core.bodies.isEmpty }, limit: 3)
+        expectEqual(core.types(), ["begin-take-transition", "load-scene-graph", "set-preview-scene"],
+                    "keyboard Take goes through take() (transition leads the batch)")
+        // Alternate Take when unavailable is NOT consumed (Windows CanExecute false -> unhandled).
+        let unavailable = model.handleTransportKey(
+            TransportKeyEvent(kind: .returnKey, modifiers: .command, isRepeat: false,
+                              isStudioTab: true, isTextEntryFocus: false))
+        expect(!unavailable, "Cmd+Return unavailable passes through")
+        // FTB.
+        let fired = model.handleTransportKey(
+            TransportKeyEvent(kind: .b, modifiers: [.command, .shift], isRepeat: false,
+                              isStudioTab: true, isTextEntryFocus: false))
+        expect(fired, "Cmd+Shift+B consumed")
+        spin(until: { !ftb.commands.isEmpty }, limit: 3)
+        expectEqual(ftb.commands.first?["type"] as? String, "program-blackout", "keyboard FTB sends the wire command")
+    }
+
     /// Final-review IMPORTANT 7: Cmd-Q with the main window closed must still
     /// show something the operator can answer, and a repeat Cmd-Q re-presents it.
     @MainActor
@@ -2175,6 +2427,15 @@ enum ShellTests {
             ("take/in-flight-refused", testSecondTakeWhileInFlightIsRefused),
             ("take/refusals-offline", testTakeRefusalsAndOffline),
             ("take/not-blocked-by-quit", testTakeIsNotBlockedByTheQuitGuard),
+            ("ftb/wire-and-echo", testFtbSendsTheWireCommandAndAppliesTheEcho),
+            ("ftb/admission-refusals", testFtbAdmissionRefusals),
+            ("ftb/echo-required", testFtbRequiresTheEchoAndReportsFailure),
+            ("ftb/in-flight-guard", testFtbInFlightGuard),
+            ("ftb/labels-from-opacity", testFtbLabelsFromOpacity),
+            ("ftb/take-while-black", testTakeWhileBlackDoesNotReleaseTheBlackout),
+            ("keys/routing-decision", testTransportKeyRouting),
+            ("keys/text-entry-detection", testTransportKeyTextEntryDetection),
+            ("keys/handler-real-commands", testTransportKeyHandlerCallsTheRealCommands),
             ("quit/cancel", testQuitCancelRepliesFalseOnceAndSendsNothing),
             ("quit/idle", testQuitIdleQuitsImmediately),
             ("quit/dead-core", testQuitWithADeadCoreFinishesImmediately),

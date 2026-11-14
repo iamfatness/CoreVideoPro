@@ -560,6 +560,14 @@ final class AppModel: ObservableObject {
         // exit. Pairs with COREVIDEO_SHELL_TAB for per-tab proof shots.
         if let snapshotPath =
             ProcessInfo.processInfo.environment["COREVIDEO_SHELL_SNAPSHOT"] {
+            // Proof-shot only: COREVIDEO_SHELL_FTB=black shows the transport in its
+            // settled-black state.
+            if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_FTB"] == "black" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+                    self?.applyProgramBlackout(["programBlackout": true, "programBlackoutOpacity": 1.0])
+                    self?.blackoutProofHold = true
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
                 if let window = NSApplication.shared.windows.first,
                    let view = window.contentView,
@@ -778,6 +786,7 @@ final class AppModel: ObservableObject {
         // the Diagnose surface (an operator reads it hardest right when the
         // core is unhappy).
         if !snapshot.isEmpty { lastSnapshot = snapshot; observeAudioObservation(snapshot) }
+        if !snapshot.isEmpty { applyProgramBlackout(snapshot) }
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         clockText = formatter.string(from: Date())
@@ -2001,6 +2010,125 @@ final class AppModel: ObservableObject {
             takeStatus = failure
             pushWarning(failure)
             return .failed(failure)
+        }
+    }
+
+    // ── Fade to Black (audit §2; Windows StudioViewModel.ProgramBlackout.cs) ──
+    /// Core-owned state, observed from the snapshot (`programBlackout` /
+    /// `programBlackoutOpacity`). No preference engages it; a new session starts clear.
+    @Published private(set) var programBlackout = false
+    @Published private(set) var programBlackoutLabel = "Fade to Black"
+    private var blackoutInFlight = false
+
+    enum BlackoutResult: Equatable {
+        case success
+        case failed(String)
+    }
+
+    /// Windows `ApplyProgramBlackoutSnapshot` label switch, case for case.
+    static func programBlackoutLabel(blackout: Bool?, opacity: Double) -> String {
+        switch blackout {
+        case true? where opacity < 0.999: return "Fading to black"
+        case true?: return "BLACK · Restore"
+        case false? where opacity > 0.001: return "Restoring picture"
+        default: return "Fade to Black"
+        }
+    }
+
+    /// JSON booleans only (an int or string is "no observation", as with
+    /// System.Text.Json's `bool?` on Windows).
+    private static func strictBool(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
+    /// Proof-shot only (COREVIDEO_SHELL_FTB): keeps a live core's snapshots from clearing the shown state.
+    private var blackoutProofHold = false
+
+    private func applyProgramBlackout(_ snapshot: JSONObject) {
+        if blackoutProofHold { return }
+        let observed = Self.strictBool(snapshot["programBlackout"])
+        let opacity = (snapshot["programBlackoutOpacity"] as? NSNumber)?.doubleValue ?? 0
+        programBlackout = observed == true
+        programBlackoutLabel = Self.programBlackoutLabel(blackout: observed, opacity: opacity)
+    }
+
+    /// Windows `SetProgramBlackoutAsync`: every caller (button, keyboard, later
+    /// the control API) shares this admission and the native observation.
+    func setProgramBlackout(_ enabled: Bool?) async -> BlackoutResult {
+        if blackoutInFlight { return .failed("FTB command is already in progress.") }
+        guard bridge != nil || quitRequestForTesting != nil else {
+            return .failed("FTB unavailable: media core is offline.")
+        }
+        blackoutInFlight = true
+        defer { blackoutInFlight = false }
+        do {
+            // Poll first: an older core without the observation rejects FTB.
+            let polled = try await outputRequest([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [JSONObject](),
+            ])
+            guard let current = Self.strictBool((polled["snapshot"] as? JSONObject)?["programBlackout"]) else {
+                return .failed("This media core does not support Fade to Black.")
+            }
+            let target = enabled ?? !current
+            let response = try await outputRequest([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                "commands": [["type": "program-blackout", "enabled": target, "durationMs": 300] as JSONObject],
+            ])
+            let snapshot = response["snapshot"] as? JSONObject ?? [:]
+            applySnapshot(snapshot)
+            guard Self.strictBool(snapshot["programBlackout"]) == target else {
+                return .failed("Media core did not acknowledge FTB.")
+            }
+            takeStatus = target ? "Fading Program to black — audio continues" : "Restoring Program picture"
+            return .success
+        } catch {
+            let failure = "FTB unavailable: \(error.localizedDescription)"
+            takeStatus = failure
+            return .failed(failure)
+        }
+    }
+
+    /// Windows `ToggleProgramBlackout` command: the button and Cmd+Shift+B.
+    func toggleProgramBlackout() async {
+        if case .failed(let why) = await setProgramBlackout(nil) { takeStatus = why }
+    }
+
+    // ── keyboard Take / FTB (audit §5) ───────────────────────────────────────
+    let transportHotkeys = TransportHotkeyMonitor()
+
+    /// Installed only while the Studio tab is the active tab.
+    func syncTransportHotkeys() {
+        transportHotkeys.setActive(selectedTab == .studio) { [weak self] nsEvent in
+            guard let self else { return false }
+            let key = TransportKeys.event(
+                from: nsEvent, isStudioTab: self.selectedTab == .studio,
+                firstResponder: nsEvent.window?.firstResponder)
+            return self.handleTransportKey(key)
+        }
+    }
+
+    /// Executes a routed key against the real commands; returns whether it was
+    /// consumed. `takeOverride` lets tests observe a Take without a core.
+    func handleTransportKey(_ event: TransportKeyEvent, takeOverride: (() -> Void)? = nil) -> Bool {
+        func fireTake() {
+            if let takeOverride { takeOverride() } else { Task { @MainActor in await self.take() } }
+        }
+        switch TransportKeys.decide(event) {
+        case .ignore: return false
+        case .swallow: return true
+        case .take:
+            // Consumed even when Take is unavailable: Space must never activate
+            // whatever control happened to hold focus.
+            if canTake { fireTake() }
+            return true
+        case .alternateTake:
+            guard canTake else { return false }
+            fireTake()
+            return true
+        case .toggleBlackout:
+            Task { @MainActor in await self.toggleProgramBlackout() }
+            return true
         }
     }
 
