@@ -19,6 +19,7 @@
 #include "compositor/CompositorLayout.h"
 #include "compositor/CompositorShaderParams.h"
 #include "modules/Interfaces.h"
+#include "core/ProgramBlackout.h"
 #include "modules/ProgramFramePreview.h"
 
 namespace {
@@ -549,6 +550,68 @@ TEST(MetalCompositor, LayerOpacityBlendsTowardBackground) {
   // 50% red over the dark background: red lands mid-range, neither ~24 nor ~255.
   EXPECT_GT(pixel[2], 80);
   EXPECT_LT(pixel[2], 200);
+}
+
+// Port of D3D11Compositor.FadeToBlackProducesBlackPixelsAndRestoresHeldVideo.
+// ProgramBlackout appends a sourceless hasFillColor "#000000" layer; before the
+// Metal hasFillColor branch it fell through to the default 0xff444444 grey.
+TEST(MetalCompositor, FadeToBlackProducesBlackPixelsAndRestoresHeldVideo) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  CompositorRenderPlan plan;
+  plan.renderPlanId = "plan-ftb";
+  plan.width = 640;
+  plan.height = 360;
+  plan.layers.push_back(solidLayer("camera", 0.f, 0.f, 1.f, 1.f));
+  const auto source = bgraFrame("camera", 64, 36, 0xee, 0xee, 0xee);
+  const auto baseline = compositor->render(plan, {source});
+  ASSERT_FALSE(baseline.preview.bgra.empty());
+  const auto basePixel = previewAt(baseline.preview, 0.5f, 0.5f);
+  EXPECT_GT(basePixel[2], 200);
+
+  corevideo::core::ProgramBlackout fade;
+  fade.set(true);
+  fade.advance(150);
+  auto half = plan;
+  fade.append(half);
+  const auto middle = previewAt(compositor->render(half, {source}).preview, 0.5f, 0.5f);
+  // Opacity 0.5 of black over ~0xee: roughly half brightness.
+  for (int c = 0; c < 3; ++c) {
+    EXPECT_GT(middle[c], 105) << "channel " << c;
+    EXPECT_LT(middle[c], 135) << "channel " << c;
+  }
+
+  fade.advance(150);
+  auto black = plan;
+  fade.append(black);
+  const auto full = compositor->render(black, {source});
+  ASSERT_FALSE(full.preview.bgra.empty());
+  const auto pixel = previewAt(full.preview, 0.5f, 0.5f);
+  for (int c = 0; c < 3; ++c) EXPECT_LE(pixel[c], 2) << "channel " << c << " (grey 0x44 = 68)";
+
+  fade.set(false);
+  fade.advance(300);
+  auto restored = plan;
+  fade.append(restored);
+  EXPECT_EQ(compositor->render(restored, {source}).preview.bgra, baseline.preview.bgra);
+}
+
+TEST(MetalCompositor, SourcelessFillColorLayerPaintsItsParsedColour) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  CompositorRenderPlan plan;
+  plan.renderPlanId = "plan-fill";
+  plan.width = 640;
+  plan.height = 360;
+  CompositorRenderPlanLayer bg;
+  bg.layerId = "tiles-bg:test";
+  bg.kind = "tiles-background";
+  bg.rect = {0.f, 0.f, 1.f, 1.f};
+  bg.hasFillColor = true;
+  bg.fillColor = "#3366CC";
+  plan.layers.push_back(bg);
+  const auto pixel = previewAt(compositor->render(plan, {}).preview, 0.5f, 0.5f);
+  EXPECT_NEAR(pixel[2], 0x33, 2);  // R
+  EXPECT_NEAR(pixel[1], 0x66, 2);  // G
+  EXPECT_NEAR(pixel[0], 0xCC, 2);  // B
 }
 
 }  // namespace

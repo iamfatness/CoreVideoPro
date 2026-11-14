@@ -99,9 +99,11 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   audible drift, not latent. (Dedupe matters: `applyPreviewScene` rides the
   REPEATING spine sync and does NOT clear that vector, so an unconditional push
   there grows without bound on a scene-flip loop.)
-  And **Metal has no `hasFillColor` branch** — the wall background renders as a
-  dark-grey slab on macOS; named in a comment at the site, owned by
-  `docs/corevideo-tiles-iso-scaling-plan.md` implementation slice 3 (Metal parity).
+  Metal's missing `hasFillColor` branch (wall background a dark-grey slab, FTB
+  fading to 0x44 grey) is FIXED: `MetalCompositorAdapter.mm` `resolveLayers` now
+  paints the parsed `fillColor`; pixel-proven by
+  `MetalCompositor.FadeToBlackProducesBlackPixelsAndRestoresHeldVideo` and
+  `MetalCompositor.SourcelessFillColorLayerPaintsItsParsedColour`.
 
 - **A TILES WALL TAKEN FROM PREVIEW IS CUT TO, NEVER REDRAWN (owner report,
   live show 2026-09-09).** "I am ok if panelists leave and join the video but

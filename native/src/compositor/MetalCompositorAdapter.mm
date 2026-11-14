@@ -817,31 +817,17 @@ class MetalCompositor final : public ICompositor {
             warnUnmatchedCaptureLayer(frameSourceId, frames);
           }
         }
-        // ── KNOWN GAP, DELIBERATELY NAMED: no `hasFillColor` branch here ──
-        //
-        // The D3D11 twin (D3D11CompositorAdapter.cpp, resolveLayers) and the
-        // CPU preview path (ProgramFramePreview.cpp, buildProgramFramePreview)
-        // both carry an `else if (layer.plan.hasFillColor)` branch that paints
-        // `CompositorRenderPlanLayer::fillColor` for a DELIBERATELY SOURCELESS
-        // solid layer — the shape the CoreVideo Tiles wall background uses
-        // (MediaCore::buildRenderPlanForScene emits `tiles-bg:<layerId>` with
-        // hasFillColor=true and no participantId/mediaAssetId).
-        //
-        // This adapter has no such branch, so that layer falls through to the
-        // default mid-grey `ResolvedLayer::color` and the wall background
-        // renders as a DARK-GREY SLAB on macOS instead of the operator's
-        // configured backgroundColor. Program is inherited by the virtual
-        // camera, recordings and streams, so this is visible on air — it is
-        // not a preview-only cosmetic.
-        //
-        // OWNER: docs/corevideo-tiles-iso-scaling-plan.md, "Implementation
-        // slices" §3 ("GPU effects: Rounded mask, border, and outer-glow
-        // passes in D3D11, followed by Metal parity"). The fix is a
-        // `hasFillColor` branch mirroring D3D11CompositorAdapter.cpp's, plus
-        // the corresponding solid-quad draw. It is NOT in the T1 core-wall
-        // branch on purpose (T1 is Windows-first); this comment exists so the
-        // gap is greppable in this file rather than silent.
-        else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
+        // hasFillColor: a DELIBERATELY SOURCELESS solid layer — the Tiles wall
+        // background (`tiles-bg:<layerId>`) and fade-to-black
+        // (ProgramBlackout::append). Mirrors the D3D11 resolveLayers branch and
+        // ProgramFramePreview.cpp: never resolves to a frame; paints the parsed
+        // fillColor instead of the default mid-grey ResolvedLayer::color. The
+        // former KNOWN GAP (Mac FTB faded to 0x44 grey) is closed; proven by
+        // MetalCompositor.FadeToBlackProducesBlackPixelsAndRestoresHeldVideo and
+        // MetalCompositor.SourcelessFillColorLayerPaintsItsParsedColour.
+        else if (layer.plan.hasFillColor) {
+          layer.color = compositor::parseHexColorRgba(layer.plan.fillColor, 0xff808080u);
+        } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           // Legacy positional fallback (a layer with no participantId/mediaAssetId
           // at all, matched by index) — I-4: pink is retired for every kind, so
           // this resolves by the same one rule as every other layer.
