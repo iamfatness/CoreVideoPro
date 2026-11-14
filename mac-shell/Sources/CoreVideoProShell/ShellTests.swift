@@ -1304,6 +1304,63 @@ enum ShellTests {
         expectEqual(prefs?.overlays?.brandName, "Acme", "ShellPrefs keeps the overlays block")
     }
 
+    // Windows ApplyBrandOverlayDefaults (StudioViewModel.cs:1060), run from
+    // SetBrandKit (:1024) only: manual no-op, all-off disables every graphic,
+    // anything else leaves them alone.
+    @MainActor
+    private static func brandDefaultsModel(_ behavior: String, phase: String)
+        -> (AppModel, () -> [JSONObject]) {
+        let model = AppModel()
+        model.overlays.defaultOverlayBehavior = behavior
+        model.lowerThirdPhase = phase
+        model.lowerThirdName = "Guest"
+        var seen: [JSONObject] = []
+        model.overlayCommandObserver = { seen.append($0) }
+        return (model, { seen })
+    }
+
+    private static func lowerThirdHides(_ cmds: [JSONObject]) -> Bool {
+        cmds.contains {
+            ($0["overlayId"] as? String) == "key:lower-third"
+                && ($0["keyPhase"] as? String) == "building-out"
+        }
+    }
+
+    @MainActor
+    private static func testBrandDefaultAllOffRetiresTheLowerThird() {
+        for phase in ["on-air", "building-in"] {
+            let (model, seen) = brandDefaultsModel("all-off", phase: phase)
+            model.pushBrandKitNow()
+            expect(seen().contains { ($0["type"] as? String) == "set-brand-kit" },
+                   "brand kit still goes out (\(phase))")
+            expect(lowerThirdHides(seen()),
+                   "all-off on a brand-kit apply retires the \(phase) lower third")
+        }
+        let (hidden, seenHidden) = brandDefaultsModel("all-off", phase: "hidden")
+        hidden.pushBrandKitNow()
+        expect(!lowerThirdHides(seenHidden()), "all-off with nothing up sends no retire")
+    }
+
+    @MainActor
+    private static func testBrandDefaultManualAndUnknownAreNoOps() {
+        for behavior in ["manual", "restore-last", "lower-third-only", "bogus"] {
+            let (model, seen) = brandDefaultsModel(behavior, phase: "on-air")
+            model.pushBrandKitNow()
+            expect(!lowerThirdHides(seen()), "\(behavior) leaves an enabled overlay enabled")
+            expectEqual(model.lowerThirdPhase, "on-air", "\(behavior) leaves the phase alone")
+        }
+    }
+
+    @MainActor
+    private static func testBrandDefaultsAreNotRerunBySyncs() {
+        let (model, seen) = brandDefaultsModel("all-off", phase: "on-air")
+        model.setCaptionsEnabled(true)
+        model.applyMotionTiming(.gentle)
+        model.showLowerThird()
+        expect(!lowerThirdHides(seen()),
+               "captions / motion / show never apply the brand default; only a brand-kit apply does")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
 
     @MainActor
@@ -1361,6 +1418,9 @@ enum ShellTests {
             ("iso/preflight-unobserved", testIsoPreflightNeverWarnsOnAnUnobservedState),
             ("overlays/brand-kit-payload", testBrandKitCommandCarriesOnlyWhatTheCoreApplies),
             ("overlays/old-prefs-decode", testOldOverlayPrefsWithRemovedFieldsStillDecode),
+            ("overlays/brand-default-all-off", testBrandDefaultAllOffRetiresTheLowerThird),
+            ("overlays/brand-default-noops", testBrandDefaultManualAndUnknownAreNoOps),
+            ("overlays/brand-default-not-on-sync", testBrandDefaultsAreNotRerunBySyncs),
             ("scenes/rename-keeps-fields", testSceneRenameKeepsEveryOtherField),
             ("scenes/rename-policy", testSceneRenameValidationIsTheWindowsPolicy),
             ("scenes/duplicate-copies-all", testSceneDuplicateCopiesEveryField),

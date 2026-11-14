@@ -1069,6 +1069,8 @@ final class AppModel: ObservableObject {
     @Published var audioInputs: [AudioInputDevice] = []
     var captureAudioSyncTask: Task<Void, Never>?
     var brandSyncTask: Task<Void, Never>?
+    /// Test seam: sees every overlay command before it goes to the bridge.
+    var overlayCommandObserver: ((JSONObject) -> Void)?
     /// How many keyed graphics are on air (the WinUI "N on air" readout).
     var lowerThirdOnAirCount: Int {
         (lowerThirdPhase == "on-air" || lowerThirdPhase == "building-in") ? 1 : 0
@@ -2424,6 +2426,7 @@ final class AppModel: ObservableObject {
     // Internal (not private): AutomationExtras.swift keys the automatic lower
     // third through the same single-command path.
     func sendOverlay(_ command: JSONObject) {
+        overlayCommandObserver?(command)
         guard let bridge else { return }
         Task {
             do {

@@ -111,7 +111,29 @@ extension AppModel {
 
     @MainActor
     func pushBrandKit() async {
+        pushBrandKitNow()
+    }
+
+    /// Brand-kit apply (Windows StudioViewModel.SetBrandKit): send the kit.
+    @MainActor
+    func pushBrandKitNow() {
+        applyBrandOverlayDefaults(overlays.defaultOverlayBehavior)
         sendOverlay(Self.brandKitCommand(overlays))
+    }
+
+    /// Windows StudioViewModel.ApplyBrandOverlayDefaults (:1060): "manual" is a
+    /// no-op; "all-off" turns every graphic off; any other value leaves them as
+    /// they are. The Mac's only keyed graphic is the lower third, so all-off
+    /// retires it (the same two-step build-out the Hide button uses) when it is
+    /// up. Runs only on a brand-kit apply, never on an ordinary sync.
+    @MainActor
+    func applyBrandOverlayDefaults(_ behavior: String) {
+        switch behavior {
+        case "all-off":
+            if lowerThirdOnAirCount > 0 { hideLowerThird() }
+        default:  // "manual" and every other value leave graphics unchanged
+            break
+        }
     }
 
     func setCaptionsEnabled(_ enabled: Bool) {
