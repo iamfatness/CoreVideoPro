@@ -222,6 +222,46 @@ enum ShellTests {
         expect(stopped.desired, "fresh recording after explicit Start remains armed")
     }
 
+    // #976: a retained terminal state from the PREVIOUS take must not cancel a new Start.
+    private static func testRecordingRetainedTerminalStateDoesNotCancelNewStart() {
+        for terminal in ["failed", "interrupted"] {
+            var policy = RecordingCommandPolicy()
+            policy.observe(terminal, sessionId: "take-1")
+            let start = policy.begin()
+            expect(!start.stop && policy.desired, "\(terminal): Start arms intent")
+            policy.observe(terminal, sessionId: "take-1")
+            expect(policy.desired, "\(terminal): retained previous-take state cannot cancel pending Start")
+            policy.finish(start, failed: false)
+            policy.observe(terminal, sessionId: "take-1")
+            expect(policy.desired, "\(terminal): retained state after ack cannot cancel the Start")
+            policy.observe("starting", sessionId: "take-2")
+            policy.observe("recording", sessionId: "take-2")
+            expect(policy.desired, "\(terminal): new take goes live with intent intact")
+            policy.observe("failed", sessionId: "take-2")
+            expect(!policy.desired, "\(terminal): the NEW take's own failure still clears intent")
+        }
+        var missing = RecordingCommandPolicy()
+        missing.observe("failed", sessionId: "take-1")
+        missing.finish(missing.begin(), failed: false)
+        missing.observe("failed", sessionId: nil)
+        expect(!missing.desired, "missing identity is never proof of an old failure")
+        var bounded = RecordingCommandPolicy()
+        bounded.observe("failed", sessionId: "take-1")
+        bounded.finish(bounded.begin(), failed: false)
+        bounded.observe("recording", sessionId: nil)
+        bounded.observe("failed", sessionId: "take-1")
+        expect(!bounded.desired, "supersession ends once the new take shows progress")
+        var reused = RecordingCommandPolicy()
+        reused.observe("failed", sessionId: "take-1")
+        reused.finish(reused.begin(), failed: false)
+        reused.observe("failed", sessionId: "take-9")
+        expect(!reused.desired, "a different session's failure cancels the Start")
+        expectEqual(RecordingLifecycleReadModel.sessionId(
+            ["lifecycle": ["sessionId": "abc"], "sessionId": "zzz"]), "abc", "lifecycle sessionId read")
+        expectEqual(RecordingLifecycleReadModel.sessionId(["sessionId": "zzz"]), "zzz", "legacy sessionId read")
+        expect(RecordingLifecycleReadModel.sessionId(["status": "idle"]) == nil, "no sessionId -> nil")
+    }
+
     private static func testBridgeGenerationRejectsStaleWork() {
         var policy = BridgeGenerationPolicy()
         expect(!policy.canWrite(policy.generation), "stopped bridge rejects writes")
@@ -1677,6 +1717,7 @@ enum ShellTests {
             ("audio-route/revisioned-projection", testAudioRouteControlProjection),
             ("zoom-roster/recovery-projection", testZoomRosterProjection),
             ("recording/command-retry", testRecordingCommandRetriesAndSupersession),
+            ("recording/retained-terminal-vs-new-start", testRecordingRetainedTerminalStateDoesNotCancelNewStart),
             ("bridge/generation-lifecycle", testBridgeGenerationRejectsStaleWork),
             ("wire/shared-lifecycle-contracts", testSharedLifecycleContracts),
             ("prefs/older-file", testPrefsSurviveAnOlderFile),

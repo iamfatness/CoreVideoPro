@@ -16,4 +16,10 @@ enum RecordingLifecycleReadModel {
         if state == "completed", lifecycle["finalized"] as? Bool != true { return "unknown" }
         return state
     }
+
+    static func sessionId(_ recording: [String: Any]) -> String? {
+        let id = (recording["lifecycle"] as? [String: Any])?["sessionId"] as? String
+            ?? recording["sessionId"] as? String
+        return (id?.isEmpty ?? true) ? nil : id
+    }
 }

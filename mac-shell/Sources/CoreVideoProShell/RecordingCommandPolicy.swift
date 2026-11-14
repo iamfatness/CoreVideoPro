@@ -11,12 +11,28 @@ struct RecordingCommandPolicy {
     private var generation: UInt64 = 0
     private var pending: UInt64?
     private var awaitingStartProgress = false
+    private var lastSessionId: String?
+    // #976 (Windows 53c3efaf): the take that was retained when a Start was admitted.
+    // Its terminal state can still be reported until the new take shows progress.
+    private var supersededSessionId: String?
 
     private var observedLive: Bool { status == "recording" || status == "warning" }
 
-    mutating func observe(_ status: String) {
+    mutating func observe(_ status: String, sessionId: String? = nil) {
+        let retainedFromPreviousTake = (status == "failed" || status == "interrupted")
+            && sessionId != nil && sessionId == supersededSessionId
         self.status = status
         if status == "starting" || observedLive { awaitingStartProgress = false }
+        if !retainedFromPreviousTake {
+            // Any observation that is not the old take's terminal replay ends supersession;
+            // a missing identity is never proof of an old failure.
+            if let sessionId { lastSessionId = sessionId }
+            if status == "starting" || observedLive || (sessionId != nil && sessionId != supersededSessionId) {
+                supersededSessionId = nil
+            }
+        } else if pending == nil && desired {
+            return
+        }
         guard pending == nil else { return }
         // A poll issued before Start can finish after its acknowledgement.
         // Idle/completed from that poll cannot revoke the newer Start intent.
@@ -31,6 +47,7 @@ struct RecordingCommandPolicy {
         pending = generation
         desired = !operation.stop
         awaitingStartProgress = !operation.stop
+        if !operation.stop { supersededSessionId = lastSessionId }
         return operation
     }
 

@@ -793,7 +793,8 @@ final class AppModel: ObservableObject {
         }
         if let recording = snapshot["recording"] as? JSONObject {
             let nextStatus = RecordingLifecycleReadModel.status(recording)
-            recordingCommands.observe(nextStatus)
+            recordingCommands.observe(
+                nextStatus, sessionId: RecordingLifecycleReadModel.sessionId(recording))
             recordingDesired = recordingCommands.desired
             if nextStatus == "recording", recordingStatus != "recording" {
                 recordingStartedAt = Date()
