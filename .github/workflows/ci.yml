@@ -272,7 +272,8 @@ jobs:
       - name: macOS capture tests
         run: ./native/build-metal/corevideo-native-tests --gtest_filter='MacCapture*'
       # `-LE realtime`: the Mac AVF recordings (~36 s of real wall-clock capture and
-      # encode, ctest label `realtime`) are timing-sensitive and a shared runner
+      # encode, ctest label `realtime`, only the 4-10 s measurement cases; the
+      # deterministic AVF cases stay in the main ctest) are timing-sensitive and a shared runner
       # cannot hold the cadence they assert. They run locally (plain `ctest`) as
       # part of the release gate, not here.
       - name: Full native tests (Metal configuration, excluding realtime)

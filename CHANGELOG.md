@@ -4,9 +4,10 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## CoreVideo Pro for macOS 1.0.0 - unreleased
+## [macOS 1.0.0] - unreleased
 
-First Apple Silicon release of the native macOS app (macOS 13+, arm64 only; no Intel
+First Apple Silicon release of the native macOS app. This is its own version line,
+independent of the Windows 1.0.0 below (macOS 13+, arm64 only; no Intel
 build). Acceptance by the owner is pending: see `docs/qa/macos-1.0-owner-acceptance.md`.
 
 ### Added

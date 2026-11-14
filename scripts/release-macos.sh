@@ -104,6 +104,9 @@ MOUNT=""
 cleanup() {
     [ -z "$MOUNT" ] || hdiutil detach "$MOUNT" -quiet -force 2>/dev/null || true
     rm -rf "$WORK"
+    # A leftover moved-aside previous release is removed only once the new one is
+    # in place; if the publish failed and the restore did too, it is the only copy.
+    [ -z "${OUT:-}" ] || [ ! -e "$OUT" ] || rm -rf "$OUT.previous.$$"
 }
 trap cleanup EXIT
 

@@ -43,13 +43,18 @@ Start a recording first, then repeat with a stream running instead.
 ## 4. Real camera ISO frame count (#984)
 
 1. Record a Program recording plus an ISO of a real camera for 60 seconds.
-2. Pass: the ISO file's frame count matches camera deliveries at the camera's frame rate
-   (`ffprobe -count_frames -select_streams v -show_entries stream=nb_read_frames`),
-   within one frame per second of drift, with no duplicate runs or gaps in a frame step.
+2. Count source: the adapter's camera arrival counter (frames the camera delivered to the
+   capture adapter, shown in Diagnose or the core log for that device) is the expected
+   count. The ISO file's frame count is
+   `ffprobe -count_frames -select_streams v -show_entries stream=nb_read_frames <iso.mp4>`.
+3. Pass: the ISO frame count equals the arrival counter, off by at most 1 frame. Then check
+   every frame step: `ffprobe -select_streams v -show_entries packet=pts_time -of csv=p=0
+   <iso.mp4>` has no repeated pts and no delta larger than 1.5x the camera frame period.
+   Any duplicate or gap fails, even if the totals match.
 
 ## 5. Zoom sign-in and join (hardened runtime)
 
-1. From the Zoom tab, sign in, then join a real meeting as the attendee's host or co-host.
+1. From the Zoom tab, sign in, then join a meeting where the signed-in account is host or co-host.
 2. Pass: sign-in completes, the join succeeds, participant video appears, and a Zoom source
    can be put on Program. The Zoom engine launches from the signed bundle (no crash dialog,
    no "damaged" error).
@@ -65,7 +70,7 @@ Start a recording first, then repeat with a stream running instead.
 
 ## 7. Keyboard
 
-1. With the main window focused: Space, Cmd-Return, Cmd-Shift-B.
+1. With the main window focused on the Studio tab: Space, Cmd-Return, Cmd-Shift-B.
 2. Pass: Space and Cmd-Return Take; Cmd-Shift-B toggles Fade to Black.
 3. Click into any text field (scene name, stream key) and type a space.
 4. Pass: the space is typed and no Take happens.
@@ -88,10 +93,18 @@ Start a recording first, then repeat with a stream running instead.
 
 ## 10. 1080p60 frame delivery
 
-1. On the owner's Mac: `python scripts/mac-show-drill.py --seconds 40 --load 8`.
-2. Pass (north star in CLAUDE.md): per-frame delivery holds, not just mean fps. The drill
-   prints a PASS verdict with the frame-delivery and render-tick gates satisfied. Attach the
-   output to the release notes.
+Per CLAUDE.md "Frame-delivery acceptance": 60 fps is per-frame delivery, never an average.
+
+1. On the owner's Mac, with the release core build (the one inside the DMG app, not a
+   debug or dev-tree core), Program buffer at its default: `python scripts/mac-show-drill.py
+   --seconds 40 --load 8`.
+2. Pass: zero Program-buffer underruns, zero missed scheduled output deadlines and zero
+   dropped frames in the drill's verdict, and every structural gate passes. Any one of these
+   fails the tested configuration; a 60 fps mean or median never waives it. A render overrun
+   absorbed by the buffer is diagnostic only.
+3. Record in the release notes: Mac model and macOS version, the workload (`--load 8`,
+   duration, enabled outputs), the core binary path and build, the Program buffer setting,
+   and every failure or warning the drill printed, with the full output attached.
 
 ## 11. Full show rehearsal
 

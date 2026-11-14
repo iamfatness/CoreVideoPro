@@ -1086,7 +1086,21 @@ if(BUILD_TESTING)
     # their own ctest, LABELS realtime, so a busy machine can skip them with
     # `ctest -LE realtime`. Plain `ctest` still runs them (RUN_SERIAL: they are
     # timing measurements and must not share the box with the main suite).
-    set(COREVIDEO_REALTIME_TEST_FILTER "AvfProgramTail.*:AvfCaptureArrival.*")
+    # Only the cases that measure wall-clock capture/encode (4-10 s each) carry the
+    # label; the sub-second deterministic cases (NoIsoDemandMeansNoRetainedFrames,
+    # HeldPictureKeepsItsArrivalIdentity..., StopUnderVideoBackpressure...) stay in
+    # the main ctest so CI runs them.
+    set(COREVIDEO_REALTIME_TEST_FILTER
+      "AvfCaptureArrival.EveryCameraDeliveryReachesTheIsoRecorderOver10Seconds"
+      ":AvfCaptureArrival.FastCameraIsNotDecimatedToTheTickRate"
+      ":AvfCaptureArrival.IsoMp4HoldsOneFramePerCameraDeliveryOver10Seconds"
+      ":AvfProgramTail.SteadyStopKeepsEveryPictureAndAlignedEnds"
+      ":AvfProgramTail.VideoStalledBeforeStopHoldsTheFinalPictureToTheAudioEnd"
+      ":AvfProgramTail.SubThresholdVideoSkewIsStillReconciled"
+      ":AvfProgramTail.SubThresholdAudioSkewIsStillPadded"
+      ":AvfProgramTail.AudioStalledBeforeStopIsPaddedWithSilenceNotCut"
+      ":AvfProgramTail.IsoVideoStalledBeforeStopIsHeldToItsAudioEnd")
+    string(CONCAT COREVIDEO_REALTIME_TEST_FILTER ${COREVIDEO_REALTIME_TEST_FILTER})
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests"
       "--gtest_filter=-${COREVIDEO_REALTIME_TEST_FILTER}")
     add_test(NAME corevideo-native-tests-realtime
