@@ -35,6 +35,7 @@
 #include <thread>
 #include <vector>
 
+#include "modules/AvfEncoderTestProbe.h"
 #include "modules/Interfaces.h"
 #include "modules/IsoFrameConform.h"
 #include "modules/RecordingArtifactNaming.h"
@@ -312,7 +313,7 @@ class AvfMp4Writer {
       errorOut = "audio stream not configured";
       return false;
     }
-    if (mustAccept) waitUntilReady(audioInput_);
+    if (mustAccept && !waitUntilReady(audioInput_, errorOut)) return false;
     if (!audioInput_.readyForMoreMediaData) {
       if (mustAccept) {
         errorOut = "audio input was not ready to accept the tail silence";
@@ -379,11 +380,24 @@ class AvfMp4Writer {
   void setTailHoldsRealSample(bool value) { tailHoldsRealSample_ = value; }
 
   // Brief bounded wait for a busy input at close; ordinary realtime backpressure
-  // must not turn a normal stop into a warning.
-  static void waitUntilReady(AVAssetWriterInput* input) {
+  // must not turn a normal stop into a warning. Only a WRITING writer can become
+  // ready again: a failed or cancelled one fails fast with its own error instead
+  // of spending the whole 200 ms (per call) on a wait that cannot succeed.
+  bool waitUntilReady(AVAssetWriterInput* input, std::string& errorOut) {
+    if (!writer_ || writer_.status != AVAssetWriterStatusWriting) {
+      errorOut = notWritingError();
+      return false;
+    }
     for (int i = 0; i < 40 && !input.readyForMoreMediaData; ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
+    return true;
+  }
+
+  std::string notWritingError() const {
+    if (writer_ && writer_.error) return writer_.error.localizedDescription.UTF8String;
+    return "AVAssetWriter is not writing (status " +
+           std::to_string(writer_ ? static_cast<long>(writer_.status) : -1L) + ")";
   }
 
   // #1186 (Windows 03ebd1c3 Mp4Writer::reconcileTail): bring both tracks to one
@@ -415,7 +429,7 @@ class AvfMp4Writer {
       holdPts = std::max(lastVideoPts100ns_ + 1, target - frameDuration);
     }
     if (videoShort) {
-      waitUntilReady(videoInput_);
+      if (!waitUntilReady(videoInput_, errorOut)) return false;
       if (!videoInput_.readyForMoreMediaData) {
         errorOut = "video input was not ready to accept the held tail picture";
         return false;
@@ -446,6 +460,16 @@ class AvfMp4Writer {
     if (writer_ && writing_) {
       std::string tail;
       if (!reconcileTail(tail) && tailError) *tailError = tail;
+    }
+    if (writer_ && writing_ && writer_.status != AVAssetWriterStatusWriting) {
+      // Failed or cancelled mid-session: finishWriting raises on such a writer
+      // ("Cannot call method when status is 4"), so report it, never call it.
+      finalized = false;
+      if (errorOut) *errorOut = notWritingError();
+      std::error_code ec;
+      const auto size = std::filesystem::file_size(path_, ec);
+      bytesWritten_ = ec ? 0 : static_cast<int64_t>(size);
+    } else if (writer_ && writing_) {
       [videoInput_ markAsFinished];
       if (audioInput_) {
         [audioInput_ markAsFinished];
@@ -477,6 +501,11 @@ class AvfMp4Writer {
     audioConfigured_ = false;
     return finalized;
   }
+
+  // Test-only (probeStoppedWriterForTest): a writer that stops writing mid-session.
+  void cancelForTest() { [writer_ cancelWriting]; }
+  bool reconcileTailForTest(std::string& errorOut) { return reconcileTail(errorOut); }
+  int64_t lastAudioEnd100nsForTest() const { return lastAudioEnd100ns_; }
 
   bool audioConfigured() const { return audioConfigured_; }
   int64_t videoFrameCount() const { return videoFrameCount_; }
@@ -729,7 +758,6 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     if (!writer_.finalize(&finalizeError, &tailError)) failRecording(finalizeError);
     if (!tailError.empty() && session_.recordingWarning.empty()) {
       session_.recordingWarning = "Program recording could not align its A/V tail: " + tailError + ".";
-      session_.recordingStatus = "warning";
       raiseWarning(session_.recordingWarning);
     }
     // Each ISO finalizes independently — its own moov, no 0-byte tails.
@@ -943,6 +971,39 @@ class AVFoundationEncoderSink final : public IEncoderSink {
 
 std::unique_ptr<IEncoderSink> createAVFoundationEncoderSink() {
   return std::make_unique<AVFoundationEncoderSink>();
+}
+
+AvfStoppedWriterProbe probeStoppedWriterForTest(const std::string& path) {
+  AvfStoppedWriterProbe probe;
+  AvfMp4Writer writer;
+  std::string error;
+  if (!writer.open(path, 64, 64, 30, 2.0, "h264", error) ||
+      !writer.ensureAudioStream(2, 48000, 128, error) || !writer.beginWriting(error)) {
+    probe.setUpError = error;
+    return probe;
+  }
+  std::vector<uint8_t> picture(64 * 64 * 4, 0x40);
+  std::vector<float> audio(4800 * 2, 0.f);
+  if (!writer.writeVideo(picture.data(), 64, 64, 64 * 4, 0, error) ||
+      !writer.writeAudio(audio.data(), 4800, 0, error, true)) {
+    probe.setUpError = error;
+    return probe;
+  }
+  writer.cancelForTest();
+  using Clock = std::chrono::steady_clock;
+  const auto ms = [](Clock::time_point from) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - from).count();
+  };
+  auto t0 = Clock::now();
+  probe.silenceRefused =
+      !writer.writeAudioSilence(48000, writer.lastAudioEnd100nsForTest(), probe.silenceError, true);
+  probe.silenceMs = ms(t0);
+  t0 = Clock::now();
+  probe.tailRefused = !writer.reconcileTailForTest(probe.tailError);
+  probe.tailMs = ms(t0);
+  probe.finalizeRefused = !writer.finalize(&probe.finalizeError);
+  probe.setUp = true;
+  return probe;
 }
 
 }  // namespace corevideo::modules

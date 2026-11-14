@@ -53,9 +53,35 @@ inline bool wildcardMatch(const std::string& pattern, const std::string& value) 
   return patternIndex == pattern.size();
 }
 
+// Upstream gtest filter syntax: ':'-separated positive patterns, then an
+// optional '-' and ':'-separated negative patterns ("A.*:B.*", "-Slow.*").
+inline bool matchesAnyPattern(const std::string& patterns, const std::string& value) {
+  size_t start = 0;
+  while (true) {
+    const size_t end = patterns.find(':', start);
+    const std::string pattern =
+        patterns.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    if (!pattern.empty() && wildcardMatch(pattern, value)) {
+      return true;
+    }
+    if (end == std::string::npos) {
+      return false;
+    }
+    start = end + 1;
+  }
+}
+
 inline bool shouldRunTest(const TestInfo& test) {
   const std::string fullName = test.suite + "." + test.name;
-  return wildcardMatch(activeFilter(), fullName);
+  const std::string& filter = activeFilter();
+  const size_t dash = filter.find('-');
+  std::string positive = dash == std::string::npos ? filter : filter.substr(0, dash);
+  const std::string negative = dash == std::string::npos ? std::string() : filter.substr(dash + 1);
+  if (positive.empty()) {
+    positive = "*";
+  }
+  return matchesAnyPattern(positive, fullName) &&
+         (negative.empty() || !matchesAnyPattern(negative, fullName));
 }
 
 struct Registrar {

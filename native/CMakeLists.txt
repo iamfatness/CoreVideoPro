@@ -1076,6 +1076,19 @@ if(BUILD_TESTING)
     # rebuilt instead of silently exercising an older host left on disk.
     add_dependencies(corevideo-native-tests corevideo-plugin-host)
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests.exe")
+  elseif(APPLE AND COREVIDEO_WITH_AVF_ENCODER)
+    # The Mac realtime AVF recordings (~36 s of wall-clock capture/encode) run as
+    # their own ctest, LABELS realtime, so a busy machine can skip them with
+    # `ctest -LE realtime`. Plain `ctest` still runs them (RUN_SERIAL: they are
+    # timing measurements and must not share the box with the main suite).
+    set(COREVIDEO_REALTIME_TEST_FILTER "AvfProgramTail.*:AvfCaptureArrival.*")
+    add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests"
+      "--gtest_filter=-${COREVIDEO_REALTIME_TEST_FILTER}")
+    add_test(NAME corevideo-native-tests-realtime
+      COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests"
+        "--gtest_filter=${COREVIDEO_REALTIME_TEST_FILTER}")
+    set_tests_properties(corevideo-native-tests-realtime PROPERTIES
+      LABELS realtime RUN_SERIAL TRUE TIMEOUT 900)
   else()
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests")
   endif()

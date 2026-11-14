@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "AvfMp4Decode.h"
+#include "modules/AvfEncoderTestProbe.h"
 #include "modules/Interfaces.h"
 
 namespace {
@@ -184,6 +185,26 @@ TEST(AvfProgramTail, IsoVideoStalledBeforeStopIsHeldToItsAudioEnd) {
   EXPECT_NEAR(e.video.trackEnd, e.audio.end, kEndTolerance);
   EXPECT_GE(static_cast<int64_t>(e.video.samples), v);
   EXPECT_LE(static_cast<int64_t>(e.video.samples), v + 1) << "more than one held picture";
+  std::filesystem::remove_all(dir);
+}
+// Final review IMPORTANT 4: a writer that stopped writing (failed/cancelled)
+// can never become ready, so the close-time readiness wait must not spend its
+// 200 ms on it (it did, per must-accept call). Fail fast with the writer's error.
+TEST(AvfWriterFailFast, AStoppedWriterRefusesTheTailWithoutWaiting) {
+  const auto dir = std::filesystem::temp_directory_path() / "avf-failfast";
+  std::filesystem::remove_all(dir); std::filesystem::create_directories(dir);
+  const auto probe = probeStoppedWriterForTest((dir / "stopped.mp4").string());
+  ASSERT_TRUE(probe.setUp) << probe.setUpError;
+  std::fprintf(stderr, "[failfast] silence %.1f ms (%s) | tail %.1f ms (%s) | finalize refused=%d (%s)\n",
+      probe.silenceMs, probe.silenceError.c_str(), probe.tailMs, probe.tailError.c_str(),
+      probe.finalizeRefused ? 1 : 0, probe.finalizeError.c_str());
+  EXPECT_TRUE(probe.silenceRefused) << "a stopped writer cannot accept a must-accept silence pad";
+  EXPECT_FALSE(probe.silenceError.empty());
+  EXPECT_LT(probe.silenceMs, 50.0) << "the silence pad waited on a writer that can never be ready";
+  EXPECT_TRUE(probe.tailRefused) << "the tail reconcile must report the stopped writer";
+  EXPECT_FALSE(probe.tailError.empty());
+  EXPECT_LT(probe.tailMs, 50.0) << "the tail reconcile waited on a writer that can never be ready";
+  EXPECT_TRUE(probe.finalizeRefused) << "a cancelled writer is reported, never finishWriting'd";
   std::filesystem::remove_all(dir);
 }
 }  // namespace
