@@ -70,6 +70,8 @@
 #import <Cocoa/Cocoa.h>
 
 #include "engine-ipc.h"
+#include "engine-command.h"
+#include <set>
 #include "engine-writer.h"
 
 #include <sys/socket.h>
@@ -2285,31 +2287,31 @@ int main(int argc, char **argv)
     // makes asynchronous auth possible at all.
     std::thread reader([p2e, e2p, ipc_token]() {
         std::string line;
+        std::set<std::string> unknown_cmds_logged;
         while (ipc_read_line(p2e, line)) {
             if (line.empty())
                 continue;
 
-            if (line.find(IPC_CMD_QUIT) != std::string::npos)
+            const EngineCommand command = engine_parse_command(line);
+            if (command == EngineCommand::Quit)
                 break;
 
             // Copy for the block: `line` is reused by the next read.
             const std::string msg = line;
-            // Ordered like main.cpp's command loop. These are substring matches
-            // on the whole line, so the order is the disambiguation: check the
-            // longer/more specific commands before their prefixes.
-            if (msg.find(IPC_CMD_INIT) != std::string::npos) {
+            // Dispatch is by the parsed "cmd" value, never by substring.
+            if (command == EngineCommand::Init) {
                 dispatch_async(dispatch_get_main_queue(), ^{ handle_init(msg); });
-            } else if (msg.find(IPC_CMD_JOIN) != std::string::npos) {
+            } else if (command == EngineCommand::Join) {
                 dispatch_async(dispatch_get_main_queue(), ^{ handle_join(msg); });
-            } else if (msg.find(IPC_CMD_LEAVE) != std::string::npos) {
+            } else if (command == EngineCommand::Leave) {
                 dispatch_async(dispatch_get_main_queue(), ^{ handle_leave(); });
-            } else if (msg.find(IPC_CMD_START_MEDIA) != std::string::npos) {
+            } else if (command == EngineCommand::StartMedia) {
                 dispatch_async(dispatch_get_main_queue(),
                                ^{ handle_start_media("manual_start"); });
-            } else if (msg.find(IPC_CMD_STOP_MEDIA) != std::string::npos) {
+            } else if (command == EngineCommand::StopMedia) {
                 dispatch_async(dispatch_get_main_queue(),
                                ^{ handle_stop_media("manual_stop"); });
-            } else if (ipc_command_is(msg, IPC_CMD_SUBSCRIBE_AUDIO)) {
+            } else if (command == EngineCommand::SubscribeAudio) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     const std::string uuid = json_str(msg, "source_uuid");
                     if (!is_valid_source_uuid(uuid)) return;
@@ -2322,7 +2324,7 @@ int main(int argc, char **argv)
             // Windows engine has that ordering and gets away with it only because
             // participant_id parses as 0 there, which its subscribe path treats as
             // an unsubscribe — but it never drops the audio target.)
-            } else if (ipc_command_is(msg, IPC_CMD_UNSUBSCRIBE)) {
+            } else if (command == EngineCommand::Unsubscribe) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     const std::string uuid = json_str(msg, "source_uuid");
                     if (!is_valid_source_uuid(uuid)) return;
@@ -2333,7 +2335,7 @@ int main(int argc, char **argv)
                     share_unsubscribe(uuid);
                     audio_remove(uuid);
                 });
-            } else if (ipc_command_is(msg, IPC_CMD_SUBSCRIBE)) {
+            } else if (command == EngineCommand::Subscribe) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     const std::string uuid = json_str(msg, "source_uuid");
                     if (!is_valid_source_uuid(uuid)) return;
@@ -2346,6 +2348,15 @@ int main(int argc, char **argv)
                     const uint32_t pid = json_uint(msg, "participant_id");
                     video_subscribe(pid, uuid, res);
                 });
+            } else {
+                // Unknown or missing cmd: log each distinct name once (bounded)
+                // so an unhandled command is visible instead of vanishing.
+                const std::string name = engine_command_name(line);
+                if (unknown_cmds_logged.size() < 16 &&
+                    unknown_cmds_logged.insert(name).second) {
+                    fprintf(stderr, "[zoom-engine] ignoring unknown command '%s'\n",
+                            name.empty() ? "<no cmd>" : name.c_str());
+                }
             }
         }
 
