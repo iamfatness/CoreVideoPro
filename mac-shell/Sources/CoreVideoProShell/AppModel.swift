@@ -2009,7 +2009,21 @@ final class AppModel: ObservableObject {
 
     // OFF → empty (program byte-identical to pre-ISO); drop departed sources;
     // cap 8. Zoom → zoom:<pid>, capture → capture:<id> (already scheme-qualified).
+    // Command-send paths only: this MUTATES the take state. Views use
+    // peekIsoSourceIds() instead.
     func resolvedIsoSourceIds(recording: Bool? = nil) -> [String] {
+        isoResolve(&recordingIso, recording: recording)
+    }
+
+    // What resolve would send right now, without touching take state — safe
+    // from a SwiftUI body.
+    func peekIsoSourceIds(recording: Bool? = nil) -> [String] {
+        var copy = recordingIso
+        return isoResolve(&copy, recording: recording)
+    }
+
+    private func isoResolve(_ selection: inout RecordingIsoSelection,
+                            recording: Bool?) -> [String] {
         let present = Set(roster.map { "zoom:" + $0.id })
             .union(captureDevices.filter { $0.connectionState == "connected" }
                 .map { "capture:" + $0.id })
@@ -2018,7 +2032,7 @@ final class AppModel: ObservableObject {
         })
         // While a take is recording, passive roster loss never shrinks the set
         // (#1188); only an operator ISO edit does.
-        return recordingIso.resolve(
+        return selection.resolve(
             recordingRequested: recording ?? isRecordingActive,
             enabled: isoRecordingEnabled, selected: isoSelectedSourceIds,
             eligible: present.sorted(), assigned: assigned)

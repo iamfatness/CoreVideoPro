@@ -982,6 +982,24 @@ enum ShellTests {
                     ["zoom:b"], "new take arms only present sources")
     }
 
+    @MainActor
+    private static func testIsoDisplayReadDoesNotConsumeOperatorEdit() {
+        let model = isoTakeModel()
+        model.recordingDesired = true
+        _ = model.startProgramOutput(recording: true, streaming: false)
+        model.roster = [RosterParticipant(id: "c", name: "c", hasVideo: true, muted: false,
+                                          talking: false, assigned: true)]
+        model.toggleSlotIso(3)     // operator selects c (edit pending)
+        let first = model.peekIsoSourceIds()
+        expectEqual(first, ["zoom:a", "zoom:b", "zoom:c"], "peek shows the pending edit")
+        expectEqual(model.peekIsoSourceIds(), first, "peek is repeatable")
+        // If peek had resolved (mutated), c would now be locked into the take.
+        model.roster = []
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: false)),
+                    ["zoom:a", "zoom:b"],
+                    "display reads must not change what the next command sends")
+    }
+
     private static func testRecordingIsoSelectionPort() {
         var sel = RecordingIsoSelection()
         let abc: Set<String> = ["zoom:a", "zoom:b", "zoom:c"]
@@ -997,6 +1015,22 @@ enum ShellTests {
         sel.noteOperatorEdit()
         expectEqual(r(["zoom:c", "zoom:b"]), ["zoom:a", "zoom:b", "zoom:c"],
                     "an operator edit re-derives from presence + take")
+        // Explicit authority (ExplicitDeselectUnassignAndMasterOffRemainAuthoritative).
+        var auth = RecordingIsoSelection()
+        let ab: Set<String> = ["zoom:a", "zoom:b"]
+        func a(_ selected: Set<String>, enabled: Bool = true, eligible: [String] = [],
+               assigned: Set<String>) -> [String] {
+            auth.resolve(recordingRequested: true, enabled: enabled, selected: selected,
+                         eligible: eligible, assigned: assigned)
+        }
+        _ = a(ab, eligible: Array(ab), assigned: ab)
+        expectEqual(a(["zoom:b"], assigned: ab), ["zoom:b"],
+                    "smaller selected set mid-take removes the id")
+        expectEqual(a(ab, assigned: []), [], "empty assigned set empties the take")
+        _ = a(ab, eligible: Array(ab), assigned: ab)
+        expectEqual(a(ab, enabled: false, eligible: Array(ab), assigned: ab), [],
+                    "master off while recording returns empty")
+        expectEqual(a(ab, assigned: ab), [], "master-off reset: no stale take, empty roster")
         var nine = RecordingIsoSelection()
         let ids = (1...9).map { "zoom:\($0)" }
         expectEqual(nine.resolve(recordingRequested: true, enabled: true, selected: Set(ids),
@@ -1097,6 +1131,7 @@ enum ShellTests {
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),
             ("iso/take-operator-deselect", testIsoTakeOperatorDeselectIsAuthoritative),
             ("iso/next-take-refilters", testIsoNextTakeFiltersByPresenceAgain),
+            ("iso/display-read-pure", testIsoDisplayReadDoesNotConsumeOperatorEdit),
             ("iso/selection-port", testRecordingIsoSelectionPort),
             ("iso/preflight-loud", testIsoPreflightWarnsLoudly),
             ("iso/preflight-unobserved", testIsoPreflightNeverWarnsOnAnUnobservedState),

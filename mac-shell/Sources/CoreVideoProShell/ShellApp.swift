@@ -1160,7 +1160,7 @@ struct TransportBar: View {
                         Text(recording ? "Stop Rec" : "Record")
                             .font(.grotesk(11, .semibold))
                         Text(model.isoRecordingEnabled
-                             ? "MP4 + \(model.resolvedIsoSourceIds().count) ISOs" : "MP4")
+                             ? "MP4 + \(model.peekIsoSourceIds().count) ISOs" : "MP4")
                             .font(.grotesk(8)).foregroundStyle(Studio.secondary)
                     }
                 }
