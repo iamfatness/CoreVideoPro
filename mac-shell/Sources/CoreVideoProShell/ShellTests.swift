@@ -2404,6 +2404,153 @@ enum ShellTests {
         expect(model.warnings.contains { $0.contains("did not finish") }, "the timeout is loud")
     }
 
+
+    // ── footer health line + multiview placeholder (Task 3) ──────────────────
+    // Ported from CoreVideoPro.MediaCore.Tests StalledFeedsReadoutTests /
+    // StreamDegradationReadoutTests and WinUI.Tests MultiviewEmptyStatePolicyTests.
+
+    private static func hSource(_ id: String, _ kind: String, _ health: String,
+                                age: Double? = 2000, hasVideo: Bool = true) -> JSONObject {
+        var row: JSONObject = ["sourceId": id, "kind": kind, "health": health, "hasVideo": hasVideo]
+        row["sinceLastNewFrameMs"] = age.map { $0 as Any } ?? NSNull()
+        return row
+    }
+    private static func hZoom(_ id: String, _ age: Double = 2000) -> JSONObject {
+        hSource(id, "zoom", "stalled", age: age)
+    }
+    private static func hSnap(_ bp: JSONObject?, _ sources: [JSONObject], status: String = "live",
+                              fps: Int = 60, lifecycle: String? = nil) -> JSONObject {
+        var sender: JSONObject = ["senderId": "rtmp", "destination": "rtmp", "status": status]
+        if let bp { sender["backpressure"] = bp }
+        if let lifecycle { sender["lifecycle"] = ["state": lifecycle] }
+        return ["outputProfile": ["fps": fps],
+                "outputSenderSession": ["status": status, "senders": [sender]],
+                "sources": sources]
+    }
+    private static let hLevel1Queue445: JSONObject =
+        ["divisor": 2, "appliedDivisor": 1, "level": 1, "bufferedMs": 445]
+
+    private static func testStalledFeedsReadout() {
+        // The 2026-10-31 live-show shape: no claimed cause.
+        let line = StudioHealthReadout.stalledFeeds(hSnap(hLevel1Queue445,
+            [hZoom("1"), hZoom("2"), hZoom("3"), hSource("4", "zoom", "producing", age: 16)]))
+        expectEqual(line, "Stream 445 ms behind and 3 Zoom feeds stalled", "live-show line")
+        expect(!(line ?? "").localizedCaseInsensitiveContains("network")
+               && !(line ?? "").localizedCaseInsensitiveContains("congest"), "never claims a cause")
+        let rate: JSONObject = ["divisor": 3, "appliedDivisor": 3, "level": 2, "bufferedMs": 900]
+        expectEqual(StudioHealthReadout.stalledFeeds(hSnap(rate, [hZoom("1"), hZoom("2")])),
+                    "Stream at 1/3 rate and 2 Zoom feeds stalled", "applied divisor reads as a rate")
+        let drained: JSONObject = ["divisor": 2, "appliedDivisor": 1, "level": 1, "bufferedMs": 0]
+        expectEqual(StudioHealthReadout.stalledFeeds(hSnap(drained, [hZoom("1"), hZoom("2")])),
+                    "Stream backpressure level 1 and 2 Zoom feeds stalled", "drained queue reports level")
+        // Static screen captures never light the line.
+        let captures = [hSource("capture:screen-1", "capture", "stalled", age: 120_000),
+                        hSource("capture:screen-2", "capture", "stalled", age: 300_000)]
+        expectEqual(StudioHealthReadout.stalledFeedCount(captures), 0, "captures are not feeds")
+        expect(StudioHealthReadout.stalledFeeds(hSnap(hLevel1Queue445, captures)) == nil, "captures: no line")
+        // On-air 1.5 s edges.
+        for (age, counted) in [(200.0, false), (1499.0, false), (1500.0, true), (3000.0, true)] {
+            let rows = [hZoom("1", age), hZoom("2", age)]
+            expectEqual(StudioHealthReadout.stalledFeedCount(rows), counted ? 2 : 0, "age \(age) count")
+            expectEqual(StudioHealthReadout.stalledFeeds(hSnap(hLevel1Queue445, rows)) != nil, counted,
+                        "age \(age) line")
+        }
+        expectEqual(StudioHealthReadout.stalledFeedCount(
+            [hSource("1", "zoom", "stalled", age: nil), hSource("2", "zoom", "stalled", age: nil)]), 0,
+            "row without age never counted")
+        expect(StudioHealthReadout.stalledFeeds(hSnap(hLevel1Queue445,
+            [hZoom("1"), hSource("2", "zoom", "producing", age: 16)])) == nil, "one stalled feed is one guest's problem")
+        let healthy: JSONObject = ["divisor": 1, "appliedDivisor": 1, "level": 0]
+        expect(StudioHealthReadout.stalledFeeds(hSnap(healthy, [hZoom("1"), hZoom("2")])) == nil,
+               "no pressure: nothing")
+        expect(StudioHealthReadout.stalledFeeds(hSnap(nil, [hZoom("1"), hZoom("2")])) == nil,
+               "no backpressure node: nothing")
+        for status in ["starting", "failed", "idle"] {
+            expect(StudioHealthReadout.stalledFeeds(
+                hSnap(hLevel1Queue445, [hZoom("1"), hZoom("2")], status: status)) == nil,
+                   "non-producing sender (\(status)) is not backpressure")
+        }
+        let mixed = [hSource("still:logo", "still", "stalled", age: 60_000),
+                     hSource("media:clip", "media", "stalled", age: 60_000),
+                     hSource("tiles:s", "composed", "stalled", age: 60_000),
+                     hSource("zoom-slate", "zoom-slate", "stalled", age: 60_000),
+                     hSource("9", "zoom", "stalled", age: 60_000, hasVideo: false), hZoom("1")]
+        expectEqual(StudioHealthReadout.stalledFeedCount(mixed), 1, "only zoom video feeds count")
+        expect(StudioHealthReadout.stalledFeeds(hSnap(hLevel1Queue445, mixed)) == nil, "mixed: one feed, no line")
+        // Core wire shape (SourceVideoIngress.cpp / CoreStateCapture.cpp), through real JSON.
+        let json = """
+        {"sources":[{"sourceId":"12","kind":"zoom","hasVideo":true,"health":"stalled","sinceLastNewFrameMs":1730},
+                    {"sourceId":"13","kind":"zoom","hasVideo":false,"health":"warming","sinceLastNewFrameMs":null},
+                    {"sourceId":"14","kind":"zoom","hasVideo":true,"health":"stalled","sinceLastNewFrameMs":1900}],
+         "outputProfile":{"fps":60},
+         "outputSenderSession":{"status":"live","senders":[{"senderId":"rtmp","destination":"rtmp","status":"live",
+           "lifecycle":{"state":"producing"},
+           "backpressure":{"divisor":2,"appliedDivisor":1,"level":1,"bufferedMs":445,"queuedChunks":3}}]}}
+        """
+        let wire = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? JSONObject ?? [:]
+        expectEqual(StudioHealthReadout.stalledFeeds(wire),
+                    "Stream 445 ms behind and 2 Zoom feeds stalled", "wire shape binds")
+        // Both readouts agree on what pressure is.
+        let snap = hSnap(hLevel1Queue445, [hZoom("1"), hZoom("2")])
+        expect(StudioHealthReadout.streamDegradation(snap) != nil && StudioHealthReadout.stalledFeeds(snap) != nil,
+               "both readouts see the pressure")
+        let recovered = hSnap(["divisor": 1, "appliedDivisor": 1, "level": 0], [hZoom("1"), hZoom("2")])
+        expect(StudioHealthReadout.streamDegradation(recovered) == nil
+               && StudioHealthReadout.stalledFeeds(recovered) == nil, "recovery clears both")
+    }
+
+    private static func testStreamDegradationReadout() {
+        for (fps, divisor, expected) in [(60, 4, "15 fps feed"), (30, 4, "7.5 fps feed"), (25, 3, "8.33 fps feed")] {
+            let line = StudioHealthReadout.streamDegradation(
+                hSnap(["appliedDivisor": divisor, "level": 0], [], fps: fps))
+            expect((line ?? "").contains(expected), "cadence \(fps)/\(divisor) -> \(expected), got \(line ?? "nil")")
+        }
+        expectEqual(StudioHealthReadout.streamDegradation(
+            hSnap(["divisor": 4, "appliedDivisor": 1, "level": 3, "bufferedMs": 0], [])),
+            "RTMP degraded · 60 fps feed", "requested divisor does not pretend the feed was reduced")
+        for status in ["starting", "failed", "idle"] {
+            expect(StudioHealthReadout.streamDegradation(
+                hSnap(["appliedDivisor": 4, "level": 3], [], status: status)) == nil,
+                   "\(status) does not advertise degradation")
+        }
+        expect(StudioHealthReadout.streamDegradation(hSnap(["appliedDivisor": 1, "level": 0], [])) == nil,
+               "recovery clears")
+        expect((StudioHealthReadout.streamDegradation(hSnap(["appliedDivisor": 4, "level": 3], [], fps: 0)) ?? "")
+            .contains("feed rate unknown"), "fps 0 unknown")
+        expect((StudioHealthReadout.streamDegradation(hSnap(["appliedDivisor": 0, "level": 3], [])) ?? "")
+            .contains("feed rate unknown"), "divisor 0 unknown")
+        expect(StudioHealthReadout.streamDegradation(
+            hSnap(["appliedDivisor": 4, "level": 3], [], lifecycle: "interrupted")) == nil,
+               "lifecycle other than producing is not degraded streaming")
+    }
+
+    private static func testMultiviewEmptyStatePolicy() {
+        typealias P = MultiviewEmptyStatePolicy
+        let slate = P.Surface(status: "Waiting for video frames")
+        expect(P.showAssignmentGuidance(tileCount: 0, surface: nil), "empty, no surface: guidance")
+        expect(P.showAssignmentGuidance(tileCount: 0, surface: slate), "empty generic slate: guidance")
+        expect(!P.showAssignmentGuidance(tileCount: 2, surface: slate), "populated slate: no guidance")
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: P.Surface(status: "Renderer failed")),
+               "failure status stays visible")
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: P.Surface(status: "Capture paused")),
+               "unknown status stays visible")
+        for generic in ["Waiting for video frames", "Preparing video", "Preparing Program"] {
+            expect(P.showAssignmentGuidance(tileCount: 0, surface: P.Surface(status: generic)), "\(generic) is generic")
+        }
+        var picture = slate; picture.hasPreviewBitmap = true
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: picture), "available picture never covered")
+        var frames = slate; frames.hasFrames = true
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: frames), "published frame keeps surface")
+        var gpu = slate; gpu.awaitingGpuHandle = true
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: gpu), "pending GPU handle keeps surface")
+        var media = slate; media.mediaAssetPath = "/x.mp4"
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: media), "media path keeps surface")
+        // The Mac mapping: a published IOSurface is a picture.
+        expect(P.showAssignmentGuidance(tileCount: 0, multiviewSurfaceId: 0), "no IOSurface: guidance")
+        expect(!P.showAssignmentGuidance(tileCount: 0, multiviewSurfaceId: 7), "IOSurface present: never covered")
+        expect(!P.showAssignmentGuidance(tileCount: 3, multiviewSurfaceId: 0), "tiles present: no guidance")
+    }
+
     @MainActor
     static func runAndExit() -> Never {
         // Before ANY test: a run whose prefs resolve to the real file aborts.
@@ -2506,6 +2653,9 @@ enum ShellTests {
             ("keys/quit-prompt-passthrough", testTransportKeysPassThroughWhileTheQuitPromptIsUp),
             ("keys/monitor-lifecycle", testTransportMonitorLifecycleFollowsTheStudioTab),
             ("ftb/refusal-status", testFtbRefusalsSurfaceAsStatusForDirectCallers),
+            ("health/stalled-feeds", testStalledFeedsReadout),
+            ("health/stream-degradation", testStreamDegradationReadout),
+            ("multiview/empty-state-policy", testMultiviewEmptyStatePolicy),
             ("quit/cancel", testQuitCancelRepliesFalseOnceAndSendsNothing),
             ("quit/idle", testQuitIdleQuitsImmediately),
             ("quit/dead-core", testQuitWithADeadCoreFinishesImmediately),

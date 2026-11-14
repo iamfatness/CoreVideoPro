@@ -568,6 +568,17 @@ final class AppModel: ObservableObject {
                     self?.blackoutProofHold = true
                 }
             }
+            // Proof-shot only: COREVIDEO_SHELL_WINDOW=WxH sizes the window for the
+            // narrow/wide footer comparison.
+            if let size = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_WINDOW"] {
+                let parts = size.split(separator: "x").compactMap { Double($0) }
+                if parts.count == 2 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                        NSApplication.shared.windows.first?.setContentSize(
+                            NSSize(width: parts[0], height: parts[1]))
+                    }
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
                 if let window = NSApplication.shared.windows.first,
                    let view = window.contentView,
@@ -769,6 +780,10 @@ final class AppModel: ObservableObject {
         }
         applyZoom(snapshot)
     }
+
+    /// Footer health readouts, derived from the last core snapshot (StudioHealth.swift).
+    var stalledFeedsLine: String? { StudioHealthReadout.stalledFeeds(lastSnapshot) }
+    var streamDegradationLine: String? { StudioHealthReadout.streamDegradation(lastSnapshot) }
 
     func observeAudioObservation(_ snapshot: JSONObject, now: Date = Date()) {
         audioObservation = AudioObservation(snapshot)

@@ -765,7 +765,9 @@ struct MultiviewerCanvas: View {
                             }
                     }
                 }
-                if model.multiviewTiles.isEmpty {
+                if MultiviewEmptyStatePolicy.showAssignmentGuidance(
+                    tileCount: model.multiviewTiles.count,
+                    multiviewSurfaceId: model.multiviewSurfaceId) {
                     VStack(spacing: 6) {
                         Text("Multiviewer")
                             .font(.grotesk(14, .semibold))
@@ -1263,7 +1265,13 @@ struct TransportBar: View {
         return live.isEmpty ? "Outputs idle" : "Outputs live: " + live.joined(separator: " + ")
     }
 
-    var body: some View {
+    // RC footer (StudioFooterLayoutPanel.cs): Graphics + Outputs are a left-aligned
+    // group with a fixed gap, only the space before the transport grows, and
+    // Take / transition choice / FTB are anchored far right. If the three groups
+    // cannot fit one row, Graphics sits on its own row and Outputs + transport
+    // share the second (the Windows wrap rule). The health/audio row is separate
+    // (OutputsStatusRow, below).
+    private var graphicsGroup: some View {
         HStack(spacing: 10) {
             HStack(spacing: 4) {
                 Text("LT")
@@ -1283,7 +1291,44 @@ struct TransportBar: View {
             TransportChip(title: "DSK",
                           detail: model.lowerThirdPhase == "hidden" ? "Off" : "In",
                           lit: model.lowerThirdPhase != "hidden")
-            Spacer()
+        }
+    }
+
+    private var outputsGroup: some View {
+        HStack(spacing: 8) {
+            // Record — red outline with format subtitle.
+            Button {
+                model.toggleRecording()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: recording ? "stop.fill" : "record.circle")
+                        .font(.system(size: 10))  // design-lint: allow
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(recording ? "Stop" : "Rec")
+                            .font(.grotesk(11, .semibold))
+                    }
+                }
+                .foregroundStyle(recording ? .white : Studio.red)
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8)
+                    .fill(recording ? Studio.red : Studio.red.opacity(0.10)))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .stroke(Studio.red.opacity(0.8), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .help(model.isoRecordingEnabled
+                  ? "Record MP4 + \(model.peekIsoSourceIds().count) ISOs" : "Record MP4")
+            Toggle("ISOs", isOn: $model.isoRecordingEnabled)
+                .toggleStyle(.checkbox)
+                .font(.grotesk(10))
+                .disabled(recording)
+            StreamControl()
+            VirtualCamChip()
+        }
+    }
+
+    private var transportGroup: some View {
+        HStack(spacing: 10) {
             Text(outputsLabel).font(.grotesk(10)).foregroundStyle(Studio.secondary)
             if !model.takeStatus.isEmpty {
                 Text(model.takeStatus).font(.grotesk(10)).foregroundStyle(Studio.secondary)
@@ -1332,38 +1377,29 @@ struct TransportBar: View {
             .buttonStyle(.plain)
             .help("\(model.programBlackoutLabel) (⌘⇧B). Fades Program video over 300 ms; audio continues.")
             .accessibilityLabel(model.programBlackoutLabel)
-            // Record — red outline with format subtitle.
-            Button {
-                model.toggleRecording()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: recording ? "stop.fill" : "record.circle")
-                        .font(.system(size: 10))  // design-lint: allow
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(recording ? "Stop Rec" : "Record")
-                            .font(.grotesk(11, .semibold))
-                        Text(model.isoRecordingEnabled
-                             ? "MP4 + \(model.peekIsoSourceIds().count) ISOs" : "MP4")
-                            .font(.grotesk(8)).foregroundStyle(Studio.secondary)
-                    }
-                }
-                .foregroundStyle(recording ? .white : Studio.red)
-                .padding(.horizontal, 10).padding(.vertical, 5)
-                .background(RoundedRectangle(cornerRadius: 8)
-                    .fill(recording ? Studio.red : Studio.red.opacity(0.10)))
-                .overlay(RoundedRectangle(cornerRadius: 8)
-                    .stroke(Studio.red.opacity(0.8), lineWidth: 1))
+        }
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                graphicsGroup
+                outputsGroup
+                Spacer(minLength: 12)
+                transportGroup
             }
-            .buttonStyle(.plain)
-            Toggle("ISOs", isOn: $model.isoRecordingEnabled)
-                .toggleStyle(.checkbox)
-                .font(.grotesk(10))
-                .disabled(recording)
-            StreamControl()
-            VirtualCamChip()
+            VStack(alignment: .leading, spacing: 8) {
+                graphicsGroup
+                HStack(spacing: 12) {
+                    outputsGroup
+                    Spacer(minLength: 12)
+                    transportGroup
+                }
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Studio.panel)
         .overlay(Rectangle().frame(height: 1).foregroundStyle(Studio.stroke),
                  alignment: .top)
@@ -1395,17 +1431,16 @@ struct TransportChip: View {
 // pretending to be available.
 struct VirtualCamChip: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Virtual Cam").font(.grotesk(11, .semibold))
-            Text("Needs Developer ID").font(.grotesk(9))
-                .foregroundStyle(Studio.textDim)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
-        .opacity(0.6)
-        .help("The CoreMediaIO camera extension requires a signed, notarized "
-              + "build — blocked on the Apple Developer ID.")
+        Image(systemName: "web.camera")
+            .font(.system(size: 12))  // design-lint: allow
+            .foregroundStyle(Studio.textDim)
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
+            .opacity(0.6)
+            .accessibilityLabel("Virtual camera, needs Developer ID")
+            .help("Virtual Cam: the CoreMediaIO camera extension requires a signed, "
+                  + "notarized build — blocked on the Apple Developer ID.")
     }
 }
 
@@ -1430,24 +1465,24 @@ struct StreamControl: View {
                     Image(systemName: "dot.radiowaves.left.and.right")
                         .font(.system(size: 10))  // design-lint: allow
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(live ? "Stop Stream" : "Stream")
+                        Text(live ? "Stop" : "Live")
                             .font(.grotesk(11, .semibold))
-                        Text(live ? (model.streamDetail.isEmpty ? "starting…"
-                                     : model.streamDetail)
-                             : "RTMP 6 Mbps")
-                            .font(.grotesk(8)).foregroundStyle(
-                                live ? Studio.blue : Studio.secondary)
-                            .lineLimit(1)
+                        if live {
+                            Text(model.streamDetail.isEmpty ? "starting…" : model.streamDetail)
+                                .font(.grotesk(8)).foregroundStyle(Studio.blue)
+                                .lineLimit(1)
+                        }
                     }
                 }
                 .foregroundStyle(live ? .white : Studio.blue)
-                .padding(.horizontal, 10).padding(.vertical, 5)
+                .padding(.horizontal, 8).padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 8)
                     .fill(live ? Studio.blue : Studio.blue.opacity(0.10)))
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .stroke(Studio.blue.opacity(0.8), lineWidth: 1))
             }
             .buttonStyle(.plain)
+            .help(live ? "Stop streaming (RTMP)" : "Start streaming (RTMP, 6 Mbps)")
             Button {
                 showSettings = true
             } label: {
@@ -1507,7 +1542,7 @@ struct OutputsStatusRow: View {
             OutputColumn(title: "PROGRAM", value: "1080p60",
                          detail: model.programSceneId.isEmpty ? "idle" : "live")
             OutputColumn(title: "STREAM",
-                         value: model.streamingDesired ? "6 Mbps" : "—",
+                         value: model.streamingDesired ? (model.streamDegradationLine ?? "6 Mbps") : "—",
                          detail: model.streamingDesired
                              ? (model.streamStatus.isEmpty ? "starting" : model.streamStatus)
                              : "Idle")
@@ -1535,6 +1570,12 @@ struct OutputsStatusRow: View {
                         value: elapsedString(from: started, to: context.date),
                         detail: "")
                 }
+            }
+            // #1074: two facts, never a cause. Nothing shows when the condition is absent.
+            if let health = model.stalledFeedsLine {
+                Text(health).font(.grotesk(10, .semibold)).foregroundStyle(Studio.amber)
+                    .lineLimit(1).truncationMode(.tail)
+                    .accessibilityLabel("Stream health: \(health)")
             }
             Spacer()
             Toggle(isOn: Binding(
