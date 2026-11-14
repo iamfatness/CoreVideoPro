@@ -106,7 +106,7 @@ sign bare Mach-O executables inside SDK frameworks (required for notarization). 
 `scripts/release-macos.sh`: clean build of core (Metal+AVF+CoreAudio+RTMP as CI's mac config
 plus whatever the shipped app needs), engine (Zoom SDK path via env), shell; signed bundle;
 `.dmg` (hdiutil, app + Applications symlink, volume name "CoreVideo Pro"), signed;
-notarize app-zip and DMG with keychain profile `CoreVideo Plugin` (`xcrun notarytool submit
+notarize app-zip and DMG with keychain profile `CoreVideo Pro` (owner correction 2026-11-14: `CoreVideo Plugin` is the OBS plugin's profile; one-time setup `xcrun notarytool store-credentials "CoreVideo Pro" --team-id 42394L3353`) (`xcrun notarytool submit
 --wait`), staple both; verify `spctl --assess --type execute` → "accepted source=Notarized
 Developer ID", `stapler validate`, `codesign --verify --deep --strict`; write
 `dist/macos/<version>/` with the DMG, `.sha256`, and a manifest JSON (version, build, git

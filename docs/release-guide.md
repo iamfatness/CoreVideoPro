@@ -32,8 +32,9 @@ keeping your settings, recordings and downloaded media.
 3. On first use, macOS asks for camera and microphone permission (and screen
    recording permission for a screen source). If a prompt was dismissed, allow
    it in System Settings > Privacy & Security.
-4. **Streaming (RTMP/SRT) and SRT/RTMP ingest need FFmpeg**, which is not
-   bundled. Install it with [Homebrew](https://brew.sh): `brew install ffmpeg`.
+4. **Streaming (RTMP output) needs FFmpeg**, which is not
+   bundled. RTMP is the only network output in the Mac 1.0 build; SRT output and
+   SRT/RTMP ingest are Windows-only for now. Install it with [Homebrew](https://brew.sh): `brew install ffmpeg`.
    CoreVideo Pro finds Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`) and
    MacPorts (`/opt/local/bin`) installs automatically, including when the app
    is opened from Finder or the Dock. Local recording does not need FFmpeg.
@@ -80,7 +81,7 @@ In `companion-module-corevideopro`, add a connection and set:
 To let another computer reach a Mac, launch CoreVideo Pro with
 `COREVIDEO_HTTP_LAN=1` and a non-empty `COREVIDEO_CONTROL_TOKEN`
 from a terminal (for example
-`COREVIDEO_HTTP_LAN=1 COREVIDEO_CONTROL_TOKEN=<secret> <path to>/CoreVideoProShell`).
+`COREVIDEO_HTTP_LAN=1 COREVIDEO_CONTROL_TOKEN=<secret> "/Applications/CoreVideo Pro.app/Contents/MacOS/CoreVideoProShell"`).
 Without a token the app refuses to listen beyond loopback. The connection shows
 green once Companion's WebSocket opens, and its action list is read from the
 app's `/manifest`.
@@ -95,8 +96,11 @@ use, the app shows a warning and keeps running without remote control.
 One-time setup on the release Mac, so notarization can run unattended:
 
 ```
-xcrun notarytool store-credentials "CoreVideo Plugin" --team-id 42394L3353
+xcrun notarytool store-credentials "CoreVideo Pro" --team-id 42394L3353
 ```
+
+The profile is named `CoreVideo Pro` (the OBS plugin has its own, separate profile).
+To use a different name, set `COREVIDEO_NOTARY_PROFILE` when running the script.
 
 Then, from a clean tree on the release branch:
 
@@ -104,6 +108,14 @@ Then, from a clean tree on the release branch:
 scripts/release-macos.sh --skip-notarize   # rehearsal: dist/macos/<v>-UNNOTARIZED/
 scripts/release-macos.sh                   # release:   dist/macos/<v>/
 ```
+
+Both runs first build the release core and run the FULL native `ctest` on it,
+including the `realtime` label (the AVF encoder/capture timing tests). CI excludes
+that label on shared runners, so this is the only place those tests run; any
+failure, or a core that lists no realtime test, stops the release before anything
+is packaged. Run it on a quiet machine. The result is recorded in `manifest.json`
+(`coreTests`). The app is assembled inside the script's temp work dir, so your dev
+bundle at `mac-shell/.build/CoreVideo Pro.app` is left alone.
 
 The rehearsal builds and signs everything but submits nothing to Apple, and its
 output is named `-UNNOTARIZED` so it cannot be mistaken for a release. The real run

@@ -259,8 +259,8 @@ jobs:
       # Mirrors scripts/release-macos.sh's core configure (Metal + AVF + CoreAudio +
       # SCK capture + RTMP), minus the Zoom engine and signing, which need secrets.
       # RTMP is in the set because its macOS compile break sat unnoticed when CI
-      # never built it. RTMP loads libavformat at runtime, so no ffmpeg is needed
-      # to compile or run these tests.
+      # never built it. RTMP output launches an external `ffmpeg` process at stream
+      # time (not linked), so no ffmpeg is needed to compile or run these tests.
       - name: Build
         run: cmake --build native/build-metal
       - name: Metal compositor tests
@@ -274,8 +274,9 @@ jobs:
       # `-LE realtime`: the Mac AVF recordings (~36 s of real wall-clock capture and
       # encode, ctest label `realtime`, only the 4-10 s measurement cases; the
       # deterministic AVF cases stay in the main ctest) are timing-sensitive and a shared runner
-      # cannot hold the cadence they assert. They run locally (plain `ctest`) as
-      # part of the release gate, not here.
+      # cannot hold the cadence they assert. scripts/release-macos.sh runs them: it
+      # runs the FULL ctest (realtime included) on the release core build and stops
+      # the release on any failure.
       - name: Full native tests (Metal configuration, excluding realtime)
         run: ctest --test-dir native/build-metal --output-on-failure -LE realtime
       # #933: a segfault on the paravirtual runner left no stack. Keep the macOS

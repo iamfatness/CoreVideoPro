@@ -240,8 +240,8 @@ hardened runtime + secure timestamp, with entitlements — port the recipe and t
 `disable-library-validation` entitlement rationale from
 `~/Developer/CoreVideo/scripts/make-macos-bundle.sh` and its entitlements file (read them;
 note XML forbids `--` in comments; macOS bash is 3.2 — no empty arrays under `set -u`). Add an
-optional `--notarize <keychain-profile>` mirroring the plugin script (profile on this Mac:
-`CoreVideo Plugin`). Do not notarize in this task.
+optional `--notarize <keychain-profile>` mirroring the plugin script (CoreVideo Pro's profile:
+`CoreVideo Pro`; `CoreVideo Plugin` is the OBS plugin's — owner correction 2026-11-14). Do not notarize in this task.
 
 **Tests.** Build the bundle with `COREVIDEO_SIGN_IDENTITY="Developer ID Application: John
 Wallace (42394L3353)"`; `codesign --verify --deep --strict` passes; `codesign -dv` shows the

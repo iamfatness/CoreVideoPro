@@ -6,7 +6,8 @@
 # that identity instead: hardened runtime + timestamp + per-binary entitlements,
 # nested code deepest-first. A stable identity stops TCC/Keychain re-prompting
 # after every rebuild. Unset = ad-hoc, exactly as before (CI relies on this).
-# Notarization: --notarize <keychain-profile> (needs the env var set).
+# Notarization: --notarize <keychain-profile> (needs the env var set), e.g.
+# --notarize "CoreVideo Pro" (CoreVideo Pro's own profile; "CoreVideo Plugin" is the OBS plugin's).
 # Release builds use scripts/release-macos.sh, which drives this script.
 #
 # Inputs (env, all optional; defaults are the dev build trees):
@@ -14,6 +15,9 @@
 #   COREVIDEO_CORE_BUILD_DIR   holds corevideo-native + corevideo-plugin-host (native/build-metal)
 #   COREVIDEO_ENGINE_APP       corevideo-zoom-engine.app (native/build-engine/...)
 #   COREVIDEO_BUILD_NUMBER     CFBundleVersion (default: git commit count)
+#   COREVIDEO_APP_OUT          where to assemble the .app (mac-shell/.build/CoreVideo Pro.app);
+#                              release-macos.sh points this into its own work dir so a
+#                              release never overwrites the developer's dev bundle
 #   COREVIDEO_REQUIRE_HELPERS=1  a missing core/engine/plugin-host is fatal
 #                              (release); unset = skip it, as dev runs always did.
 #
@@ -35,7 +39,8 @@ if [ -n "$NOTARIZE_PROFILE" ] && [ "$SIGN_ID" = "-" ]; then
     exit 2
 fi
 . scripts/macos-sign-lib.sh
-APP="mac-shell/.build/CoreVideo Pro.app"
+APP="${COREVIDEO_APP_OUT:-mac-shell/.build/CoreVideo Pro.app}"
+mkdir -p "$(dirname "$APP")"
 BIN="${COREVIDEO_SHELL_BIN:-mac-shell/.build/release/CoreVideoProShell}"
 CORE_DIR="${COREVIDEO_CORE_BUILD_DIR:-native/build-metal}"
 ENGINE_SRC="${COREVIDEO_ENGINE_APP:-native/build-engine/corevideo-zoom-engine.app}"

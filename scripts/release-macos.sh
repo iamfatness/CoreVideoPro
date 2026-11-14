@@ -11,15 +11,21 @@
 #
 # Steps: clean Release build of the media core (CI's mac Metal config plus the
 # adapters the shipped app uses: AVF capture, ScreenCaptureKit, RTMP output),
+# then the FULL native ctest on that exact build -- including the `realtime`
+# label (AVF encoder/capture timing tests) that shared CI runners exclude, so
+# this script is the gate that runs them; any failure stops the release. Then
 # the Zoom engine (real SDK) and the SwiftUI shell, each in a dedicated
 # release build dir so dev trees are never touched; assemble + Developer ID
-# sign the .app (make-macos-shell-bundle.sh); notarize the app (zip) and
+# sign the .app (make-macos-shell-bundle.sh) inside the temp work dir, so the
+# dev bundle at mac-shell/.build/CoreVideo Pro.app is never touched; notarize the app (zip) and
 # staple; build a DMG (app + /Applications alias, volume "CoreVideo Pro"),
 # sign, notarize and staple it; verify; write dist/.
 #
 # Environment:
 #   COREVIDEO_SIGN_IDENTITY   default "Developer ID Application: John Wallace (42394L3353)"
-#   COREVIDEO_NOTARY_PROFILE  notarytool keychain profile, default "CoreVideo Plugin"
+#   COREVIDEO_NOTARY_PROFILE  notarytool keychain profile, default "CoreVideo Pro"
+#                             (one-time: xcrun notarytool store-credentials "CoreVideo Pro"
+#                             --team-id 42394L3353; "CoreVideo Plugin" is the OBS plugin's)
 #   ZOOM_SDK_DIR              Zoom macOS SDK dir holding ZoomSDK.framework
 #                             (default ~/Downloads/zoom-sdk-macos-7.1.5.84750/ZoomSDK)
 #   COREVIDEO_BUILD_NUMBER    CFBundleVersion (default: git commit count)
@@ -33,8 +39,10 @@
 # verification passed, so a failed run never leaves a plausible DMG behind
 # (and never removes the previous good output).
 #
-# Runtime note: RTMP/SRT output and SRT/RTMP ingest launch an external
-# `ffmpeg`, which this DMG does not bundle (GPL/licensing ruling pending).
+# Runtime note: RTMP output launches an external `ffmpeg`, which this DMG does
+# not bundle (GPL/licensing ruling pending). The release core is built with
+# COREVIDEO_WITH_RTMP_OUTPUT=ON only; SRT output and SRT/RTMP ingest are not in
+# the macOS 1.0 build (their options default OFF and the Mac shell has no SRT UI).
 # The core looks in COREVIDEO_FFMPEG_BIN_DIR, FFMPEG_BIN_DIR, its own
 # directory, the cwd, PATH, then /opt/homebrew/bin, /usr/local/bin and
 # /opt/local/bin (native/src/modules/PosixExecutableLocator.h), so a
@@ -48,13 +56,13 @@ NOTARIZE=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-notarize) NOTARIZE=0; shift ;;
-        -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
         *) echo "error: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
 
 SIGN_ID="${COREVIDEO_SIGN_IDENTITY:-Developer ID Application: John Wallace (42394L3353)}"
-PROFILE="${COREVIDEO_NOTARY_PROFILE:-CoreVideo Plugin}"
+PROFILE="${COREVIDEO_NOTARY_PROFILE:-CoreVideo Pro}"
 ZOOM_SDK="${ZOOM_SDK_DIR:-$HOME/Downloads/zoom-sdk-macos-7.1.5.84750/ZoomSDK}"
 export PATH="$HOME/Library/Python/3.9/bin:$PATH"   # pip-installed cmake/ninja
 
@@ -74,7 +82,7 @@ grep -qF "\"$SIGN_ID\"" <<<"$IDENTITIES" || die "signing identity not in keychai
 if [ "$NOTARIZE" = "1" ]; then
     # Cheap auth probe: fails fast on a missing profile or bad credentials.
     xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1 \
-        || die "notarytool profile '$PROFILE' missing or auth failed (xcrun notarytool history)"
+        || die "notarytool profile '$PROFILE' missing or auth failed (xcrun notarytool history); create it once with: xcrun notarytool store-credentials \"$PROFILE\" --team-id 42394L3353"
 fi
 DIRTY=false
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
@@ -91,7 +99,6 @@ echo "CoreVideo Pro $VERSION (build $BUILD_NUMBER, $GIT_SHA, dirty=$DIRTY)"
 CORE_BUILD="native/build-release-core"
 ENGINE_BUILD="native/build-release-engine"
 SHELL_SCRATCH="mac-shell/.build-release"
-APP="mac-shell/.build/CoreVideo Pro.app"
 if [ "$NOTARIZE" = "1" ]; then
     OUT="dist/macos/$VERSION"
     DMG_NAME="CoreVideoPro-$VERSION-arm64.dmg"
@@ -100,6 +107,9 @@ else
     DMG_NAME="CoreVideoPro-$VERSION-arm64-UNNOTARIZED.dmg"
 fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cvp-release.XXXXXX")"
+# Assembled in the work dir, never at mac-shell/.build/CoreVideo Pro.app (the
+# developer's dev bundle, which a release must leave untouched).
+APP="$WORK/app/CoreVideo Pro.app"
 MOUNT=""
 cleanup() {
     [ -z "$MOUNT" ] || hdiutil detach "$MOUNT" -quiet -force 2>/dev/null || true
@@ -122,6 +132,24 @@ cmake -S native -B "$CORE_BUILD" -G Ninja \
     -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON \
     -DCOREVIDEO_WITH_RTMP_OUTPUT=ON
 cmake --build "$CORE_BUILD" --target corevideo-native corevideo-plugin-host
+
+# The release gate for the core: the FULL native suite on this exact build,
+# INCLUDING the `realtime` label. CI excludes `realtime` (shared runners cannot
+# hold AVF encoder/capture timing), so nothing else runs those tests; a release
+# that skipped them would ship that path unverified. Run on a quiet machine.
+log "core tests (full ctest, realtime label included)"
+cmake --build "$CORE_BUILD"   # every test target ctest lists
+CTEST_LOG="$WORK/ctest-core.log"
+if ! ctest --test-dir "$CORE_BUILD" -j 6 --output-on-failure 2>&1 | tee "$CTEST_LOG"; then
+    die "native ctest failed on the release core build (see output above); release stopped"
+fi
+CTEST_SUMMARY="$(grep -E 'tests passed, [0-9]+ tests failed' "$CTEST_LOG" | tail -1)"
+REALTIME_SUMMARY="$(ctest --test-dir "$CORE_BUILD" -N -L realtime | grep -E '^Total Tests' || true)"
+# A gate that silently ran zero realtime tests is no gate.
+case "$REALTIME_SUMMARY" in
+    "Total Tests: 0"|"") die "the release core lists no 'realtime' ctest; the AVF timing gate did not run" ;;
+esac
+echo "core ctest: $CTEST_SUMMARY (realtime label: ${REALTIME_SUMMARY:-none listed})"
 
 log "Zoom engine (clean Release, SDK $ZOOM_SDK)"
 rm -rf "$ENGINE_BUILD"
@@ -287,9 +315,11 @@ manifest = {
     "zoomSdk": "$(basename "$(dirname "$ZOOM_SDK")")",
     "runtimeRequirements": [
         "macOS 13+ on Apple Silicon",
-        "RTMP/SRT need ffmpeg (not bundled; e.g. brew install ffmpeg). "
+        "RTMP output needs ffmpeg (not bundled; e.g. brew install ffmpeg). "
         "Homebrew and MacPorts locations are found automatically.",
     ],
+    "coreTests": {"ctest": "$CTEST_SUMMARY", "realtimeIncluded": True,
+                  "realtime": "$REALTIME_SUMMARY"},
 }
 with open(sys.argv[1], "w") as f:
     json.dump(manifest, f, indent=2)

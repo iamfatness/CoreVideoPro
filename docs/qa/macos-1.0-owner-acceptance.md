@@ -6,14 +6,31 @@ and the date next to each item. A single fail blocks the release.
 
 Prerequisites: a camera, a microphone, a second Mac or phone to play the Zoom
 attendee, an RTMP test destination, FFmpeg installed (`brew install ffmpeg`), and the
-app installed to `/Applications` from the DMG.
+app installed to `/Applications` from the DMG (the bundle is `"/Applications/CoreVideo Pro.app"`,
+with a space; quote the path in every command).
+The release itself is notarized with CoreVideo Pro's own notarytool profile, `CoreVideo Pro`
+(one-time: `xcrun notarytool store-credentials "CoreVideo Pro" --team-id 42394L3353`; the
+OBS plugin's `CoreVideo Plugin` profile is a different product's).
+
+## 0. Release gate: the full native test suite, realtime included
+
+Shared CI runners exclude the `realtime` ctest label (the AVF encoder/capture timing
+tests, `corevideo-native-tests-realtime`), so CI never runs them. `scripts/release-macos.sh`
+is the gate that does: it runs the FULL native `ctest` on the release core build, realtime
+included, before anything is packaged, and stops the release on any failure (or if no
+`realtime` test is listed at all).
+
+1. Run the release on a quiet machine (no other build, soak or drill running).
+2. Pass: the script prints `core ctest: 100% tests passed, 0 tests failed ...` and the
+   `manifest.json` `coreTests` entry shows `realtimeIncluded: true`. A failed or skipped
+   realtime test blocks the release; do not re-run with the label excluded.
 
 ## 1. Install and Gatekeeper
 
 1. On a Mac that has never run this build (or after deleting the app and its quarantine
    state), download the DMG, open it, drag the app to Applications, and launch it.
 2. Pass: no Gatekeeper warning or "unidentified developer" dialog; `spctl -a -vv
-   /Applications/CoreVideoPro.app` reports `source=Notarized Developer ID`;
+   "/Applications/CoreVideo Pro.app"` reports `source=Notarized Developer ID`;
    `xcrun stapler validate` on the DMG succeeds.
 
 ## 2. Permission prompts appear once and persist
@@ -78,7 +95,8 @@ Start a recording first, then repeat with a stream running instead.
 ## 8. Companion and Stream Deck
 
 1. Point Bitfocus Companion (same Mac: `127.0.0.1`, port 8011) at the app, then repeat from
-   another computer with `COREVIDEO_HTTP_LAN=1 COREVIDEO_CONTROL_TOKEN=<secret>`.
+   another computer, launching the app from a terminal as
+   `COREVIDEO_HTTP_LAN=1 COREVIDEO_CONTROL_TOKEN=<secret> "/Applications/CoreVideo Pro.app/Contents/MacOS/CoreVideoProShell"`.
 2. From a Stream Deck button for each: Take, Fade to Black, scene select.
 3. Pass: the connection shows green, and each button acts on the Mac within a second
    and the button feedback matches app state. Without a token, the LAN connection is refused.
@@ -87,7 +105,8 @@ Start a recording first, then repeat with a stream running instead.
 
 1. Quit the app, then launch it by double-clicking it in Finder (not from a terminal), with
    FFmpeg installed through Homebrew.
-2. Start a stream to a real RTMP destination for 10 minutes.
+2. Start a stream to a real RTMP destination for 10 minutes. (RTMP is the only network
+   output in macOS 1.0; there is no SRT output or SRT/RTMP ingest on the Mac.)
 3. Pass: the stream goes live and stays up; the destination shows a clean picture and sound
    with no stalls. With FFmpeg uninstalled, the app says FFmpeg is missing rather than failing silently.
 
