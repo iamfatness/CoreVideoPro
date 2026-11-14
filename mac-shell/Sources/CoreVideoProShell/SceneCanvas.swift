@@ -13,10 +13,11 @@ import SwiftUI
 struct ScenesPane: View {
     @EnvironmentObject var model: AppModel
     @State private var selectedLayerId: String?
+    @State private var nameDraft = ""
 
-    var sceneId: String {
-        model.previewSceneId.isEmpty ? model.programSceneId : model.previewSceneId
-    }
+    // The PREVIEW scene only. With Preview empty there is no edit target —
+    // never the live Program scene (#1196).
+    var sceneId: String { model.sceneEditTargetId ?? "" }
 
     var scene: SceneDef? { model.scenes.first { $0.id == sceneId } }
 
@@ -44,7 +45,7 @@ struct ScenesPane: View {
                     Button("Duplicate") { model.duplicateScene(sceneId) }
                         .disabled(sceneId.isEmpty)
                     Button("Delete") { model.deleteScene(sceneId) }
-                        .disabled(model.scenes.count <= 1)
+                        .disabled(sceneId.isEmpty)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
@@ -55,18 +56,25 @@ struct ScenesPane: View {
             }
             HStack(spacing: 8) {
                 Text("Name").font(.grotesk(12)).foregroundStyle(Studio.secondary)
-                TextField("Scene name", text: Binding(
-                    get: { scene?.name ?? "" },
-                    set: { model.renameScene(sceneId, to: $0) }))
+                TextField("Scene name", text: $nameDraft)
+                    .onSubmit { model.renameScene(sceneId, to: nameDraft)
+                        nameDraft = scene?.name ?? "" }
+                    .disabled(sceneId.isEmpty)
                     .textFieldStyle(StudioFieldStyle())
                     .frame(width: 220)
+                if !model.sceneEditMessage.isEmpty {
+                    Text(model.sceneEditMessage).font(.plexMono(10))
+                        .foregroundStyle(Studio.red)
+                }
                 if !model.sceneSaveStatus.isEmpty {
                     Text(model.sceneSaveStatus).font(.plexMono(10))
                         .foregroundStyle(Studio.accent)
                 }
                 Spacer()
             }
-            Text("Editing the PREVIEW scene — program is untouched until Take. "
+            Text(sceneId.isEmpty
+                 ? "No scene on Preview — cue one to edit it. Program is never edited directly."
+                 : "Editing the PREVIEW scene — program is untouched until Take. "
                  + "Drag to move, drag the corner to resize. Scenes persist across "
                  + "relaunches.")
                 .font(.grotesk(12)).foregroundStyle(Studio.secondary)
@@ -80,7 +88,12 @@ struct ScenesPane: View {
         .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
         .frame(maxWidth: 1000)
-        .onAppear { model.ensureLayers(for: sceneId) }
+        .onAppear { model.ensureLayers(for: sceneId); nameDraft = scene?.name ?? "" }
+        .onChange(of: sceneId) { _ in
+            model.ensureLayers(for: sceneId)
+            nameDraft = scene?.name ?? ""
+            model.sceneEditMessage = ""
+        }
     }
 }
 

@@ -912,6 +912,117 @@ enum ShellTests {
                     "the policy command comes after every scene command")
     }
 
+    // ── #1196 / #1070: scene editing never changes what is on air ───────────
+
+    @MainActor
+    private static func sceneEditModel() -> AppModel {
+        let model = AppModel()
+        model.scenes = [
+            SceneDef(id: "s1", name: "Intro", layout: "single",
+                     layers: [SceneLayer(id: "s1-layer-0", slotId: 2, x: 0.1, y: 0.2,
+                                         width: 0.5, height: 0.6, fitMode: "fit",
+                                         opacity: 0.75)],
+                     backgroundAssetId: "bg-asset"),
+            SceneDef(id: "s2", name: "Panel", layout: "two-up"),
+            SceneDef(id: "s3", name: "Closing", layout: "pip"),
+        ]
+        model.programSceneId = "s2"
+        model.previewSceneId = "s1"
+        return model
+    }
+
+    @MainActor
+    private static func testSceneRenameKeepsEveryOtherField() {
+        let model = sceneEditModel()
+        let before = model.scenes[0]
+        let syncs = model.sceneSyncRequestCount
+        expect(model.renameScene("s1", to: "  Opening  ") == nil, "rename accepted")
+        let after = model.scenes[0]
+        expectEqual(after.name, "Opening", "name trimmed + applied")
+        expectEqual(after.backgroundAssetId, "bg-asset", "rename keeps the background")
+        expectEqual(after.layers, before.layers, "rename keeps layers byte-equal")
+        expectEqual(after.layout, before.layout, "rename keeps layout")
+        expectEqual(after.id, before.id, "rename keeps id")
+        expectEqual(model.sceneSyncRequestCount, syncs, "rename sends no scene command")
+        expectEqual(model.programSceneId, "s2", "rename leaves Program alone")
+    }
+
+    @MainActor
+    private static func testSceneRenameValidationIsTheWindowsPolicy() {
+        let model = sceneEditModel()
+        expectEqual(model.renameScene("s1", to: "   ") ?? "", "Enter a scene name.",
+                    "blank refused with the Windows text")
+        expectEqual(model.renameScene("s1", to: "  PANEL ") ?? "",
+                    "A scene with that name already exists. Choose a different name.",
+                    "case-insensitive duplicate refused with the Windows text")
+        expectEqual(model.scenes[0].name, "Intro", "refused rename changes nothing")
+        expect(model.renameScene("s1", to: "  INTRO  ") == nil, "own name (any case) allowed")
+        expect(model.renameScene("s1", to: "主題 – Montréal") == nil, "unicode allowed")
+    }
+
+    @MainActor
+    private static func testSceneDuplicateCopiesEveryField() {
+        let model = sceneEditModel()
+        let source = model.scenes[0]
+        model.duplicateScene("s1")
+        guard let copy = model.scenes.last, copy.id != "s1" else {
+            expect(false, "duplicate appended a scene"); return
+        }
+        expectEqual(copy.backgroundAssetId, source.backgroundAssetId, "duplicate keeps background")
+        expectEqual(copy.layout, source.layout, "duplicate keeps layout")
+        expectEqual(copy.layers.count, source.layers.count, "duplicate keeps layer count")
+        let l = copy.layers[0], o = source.layers[0]
+        expect(l.slotId == o.slotId && l.x == o.x && l.y == o.y && l.width == o.width
+               && l.height == o.height && l.fitMode == o.fitMode && l.opacity == o.opacity,
+               "duplicate layer geometry/fit/opacity/slot equal")
+        expect(copy.name != source.name, "duplicate has its own name")
+        expectEqual(model.programSceneId, "s2", "duplicate leaves Program alone")
+    }
+
+    @MainActor
+    private static func testSceneDeleteRefusesOnAirAndLast() {
+        let model = sceneEditModel()
+        let syncs = model.sceneSyncRequestCount
+        expectEqual(model.deleteScene("s2") ?? "", "The on-air scene cannot be removed",
+                    "Program delete refused with the Windows text")
+        expect(model.scenes.contains { $0.id == "s2" }, "Program scene still exists")
+        expectEqual(model.programSceneId, "s2", "Program did not switch")
+        expectEqual(model.sceneSyncRequestCount, syncs, "refused delete sends no scene command")
+        expectEqual(model.sceneEditMessage, "The on-air scene cannot be removed",
+                    "refusal is surfaced to the UI")
+        // Program == Preview: still the on-air scene.
+        model.previewSceneId = "s2"
+        expect(model.deleteScene("s2") != nil, "Program delete refused even when also Preview")
+        // Last scene.
+        let solo = AppModel()
+        solo.scenes = [SceneDef(id: "only", name: "Only", layout: "single")]
+        solo.programSceneId = "other"
+        expectEqual(solo.deleteScene("only") ?? "", "The last scene cannot be removed",
+                    "last scene refused with the Windows text")
+        // A non-air scene goes; Program is untouched.
+        let ok = sceneEditModel()
+        expect(ok.deleteScene("s3") == nil, "off-air scene deletes")
+        expectEqual(ok.scenes.map(\.id), ["s1", "s2"], "only the target removed")
+        expectEqual(ok.programSceneId, "s2", "Program untouched by a delete")
+        // Deleting the Preview scene empties Preview, never moves Program.
+        expect(ok.deleteScene("s1") == nil, "preview scene deletes")
+        expectEqual(ok.previewSceneId, "", "Preview empties")
+        expectEqual(ok.programSceneId, "s2", "Program still untouched")
+    }
+
+    @MainActor
+    private static func testSceneEditorNeverTargetsProgram() {
+        let model = sceneEditModel()
+        expectEqual(model.sceneEditTargetId ?? "<nil>", "s1", "editor targets Preview")
+        model.previewSceneId = ""
+        expect(model.sceneEditTargetId == nil, "empty Preview -> no edit target (not Program)")
+        // The Program scene graph is identical before and after an editor-less state.
+        let programBefore = model.buildRoutes(for: "s2", isProgram: true).count
+        _ = model.deleteScene("s3")
+        expectEqual(model.buildRoutes(for: "s2", isProgram: true).count, programBefore,
+                    "Program routes unchanged")
+    }
+
     // ── #1188: output start/stop mid-take must not shrink the armed ISO set ──
 
     @MainActor
@@ -1135,6 +1246,11 @@ enum ShellTests {
             ("iso/selection-port", testRecordingIsoSelectionPort),
             ("iso/preflight-loud", testIsoPreflightWarnsLoudly),
             ("iso/preflight-unobserved", testIsoPreflightNeverWarnsOnAnUnobservedState),
+            ("scenes/rename-keeps-fields", testSceneRenameKeepsEveryOtherField),
+            ("scenes/rename-policy", testSceneRenameValidationIsTheWindowsPolicy),
+            ("scenes/duplicate-copies-all", testSceneDuplicateCopiesEveryField),
+            ("scenes/delete-refusals", testSceneDeleteRefusesOnAirAndLast),
+            ("scenes/editor-never-program", testSceneEditorNeverTargetsProgram),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)

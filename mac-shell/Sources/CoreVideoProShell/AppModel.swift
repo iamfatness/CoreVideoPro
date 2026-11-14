@@ -60,7 +60,7 @@ struct SceneRoute {
 // (the previous behavior), non-empty = the canvas editor owns this scene.
 struct SceneDef: Identifiable {
     let id: String
-    let name: String
+    var name: String
     let layout: String
     var layers: [SceneLayer] = []
     // SuperSource background: a media asset composited full-canvas BEHIND every
@@ -1675,11 +1675,64 @@ final class AppModel: ObservableObject {
         sceneSaveStatus = "Saved \(formatter.string(from: Date()))"
     }
 
-    func renameScene(_ sceneId: String, to name: String) {
-        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
-        scenes[index] = SceneDef(id: scenes[index].id, name: name,
-                                 layout: scenes[index].layout,
-                                 layers: scenes[index].layers)
+    // ── scene naming + removal rules (Windows #1196 / #1070) ─────────────────
+    // Ported from SceneNamingPolicy.Validate and SceneCatalogPolicy.RemovalRefusal;
+    // the message text is the Windows text, verbatim.
+    static let sceneNameBlankMessage = "Enter a scene name."
+    static let sceneNameDuplicateMessage =
+        "A scene with that name already exists. Choose a different name."
+    static let sceneOnAirRefusal = "The on-air scene cannot be removed"
+    static let sceneLastRefusal = "The last scene cannot be removed"
+
+    /// Operator-facing result of the last rename/delete (refusal text or "").
+    @Published var sceneEditMessage = ""
+
+    /// How many scene-graph syncs have been requested. Test seam: a refused
+    /// edit must leave this unchanged (nothing reached the wire).
+    private(set) var sceneSyncRequestCount = 0
+
+    /// The scene the Scenes tab edits: the PREVIEW scene only. With Preview
+    /// empty there is nothing to edit — it never falls back to Program, which
+    /// is live (#1196: editing must not change what is on air).
+    var sceneEditTargetId: String? {
+        previewSceneId.isEmpty ? nil : previewSceneId
+    }
+
+    /// SceneNamingPolicy.Validate: blank, or another scene's name
+    /// (case-insensitive, trimmed) -> the Windows message; nil when fine.
+    func sceneNameRefusal(sceneId: String?, name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return Self.sceneNameBlankMessage }
+        let clash = railScenes.contains { $0.id != sceneId
+            && $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame }
+        return clash ? Self.sceneNameDuplicateMessage : nil
+    }
+
+    /// Why a scene cannot be removed right now (SceneCatalogPolicy.RemovalRefusal):
+    /// the on-air scene, or the last visible one. Nil when it can go.
+    func sceneRemovalRefusal(_ sceneId: String) -> String? {
+        if sceneId == programSceneId { return Self.sceneOnAirRefusal }
+        let reserved = sceneId == Self.soloSceneA || sceneId == Self.soloSceneB
+        if !reserved && railScenes.count <= 1 { return Self.sceneLastRefusal }
+        return nil
+    }
+
+    /// Metadata only: every other field (layers, background) is carried, and
+    /// nothing is synced — a name never reaches the wire. Returns the refusal
+    /// message, or nil when applied (the trimmed name is stored).
+    @discardableResult
+    func renameScene(_ sceneId: String, to name: String) -> String? {
+        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else {
+            return "This scene is no longer available."
+        }
+        if let refusal = sceneNameRefusal(sceneId: sceneId, name: name) {
+            sceneEditMessage = refusal
+            return refusal
+        }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if scenes[index].name != trimmed { scenes[index].name = trimmed }
+        sceneEditMessage = ""
+        return nil
     }
 
     func duplicateScene(_ sceneId: String) {
@@ -1691,15 +1744,19 @@ final class AppModel: ObservableObject {
             suffix += 1
         }
         let newId = source.id + "-copy-\(Int(Date().timeIntervalSince1970))"
-        scenes.append(SceneDef(id: newId, name: name, layout: source.layout,
-                               layers: source.layers.map { layer in
-                                   SceneLayer(id: newId + "-" + layer.id,
-                                              slotId: layer.slotId,
-                                              x: layer.x, y: layer.y,
-                                              width: layer.width, height: layer.height,
-                                              fitMode: layer.fitMode,
-                                              opacity: layer.opacity)
-                               }))
+        // Every field is carried (background included); only identity and
+        // the per-layer ids change.
+        let copy = SceneDef(id: newId, name: name, layout: source.layout,
+                            layers: source.layers.map { layer in
+                                var l = layer
+                                l = SceneLayer(id: newId + "-" + layer.id,
+                                               slotId: l.slotId, x: l.x, y: l.y,
+                                               width: l.width, height: l.height,
+                                               fitMode: l.fitMode, opacity: l.opacity)
+                                return l
+                            },
+                            backgroundAssetId: source.backgroundAssetId)
+        scenes.append(copy)
         previewSceneId = newId
         syncScenes()
         saveScenes()
@@ -1720,15 +1777,22 @@ final class AppModel: ObservableObject {
         saveScenes()
     }
 
-    func deleteScene(_ sceneId: String) {
-        guard scenes.count > 1 else { return }
+    /// Windows #1070: the on-air scene and the last visible scene are refused
+    /// (message in `sceneEditMessage`, nothing synced). Removing the Preview
+    /// scene empties Preview; Program is never touched here.
+    @discardableResult
+    func deleteScene(_ sceneId: String) -> String? {
+        if let refusal = sceneRemovalRefusal(sceneId) {
+            sceneEditMessage = refusal
+            return refusal
+        }
+        guard let scene = scenes.first(where: { $0.id == sceneId }) else { return nil }
         scenes.removeAll { $0.id == sceneId }
         if previewSceneId == sceneId { previewSceneId = "" }
-        if programSceneId == sceneId, let first = scenes.first {
-            programSceneId = first.id
-        }
+        sceneEditMessage = "\(scene.name) removed"
         syncScenes()
         saveScenes()
+        return nil
     }
 
     // Back to the layout preset (drops the edited canvas).
@@ -1797,6 +1861,7 @@ final class AppModel: ObservableObject {
     // until every command times out — the owner hit exactly that. Callers stay
     // naive; the debounce is here.
     func syncScenes() {
+        sceneSyncRequestCount += 1
         sceneSyncTask?.cancel()
         sceneSyncTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 120_000_000)
