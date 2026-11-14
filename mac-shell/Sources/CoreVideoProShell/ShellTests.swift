@@ -1418,6 +1418,117 @@ enum ShellTests {
 
     // ── runner ───────────────────────────────────────────────────────────────
 
+    // ── quit guard (T1.8 parity) ─────────────────────────────────────────────
+
+    private static func runBlocking<T: Sendable>(_ body: @escaping @Sendable () async -> T) -> T {
+        let box = QuitProbeResult<T>()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached { box.value = await body(); done.signal() }
+        done.wait()
+        return box.value!
+    }
+
+    private static func testQuitDecisionAsksOnlyWhenOutputsAreLive() {
+        func outputs(_ recording: String = "idle", desired: Bool = false,
+                     streaming: Bool = false, stream: String = "") -> QuitOutputs {
+            QuitOutputs(recordingStatus: recording, recordingDesired: desired,
+                        streamingDesired: streaming, streamStatus: stream)
+        }
+        for idle in ["idle", "completed", "failed", "interrupted"] {
+            var gate = QuitGate()
+            expectEqual(gate.request(outputs(idle)), .quitNow, "\(idle) recording quits immediately")
+        }
+        var fresh = QuitGate()
+        expectEqual(fresh.request(outputs()), .quitNow, "idle app quits immediately")
+        for live in ["recording", "starting", "producing", "stopping", "finalizing", "warning", "unknown"] {
+            var gate = QuitGate()
+            expectEqual(gate.request(outputs(live)), .ask, "\(live) recording asks first")
+        }
+        var intent = QuitGate()
+        expectEqual(intent.request(outputs(desired: true)), .ask, "a recording intent asks even before the core reports live")
+        var streaming = QuitGate()
+        expectEqual(streaming.request(outputs(streaming: true)), .ask, "streaming intent asks")
+        var senderLive = QuitGate()
+        expectEqual(senderLive.request(outputs(stream: "live")), .ask, "a live sender asks")
+        var senderGone = QuitGate()
+        expectEqual(senderGone.request(outputs(stream: "failed")), .quitNow, "a failed sender does not ask")
+    }
+
+    private static func testQuitGateAllowsOnePromptAtATime() {
+        let live = QuitOutputs(recordingStatus: "recording", recordingDesired: true)
+        var gate = QuitGate()
+        expectEqual(gate.request(live), .ask, "first quit asks")
+        expectEqual(gate.request(live), .ignore, "a second quit while the dialog is open is ignored")
+        expect(gate.confirm(), "confirm from the dialog proceeds")
+        expectEqual(gate.request(live), .ignore, "a quit while outputs finish is ignored, never a force-exit")
+        var kept = QuitGate()
+        _ = kept.request(live)
+        kept.cancel()
+        expectEqual(kept.request(live), .ask, "Keep running re-arms the next quit")
+        var stray = QuitGate()
+        expect(!stray.confirm(), "confirm without a dialog does nothing")
+        expect(QuitGuardPolicy.recordingTerminal("completed") && QuitGuardPolicy.recordingTerminal("failed"),
+               "completed and failed are terminal")
+        expect(!QuitGuardPolicy.recordingTerminal("idle") && !QuitGuardPolicy.recordingTerminal("stopping")
+               && !QuitGuardPolicy.recordingTerminal("finalizing"),
+               "idle, stopping and finalizing are NOT terminal evidence")
+        expectEqual(QuitGuardPolicy.finishTimeout, 15, "wait bound matches Windows OutputShutdownCoordinator (15 s)")
+        expectEqual(QuitGuardPolicy.coreExitGrace, 2, "core exit grace matches Windows ShutdownBudget (2 s)")
+    }
+
+    private static func testQuitFinishStopsThenWaitsForTerminalEvidence() {
+        let probe = QuitProbe()
+        let outcome = runBlocking {
+            await QuitFlow.finishOutputs(
+                stop: { probe.stop(landing: true) },
+                isFinished: { probe.check(finishedAfter: 3) },
+                timeout: 5, poll: 0.01)
+        }
+        expectEqual(outcome, .finished, "finishes once terminal evidence arrives")
+        expectEqual(probe.order.first ?? "", "stop", "the stop is sent before any evidence is read")
+        expect(probe.order.filter { $0 == "check" }.count >= 3, "it kept waiting until the terminal state")
+        expectEqual(probe.stops, 1, "a stop that landed is not re-sent")
+    }
+
+    private static func testQuitFinishTimesOutLoudlyAndResendsAStopThatDidNotLand() {
+        let probe = QuitProbe()
+        let started = Date()
+        let outcome = runBlocking {
+            await QuitFlow.finishOutputs(
+                stop: { probe.stop(landing: false) },
+                isFinished: { probe.check(finishedAfter: Int.max) },
+                timeout: 0.35, poll: 0.01, resendEvery: 0.1)
+        }
+        expectEqual(outcome, .timedOut, "never-terminal outputs end in a bounded timeout")
+        expect(Date().timeIntervalSince(started) < 3, "the wait is bounded")
+        expect(probe.stops >= 2, "a stop that did not land is re-sent")
+        expect(!probe.order.contains("check"), "no evidence counts before a stop has landed")
+    }
+
+
+    private static func testBridgeAppExitClosesStdinAndGivesTheCoreAGraceBeforeTerminating() {
+        // /bin/cat exits on stdin EOF, like the core (it finalizes on EOF).
+        let polite = MediaCoreBridge(corePath: "/bin/cat", environmentExtras: [:])
+        polite.start()
+        Thread.sleep(forTimeInterval: 0.4)
+        let t0 = Date()
+        let exitedByItself = runBlocking { await polite.stopForAppExit(grace: 3) }
+        expect(exitedByItself, "a core that honours EOF exits by itself within the grace")
+        expect(Date().timeIntervalSince(t0) < 2.5, "it does not burn the whole grace when the core exits")
+        // A core that ignores stdin: the grace runs out, then it is terminated.
+        let script = NSTemporaryDirectory() + "cv-quit-stubborn-\(UUID().uuidString).sh"
+        try? "#!/bin/sh\nexec sleep 30\n".write(toFile: script, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script)
+        defer { try? FileManager.default.removeItem(atPath: script) }
+        let stubborn = MediaCoreBridge(corePath: script, environmentExtras: [:])
+        stubborn.start()
+        Thread.sleep(forTimeInterval: 0.4)
+        let t1 = Date()
+        let graceful = runBlocking { await stubborn.stopForAppExit(grace: 0.4) }
+        expect(!graceful, "a core that ignores EOF is reported as terminated after the grace")
+        expect(Date().timeIntervalSince(t1) < 3, "the grace is bounded")
+    }
+
     @MainActor
     static func runAndExit() -> Never {
         failures = []
@@ -1486,6 +1597,11 @@ enum ShellTests {
             ("scenes/editor-never-program", testSceneEditorNeverTargetsProgram),
             ("meters/observation-thresholds", testAudioObservationThresholdsAreWindows),
             ("meters/warning-recovers", testMeterWarningFollowsSnapshotAgeAndRecovers),
+            ("quit/decision", testQuitDecisionAsksOnlyWhenOutputsAreLive),
+            ("quit/one-prompt", testQuitGateAllowsOnePromptAtATime),
+            ("quit/stop-then-wait", testQuitFinishStopsThenWaitsForTerminalEvidence),
+            ("quit/bridge-app-exit", testBridgeAppExitClosesStdinAndGivesTheCoreAGraceBeforeTerminating),
+            ("quit/timeout-resend", testQuitFinishTimesOutLoudlyAndResendsAStopThatDidNotLand),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
@@ -1511,3 +1627,21 @@ private extension FileManager {
         return "\(a[.modificationDate] as? Date ?? .distantPast)|\(a[.size] as? Int ?? -1)"
     }
 }
+
+private final class QuitProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _stops = 0, _checks = 0, _order: [String] = []
+    var stops: Int { lock.lock(); defer { lock.unlock() }; return _stops }
+    var order: [String] { lock.lock(); defer { lock.unlock() }; return _order }
+    func stop(landing: Bool) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        _stops += 1; _order.append("stop"); return landing
+    }
+    func check(finishedAfter n: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        _checks += 1; _order.append("check")
+        return _checks >= n
+    }
+}
+
+private final class QuitProbeResult<T>: @unchecked Sendable { var value: T? }

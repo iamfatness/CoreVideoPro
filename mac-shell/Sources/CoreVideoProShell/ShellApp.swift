@@ -20,8 +20,23 @@ struct StudioPanel: ViewModifier {
     }
 }
 
+// Routes Cmd-Q / Dock Quit through the quit guard (QuitGuard.swift). The model
+// registers itself on start(); until then (and in the test/selfcheck harnesses)
+// a quit is immediate.
+final class ShellAppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor static weak var quitHost: AppModel?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            guard let host = Self.quitHost else { return .terminateNow }
+            return host.handleQuitRequest()
+        }
+    }
+}
+
 @main
 struct ShellApp: App {
+    @NSApplicationDelegateAdaptor(ShellAppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
     init() {
@@ -55,7 +70,10 @@ struct ShellApp: App {
         WindowGroup("CoreVideo Pro") {
             RootView()
                 .environmentObject(model)
-                .onAppear { model.start() }
+                .onAppear {
+                    ShellAppDelegate.quitHost = model
+                    model.start()
+                }
                 .modifier(PopoutAutoOpen())
                 .onOpenURL { url in model.handleOAuthCallback(url) }
                 .frame(minWidth: 1360, minHeight: 860)
@@ -219,6 +237,48 @@ struct RootView: View {
             OutputsStatusRow()
         }
         .background(Studio.background)
+        .overlay { QuitConfirmation() }
+    }
+}
+
+// In-app "Stop outputs and quit?" confirmation (design-system styled — no stock
+// alert). Keep running is the default action (Return / Esc).
+struct QuitConfirmation: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        if model.quitPromptVisible || model.quitFinishing {
+            ZStack {
+                Color.black.opacity(0.55).ignoresSafeArea()
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(model.quitFinishing ? "Finishing your files" : "Stop outputs and quit?")
+                        .font(.grotesk(16, .semibold))
+                        .foregroundStyle(Studio.textPrimary)
+                    Text(model.quitFinishing
+                         ? "Waiting for the recording to close so it stays playable. CoreVideo Pro quits when it is done."
+                         : "A recording or stream is live. Quitting stops it and finishes the files first, so the recording stays playable.")
+                        .font(.grotesk(13))
+                        .foregroundStyle(Studio.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !model.quitFinishing {
+                        HStack(spacing: 10) {
+                            Spacer()
+                            Button("Stop and quit") { model.confirmQuit() }
+                                .buttonStyle(GhostButtonStyle(tint: Studio.red))
+                            Button("Keep running") { model.cancelQuit() }
+                                .buttonStyle(AccentButtonStyle())
+                                .keyboardShortcut(.defaultAction)
+                        }
+                    }
+                }
+                .padding(20)
+                .frame(width: 420)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+                .onExitCommand { if !model.quitFinishing { model.cancelQuit() } }
+            }
+            .transition(.opacity)
+        }
     }
 }
 

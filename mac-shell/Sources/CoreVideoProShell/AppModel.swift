@@ -408,6 +408,16 @@ final class AppModel: ObservableObject {
     // Readable (not settable) outside this file so cross-file extensions
     // (VstInserts.swift) can issue their own RPCs; the lifecycle stays owned here.
     private(set) var bridge: MediaCoreBridge?
+    // Quit guard (T1.8 parity, QuitGuard.swift). The gate allows one prompt at a
+    // time; `snapshotSequence` lets the finish wait accept only snapshots that
+    // arrived AFTER the stop landed (a stale pre-stop `completed` never counts).
+    private var quitGate = QuitGate()
+    private(set) var snapshotSequence = 0
+    @Published var quitPromptVisible = false
+    @Published var quitFinishing = false
+    /// Test seam: replaces the real stop/finish/shutdown so the flow can be driven
+    /// without a core. Production leaves it nil.
+    var quitReplyForTesting: ((Bool) -> Void)?
     private var syncTimer: Timer?
     private var zoomTimer: Timer?
     private var startedAt = Date()
@@ -753,6 +763,7 @@ final class AppModel: ObservableObject {
     }
 
     private func applySnapshot(_ snapshot: JSONObject) {
+        snapshotSequence &+= 1
         // Keep the last NON-EMPTY snapshot: a failed/empty sync must not blank
         // the Diagnose surface (an operator reads it hardest right when the
         // core is unhappy).
@@ -2549,6 +2560,117 @@ final class AppModel: ObservableObject {
         } catch {
             pushWarning("audio mix sync failed: \(error.localizedDescription)")
         }
+    }
+
+    // ── quit guard ───────────────────────────────────────────────────────────
+
+    var quitOutputs: QuitOutputs {
+        QuitOutputs(recordingStatus: recordingStatus, recordingDesired: recordingDesired,
+                    streamingDesired: streamingDesired, streamStatus: streamStatus)
+    }
+
+    /// NSApplicationDelegate.applicationShouldTerminate. Idle quits at once;
+    /// live outputs defer the quit behind the in-app confirmation.
+    func handleQuitRequest() -> NSApplication.TerminateReply {
+        switch quitGate.request(quitOutputs) {
+        case .quitNow: return .terminateNow
+        case .ask:
+            quitPromptVisible = true
+            // Bring the window forward so the dialog is seen.
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
+            return .terminateLater
+        case .ignore:
+            NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
+            return .terminateCancel
+        }
+    }
+
+    /// "Keep running".
+    func cancelQuit() {
+        guard quitPromptVisible else { return }
+        quitGate.cancel()
+        quitPromptVisible = false
+        replyToQuit(false)
+    }
+
+    /// "Stop and quit": stop streams, then the recording, wait (bounded) for the
+    /// truthful terminal lifecycle, then retire the core with the stdin-EOF grace.
+    func confirmQuit() {
+        guard quitGate.confirm() else { return }
+        quitPromptVisible = false
+        quitFinishing = true
+        let recordingWasLive = QuitGuardPolicy.recordingLive(quitOutputs)
+        let streamWasLive = QuitGuardPolicy.streamLive(quitOutputs)
+        ShellLog.write("quit: stopping outputs recording=\(recordingWasLive) stream=\(streamWasLive)")
+        Task { @MainActor in
+            var baseline = Int.max   // set when the stop lands; only later snapshots count
+            let outcome = await QuitFlow.finishOutputs(
+                stop: { @MainActor [weak self] in
+                    guard let self else { return true }
+                    let landed = await self.sendQuitStops(recording: recordingWasLive,
+                                                          stream: streamWasLive)
+                    if landed { baseline = self.snapshotSequence }
+                    return landed
+                },
+                isFinished: { @MainActor [weak self] in
+                    guard let self, self.snapshotSequence > baseline else { return false }
+                    let recordingDone = !recordingWasLive
+                        || QuitGuardPolicy.recordingTerminal(self.recordingStatus)
+                    let streamDone = !streamWasLive
+                        || !QuitGuardPolicy.streamLive(
+                            QuitOutputs(streamStatus: self.streamStatus))
+                    return recordingDone && streamDone
+                })
+            if outcome == .timedOut {
+                let message = "quit: outputs did not finish within "
+                    + "\(Int(QuitGuardPolicy.finishTimeout)) s; quitting anyway"
+                ShellLog.write(message)
+                pushWarning(message)
+            } else {
+                ShellLog.write("quit: outputs finished")
+            }
+            let exited = await bridge?.stopForAppExit(grace: QuitGuardPolicy.coreExitGrace) ?? true
+            ShellLog.write("quit: core \(exited ? "exited on EOF" : "terminated after grace")")
+            quitFinishing = false
+            quitGate.reset()
+            replyToQuit(true)
+        }
+    }
+
+    private func replyToQuit(_ shouldTerminate: Bool) {
+        if let seam = quitReplyForTesting { seam(shouldTerminate); return }
+        NSApplication.shared.reply(toApplicationShouldTerminate: shouldTerminate)
+    }
+
+    /// The same transport stops the operator's buttons send: streams first, then
+    /// the recording session. True when every needed stop was accepted.
+    private func sendQuitStops(recording: Bool, stream: Bool) async -> Bool {
+        guard let bridge else { return true }   // no core: nothing left to stop
+        var ok = true
+        if stream {
+            streamingDesired = false
+            let commands: [JSONObject] = recording
+                ? [startProgramOutput(recording: true, streaming: false)]
+                : [["type": "stop-encoder-session", "reason": "Streaming stopped on quit."]]
+            do {
+                _ = try await bridge.request([
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": commands,
+                ], timeout: 15)
+            } catch { ok = false }
+        }
+        // Already stopping/finalizing: the stop landed on an earlier attempt.
+        let recordingInFlight = ["stopping", "finalizing"].contains(recordingStatus)
+        if recording, !recordingInFlight {
+            recordingDesired = false
+            do {
+                _ = try await bridge.request([
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                    "commands": [["type": "stop-recording-session", "reason": "Quit."]],
+                ], timeout: 30)
+            } catch { ok = false }
+        }
+        return ok
     }
 
     func toggleRecording() {
