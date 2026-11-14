@@ -1269,6 +1269,41 @@ enum ShellTests {
                "intent OFF is itself observed — the shell owns the Capture toggle")
     }
 
+    // #764: the core stopped storing/applying logoText, lowerThirdStyle,
+    // captionStyle and defaultOverlayBehavior; Windows stopped sending them
+    // (MediaCoreCommandBuilderTests brand-kit test) and removed the Logo text
+    // box, lower-third Style combo and Caption style combo.
+    private static func testBrandKitCommandCarriesOnlyWhatTheCoreApplies() {
+        let cmd = AppModel.brandKitCommand(OverlaysState())
+        expectEqual(cmd["type"] as? String, "set-brand-kit", "brand kit command type")
+        expectEqual(Set(cmd.keys),
+                    Set(["type", "name", "brandColor", "accentColor", "backgroundColor"]),
+                    "set-brand-kit carries exactly the fields the core applies")
+        for dead in ["logoText", "lowerThirdStyle", "captionStyle", "defaultOverlayBehavior",
+                     "logoAssetId", "logoAssetName", "logoAssetPath"] {
+            expect(cmd[dead] == nil, "set-brand-kit no longer sends \(dead)")
+        }
+    }
+
+    private static func testOldOverlayPrefsWithRemovedFieldsStillDecode() {
+        let json = """
+        {"buildInMs":700,"buildOutMs":300,"motionTiming":"custom","lowerThirdStyle":"solid",
+         "brandName":"Acme","logoText":"ACME","brandColor":"#112233","accentColor":"#445566",
+         "backgroundColor":"#000000","defaultOverlayBehavior":"restore-last",
+         "captionStyle":"boxed","captionsEnabled":true}
+        """
+        let decoded = try? JSONDecoder().decode(OverlaysState.self, from: Data(json.utf8))
+        expect(decoded != nil, "an overlays block still carrying the removed keys decodes")
+        expectEqual(decoded?.brandName, "Acme", "kept fields survive the removed keys")
+        expectEqual(decoded?.buildInMs, 700, "build timing survives")
+        expectEqual(decoded?.captionsEnabled, true, "captions toggle survives")
+        expectEqual(decoded?.brandColor, "#112233", "brand colour survives")
+        // Whole prefs file, through the real decoder.
+        let full = "{\"overlays\":" + json + "}"
+        let prefs = try? JSONDecoder().decode(ShellPrefs.self, from: Data(full.utf8))
+        expectEqual(prefs?.overlays?.brandName, "Acme", "ShellPrefs keeps the overlays block")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
 
     @MainActor
@@ -1324,6 +1359,8 @@ enum ShellTests {
             ("iso/selection-port", testRecordingIsoSelectionPort),
             ("iso/preflight-loud", testIsoPreflightWarnsLoudly),
             ("iso/preflight-unobserved", testIsoPreflightNeverWarnsOnAnUnobservedState),
+            ("overlays/brand-kit-payload", testBrandKitCommandCarriesOnlyWhatTheCoreApplies),
+            ("overlays/old-prefs-decode", testOldOverlayPrefsWithRemovedFieldsStillDecode),
             ("scenes/rename-keeps-fields", testSceneRenameKeepsEveryOtherField),
             ("scenes/rename-policy", testSceneRenameValidationIsTheWindowsPolicy),
             ("scenes/duplicate-copies-all", testSceneDuplicateCopiesEveryField),
