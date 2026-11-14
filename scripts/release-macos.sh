@@ -135,17 +135,28 @@ COREVIDEO_REQUIRE_HELPERS=1 \
 # signature with the hardened runtime. Catch it here, not in Apple's log.
 log "audit every Mach-O in the app"
 MACHO_COUNT=0
+X86_VENDOR=0
 while IFS= read -r f; do
     magic="$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')"
     case "$magic" in feedfacf|cffaedfe|cafebabe|bebafeca|feedface|cefaedfe) ;; *) continue ;; esac
     MACHO_COUNT=$((MACHO_COUNT + 1))
-    lipo -archs "$f" 2>/dev/null | grep -qw arm64 || die "not arm64: $f"
+    if ! lipo -archs "$f" 2>/dev/null | grep -qw arm64; then
+        # Zoom ships a few Intel-only libraries (e.g. libmkldnn, MKL-DNN) that
+        # it loads only on x86_64. Vendor SDK files are not ours to strip;
+        # anything we build must run on Apple Silicon.
+        case "$f" in
+            */corevideo-zoom-engine.app/Contents/Frameworks/*)
+                X86_VENDOR=$((X86_VENDOR + 1))
+                echo "note: vendor SDK file has no arm64 slice (signed anyway): ${f#"$APP"/}" ;;
+            *) die "not arm64: $f" ;;
+        esac
+    fi
     info="$(codesign -dvv "$f" 2>&1)" || die "unsigned: $f"
     grep -qF "Authority=$SIGN_ID" <<<"$info" || die "not signed by $SIGN_ID: $f"
     grep -q "flags=.*runtime" <<<"$info" || die "no hardened runtime: $f"
     grep -q "^Timestamp=" <<<"$info" || die "no secure timestamp: $f"
 done < <(find "$APP" -type f)
-echo "audited $MACHO_COUNT Mach-O files: arm64 + Developer ID + runtime + timestamp"
+echo "audited $MACHO_COUNT Mach-O files: Developer ID + runtime + timestamp; arm64 except $X86_VENDOR Intel-only vendor SDK file(s)"
 
 # notarytool submit --wait, JSON out; echoes the submission id. Rejected or
 # invalid → fetch the log into $OUT and fail.
