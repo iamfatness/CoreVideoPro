@@ -117,14 +117,16 @@ enum MultiviewEmptyStatePolicy {
         return ["Waiting for video frames", "Preparing video", "Preparing Program"].contains(surface.status)
     }
 
-    /// Mac mapping: the core publishes the multiview as one IOSurface. A published
-    /// surface IS an available picture, so guidance never covers it; no surface is the
-    /// same as Windows' null surface.
+    /// Mac mapping: the core publishes the multiview as one IOSurface, but an allocated
+    /// surface only says the core made it, not that it holds a picture, and the snapshot
+    /// carries no multiview frame signal. Every real picture (PGM/PVW cells, sources) is
+    /// a tile, so a surface with zero tiles is "preparing" and the guidance stays; with
+    /// tiles present the Windows tile rule already hides it. No surface = Windows' null.
     static func showAssignmentGuidance(tileCount: Int, multiviewSurfaceId: UInt32) -> Bool {
         showAssignmentGuidance(
             tileCount: tileCount,
             surface: multiviewSurfaceId == 0
                 ? nil
-                : Surface(hasFrames: true, status: "Live"))
+                : Surface(hasFrames: false, status: "Preparing Program"))
     }
 }

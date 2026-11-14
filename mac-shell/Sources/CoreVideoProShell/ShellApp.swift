@@ -1300,24 +1300,20 @@ struct TransportBar: View {
             Button {
                 model.toggleRecording()
             } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: recording ? "stop.fill" : "record.circle")
-                        .font(.system(size: 10))  // design-lint: allow
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(recording ? "Stop" : "Rec")
-                            .font(.grotesk(11, .semibold))
-                    }
-                }
+                Image(systemName: recording ? "stop.fill" : "record.circle")
+                    .font(.system(size: 13))  // design-lint: allow
                 .foregroundStyle(recording ? .white : Studio.red)
-                .padding(.horizontal, 8).padding(.vertical, 6)
+                .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 8)
                     .fill(recording ? Studio.red : Studio.red.opacity(0.10)))
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .stroke(Studio.red.opacity(0.8), lineWidth: 1))
             }
             .buttonStyle(.plain)
-            .help(model.isoRecordingEnabled
-                  ? "Record MP4 + \(model.peekIsoSourceIds().count) ISOs" : "Record MP4")
+            .accessibilityLabel(recording ? "Stop recording" : "Record")
+            .help(recording ? "Stop recording"
+                  : (model.isoRecordingEnabled
+                     ? "Record MP4 + \(model.peekIsoSourceIds().count) ISOs" : "Record MP4"))
             Toggle("ISOs", isOn: $model.isoRecordingEnabled)
                 .toggleStyle(.checkbox)
                 .font(.grotesk(10))
@@ -1461,28 +1457,19 @@ struct StreamControl: View {
                     model.toggleStreaming()
                 }
             } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "dot.radiowaves.left.and.right")
-                        .font(.system(size: 10))  // design-lint: allow
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(live ? "Stop" : "Live")
-                            .font(.grotesk(11, .semibold))
-                        if live {
-                            Text(model.streamDetail.isEmpty ? "starting…" : model.streamDetail)
-                                .font(.grotesk(8)).foregroundStyle(Studio.blue)
-                                .lineLimit(1)
-                        }
-                    }
-                }
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 13))  // design-lint: allow
                 .foregroundStyle(live ? .white : Studio.blue)
-                .padding(.horizontal, 8).padding(.vertical, 6)
+                .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 8)
                     .fill(live ? Studio.blue : Studio.blue.opacity(0.10)))
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .stroke(Studio.blue.opacity(0.8), lineWidth: 1))
             }
             .buttonStyle(.plain)
-            .help(live ? "Stop streaming (RTMP)" : "Start streaming (RTMP, 6 Mbps)")
+            .accessibilityLabel(live ? "Stop streaming" : "Start streaming")
+            .help(live ? "Stop streaming (RTMP)\(model.streamDetail.isEmpty ? "" : " — " + model.streamDetail)"
+                  : "Start streaming (RTMP, 6 Mbps)")
             Button {
                 showSettings = true
             } label: {

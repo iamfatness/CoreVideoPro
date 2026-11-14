@@ -2547,7 +2547,10 @@ enum ShellTests {
         expect(!P.showAssignmentGuidance(tileCount: 0, surface: media), "media path keeps surface")
         // The Mac mapping: a published IOSurface is a picture.
         expect(P.showAssignmentGuidance(tileCount: 0, multiviewSurfaceId: 0), "no IOSurface: guidance")
-        expect(!P.showAssignmentGuidance(tileCount: 0, multiviewSurfaceId: 7), "IOSurface present: never covered")
+        // An allocated IOSurface with no tiles holds no real picture yet (grid, nothing
+        // assigned): the guidance stays. The core publishes no multiview frame signal.
+        expect(P.showAssignmentGuidance(tileCount: 0, multiviewSurfaceId: 7),
+               "surface present but 0 tiles: guidance still shown")
         expect(!P.showAssignmentGuidance(tileCount: 3, multiviewSurfaceId: 0), "tiles present: no guidance")
     }
 
