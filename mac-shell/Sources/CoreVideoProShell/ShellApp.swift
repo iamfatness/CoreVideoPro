@@ -1646,7 +1646,7 @@ struct ZoomPane: View {
                 ? "Connected — raw media live"
                 : "Connected — capture is off"
         }
-        return model.meetingState == "error" ? "See Diagnose for the engine warning"
+        return model.meetingState == "error" ? "See Health for the engine warning"
                                              : "Not connected"
     }
 
@@ -2189,7 +2189,7 @@ struct AutomationPane: View {
     }
 }
 
-// DiagnosePane now lives in Diagnostics.swift (the full DIAGNOSE surface plus
+// DiagnosePane now lives in Diagnostics.swift (the full Health (DIAGNOSE) surface plus
 // the redacted support-bundle export).
 
 // ── Meters ───────────────────────────────────────────────────────────────────

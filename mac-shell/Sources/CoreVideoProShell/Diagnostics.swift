@@ -702,7 +702,7 @@ enum DiagnosticsSelfCheck {
 
     /// Headless export of the CURRENT on-disk logs, for the case the UI itself
     /// is the thing that is broken (a Finder launch has no console, so an
-    /// operator who cannot reach the Diagnose tab has no other way to produce a
+    /// operator who cannot reach the Health tab has no other way to produce a
     /// bundle). There is no live core here, so the snapshot files are skip
     /// notes — the log tails are the payload.
     ///     COREVIDEO_SHELL_EXPORT_BUNDLE=1 .build/release/CoreVideoProShell

@@ -44,7 +44,7 @@ Start a recording first, then repeat with a stream running instead.
 
 1. Record a Program recording plus an ISO of a real camera for 60 seconds.
 2. Count source: the adapter's camera arrival counter (frames the camera delivered to the
-   capture adapter, shown in Diagnose or the core log for that device) is the expected
+   capture adapter, shown in Health or the core log for that device) is the expected
    count. The ISO file's frame count is
    `ffprobe -count_frames -select_streams v -show_entries stream=nb_read_frames <iso.mp4>`.
 3. Pass: the ISO frame count equals the arrival counter, off by at most 1 frame. Then check

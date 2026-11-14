@@ -428,7 +428,7 @@ final class AppModel: ObservableObject {
     @Published var streamDetail = ""       // lastResultCode / warning
 
     // The LAST snapshots as the core sent them. applySnapshot/applyZoom cherry-
-    // pick the slices the panes bind to; the Diagnose surface and the support
+    // pick the slices the panes bind to; the Health surface and the support
     // bundle need the WHOLE thing (health/encoderSession/outputSenderSession/
     // recording.proof/zoom.readiness were all on the wire and thrown away).
     // Never render these raw — Diagnostics.swift redacts before anything is
@@ -848,7 +848,7 @@ final class AppModel: ObservableObject {
     private func applySnapshot(_ snapshot: JSONObject) {
         snapshotSequence &+= 1
         // Keep the last NON-EMPTY snapshot: a failed/empty sync must not blank
-        // the Diagnose surface (an operator reads it hardest right when the
+        // the Health surface (an operator reads it hardest right when the
         // core is unhappy).
         if !snapshot.isEmpty {
             lastSnapshot = snapshot
@@ -885,7 +885,7 @@ final class AppModel: ObservableObject {
             // FRAME DROPS. The core has always published these; nothing read
             // them, so a recording could be losing frames with no sign of it
             // anywhere in the operator's view. A dropped frame is a compromised
-            // master — it belongs on the status strip, not buried in Diagnose.
+            // master — it belongs on the status strip, not buried in Health.
             recordingDroppedFrames =
                 (recording["totalDroppedFrames"] as? NSNumber)?.intValue ?? recordingDroppedFrames
             recordingFramesWritten =
