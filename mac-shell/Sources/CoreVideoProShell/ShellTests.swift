@@ -2206,6 +2206,11 @@ enum ShellTests {
         expect(TransportKeys.isTextEntry(field), "NSTextField is text entry")
         expect(TransportKeys.isTextEntry(editor), "the field editor (NSTextView) is text entry")
         expect(TransportKeys.isTextEntry(secure), "secure field is text entry")
+        let readOnly = NSTextView(frame: .zero)
+        readOnly.isEditable = false
+        expect(!TransportKeys.isTextEntry(readOnly), "read-only selectable text is not text entry")
+        let label = NSTextField(labelWithString: "x")
+        expect(!TransportKeys.isTextEntry(label), "a label (non-editable NSTextField) is not text entry")
         expect(!TransportKeys.isTextEntry(button), "a focused button is NOT text entry (Space still Takes)")
         expect(!TransportKeys.isTextEntry(nil), "no responder")
     }
@@ -2244,6 +2249,68 @@ enum ShellTests {
         expect(fired, "Cmd+Shift+B consumed")
         spin(until: { !ftb.commands.isEmpty }, limit: 3)
         expectEqual(ftb.commands.first?["type"] as? String, "program-blackout", "keyboard FTB sends the wire command")
+    }
+
+    @MainActor
+    private static func testTransportKeysPassThroughWhileTheQuitPromptIsUp() {
+        for (visible, finishing) in [(true, false), (false, true), (true, true)] {
+            let ftb = FakeFtbCore()
+            let model = ftbModel(ftb)
+            let core = FakeTakeCore()
+            let tm = takeModel(core)
+            for m in [model, tm] { m.quitPromptVisible = visible; m.quitFinishing = finishing }
+            for (kind, mods) in [(TransportKeyEvent.Kind.space, TransportKeyEvent.Modifiers()),
+                                 (.returnKey, [.command]), (.b, [.command, .shift])] {
+                let event = TransportKeyEvent(kind: kind, modifiers: mods, isRepeat: false,
+                                              isStudioTab: true, isTextEntryFocus: false)
+                expect(!tm.handleTransportKey(event), "\(kind) passes through (prompt \(visible)/\(finishing))")
+                expect(!model.handleTransportKey(event), "\(kind) not consumed on FTB model")
+            }
+            spin(until: { false }, limit: 0.2)
+            expect(core.bodies.isEmpty, "no Take fired under the quit prompt")
+            expect(ftb.commands.isEmpty, "no FTB fired under the quit prompt")
+        }
+    }
+
+    @MainActor
+    private static func testTransportMonitorLifecycleFollowsTheStudioTab() {
+        let model = AppModel()
+        model.selectedTab = .zoom
+        model.syncTransportHotkeys()
+        expect(!model.transportHotkeys.isInstalled, "not installed off Studio")
+        model.selectedTab = .studio
+        model.syncTransportHotkeys()
+        expect(model.transportHotkeys.isInstalled, "installed on Studio")
+        model.syncTransportHotkeys()
+        expect(model.transportHotkeys.isInstalled, "second sync keeps one monitor")
+        model.selectedTab = .audio
+        model.syncTransportHotkeys()
+        expect(!model.transportHotkeys.isInstalled, "removed when leaving Studio")
+        model.selectedTab = .studio
+        model.syncTransportHotkeys()
+        expect(model.transportHotkeys.isInstalled, "reinstalled on return")
+        model.transportHotkeys.remove()
+    }
+
+    @MainActor
+    private static func testFtbRefusalsSurfaceAsStatusForDirectCallers() {
+        let offline = sceneEditModel()
+        _ = runFtb(offline)
+        expectEqual(offline.takeStatus, "FTB unavailable: media core is offline.", "offline status set by the shared path")
+        let core = FakeFtbCore()
+        core.hold = true
+        let model = ftbModel(core)
+        let first = runFtb(model, wait: false)
+        spin(until: { !core.commands.isEmpty }, limit: 2)
+        _ = runFtb(model)
+        expectEqual(model.takeStatus, "FTB command is already in progress.", "in-flight status set by the shared path")
+        core.hold = false
+        spin(until: { first.result != nil }, limit: 3)
+        let old = FakeFtbCore()
+        old.pollSnapshot = [:]
+        let om = ftbModel(old)
+        _ = runFtb(om)
+        expectEqual(om.takeStatus, "This media core does not support Fade to Black.", "unsupported status")
     }
 
     /// Final-review IMPORTANT 7: Cmd-Q with the main window closed must still
@@ -2436,6 +2503,9 @@ enum ShellTests {
             ("keys/routing-decision", testTransportKeyRouting),
             ("keys/text-entry-detection", testTransportKeyTextEntryDetection),
             ("keys/handler-real-commands", testTransportKeyHandlerCallsTheRealCommands),
+            ("keys/quit-prompt-passthrough", testTransportKeysPassThroughWhileTheQuitPromptIsUp),
+            ("keys/monitor-lifecycle", testTransportMonitorLifecycleFollowsTheStudioTab),
+            ("ftb/refusal-status", testFtbRefusalsSurfaceAsStatusForDirectCallers),
             ("quit/cancel", testQuitCancelRepliesFalseOnceAndSendsNothing),
             ("quit/idle", testQuitIdleQuitsImmediately),
             ("quit/dead-core", testQuitWithADeadCoreFinishesImmediately),

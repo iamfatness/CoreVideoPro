@@ -2055,7 +2055,15 @@ final class AppModel: ObservableObject {
 
     /// Windows `SetProgramBlackoutAsync`: every caller (button, keyboard, later
     /// the control API) shares this admission and the native observation.
+    /// Every refusal and failure is both returned and left in `takeStatus`, so a
+    /// direct caller (the control API) can report it without the button wrapper.
     func setProgramBlackout(_ enabled: Bool?) async -> BlackoutResult {
+        let result = await performProgramBlackout(enabled)
+        if case .failed(let why) = result { takeStatus = why }
+        return result
+    }
+
+    private func performProgramBlackout(_ enabled: Bool?) async -> BlackoutResult {
         if blackoutInFlight { return .failed("FTB command is already in progress.") }
         guard bridge != nil || quitRequestForTesting != nil else {
             return .failed("FTB unavailable: media core is offline.")
@@ -2083,15 +2091,13 @@ final class AppModel: ObservableObject {
             takeStatus = target ? "Fading Program to black — audio continues" : "Restoring Program picture"
             return .success
         } catch {
-            let failure = "FTB unavailable: \(error.localizedDescription)"
-            takeStatus = failure
-            return .failed(failure)
+            return .failed("FTB unavailable: \(error.localizedDescription)")
         }
     }
 
     /// Windows `ToggleProgramBlackout` command: the button and Cmd+Shift+B.
     func toggleProgramBlackout() async {
-        if case .failed(let why) = await setProgramBlackout(nil) { takeStatus = why }
+        _ = await setProgramBlackout(nil)
     }
 
     // ── keyboard Take / FTB (audit §5) ───────────────────────────────────────
@@ -2114,6 +2120,9 @@ final class AppModel: ObservableObject {
         func fireTake() {
             if let takeOverride { takeOverride() } else { Task { @MainActor in await self.take() } }
         }
+        // The in-window quit prompt owns the keyboard: pass keys through so Space
+        // can activate its focused button and nothing is Taken under it.
+        if quitPromptVisible || quitFinishing { return false }
         switch TransportKeys.decide(event) {
         case .ignore: return false
         case .swallow: return true

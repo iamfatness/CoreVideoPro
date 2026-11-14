@@ -60,11 +60,13 @@ enum TransportKeys {
         return event.isRepeat ? .swallow : wanted
     }
 
-    /// Text entry = a field, or the shared field editor behind one.
+    /// Text entry = an EDITABLE field, or the shared field editor behind one.
+    /// Read-only selectable text keeps Space (Windows ignores text-entry controls only).
     static func isTextEntry(_ responder: NSResponder?) -> Bool {
         var current = responder
         while let item = current {
-            if item is NSText || item is NSTextField { return true }
+            if let text = item as? NSText, text.isEditable { return true }
+            if let field = item as? NSTextField, field.isEditable { return true }
             current = item.nextResponder
         }
         return false
