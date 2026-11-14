@@ -294,7 +294,12 @@ final class AppModel: ObservableObject {
     @Published var roster: [RosterParticipant] = []
     @Published var assignedIds: Set<String> = []
     @Published var recordingStatus = "idle"
-    @Published var recordingDesired = false
+    @Published var recordingDesired = false {
+        // Take over: the next take arms from presence again (Windows
+        // ResetRecordingIsoSelection on RecordingRequested -> false).
+        didSet { if !recordingDesired { recordingIso.reset() } }
+    }
+    private var recordingIso = RecordingIsoSelection()
     private var recordingCommands = RecordingCommandPolicy()
     @Published var recordingStartedAt: Date?
     @Published var recordingArtifactPath = ""
@@ -960,6 +965,7 @@ final class AppModel: ObservableObject {
 
     func toggleSlotIso(_ slotId: Int) {
         guard let index = slots.firstIndex(where: { $0.id == slotId }) else { return }
+        recordingIso.noteOperatorEdit()
         slots[index].iso.toggle()
         recomputeFromSlots()
     }
@@ -1971,6 +1977,7 @@ final class AppModel: ObservableObject {
     }
 
     func toggleIsoCell(column: Int, sourceId: String) {
+        recordingIso.noteOperatorEdit()
         if isoColumnAssignments[column] == sourceId {
             isoColumnAssignments[column] = nil
         } else {
@@ -2002,15 +2009,23 @@ final class AppModel: ObservableObject {
 
     // OFF → empty (program byte-identical to pre-ISO); drop departed sources;
     // cap 8. Zoom → zoom:<pid>, capture → capture:<id> (already scheme-qualified).
-    func resolvedIsoSourceIds() -> [String] {
-        guard isoRecordingEnabled else { return [] }
+    func resolvedIsoSourceIds(recording: Bool? = nil) -> [String] {
         let present = Set(roster.map { "zoom:" + $0.id })
             .union(captureDevices.filter { $0.connectionState == "connected" }
                 .map { "capture:" + $0.id })
-        return isoSelectedSourceIds.sorted().filter(present.contains).prefix(8).map { $0 }
+        let assigned = Set(slots.filter { $0.kind != "unassigned" }.map {
+            ($0.kind == "zoom" ? "zoom:" : "capture:") + $0.sourceId
+        })
+        // While a take is recording, passive roster loss never shrinks the set
+        // (#1188); only an operator ISO edit does.
+        return recordingIso.resolve(
+            recordingRequested: recording ?? isRecordingActive,
+            enabled: isoRecordingEnabled, selected: isoSelectedSourceIds,
+            eligible: present.sorted(), assigned: assigned)
     }
 
     func toggleIsoSource(_ sourceId: String) {
+        recordingIso.noteOperatorEdit()
         if isoSelectedSourceIds.contains(sourceId) {
             isoSelectedSourceIds.remove(sourceId)
         } else {
@@ -2033,11 +2048,11 @@ final class AppModel: ObservableObject {
 
     // start-program-output is FULL-STATE for the destination set, so record
     // and stream always resend the union of what should be live.
-    private func startProgramOutput(recording: Bool, streaming: Bool) -> JSONObject {
+    func startProgramOutput(recording: Bool, streaming: Bool) -> JSONObject {
         var destinations: [String] = []
         if recording { destinations.append("recording") }
         if streaming { destinations.append("rtmp") }
-        let isoIds = resolvedIsoSourceIds()
+        let isoIds = resolvedIsoSourceIds(recording: recording)
         var command: JSONObject = [
             "type": "start-program-output", "destinations": destinations,
             "isoSourceIds": isoIds,

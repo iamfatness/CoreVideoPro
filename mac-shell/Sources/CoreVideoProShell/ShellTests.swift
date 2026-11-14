@@ -912,6 +912,102 @@ enum ShellTests {
                     "the policy command comes after every scene command")
     }
 
+    // ── #1188: output start/stop mid-take must not shrink the armed ISO set ──
+
+    @MainActor
+    private static func isoTakeModel() -> AppModel {
+        let model = AppModel()
+        func guest(_ id: String) -> RosterParticipant {
+            RosterParticipant(id: id, name: id, hasVideo: true, muted: false,
+                              talking: false, assigned: true)
+        }
+        model.roster = [guest("a"), guest("b"), guest("c")]
+        for (slot, id) in [(1, "a"), (2, "b"), (3, "c")] {
+            model.assignSlot(slot, kind: "zoom", sourceId: id, name: id)
+        }
+        model.toggleSlotIso(1)
+        model.toggleSlotIso(2)
+        return model
+    }
+
+    private static func isoIds(_ command: JSONObject) -> [String] {
+        command["isoSourceIds"] as? [String] ?? ["<missing>"]
+    }
+
+    @MainActor
+    private static func testIsoTakeSurvivesRosterLossAcrossStreamToggle() {
+        let model = isoTakeModel()
+        model.recordingDesired = true
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: false)),
+                    ["zoom:a", "zoom:b"], "take arms both ISOs")
+        model.roster = []          // transient empty roster (#1183)
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: true)),
+                    ["zoom:a", "zoom:b"], "Stream ON mid-take keeps both ISOs")
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: false)),
+                    ["zoom:a", "zoom:b"], "Stream OFF mid-take keeps both ISOs")
+        // Recovery must not admit a source that was never in the take.
+        model.roster = [RosterParticipant(id: "c", name: "c", hasVideo: true, muted: false,
+                                          talking: false, assigned: true)]
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: true)),
+                    ["zoom:a", "zoom:b"], "recovery does not change the take")
+    }
+
+    @MainActor
+    private static func testIsoTakeOperatorDeselectIsAuthoritative() {
+        let model = isoTakeModel()
+        model.recordingDesired = true
+        _ = model.startProgramOutput(recording: true, streaming: false)
+        model.roster = []
+        model.toggleSlotIso(1)     // operator deselects a
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: true)),
+                    ["zoom:b"], "operator deselect removes exactly that id")
+        model.unassignSlot(2)      // operator unassigns b
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: true)),
+                    [], "unassign / master off empties the take")
+    }
+
+    @MainActor
+    private static func testIsoNextTakeFiltersByPresenceAgain() {
+        let model = isoTakeModel()
+        model.recordingDesired = true
+        _ = model.startProgramOutput(recording: true, streaming: false)
+        model.roster = []
+        model.recordingDesired = false     // take over
+        expectEqual(isoIds(model.startProgramOutput(recording: false, streaming: true)),
+                    [], "between takes the present-filter applies")
+        model.roster = [RosterParticipant(id: "b", name: "b", hasVideo: true, muted: false,
+                                          talking: false, assigned: true)]
+        model.recordingDesired = true      // new take arms from presence
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: false)),
+                    ["zoom:b"], "new take arms only present sources")
+    }
+
+    private static func testRecordingIsoSelectionPort() {
+        var sel = RecordingIsoSelection()
+        let abc: Set<String> = ["zoom:a", "zoom:b", "zoom:c"]
+        func r(_ eligible: [String], _ assigned: Set<String>? = nil) -> [String] {
+            sel.resolve(recordingRequested: true, enabled: true, selected: abc,
+                        eligible: eligible, assigned: assigned ?? abc)
+        }
+        expectEqual(r(["zoom:a", "zoom:b"]), ["zoom:a", "zoom:b"], "arm filters by presence")
+        expectEqual(r([]), ["zoom:a", "zoom:b"], "passive loss keeps the take")
+        expectEqual(r(["zoom:c", "zoom:b"]), ["zoom:a", "zoom:b"], "recovery does not admit c")
+        expectEqual(r(["zoom:c", "zoom:b"], abc.union(["zoom:unselected"])),
+                    ["zoom:a", "zoom:b"], "unrelated assignment is not an ISO edit")
+        sel.noteOperatorEdit()
+        expectEqual(r(["zoom:c", "zoom:b"]), ["zoom:a", "zoom:b", "zoom:c"],
+                    "an operator edit re-derives from presence + take")
+        var nine = RecordingIsoSelection()
+        let ids = (1...9).map { "zoom:\($0)" }
+        expectEqual(nine.resolve(recordingRequested: true, enabled: true, selected: Set(ids),
+                                 eligible: ids, assigned: Set(ids)), Array(ids.prefix(8)),
+                    "eight-writer cap")
+        nine.noteOperatorEdit()
+        expectEqual(nine.resolve(recordingRequested: true, enabled: true, selected: Set(ids),
+                                 eligible: [ids[8]], assigned: Set(ids)), Array(ids.prefix(8)),
+                    "retained sources keep their slots under the cap")
+    }
+
     private static func testIsoPreflightWarnsLoudly() {
         // The Windows T3.7 defect mirrored: 7 ISO streams sat at framesWritten 0,
         // no file, recording.warning null. The counts are the fixture constants;
@@ -998,6 +1094,10 @@ enum ShellTests {
             ("budget/wire-shape", testSpineSubscriptionWireShape),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
+            ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),
+            ("iso/take-operator-deselect", testIsoTakeOperatorDeselectIsAuthoritative),
+            ("iso/next-take-refilters", testIsoNextTakeFiltersByPresenceAgain),
+            ("iso/selection-port", testRecordingIsoSelectionPort),
             ("iso/preflight-loud", testIsoPreflightWarnsLoudly),
             ("iso/preflight-unobserved", testIsoPreflightNeverWarnsOnAnUnobservedState),
         ]
