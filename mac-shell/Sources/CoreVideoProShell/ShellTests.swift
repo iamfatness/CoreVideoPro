@@ -129,7 +129,7 @@ enum ShellTests {
         expect(projection.notice.isEmpty, "fresh roster clears reconciliation notice")
     }
 
-    private static func expect(_ condition: Bool, _ what: String,
+    static func expect(_ condition: Bool, _ what: String,
                                _ file: StaticString = #file, _ line: UInt = #line) {
         checks += 1
         if !condition {
@@ -137,7 +137,7 @@ enum ShellTests {
         }
     }
 
-    private static func expectEqual<T: Equatable>(_ actual: T, _ expected: T, _ what: String,
+    static func expectEqual<T: Equatable>(_ actual: T, _ expected: T, _ what: String,
                                                   _ file: StaticString = #file,
                                                   _ line: UInt = #line) {
         checks += 1
@@ -957,7 +957,7 @@ enum ShellTests {
     // ── #1196 / #1070: scene editing never changes what is on air ───────────
 
     @MainActor
-    private static func sceneEditModel() -> AppModel {
+    static func sceneEditModel() -> AppModel {
         let model = AppModel()
         model.scenes = [
             SceneDef(id: "s1", name: "Intro", layout: "single",
@@ -1670,7 +1670,7 @@ enum ShellTests {
     }
 
     @MainActor
-    private static func spin(until condition: () -> Bool, limit: TimeInterval) {
+    static func spin(until condition: () -> Bool, limit: TimeInterval) {
         let end = Date().addingTimeInterval(limit)
         while !condition(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
     }
@@ -1813,7 +1813,7 @@ enum ShellTests {
     // DoesNotSwapBack / Take_FailureRestoresPriorProgramAndRetainsPreviewForRetry;
     // MediaCoreCommandBuilder.BuildSyncCommands puts begin-take-transition first.
 
-    private final class FakeTakeCore: @unchecked Sendable {
+    final class FakeTakeCore: @unchecked Sendable {
         private let lock = NSLock()
         private var _bodies: [[String: Any]] = []
         private var _hold = false, _failure: String?
@@ -1835,7 +1835,7 @@ enum ShellTests {
     }
 
     @MainActor
-    private static func takeModel(_ core: FakeTakeCore) -> AppModel {
+    static func takeModel(_ core: FakeTakeCore) -> AppModel {
         let model = sceneEditModel()   // Program s2, Preview s1
         model.quitRequestForTesting = { body, _ in try await core.handle(body) }
         model.status = .connected(renderer: "test")
@@ -1999,7 +1999,7 @@ enum ShellTests {
     // Windows: StudioViewModel.ProgramBlackout.cs (SetProgramBlackoutAsync,
     // ApplyProgramBlackoutSnapshot); Views/StudioWorkspace.TransportHotkeys.cs.
 
-    private final class FakeFtbCore: @unchecked Sendable {
+    final class FakeFtbCore: @unchecked Sendable {
         private let lock = NSLock()
         private var _bodies: [[String: Any]] = []
         private var _hold = false
@@ -2029,7 +2029,7 @@ enum ShellTests {
     }
 
     @MainActor
-    private static func ftbModel(_ core: FakeFtbCore) -> AppModel {
+    static func ftbModel(_ core: FakeFtbCore) -> AppModel {
         let model = sceneEditModel()
         model.quitRequestForTesting = { body, _ in try await core.handle(body) }
         model.status = .connected(renderer: "test")
@@ -2664,6 +2664,18 @@ enum ShellTests {
             ("quit/dead-core", testQuitWithADeadCoreFinishesImmediately),
             ("quit/core-hang-deadline", testQuitDeadlineIsHonouredWhenTheCoreHangs),
             ("quit/timeout-resend", testQuitFinishTimesOutLoudlyAndResendsAStopThatDidNotLand),
+            ("control/manifest-golden", testControlManifestMatchesWindowsGolden),
+            ("control/invoke-rejections", testControlInvokeRejectsLikeWindows),
+            ("control/invoke-bind-and-replies", testControlInvokeBindsAndShapesReplies),
+            ("control/snapshot-envelope", testControlSnapshotEnvelopeIsWindows),
+            ("control/snapshot-redaction", testControlSnapshotRedactionIsWindows),
+            ("control/auth-and-bind-policy", testControlAuthAndBindPolicyAreWindows),
+            ("control/http-parser-bounds", testControlHttpParserBounds),
+            ("control/surface-model-paths", testControlSurfaceRoutesThroughTheModel),
+            ("control/surface-ftb-snapshot", testControlSurfaceFtbAndSnapshot),
+            ("control/server-end-to-end", testControlServerEndToEnd),
+            ("control/server-auth-wire", testControlServerAuthOverTheWire),
+            ("control/server-real-model", testControlServerDrivesTheRealModel),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)

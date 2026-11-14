@@ -404,6 +404,12 @@ final class AppModel: ObservableObject {
     // written to disk.
     @Published var lastSnapshot: JSONObject = [:]
     @Published var lastZoomSnapshot: JSONObject = [:]
+    /// Lock-protected copy of `lastSnapshot` + its receipt time for the control
+    /// API's GET /snapshot (ControlSurface.swift): served from any thread with no
+    /// main-actor hop and no core round-trip (Windows reads the reference the
+    /// bridge already published). Redacted at the boundary, never here.
+    nonisolated let controlSnapshotBox = ControlSnapshotBox()
+    let controlApi = ControlApiHost()
 
     // Readable (not settable) outside this file so cross-file extensions
     // (VstInserts.swift) can issue their own RPCs; the lifecycle stays owned here.
@@ -555,6 +561,9 @@ final class AppModel: ObservableObject {
     func start() {
         refreshMediaBin()
         restorePrefs()
+        // Local control API (Companion / Stream Deck): 127.0.0.1:8011 by default.
+        // Never in the TESTS/SELFCHECK harness; a bind failure is a warning.
+        controlApi.start(model: self)
         // Self-snapshot harness: render our own window to PNG (no TCC, no
         // focus games — AX/screen-recording automation proved unreliable) and
         // exit. Pairs with COREVIDEO_SHELL_TAB for per-tab proof shots.
@@ -800,7 +809,11 @@ final class AppModel: ObservableObject {
         // Keep the last NON-EMPTY snapshot: a failed/empty sync must not blank
         // the Diagnose surface (an operator reads it hardest right when the
         // core is unhappy).
-        if !snapshot.isEmpty { lastSnapshot = snapshot; observeAudioObservation(snapshot) }
+        if !snapshot.isEmpty {
+            lastSnapshot = snapshot
+            controlSnapshotBox.publish(snapshot, at: Date())
+            observeAudioObservation(snapshot)
+        }
         if !snapshot.isEmpty { applyProgramBlackout(snapshot) }
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
