@@ -16,4 +16,7 @@ struct DecodedMp4Video {
 
 DecodedMp4Video decodeMp4VideoToBgra(const std::string& path);
 
+// Longest track duration in seconds (0 if the file is unreadable).
+double mp4DurationSeconds(const std::string& path);
+
 }  // namespace corevideo::testing

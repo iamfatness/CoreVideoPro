@@ -342,6 +342,111 @@ TEST(AvfEncoderRecording, IsoPerSourceDedupSkipsResubmittedFrames) {
   fs::remove_all(dir);
 }
 
+// #1030/#1183 (Windows rule, MediaFoundationEncoderAdapter submitIsoAudio):
+// once the core marks a Zoom ISO departed, its silence-only ticks are neither
+// queued nor written, so the file ends at its last real media and finalizes
+// with the real duration instead of growing with silence until Stop. Real
+// PCM from a returning source resumes the SAME file and the clock bridges the
+// gap with silence at that point.
+namespace {
+IsoSourceAudio stemTick(const std::string& id, bool real, bool departed) {
+  IsoSourceAudio stem;
+  stem.sourceId = id;
+  stem.departed = departed;
+  stem.channels = 1;
+  if (real) {
+    stem.pcm = tonePcm(960, 1);
+    stem.frameCount = 960;
+  }
+  return stem;
+}
+
+RecordingSessionRequest twoZoomIsoRequest(const std::string& folder) {
+  auto request = testRequest(folder);
+  IsoSourceSelection alice;
+  alice.sourceId = "zoom:101";
+  alice.displayName = "Alice";
+  alice.hasAudio = true;
+  IsoSourceSelection carol;
+  carol.sourceId = "zoom:102";
+  carol.displayName = "Carol";
+  carol.hasAudio = true;
+  request.isoSources = {alice, carol};
+  return request;
+}
+
+// One 20 ms tick of a live two-guest show: Carol always live; Alice live or not.
+void departureTick(IEncoderSink& encoder, int64_t& frameId, bool aliceLive, bool aliceDeparted) {
+  ++frameId;
+  std::vector<IsoSourceVideoFrame> video;
+  video.push_back({"zoom:102", "Carol", isoI420Frame("zoom:102", frameId, 100)});
+  // A departed guest delivers no new pictures; the worker resubmits the last
+  // frame (same id), which the per-source dedup swallows.
+  video.push_back({"zoom:101", "Alice", isoI420Frame("zoom:101", aliceLive ? frameId : 1, 90)});
+  encoder.submitIsoVideo(video);
+  encoder.submitIsoAudio({stemTick("zoom:101", aliceLive, aliceDeparted),
+                          stemTick("zoom:102", true, false)});
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+}
+
+const IsoStreamStatus& isoStatus(const OutputSession& s, const std::string& id) {
+  for (const auto& st : s.isoStreams) if (st.sourceId == id) return st;
+  static const IsoStreamStatus none;
+  return none;
+}
+}  // namespace
+
+TEST(AvfEncoderRecording, DepartedIsoFinalizesAtItsRealDurationWhileSiblingKeepsGrowing) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("iso-departed");
+  encoder->configureRecording(twoZoomIsoRequest(dir.string()));
+  (void)encoder->start({"recording"}, {"zoom:101", "zoom:102"});
+  int64_t frameId = 1;
+  for (int i = 0; i < 25; ++i) departureTick(*encoder, frameId, true, false);       // ~0.5 s together
+  for (int i = 0; i < 125; ++i) departureTick(*encoder, frameId, false, true);      // ~2.5 s Alice gone
+  encoder->stopRecording();
+
+  const auto session = encoder->session();
+  const auto& alice = isoStatus(session, "zoom:101");
+  const auto& carol = isoStatus(session, "zoom:102");
+  EXPECT_TRUE(alice.warning.empty()) << alice.warning;
+  const auto aliceSecs = corevideo::testing::mp4DurationSeconds(alice.path);
+  const auto carolSecs = corevideo::testing::mp4DurationSeconds(carol.path);
+  EXPECT_GT(aliceSecs, 0.2);
+  EXPECT_LT(aliceSecs, 1.4) << "departed ISO kept growing with silence until Stop";
+  EXPECT_GT(carolSecs, 2.4) << "the present guest must keep recording";
+  EXPECT_LT(alice.audioSampleCount, 48000 * 1.4);
+  EXPECT_GT(carol.audioSampleCount, 48000 * 2.4);
+  const auto decoded = corevideo::testing::decodeMp4VideoToBgra(alice.path);
+  EXPECT_TRUE(decoded.error.empty()) << decoded.error;  // finalized and playable
+  EXPECT_GT(decoded.frames.size(), 0u);
+  fs::remove_all(dir);
+}
+
+TEST(AvfEncoderRecording, DepartedIsoThatReturnsResumesTheSameFileAndBridgesTheGap) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("iso-returned");
+  encoder->configureRecording(twoZoomIsoRequest(dir.string()));
+  (void)encoder->start({"recording"}, {"zoom:101", "zoom:102"});
+  int64_t frameId = 1;
+  for (int i = 0; i < 25; ++i) departureTick(*encoder, frameId, true, false);
+  const auto atDeparture = isoStatus(encoder->session(), "zoom:101").audioSampleCount;
+  for (int i = 0; i < 50; ++i) departureTick(*encoder, frameId, false, true);       // ~1 s gone
+  EXPECT_EQ(isoStatus(encoder->session(), "zoom:101").audioSampleCount, atDeparture)
+      << "no silence while departed";
+  for (int i = 0; i < 25; ++i) departureTick(*encoder, frameId, true, false);       // back
+  encoder->stopRecording();
+
+  const auto session = encoder->session();
+  const auto& alice = isoStatus(session, "zoom:101");
+  EXPECT_TRUE(alice.warning.empty()) << alice.warning;
+  // Same path, one file: it spans the whole take because the gap was bridged.
+  EXPECT_EQ(fs::path(alice.path).filename().string().rfind("ISO-01-Alice", 0), 0u);
+  EXPECT_GT(corevideo::testing::mp4DurationSeconds(alice.path), 1.8);
+  EXPECT_GT(alice.audioSampleCount, atDeparture + 48000 * 0.8) << "gap not bridged on return";
+  fs::remove_all(dir);
+}
+
 // I420 frame whose bottom-right quadrant is white and everything else dark grey.
 VideoFrame isoQuadrantI420(const std::string& sourceId, int64_t frameId, int width, int height) {
   VideoFrame frame;
@@ -396,7 +501,6 @@ TEST(AvfEncoderRecording, ZoomIsoOpensAtSelectedSizeAndScalesLaterFramesWithoutC
   EXPECT_EQ(decoded.width, 1280);
   EXPECT_EQ(decoded.height, 720);
   ASSERT_GT(decoded.frames.size(), 2u);
-  ASSERT_EQ(decoded.width, 1280);
   const auto& last = decoded.frames.back();
   const auto luma = [&](int x, int y) {
     const size_t o = (static_cast<size_t>(y) * decoded.width + x) * 4u;

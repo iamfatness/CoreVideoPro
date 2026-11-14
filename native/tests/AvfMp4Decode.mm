@@ -8,12 +8,44 @@
 
 namespace corevideo::testing {
 
+namespace {
+// Synchronous wrapper over the async track loader (the sync accessor
+// -tracksWithMediaType: is deprecated since macOS 15).
+NSArray<AVAssetTrack*>* loadTracks(AVURLAsset* asset, AVMediaType type) {
+  __block NSArray<AVAssetTrack*>* result = @[];
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  [asset loadTracksWithMediaType:type
+               completionHandler:^(NSArray<AVAssetTrack*>* tracks, NSError*) {
+                 if (tracks) result = tracks;
+                 dispatch_semaphore_signal(done);
+               }];
+  dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+  return result;
+}
+}  // namespace
+
+double mp4DurationSeconds(const std::string& path) {
+  double longest = 0;
+  @autoreleasepool {
+    AVURLAsset* asset =
+        [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]]
+                            options:nil];
+    for (AVMediaType type in @[ AVMediaTypeVideo, AVMediaTypeAudio ]) {
+      for (AVAssetTrack* track in loadTracks(asset, type)) {
+        const double secs = CMTimeGetSeconds(CMTimeRangeGetEnd(track.timeRange));
+        if (secs > longest) longest = secs;
+      }
+    }
+  }
+  return longest;
+}
+
 DecodedMp4Video decodeMp4VideoToBgra(const std::string& path) {
   DecodedMp4Video out;
   @autoreleasepool {
     NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
     AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url options:nil];
-    NSArray<AVAssetTrack*>* tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+    NSArray<AVAssetTrack*>* tracks = loadTracks(asset, AVMediaTypeVideo);
     if (tracks.count == 0) {
       out.error = "no video track";
       return out;

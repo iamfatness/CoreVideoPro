@@ -187,6 +187,9 @@ class AvfMp4Writer {
     CVPixelBufferLockBaseAddress(buffer, 0);
     auto* dst = static_cast<uint8_t*>(CVPixelBufferGetBaseAddress(buffer));
     const size_t dstStride = CVPixelBufferGetBytesPerRow(buffer);
+    // Legacy crop/pad of a mismatched source (top-left copy). The ISO caller now
+    // guarantees matching sizes (it conforms I420 and refuses BGRA size changes
+    // before calling); only Program still relies on this branch.
     const int copyWidth = std::min(srcWidth, width_);
     const int copyHeight = std::min(srcHeight, height_);
     for (int y = 0; y < height_; ++y) {
@@ -233,6 +236,9 @@ class AvfMp4Writer {
       return false;
     }
     CVPixelBufferLockBaseAddress(buffer, 0);
+    // Legacy crop/pad of a mismatched source (top-left copy). The ISO caller now
+    // guarantees matching sizes (it conforms I420 and refuses BGRA size changes
+    // before calling); only Program still relies on this branch.
     const int copyWidth = std::min(srcWidth & ~1, width_);
     const int copyHeight = std::min(srcHeight & ~1, height_);
     auto* yDst = static_cast<uint8_t*>(CVPixelBufferGetBaseAddressOfPlane(buffer, 0));
@@ -527,6 +533,26 @@ class AVFoundationEncoderSink final : public IEncoderSink {
       if (!entry.writer->audioConfigured()) {
         continue;  // video-only ISO (hasAudio=false): no fabricated stem
       }
+      if (source.departed && (source.frameCount <= 0 || source.pcm.empty())) {
+        // #1030/#1183, same rule as the Windows sink: never queue silence for a
+        // participant who has left. Skipping the tick (before the clock sees
+        // it) leaves the stem at its last real media, so the file finalizes at
+        // Stop with the real duration; a guest who returns resumes this same
+        // file and isoAudioAdvance bridges the gap with silence at that point.
+        if (!entry.departureLogged) {
+          entry.departureLogged = true;
+          ::corevideo::core::nativeLogf(
+                       "[recording] iso %s (%s) participant left the meeting; stem "
+                       "silence-fill stopped, file ends at its last real media\n",
+                       entry.status.displayName.c_str(), source.sourceId.c_str());
+        }
+        continue;
+      }
+      if (entry.departureLogged && !source.departed) {
+        entry.departureLogged = false;
+        ::corevideo::core::nativeLogf("[recording] iso %s (%s) participant is back in the meeting\n",
+                     entry.status.displayName.c_str(), source.sourceId.c_str());
+      }
       const int64_t timelineNow =
           source.timelineTimestamp100ns > 0 ? source.timelineTimestamp100ns : now100ns();
       const auto advance =
@@ -768,6 +794,7 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     bool opened = false;
     bool failed = false;
     bool loggedSizeChange = false;
+    bool departureLogged = false;  // #1030: one log per departure
     int targetWidth = 0;   // selected canvas for a Zoom camera; 0 = source-native
     int targetHeight = 0;
     std::vector<uint8_t> nv12Scratch;
