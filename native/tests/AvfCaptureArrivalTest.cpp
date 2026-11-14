@@ -58,6 +58,16 @@ Run measure(double camFps, double tickMs, double jitterMs, double seconds, bool 
     (void)ingress.drain(std::chrono::milliseconds(0));
   }
   stop = true; camera.join();
+  // One last tick after the camera is quiet, so frames published after the final
+  // timed tick are still delivered (the count below is then exact).
+  {
+    std::vector<VideoFrame> sampled; VideoFrame held; int64_t id = 0;
+    if (state.sampleLatest(held, id)) { held.participantId = "capture:cam"; sampled.push_back(held); }
+    std::vector<VideoFrame> arrivals;
+    if (useArrivals) arrivals = state.isoArrivals.take();
+    ingress.observe({"capture:cam"}, sampled, std::move(arrivals), 1);
+    (void)ingress.drain(std::chrono::milliseconds(0));
+  }
   const auto c = ingress.counters()["capture:cam"];
   return {published.load(), c.distinctSubmitted, c.duplicateRejected, c.queueOverflowed};
 }
@@ -71,8 +81,7 @@ TEST(AvfCaptureArrival, EveryCameraDeliveryReachesTheIsoRecorderOver10Seconds) {
   std::fprintf(stderr, "[984] published=%d recorded=%llu dupRejected=%llu overflow=%llu\n", r.published,
       (unsigned long long)r.distinct, (unsigned long long)r.duplicateRejected, (unsigned long long)r.overflowed);
   EXPECT_GE(r.published, 295);
-  // The camera thread can publish one more frame after the final tick.
-  EXPECT_GE(static_cast<int>(r.distinct), r.published - 1) << "camera frames never recorded";
+  EXPECT_GE(static_cast<int>(r.distinct), r.published) << "camera frames never recorded";
   EXPECT_LE(static_cast<int>(r.distinct), r.published) << "a camera frame was recorded twice";
   EXPECT_EQ(r.overflowed, 0u);
 }
@@ -80,7 +89,7 @@ TEST(AvfCaptureArrival, EveryCameraDeliveryReachesTheIsoRecorderOver10Seconds) {
 TEST(AvfCaptureArrival, FastCameraIsNotDecimatedToTheTickRate) {
   const auto r = measure(60.0, 33.0, 3.0, 4.0, useArrivalsForAssertions());
   std::fprintf(stderr, "[984] 60fps published=%d recorded=%llu\n", r.published, (unsigned long long)r.distinct);
-  EXPECT_GE(static_cast<int>(r.distinct), r.published - 1);
+  EXPECT_GE(static_cast<int>(r.distinct), r.published);
   EXPECT_EQ(r.overflowed, 0u);
 }
 
@@ -153,6 +162,13 @@ TEST(AvfCaptureArrival, IsoMp4HoldsOneFramePerCameraDeliveryOver10Seconds) {
     if (!batch.empty()) encoder->submitIsoVideo(batch);
   }
   stop = true; camera.join();
+  {
+    std::vector<VideoFrame> sampled; VideoFrame held; int64_t id = 0;
+    if (state.sampleLatest(held, id)) { held.participantId = "capture:cam"; sampled.push_back(held); }
+    ingress.observe({"capture:cam"}, sampled, state.isoArrivals.take(), 1);
+    auto batch = ingress.drain(std::chrono::milliseconds(0));
+    if (!batch.empty()) encoder->submitIsoVideo(batch);
+  }
   encoder->stopRecording();
   const auto session = encoder->session();
   ASSERT_EQ(session.isoStreams.size(), 1u);
@@ -161,7 +177,7 @@ TEST(AvfCaptureArrival, IsoMp4HoldsOneFramePerCameraDeliveryOver10Seconds) {
   std::fprintf(stderr, "[984] mp4 published=%d writerFrames=%lld decodedFrames=%zu duration=%.2fs\n",
       published.load(), static_cast<long long>(session.isoStreams[0].videoFrameCount),
       decoded.frames.size(), seconds);
-  EXPECT_GE(static_cast<int>(decoded.frames.size()), published.load() - 1) << "camera frames missing from the ISO file";
+  EXPECT_GE(static_cast<int>(decoded.frames.size()), published.load()) << "camera frames missing from the ISO file";
   EXPECT_LE(static_cast<int>(decoded.frames.size()), published.load());
   EXPECT_NEAR(seconds, 10.0, 0.4);
   std::filesystem::remove_all(dir);

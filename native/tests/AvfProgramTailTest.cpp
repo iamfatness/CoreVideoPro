@@ -24,6 +24,9 @@ ProgramFrame frame(int64_t n) {
 }
 
 struct Tail { std::string path; double lastMean = 0, prevMean = 0; corevideo::testing::Mp4Extents e; int64_t v = 0, a = 0; double longest = 0; };
+// One AAC packet (~21 ms) plus the observed packet-grid rounding of the padded tail.
+constexpr double kEndTolerance = 0.055;
+
 Tail measure(double videoStopsAtSeconds, double audioStopsAtSeconds = 99) {
   auto encoder = createAVFoundationEncoderSink();
   if (!encoder) { Tail skipped; skipped.v = -1; return skipped; }
@@ -67,7 +70,7 @@ TEST(AvfProgramTail, SteadyStopKeepsEveryPictureAndAlignedEnds) {
   const auto t = measure(99);
   if (t.v < 0) { std::fprintf(stderr, "[avf-test] skipping: factory returned null\n"); return; }
   EXPECT_EQ(static_cast<int64_t>(t.e.video.samples), t.v) << "a Program picture was lost or duplicated";
-  EXPECT_NEAR(t.e.audio.end, t.e.video.end, 0.1);
+  EXPECT_NEAR(t.e.audio.end, t.e.video.trackEnd, kEndTolerance);
 }
 
 TEST(AvfProgramTail, VideoStalledBeforeStopHoldsTheFinalPictureToTheAudioEnd) {
@@ -75,17 +78,77 @@ TEST(AvfProgramTail, VideoStalledBeforeStopHoldsTheFinalPictureToTheAudioEnd) {
   if (t.v < 0) { std::fprintf(stderr, "[avf-test] skipping: factory returned null\n"); return; }
   std::fprintf(stderr, "[1186] video stalled 1s: video end=%.3f trackEnd=%.3f audio end=%.3f container=%.3f frames=%zu/%lld\n",
       t.e.video.end, t.e.video.trackEnd, t.e.audio.end, t.longest, t.e.video.samples, (long long)t.v);
-  EXPECT_NEAR(t.e.video.end, t.e.audio.end, 0.1) << "video track stops short of the audio";
+  EXPECT_NEAR(t.e.video.trackEnd, t.e.audio.end, kEndTolerance) << "video track stops short of the audio";
   EXPECT_EQ(static_cast<int64_t>(t.e.video.samples), t.v) << "the final real picture was dropped or duplicated";
   EXPECT_NEAR(t.lastMean, t.prevMean, 20.0) << "the final decoded picture is not the real final picture";
+}
+
+// Below the old 2-frame threshold (66 ms): still reconciled, as Windows has no threshold.
+TEST(AvfProgramTail, SubThresholdVideoSkewIsStillReconciled) {
+  const auto t = measure(5.96);
+  if (t.v < 0) { std::fprintf(stderr, "[avf-test] skipping: factory returned null\n"); return; }
+  std::fprintf(stderr, "[1186] skew: video trackEnd=%.3f audio end=%.3f\n", t.e.video.trackEnd, t.e.audio.end);
+  EXPECT_NEAR(t.e.video.trackEnd, t.e.audio.end, kEndTolerance);
+  EXPECT_EQ(static_cast<int64_t>(t.e.video.samples), t.v);
+}
+
+TEST(AvfProgramTail, SubThresholdAudioSkewIsStillPadded) {
+  const auto t = measure(99, 5.93);
+  if (t.v < 0) { std::fprintf(stderr, "[avf-test] skipping: factory returned null\n"); return; }
+  std::fprintf(stderr, "[1186] audio skew: video trackEnd=%.3f audio end=%.3f\n", t.e.video.trackEnd, t.e.audio.end);
+  EXPECT_NEAR(t.e.video.trackEnd, t.e.audio.end, kEndTolerance);
 }
 
 TEST(AvfProgramTail, AudioStalledBeforeStopIsPaddedWithSilenceNotCut) {
   const auto t = measure(99, 5.0);
   if (t.v < 0) { std::fprintf(stderr, "[avf-test] skipping: factory returned null\n"); return; }
   std::fprintf(stderr, "[1186] audio stalled 1s: video end=%.3f audio end=%.3f\n", t.e.video.end, t.e.audio.end);
-  EXPECT_NEAR(t.e.video.end, t.e.audio.end, 0.1) << "audio track stops short of the video";
+  EXPECT_NEAR(t.e.video.trackEnd, t.e.audio.end, kEndTolerance) << "audio track stops short of the video";
   EXPECT_EQ(static_cast<int64_t>(t.e.video.samples), t.v);
+}
+
+// Windows ISO rule: a short video tail is held with one real sample, so the ISO
+// file's tracks end together instead of the picture stopping early.
+TEST(AvfProgramTail, IsoVideoStalledBeforeStopIsHeldToItsAudioEnd) {
+  auto encoder = createAVFoundationEncoderSink();
+  if (!encoder) { std::fprintf(stderr, "[avf-test] skipping: factory returned null\n"); return; }
+  const auto dir = std::filesystem::temp_directory_path() / "avf-iso-tail-1186";
+  std::filesystem::remove_all(dir); std::filesystem::create_directories(dir);
+  RecordingSessionRequest request;
+  request.sessionId = "1186i"; request.targetFolder = dir.string(); request.filenamePrefix = "tail";
+  request.format = "mp4"; request.width = 640; request.height = 360; request.fps = 30;
+  request.targetBitrateMbps = 4.0; request.audioBitrateKbps = 160;
+  IsoSourceSelection guest; guest.sourceId = "zoom:7"; guest.displayName = "Guest"; guest.hasAudio = true;
+  request.isoSources = {guest};
+  encoder->configureRecording(request);
+  (void)encoder->start({"recording"}, {"zoom:7"});
+  const auto t0 = Clock::now();
+  int64_t v = 0, a = 0;
+  while (Clock::now() - t0 < std::chrono::seconds(4)) {
+    const auto now = Clock::now() - t0;
+    if (std::chrono::duration<double>(now).count() < 3.0 && now >= std::chrono::microseconds(33333) * v) {
+      VideoFrame f; f.participantId = "zoom:7"; f.frameId = ++v; f.i420Width = 320; f.i420Height = 180;
+      f.i420 = std::make_shared<std::vector<uint8_t>>(320u * 180u * 3 / 2, static_cast<uint8_t>(40 + v % 50));
+      encoder->submitIsoVideo({{"zoom:7", "Guest", f}});
+    }
+    if (now >= std::chrono::milliseconds(20) * a) {
+      IsoSourceAudio stem; stem.sourceId = "zoom:7"; stem.channels = 1; stem.frameCount = 960;
+      stem.pcm.assign(960, 0.1f);
+      encoder->submitIsoAudio({stem});
+      ++a;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  encoder->stopRecording();
+  const auto session = encoder->session();
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  const auto e = corevideo::testing::mp4TrackExtents(session.isoStreams[0].path);
+  std::fprintf(stderr, "[1186] iso: frames=%zu/%lld video trackEnd=%.3f audio end=%.3f\n",
+      e.video.samples, (long long)v, e.video.trackEnd, e.audio.end);
+  EXPECT_NEAR(e.video.trackEnd, e.audio.end, kEndTolerance);
+  EXPECT_GE(static_cast<int64_t>(e.video.samples), v);
+  EXPECT_LE(static_cast<int64_t>(e.video.samples), v + 1) << "more than one held picture";
+  std::filesystem::remove_all(dir);
 }
 }  // namespace
 #endif

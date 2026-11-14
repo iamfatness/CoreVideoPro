@@ -366,32 +366,47 @@ class AvfMp4Writer {
     return true;
   }
 
-  // #1186 (Windows 03ebd1c3 reconcileTail): a stalled video or audio feed must not
-  // leave one track ending earlier than the other. A short audio tail is padded
-  // with silence; a short video tail holds the final real picture through the
-  // audio endpoint. Nothing recorded is cut.
-  void reconcileTail() {
-    if (!writing_ || !audioConfigured_ || videoFrameCount_ <= 0 || audioPacketCount_ <= 0) return;
+  // ISO writers hold the final picture with one real sample (Windows ISO rule);
+  // Program extends its last picture without encoding a second copy.
+  void setTailHoldsRealSample(bool value) { tailHoldsRealSample_ = value; }
+
+  // #1186 (Windows 03ebd1c3 Mp4Writer::reconcileTail): bring both tracks to one
+  // endpoint before finalize, with no tolerance. target = max(video end, audio
+  // end), where the video end includes the last frame's own period. A short audio
+  // tail is padded with silence; a short video tail is held. Nothing recorded is
+  // cut. AVAssetWriter gives the last video sample no duration, so the video
+  // track ends at its last PTS: a held sample at the session end is trimmed away
+  // and the session end stretches the previous real picture to the target.
+  bool reconcileTail(std::string& errorOut) {
+    if (!writing_ || !audioConfigured_ || videoFrameCount_ <= 0 || audioPacketCount_ <= 0 ||
+        !lastVideoBuffer_) {
+      return true;
+    }
     const int64_t frameDuration = kHundredNsPerSecond / fps_;
-    std::string ignored;
-    if (lastVideoPts100ns_ > lastAudioEnd100ns_ + 2 * frameDuration) {
-      const int64_t gapFrames = (lastVideoPts100ns_ - lastAudioEnd100ns_) * audioSampleRate_ / kHundredNsPerSecond;
-      if (gapFrames > 0 && writeAudioSilence(gapFrames, lastAudioEnd100ns_, ignored)) {
-        // lastAudioEnd100ns_ advanced by writeAudio.
-      }
+    const int64_t videoEnd = lastVideoPts100ns_ + frameDuration;
+    const int64_t target = std::max(videoEnd, lastAudioEnd100ns_);
+    if (lastAudioEnd100ns_ < target) {
+      const int64_t rate = std::max(1, audioSampleRate_);
+      const int64_t frames = ((target - lastAudioEnd100ns_) * rate + kHundredNsPerSecond - 1) / kHundredNsPerSecond;
+      if (!writeAudioSilence(frames, lastAudioEnd100ns_, errorOut)) return false;
     }
-    // Under two frame periods is ordinary thread skew between the video and audio
-    // feeds, not a stall.
-    if (lastAudioEnd100ns_ > lastVideoPts100ns_ + 2 * frameDuration && lastVideoBuffer_ &&
-        videoInput_.readyForMoreMediaData) {
-      // One held sample re-presents the final real picture after its own frame
-      // period; the session end then stretches it to the audio endpoint.
-      const int64_t holdPts = lastAudioEnd100ns_;
-      if ([adaptor_ appendPixelBuffer:lastVideoBuffer_ withPresentationTime:ptsToTime(holdPts)]) {
-        lastVideoPts100ns_ = holdPts;
-        [writer_ endSessionAtSourceTime:ptsToTime(lastAudioEnd100ns_)];
-      }
+    int64_t holdPts = target;  // Program: trimmed by the session end, no extra picture
+    if (tailHoldsRealSample_) {
+      if (videoEnd >= target) return true;  // ISO: one real held sample only when video is short
+      holdPts = std::max(lastVideoPts100ns_ + 1, target - frameDuration);
     }
+    if (!videoInput_.readyForMoreMediaData) {
+      errorOut = "video input was not ready to accept the held tail picture";
+      return false;
+    }
+    if (![adaptor_ appendPixelBuffer:lastVideoBuffer_ withPresentationTime:ptsToTime(holdPts)]) {
+      errorOut = std::string("append held tail picture: ") +
+                 (writer_.error ? writer_.error.localizedDescription.UTF8String : "unknown");
+      return false;
+    }
+    lastVideoPts100ns_ = holdPts;
+    [writer_ endSessionAtSourceTime:ptsToTime(target)];
+    return true;
   }
 
   void holdLastVideo(CVPixelBufferRef buffer) {
@@ -404,10 +419,11 @@ class AvfMp4Writer {
     lastVideoBuffer_ = nullptr;
   }
 
-  bool finalize(std::string* errorOut = nullptr) {
+  bool finalize(std::string* errorOut = nullptr, std::string* tailError = nullptr) {
     bool finalized = true;
     if (writer_ && writing_) {
-      reconcileTail();
+      std::string tail;
+      if (!reconcileTail(tail) && tailError) *tailError = tail;
       [videoInput_ markAsFinished];
       if (audioInput_) {
         [audioInput_ markAsFinished];
@@ -467,6 +483,7 @@ class AvfMp4Writer {
   int64_t audioSampleCount_ = 0;
   int64_t lastVideoPts100ns_ = 0;
   int64_t lastAudioEnd100ns_ = 0;
+  bool tailHoldsRealSample_ = false;
   CVPixelBufferRef lastVideoBuffer_ = nullptr;
   int64_t bytesWritten_ = 0;
 };
@@ -686,13 +703,24 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     if (!recordingArmed_) {
       return;
     }
-    std::string finalizeError;
-    if (!writer_.finalize(&finalizeError)) failRecording(finalizeError);
+    std::string finalizeError, tailError;
+    if (!writer_.finalize(&finalizeError, &tailError)) failRecording(finalizeError);
+    if (!tailError.empty() && session_.recordingWarning.empty()) {
+      session_.recordingWarning = "Program recording could not align its A/V tail: " + tailError + ".";
+      session_.recordingStatus = "warning";
+      raiseWarning(session_.recordingWarning);
+    }
     // Each ISO finalizes independently — its own moov, no 0-byte tails.
     for (auto& [sourceId, entry] : isoWriters_) {
       if (entry.opened) {
-        std::string isoFinalizeError;
-        if (!entry.writer->finalize(&isoFinalizeError)) {
+        std::string isoFinalizeError, isoTailError;
+        const bool isoFinalized = entry.writer->finalize(&isoFinalizeError, &isoTailError);
+        if (!isoTailError.empty() && entry.status.warning.empty()) {
+          entry.status.warning = "ISO " + entry.status.displayName + " (" + sourceId +
+                                 ") could not align its A/V tail: " + isoTailError + ".";
+          raiseWarning(entry.status.warning);
+        }
+        if (!isoFinalized) {
           entry.status.warning = "ISO finalization failed for " + sourceId + ": " + isoFinalizeError;
           failRecording(entry.status.warning);
         }
@@ -862,6 +890,7 @@ class AVFoundationEncoderSink final : public IEncoderSink {
       width = entry.targetWidth;
       height = entry.targetHeight;
     }
+    entry.writer->setTailHoldsRealSample(true);
     if (!entry.writer->open(entry.status.path, width, height, request_.fps,
                             request_.targetBitrateMbps, request_.videoCodec, error,
                             isI420 ? VideoInput::Nv12 : VideoInput::Bgra) ||

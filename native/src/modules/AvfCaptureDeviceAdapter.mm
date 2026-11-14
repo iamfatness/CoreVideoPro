@@ -321,9 +321,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
               "camera — quit it, or disconnect and reconnect this source.";
           entry.info.width = frame.i420Width;
           entry.info.height = frame.i420Height;
-          const std::string stalledKey =
-              entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId;
-          frame.participantId = "capture:" + stalledKey;
+          frame.participantId = frameKeyLocked(entry);
           frame.naturalWidth = frame.i420Width;
           frame.naturalHeight = frame.i420Height;
           frame.timestampMs = timestampMs + entry.info.audioSyncOffsetMs;
@@ -341,9 +339,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
         entry.info.warning.clear();
         entry.info.width = frame.i420Width;
         entry.info.height = frame.i420Height;
-        const std::string key =
-            entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId;
-        frame.participantId = "capture:" + key;
+        frame.participantId = frameKeyLocked(entry);
         frame.naturalWidth = frame.i420Width;
         frame.naturalHeight = frame.i420Height;
         frame.timestampMs = timestampMs + entry.info.audioSyncOffsetMs;
@@ -492,8 +488,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
                    entry.info.name.c_str());
       return;
     }
-    entry.state = std::make_shared<AvfSessionState>(
-        "capture:" + (entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId));
+    entry.state = std::make_shared<AvfSessionState>(frameKeyLocked(entry));
     entry.state->startedAtMs = avfMonotonicMs();
     entry.state->isoArrivals.require(sourceNeedsCpuVideo(shared_->demands, frameKeyLocked(entry)));
     entry.session = [[AVCaptureSession alloc] init];
