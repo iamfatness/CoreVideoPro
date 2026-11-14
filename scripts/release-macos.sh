@@ -26,11 +26,20 @@
 #   COREVIDEO_ALLOW_DIRTY=1   build from a dirty tree (recorded in the manifest)
 #
 # --skip-notarize builds and signs everything but submits nothing to Apple
-# (rehearsal); its output is NOT distributable and lands in dist/ marked so.
+# (rehearsal). Its output can never be mistaken for, or overwrite, a release:
+#   dist/macos/<version>-UNNOTARIZED/CoreVideoPro-<version>-arm64-UNNOTARIZED.dmg
 #
-# Runtime note: RTMP streaming launches an external `ffmpeg` (found via
-# COREVIDEO_FFMPEG_BIN_DIR, FFMPEG_BIN_DIR, the core's own directory or PATH).
-# This DMG does not bundle ffmpeg (GPL/licensing ruling pending).
+# Everything is built in a temp dir and moved into dist/ only after every
+# verification passed, so a failed run never leaves a plausible DMG behind
+# (and never removes the previous good output).
+#
+# Runtime note: RTMP/SRT output and SRT/RTMP ingest launch an external
+# `ffmpeg`, which this DMG does not bundle (GPL/licensing ruling pending).
+# The core looks in COREVIDEO_FFMPEG_BIN_DIR, FFMPEG_BIN_DIR, its own
+# directory, the cwd, PATH, then /opt/homebrew/bin, /usr/local/bin and
+# /opt/local/bin (native/src/modules/PosixExecutableLocator.h), so a
+# Homebrew or MacPorts ffmpeg is found even from a Finder/Dock launch, whose
+# PATH is only /usr/bin:/bin:/usr/sbin:/sbin.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -57,8 +66,10 @@ die() { echo "error: $*" >&2; exit 1; }
 for tool in cmake ninja swift node xcrun hdiutil codesign ditto shasum; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
-security find-identity -v -p codesigning | grep -qF "\"$SIGN_ID\"" \
-    || die "signing identity not in keychain: $SIGN_ID"
+# Never `cmd | grep -q` under pipefail: grep -q exits on the first match and
+# the producer's SIGPIPE turns a hit into a failure. Capture, then match.
+IDENTITIES="$(security find-identity -v -p codesigning)"
+grep -qF "\"$SIGN_ID\"" <<<"$IDENTITIES" || die "signing identity not in keychain: $SIGN_ID"
 [ -d "$ZOOM_SDK/ZoomSDK.framework" ] || die "no ZoomSDK.framework under ZOOM_SDK_DIR=$ZOOM_SDK"
 if [ "$NOTARIZE" = "1" ]; then
     # Cheap auth probe: fails fast on a missing profile or bad credentials.
@@ -81,8 +92,13 @@ CORE_BUILD="native/build-release-core"
 ENGINE_BUILD="native/build-release-engine"
 SHELL_SCRATCH="mac-shell/.build-release"
 APP="mac-shell/.build/CoreVideo Pro.app"
-OUT="dist/macos/$VERSION"
-DMG_NAME="CoreVideoPro-$VERSION-arm64.dmg"
+if [ "$NOTARIZE" = "1" ]; then
+    OUT="dist/macos/$VERSION"
+    DMG_NAME="CoreVideoPro-$VERSION-arm64.dmg"
+else
+    OUT="dist/macos/$VERSION-UNNOTARIZED"
+    DMG_NAME="CoreVideoPro-$VERSION-arm64-UNNOTARIZED.dmg"
+fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cvp-release.XXXXXX")"
 MOUNT=""
 cleanup() {
@@ -140,7 +156,8 @@ while IFS= read -r f; do
     magic="$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')"
     case "$magic" in feedfacf|cffaedfe|cafebabe|bebafeca|feedface|cefaedfe) ;; *) continue ;; esac
     MACHO_COUNT=$((MACHO_COUNT + 1))
-    if ! lipo -archs "$f" 2>/dev/null | grep -qw arm64; then
+    archs="$(lipo -archs "$f" 2>/dev/null || true)"
+    if ! grep -qw arm64 <<<"$archs"; then
         # Zoom ships a few Intel-only libraries (e.g. libmkldnn, MKL-DNN) that
         # it loads only on x86_64. Vendor SDK files are not ours to strip;
         # anything we build must run on Apple Silicon.
@@ -159,7 +176,7 @@ done < <(find "$APP" -type f)
 echo "audited $MACHO_COUNT Mach-O files: Developer ID + runtime + timestamp; arm64 except $X86_VENDOR Intel-only vendor SDK file(s)"
 
 # notarytool submit --wait, JSON out; echoes the submission id. Rejected or
-# invalid → fetch the log into $OUT and fail.
+# invalid → fetch the log into $WORK (copied to dist/ on success) and fail.
 NOTARY_LOG_DIR="$WORK"
 notarize() {  # notarize <file> <label>
     local file="$1" label="$2" json id status
@@ -195,9 +212,10 @@ STAGE="$WORK/dmg"
 mkdir -p "$STAGE"
 ditto "$APP" "$STAGE/CoreVideo Pro.app"
 ln -s /Applications "$STAGE/Applications"
-rm -rf "$OUT"
-mkdir -p "$OUT"
-DMG="$OUT/$DMG_NAME"
+# Assembled in $WORK; published to $OUT only after verification.
+PUB="$WORK/out"
+mkdir -p "$PUB"
+DMG="$PUB/$DMG_NAME"
 hdiutil create -volname "CoreVideo Pro" -srcfolder "$STAGE" -fs HFS+ \
     -format UDZO -imagekey zlib-level=9 -ov "$DMG" >/dev/null
 # A DMG takes a plain signature: no hardened runtime (not code), but a
@@ -211,37 +229,38 @@ if [ "$NOTARIZE" = "1" ]; then
     DMG_SUBMISSION="$(notarize "$DMG" dmg)"
     xcrun stapler staple "$DMG"
     xcrun stapler validate "$DMG"
-    cp "$WORK"/notary-*.json "$OUT/" 2>/dev/null || true
+    cp "$WORK"/notary-*.json "$PUB/" 2>/dev/null || true
 fi
 
 # ── Verify (the questions a user's Mac asks) ────────────────────────────────
 log "verify"
 codesign --verify --deep --strict --verbose=2 "$APP"
 if [ "$NOTARIZE" = "1" ]; then
-    spctl --assess --type execute -vv "$APP" 2>&1 | tee "$WORK/spctl-app.txt"
-    grep -q "source=Notarized Developer ID" "$WORK/spctl-app.txt" \
+    assess="$(spctl --assess --type execute -vv "$APP" 2>&1 || true)"
+    echo "$assess"
+    grep -q "source=Notarized Developer ID" <<<"$assess" \
         || die "app is not assessed as Notarized Developer ID"
-    spctl --assess --type open --context context:primary-signature -vv "$DMG" 2>&1 \
-        | tee "$WORK/spctl-dmg.txt"
-    grep -q "source=Notarized Developer ID" "$WORK/spctl-dmg.txt" \
+    assess="$(spctl --assess --type open --context context:primary-signature -vv "$DMG" 2>&1 || true)"
+    echo "$assess"
+    grep -q "source=Notarized Developer ID" <<<"$assess" \
         || die "DMG is not assessed as Notarized Developer ID"
     # The copy a user actually drags out: mount and assess the app inside.
     MOUNT="$WORK/mnt"; mkdir -p "$MOUNT"
     hdiutil attach "$DMG" -readonly -nobrowse -noautoopen -mountpoint "$MOUNT" -quiet
     [ -L "$MOUNT/Applications" ] || die "DMG lacks the Applications alias"
     xcrun stapler validate "$MOUNT/CoreVideo Pro.app"
-    spctl --assess --type execute -vv "$MOUNT/CoreVideo Pro.app" 2>&1 \
-        | grep -q "source=Notarized Developer ID" || die "app inside DMG not notarized"
+    assess="$(spctl --assess --type execute -vv "$MOUNT/CoreVideo Pro.app" 2>&1 || true)"
+    grep -q "source=Notarized Developer ID" <<<"$assess" || die "app inside DMG not notarized"
     hdiutil detach "$MOUNT" -quiet; MOUNT=""
     echo "app inside the mounted DMG: stapled + Notarized Developer ID"
 fi
 
 # ── Artifacts ───────────────────────────────────────────────────────────────
 log "write $OUT"
-( cd "$OUT" && shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256" )
-SHA256="$(cut -d' ' -f1 "$OUT/$DMG_NAME.sha256")"
+( cd "$PUB" && shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256" )
+SHA256="$(cut -d' ' -f1 "$PUB/$DMG_NAME.sha256")"
 HELPERS="$(cd "$APP/Contents/Resources" && ls -d corevideo-* | paste -sd, -)"
-python3 -I - "$OUT/manifest.json" <<PY
+python3 -I - "$PUB/manifest.json" <<PY
 import json, sys
 manifest = {
     "product": "CoreVideo Pro",
@@ -265,13 +284,19 @@ manifest = {
     "zoomSdk": "$(basename "$(dirname "$ZOOM_SDK")")",
     "runtimeRequirements": [
         "macOS 13+ on Apple Silicon",
-        "RTMP streaming needs an ffmpeg executable (not bundled)",
+        "RTMP/SRT need ffmpeg (not bundled; e.g. brew install ffmpeg). "
+        "Homebrew and MacPorts locations are found automatically.",
     ],
 }
 with open(sys.argv[1], "w") as f:
     json.dump(manifest, f, indent=2)
     f.write("\n")
 PY
+# Publish: only now does anything replace the previous output in dist/.
+mkdir -p "$(dirname "$OUT")"
+rm -rf "$OUT"
+mv "$PUB" "$OUT"
+DMG="$OUT/$DMG_NAME"
 cat "$OUT/manifest.json"
 [ "$NOTARIZE" = "1" ] || echo "NOTE: --skip-notarize build; NOT distributable"
 echo "release: $DMG"

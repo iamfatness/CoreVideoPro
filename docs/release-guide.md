@@ -21,6 +21,23 @@ Use a Windows 10 or later x64 PC with a Direct3D 11 GPU and current graphics
 drivers. Installing a newer version retires older CoreVideo Pro installs while
 keeping your settings, recordings and downloaded media.
 
+## Install on a Mac
+
+1. Download `CoreVideoPro-<version>-arm64.dmg` and its `.sha256` checksum from
+   the releases page. The Mac build runs on Apple Silicon (M-series) Macs with
+   macOS 13 or later; there is no Intel build.
+2. Open the DMG and drag **CoreVideo Pro** onto **Applications**. The app is
+   signed with a Developer ID and notarized by Apple, so it opens without a
+   Gatekeeper override.
+3. On first use, macOS asks for camera and microphone permission (and screen
+   recording permission for a screen source). If a prompt was dismissed, allow
+   it in System Settings > Privacy & Security.
+4. **Streaming (RTMP/SRT) and SRT/RTMP ingest need FFmpeg**, which is not
+   bundled. Install it with [Homebrew](https://brew.sh): `brew install ffmpeg`.
+   CoreVideo Pro finds Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`) and
+   MacPorts (`/opt/local/bin`) installs automatically, including when the app
+   is opened from Finder or the Dock. Local recording does not need FFmpeg.
+
 ## Before your first show
 
 - Sign in with Zoom. Sign-in uses the CoreVideo broker at
