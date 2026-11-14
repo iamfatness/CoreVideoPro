@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for CoreVideo Pro.app (the SwiftUI shell). No double hyphens in
+  this comment: XML forbids them and codesign fails with a bare syntax error.
+
+  device.camera and device.audio-input: the shell enumerates and meters
+  AVCaptureDevice inputs (AudioInputs.swift). Hardened runtime blocks device
+  access without them, and a missing usage string crashes the process, so the
+  Info.plist carries NSCameraUsageDescription and NSMicrophoneUsageDescription.
+
+  Deliberately NOT disable-library-validation: the shell loads only system
+  frameworks. The Zoom SDK lives in a separate engine process, and the NDI
+  runtime is dlopened by the core, which has its own entitlements.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+</dict>
+</plist>

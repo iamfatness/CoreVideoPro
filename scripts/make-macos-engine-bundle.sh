@@ -18,10 +18,13 @@
 #                     ~/Developer/zoom-sdk-macos)
 #   --link-sdk        Symlink the SDK instead of copying (~600MB). Fast for
 #                     local iteration; NOT distributable.
-#   --sign IDENTITY   codesign identity (default: "-", ad-hoc)
+#   --sign IDENTITY   codesign identity (default: $COREVIDEO_SIGN_IDENTITY,
+#                     else "-", ad-hoc). A real identity turns on hardened
+#                     runtime + timestamp, signs the nested SDK deepest-first
+#                     and applies scripts/macos-engine.entitlements.
 #
-# Ad-hoc signing is fine for local runs. A distributable build needs a
-# Developer ID identity plus notarization, which this script does not do.
+# Ad-hoc signing is fine for local runs. A distributable build also needs
+# notarization, which this script does not do.
 # NEVER commit any Zoom SDK file to the repo.
 
 set -euo pipefail
@@ -31,7 +34,7 @@ BUILD_DIR=""
 OUT_DIR=""
 ZOOM_SDK="${ZOOM_SDK_DIR:-$HOME/Developer/zoom-sdk-macos}"
 LINK_SDK=0
-SIGN_ID="-"
+SIGN_ID="${COREVIDEO_SIGN_IDENTITY:--}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -40,7 +43,7 @@ while [ $# -gt 0 ]; do
         --zoom-sdk)  ZOOM_SDK="$2";  shift 2 ;;
         --sign)      SIGN_ID="$2";   shift 2 ;;
         --link-sdk)  LINK_SDK=1;     shift ;;
-        -h|--help)   sed -n '2,26p' "$0"; exit 0 ;;
+        -h|--help)   sed -n '2,30p' "$0"; exit 0 ;;
         *) echo "error: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
@@ -106,8 +109,18 @@ if [ ! -L "$APP/Contents/Frameworks" ]; then
         "$APP/Contents/MacOS/corevideo-zoom-engine"
 fi
 
-codesign --force --deep --sign "$SIGN_ID" "$APP" 2>/dev/null || \
-    codesign --force --sign "$SIGN_ID" "$APP"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/macos-sign-lib.sh"
+if [ "$SIGN_ID" = "-" ]; then
+    codesign --force --deep --sign "$SIGN_ID" "$APP" 2>/dev/null || \
+        codesign --force --sign "$SIGN_ID" "$APP"
+else
+    # A symlinked SDK is not ours to re-sign (shared, dev-only).
+    if [ "$LINK_SDK" -eq 0 ] && [ -d "$APP/Contents/Frameworks" ]; then
+        sign_nested "$APP/Contents/Frameworks"
+    fi
+    sign_one "$APP" --entitlements "$SCRIPT_DIR/macos-engine.entitlements"
+fi
 
 echo "bundle: $APP"
 echo "engine binary: $APP/Contents/MacOS/corevideo-zoom-engine"
