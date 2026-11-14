@@ -887,7 +887,7 @@ struct DiagnosePane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Diagnose").font(.grotesk(14, .semibold))
+            Text("Health").font(.grotesk(14, .semibold))
             if snap.isEmpty {
                 DiagNote(text: "No core snapshot received yet — every reading below stays "
                          + "blank until the media core answers a sync.")

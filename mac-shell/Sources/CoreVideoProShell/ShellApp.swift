@@ -1,6 +1,6 @@
 // CoreVideo Pro — macOS shell. Composition mirrors the Windows product
 // (ground truth: artifacts/alpha-evidence/soak-*.png + StudioWorkspace.xaml):
-// header with pill tabs under Produce/Setup group labels + Capture/Zoom Live
+// header with pill tabs under the Produce group label + Capture/Zoom Live
 // pills, readiness strip, and the Studio workspace — scene rail (numbered
 // rows, PGM amber / PVW green), PROGRAM + PREVIEW monitors (preview LEFT),
 // show-inputs strip, "Video in room" participant rail — over the transport
@@ -395,15 +395,8 @@ struct HeaderBar: View {
                 Text("Live production").font(.grotesk(11))
                     .foregroundStyle(Studio.secondary)
             }
-            GroupLabel("Produce")
-            TabPill(tab: .studio)
-            GroupLabel("Setup")
-            ForEach([StudioTab.zoom, .sources, .scenes, .routing], id: \.self) { TabPill(tab: $0) }
-            ForEach([StudioTab.overlays, .audio, .media], id: \.self) {
-                TabPill(tab: $0)
-            }
-            GroupLabel("Diagnose")
-            ForEach([StudioTab.diagnose, .settings], id: \.self) { TabPill(tab: $0) }
+            GroupLabel(StudioTab.navGroups[0])
+            ForEach(StudioTab.navigation, id: \.self) { TabPill(tab: $0) }
             Spacer()
             CapturePill()
             if model.meetingState == "in_meeting" {
@@ -439,7 +432,7 @@ struct TabPill: View {
 
     var body: some View {
         // Nav button spec: ghost, 12px SemiBold, padding 12x8, 10px radius.
-        Button(tab.rawValue) { model.selectedTab = tab }
+        Button(tab.navLabel) { model.selectedTab = tab }
             .buttonStyle(.plain)
             .font(.grotesk(12, .semibold))
             .foregroundStyle(active ? Studio.accent : Studio.textPrimary)

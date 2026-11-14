@@ -2272,6 +2272,36 @@ enum ShellTests {
         }
     }
 
+    // Windows 1.0 nav (StudioWorkspace.xaml): one "Produce" group, Studio, Zoom,
+    // Sources, Scenes, Routing, Graphics, Audio, (Comms), Media, Health, (OHG
+    // Show). Comms/OHG are not on Mac 1.0. Settings trails (no Windows
+    // counterpart: Windows' Zoom button opens its connection page, whose
+    // content is Mac's Zoom pane; Mac Settings is output/recording config).
+    @MainActor
+    private static func testNavigationMatchesWindowsOrderAndLabels() {
+        expectEqual(StudioTab.navigation.map(\.navLabel),
+                    ["Studio", "Zoom", "Sources", "Scenes", "Routing", "Graphics",
+                     "Audio", "Media", "Health", "Settings"],
+                    "Mac nav order + labels follow Windows 1.0")
+        expectEqual(StudioTab.navigation.map(\.rawValue),
+                    ["Studio", "Zoom", "Sources", "Scenes", "Routing", "Overlays",
+                     "Audio", "Media", "Diagnose", "Settings"],
+                    "tab identifiers are unchanged")
+        expect(!StudioTab.navigation.contains(.automation), "no Automation pill")
+        expectEqual(StudioTab.navGroups, ["Produce"], "one group label")
+    }
+
+    @MainActor
+    private static func testTabNamesResolveWithAliases() {
+        expectEqual(StudioTab(name: "Overlays"), .overlays, "old name Overlays")
+        expectEqual(StudioTab(name: "graphics"), .overlays, "Graphics alias")
+        expectEqual(StudioTab(name: "Diagnose"), .diagnose, "old name Diagnose")
+        expectEqual(StudioTab(name: "HEALTH"), .diagnose, "Health alias")
+        expectEqual(StudioTab(name: "settings"), .settings, "Settings")
+        expectEqual(StudioTab(name: "zoom"), .zoom, "case-insensitive")
+        expect(StudioTab(name: "nope") == nil, "unknown name")
+    }
+
     @MainActor
     private static func testTransportMonitorLifecycleFollowsTheStudioTab() {
         let model = AppModel()
@@ -2654,6 +2684,8 @@ enum ShellTests {
             ("keys/text-entry-detection", testTransportKeyTextEntryDetection),
             ("keys/handler-real-commands", testTransportKeyHandlerCallsTheRealCommands),
             ("keys/quit-prompt-passthrough", testTransportKeysPassThroughWhileTheQuitPromptIsUp),
+            ("nav/windows-order", testNavigationMatchesWindowsOrderAndLabels),
+            ("nav/tab-aliases", testTabNamesResolveWithAliases),
             ("keys/monitor-lifecycle", testTransportMonitorLifecycleFollowsTheStudioTab),
             ("ftb/refusal-status", testFtbRefusalsSurfaceAsStatusForDirectCallers),
             ("health/stalled-feeds", testStalledFeedsReadout),

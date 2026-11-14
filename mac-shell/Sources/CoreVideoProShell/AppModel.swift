@@ -19,6 +19,37 @@ enum StudioTab: String, CaseIterable {
     case automation = "Automation"
     case settings = "Settings"
     case diagnose = "Diagnose"
+
+    // Top navigation, matching Windows 1.0 (StudioWorkspace.xaml): one "Produce"
+    // group — Studio, Zoom, Sources, Scenes, Routing, Graphics, Audio, Media,
+    // Health. Comms and OHG Show are not on Mac in 1.0, so they are omitted
+    // rather than shown disabled. Settings trails: Windows reaches its Zoom
+    // connection page through "Zoom", which is Mac's Zoom pane; Mac Settings
+    // (output/recording/stream) has no Windows nav counterpart.
+    static let navGroups = ["Produce"]
+    static let navigation: [StudioTab] = [
+        .studio, .zoom, .sources, .scenes, .routing, .overlays, .audio, .media,
+        .diagnose, .settings,
+    ]
+
+    /// Operator-facing label. rawValue stays the stable identifier (control
+    /// state, COREVIDEO_SHELL_TAB); Windows calls these Graphics and Health.
+    var navLabel: String {
+        switch self {
+        case .overlays: return "Graphics"
+        case .diagnose: return "Health"
+        default: return rawValue
+        }
+    }
+
+    /// Resolves a tab by identifier or current label, case-insensitively.
+    init?(name: String) {
+        let n = name.lowercased()
+        guard let tab = StudioTab.allCases.first(where: {
+            $0.rawValue.lowercased() == n || $0.navLabel.lowercased() == n
+        }) else { return nil }
+        self = tab
+    }
 }
 
 // A scene route mirrors ONLY what the core parses (loadSceneGraph): modes are
@@ -616,9 +647,7 @@ final class AppModel: ObservableObject {
         // skip the Keychain read — every ad-hoc rebuild is a new signing
         // identity and the access prompt would nag the operator.
         if let tabName = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB"],
-           let tab = StudioTab.allCases.first(where: {
-               $0.rawValue.lowercased() == tabName.lowercased()
-           }) {
+           let tab = StudioTab(name: tabName) {
             selectedTab = tab
         } else {
             refreshZoomSignedIn()
