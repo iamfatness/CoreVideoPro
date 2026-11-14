@@ -9,7 +9,7 @@ namespace CoreVideoPro.WinUI.ViewModels.ShowInputs;
 /// <summary>Owns operator RTMP listener intent, persistence, and the native command projection.</summary>
 public sealed class RtmpIngestSourcesCoordinator : IDisposable
 {
-    public const int MaxSources = 8;
+    public const int MaxSources = ShowInputRosterService.MaxShowInputs;
     private readonly IRtmpIngestSourceStore _store;
     public ObservableCollection<RtmpIngestSource> Sources { get; } = [];
     public bool PersistenceError { get; private set; }

@@ -26,7 +26,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private const string MultiviewSoloSceneAId = "multiview-solo-a";
     private const string MultiviewSoloSceneBId = "multiview-solo-b";
     private const string ManualOneUpLayout = "full";
-    private const int MaxSrtIngestSources = 8;
+    // Owner ruling 2026-11-13: two CoreVideo Edge nodes over SRT = 16 feeds (ports 10000-10015).
+    private const int MaxSrtIngestSources = ShowInputRosterService.MaxShowInputs;
     private const double DefaultAudioMonitorVolume = 0.75;
 
     private readonly MediaCoreBridgeService _bridge;
@@ -1100,7 +1101,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<SceneCanvasLayerViewModel> PreviewCanvasLayers { get; } = [];
 
     /// <summary>
-    /// "Add source" picker for the scene canvas (§4 IA): Inputs 1-10 plus the auto roles
+    /// "Add source" picker for the scene canvas (§4 IA): Inputs 1-16 plus the auto roles
     /// (Active Speaker / Screen Share / Media). Sourced from <see cref="SceneRoutingService"/>
     /// so the layer references an Input directly.
     /// </summary>
@@ -2898,8 +2899,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (assigned == 0)
             {
                 return Settings.IsInMeeting
-                    ? "Zoom is live. Next: open Sources and assign guests, media, or a camera to Inputs 1-10."
-                    : "Start by joining Zoom or adding a camera, screen, or media source, then assign sources to Inputs 1-10.";
+                    ? "Zoom is live. Next: open Sources and assign guests, media, or a camera to Inputs 1-16."
+                    : "Start by joining Zoom or adding a camera, screen, or media source, then assign sources to Inputs 1-16.";
             }
 
             if (inShow == 0)
@@ -2993,11 +2994,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // layout (PGM + PVW cells on top over the source-feed tiles) rather than a bare source grid,
     // so it ALWAYS shows Preview/Program plus the enabled sources.
     public const string DefaultMultiviewLayoutMode = "pgmPvwTop";
-    // Tile capacity matches the 10 Show Input slots (ShowInputRosterService.MaxMultiviewBoxes),
-    // so every enabled input can be on the wall at once.
-    public const int DefaultMultiviewTileCount = 10;
+    // Tile capacity matches the 16 Show Input slots (ShowInputRosterService.MaxMultiviewBoxes),
+    // so every enabled input can be on the wall at once. A fresh profile takes the GPU tier's
+    // default (GpuTierPolicy.EffectiveDefaultTileCount); this is the fallback.
+    public const int DefaultMultiviewTileCount = ShowInputRosterService.MaxMultiviewBoxes;
     public const int MinMultiviewTileCount = 1;
-    public const int MaxMultiviewTileCount = 10;
+    public const int MaxMultiviewTileCount = ShowInputRosterService.MaxMultiviewBoxes;
 
     public static int ClampMultiviewTileCount(int value) =>
         Math.Clamp(value, MinMultiviewTileCount, MaxMultiviewTileCount);
@@ -12577,7 +12579,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshMasteringStageBindings();
     }
 
-    // Persistence for Input 1-10 slot assignments (alpha #2). The store is abstracted so the
+    // Persistence for Input 1-16 slot assignments (alpha #2). The store is abstracted so the
     // round-trip is unit-testable without a running WinUI/ApplicationData host.
     private static IShowInputRosterStore CreateShowInputRosterStore()
     {

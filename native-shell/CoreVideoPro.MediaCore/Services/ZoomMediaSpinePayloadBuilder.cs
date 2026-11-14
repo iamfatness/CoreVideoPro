@@ -8,15 +8,14 @@ namespace CoreVideoPro.MediaCore.Services;
 /// </summary>
 public static class ZoomMediaSpinePayloadBuilder
 {
-    // Ten matches the Show Input and Multiview capacity contract. This was 6, then 8, which
-    // silently left the 7th and 8th camera-on participants with NO raw video
-    // subscription at all — they showed as frozen/placeholder tiles with no error
-    // anywhere (live meeting, 2026-08-09: seven cameras on, Susan Cho never
-    // subscribed). If the SDK refuses the extra subscriptions, the engine's
-    // per-participant downgrade ladder handles it LOUDLY (video_subscribe code +
-    // video_resolution_downgraded), so the cap must not pre-censor what the SDK
-    // might grant.
-    public const int DefaultMaxVideoSubscriptions = 10;
+    // OWNER RULING 2026-11-13 (16 sources): Pro itself pulls at most EIGHT Zoom video
+    // feeds, all inside the 1080P grant. Show Inputs and the multiviewer hold 16; the
+    // other eight are whatever the operator routes (CoreVideo Edge NDI/SRT feeds,
+    // screen, webcam, clips). History: this was 6, then 8, then 10 (2026-08-09 a
+    // seventh camera was silently never subscribed). A camera-on Zoom source past
+    // the budget is now named LOUDLY ("no video: subscription limit (8)") on its
+    // tile and the PVW cell, never a silent frozen tile.
+    public const int DefaultMaxVideoSubscriptions = 8;
 
     /// <summary>
     /// Synthetic Zoom user id for the meeting-mix subscription. Must be numeric

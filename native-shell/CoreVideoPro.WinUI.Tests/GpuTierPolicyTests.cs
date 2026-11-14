@@ -63,7 +63,7 @@ public sealed class GpuTierPolicyTests
         var p = GpuTierPolicy.ForTier(GpuVramTier.AtLeast16Gb);
         Assert.Equal("3840x2160", p.ResolveCanvas(null, out var above));
         Assert.False(above);
-        Assert.Equal(10, p.ResolveTileCount(null, out above));
+        Assert.Equal(16, p.ResolveTileCount(null, out above));
         Assert.False(above);
     }
 
@@ -124,8 +124,8 @@ public sealed class GpuTierPolicyTests
     [InlineData(GpuVramTier.Under8Gb, false, 10, 10)]   // saved 10 above ceiling 9: Maximum must not coerce it
     [InlineData(GpuVramTier.Unknown, false, 10, 10)]
     [InlineData(GpuVramTier.Under8Gb, false, 4, 9)]
-    [InlineData(GpuVramTier.Under8Gb, true, 4, 10)]
-    [InlineData(GpuVramTier.AtLeast16Gb, false, 4, 10)]
+    [InlineData(GpuVramTier.Under8Gb, true, 4, 16)]
+    [InlineData(GpuVramTier.AtLeast16Gb, false, 4, 16)]
     public void TileMaximum_NeverFallsBelowCurrentValue(GpuVramTier tier, bool over, int current, int expected)
     {
         var max = GpuTierPolicy.ForTier(tier).TileMaximum(over, current);
@@ -157,13 +157,14 @@ public sealed class GpuTierPolicyTests
     }
 
     [Fact]
-    public void OlderVersionProfile_OnSixteenGbTier_ChangesNothing()
+    public void OlderVersionProfile_OnSixteenGbTier_ChangesNothingButTheTenToSixteenMove()
     {
+        // v18 (owner ruling 2026-11-13): a saved 10 was the old product maximum and moves to 16.
         var prefs = ProductionOutputPreferencesSerializer.Deserialize(
             "{\"Version\":11,\"CanvasResolution\":\"1920x1080\",\"MultiviewTileCount\":10}")!;
         var r = GpuTierPolicy.ForBand("nvidia-vram16gb+").Resolve(prefs);
         Assert.Equal("1920x1080", r.Canvas);
-        Assert.Equal(10, r.TileCount);
+        Assert.Equal(16, r.TileCount);
         Assert.False(r.CanvasFromDefault);
         Assert.False(r.TilesFromDefault);
         Assert.False(r.CanvasAboveCeiling);
@@ -175,7 +176,7 @@ public sealed class GpuTierPolicyTests
     {
         var line = GpuTierPolicy.ForTier(GpuVramTier.AtLeast16Gb).StatusLine(false);
         Assert.Contains("canvas up to 4K", line);
-        Assert.Contains("tiles up to 10 (product limit)", line);
+        Assert.Contains("tiles up to 16 (product limit)", line);
         Assert.Contains("1440p counts as above the 1080p ceiling", line);
         Assert.Contains("not measured", GpuTierPolicy.ForTier(GpuVramTier.Unknown).StatusLine(false));
     }

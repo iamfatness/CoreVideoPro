@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -59,7 +60,7 @@ bool overlaps(const LayerRect& a, const LayerRect& b) {
 }
 
 const std::vector<std::string> kModes = {"grid", "pgmPvwTop", "pgmPvwLarge", "pgmPvwSide"};
-const std::vector<int> kCounts = {1, 2, 4, 6, 8};
+const std::vector<int> kCounts = {1, 2, 4, 6, 8, 10, 12, 13, 16};
 
 }  // namespace
 
@@ -147,6 +148,28 @@ TEST(MultiviewLayout, TenSourcesWrapToTwoRows) {
     EXPECT_GT(plan.sourceCells.back().y, plan.sourceCells.front().y)
         << mode << " expected a second source row";
   }
+}
+
+// Sixteen sources (Show Input capacity, owner ruling 2026-11-13): the top modes
+// use three rows of 1/6-width tiles, and the side strip splits into two columns.
+TEST(MultiviewLayout, SixteenSourcesUseThreeRowsOrTwoStripColumns) {
+  for (const std::string mode : {"pgmPvwTop", "pgmPvwLarge"}) {
+    const auto plan = computeMultiviewLayout(mode, 16);
+    ASSERT_EQ(plan.sourceCells.size(), 16u) << mode;
+    std::vector<float> rowTops;
+    for (const auto& cell : plan.sourceCells)
+      if (std::none_of(rowTops.begin(), rowTops.end(), [&](float y) { return nearly(y, cell.y, 1e-4f); }))
+        rowTops.push_back(cell.y);
+    EXPECT_EQ(rowTops.size(), 3u) << mode;
+    EXPECT_GT(plan.sourceCells.front().width, 1.f / 7.f) << mode << " tiles should be ~1/6 wide";
+  }
+  const auto side = computeMultiviewLayout("pgmPvwSide", 16);
+  ASSERT_EQ(side.sourceCells.size(), 16u);
+  EXPECT_GT(side.sourceCells[0].height, 1.f / 9.f);
+  EXPECT_LT(side.sourceCells[0].x, side.sourceCells[1].x);
+  // Up to 8 the side strip stays one column (unchanged wall).
+  const auto side8 = computeMultiviewLayout("pgmPvwSide", 8);
+  EXPECT_TRUE(nearly(side8.sourceCells[0].x, side8.sourceCells[7].x, 1e-6f));
 }
 
 // An unknown mode falls back to grid.

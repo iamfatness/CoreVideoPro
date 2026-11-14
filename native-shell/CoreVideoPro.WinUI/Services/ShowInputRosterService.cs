@@ -7,8 +7,16 @@ namespace CoreVideoPro.WinUI.Services;
 
 public static class ShowInputRosterService
 {
-    public const int MaxShowInputs = 10;
-    public const int MaxMultiviewBoxes = 10;
+    // OWNER RULING 2026-11-13: Show Inputs and the multiviewer hold 16 sources (was 10).
+    // Pro's own Zoom video stays at 8 (ZoomMediaSpinePayloadBuilder.DefaultMaxVideoSubscriptions);
+    // the rest are any source the operator routes (CoreVideo Edge, NDI, SRT, screen, webcam).
+    public const int MaxShowInputs = 16;
+    public const int MaxMultiviewBoxes = 16;
+
+    /// <summary>Roster AUTO-assign fills at most this many slots with Zoom participants, so a
+    /// big meeting never fills all 16 slots with guests Pro will not pull video for. The
+    /// operator may still assign a Zoom participant to any slot by hand.</summary>
+    public const int MaxAutoAssignedZoomSlots = ZoomMediaSpinePayloadBuilder.DefaultMaxVideoSubscriptions;
 
     public static IReadOnlyList<ShowInputKindOption> KindOptions { get; } =
     [
@@ -340,8 +348,8 @@ public static class ShowInputRosterService
 
     /// <summary>Reconciles the Zoom-participant Show Input slots against the live roster:
     /// frees slots whose participant left, and — when <paramref name="autoAssign"/> is on — fills
-    /// FREE (Unassigned) slots with roster participants not yet shown, in roster order, up to the
-    /// slot cap. Never disturbs operator- or capture/media-assigned slots, and keeps each already
+    /// FREE (Unassigned) slots with roster participants not yet shown, in roster order, until
+    /// <see cref="MaxAutoAssignedZoomSlots"/> slots hold Zoom participants. Never disturbs operator- or capture/media-assigned slots, and keeps each already
     /// shown participant in its current slot (no reshuffle when others leave).</summary>
     /// <param name="operatorClearedSlotNumbers">Slot NUMBERS the operator deliberately
     /// emptied this meeting. They are reserved against AUTO-assign only: the operator may
@@ -394,6 +402,11 @@ public static class ShowInputRosterService
         // callers that mean it (the operator flipping the auto-assign toggle).
         foreach (var participantId in autoAssignCandidates ?? participantIdsInRosterOrder)
         {
+            if (alreadyShown.Count >= MaxAutoAssignedZoomSlots)
+            {
+                break;  // owner ruling 2026-11-13: auto-assign stops at Pro's Zoom video budget
+            }
+
             if (string.IsNullOrWhiteSpace(participantId) || alreadyShown.Contains(participantId))
             {
                 continue;  // already in a slot — keep it stable
@@ -507,7 +520,7 @@ public static class ShowInputRosterService
     }
 
     /// <summary>
-    /// Pure mapping from an assigned Input 1-10 slot onto a <see cref="SourceRoute"/>.
+    /// Pure mapping from an assigned Input 1-16 slot onto a <see cref="SourceRoute"/>.
     /// Zoom and Media resolve to a Fixed participant route (Media uses a "media:{assetId}"
     /// identity); capture-class kinds resolve to a CaptureDevice route. Unassigned/unknown
     /// kinds leave the route unchanged. Extracted from the view-model so route resolution can

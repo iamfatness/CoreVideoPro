@@ -44,7 +44,7 @@ internal static class SourcesWorkspaceIntegrationProbe
         var columns = new MemoryColumns();
         var workspace = new SourcesWorkspaceControl(columns) { Studio = studio };
         window.Content = workspace; window.AppWindow.Resize(new SizeInt32(1600, 950));
-        await Eventually(() => workspace.IsLoaded && Descendants(workspace).OfType<SourcesTableRowControl>().Count() == 10);
+        await Eventually(() => workspace.IsLoaded && Descendants(workspace).OfType<SourcesTableRowControl>().Count() == ShowInputRosterService.MaxShowInputs);
         var rows = Descendants(workspace).OfType<SourcesTableRowControl>().OrderBy(row => row.Input.SlotNumber).ToArray();
         Require(rows.Select(row => row.Input).SequenceEqual(slots), "Table changed slot object identity");
         var quickPicker = Descendants(rows[0]).OfType<SourceAssignmentPicker>().Single();
@@ -126,7 +126,7 @@ internal static class SourcesWorkspaceIntegrationProbe
             }
         }
         Require(before.SequenceEqual(slots.Select(s => (s.SourceId, s.InShow, s.IsoEnabled))) && program == studio.ActiveSceneId, "Inspection/filter/resize changed production state");
-        checks.Add("native table and inspector retain ten row objects, source-grade identities, assignments, MV/ISO and Program across selection/filtering and 1600/1100/900/720 widths");
+        checks.Add("native table and inspector retain all sixteen row objects, source-grade identities, assignments, MV/ISO and Program across selection/filtering and 1600/1100/900/720 widths");
         workspace.State.Inspect(slots[0]);
         slots[0].RefreshSourceOptions([alice], [camera], mediaAssets: [clip]);
         var sourceName = slots[0].SelectedUnifiedSourceLabel;

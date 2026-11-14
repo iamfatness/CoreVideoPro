@@ -31,7 +31,7 @@ public sealed class SceneNamingTests
             {"Version":16,"CustomScenes":[{"Id":"custom-one","Name":"Existing show","Layout":"two-up","Routes":[]}]}
             """, out var migrated)!;
         Assert.True(migrated);
-        Assert.Equal(17, restored.Version);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, restored.Version);
         Assert.Empty(restored.SceneNames);
         Assert.Equal("Existing show", Assert.Single(restored.CustomScenes).Name);
     }

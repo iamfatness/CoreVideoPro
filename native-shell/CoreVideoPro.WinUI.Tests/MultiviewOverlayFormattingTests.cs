@@ -114,7 +114,7 @@ public sealed class MultiviewOverlayFormattingTests
     public void SelectOverlayTiles_MoreSourcesThanShowInputs_CapsSourcesOnly()
     {
         var tiles = new List<MultiviewTile> { new() { Role = "pgm", Slot = -2 } };
-        for (var slot = 0; slot < 14; slot++)
+        for (var slot = 0; slot < 20; slot++)
         {
             tiles.Add(new MultiviewTile { Role = "source", Slot = slot });
         }
@@ -122,6 +122,6 @@ public sealed class MultiviewOverlayFormattingTests
         var selected = MultiviewOverlayFormatting.SelectOverlayTiles(tiles);
 
         Assert.Single(selected, tile => tile.Role == "pgm");
-        Assert.Equal(10, selected.Count(tile => tile.Role == "source"));
+        Assert.Equal(16, selected.Count(tile => tile.Role == "source"));
     }
 }

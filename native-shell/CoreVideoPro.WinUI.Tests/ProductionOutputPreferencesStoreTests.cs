@@ -150,10 +150,10 @@ public sealed class ProductionOutputPreferencesStoreTests
     {
         var preferences = new ProductionOutputPreferences();
 
-        // Defaults must match the fixed multiviewer contract (all 10 inputs, labels/tally/meters on,
+        // Defaults must match the fixed multiviewer contract (all 16 inputs, labels/tally/meters on,
         // clock off) so a fresh install starts in the documented state.
         Assert.Null(preferences.MultiviewLayoutMode);
-        Assert.Equal(10, preferences.MultiviewTileCount);
+        Assert.Equal(16, preferences.MultiviewTileCount);
         Assert.True(preferences.MultiviewShowLabels);
         Assert.True(preferences.MultiviewShowTally);
         Assert.True(preferences.MultiviewShowMeters);
@@ -170,7 +170,7 @@ public sealed class ProductionOutputPreferencesStoreTests
     }
 
     [Fact]
-    public void Serializer_MigratesV11EightTileDefaultToTenWithoutOverwritingCustomCounts()
+    public void Serializer_MigratesV11EightTileDefaultToSixteenWithoutOverwritingCustomCounts()
     {
         var migratedDefault = ProductionOutputPreferencesSerializer.Deserialize(
             "{\"Version\":11,\"MultiviewTileCount\":8}", out var defaultWasMigrated);
@@ -182,8 +182,22 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.True(defaultWasMigrated);
         Assert.True(customWasMigrated);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migratedDefault.Version);
-        Assert.Equal(10, migratedDefault.MultiviewTileCount);
+        // v12 moved the old 8 default to 10, then v18 moves the old 10 maximum to 16.
+        Assert.Equal(16, migratedDefault.MultiviewTileCount);
         Assert.Equal(6, migratedCustom.MultiviewTileCount);
+    }
+
+    [Fact]
+    public void Serializer_MigratesV17TenTileMaximumToSixteenOnly()
+    {
+        var ten = ProductionOutputPreferencesSerializer.Deserialize("{\"Version\":17,\"MultiviewTileCount\":10}", out var tenMigrated);
+        var nine = ProductionOutputPreferencesSerializer.Deserialize("{\"Version\":17,\"MultiviewTileCount\":9}", out _);
+        var current = ProductionOutputPreferencesSerializer.Deserialize("{\"Version\":18,\"MultiviewTileCount\":10}", out _);
+
+        Assert.True(tenMigrated);
+        Assert.Equal(16, ten!.MultiviewTileCount);
+        Assert.Equal(9, nine!.MultiviewTileCount);
+        Assert.Equal(10, current!.MultiviewTileCount);  // a v18 choice of 10 is the operator's
     }
 
     [Fact]
@@ -246,7 +260,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(17, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(18, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Empty(migrated.VstInsertStates);
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
@@ -270,7 +284,7 @@ public sealed class ProductionOutputPreferencesStoreTests
             ProductionOutputPreferencesSerializer.Serialize(preferences));
 
         Assert.NotNull(roundTripped);
-        Assert.Equal(17, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(18, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal("black", roundTripped.SourceDropoutPolicies["zoom:16778240"]);
         Assert.Equal("hold", roundTripped.SourceDropoutPolicies["capture:cam0"]);
     }
@@ -291,7 +305,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(17, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(18, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Empty(migrated.SourceDropoutPolicies);
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
@@ -331,7 +345,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(17, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(18, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.False(migrated.IsoRecordingEnabled);
         Assert.Empty(migrated.IsoRecordingSourceIds);
@@ -372,7 +386,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(17, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(18, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Equal(ZoomAudioModePreference.PerGuestIsoValue, migrated.ZoomAudioMode);
         Assert.Equal(ZoomAudioMode.PerGuestIso, ZoomAudioModePreference.Parse(migrated.ZoomAudioMode));

@@ -5,7 +5,7 @@ using CoreVideoPro.WinUI.Models;
 namespace CoreVideoPro.WinUI.Services;
 
 /// <summary>
-/// Serializable snapshot of a single Input 1-10 slot assignment. Captures operator intent
+/// Serializable snapshot of a single Input 1-16 slot assignment. Captures operator intent
 /// (kind + chosen source ids) so a pre-built show survives an app restart even if the
 /// referenced participant/device is not currently present.
 /// </summary>
@@ -26,7 +26,7 @@ public sealed class ShowInputRosterSnapshot
 }
 
 /// <summary>
-/// Persists Input 1-10 slot assignments. Abstracted behind an interface so the persistence
+/// Persists Input 1-16 slot assignments. Abstracted behind an interface so the persistence
 /// logic is unit-testable without a running WinUI/ApplicationData host (tests use an
 /// in-memory or temp-file implementation).
 /// </summary>

@@ -89,7 +89,7 @@ public sealed partial class RoutingBus : ObservableObject
 }
 
 /// <summary>
-/// A routable source (a matrix row) — an assigned Input (1–10) or a synthetic
+/// A routable source (a matrix row) — an assigned Input (1–16) or a synthetic
 /// source such as the Zoom program mix or media playback.
 /// </summary>
 public sealed record RoutingSource(string Id, string Label, bool DefaultUnrouted = false);

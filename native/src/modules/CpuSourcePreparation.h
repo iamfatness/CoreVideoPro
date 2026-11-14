@@ -7,7 +7,9 @@ namespace corevideo::modules {
 // Program selects the same token later and resolves only its exact ready view.
 class CpuSourcePreparation {
  public:
-  static constexpr size_t kMaxSources = 64, kMaxActive = 16, kPendingPerSource = 28;
+  // kMaxActive 24 (was 16): two CoreVideo Edge nodes can feed all 16 Show Inputs over
+  // NDI/SRT at once (owner ruling 2026-11-13), plus headroom for webcams/browser sources.
+  static constexpr size_t kMaxSources = 64, kMaxActive = 24, kPendingPerSource = 28;
   struct Stats { bool requested = false, supported = false;
     uint64_t prepared = 0, refused = 0, superseded = 0, failed = 0;
     size_t sources = 0, active = 0;

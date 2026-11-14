@@ -24,11 +24,13 @@ void MediaCore::submitIsolatedMonitorTick(const modules::CompositorRenderPlan& r
           modules::SourceMonitorConsumer::PreviewFallback, "preview-fallback"});
   }
   // Sources inspectors need identity-safe full-source exports even while
-  // composite Preview is active. Bound demand to ten assigned input rows;
-  // never export every participant. programPlan carries off-air source grades.
+  // composite Preview is active. Bound demand to the 16 assigned input rows
+  // (Show Input capacity, owner ruling 2026-11-13); never export every
+  // participant. programPlan carries off-air source grades.
+  constexpr int kMaxInspectorRows = 16;
   int inspectorRows = 0;
   for (const auto& source : multiviewSources_) {
-    if (!sourcePreviewDemand_.active() || inspectorRows++ >= 10) break;
+    if (!sourcePreviewDemand_.active() || inspectorRows++ >= kMaxInspectorRows) break;
     const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
         source.captureDeviceId, source.mediaAssetId);
     const auto nativeId = feed.participantId.empty() ? feed.sourceId : feed.participantId;

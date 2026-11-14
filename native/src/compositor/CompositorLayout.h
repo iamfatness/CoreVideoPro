@@ -155,10 +155,17 @@ inline MultiviewLayoutPlan computeMultiviewLayout(
     plan.previewCell = insetRect({0.f, 0.5f, leftW, 0.5f}, pad);
     const float rightX = leftW;
     const float rightW = 1.f - leftW;
-    const int n = std::max(1, count);
+    // One column up to 8 sources; past that (Show Inputs hold 16, owner ruling
+    // 2026-11-13) the strip splits into two columns so a 16-source wall keeps
+    // 1/8-height cells instead of 1/16 slivers.
+    const int stripCols = count > 8 ? 2 : 1;
+    const int n = std::max(1, (count + stripCols - 1) / stripCols);
+    const float cellW = rightW / static_cast<float>(stripCols);
     const float cellH = 1.f / static_cast<float>(n);
     for (int i = 0; i < count; ++i) {
-      pushCell({rightX, static_cast<float>(i) * cellH, rightW, cellH});
+      const int col = i % stripCols;
+      const int row = i / stripCols;
+      pushCell({rightX + static_cast<float>(col) * cellW, static_cast<float>(row) * cellH, cellW, cellH});
     }
     return plan;
   }
@@ -185,9 +192,21 @@ inline MultiviewLayoutPlan computeMultiviewLayout(
 
     const float regionY = kBusH;
     const float regionH = 1.f - kBusH;
-    // One row up to 4 sources (bigger tiles when the show is small), two rows
-    // through 10 — the ATEM 10-way wall.
-    const int rows = count <= 4 ? 1 : 2;
+    // Pick the row count (1-4) that gives the LARGEST 16:9 tile in the strip,
+    // fewest rows on a tie. That reproduces the original wall exactly through 12
+    // (one row up to 4, two rows through 12 — the ATEM 10-way shape) and gives a
+    // 16-source wall (owner ruling 2026-11-13) three rows of 1/6-width tiles
+    // instead of two rows of 1/8.
+    int rows = 1;
+    float bestTile = 0.f;
+    for (int r = 1; r <= 4; ++r) {
+      const int c = (count + r - 1) / r;
+      const float tile = std::min(1.f / static_cast<float>(c), regionH / static_cast<float>(r));
+      if (tile > bestTile + 1e-6f) {
+        bestTile = tile;
+        rows = r;
+      }
+    }
     const int cols = (count + rows - 1) / rows;
     float tileW = 1.f / static_cast<float>(cols);
     float tileH = tileW;  // 16:9

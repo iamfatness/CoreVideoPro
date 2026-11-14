@@ -26,7 +26,9 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
     }
 
     [Fact]
-    public void DefaultCapacityRequestsAllTenShowVideoSources()
+    // Owner ruling 2026-11-13: Pro itself pulls at most 8 Zoom video feeds (all inside the 1080P
+    // grant). The wall holds 16; the other sources come from CoreVideo Edge or local inputs.
+    public void DefaultCapacityRequestsEightZoomVideoFeedsAndNamesTheRest()
     {
         var guests = Enumerable.Range(1, 10).Select(index => Guest(index.ToString(), $"Guest {index}")).ToList();
         var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
@@ -36,7 +38,10 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
             Multiview = Wall(guests.Select((guest, slot) => (slot, guest.Id)).ToArray())
         });
 
-        Assert.Equal(10, Video(payload).Count);
+        Assert.Equal(8, ZoomMediaSpinePayloadBuilder.DefaultMaxVideoSubscriptions);
+        Assert.Equal(8, Video(payload).Count);
+        var warnings = Assert.IsAssignableFrom<IReadOnlyList<string>>(payload["warnings"]);
+        Assert.Contains(warnings, warning => warning.Contains("subscription limit (8)", StringComparison.Ordinal));
     }
 
     [Fact]
