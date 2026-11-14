@@ -32,6 +32,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "modules/Interfaces.h"
@@ -287,7 +288,8 @@ class AvfMp4Writer {
   }
 
   // Silence-fill for gapped ISO stems (0.1s chunks like the MF writer).
-  bool writeAudioSilence(int64_t frames, int64_t ptsStart100ns, std::string& errorOut) {
+  bool writeAudioSilence(int64_t frames, int64_t ptsStart100ns, std::string& errorOut,
+                         bool mustAccept = false) {
     constexpr int kChunkFrames = 4800;
     std::vector<float> zeros;
     int64_t written = 0;
@@ -295,7 +297,7 @@ class AvfMp4Writer {
       const int chunk = static_cast<int>(std::min<int64_t>(kChunkFrames, frames - written));
       zeros.assign(static_cast<size_t>(chunk) * audioChannels_, 0.f);
       const int64_t pts = ptsStart100ns + written * kHundredNsPerSecond / audioSampleRate_;
-      if (!writeAudio(zeros.data(), chunk, pts, errorOut)) {
+      if (!writeAudio(zeros.data(), chunk, pts, errorOut, mustAccept)) {
         return false;
       }
       written += chunk;
@@ -303,13 +305,19 @@ class AvfMp4Writer {
     return true;
   }
 
+  // `mustAccept`: a refused buffer is an error, not a silent drop (tail alignment).
   bool writeAudio(const float* interleaved, int frameCount, int64_t pts100ns,
-                  std::string& errorOut) {
+                  std::string& errorOut, bool mustAccept = false) {
     if (!writing_ || !audioConfigured_ || !audioInput_) {
       errorOut = "audio stream not configured";
       return false;
     }
+    if (mustAccept) waitUntilReady(audioInput_);
     if (!audioInput_.readyForMoreMediaData) {
+      if (mustAccept) {
+        errorOut = "audio input was not ready to accept the tail silence";
+        return false;
+      }
       return true;  // drop under backpressure; the async sink already budgets
     }
     const size_t sampleCount = static_cast<size_t>(frameCount) * audioChannels_;
@@ -370,13 +378,23 @@ class AvfMp4Writer {
   // Program extends its last picture without encoding a second copy.
   void setTailHoldsRealSample(bool value) { tailHoldsRealSample_ = value; }
 
+  // Brief bounded wait for a busy input at close; ordinary realtime backpressure
+  // must not turn a normal stop into a warning.
+  static void waitUntilReady(AVAssetWriterInput* input) {
+    for (int i = 0; i < 40 && !input.readyForMoreMediaData; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+  }
+
   // #1186 (Windows 03ebd1c3 Mp4Writer::reconcileTail): bring both tracks to one
   // endpoint before finalize, with no tolerance. target = max(video end, audio
   // end), where the video end includes the last frame's own period. A short audio
   // tail is padded with silence; a short video tail is held. Nothing recorded is
-  // cut. AVAssetWriter gives the last video sample no duration, so the video
-  // track ends at its last PTS: a held sample at the session end is trimmed away
-  // and the session end stretches the previous real picture to the target.
+  // cut. The session end only trims: it cannot extend the last real sample on its
+  // own, so a short video tail needs a sample at the target (Program: trimmed away
+  // by the session end, no second picture; ISO: one real held sample, MF ISO rule).
+  // When video is already the longer track nothing is appended, so a busy video
+  // input cannot raise a false warning.
   bool reconcileTail(std::string& errorOut) {
     if (!writing_ || !audioConfigured_ || videoFrameCount_ <= 0 || audioPacketCount_ <= 0 ||
         !lastVideoBuffer_) {
@@ -388,23 +406,27 @@ class AvfMp4Writer {
     if (lastAudioEnd100ns_ < target) {
       const int64_t rate = std::max(1, audioSampleRate_);
       const int64_t frames = ((target - lastAudioEnd100ns_) * rate + kHundredNsPerSecond - 1) / kHundredNsPerSecond;
-      if (!writeAudioSilence(frames, lastAudioEnd100ns_, errorOut)) return false;
+      if (!writeAudioSilence(frames, lastAudioEnd100ns_, errorOut, true)) return false;
     }
-    int64_t holdPts = target;  // Program: trimmed by the session end, no extra picture
+    const bool videoShort = videoEnd < target;
+    int64_t holdPts = target;
     if (tailHoldsRealSample_) {
-      if (videoEnd >= target) return true;  // ISO: one real held sample only when video is short
+      if (!videoShort) return true;
       holdPts = std::max(lastVideoPts100ns_ + 1, target - frameDuration);
     }
-    if (!videoInput_.readyForMoreMediaData) {
-      errorOut = "video input was not ready to accept the held tail picture";
-      return false;
+    if (videoShort) {
+      waitUntilReady(videoInput_);
+      if (!videoInput_.readyForMoreMediaData) {
+        errorOut = "video input was not ready to accept the held tail picture";
+        return false;
+      }
+      if (![adaptor_ appendPixelBuffer:lastVideoBuffer_ withPresentationTime:ptsToTime(holdPts)]) {
+        errorOut = std::string("append held tail picture: ") +
+                   (writer_.error ? writer_.error.localizedDescription.UTF8String : "unknown");
+        return false;
+      }
+      lastVideoPts100ns_ = holdPts;
     }
-    if (![adaptor_ appendPixelBuffer:lastVideoBuffer_ withPresentationTime:ptsToTime(holdPts)]) {
-      errorOut = std::string("append held tail picture: ") +
-                 (writer_.error ? writer_.error.localizedDescription.UTF8String : "unknown");
-      return false;
-    }
-    lastVideoPts100ns_ = holdPts;
     [writer_ endSessionAtSourceTime:ptsToTime(target)];
     return true;
   }
@@ -715,10 +737,11 @@ class AVFoundationEncoderSink final : public IEncoderSink {
       if (entry.opened) {
         std::string isoFinalizeError, isoTailError;
         const bool isoFinalized = entry.writer->finalize(&isoFinalizeError, &isoTailError);
-        if (!isoTailError.empty() && entry.status.warning.empty()) {
-          entry.status.warning = "ISO " + entry.status.displayName + " (" + sourceId +
-                                 ") could not align its A/V tail: " + isoTailError + ".";
-          raiseWarning(entry.status.warning);
+        if (!isoTailError.empty()) {
+          // Windows parity: on the ISO track only; never the session-wide Program warning.
+          entry.status.warning = "ISO writer could not align its A/V tail: " + isoTailError;
+          ::corevideo::core::nativeLogf("[avf-encoder] %s (%s)\n", entry.status.warning.c_str(),
+                                        sourceId.c_str());
         }
         if (!isoFinalized) {
           entry.status.warning = "ISO finalization failed for " + sourceId + ": " + isoFinalizeError;
