@@ -179,7 +179,9 @@ COREVIDEO_SHELL_BIN="$SHELL_BIN" \
 COREVIDEO_CORE_BUILD_DIR="$CORE_BUILD" \
 COREVIDEO_ENGINE_APP="$ENGINE_BUILD/corevideo-zoom-engine.app" \
 COREVIDEO_REQUIRE_HELPERS=1 \
+COREVIDEO_APP_OUT="$APP" \
     scripts/make-macos-shell-bundle.sh
+[ -d "$APP/Contents/MacOS" ] || die "bundle was not assembled at $APP"
 
 # Every Mach-O in the app must be arm64-capable and carry a Developer ID
 # signature with the hardened runtime. Catch it here, not in Apple's log.
@@ -207,6 +209,9 @@ while IFS= read -r f; do
     grep -q "flags=.*runtime" <<<"$info" || die "no hardened runtime: $f"
     grep -q "^Timestamp=" <<<"$info" || die "no secure timestamp: $f"
 done < <(find "$APP" -type f)
+# The find above runs in a process substitution, whose failure set -e cannot see:
+# an audit that looked at nothing must not pass.
+[ "$MACHO_COUNT" -gt 0 ] || die "audited 0 Mach-O files under $APP; nothing was checked"
 echo "audited $MACHO_COUNT Mach-O files: Developer ID + runtime + timestamp; arm64 except $X86_VENDOR Intel-only vendor SDK file(s)"
 
 # notarytool submit --wait, JSON out; echoes the submission id. Rejected or
