@@ -1031,6 +1031,9 @@ final class AppModel: ObservableObject {
         let acceptRoster = rosterProjection.observe(snapshot)
         rosterRecoveryNotice = rosterProjection.notice
         if acceptRoster { meetingState = snapshot["meetingState"] as? String ?? meetingState }
+        if acceptRoster, Self.meetingStateIsInMeeting(snapshot["meetingState"] as? String ?? "") == false {
+            endMeetingAudioSession()
+        }
         if acceptRoster, let participants = snapshot["participants"] as? [JSONObject] {
             // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
             // the WinUI shell consumes): userId/displayName/videoOn/muted/talking.
@@ -3109,6 +3112,38 @@ final class AppModel: ObservableObject {
         pushRoutingBase()
     }
 
+    /// The A1's per-id strip settings for the current meeting (review I2). Cleared
+    /// for Zoom ids when the meeting ends: Zoom reuses user ids across meetings,
+    /// and a reused id must never inherit another person's mute or fader.
+    private(set) var rememberedStripSettings: [String: AudioStrip] = [:]
+
+    /// nil = unknown (no state yet), true = in a meeting, false = KNOWN not.
+    static func meetingStateIsInMeeting(_ state: String) -> Bool? {
+        if state.isEmpty { return nil }
+        return state == "in_meeting" || state == "in-meeting"
+    }
+
+    /// The meeting ended (a KNOWN not-in-meeting state; an unknown state never
+    /// clears — the Windows ResetMixerMeetingSession rule). Forgets every Zoom
+    /// participant's remembered strip settings and route edits, and drops the
+    /// meeting's sources from the console now rather than at the next spine push.
+    /// Non-Zoom sources (zoom-mix, capture mics, media) keep their settings.
+    func endMeetingAudioSession() {
+        let isZoom = AudioConsolePolicy.isZoomParticipantChannel
+        let hasState = !zoomAudioSourceIds.isEmpty || meetingAudioSubscribed
+            || rememberedStripSettings.keys.contains(where: isZoom)
+            || operatorRouteEdits.keys.contains { isZoom($0.source) }
+            || strips.contains { isZoom($0.id) }
+        guard hasState else { return }
+        rememberedStripSettings = rememberedStripSettings.filter { !isZoom($0.key) }
+        operatorRouteEdits = operatorRouteEdits.filter { !isZoom($0.key.source) }
+        zoomAudioSourceIds = []
+        meetingAudioSubscribed = false
+        strips.removeAll { isZoom($0.id) }
+        refreshStrips()
+        pushRoutingBase()
+    }
+
     /// Rebuilds the strips from the shell's source set + the last echo, and — the
     /// FADER LAW — syncs the full channel list whenever the strip SET changes, so
     /// the core never holds a routed source without a strip (a late guest, a newly
@@ -3116,7 +3151,9 @@ final class AppModel: ObservableObject {
     /// Internal: the harness drives it.
     func refreshStrips() {
         strips = AudioConsolePolicy.mergeStrips(
-            echo: lastMixEcho, prior: strips, expected: expectedAudioSourceIds)
+            echo: lastMixEcho, prior: strips, remembered: rememberedStripSettings,
+            expected: expectedAudioSourceIds)
+        for strip in strips { rememberedStripSettings[strip.id] = strip }
         // Schedule once per new SET (order is presentation, never a reason to
         // sync): snapshots arrive faster than the 150 ms debounce, and
         // re-scheduling on every one would cancel the sync forever.
@@ -3138,6 +3175,7 @@ final class AppModel: ObservableObject {
     func editStrip(_ id: String, _ apply: (inout AudioStrip) -> Void) {
         guard let index = strips.firstIndex(where: { $0.id == id }) else { return }
         apply(&strips[index])
+        rememberedStripSettings[id] = strips[index]
         stripEditTimes[id] = Date()
         scheduleMixSync()
     }
@@ -3331,6 +3369,7 @@ final class AppModel: ObservableObject {
 
     /// Test seam: feed a snapshot through the real read path.
     func applySnapshotForTesting(_ snapshot: JSONObject) { applySnapshot(snapshot) }
+    func applyZoomForTesting(_ snapshot: JSONObject) { applyZoom(snapshot) }
 
     private func replyToQuit(_ shouldTerminate: Bool) {
         if let seam = quitReplyForTesting { seam(shouldTerminate); return }

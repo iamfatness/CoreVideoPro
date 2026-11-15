@@ -83,7 +83,13 @@ enum AudioConsolePolicy {
 
     /// The WHOLE echo -> strip merge (the pure-function-over-the-whole-decision
     /// shape CLAUDE.md asks for after #481: a test can construct the regression).
+    /// `remembered`: the A1's settings per id for the whole MEETING (Windows
+    /// RememberMixerChannelSettings). A source that leaves the source set for one
+    /// push — moved off the wall and back, a slot swap, a slot briefly offline —
+    /// must come back with its mute and fader, never live at unity because of a
+    /// video-side action.
     static func mergeStrips(echo: [JSONObject], prior: [AudioStrip],
+                            remembered: [String: AudioStrip] = [:],
                             expected: [String]) -> [AudioStrip] {
         var echoById: [String: JSONObject] = [:]
         var echoOrder: [String] = []
@@ -103,7 +109,7 @@ enum AudioConsolePolicy {
         return ids.map { id in
             let entry = echoById[id]
             // Shell-owned state: the prior strip's, else a fresh unmuted unity strip.
-            var strip = priorById[id] ?? AudioStrip(
+            var strip = priorById[id] ?? remembered[id] ?? AudioStrip(
                 id: id, outputLevel: 0, manualGainDb: 0, muted: false, solo: false,
                 pan: 0, status: "waiting-for-pcm")
             // Measurements only.

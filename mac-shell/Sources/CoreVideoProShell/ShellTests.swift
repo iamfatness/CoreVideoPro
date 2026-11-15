@@ -1195,6 +1195,53 @@ enum ShellTests {
         expect(model.scheduledStripIds == nil, "an order-only change sends no channel sync")
     }
 
+    /// Review I2: a muted guest who leaves the source set for one push (off the
+    /// wall and back) comes back MUTED, not live at unity.
+    @MainActor
+    private static func testMutedGuestStaysMutedAcrossASourceSetExit() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        model.refreshStrips()
+        model.editStrip("11") { $0.muted = true; $0.manualGainDb = -8 }
+        model.zoomAudioSourceIds = []          // moved off the wall
+        model.refreshStrips()
+        expect(!model.strips.contains { $0.id == "11" }, "precondition: the strip is gone")
+        model.zoomAudioSourceIds = ["11"]      // ...and back
+        model.refreshStrips()
+        let back = model.strips.first { $0.id == "11" }
+        expectEqual(back?.muted, true, "the A1's mute survives a source-set exit")
+        expectEqual(back?.manualGainDb, -8, "the A1's fader survives a source-set exit")
+    }
+
+    /// Review M4 + I2: the memory is per MEETING. Zoom reuses user ids, so a new
+    /// meeting's guest 11 must not inherit the last meeting's mute or routing.
+    @MainActor
+    private static func testMeetingEndForgetsPerGuestAudioState() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        model.meetingAudioSubscribed = true
+        model.refreshStrips()
+        model.editStrip("11") { $0.muted = true }
+        model.selectOrRouteSend(source: "11", bus: "iso-1")
+        model.selectOrRouteSend(source: "zoom-mix", bus: "iso-2")
+        model.applyZoomForTesting(["meetingState": "in-meeting"])
+        expectEqual(model.rememberedStripSettings["11"]?.muted, true, "in a meeting: remembered")
+        model.applyZoomForTesting(["meetingState": ""])
+        expectEqual(model.rememberedStripSettings["11"]?.muted, true, "an UNKNOWN state never clears")
+        model.applyZoomForTesting(["meetingState": "idle"])
+        expect(model.rememberedStripSettings["11"] == nil, "meeting end forgets the guest's strip settings")
+        expect(model.operatorRouteEdits[AudioRouteKey(source: "11", bus: "iso-1")] == nil,
+               "meeting end forgets the guest's route edits")
+        expect(model.operatorRouteEdits[AudioRouteKey(source: "zoom-mix", bus: "iso-2")] != nil,
+               "non-guest route edits are kept")
+        expect(!model.strips.contains { $0.id == "11" || $0.id == "zoom-mix" },
+               "the meeting's strips leave the console at meeting end")
+        model.zoomAudioSourceIds = ["11"]      // next meeting, Zoom reuses id 11
+        model.refreshStrips()
+        expectEqual(model.strips.first { $0.id == "11" }?.muted, false,
+                    "a reused id starts unmuted in the next meeting")
+    }
+
     /// Cross-checks the audio wire strings against the CORE's source, the way the
     /// payload-wrapper contract test does: a rename in C++ fails here, not live.
     @MainActor
@@ -3179,6 +3226,8 @@ enum ShellTests {
             ("audio-console/core-restart-reasserts", testCoreRestartReassertsTheWholeAudioConsole),
             ("audio-console/pre-mute-meter", testMutedTalkingGuestShowsADimmedPreMuteMeter),
             ("audio-console/roster-order-stable", testStripOrderIsRosterOrderAndStableAcrossACue),
+            ("audio-console/mute-survives-source-exit", testMutedGuestStaysMutedAcrossASourceSetExit),
+            ("audio-console/meeting-end-forgets", testMeetingEndForgetsPerGuestAudioState),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),
