@@ -16,17 +16,27 @@ final class SourceStream: NSObject, CMIOExtensionStreamSource, @unchecked Sendab
     private let streamFormats: [CMIOExtensionStreamFormat]
     /// One prebuilt slate per advertised format, built once at launch.
     private let slates: [CVPixelBuffer?]
+    /// Video-range black (Y 16, UV 128), per format: served if a slate is
+    /// missing and nothing has been sent yet.
+    private let blacks: [CVPixelBuffer?]
 
     // Owned by `queue`.
     private var activeFormatIndex = 0
     private var frameDuration: CMTime
     private var timer: DispatchSourceTimer?
     private var lastChoice: FrameChoice?
+    /// The last sample actually sent: the fallback when the slate cannot be
+    /// built, so the camera never goes silent (spec §4 law 2).
+    private var lastSent: CMSampleBuffer?
+    /// Failure states, each logged once per transition.
+    private var retimeFailing = false
+    private var slateFailing = false
 
     init(localizedName: String, store: ProgramFrameStore) {
         self.store = store
         streamFormats = CameraFormats.source.compactMap(CameraFormatFactory.streamFormat)
         slates = CameraFormats.source.map { Self.makeSlate(width: $0.width, height: $0.height) }
+        blacks = CameraFormats.source.map { Self.makeBlack(width: $0.width, height: $0.height) }
         frameDuration = streamFormats.first?.minFrameDuration ?? CMTime(value: 1, timescale: 60)
         super.init()
         stream = CMIOExtensionStream(
@@ -37,6 +47,17 @@ final class SourceStream: NSObject, CMIOExtensionStreamSource, @unchecked Sendab
     /// A CVPixelBuffer holding StandbySlate.nv12, byte for byte (bulk row copies).
     static func makeSlate(width: Int, height: Int) -> CVPixelBuffer? {
         guard let bytes = StandbySlate.nv12(width: width, height: height) else { return nil }
+        return makeNV12(bytes, width: width, height: height)
+    }
+
+    static func makeBlack(width: Int, height: Int) -> CVPixelBuffer? {
+        guard width > 0, height > 0, width % 2 == 0, height % 2 == 0 else { return nil }
+        let bytes = [UInt8](repeating: 16, count: width * height)
+            + [UInt8](repeating: 128, count: width * (height / 2))
+        return makeNV12(bytes, width: width, height: height)
+    }
+
+    private static func makeNV12(_ bytes: [UInt8], width: Int, height: Int) -> CVPixelBuffer? {
         let attributes = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary] as CFDictionary
         var buffer: CVPixelBuffer?
         guard CVPixelBufferCreate(kCFAllocatorDefault, width, height,
@@ -128,14 +149,40 @@ final class SourceStream: NSObject, CMIOExtensionStreamSource, @unchecked Sendab
             duration: frameDuration,
             presentationTimeStamp: CMTime(value: CMTimeValue(hostNanos), timescale: 1_000_000_000),
             decodeTimeStamp: .invalid)
-        let program = store.programBuffer(atNanoseconds: hostNanos).flatMap { retimed($0, timing) }
+        var program: CMSampleBuffer?
+        if let fresh = store.programBuffer(atNanoseconds: hostNanos) {
+            program = retimed(fresh, timing)
+            noteTransition(&retimeFailing, failing: program == nil,
+                           "program retime failed; serving the slate until it succeeds",
+                           "program retime recovered")
+        }
         let choice: FrameChoice = program == nil ? .slate : .program
         if choice != lastChoice {
             log.info("source now serving \(choice == .program ? "program" : "slate", privacy: .public)")
             lastChoice = choice
         }
-        guard let buffer = program ?? slateSample(timing) else { return }
+        var buffer = program
+        if buffer == nil {
+            buffer = slateSample(timing)
+            noteTransition(&slateFailing, failing: buffer == nil,
+                           "slate unavailable; repeating the last frame sent (black if none)",
+                           "slate recovered")
+            if buffer == nil, let last = lastSent { buffer = retimed(last, timing) }
+            if buffer == nil { buffer = blackSample(timing) }
+        }
+        guard let buffer else { return }
+        lastSent = buffer
         stream.send(buffer, discontinuity: [], hostTimeInNanoseconds: hostNanos)
+    }
+
+    private func noteTransition(_ state: inout Bool, failing: Bool, _ failed: String, _ recovered: String) {
+        guard state != failing else { return }
+        state = failing
+        if failing {
+            log.error("\(failed, privacy: .public)")
+        } else {
+            log.info("\(recovered, privacy: .public)")
+        }
     }
 
     private func retimed(_ buffer: CMSampleBuffer, _ timing: CMSampleTimingInfo) -> CMSampleBuffer? {
@@ -151,6 +198,17 @@ final class SourceStream: NSObject, CMIOExtensionStreamSource, @unchecked Sendab
         guard slates.indices.contains(activeFormatIndex), let slate = slates[activeFormatIndex] else {
             return nil
         }
+        return sample(of: slate, timing)
+    }
+
+    private func blackSample(_ timing: CMSampleTimingInfo) -> CMSampleBuffer? {
+        guard blacks.indices.contains(activeFormatIndex), let black = blacks[activeFormatIndex] else {
+            return nil
+        }
+        return sample(of: black, timing)
+    }
+
+    private func sample(of slate: CVPixelBuffer, _ timing: CMSampleTimingInfo) -> CMSampleBuffer? {
         var description: CMFormatDescription?
         guard CMVideoFormatDescriptionCreateForImageBuffer(
             allocator: kCFAllocatorDefault, imageBuffer: slate, formatDescriptionOut: &description) == noErr,

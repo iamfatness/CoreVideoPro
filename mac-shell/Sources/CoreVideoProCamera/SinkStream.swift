@@ -21,6 +21,9 @@ final class SinkStream: NSObject, CMIOExtensionStreamSource, @unchecked Sendable
     private var client: CMIOExtensionClient?
     private var timer: DispatchSourceTimer?
     private var consuming = false
+    /// True while consumes are failing; logged once per transition, since the
+    /// 8 ms timer would otherwise repeat the same failure 125 times a second.
+    private var consumeFailing = false
 
     init(store: ProgramFrameStore) {
         self.store = store
@@ -87,6 +90,7 @@ final class SinkStream: NSObject, CMIOExtensionStreamSource, @unchecked Sendable
             timer = nil
             client = nil
             consuming = false
+            consumeFailing = false
             store.producerStopped()
             log.info("sink stream stopped")
         }
@@ -116,6 +120,15 @@ final class SinkStream: NSObject, CMIOExtensionStreamSource, @unchecked Sendable
                     self.stream.notifyScheduledOutputChanged(
                         CMIOExtensionScheduledOutput(sequenceNumber: sequence, hostTimeInNanoseconds: now))
                     self.store.producerDelivered(buffer, atNanoseconds: now)
+                }
+                if let error {
+                    if !self.consumeFailing {
+                        self.consumeFailing = true
+                        self.log.error("sink consume failing: \(error.localizedDescription, privacy: .public)")
+                    }
+                } else if buffer != nil, self.consumeFailing {
+                    self.consumeFailing = false
+                    self.log.info("sink consume recovered")
                 }
                 if buffer != nil, error == nil, hasMore {
                     self.consume(from: client)
