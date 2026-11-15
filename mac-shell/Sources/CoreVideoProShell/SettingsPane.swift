@@ -199,6 +199,9 @@ struct SettingsPane: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Button("Remove virtual camera") { model.removeVirtualCamera() }
                             .buttonStyle(GhostButtonStyle())
+                        if let status = model.virtualCameraRemovalStatus {
+                            Text(status).font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
+                        }
                         Text("macOS may ask for your password. The camera disappears from other apps.")
                             .font(.grotesk(11)).foregroundStyle(Studio.textDim)
                     }

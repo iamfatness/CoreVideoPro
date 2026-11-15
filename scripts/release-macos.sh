@@ -269,7 +269,9 @@ CAM_PROFILE_EXPIRES="$(plutil -extract ExpirationDate raw -o - "$CAM_PROFILE_PLI
 ( cd "$WORK" && codesign -d --extract-certificates=leaf "$EXT_DIR" >/dev/null 2>&1 ) \
     && openssl x509 -inform DER -in "$WORK/leaf0" -noout -enddate >"$WORK/cert-end.txt" 2>/dev/null \
     || die "cannot read the camera extension's signing certificate"
-CERT_EXPIRES="$(sed 's/^notAfter=//' "$WORK/cert-end.txt")"
+CERT_END="$(sed 's/^notAfter=//' "$WORK/cert-end.txt")"
+CERT_EXPIRES="$(date -j -u -f '%b %e %T %Y %Z' "$CERT_END" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" \
+    || die "cannot parse the signing certificate expiry '$CERT_END'"
 echo "camera extension: build $EXT_BUNDLE_VERSION, profile expires $CAM_PROFILE_EXPIRES, certificate expires $CERT_EXPIRES"
 
 # notarytool submit --wait, JSON out; echoes the submission id. Rejected or

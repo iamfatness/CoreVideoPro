@@ -797,6 +797,43 @@ enum ShellTests {
         model.stopTimersForTesting()
     }
 
+    /// A cancelled password or a failed deactivation leaves the extension
+    /// installed: the opt-in must survive and the Settings row must say so.
+    @MainActor
+    private static func testRemoveVirtualCameraFailureKeepsOptInAndReports() {
+        final class FailingDeactivator: CameraExtensionActivating {
+            let result: CameraExtensionState
+            init(_ r: CameraExtensionState) { result = r }
+            func query(_ done: @escaping (CameraExtensionState) -> Void) { done(.active) }
+            func activate(_ update: @escaping (CameraExtensionState) -> Void) { update(.active) }
+            func deactivate(_ update: @escaping (CameraExtensionState) -> Void) { update(result) }
+        }
+        for (name, result) in [("cancelled", CameraExtensionState.failed("Couldn't install the virtual camera (code 4).")),
+                               ("unavailable", CameraExtensionState.unavailable("macOS policy blocked the camera extension."))] {
+            let model = AppModel()
+            model.cameraExtension = FailingDeactivator(result)
+            model.coreCommandCaptureForTesting = { _ in }
+            model.setVirtualCamera(enabled: true)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            model.removeVirtualCamera()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            expectEqual(model.cameraExtensionOptedIn, true, "\(name): the opt-in is kept when removal fails")
+            expectEqual(model.virtualCamera.enabled, false, "\(name): intent is still off")
+            expectEqual(model.virtualCameraRemovalStatus, "Couldn't remove the virtual camera. It is still installed.",
+                        "\(name): the Settings row reports the failure")
+            model.stopTimersForTesting()
+        }
+        let ok = AppModel()
+        ok.cameraExtension = FakeCameraExtensionActivator(script: [.active])
+        ok.coreCommandCaptureForTesting = { _ in }
+        ok.setVirtualCamera(enabled: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        ok.removeVirtualCamera()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expect(ok.virtualCameraRemovalStatus == nil, "success leaves no removal status")
+        ok.stopTimersForTesting()
+    }
+
     /// The flyout toggles draw their own track: on and off must be told apart,
     /// and the off track must be visible against the flyout's panel.
     private static func testStudioToggleTrackIsVisibleInBothStates() {
@@ -3255,6 +3292,7 @@ enum ShellTests {
             ("vcam/resent-each-core-generation", testVirtualCameraResentOnNewCoreGeneration),
             ("vcam/activation-wiring", testVirtualCameraActivationWiring),
             ("vcam/remove-deactivates-and-clears-opt-in", testRemoveVirtualCameraCallsDeactivateAndClearsOptIn),
+            ("vcam/remove-failure-keeps-opt-in-and-reports", testRemoveVirtualCameraFailureKeepsOptInAndReports),
             ("vcam/toggle-track-visible", testStudioToggleTrackIsVisibleInBothStates),
             ("vcam/unchanged-name-sends-nothing", testVirtualCameraUnchangedNameSendsNothing),
             ("vcam/proof-needs-snapshot", testVirtualCameraProofNeedsTheSnapshotVariable),

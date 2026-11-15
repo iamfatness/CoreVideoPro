@@ -860,21 +860,37 @@ final class AppModel: ObservableObject {
         applyVirtualCamera(next)
     }
 
-    /// Settings "Remove virtual camera". Clears the opt-in first (so a relaunch
-    /// never re-installs it and the clear is persisted with the intent change),
-    /// turns the intent off (one sync-virtual-camera {on:false}), then asks the
-    /// OS to uninstall the extension; its answer reaches the label.
+    /// Settings "Remove virtual camera". Turns the intent off (one
+    /// sync-virtual-camera {on:false}) and asks the OS to uninstall. The opt-in
+    /// is cleared only once the uninstall succeeded (a cancelled password or a
+    /// failure leaves the extension installed, so it must stay opted in) and a
+    /// failure is reported in `virtualCameraRemovalStatus` because the flyout
+    /// label reads "off" whenever the intent is off.
     func removeVirtualCamera() {
         cameraExtensionQueryToken = nil
-        cameraExtensionOptedIn = false
+        virtualCameraRemovalStatus = nil
         var next = virtualCamera
         next.enabled = false
         applyVirtualCamera(next)
-        persistPrefsNow()
         cameraExtension.deactivate { [weak self] state in
-            Task { @MainActor in self?.setCameraExtensionState(state) }
+            Task { @MainActor in
+                guard let self else { return }
+                self.setCameraExtensionState(state)
+                switch state {
+                case .notInstalled, .needsReboot:
+                    self.cameraExtensionOptedIn = false
+                    self.persistPrefsNow()
+                    self.virtualCameraRemovalStatus = state == .needsReboot
+                        ? "Restart your Mac to finish removing the virtual camera." : nil
+                default:
+                    ShellLog.write("vcam-ext: removal did not complete (\(state)); opt-in kept")
+                    self.virtualCameraRemovalStatus = "Couldn't remove the virtual camera. It is still installed."
+                }
+            }
         }
     }
+
+    @Published var virtualCameraRemovalStatus: String?
 
     func setVirtualCameraMirror(_ on: Bool) {
         var next = virtualCamera

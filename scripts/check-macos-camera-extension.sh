@@ -67,7 +67,7 @@ if [ "$MODE" = "negatives" ]; then
         if [ $rc -eq 0 ]; then
             echo "NEGATIVE FAILED: '$name' passed the check"; echo "$out"; exit 1
         fi
-        if ! printf '%s\n' "$out" | grep -q "^FAIL ($letter)"; then
+        if ! grep -q "^FAIL ($letter)" <<<"$out"; then
             echo "NEGATIVE FAILED: '$name' failed, but not at ($letter):"; echo "$out"; exit 1
         fi
         echo "negative ok: '$name' -> $(printf '%s\n' "$out" | grep '^FAIL' | head -1)"
@@ -173,9 +173,9 @@ if [ "$MODE" = "release" ]; then
     SIGN_ID="$DEVID_AUTHORITY"
     . scripts/macos-sign-lib.sh
     INFO="$(codesign -dvv "$EXT" 2>&1)"
-    printf '%s\n' "$INFO" | grep -qx "Authority=$DEVID_AUTHORITY" || \
+    grep -qx "Authority=$DEVID_AUTHORITY" <<<"$INFO" || \
         fail f "extension is not signed by $DEVID_AUTHORITY"
-    printf '%s\n' "$INFO" | grep -q '^CodeDirectory.*flags=.*(runtime)' || \
+    grep -q '^CodeDirectory.*flags=.*(runtime)' <<<"$INFO" || \
         fail f "extension lacks the hardened runtime flag"
     for pair in "$APP|$TEAM.$APP_ID" "$EXT|$MACH_SERVICE"; do
         b="${pair%%|*}"; id="${pair#*|}"

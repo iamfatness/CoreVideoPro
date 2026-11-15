@@ -134,8 +134,8 @@ verify_profile() {  # verify_profile <profile> <expected-app-id> <min-days> [sig
         # The VALID identity of that exact name (an expired or revoked
         # certificate can share the name), then its certificate by SHA-1.
         local want_sha pem
-        want_sha="$(security find-identity -v -p codesigning 2>/dev/null \
-            | grep -F "\"$SIGN_ID\"" | awk 'NR==1 {print toupper($2)}')"
+        want_sha="$( { security find-identity -v -p codesigning 2>/dev/null \
+            | grep -F "\"$SIGN_ID\"" | awk 'NR==1 {print toupper($2)}'; } || true)"
         security find-certificate -a -c "$SIGN_ID" -p 2>/dev/null \
             | awk -v d="$tmp" '/BEGIN CERT/ {n++} {print > (d "/kc" n ".pem")}'
         for pem in "$tmp"/kc*.pem; do
