@@ -56,6 +56,19 @@ enum AudioConsolePolicy {
         id.hasPrefix("media:") && id.count > "media:".count
     }
 
+    /// Zoom audio ids in ROSTER order (Windows BuildAudioMixChannels runs over the
+    /// room roster). The source set arrives in BUDGET order — Program first, then
+    /// Preview — so using it directly reordered the A1's faders on every cue and
+    /// Take. Ids missing from the roster keep their relative order at the end.
+    static func rosterOrdered(_ ids: [String], roster: [String]) -> [String] {
+        let rank = Dictionary(roster.enumerated().map { ($0.element, $0.offset) },
+                              uniquingKeysWith: { first, _ in first })
+        return ids.enumerated().sorted { lhs, rhs in
+            let l = rank[lhs.element] ?? Int.max, r = rank[rhs.element] ?? Int.max
+            return l != r ? l < r : lhs.offset < rhs.offset
+        }.map(\.element)
+    }
+
     /// The strips the console must have, in console order.
     static func expectedSourceIds(meetingAudio: Bool, zoomAudioIds: [String],
                                   captureAudioIds: [String]) -> [String] {

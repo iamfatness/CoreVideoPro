@@ -1064,7 +1064,7 @@ enum ShellTests {
         model.zoomAudioSourceIds = ["11", "22"]
         model.meetingAudioSubscribed = true
         model.refreshStrips()
-        expectEqual(model.scheduledStripIds, ["zoom-mix", "11", "22", "media"],
+        expectEqual(model.scheduledStripIds, Set(["zoom-mix", "11", "22", "media"]),
                     "a changed strip SET schedules a full channel sync (late guests get a fader)")
         model.editStrip("22") { $0.muted = true }
         let channels = model.audioMixCommand()["channels"] as? [JSONObject] ?? []
@@ -1133,7 +1133,7 @@ enum ShellTests {
         expect(model.scheduledStripIds == nil && model.lastRoutingBaseSent != nil,
                "precondition: everything delivered to the old core")
         model.onConnected()  // the respawned core's handshake
-        expectEqual(model.scheduledStripIds, ["zoom-mix", "11", "media"],
+        expectEqual(model.scheduledStripIds, Set(["zoom-mix", "11", "media"]),
                     "a new core generation gets the full channel list again")
         expect(model.lastRoutingBaseSent == nil,
                "the routing memo is forgotten, so the base matrix is re-sent to the new core")
@@ -1171,6 +1171,28 @@ enum ShellTests {
         let native = AudioConsolePolicy.mergeStrips(
             echo: [["participantId": "11", "inputLevel": 42]], prior: [], expected: ["11"])
         expectEqual(native.first?.inputLevel, 42, "before any sync the native mixer's inputLevel is used")
+    }
+
+    /// Review I1: a cue or Take reorders the BUDGET (Program first) but must not
+    /// move the A1's faders, and an order-only change is not a new strip set.
+    @MainActor
+    private static func testStripOrderIsRosterOrderAndStableAcrossACue() {
+        let model = AppModel()
+        model.roster = ["11", "22"].map {
+            RosterParticipant(id: $0, name: "g\($0)", hasVideo: true, muted: false,
+                              talking: false, assigned: true)
+        }
+        model.meetingAudioSubscribed = true
+        model.zoomAudioSourceIds = ["22", "11"]   // 22 is on Program
+        model.refreshStrips()
+        expectEqual(model.strips.map(\.id), ["zoom-mix", "11", "22", "media"],
+                    "Zoom strips follow the roster, not the budget")
+        model.markAudioConsoleDeliveredForTesting()
+        model.zoomAudioSourceIds = ["11", "22"]   // a Take swaps Program and Preview
+        model.refreshStrips()
+        expectEqual(model.strips.map(\.id), ["zoom-mix", "11", "22", "media"],
+                    "a cue or Take does not move the A1's faders")
+        expect(model.scheduledStripIds == nil, "an order-only change sends no channel sync")
     }
 
     /// Cross-checks the audio wire strings against the CORE's source, the way the
@@ -3156,6 +3178,7 @@ enum ShellTests {
             ("audio-routing/model-mon-bus", testModelRoutesEverySourceToTheMonitorBus),
             ("audio-console/core-restart-reasserts", testCoreRestartReassertsTheWholeAudioConsole),
             ("audio-console/pre-mute-meter", testMutedTalkingGuestShowsADimmedPreMuteMeter),
+            ("audio-console/roster-order-stable", testStripOrderIsRosterOrderAndStableAcrossACue),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),

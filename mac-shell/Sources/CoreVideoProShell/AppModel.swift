@@ -3048,9 +3048,9 @@ final class AppModel: ObservableObject {
     private var lastMixEcho: [JSONObject] = []
     /// The strip ids last sent in a sync-participant-audio-mix (nil = never sent
     /// to this core generation).
-    private(set) var lastSyncedStripIds: [String]?
+    private(set) var lastSyncedStripIds: Set<String>?
     /// The strip set a channel sync is scheduled for (nil = none pending).
-    private(set) var scheduledStripIds: [String]?
+    private(set) var scheduledStripIds: Set<String>?
 
     private func applyMixParticipants(_ participants: [JSONObject]) {
         lastMixEcho = participants
@@ -3062,7 +3062,9 @@ final class AppModel: ObservableObject {
     /// the media strip.
     var expectedAudioSourceIds: [String] {
         AudioConsolePolicy.expectedSourceIds(
-            meetingAudio: meetingAudioSubscribed, zoomAudioIds: zoomAudioSourceIds,
+            meetingAudio: meetingAudioSubscribed,
+            zoomAudioIds: AudioConsolePolicy.rosterOrdered(
+                zoomAudioSourceIds, roster: roster.map(\.id)),
             captureAudioIds: slots
                 .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
                 .map { "capture:" + $0.sourceId })
@@ -3087,7 +3089,7 @@ final class AppModel: ObservableObject {
     /// Harness seam: records the console as delivered to the current core, as a
     /// successful sync would (the harness has no bridge).
     func markAudioConsoleDeliveredForTesting() {
-        lastSyncedStripIds = strips.map(\.id)
+        lastSyncedStripIds = Set(strips.map(\.id))
         scheduledStripIds = nil
         lastRoutingBaseSent = routingBaseCommand()?["sends"] as? [JSONObject]
     }
@@ -3115,9 +3117,10 @@ final class AppModel: ObservableObject {
     func refreshStrips() {
         strips = AudioConsolePolicy.mergeStrips(
             echo: lastMixEcho, prior: strips, expected: expectedAudioSourceIds)
-        // Schedule once per new set: snapshots arrive faster than the 150 ms
-        // debounce, and re-scheduling on every one would cancel the sync forever.
-        let ids = strips.map(\.id)
+        // Schedule once per new SET (order is presentation, never a reason to
+        // sync): snapshots arrive faster than the 150 ms debounce, and
+        // re-scheduling on every one would cancel the sync forever.
+        let ids = Set(strips.map(\.id))
         if ids != lastSyncedStripIds && ids != scheduledStripIds {
             scheduledStripIds = ids
             scheduleMixSync()
@@ -3175,7 +3178,7 @@ final class AppModel: ObservableObject {
     private func syncAudioMix() async {
         scheduledStripIds = nil
         guard let bridge, !strips.isEmpty else { return }
-        lastSyncedStripIds = strips.map(\.id)
+        lastSyncedStripIds = Set(strips.map(\.id))
         do {
             _ = try await bridge.request([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
