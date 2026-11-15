@@ -112,6 +112,8 @@ struct SceneLayer: Identifiable, Equatable {
     var height = 1.0
     var fitMode = "fill"      // fit | fill | stretch
     var opacity = 1.0         // [0, 1]
+    // Add overlay (Tier 0.14): a still from the media bin instead of a slot.
+    var mediaAssetId: String? = nil
 }
 
 struct CaptureDeviceRow: Identifiable, Equatable {
@@ -139,7 +141,7 @@ struct AudioStrip: Identifiable, Equatable {
 // shell (docs/routing-ux-spec.md tab 1). Slots are the AUTHORITY for show
 // membership; assignedIds/multiview/scenes derive from them.
 struct ShowInputSlot: Identifiable, Equatable {
-    let id: Int                 // 1...10
+    var id: Int                 // 1...10 (var only so a drag-swap can renumber)
     var kind = "unassigned"     // unassigned | zoom | capture
     var sourceId = ""           // participant id or capture device id
     var name = ""               // editable display name
@@ -552,7 +554,8 @@ final class AppModel: ObservableObject {
                                               x: layer.x, y: layer.y,
                                               width: layer.width, height: layer.height,
                                               fitMode: layer.fitMode,
-                                              opacity: layer.opacity)
+                                              opacity: layer.opacity,
+                                              mediaAssetId: layer.mediaAssetId)
                            })
         }
         return prefs
@@ -628,7 +631,8 @@ final class AppModel: ObservableObject {
                              SceneLayer(id: layer.id, slotId: layer.slotId,
                                         x: layer.x, y: layer.y,
                                         width: layer.width, height: layer.height,
-                                        fitMode: layer.fitMode, opacity: layer.opacity)
+                                        fitMode: layer.fitMode, opacity: layer.opacity,
+                                        mediaAssetId: layer.mediaAssetId)
                          },
                          backgroundAssetId: saved.backgroundAssetId)
             }
@@ -1138,7 +1142,7 @@ final class AppModel: ObservableObject {
         slots.filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }.count
     }
 
-    private func recomputeFromSlots() {
+    func recomputeFromSlots() {
         assignedIds = Set(slots.filter { $0.kind == "zoom" && $0.inShow }
             .map(\.sourceId))
         // Project the selection onto the (possibly new) slot set. This used to
@@ -1812,11 +1816,28 @@ final class AppModel: ObservableObject {
         // An edited canvas OWNS its scene: layers carry their own rects, fit
         // and opacity, and bind to a slot (nil = active speaker).
         if !scene.layers.isEmpty {
-            var edited: [JSONObject] = scene.layers.enumerated().map { index, layer in
+            var edited: [JSONObject] = scene.layers.enumerated().compactMap { index, layer -> JSONObject? in
                 var route = SceneRoute(
                     routeId: "\(sceneId)-layer-\(index)", mode: "active-speaker",
                     participantId: nil, captureDeviceId: nil,
                     rect: (layer.x, layer.y, layer.width, layer.height), zIndex: index)
+                // An overlay layer bound to a media-bin still (Add overlay):
+                // the mediaAsset* fields are the media identity on the wire,
+                // exactly like the logo bug below.
+                if let assetId = layer.mediaAssetId {
+                    // A still that left the bin sends nothing: the core warns
+                    // on every sync about an id that arrives without a path.
+                    guard let asset = mediaAssets.first(where: { $0.id == assetId }) else { return nil }
+                    return [
+                        "routeId": "\(sceneId)-layer-\(index)", "mode": "fixed", "audioRole": "mix",
+                        "fitMode": layer.fitMode, "opacity": max(0, min(1, layer.opacity)),
+                        "zIndex": index,
+                        "mediaAssetId": assetId, "mediaAssetName": asset.name,
+                        "mediaAssetKind": asset.kind, "mediaAssetPath": asset.filePath,
+                        "mediaPlaybackKey": "", "mediaAssetPlaying": false,
+                        "rect": ["x": layer.x, "y": layer.y, "width": layer.width, "height": layer.height],
+                    ]
+                }
                 if let slotId = layer.slotId,
                    let slot = slots.first(where: { $0.id == slotId }),
                    slot.kind != "unassigned" {
@@ -1964,6 +1985,10 @@ final class AppModel: ObservableObject {
 
     /// Operator-facing result of the last rename/delete (refusal text or "").
     @Published var sceneEditMessage = ""
+    /// Studio "Edit layout" overlay open (Tier 0.14, StudioSceneEditing.swift).
+    @Published var studioLayoutEditing = false
+    /// Windows CommandStatus for the Studio scene gestures (overlay, swap, duplicate).
+    @Published var studioCommandStatus = ""
 
     /// How many scene-graph syncs have been requested. Test seam: a refused
     /// edit must leave this unchanged (nothing reached the wire).
@@ -2036,12 +2061,14 @@ final class AppModel: ObservableObject {
                                 l = SceneLayer(id: newId + "-" + layer.id,
                                                slotId: l.slotId, x: l.x, y: l.y,
                                                width: l.width, height: l.height,
-                                               fitMode: l.fitMode, opacity: l.opacity)
+                                               fitMode: l.fitMode, opacity: l.opacity,
+                                               mediaAssetId: l.mediaAssetId)
                                 return l
                             },
                             backgroundAssetId: source.backgroundAssetId)
         scenes.append(copy)
         previewSceneId = newId
+        studioCommandStatus = "\(name) duplicated from \(source.name) and cued on preview"
         syncScenes()
         saveScenes()
     }

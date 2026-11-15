@@ -33,6 +33,10 @@ extension ShellTests {
             ("tier0/monitor-projection-carries-device", testMonitorProjectionCarriesTheDevice),
             ("tier0/end-other-session-offered-only-on-collision", testEndOtherSessionIsOfferedOnlyOnTheCollision),
             ("tier0/end-other-session-join-is-explicit", testEndOtherSessionJoinIsExplicitAndNeverSticky),
+            ("tier0/studio-edit-layout-edits-preview", testStudioEditLayoutEditsThePreviewSceneInPlace),
+            ("tier0/studio-add-overlay", testStudioAddOverlayPlacesATopMostPreviewLayer),
+            ("tier0/studio-rail-row-actions", testSceneRailRowActionsTargetTheRowWithoutCueing),
+            ("tier0/studio-multiview-drag-swap", testMultiviewDragSwapsTheTwoInputSlots),
         ]
     }
 
@@ -746,6 +750,152 @@ extension ShellTests {
                               + "                            Button(\"Join and end my other Zoom session\") {\n"
                               + "                                model.joinZoom(endOtherMeeting: true)"),
                "the Windows button, shown only while the takeover is offered")
+    }
+
+    // ── 0.14 Studio scene editing ────────────────────────────────────────────
+
+    /// Mac "Edit layout" changed the multiview layout mode; Windows opens an
+    /// in-place editor for the PREVIEW scene.
+    @MainActor
+    static func testStudioEditLayoutEditsThePreviewSceneInPlace() {
+        let model = sceneEditModel()   // Program s2, Preview s1
+        model.scenes[0].layers = []    // Preview follows its preset
+        let programBefore = model.buildRoutes(for: "s2", isProgram: true).map { NSDictionary(dictionary: $0) }
+        model.toggleStudioLayoutEditing()
+        expect(model.studioLayoutEditing, "Edit layout opens the in-place editor")
+        expect(!model.scenes[0].layers.isEmpty, "the Preview scene's preset is seeded as editable layers")
+        let layer = model.scenes[0].layers[0]
+        model.updateLayer(sceneId: "s1", layerId: layer.id) { $0.x = 0.3 }
+        let programAfter = model.buildRoutes(for: "s2", isProgram: true).map { NSDictionary(dictionary: $0) }
+        expectEqual(programAfter, programBefore, "Program changes exclusively on Take")
+        model.toggleStudioLayoutEditing()
+        expect(!model.studioLayoutEditing, "the toggle closes it (Done does the same)")
+
+        // Preview on Program (or empty) is no edit target: refused, said why.
+        model.previewSceneId = "s2"
+        model.toggleStudioLayoutEditing()
+        expect(!model.studioLayoutEditing, "Program is never edited in place")
+        expectEqual(model.studioCommandStatus, AppModel.noPreviewSceneMessage, "and the operator is told why")
+
+        guard let shell = sourceFile("ShellApp.swift"),
+              let canvas = functionBody(named: "struct MultiviewerCanvas: View {", in: "ShellApp.swift") else {
+            expect(false, "ShellApp.swift"); return
+        }
+        expect(canvas.contains("ActionChip(\"Edit layout\"") && canvas.contains("model.toggleStudioLayoutEditing()"),
+               "the Studio header's Edit layout opens the scene editor")
+        expect(!canvas.contains("configureMultiviewer(mode:"),
+               "the header no longer changes the multiview layout (Settings > Multiview does)")
+        expect(canvas.contains("StudioLayoutEditorOverlay()"), "the editor sits over the multiview")
+        expect(shell.contains("AddOverlayMenu()"), "Add overlay is in the header")
+    }
+
+    /// Windows POS-2: no Add overlay on the Mac.
+    @MainActor
+    static func testStudioAddOverlayPlacesATopMostPreviewLayer() {
+        // Windows OverlayLayerService rect math.
+        let tr = OverlayPlacementPolicy.rect("top-right", sourceAspect: nil)
+        expect(abs(tr.x - 0.80) < 1e-9 && abs(tr.y - 0.05) < 1e-9 && abs(tr.w - 0.15) < 1e-9
+               && abs(tr.h - 0.15) < 1e-9, "top-right: 15% wide, 16:9, inside the 5% safe area")
+        let square = OverlayPlacementPolicy.rect("bottom-left", sourceAspect: 1)
+        expect(abs(square.h - 0.15 * 16 / 9) < 1e-9 && abs(square.y - (0.95 - square.h)) < 1e-9,
+               "the box is aspect-locked to the source")
+        let banner = OverlayPlacementPolicy.rect("center", sourceAspect: 8)
+        expect(abs(banner.h - 0.08) < 1e-9, "a wide banner keeps the minimum height")
+        let full = OverlayPlacementPolicy.rect("full-canvas", sourceAspect: 2)
+        expect(full.x == 0 && full.y == 0 && full.w == 1 && full.h == 1, "full canvas is the whole frame")
+        expectEqual(OverlayPlacementPolicy.options.map(\.label),
+                    ["Full canvas (transparent overlay)", "Top left", "Top right", "Bottom left",
+                     "Bottom right", "Center", "Free (drag to place)"], "Windows placement menu")
+
+        let model = sceneEditModel()   // Program s2, Preview s1 (one layer)
+        model.mediaAssets = [MediaAsset(id: "logo", name: "Logo", kind: "image", relativePath: "logo.png",
+                                        filePath: "/tmp/logo.png", naturalWidth: 400, naturalHeight: 200)]
+        let programBefore = model.buildRoutes(for: "s2", isProgram: true).map { NSDictionary(dictionary: $0) }
+        expect(model.addOverlayLayer(placement: "top-right", source: .media("logo")) == nil, "overlay added")
+        let top = model.scenes[0].layers.last
+        expectEqual(top?.mediaAssetId, "logo", "the overlay is the Preview scene's top-most layer")
+        expect(abs((top?.height ?? 0) - 0.15 * 16 / 9 / 2) < 1e-9, "sized from the still's aspect")
+        let route = model.buildRoutes(for: "s1").last
+        expectEqual(route?["mediaAssetId"] as? String, "logo", "the preview bus composites the still on top")
+        expectEqual(route?["mediaAssetPath"] as? String, "/tmp/logo.png", "with its path")
+        expectEqual(model.buildRoutes(for: "s2", isProgram: true).map { NSDictionary(dictionary: $0) },
+                    programBefore, "Program is untouched until Take")
+        expectEqual(model.studioCommandStatus,
+                    "Logo overlay added to Intro (Top right) - drag or use Edit layout to fine-tune",
+                    "Windows status text")
+        guard let after = relaunched(model) else { expect(false, "relaunch"); return }
+        expectEqual(after.scenes.first { $0.id == "s1" }?.layers.last?.mediaAssetId, "logo",
+                    "the overlay survives a relaunch")
+
+        model.previewSceneId = "s2"   // Preview on Program: no target
+        expect(model.addOverlayLayer(placement: "center", source: .activeSpeaker) != nil,
+               "no overlay is ever added to the on-air scene")
+    }
+
+    /// Rename/duplicate/remove worked only on the cued scene in the Scenes tab.
+    @MainActor
+    static func testSceneRailRowActionsTargetTheRowWithoutCueing() {
+        let model = sceneEditModel()   // Program s2, Preview s1; s3 idle
+        let syncs = model.sceneSyncRequestCount
+        expect(model.renameScene("s3", to: "Outro") == nil, "an idle row renames by its id")
+        expectEqual(model.previewSceneId, "s1", "without cueing it")
+        expectEqual(model.sceneSyncRequestCount, syncs, "a rename never reaches the wire")
+        expect(model.railCanRemoveScene("s3"), "an idle row offers Remove scene")
+        expect(!model.railCanRemoveScene("s2"), "the on-air row does not (#1070)")
+        model.duplicateScene("s3")
+        expectEqual(model.scenes.last?.name, "Outro copy", "Duplicate copies that row")
+        expectEqual(model.previewSceneId, model.scenes.last?.id, "and cues the copy on Preview")
+        expectEqual(model.programSceneId, "s2", "Program is untouched")
+        expectEqual(model.studioCommandStatus, "Outro copy duplicated from Outro and cued on preview",
+                    "Windows status text")
+
+        guard let row = functionBody(named: "struct SceneRow: View {", in: "ShellApp.swift") else {
+            expect(false, "SceneRow"); return
+        }
+        expect(row.contains("Button(\"Rename scene\", action: rename)"), "the row's context menu renames it")
+        expect(row.contains("if model.railCanRemoveScene(scene.id) {")
+               && row.contains("Button(\"Remove scene\") { model.deleteScene(scene.id) }"),
+               "and removes it where the rules allow")
+        expect(row.contains("model.duplicateScene(scene.id)") && row.contains(".help(\"Duplicate scene\")"),
+               "a Duplicate button sits beside every row")
+    }
+
+    /// No drag-swap on the Mac multiview.
+    @MainActor
+    static func testMultiviewDragSwapsTheTwoInputSlots() {
+        let model = AppModel()
+        model.assignSlot(1, kind: "zoom", sourceId: "42", name: "Guest")
+        model.assignSlot(2, kind: "capture", sourceId: "cam1", name: "Wide cam")
+        model.slots[1].audioDeviceId = "mic-1"
+        model.slots[1].keyEnabled = true
+        model.swapMultiviewSlots(1, 2)
+        expectEqual(model.slots.map(\.id), Array(1...10), "slot numbers stay in place")
+        expectEqual(model.slots[0].sourceId, "cam1", "input 1 now carries the camera")
+        expectEqual(model.slots[1].sourceId, "42", "input 2 now carries the guest")
+        expectEqual(model.slots[0].audioDeviceId, "mic-1", "the camera keeps its microphone")
+        expect(model.slots[0].keyEnabled, "and its key")
+        expectEqual(model.slots[1].name, "Guest", "names follow their source")
+        expect(model.slots[0].inShow && model.slots[1].inShow, "both stay in the show (nothing cleared)")
+        expectEqual(model.studioCommandStatus, "Inputs 1 and 2 swapped on the multiviewer.", "Windows status text")
+
+        func tile(_ id: String, _ role: String, _ x: Double, _ y: Double) -> MultiviewTile {
+            MultiviewTile(id: id, label: id, role: role, tally: "none", activeSpeaker: false,
+                          x: x, y: y, w: 0.25, h: 0.25)
+        }
+        let tiles = [tile("pvw", "pvw", 0, 0), tile("zoom:42", "source", 0, 0.5),
+                     tile("capture:cam1", "source", 0.25, 0.5)]
+        expectEqual(MultiviewDragPolicy.dropTarget(tiles: tiles, from: tiles[1],
+                                                   at: CGPoint(x: 0.3, y: 0.6))?.id, "capture:cam1",
+                    "a release over another source tile is a swap")
+        expect(MultiviewDragPolicy.dropTarget(tiles: tiles, from: tiles[1], at: CGPoint(x: 0.1, y: 0.6)) == nil,
+               "a release over its own tile is not")
+        expect(MultiviewDragPolicy.dropTarget(tiles: tiles, from: tiles[1], at: CGPoint(x: 0.1, y: 0.1)) == nil,
+               "nor over a bus cell")
+        guard let canvas = functionBody(named: "struct MultiviewerCanvas: View {", in: "ShellApp.swift") else {
+            expect(false, "MultiviewerCanvas"); return
+        }
+        expect(canvas.contains("MultiviewDragPolicy.dropTarget(") && canvas.contains("model.swapMultiviewSlots(fromSlot, toSlot)"),
+               "the multiview tiles drag-swap")
     }
 
     // ── source-reading helpers ───────────────────────────────────────────────

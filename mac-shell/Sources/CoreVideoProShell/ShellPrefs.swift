@@ -53,6 +53,9 @@ struct PersistedLayer: Codable, Equatable {
     var height = 1.0
     var fitMode = "fill"
     var opacity = 1.0
+    // Add overlay (Tier 0.14): a layer bound to a media-bin still. Optional so
+    // the synthesized decoder keeps older files (absent = a slot layer).
+    var mediaAssetId: String?
 }
 
 /// One show-input slot assignment (Windows ShowInputSlotRecord,

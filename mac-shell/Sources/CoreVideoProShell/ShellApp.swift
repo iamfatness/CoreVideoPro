@@ -764,20 +764,16 @@ struct MultiviewerCanvas: View {
                 Spacer()
                 Text(model.clockText)
                     .font(.plexMono(12, .medium)).foregroundStyle(Studio.textPrimary)
-                Menu {
-                    Button("P/P top") { model.configureMultiviewer(mode: "pgmPvwTop") }
-                    Button("P/P large") { model.configureMultiviewer(mode: "pgmPvwLarge") }
-                    Button("P/P side") { model.configureMultiviewer(mode: "pgmPvwSide") }
-                    Button("Grid") { model.configureMultiviewer(mode: "grid") }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "rectangle.split.2x2").font(.system(size: 9))  // design-lint: allow
-                        Text("Edit layout").font(.grotesk(11, .semibold))
+                // Windows POS-1/POS-2 (Tier 0.14): edit the PREVIEW scene in
+                // place, and add an overlay layer to it. The multiview layout
+                // mode lives in Settings > Multiview, as on Windows.
+                if !isPopout {
+                    ActionChip("Edit layout", accent: model.studioLayoutEditing) {
+                        model.toggleStudioLayoutEditing()
                     }
+                    .help("Move and resize the preview scene's sources. Changes ride the preview until you Take.")
+                    AddOverlayMenu()
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .foregroundStyle(Studio.textPrimary)
                 ActionChip("Scene builder", accent: true) { model.selectedTab = .scenes }
                 HStack(spacing: 4) {
                     Text("LT \(model.lowerThirdPhase == "hidden" ? "out" : "in")")
@@ -797,6 +793,12 @@ struct MultiviewerCanvas: View {
                     ActionChip("Pop out") { openWindow(id: PopoutWindow.multiview) }
                     ActionChip("P/P") { openWindow(id: PopoutWindow.busMonitor) }
                 }
+            }
+            if !isPopout, !model.studioCommandStatus.isEmpty {
+                Text(model.studioCommandStatus)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             ZStack {
                 Rectangle().fill(Color.black)
@@ -823,8 +825,24 @@ struct MultiviewerCanvas: View {
                                     model.previewMultiviewSlot(slot)
                                 }
                             }
+                            // Drag one source tile onto another: swap the two
+                            // input slots (Windows TileSwapCommand). A short
+                            // press-release stays a click (cue).
+                            .gesture(DragGesture(minimumDistance: 8, coordinateSpace: .named("multiview"))
+                                .onEnded { value in
+                                    guard tile.role == "source",
+                                          geometry.size.width > 0, geometry.size.height > 0 else { return }
+                                    let point = CGPoint(x: value.location.x / geometry.size.width,
+                                                        y: value.location.y / geometry.size.height)
+                                    guard let target = MultiviewDragPolicy.dropTarget(
+                                              tiles: model.multiviewTiles, from: tile, at: point),
+                                          let fromSlot = model.slotForSourceId(tile.id),
+                                          let toSlot = model.slotForSourceId(target.id) else { return }
+                                    model.swapMultiviewSlots(fromSlot, toSlot)
+                                })
                     }
                 }
+                .coordinateSpace(name: "multiview")
                 if MultiviewEmptyStatePolicy.showAssignmentGuidance(
                     tileCount: model.multiviewTiles.count,
                     multiviewSurfaceId: model.multiviewSurfaceId) {
@@ -836,6 +854,9 @@ struct MultiviewerCanvas: View {
                              + "pick a scene — preview and program composite here.")
                             .font(.grotesk(12)).foregroundStyle(Studio.textDim)
                     }
+                }
+                if model.studioLayoutEditing && !isPopout {
+                    StudioLayoutEditorOverlay()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -937,6 +958,7 @@ struct ActionChip: View {
 
 struct SceneRail: View {
     @EnvironmentObject var model: AppModel
+    @State private var renaming: String?
 
     // A solo cue shows the SOURCE, not a scene name — the rail has no row for
     // the reserved solo scenes (on either bus, now that one can be Taken).
@@ -954,7 +976,11 @@ struct SceneRail: View {
                 SceneChip(label: "PVW \(previewName)", color: Studio.accent)
             }
             ForEach(Array(model.railScenes.enumerated()), id: \.element.id) { index, scene in
-                SceneRow(index: index + 1, scene: scene)
+                SceneRow(index: index + 1, scene: scene, rename: { renaming = scene.id })
+            }
+            if !model.sceneEditMessage.isEmpty {
+                Text(model.sceneEditMessage).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text("Tap a scene to queue on preview · Take swaps PVW and PGM")
                 .font(.grotesk(9)).foregroundStyle(Studio.secondary.opacity(0.8))
@@ -978,6 +1004,11 @@ struct SceneRail: View {
             Spacer()
         }
         .modifier(StudioPanel())
+        .sheet(isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            if let id = renaming {
+                SceneRenameSheet(sceneId: id, presented: $renaming).environmentObject(model)
+            }
+        }
     }
 }
 
@@ -1064,11 +1095,30 @@ struct SceneRow: View {
     @EnvironmentObject var model: AppModel
     let index: Int
     let scene: SceneDef
+    var rename: () -> Void = {}
 
     var onProgram: Bool { scene.id == model.programSceneId }
     var onPreview: Bool { scene.id == model.previewSceneId }
 
     var body: some View {
+        HStack(alignment: .top, spacing: 4) {
+            rowButton
+            // Windows: a Duplicate button beside every row (the copy is cued
+            // on Preview).
+            Button {
+                model.duplicateScene(scene.id)
+            } label: {
+                Image(systemName: "plus.square.on.square").font(.system(size: 10))  // design-lint: allow
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Studio.secondary)
+            .help("Duplicate scene")
+            .padding(.top, 8)
+        }
+    }
+
+    var rowButton: some View {
         Button {
             model.selectPreviewScene(scene.id)
         } label: {
@@ -1105,6 +1155,13 @@ struct SceneRow: View {
                         lineWidth: 1))
         }
         .buttonStyle(.plain)
+        // Windows rail context menu: by this row's stable id, without cueing it.
+        .contextMenu {
+            Button("Rename scene", action: rename)
+            if model.railCanRemoveScene(scene.id) {
+                Button("Remove scene") { model.deleteScene(scene.id) }
+            }
+        }
     }
 }
 
