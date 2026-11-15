@@ -2719,10 +2719,7 @@ final class AppModel: ObservableObject {
                 .map { String($0.dropFirst(5)) },
         ]
         if streaming {
-            command["streamOutputProfile"] = [
-                "width": 1920, "height": 1080, "fps": 30,
-                "targetBitrateMbps": streamBitrateMbps, "videoCodec": "h264",
-            ]
+            command["streamOutputProfile"] = streamOutputProfile()
             command["destinationSettings"] = streamDestinationSettings()
         }
         return command

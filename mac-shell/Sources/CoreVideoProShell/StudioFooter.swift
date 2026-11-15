@@ -559,7 +559,9 @@ struct FooterOutputsGroup: View {
                     .font(.grotesk(11)).foregroundStyle(Studio.textDim)
             }
             HStack {
-                Text(ProductionSettingsPolicy.streamRecipeLabel(bitrateMbps: model.streamBitrateMbps))
+                Text(ProductionSettingsPolicy.streamRecipeLabel(
+                    bitrateMbps: model.streamBitrateMbps,
+                    height: model.coreOutputProfile?.height ?? model.canvasHeight))
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
@@ -723,7 +725,7 @@ struct FooterTelemetry: View {
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
             FooterStat(title: "Program",
-                       value: "\(model.canvasHeight)p\(model.canvasFps)",
+                       value: model.coreCanvasLabel,
                        health: model.programSceneId.isEmpty ? "Idle" : "Live",
                        healthColor: model.programSceneId.isEmpty ? Studio.secondary : Studio.accent,
                        width: 110)

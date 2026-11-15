@@ -16,6 +16,7 @@ extension ShellTests {
             ("tier0/production-settings-every-generation",
              testProductionSettingsAreReassertedOnEveryCoreGeneration),
             ("tier0/production-labels-and-bitrate", testProductionLabelsAndStreamBitrateAreReal),
+            ("tier0/stream-start-keeps-the-canvas", testStreamStartSendsTheCanvasAndLabelsReadTheCore),
             ("tier0/slots-survive-relaunch", testSlotAssignmentsSurviveARelaunch),
             ("tier0/slot-settings-follow-the-source", testPerSourceSettingsFollowTheSourceNotTheSlot),
             ("tier0/iso-survives-first-assignment", testRestoredIsoSelectionSurvivesTheFirstAssignment),
@@ -139,6 +140,37 @@ extension ShellTests {
             return
         }
         expect(!shell.contains("MonoChip(\"1080p60\")"), "no hard-coded 1080p60 multiview chip")
+    }
+
+    /// Review I3: the stream profile writes the same core fields as the
+    /// canvas, so its hard-coded 1080p30 re-sized Program for every output
+    /// when Stream was pressed, while the chip showed the Settings value.
+    @MainActor
+    static func testStreamStartSendsTheCanvasAndLabelsReadTheCore() {
+        let model = AppModel()
+        model.canvasWidth = 3840
+        model.canvasHeight = 2160
+        model.canvasFps = 60
+        let start = model.startProgramOutput(recording: false, streaming: true)
+        let profile = start["streamOutputProfile"] as? JSONObject
+        expectEqual(profile?["width"] as? Int, 3840, "stream start sends the canvas width, not 1920")
+        expectEqual(profile?["height"] as? Int, 2160, "and the canvas height, not 1080")
+        expectEqual(profile?["fps"] as? Int, 60, "and the canvas fps, not 30")
+        expectEqual(profile?["codec"] as? String, "h264", "under the key the core reads (codec)")
+        let rtmp = (start["destinationSettings"] as? [JSONObject])?.first
+        expectEqual(rtmp?["fps"] as? Int, 30, "the stream itself stays at the destination's 30 fps")
+
+        // Labels show what the core renders, never the shell's setting.
+        expectEqual(model.coreCanvasLabel, "\u{2014}", "no core yet: no claim")
+        model.applySnapshotForTesting(["outputProfile": [
+            "width": 1920, "height": 1080, "fps": 30, "resolution": "1920x1080"] as JSONObject])
+        expectEqual(model.coreCanvasLabel, "1080p30",
+                    "the chip reads the core's outputProfile even when Settings says 2160p60")
+        guard let shell = sourceFile("ShellApp.swift"), let footer = sourceFile("StudioFooter.swift") else {
+            expect(false, "sources not found next to the binary"); return
+        }
+        expect(shell.contains("MonoChip(model.coreCanvasLabel)"), "the multiview chip reads the core")
+        expect(footer.contains("value: model.coreCanvasLabel,"), "the footer Program stat reads the core")
     }
 
     // ── 0.8 slot assignments + ISO selection persist ────────────────────────

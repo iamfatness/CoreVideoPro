@@ -27,10 +27,12 @@ enum ProductionSettingsPolicy {
     /// The stream flyout's recipe line. The stream profile itself is still the
     /// fixed 1080p30 H.264 recipe (separate stream render sizes are Tier 2.8);
     /// only the bitrate is the operator's, and the line says what is sent.
-    static func streamRecipeLabel(bitrateMbps: Double) -> String {
+    /// The stream encodes the Program canvas at the RTMP destination's fixed
+    /// 30 fps (streamDestinationSettings), so the size is the canvas height.
+    static func streamRecipeLabel(bitrateMbps: Double, height: Int = 1080) -> String {
         let mbps = bitrateMbps.rounded() == bitrateMbps
             ? String(format: "%.0f", bitrateMbps) : String(format: "%.1f", bitrateMbps)
-        return "1080p30 H.264 (VideoToolbox via ffmpeg) \u{00B7} \(mbps) Mbps CBR \u{00B7} AAC 160 kbps"
+        return "\(height)p30 H.264 (VideoToolbox via ffmpeg) \u{00B7} \(mbps) Mbps CBR \u{00B7} AAC 160 kbps"
     }
 }
 
@@ -82,6 +84,33 @@ extension AppModel {
 
     var canvasLabel: String {
         ProductionSettingsPolicy.canvasLabel(height: canvasHeight, fps: canvasFps)
+    }
+
+    /// What the CORE renders Program at (snapshot `outputProfile`), or nil
+    /// before a core has answered. Labels read this, not the Settings value:
+    /// a stream start used to drop Program to 1080p30 while the chip said
+    /// otherwise (review I3).
+    var coreOutputProfile: (width: Int, height: Int, fps: Int)? {
+        guard let profile = lastSnapshot["outputProfile"] as? JSONObject,
+              let height = (profile["height"] as? NSNumber)?.intValue,
+              let fps = (profile["fps"] as? NSNumber)?.intValue, height > 0, fps > 0 else { return nil }
+        return ((profile["width"] as? NSNumber)?.intValue ?? 0, height, fps)
+    }
+
+    /// The canvas the core reports ("1080p60"), or an em dash until it does.
+    var coreCanvasLabel: String {
+        coreOutputProfile.map { ProductionSettingsPolicy.canvasLabel(height: $0.height, fps: $0.fps) }
+            ?? "\u{2014}"
+    }
+
+    /// The stream profile: the canvas, as on Windows (DefaultStreamOutputProfile
+    /// = DefaultCanvasOutputProfile, MediaCoreProductionSyncContext.cs:422).
+    /// The core writes this profile into the SAME fields as set-output-profile
+    /// (MediaCore.cpp startProgramOutput), so anything but the canvas re-sizes
+    /// Program for every output. The RTMP destination pins its own 30 fps.
+    func streamOutputProfile() -> JSONObject {
+        ["width": canvasWidth, "height": canvasHeight, "fps": canvasFps,
+         "targetBitrateMbps": streamBitrateMbps, "codec": streamCodec]
     }
 
     func outputProfileCommand() -> JSONObject {
