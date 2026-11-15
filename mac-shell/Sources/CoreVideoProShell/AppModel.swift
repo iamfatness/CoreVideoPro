@@ -476,6 +476,32 @@ final class AppModel: ObservableObject {
     private var joinInFlight = false
 
     private var lastSavedPrefs = ShellPrefs()
+    /// True once restorePrefs() ran; persistPrefsNow() refuses before that.
+    private var prefsRestored = false
+
+    // ── virtual camera (roadmap M9.2; VirtualCamera.swift) ──────────────────
+    /// Installs/queries the camera system extension. Held strongly here:
+    /// OSSystemExtensionRequest.delegate is weak, and the activator owns the
+    /// in-flight requests. Tests swap in FakeCameraExtensionActivator.
+    var cameraExtension: CameraExtensionActivating = SystemCameraExtensionActivator()
+    @Published private(set) var cameraExtensionState: CameraExtensionState = .unknown
+    /// Operator intent (persisted). Change it only through the setters below.
+    @Published var virtualCamera = PersistedVirtualCamera()
+    /// The core's last `virtualCamera` node (nil = never observed).
+    @Published var virtualCameraCore: VirtualCameraReadModel?
+    /// nil = never asked; true after the first enable (persisted).
+    var cameraExtensionOptedIn: Bool?
+    /// A properties query that ends with didFinish and no foundProperties never
+    /// calls back; the shell must not wait on it forever.
+    var cameraExtensionQueryTimeout: TimeInterval = 5
+    private var cameraExtensionQueryToken: UUID?
+    /// TEST-ONLY command capture. Set only by ShellTests: no env var, control
+    /// command or wire field reaches it. When set, commands this seam covers are
+    /// handed to it instead of the bridge.
+    var coreCommandCaptureForTesting: ((JSONObject) -> Void)?
+    /// Proof-shot only (COREVIDEO_SHELL_VCAM): keeps a live core's snapshots
+    /// from replacing the virtual camera state being photographed.
+    var virtualCameraProofHold = false
 
     private func currentPrefs() -> ShellPrefs {
         var prefs = ShellPrefs()
@@ -511,6 +537,8 @@ final class AppModel: ObservableObject {
             .filter { $0.kind == "zoom" && !$0.dropoutPolicy.isEmpty }
             .map { PersistedSlotPolicy(slotId: $0.id, dropoutPolicy: $0.dropoutPolicy) }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
+        prefs.cameraExtensionOptedIn = cameraExtensionOptedIn
+        prefs.virtualCamera = virtualCamera == PersistedVirtualCamera() ? nil : virtualCamera
         prefs.scenes = scenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
                            backgroundAssetId: scene.backgroundAssetId,
@@ -589,8 +617,11 @@ final class AppModel: ObservableObject {
                          backgroundAssetId: saved.backgroundAssetId)
             }
         }
+        cameraExtensionOptedIn = prefs.cameraExtensionOptedIn
+        virtualCamera = prefs.virtualCamera ?? PersistedVirtualCamera()
         streamKey = StreamKeychain.load()
         lastSavedPrefs = prefs
+        prefsRestored = true
     }
 
     /// True once start() has run its setup. start() is reached from the main
@@ -619,6 +650,11 @@ final class AppModel: ObservableObject {
         // Local control API (Companion / Stream Deck): 127.0.0.1:8011 by default.
         // Never in the TESTS/SELFCHECK harness; a bind failure is a warning.
         controlApi.start(model: self)
+        // Camera extension (roadmap M9.2): activate after an earlier opt-in,
+        // else only query. Proof shots stage their own state instead.
+        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_VCAM"] == nil {
+            startCameraExtensionAtLaunch()
+        }
         // Self-snapshot harness: render our own window to PNG (no TCC, no
         // focus games — AX/screen-recording automation proved unreliable) and
         // exit. Pairs with COREVIDEO_SHELL_TAB for per-tab proof shots.
@@ -653,10 +689,28 @@ final class AppModel: ObservableObject {
                     QuitPromptPanel.show(model: self)
                 }
             }
+            // Proof-shot only: COREVIDEO_SHELL_VCAM=off|live|needsApproval photographs
+            // the virtual camera flyout in that state. It is staged on a SEPARATE,
+            // never-started model, so nothing is sent, persisted or activated.
+            var vcamProofView: NSView?
+            if let vcamProof = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_VCAM"] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                    let proofModel = AppModel()
+                    proofModel.stageVirtualCameraProof(vcamProof)
+                    let host = NSHostingView(rootView: VirtualCameraFlyout().environmentObject(proofModel))
+                    host.frame = NSRect(origin: .zero, size: host.fittingSize)
+                    let window = NSWindow(contentRect: host.frame, styleMask: [.borderless],
+                                          backing: .buffered, defer: false)
+                    window.contentView = host
+                    window.orderFrontRegardless()
+                    vcamProofView = host
+                    Self.vcamProofRetain = (proofModel, window)
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
-                let target: NSView? = quitPanelProof
+                let target: NSView? = vcamProofView ?? (quitPanelProof
                     ? QuitPromptPanel.proofView
-                    : NSApplication.shared.windows.first?.contentView
+                    : NSApplication.shared.windows.first?.contentView)
                 if let view = target,
                    let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                     view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -717,28 +771,7 @@ final class AppModel: ObservableObject {
         let bridge = MediaCoreBridge(corePath: corePath, environmentExtras: env)
         self.bridge = bridge
         bridge.onStatus = { [weak self] status in
-            Task { @MainActor in
-                self?.status = status
-                if case .connected(let renderer) = status {
-                    ShellLog.write("core connected renderer=\(renderer)")
-                    self?.onConnected()
-                }
-                if case .exited(let code) = status {
-                    self?.monitorControl.resetForProcess()
-                    self?.monitorControlNotice = "Monitor edit reconciling with restarted core"
-                    self?.audioRouteControl.resetForProcess()
-                    self?.audioRouteControlNotice = "Audio route reconciling with restarted core"
-                    self?.rosterProjection.resetForProcess()
-                    self?.rosterRecoveryNotice = "Zoom roster reconciling with restarted core"
-                    self?.recordingCommands.interrupted()
-                    self?.recordingDesired = false
-                    self?.streamingDesired = false
-                    self?.recordingStatus = "interrupted"
-                    self?.streamStatus = "interrupted"
-                    self?.streamDetail = "Media core exited; output continuity was interrupted."
-                    self?.pushWarning("media core exited (code \(code)) — relaunching")
-                }
-            }
+            Task { @MainActor in self?.handleBridgeStatus(status) }
         }
         bridge.onEvent = { [weak self] event in
             guard let self else { return }
@@ -752,6 +785,37 @@ final class AppModel: ObservableObject {
             CoreLog.write(line)
         }
         bridge.start()
+    }
+
+    /// Every bridge status change, including each new core generation
+    /// (`.connected` after a launch or a respawn).
+    func handleBridgeStatus(_ status: BridgeStatus) {
+        self.status = status
+        if case .connected(let renderer) = status {
+            ShellLog.write("core connected renderer=\(renderer)")
+            self.onConnected()
+        }
+        if case .exited(let code) = status {
+            self.monitorControl.resetForProcess()
+            self.monitorControlNotice = "Monitor edit reconciling with restarted core"
+            self.audioRouteControl.resetForProcess()
+            self.audioRouteControlNotice = "Audio route reconciling with restarted core"
+            self.rosterProjection.resetForProcess()
+            self.rosterRecoveryNotice = "Zoom roster reconciling with restarted core"
+            self.recordingCommands.interrupted()
+            self.recordingDesired = false
+            self.streamingDesired = false
+            self.recordingStatus = "interrupted"
+            self.streamStatus = "interrupted"
+            self.streamDetail = "Media core exited; output continuity was interrupted."
+            self.pushWarning("media core exited (code \(code)) — relaunching")
+        }
+    }
+
+    /// Test-only: stops the poll timers onConnected() schedules.
+    func stopTimersForTesting() {
+        syncTimer?.invalidate(); syncTimer = nil
+        zoomTimer?.invalidate(); zoomTimer = nil
     }
 
     // The Studio center is ONE multiview canvas (reference 01-studio): the
@@ -770,6 +834,163 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // ── virtual camera: intent, wire, activation ─────────────────────────────
+
+    var virtualCameraLabel: String {
+        VirtualCameraPresentation.label(intent: virtualCamera.enabled, ext: cameraExtensionState,
+                                        core: virtualCameraCore)
+    }
+
+    var virtualCameraFramerLabel: String {
+        VirtualCameraPresentation.framerLabel(framerEnabled: virtualCamera.framerEnabled,
+                                              intent: virtualCamera.enabled, core: virtualCameraCore)
+    }
+
+    /// The footer toggle and (later) the control API. Enabling while the
+    /// extension is not active asks the OS to install/approve it; the first
+    /// enable records the opt-in so a relaunch re-activates silently.
+    func setVirtualCamera(enabled: Bool) {
+        var next = virtualCamera
+        next.enabled = enabled
+        if enabled {
+            if cameraExtensionOptedIn != true { cameraExtensionOptedIn = true }
+            if cameraExtensionState != .active && cameraExtensionState != .activating {
+                activateCameraExtension()
+            }
+        }
+        applyVirtualCamera(next)
+    }
+
+    func setVirtualCameraMirror(_ on: Bool) {
+        var next = virtualCamera
+        next.mirror = on
+        applyVirtualCamera(next)
+    }
+
+    func setVirtualCameraFramer(_ on: Bool) {
+        var next = virtualCamera
+        next.framerEnabled = on
+        applyVirtualCamera(next)
+    }
+
+    /// Committed on field submit or focus loss, never per keystroke. The
+    /// operator's text is kept as typed (trimmed); the wire sanitizes it and a
+    /// blank name sends the default.
+    func setVirtualCameraDeviceName(_ name: String) {
+        var next = virtualCamera
+        next.deviceName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyVirtualCamera(next)
+    }
+
+    /// The ONE place a virtual camera field change lands: store, send, persist.
+    private func applyVirtualCamera(_ next: PersistedVirtualCamera) {
+        let changed = next != virtualCamera
+        virtualCamera = next
+        sendVirtualCameraSync()
+        if changed { persistPrefsNow() }
+    }
+
+    /// One-shot command, so it is also re-sent on every core generation
+    /// (onConnected): a respawned core forgets it and answers with its default.
+    private func sendVirtualCameraSync() {
+        let body = CoreCommands.mediaCoreSync(elapsedMs: Double(elapsedMs()),
+                                              commands: [CoreCommands.syncVirtualCamera(virtualCamera)])
+        if let capture = coreCommandCaptureForTesting { capture(body); return }
+        guard let bridge else { return }
+        Task {
+            if let response = try? await bridge.request(body),
+               let snapshot = response["snapshot"] as? JSONObject {
+                applySnapshot(snapshot)
+            }
+        }
+    }
+
+    /// Saves now instead of waiting for the 5 s autosave, but never before the
+    /// operator's file has been restored (that would write defaults over it).
+    private func persistPrefsNow() {
+        guard prefsRestored else { return }
+        let prefs = currentPrefs()
+        guard prefs != lastSavedPrefs else { return }
+        prefs.save()
+        lastSavedPrefs = prefs
+    }
+
+    /// Launch: after an opt-in, activate (a silent update/replace — or the
+    /// approval prompt again if it was never granted); otherwise only ask.
+    func startCameraExtensionAtLaunch() {
+        if cameraExtensionOptedIn == true {
+            activateCameraExtension()
+        } else {
+            queryCameraExtension()
+        }
+    }
+
+    private func activateCameraExtension() {
+        cameraExtensionQueryToken = nil  // an activation outranks any pending query
+        cameraExtension.activate { [weak self] state in
+            Task { @MainActor in self?.setCameraExtensionState(state) }
+        }
+    }
+
+    private func queryCameraExtension() {
+        let token = UUID()
+        cameraExtensionQueryToken = token
+        cameraExtension.query { [weak self] state in
+            Task { @MainActor in
+                guard let self, self.cameraExtensionQueryToken == token else { return }
+                self.cameraExtensionQueryToken = nil
+                self.setCameraExtensionState(state)
+            }
+        }
+        let timeout = cameraExtensionQueryTimeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.cameraExtensionQueryToken == token else { return }
+                self.cameraExtensionQueryToken = nil
+                ShellLog.write("vcam-ext: properties query gave no answer in \(timeout) s; treating as notInstalled")
+                self.setCameraExtensionState(.notInstalled)
+            }
+        }
+    }
+
+    private func setCameraExtensionState(_ state: CameraExtensionState) {
+        guard state != cameraExtensionState else { return }
+        ShellLog.write("vcam-ext: shell state \(cameraExtensionState) -> \(state)")
+        cameraExtensionState = state
+    }
+
+    /// Proof-shot only (COREVIDEO_SHELL_VCAM): keeps the staged model and its window alive.
+    static var vcamProofRetain: (AppModel, NSWindow)?
+
+    /// Proof-shot only: stages a flyout state on a never-started model by
+    /// assigning fields directly (no send, no persist, no activation).
+    func stageVirtualCameraProof(_ name: String) {
+        virtualCameraProofHold = true
+        switch name {
+        case "live":
+            virtualCamera = PersistedVirtualCamera(enabled: true, mirror: true, framerEnabled: true,
+                                                   deviceName: "")
+            cameraExtensionState = .active
+            var core = VirtualCameraReadModel()
+            core.enabled = true; core.status = "live"; core.width = 1920; core.height = 1080
+            core.framerState = "active"; core.framesPublished = 600
+            virtualCameraCore = core
+        case "needsApproval":
+            virtualCamera = PersistedVirtualCamera(enabled: true)
+            cameraExtensionState = .needsApproval
+            virtualCameraCore = nil
+        default:
+            virtualCamera = PersistedVirtualCamera()
+            cameraExtensionState = .notInstalled
+            virtualCameraCore = nil
+        }
+    }
+
+    func openCameraExtensionSettings() {
+        let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        NSWorkspace.shared.open(CameraExtensionPolicy.settingsURL(osMajor: major))
+    }
+
     private func onConnected() {
         monitorControl.resetForProcess()
         audioRouteControl.resetForProcess()
@@ -780,6 +1001,8 @@ final class AppModel: ObservableObject {
         // Re-assert a restored grade: the core starts neutral every launch, so
         // a persisted grade that is never pushed silently does nothing.
         if !gradeIsNeutral { applyColorGrade() }
+        // One-shot: a respawned core forgets the virtual camera (CLAUDE.md).
+        sendVirtualCameraSync()
         audioInputs = AudioInputs.available()
         reassertCaptureAudio()
         // A scene always sits on PROGRAM (the Windows shell starts on its
@@ -883,6 +1106,9 @@ final class AppModel: ObservableObject {
             observeAudioObservation(snapshot)
         }
         if !snapshot.isEmpty { applyProgramBlackout(snapshot) }
+        if !snapshot.isEmpty, !virtualCameraProofHold {
+            virtualCameraCore = VirtualCameraReadModel.parse(snapshot)
+        }
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         clockText = formatter.string(from: Date())

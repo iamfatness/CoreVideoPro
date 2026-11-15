@@ -560,6 +560,213 @@ enum ShellTests {
         expectEqual(act.count, 3, "an unknown request is ignored")
     }
 
+    // ── virtual camera shell side (roadmap M9.2 Task 6) ─────────────────────
+
+    private static func vcamCore(_ status: String, warning: String = "",
+                                 width: Int = 1920, height: Int = 1080,
+                                 framerState: String = "off", framerWarning: String = "") -> VirtualCameraReadModel {
+        var m = VirtualCameraReadModel()
+        m.enabled = true; m.status = status; m.warning = warning
+        m.width = width; m.height = height
+        m.framerState = framerState; m.framerWarning = framerWarning
+        return m
+    }
+
+    private static func testVirtualCameraLabelPrecedence() {
+        typealias P = VirtualCameraPresentation
+        let live = vcamCore("live")
+        // One row per precedence line.
+        expectEqual(P.label(intent: false, ext: .active, core: nil), "Virtual camera off", "1 intent off")
+        expectEqual(P.label(intent: true, ext: .activating, core: nil),
+                    "Installing the virtual camera\u{2026}", "2 activating")
+        expectEqual(P.label(intent: true, ext: .needsApproval, core: nil),
+                    "Allow CoreVideo Pro Camera in System Settings to finish setup.", "3 needs approval")
+        expectEqual(P.label(intent: true, ext: .notInApplications, core: nil),
+                    "Move CoreVideo Pro to the Applications folder to use the virtual camera.", "4 not in /Applications")
+        expectEqual(P.label(intent: true, ext: .needsReboot, core: nil),
+                    "Restart your Mac to finish installing the virtual camera.", "5 needs reboot")
+        expectEqual(P.label(intent: true, ext: .unavailable("U reason"), core: nil), "U reason", "6 unavailable")
+        expectEqual(P.label(intent: true, ext: .failed("F reason"), core: nil), "F reason", "6 failed")
+        expectEqual(P.label(intent: true, ext: .active, core: vcamCore("live", width: 1280, height: 720)),
+                    "Virtual camera live (1280x720)", "7 core live")
+        expectEqual(P.label(intent: true, ext: .active,
+                            core: vcamCore("failed", warning: "CAMERA_EXTENSION_NOT_FOUND: no device")),
+                    "Connecting to CoreVideo Pro Camera\u{2026}", "8 not found")
+        expectEqual(P.label(intent: true, ext: .active,
+                            core: vcamCore("failed", warning: "CAMERA_EXTENSION_LOST: sink vanished")),
+                    "Connecting to CoreVideo Pro Camera\u{2026}", "8 lost")
+        expectEqual(P.label(intent: true, ext: .active,
+                            core: vcamCore("failed", warning: "SINK_START_FAILED: queue refused: busy")),
+                    "queue refused: busy", "9 other warning: text after the FIRST \": \"")
+        expectEqual(P.label(intent: true, ext: .active, core: vcamCore("failed", warning: "plain words")),
+                    "plain words", "9 warning without a code prefix is shown whole")
+        expectEqual(P.label(intent: true, ext: .active, core: vcamCore("failed")),
+                    "Virtual camera failed", "9 empty warning: the Windows core-failure wording")
+        expectEqual(P.label(intent: true, ext: .active, core: vcamCore("starting")), "Virtual camera on", "10 starting")
+        expectEqual(P.label(intent: true, ext: .unknown, core: nil), "Virtual camera on", "10 no snapshot yet")
+        // Conflict rows.
+        expectEqual(P.label(intent: false, ext: .active, core: live), "Virtual camera off",
+                    "intent off beats a live core")
+        expectEqual(P.label(intent: true, ext: .needsApproval, core: live),
+                    "Allow CoreVideo Pro Camera in System Settings to finish setup.",
+                    "needsApproval beats a live core")
+        // Settings button only while approval is pending.
+        expect(P.showsSettingsButton(.needsApproval), "approval shows the settings button")
+        for s: CameraExtensionState in [.unknown, .notInstalled, .activating, .active, .needsReboot,
+                                        .notInApplications, .unavailable("x"), .failed("y")] {
+            expect(!P.showsSettingsButton(s), "no settings button for \(s)")
+        }
+        // Framer label ports VirtualCameraFramerStatusLabel.
+        expectEqual(P.framerLabel(framerEnabled: false, intent: true, core: live), "Framer off", "framer off")
+        expectEqual(P.framerLabel(framerEnabled: true, intent: false, core: live),
+                    "Ready when webcam output is enabled", "framer armed, camera off")
+        expectEqual(P.framerLabel(framerEnabled: true, intent: true,
+                                  core: vcamCore("live", framerState: "unavailable", framerWarning: "No Metal device")),
+                    "No Metal device", "framer unavailable shows its warning")
+        expectEqual(P.framerLabel(framerEnabled: true, intent: true, core: vcamCore("live", framerState: "active")),
+                    "OH Framer active on webcam output", "framer active")
+        expectEqual(P.framerLabel(framerEnabled: true, intent: true, core: nil),
+                    "Waiting for webcam frame", "framer waiting")
+    }
+
+    private static func testVirtualCameraReadModelParsesTheCoreShape() {
+        // Exactly the CoreStateCapture::virtualCameraState keys the brief names.
+        let node: JSONObject = [
+            "enabled": true, "status": "live", "deviceName": "CoreVideo Pro Camera",
+            "resolution": ["width": 1920, "height": 1080] as JSONObject, "fps": 60,
+            "framesPublished": 42.0, "framerState": "active", "framerWarning": "fw",
+            "warning": "w",
+        ]
+        guard let m = VirtualCameraReadModel.parse(["virtualCamera": node]) else {
+            expect(false, "a snapshot with the node parses"); return
+        }
+        expect(m.enabled, "enabled read")
+        expectEqual(m.status, "live", "status read")
+        expectEqual(m.width, 1920, "width from resolution.width")
+        expectEqual(m.height, 1080, "height from resolution.height")
+        expectEqual(m.framesPublished, 42, "framesPublished read (a JSON double)")
+        expectEqual(m.framerState, "active", "framerState read")
+        expectEqual(m.framerWarning, "fw", "framerWarning read")
+        expectEqual(m.warning, "w", "warning read")
+        expect(VirtualCameraReadModel.parse(["recording": [:] as JSONObject]) == nil,
+               "a snapshot without the node is nil, not a default 'off'")
+    }
+
+    private static func testSyncVirtualCameraWire() {
+        let wire = CoreCommands.syncVirtualCamera(
+            PersistedVirtualCamera(enabled: true, mirror: true, framerEnabled: true, deviceName: "Studio Cam"))
+        expectEqual(Set(wire.keys), ["type", "on", "mirror", "framerEnabled", "deviceName"], "exact keys")
+        expectEqual(wire["type"] as? String, "sync-virtual-camera", "type")
+        expectEqual(wire["on"] as? Bool, true, "on")
+        expectEqual(wire["mirror"] as? Bool, true, "mirror")
+        expectEqual(wire["framerEnabled"] as? Bool, true, "framerEnabled")
+        expectEqual(wire["deviceName"] as? String, "Studio Cam", "deviceName")
+        expect(wire["payload"] == nil, "root-level, not payload-wrapped")
+        let off = CoreCommands.syncVirtualCamera(PersistedVirtualCamera())
+        expectEqual(off["on"] as? Bool, false, "off is sent explicitly (the core defaults on to TRUE)")
+        // C11: the core ignores an empty name, so a blank field sends the default.
+        expectEqual(off["deviceName"] as? String, CameraConstants.defaultDeviceName, "blank name -> default")
+        let spaced = CoreCommands.syncVirtualCamera(PersistedVirtualCamera(enabled: true, deviceName: "   "))
+        expectEqual(spaced["deviceName"] as? String, CameraConstants.defaultDeviceName, "whitespace -> default")
+        // Cross-check the key names against MediaCore::syncVirtualCamera.
+        guard let fromCore = CoreCommands.syncVirtualCameraKeysFromCoreSource() else {
+            FileHandle.standardError.write(
+                "  SKIPPED sync-virtual-camera core cross-check (core source not alongside binary)\n"
+                    .data(using: .utf8)!)
+            return
+        }
+        expectEqual(Set(wire.keys).subtracting(["type"]), fromCore,
+                    "the shell's sync-virtual-camera keys are exactly what MediaCore::syncVirtualCamera reads")
+    }
+
+    private static func testVirtualCameraPrefsRoundTripAndOlderFile() {
+        let older = #"{"joinMeetingId":"555","streamUrl":"rtmp://x/live","cameraExtensionOptedIn":true}"#
+        guard let decoded = try? JSONDecoder().decode(ShellPrefs.self, from: Data(older.utf8)) else {
+            expect(false, "an older prefs file without virtualCamera decodes"); return
+        }
+        expect(decoded.virtualCamera == nil, "absent key decodes to nil")
+        expectEqual(decoded.joinMeetingId, "555", "other fields are kept")
+        expectEqual(decoded.cameraExtensionOptedIn, true, "opt-in kept")
+        var p = ShellPrefs()
+        p.virtualCamera = PersistedVirtualCamera(enabled: true, mirror: true, framerEnabled: true, deviceName: "Cam B")
+        let back = try? JSONDecoder().decode(ShellPrefs.self, from: JSONEncoder().encode(p))
+        expectEqual(back?.virtualCamera, p.virtualCamera, "all four fields survive a round trip")
+        expect(ShellPrefs.roundTripSelfCheck() == nil, "the self-check still round-trips every field")
+    }
+
+    @MainActor
+    private static func testVirtualCameraResentOnNewCoreGeneration() {
+        let model = AppModel()
+        model.cameraExtension = FakeCameraExtensionActivator(script: [.active])
+        var sent: [JSONObject] = []
+        model.coreCommandCaptureForTesting = { sent.append($0) }
+        model.setVirtualCamera(enabled: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        func vcamCommands() -> [JSONObject] {
+            sent.flatMap { ($0["commands"] as? [JSONObject]) ?? [] }
+                .filter { $0["type"] as? String == "sync-virtual-camera" }
+        }
+        expectEqual(vcamCommands().count, 1, "the toggle sends one sync-virtual-camera")
+        sent.removeAll()
+        // Two core generations through the real bridge-status path.
+        model.handleBridgeStatus(.connected(renderer: "test-gen-1"))
+        model.handleBridgeStatus(.exited(code: 9))
+        model.handleBridgeStatus(.connected(renderer: "test-gen-2"))
+        let resent = vcamCommands()
+        expectEqual(resent.count, 2, "each new core generation is re-sent the virtual camera state")
+        expect(resent.allSatisfy { $0["on"] as? Bool == true }, "the resend carries the operator's intent")
+        model.stopTimersForTesting()
+    }
+
+    /// Activation wiring: first enable opts in and activates; launch activates
+    /// when opted in and only queries otherwise; a silent query times out.
+    @MainActor
+    private static func testVirtualCameraActivationWiring() {
+        let model = AppModel()
+        let fake = FakeCameraExtensionActivator(script: [.activating, .needsApproval])
+        model.cameraExtension = fake
+        model.coreCommandCaptureForTesting = { _ in }
+        expect(model.cameraExtensionOptedIn == nil, "never asked by default")
+        model.setVirtualCamera(enabled: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(fake.calls, ["activate"], "enabling with the extension inactive activates it")
+        expectEqual(model.cameraExtensionOptedIn, true, "the first enable opts in")
+        expectEqual(model.cameraExtensionState, .needsApproval, "activation states reach the model")
+        expectEqual(model.virtualCameraLabel, "Allow CoreVideo Pro Camera in System Settings to finish setup.",
+                    "the label follows the activation state")
+        model.setVirtualCameraMirror(true)
+        model.setVirtualCameraFramer(true)
+        model.setVirtualCameraDeviceName("  Booth  ")
+        expect(model.virtualCamera.mirror && model.virtualCamera.framerEnabled, "setters update intent")
+
+        let optedIn = AppModel()
+        let fake2 = FakeCameraExtensionActivator(script: [.active])
+        optedIn.cameraExtension = fake2
+        optedIn.cameraExtensionOptedIn = true
+        optedIn.startCameraExtensionAtLaunch()
+        expectEqual(fake2.calls, ["activate"], "launch after an opt-in activates (silent update)")
+
+        let fresh = AppModel()
+        let fake3 = FakeCameraExtensionActivator()
+        fresh.cameraExtension = fake3
+        fresh.startCameraExtensionAtLaunch()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(fake3.calls, ["query"], "launch without an opt-in only queries")
+        expectEqual(fresh.cameraExtensionState, .notInstalled, "query result reaches the model")
+
+        final class SilentActivator: CameraExtensionActivating {
+            func query(_ done: @escaping (CameraExtensionState) -> Void) {}
+            func activate(_ update: @escaping (CameraExtensionState) -> Void) {}
+            func deactivate(_ update: @escaping (CameraExtensionState) -> Void) {}
+        }
+        let silent = AppModel()
+        silent.cameraExtension = SilentActivator()
+        silent.cameraExtensionQueryTimeout = 0.1
+        silent.startCameraExtensionAtLaunch()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        expectEqual(silent.cameraExtensionState, .notInstalled, "a query that never answers times out to notInstalled")
+    }
+
     private static func testCameraExtensionPrefsField() {
         var p = ShellPrefs()
         expect(p.cameraExtensionOptedIn == nil, "absent by default")
@@ -1336,7 +1543,7 @@ enum ShellTests {
         expectEqual(sides.right, 50, "R from the pgm-r tap")
         let none = StudioFooterReadout.masterLevels(snapshot: [:], fallback: 42)
         expect(none.left == 42 && none.right == 42, "no taps: mono master level on both sides")
-        for text in [StudioFooterReadout.virtualCameraUnavailable, StudioFooterReadout.ndiUnavailable] {
+        for text in [StudioFooterReadout.ndiUnavailable] {
             expect(text.contains("isn't available on Mac yet"), "unavailable output says so plainly")
             expect(!text.contains("Developer ID"), "the app IS Developer ID signed; never blame it")
         }
@@ -2962,6 +3169,12 @@ enum ShellTests {
             ("vcam-ext/prefs-field", testCameraExtensionPrefsField),
             ("vcam-ext/reducer", testCameraExtensionReducerSequences),
             ("vcam-ext/activator-isolation", testCameraExtensionActivatorKeepsRequestsApart),
+            ("vcam/label-precedence", testVirtualCameraLabelPrecedence),
+            ("vcam/read-model-core-shape", testVirtualCameraReadModelParsesTheCoreShape),
+            ("vcam/wire-vs-core", testSyncVirtualCameraWire),
+            ("vcam/prefs-round-trip-older-file", testVirtualCameraPrefsRoundTripAndOlderFile),
+            ("vcam/resent-each-core-generation", testVirtualCameraResentOnNewCoreGeneration),
+            ("vcam/activation-wiring", testVirtualCameraActivationWiring),
             ("overlays/brand-kit-payload", testBrandKitCommandCarriesOnlyWhatTheCoreApplies),
             ("overlays/old-prefs-decode", testOldOverlayPrefsWithRemovedFieldsStillDecode),
             ("overlays/brand-default-all-off-leaves-manual", testBrandDefaultAllOffLeavesTheManualLowerThirdAlone),

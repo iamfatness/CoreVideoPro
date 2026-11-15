@@ -152,7 +152,7 @@ struct CameraExtensionRequestReducer {
 final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating, OSSystemExtensionRequestDelegate {
     /// Everything one in-flight request needs. Holding the request here keeps it
     /// alive (OSSystemExtensionRequest.delegate is weak); whoever owns the
-    /// activator must hold IT strongly (CameraExtensionSpike.activator does).
+    /// activator must hold IT strongly (AppModel.cameraExtension does).
     private struct InFlight {
         var reducer: CameraExtensionRequestReducer
         var callback: (CameraExtensionState) -> Void
@@ -217,7 +217,6 @@ final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating,
               kind: .activate, last: .activating, callback: update)
     }
 
-
     func deactivate(_ update: @escaping (CameraExtensionState) -> Void) {
         start(OSSystemExtensionRequest.deactivationRequest(
             forExtensionWithIdentifier: CameraConstants.extensionBundleID, queue: .main),
@@ -253,16 +252,5 @@ final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating,
         deliver(.foundProperties(properties.map {
             (enabled: $0.isEnabled, awaitingApproval: $0.isAwaitingUserApproval, uninstalling: $0.isUninstalling)
         }), for: request)
-    }
-}
-
-/// Holder for the temporary Debug-menu spike item (removed in Task 6). The
-/// static keeps the activator alive: OSSystemExtensionRequest.delegate is weak.
-enum CameraExtensionSpike {
-    static let activator = SystemCameraExtensionActivator()
-
-    static func run() {
-        ShellLog.write("vcam-ext: spike activate requested")
-        activator.activate { state in ShellLog.write("vcam-ext: spike state \(state)") }
     }
 }

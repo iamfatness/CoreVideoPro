@@ -106,10 +106,6 @@ struct ShellApp: App {
         .commands {
             // No File > New Window (⌘N): there is exactly one console.
             CommandGroup(replacing: .newItem) {}
-            // TEMPORARY owner-spike item (roadmap M9.2 Task 3); removed in Task 6.
-            CommandMenu("Debug") {
-                Button("Activate camera extension") { CameraExtensionSpike.run() }
-            }
         }
 
         // POP-OUTS — `Window`, not `WindowGroup`. WindowGroup mints a NEW window

@@ -194,7 +194,7 @@ struct SettingsPane: View {
             card("System") {
                 row("Media core", statusText)
                 row("Renderer", rendererText)
-                row("Virtual camera", StudioFooterReadout.virtualCameraUnavailable)
+                row("Virtual camera", model.virtualCameraLabel)
                 labeled("Logs") {
                     HStack(spacing: 6) {
                         Button("Shell log") { reveal("CoreVideoPro-shell.log") }

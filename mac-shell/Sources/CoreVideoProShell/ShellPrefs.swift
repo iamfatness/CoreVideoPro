@@ -122,6 +122,8 @@ struct ShellPrefs: Codable, Equatable {
     var vstChannelSelections: [String: String]?
     // Operator opted in to the virtual camera extension (roadmap M9.2). OPTIONAL: nil = never asked.
     var cameraExtensionOptedIn: Bool?
+    // Virtual camera intent (roadmap M9.2, VirtualCamera.swift). OPTIONAL: nil = never set.
+    var virtualCamera: PersistedVirtualCamera?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -172,6 +174,8 @@ struct ShellPrefs: Codable, Equatable {
                                                        forKey: .slotDropoutPolicies)) ?? nil)
         cameraExtensionOptedIn = ((try? c.decodeIfPresent(Bool.self,
                                                           forKey: .cameraExtensionOptedIn)) ?? nil)
+        virtualCamera = ((try? c.decodeIfPresent(PersistedVirtualCamera.self,
+                                                 forKey: .virtualCamera)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -209,6 +213,8 @@ struct ShellPrefs: Codable, Equatable {
         p.slotDropoutPolicies = [PersistedSlotPolicy(slotId: 2, dropoutPolicy: "black")]
         p.vstChannelSelections = ["ch1": "vst:Test"]
         p.cameraExtensionOptedIn = true
+        p.virtualCamera = PersistedVirtualCamera(enabled: true, mirror: true,
+                                                 framerEnabled: true, deviceName: "Round Trip Cam")
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
             return "decode failed"
