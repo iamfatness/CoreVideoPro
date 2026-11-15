@@ -120,6 +120,8 @@ struct ShellPrefs: Codable, Equatable {
     // preferences file fail to decode, and load() silently falls back to
     // defaults, wiping the operator's saved show. Optional gets decodeIfPresent.
     var vstChannelSelections: [String: String]?
+    // Operator opted in to the virtual camera extension (roadmap M9.2). OPTIONAL: nil = never asked.
+    var cameraExtensionOptedIn: Bool?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -168,6 +170,8 @@ struct ShellPrefs: Codable, Equatable {
                                               forKey: .chromaKeys)) ?? nil)
         slotDropoutPolicies = ((try? c.decodeIfPresent([PersistedSlotPolicy].self,
                                                        forKey: .slotDropoutPolicies)) ?? nil)
+        cameraExtensionOptedIn = ((try? c.decodeIfPresent(Bool.self,
+                                                          forKey: .cameraExtensionOptedIn)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -204,6 +208,7 @@ struct ShellPrefs: Codable, Equatable {
         p.chromaKeys = [PersistedChromaKey(slotId: 1)]
         p.slotDropoutPolicies = [PersistedSlotPolicy(slotId: 2, dropoutPolicy: "black")]
         p.vstChannelSelections = ["ch1": "vst:Test"]
+        p.cameraExtensionOptedIn = true
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
             return "decode failed"

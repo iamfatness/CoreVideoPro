@@ -437,6 +437,90 @@ enum ShellTests {
         expect(roundTrip == nil, "every ShellPrefs field must survive encode->decode: \(detail)")
     }
 
+    // ── camera extension activation policy (roadmap M9.2) ────────────────────
+    private static let extDomain = "OSSystemExtensionErrorDomain"
+
+    private static func testCameraExtensionErrorMapping() {
+        func map(_ code: Int, _ canceledByUs: Bool = false) -> CameraExtensionState {
+            CameraExtensionPolicy.state(forActivationError: extDomain, code: code,
+                                        canceledByUs: canceledByUs)
+        }
+        expectEqual(map(3), .notInApplications, "code 3 = unsupported parent bundle location")
+        let unsigned = CameraExtensionState.unavailable("This copy of CoreVideo Pro isn't signed to install the camera.")
+        expectEqual(map(2), unsigned, "code 2 = missing entitlement")
+        expectEqual(map(8), unsigned, "code 8 = invalid code signature")
+        expectEqual(map(10), .unavailable("macOS policy blocked the camera extension."), "code 10 = system policy")
+        expectEqual(map(11, true), .active, "code 11 we canceled (same version) = already active")
+        expectEqual(map(11, false), .failed("Couldn't install the virtual camera (code 11)."),
+                    "code 11 not canceled by us is a real failure")
+        expectEqual(map(13), .needsApproval, "code 13 = authorization required")
+        expectEqual(map(9), .failed("Couldn't install the virtual camera (code 9)."), "anything else fails with its code")
+        expectEqual(CameraExtensionPolicy.state(forActivationError: "other", code: 3, canceledByUs: false),
+                    .failed("Couldn't install the virtual camera (code 3)."), "a foreign domain is never mapped")
+    }
+
+    private static func testCameraExtensionPreflight() {
+        let msg = "This build can't install the virtual camera (development build without a provisioning profile)."
+        expectEqual(CameraExtensionPolicy.preflight(bundlePath: "/Users/x/Downloads/CoreVideo Pro.app", hasEmbeddedProfile: true),
+                    .notInApplications, "Downloads is not /Applications")
+        expectEqual(CameraExtensionPolicy.preflight(bundlePath: "/ApplicationsX/CoreVideo Pro.app", hasEmbeddedProfile: true),
+                    .notInApplications, "/ApplicationsX is not /Applications/")
+        expectEqual(CameraExtensionPolicy.preflight(bundlePath: "/Users/x/Applications/CoreVideo Pro.app", hasEmbeddedProfile: true),
+                    .notInApplications, "a nested Applications folder is not /Applications/")
+        expectEqual(CameraExtensionPolicy.preflight(bundlePath: "/Applications/CoreVideo Pro.app", hasEmbeddedProfile: false),
+                    .unavailable(msg), "no provisioning profile")
+        expect(CameraExtensionPolicy.preflight(bundlePath: "/Applications/CoreVideo Pro.app", hasEmbeddedProfile: true) == nil,
+               "installed with a profile passes preflight")
+    }
+
+    private static func testCameraExtensionReplacement() {
+        expectEqual(CameraExtensionPolicy.replacement(existingVersion: "100", newVersion: "100"), .keep, "same version keeps")
+        expectEqual(CameraExtensionPolicy.replacement(existingVersion: "100", newVersion: "101"), .replace, "upgrade replaces")
+        expectEqual(CameraExtensionPolicy.replacement(existingVersion: "101", newVersion: "100"), .replace,
+                    "downgrade replaces (older install)")
+    }
+
+    private static func testCameraExtensionProperties() {
+        typealias P = (enabled: Bool, awaitingApproval: Bool, uninstalling: Bool)
+        let f = CameraExtensionPolicy.state(forProperties:)
+        expectEqual(f([]), .notInstalled, "no entries = not installed")
+        expectEqual(f([P(true, false, false)]), .active, "enabled = active")
+        expectEqual(f([P(true, false, true), P(false, true, false)]), .needsApproval,
+                    "enabled but uninstalling does not count; awaiting approval wins next")
+        expectEqual(f([P(false, false, false), P(true, false, true)]), .notInstalled, "nothing usable")
+        expectEqual(f([P(false, true, false), P(true, false, false)]), .active, "any enabled entry wins")
+    }
+
+    private static func testCameraExtensionSettingsLink() {
+        let security = "x-apple.systempreferences:com.apple.preference.security?Security"
+        let login = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+        for v in [13, 14] { expectEqual(CameraExtensionPolicy.settingsURL(osMajor: v).absoluteString, security, "macOS \(v)") }
+        for v in [15, 26] { expectEqual(CameraExtensionPolicy.settingsURL(osMajor: v).absoluteString, login, "macOS \(v)") }
+        expectEqual(CameraExtensionPolicy.settingsInstruction(osMajor: 15),
+                    "System Settings \u{203A} General \u{203A} Login Items & Extensions \u{203A} Camera Extensions", "15+ text")
+        expectEqual(CameraExtensionPolicy.settingsInstruction(osMajor: 14),
+                    "System Settings \u{203A} Privacy & Security, then click Allow next to the CoreVideo Pro message", "13-14 text")
+    }
+
+    private static func testCameraExtensionFakeRecordsCalls() {
+        let fake = FakeCameraExtensionActivator(script: [.activating, .needsApproval, .active])
+        var seen: [CameraExtensionState] = []
+        fake.activate { seen.append($0) }
+        expectEqual(seen, [.activating, .needsApproval, .active], "scripted states are delivered in order")
+        fake.deactivate { seen.append($0) }
+        fake.query { seen.append($0) }
+        expectEqual(fake.calls, ["activate", "deactivate", "query"], "calls are recorded")
+    }
+
+    private static func testCameraExtensionPrefsField() {
+        var p = ShellPrefs()
+        expect(p.cameraExtensionOptedIn == nil, "absent by default")
+        p.cameraExtensionOptedIn = true
+        let data = try! JSONEncoder().encode(p)
+        let back = try! JSONDecoder().decode(ShellPrefs.self, from: data)
+        expectEqual(back.cameraExtensionOptedIn, true, "opt-in survives a round trip")
+    }
+
     /// A corrupt or truncated file must fall back to defaults, not crash.
     private static func testPrefsToleratesGarbage() {
         let garbage = "{not json at all".data(using: .utf8)!
@@ -2821,6 +2905,13 @@ enum ShellTests {
             ("iso/selection-port", testRecordingIsoSelectionPort),
             ("iso/preflight-loud", testIsoPreflightWarnsLoudly),
             ("iso/preflight-unobserved", testIsoPreflightNeverWarnsOnAnUnobservedState),
+            ("vcam-ext/error-mapping", testCameraExtensionErrorMapping),
+            ("vcam-ext/preflight", testCameraExtensionPreflight),
+            ("vcam-ext/replacement", testCameraExtensionReplacement),
+            ("vcam-ext/properties", testCameraExtensionProperties),
+            ("vcam-ext/settings-link", testCameraExtensionSettingsLink),
+            ("vcam-ext/fake", testCameraExtensionFakeRecordsCalls),
+            ("vcam-ext/prefs-field", testCameraExtensionPrefsField),
             ("overlays/brand-kit-payload", testBrandKitCommandCarriesOnlyWhatTheCoreApplies),
             ("overlays/old-prefs-decode", testOldOverlayPrefsWithRemovedFieldsStillDecode),
             ("overlays/brand-default-all-off-leaves-manual", testBrandDefaultAllOffLeavesTheManualLowerThirdAlone),
