@@ -27,6 +27,7 @@ extension ShellTests {
             ("tier0/recording-folder-chosen-and-persisted", testRecordingFolderIsChosenPersistedAndUsed),
             ("tier0/recording-folder-falls-back-loudly", testRecordingFolderFallsBackLoudly),
             ("tier0/record-flyout-shows-the-effective-folder", testRecordFlyoutShowsTheEffectiveFolder),
+            ("tier0/recording-folder-real-write-probe", testRecordingFolderIsProbedWithARealWrite),
             ("tier0/zoom-status-reads-sdk-readiness", testZoomStatusReadsTheCoresSdkReadiness),
             ("tier0/lower-third-keys-a-program-source", testManualLowerThirdKeysAProgramSourceTheCoreGateAdmits),
             ("tier0/lower-third-status-from-core", testLowerThirdStatusComesFromTheCoresOverlayState),
@@ -476,6 +477,28 @@ extension ShellTests {
         }
         expect(footer.contains("Text(model.recordFlyoutFolder)"), "the flyout shows the effective folder")
         expect(!footer.contains("StudioFooterReadout.recordingFolder"), "the fixed ~/Movies readout is gone")
+    }
+
+    /// Review minor: access(2) can report writable before macOS grants a
+    /// removable volume, so the folder is probed with a real file write.
+    @MainActor
+    static func testRecordingFolderIsProbedWithARealWrite() {
+        let folder = scratchDir("probe")
+        expectEqual(RecordingFolderPolicy.problem(with: folder), nil, "a writable folder passes the probe")
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? ["?"]
+        expectEqual(leftovers, [], "the probe leaves no file behind")
+
+        let real = RecordingFolderPolicy.writeProbe
+        defer { RecordingFolderPolicy.writeProbe = real }
+        RecordingFolderPolicy.writeProbe = { _ in "macOS did not allow a test file to be written (denied)" }
+        let model = AppModel()
+        expect(!model.setRecordingFolder(scratchDir("tcc")),
+               "a folder macOS refuses at the probe is refused when chosen")
+        expect(model.recordingFolderWarning.contains("did not allow a test file"), "and says why")
+        model.recordingFolderChoice = folder
+        let used = model.recordingTargetFolder()
+        expect(used != folder, "at Record, a refused probe falls back to the default")
+        expect(model.recordingFolderWarning.contains("did not allow a test file"), "loudly")
     }
 
     // ── 0.15 Zoom tab status reflects SDK readiness ─────────────────────────
