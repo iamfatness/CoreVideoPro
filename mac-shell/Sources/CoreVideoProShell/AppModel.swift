@@ -525,6 +525,7 @@ final class AppModel: ObservableObject {
         }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         storeProductionSettings(into: &prefs)
+        prefs.recordingFolder = recordingFolderChoice.isEmpty ? nil : recordingFolderChoice
         prefs.scenes = railScenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
                            backgroundAssetId: scene.backgroundAssetId,
@@ -613,6 +614,7 @@ final class AppModel: ObservableObject {
             }
         }
         restoreProductionSettings(prefs)
+        recordingFolderChoice = prefs.recordingFolder ?? ""
         lastSavedPrefs = prefs
     }
 
@@ -1273,6 +1275,10 @@ final class AppModel: ObservableObject {
         ("h264", "H.264 (VideoToolbox)"),
     ]
     @Published var recordFormat = "mp4"
+    /// The operator's recording folder ("" = default). See RecordingFolder.swift.
+    @Published var recordingFolderChoice = ""
+    /// Why the chosen folder was refused or not used ("" = fine).
+    @Published var recordingFolderWarning = ""
     @Published var recordPrefix = "show"
     @Published var multiviewTileCount = 10  // ATEM-style 10-way wall
 
@@ -3275,12 +3281,9 @@ final class AppModel: ObservableObject {
                     // Arm the encoder ONLY here: start-program-output flips the
                     // core into per-tick full readbacks (by design, for the
                     // encoder feed) — armed-at-startup starved the RPC thread.
-                    // The in-binary harness never creates folders in ~/Movies.
-                    let folder = ShellHarness.isActive
-                        ? NSTemporaryDirectory() + "corevideo-shell-harness-\(getpid())/recordings"
-                        : (NSSearchPathForDirectoriesInDomains(
-                            .moviesDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory())
-                            + "/CoreVideoPro"
+                    // The operator's folder, or the default when it is gone
+                    // (unplugged drive) or unwritable — loudly, never silently.
+                    let folder = recordingTargetFolder()
                     // The core refuses (loudly) rather than mkdir -p'ing.
                     try? FileManager.default.createDirectory(
                         atPath: folder, withIntermediateDirectories: true)

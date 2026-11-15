@@ -152,6 +152,8 @@ struct ShellPrefs: Codable, Equatable {
     // Show-input slot assignments (Tier 0.8). nil = a file written before this
     // existed: slots start empty, exactly as before.
     var showInputSlots: [PersistedSlot]?
+    // Recording folder (Tier 0.11). nil/"" = the default ~/Movies/CoreVideoPro.
+    var recordingFolder: String?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -211,6 +213,7 @@ struct ShellPrefs: Codable, Equatable {
         multiviewTileCount = ((try? c.decodeIfPresent(Int.self, forKey: .multiviewTileCount)) ?? nil)
         showInputSlots = ((try? c.decodeIfPresent([PersistedSlot].self,
                                                   forKey: .showInputSlots)) ?? nil)
+        recordingFolder = ((try? c.decodeIfPresent(String.self, forKey: .recordingFolder)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -250,6 +253,7 @@ struct ShellPrefs: Codable, Equatable {
                                                      sourceKey: "zoom:42")]
         p.showInputSlots = [PersistedSlot(slotId: 1, kind: "capture", sourceId: "cam",
                                           name: "Cam", inShow: true)]
+        p.recordingFolder = "/Volumes/Show/Recordings"
         p.vstChannelSelections = ["ch1": "vst:Test"]
         p.canvasWidth = 3840
         p.canvasHeight = 2160

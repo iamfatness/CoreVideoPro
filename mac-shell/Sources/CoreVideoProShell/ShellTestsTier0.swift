@@ -21,6 +21,8 @@ extension ShellTests {
             ("tier0/iso-survives-first-assignment", testRestoredIsoSelectionSurvivesTheFirstAssignment),
             ("tier0/iso-matrix-one-truth", testIsoMatrixAndSourcesToggleAreOneTruth),
             ("tier0/sources-rows-fit-the-page", testSourcesRowsFitThePageAtTheMinimumWindow),
+            ("tier0/recording-folder-chosen-and-persisted", testRecordingFolderIsChosenPersistedAndUsed),
+            ("tier0/recording-folder-falls-back-loudly", testRecordingFolderFallsBackLoudly),
         ]
     }
 
@@ -287,6 +289,62 @@ extension ShellTests {
                "TabPage no longer applies a flat 720 pt cap")
         expect(shell.contains("TabPageContent(tab: model.selectedTab)"),
                "TabPage draws the shared TabPageContent (what the snapshot harness renders)")
+    }
+
+    // ── 0.11 recording folder chooser ────────────────────────────────────────
+
+    static func scratchDir(_ name: String) -> String {
+        let dir = NSTemporaryDirectory() + "corevideo-shell-harness-\(getpid())/\(name)-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// The folder was fixed to ~/Movies/CoreVideoPro: no external drive.
+    @MainActor
+    static func testRecordingFolderIsChosenPersistedAndUsed() {
+        let chosen = scratchDir("external")
+        let before = AppModel()
+        expect(before.setRecordingFolder(chosen), "a writable folder is accepted")
+        guard let after = relaunched(before) else { expect(false, "relaunch"); return }
+        expectEqual(after.recordingFolderChoice, chosen, "the chosen folder survives a relaunch")
+        expectEqual(after.recordingFolderDisplay, chosen, "Settings shows the chosen folder")
+
+        let core = FakeTakeCore()
+        after.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        after.toggleRecording()
+        spin(until: { !core.bodies.isEmpty }, limit: 3)
+        let commands = (core.bodies.first?["commands"] as? [JSONObject]) ?? []
+        let targets = commands.first { $0["type"] as? String == "set-recording-targets" }
+        expectEqual(targets?["targetFolder"] as? String, chosen, "Record writes to the chosen folder")
+
+        // A folder that cannot take recordings is refused, and the choice stands.
+        let locked = scratchDir("locked")
+        chmod(locked, 0o555)
+        defer { chmod(locked, 0o755) }
+        expect(!after.setRecordingFolder(locked), "a read-only folder is refused")
+        expect(after.recordingFolderWarning.contains("not writable"), "and says why")
+        expectEqual(after.recordingFolderChoice, chosen, "the previous choice stands")
+    }
+
+    /// An unplugged external drive must not fail a recording silently or
+    /// create a stray /Volumes folder: fall back to the default, loudly.
+    @MainActor
+    static func testRecordingFolderFallsBackLoudly() {
+        let missing = "/Volumes/CVP-unplugged-\(UUID().uuidString)/Recordings"
+        var prefs = ShellPrefs()
+        prefs.recordingFolder = missing
+        let model = AppModel()
+        model.applyRestoredPrefs(prefs)
+        let folder = model.recordingTargetFolder()
+        expect(folder != missing, "an unplugged drive is not recorded to")
+        expect(folder.hasPrefix(NSTemporaryDirectory()), "the harness default folder is used instead")
+        expect(model.recordingFolderWarning.contains("is not connected"),
+               "Settings says the drive is not connected")
+        expect(model.recordingFolderWarning.contains(missing), "and names the folder")
+        expect(model.warnings.first?.hasPrefix("recording: Recording folder unavailable") == true,
+               "the warning strip says so too")
+        expect(!FileManager.default.fileExists(atPath: missing), "nothing is created under /Volumes")
+        expectEqual(model.recordingFolderChoice, missing, "the choice is kept for when the drive returns")
     }
 
     // ── source-reading helpers ───────────────────────────────────────────────
