@@ -12,6 +12,7 @@
 // rather than toward coverage percentage. Every case below maps to a real defect
 // that reached the owner in a live session or shipped to main.
 
+import CameraExtensionKit
 import Combine
 import AppKit
 import SwiftUI
@@ -2709,6 +2710,62 @@ enum ShellTests {
     }
 
     @MainActor
+    // ── CameraExtensionKit (roadmap M9.2) ────────────────────────────────────
+    private static func testStandbySlateMatchesTheCoreSlate() {
+        // Fixture invariant: 1080/12 = 90, top = (1080-90)/2 = 495, bottom = 585.
+        let s = StandbySlate.nv12(width: 1920, height: 1080)!
+        expectEqual(s.count, 3_110_400, "NV12 size")
+        expectEqual(s[494 * 1920], 24, "row above bar is field")
+        expectEqual(s[495 * 1920], 130, "first bar row")
+        expectEqual(s[584 * 1920 + 1919], 130, "last bar row, last column")
+        expectEqual(s[585 * 1920], 24, "row below bar is field")
+        expect(s[(1920 * 1080)...].allSatisfy { $0 == 128 }, "neutral chroma")
+        expect(StandbySlate.nv12(width: 1919, height: 1080) == nil, "odd width refused")
+        expect(StandbySlate.nv12(width: 1920, height: 1081) == nil, "odd height refused")
+        expect(StandbySlate.nv12(width: 0, height: 1080) == nil, "zero width refused")
+        expect(StandbySlate.nv12(width: 1920, height: -2) == nil, "negative height refused")
+    }
+    private static func testFrameSelectorHoldAndStop() {
+        var f = FrameSelector()
+        expectEqual(f.choice(atNanoseconds: 10), .slate, "never delivered -> slate")
+        f.producerDelivered(atNanoseconds: 1_000_000_000)
+        expectEqual(f.choice(atNanoseconds: 1_500_000_000), .program, "exactly 500 ms -> still program")
+        expectEqual(f.choice(atNanoseconds: 1_500_000_001), .slate, "500 ms + 1 ns -> slate")
+        expectEqual(f.choice(atNanoseconds: 999_999_999), .slate, "now before delivery -> slate (fail toward law 2)")
+        f.producerDelivered(atNanoseconds: 2_000_000_000); f.producerStopped()
+        expectEqual(f.choice(atNanoseconds: 2_000_000_001), .slate, "stop -> slate immediately, no hold")
+        f.producerDelivered(atNanoseconds: 3_000_000_000)
+        expectEqual(f.choice(atNanoseconds: 3_000_000_001), .program, "delivery after stop -> program")
+    }
+    private static func testDeviceNamePolicy() {
+        expectEqual(DeviceNamePolicy.sanitized("  Studio A \n"), "Studio A", "trimmed")
+        expectEqual(DeviceNamePolicy.sanitized("   "), "CoreVideo Pro Camera", "blank -> default")
+        expectEqual(DeviceNamePolicy.sanitized("A\u{0007}B"), "AB", "control chars dropped")
+        expectEqual(DeviceNamePolicy.sanitized(String(repeating: "\u{00E9}", count: 80)).unicodeScalars.count, 64, "capped at 64 scalars")
+    }
+    private static func testSlateClassifier() {
+        func classify(_ plane: [UInt8], _ w: Int, _ h: Int) -> Bool {
+            plane.withUnsafeBufferPointer {
+                SlateClassifier.isSlate(yPlane: $0, width: w, height: h, bytesPerRow: w)
+            }
+        }
+        let w = 1280, h = 720
+        let slate = StandbySlate.nv12(width: w, height: h)!
+        expect(classify(Array(slate[0..<(w * h)]), w, h), "the real slate is a slate")
+        expect(!classify([UInt8](repeating: 82, count: w * h), w, h), "BT.601 red (Y 82) is not a slate")
+        expect(!classify([UInt8](repeating: 24, count: w * h), w, h), "flat dark, no bar, is not a slate")
+        // Flat Y 130 everywhere: the middle row matches, rows h/4 and 3h/4 do not.
+        expect(!classify([UInt8](repeating: 130, count: w * h), w, h), "flat 130, no dark field, is not a slate")
+        // Padded rows: bytesPerRow > width must be honoured.
+        let stride = w + 64
+        var padded = [UInt8](repeating: 0, count: stride * h)
+        for row in 0..<h { for col in 0..<w { padded[row * stride + col] = slate[row * w + col] } }
+        let paddedResult = padded.withUnsafeBufferPointer {
+            SlateClassifier.isSlate(yPlane: $0, width: w, height: h, bytesPerRow: stride)
+        }
+        expect(paddedResult, "padded stride is honoured")
+    }
+
     static func runAndExit() -> Never {
         // Before ANY test: a run whose prefs resolve to the real file aborts.
         ShellHarness.requireIsolatedPrefsOrExit()
@@ -2840,6 +2897,10 @@ enum ShellTests {
             ("lifecycle/start-is-idempotent", testStartRunsItsSetupExactlyOncePerProcess),
             ("control/ws-origin-rule", testControlWebSocketOriginRule),
             ("control/ws-slow-client-dropped", testControlSlowWebSocketClientIsDropped),
+            ("camera-kit/standby-slate", testStandbySlateMatchesTheCoreSlate),
+            ("camera-kit/frame-selector", testFrameSelectorHoldAndStop),
+            ("camera-kit/device-name", testDeviceNamePolicy),
+            ("camera-kit/slate-classifier", testSlateClassifier),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
