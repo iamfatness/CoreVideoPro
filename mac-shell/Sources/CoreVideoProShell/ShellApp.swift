@@ -1401,21 +1401,25 @@ struct ZoomPane: View {
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
 
             VStack(alignment: .leading, spacing: 8) {
+                // From the core's zoom.readiness, like the Windows SDK chip
+                // (SettingsPage.xaml:148-167) — not a fixed "Ready".
+                let readiness = ZoomOperatorStatus.readiness(snapshot: model.lastSnapshot)
+                let blocked = ZoomOperatorStatus.isBlocked(readiness, inMeeting: inMeeting)
                 Text("Zoom status").font(.grotesk(14, .semibold))
-                Text(inMeeting ? "In the meeting — \(model.roster.count) in room"
-                               : "Ready to join Zoom")
+                Text(ZoomOperatorStatus.chipLabel(readiness, inMeeting: inMeeting))
                     .font(.grotesk(12, .medium))
-                    .foregroundStyle(inMeeting ? Studio.accent : Studio.textPrimary)
+                    .foregroundStyle(blocked ? Studio.red : (inMeeting ? Studio.accent : Studio.textPrimary))
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
                     .overlay(RoundedRectangle(cornerRadius: 8)
-                        .stroke(Studio.accent.opacity(0.6), lineWidth: 1))
-                Text(inMeeting
-                     ? "Assign participants from the Studio room rail; "
-                     + "press Capture to start raw media."
-                     : "Enter a meeting link or ID above when you are ready to connect.")
+                        .stroke((blocked ? Studio.red : Studio.accent).opacity(0.6), lineWidth: 1))
+                Text(ZoomOperatorStatus.guidance(readiness, inMeeting: inMeeting))
                     .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                if blocked, let reason = ZoomOperatorStatus.blockingReason(snapshot: model.lastSnapshot) {
+                    Text(reason).font(.plexMono(10)).foregroundStyle(Studio.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(14)
             .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))

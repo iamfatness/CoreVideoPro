@@ -23,6 +23,7 @@ extension ShellTests {
             ("tier0/sources-rows-fit-the-page", testSourcesRowsFitThePageAtTheMinimumWindow),
             ("tier0/recording-folder-chosen-and-persisted", testRecordingFolderIsChosenPersistedAndUsed),
             ("tier0/recording-folder-falls-back-loudly", testRecordingFolderFallsBackLoudly),
+            ("tier0/zoom-status-reads-sdk-readiness", testZoomStatusReadsTheCoresSdkReadiness),
         ]
     }
 
@@ -345,6 +346,42 @@ extension ShellTests {
                "the warning strip says so too")
         expect(!FileManager.default.fileExists(atPath: missing), "nothing is created under /Volumes")
         expectEqual(model.recordingFolderChoice, missing, "the choice is kept for when the drive returns")
+    }
+
+    // ── 0.15 Zoom tab status reflects SDK readiness ─────────────────────────
+
+    /// The Zoom tab said "Ready to join Zoom" whatever the SDK's state; a
+    /// missing engine or failed SDK showed only on Health.
+    @MainActor
+    static func testZoomStatusReadsTheCoresSdkReadiness() {
+        // The core's exact no-engine node (CoreStateCapture::zoomReadinessState).
+        let noEngine: JSONObject = ["zoom": ["readiness": [
+            "status": "blocked", "mode": "no-engine", "sdkAvailable": false,
+            "checks": [["id": "zoom-engine-runtime", "status": "blocked",
+                        "label": "COREVIDEO_ZOOM_ENGINE_PATH is not set: no Zoom engine, so Join is refused"]],
+        ] as JSONObject] as JSONObject]
+        let ready: JSONObject = ["zoom": ["readiness": ["status": "ready", "mode": "runtime"] as JSONObject]
+            as JSONObject]
+        let blocked = ZoomOperatorStatus.readiness(snapshot: noEngine)
+        expectEqual(blocked, .blocked, "the core's blocked readiness is read")
+        expectEqual(ZoomOperatorStatus.chipLabel(blocked, inMeeting: false), "Zoom is unavailable",
+                    "Windows wording when blocked")
+        expectEqual(ZoomOperatorStatus.guidance(blocked, inMeeting: false),
+                    "CoreVideo cannot join Zoom yet. Open Health for details.", "and where to look")
+        expect(ZoomOperatorStatus.blockingReason(snapshot: noEngine)?.contains("no Zoom engine") == true,
+               "the blocking check is named on the Zoom tab")
+        let fine = ZoomOperatorStatus.readiness(snapshot: ready)
+        expectEqual(ZoomOperatorStatus.chipLabel(fine, inMeeting: false), "Ready to join Zoom", "ready")
+        expectEqual(ZoomOperatorStatus.chipLabel(blocked, inMeeting: true), "Connected to Zoom",
+                    "Windows wording in a meeting")
+        expectEqual(ZoomOperatorStatus.readiness(snapshot: [:]), .ready,
+                    "no snapshot yet is not evidence of a block")
+        guard let shell = sourceFile("ShellApp.swift") else {
+            expect(false, "ShellApp.swift not found next to the binary"); return
+        }
+        expect(shell.contains("ZoomOperatorStatus.chipLabel(readiness, inMeeting: inMeeting)"),
+               "the Zoom tab's status chip comes from the core's readiness")
+        expect(!shell.contains(": \"Ready to join Zoom\")"), "no fixed \"Ready to join Zoom\" chip")
     }
 
     // ── source-reading helpers ───────────────────────────────────────────────
