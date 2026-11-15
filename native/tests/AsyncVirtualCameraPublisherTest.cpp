@@ -1,7 +1,9 @@
 #include "modules/AsyncVirtualCameraPublisher.h"
 #include "modules/GpuWebcamFramer.h"
+#include "FramerRenders.h"
 #include <gtest/gtest.h>
 #include <atomic>
+#include <cstdio>
 #include <chrono>
 #include <future>
 using namespace corevideo::modules;
@@ -151,7 +153,7 @@ TEST(AsyncVirtualCameraPublisher, FramerForkPreservesSourceAttributionAndOffIden
     decorated=backend->last;
     EXPECT_EQ(backend->deliveredAt,9001);
   }
-#if defined(_WIN32) && COREVIDEO_WITH_D3D11
+#if defined(COREVIDEO_FRAMER_RENDERS)
   EXPECT_NE(decorated.get(),clean.get());
   EXPECT_EQ(decorated->at(950*1920+960),58);
 #else
@@ -168,7 +170,7 @@ TEST(AsyncVirtualCameraPublisher, FramerForkPreservesSourceAttributionAndOffIden
   EXPECT_FALSE(camera.status().framerEnabled);
   EXPECT_EQ(camera.status().framerState,"off");
   // A retained decorated image must remain immutable after another publication.
-#if defined(_WIN32) && COREVIDEO_WITH_D3D11
+#if defined(COREVIDEO_FRAMER_RENDERS)
   constexpr int expectedTint=58;
 #else
   constexpr int expectedTint=100;
@@ -309,8 +311,8 @@ TEST(AsyncVirtualCameraPublisher, NonCameraPublicationFailureDoesNotRetry) {
   EXPECT_EQ(backend->starts.load(),1);
   EXPECT_EQ(camera.status().state,"failed");
 }
-// Needs a framer that actually renders on this platform (Task 9 defines the macro
-// for the Metal framer). Until then it is compiled out on Mac and unverified there.
+// Needs a framer that actually renders on this platform (FramerRenders.h: the
+// Windows D3D11 framer or the Metal framer behind COREVIDEO_WITH_MAC_VIRTUALCAM).
 #if defined(COREVIDEO_FRAMER_RENDERS)
 struct UpstreamMirrorCamera : CaptureCamera {
   bool mirrorAppliedUpstream() const override { return true; }
@@ -336,9 +338,17 @@ TEST(AsyncVirtualCameraPublisher, UpstreamMirrorIsNotAppliedTwiceToTheFramer) {
   std::fill(pixels.begin(),pixels.begin()+1920*1080,16);
   auto clean=std::make_shared<const std::vector<uint8_t>>(std::move(pixels));
   GpuWebcamFramer reference;
+#if defined(__APPLE__)
+  if (!reference.prepare(1920,1080) && reference.warning().find("no Metal device")!=std::string::npos) {
+    std::fprintf(stderr,"[metal-test] unavailable: %s\n",reference.warning().c_str()); return;
+  }
+#endif
   ASSERT_TRUE(reference.prepare(1920,1080)) << reference.warning();
-  const auto unmirrored=reference.apply(clean,1920,1080,false);
-  const auto mirrored=reference.apply(clean,1920,1080,true);
+  // The publisher always draws the camera LUFS panel (WebcamLoudnessState::read()
+  // reports show=true); with no meter update it is the not-ready panel.
+  const auto meter=WebcamLoudnessState{}.read();
+  const auto unmirrored=reference.apply(clean,1920,1080,false,meter);
+  const auto mirrored=reference.apply(clean,1920,1080,true,meter);
   ASSERT_TRUE(unmirrored && mirrored);
   ASSERT_EQ(unmirrored->at(400*1920+420),74);
   ASSERT_EQ(mirrored->at(400*1920+1499),74);

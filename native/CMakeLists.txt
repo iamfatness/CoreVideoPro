@@ -401,6 +401,18 @@ if(COREVIDEO_WITH_MAC_VIRTUALCAM)
   set_source_files_properties(src/modules/CmioVirtualCameraSink.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(corevideo_native PUBLIC
     "-framework CoreMediaIO" "-framework CoreMedia" "-framework CoreVideo" "-framework IOSurface")
+  # OH Framer on macOS (Task 9): a Metal port of shaders/WebcamFramer.hlsl,
+  # compiled at runtime from shaders/WebcamFramer.metal embedded as a string.
+  # GpuWebcamFramer.cpp stays in the list and compiles to nothing here.
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/WebcamFramer.metal")
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/WebcamFramer.metal" WEBCAM_FRAMER_MSL)
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/WebcamFramerMetalSource.h"
+    "#pragma once\ninline constexpr char kWebcamFramerMetalSource[] = R\"MSL(${WEBCAM_FRAMER_MSL})MSL\";\n")
+  target_sources(corevideo_native PRIVATE
+    src/modules/GpuWebcamFramerMetal.mm src/modules/WebcamFramerAppleDecode.mm)
+  set_source_files_properties(src/modules/GpuWebcamFramerMetal.mm src/modules/WebcamFramerAppleDecode.mm
+    PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(corevideo_native PUBLIC "-framework Metal" "-framework Foundation")
 endif()
 
 if(COREVIDEO_WITH_VIRTUALCAM)

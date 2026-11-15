@@ -28,6 +28,11 @@
 #      (transport.virtualcam.set, Task 11), probe 3 s -> program, snapshot
 #      framesPublished advancing; quit the app -> slate within 1 s. Skipped,
 #      loudly, while the control API has no transport.virtualcam.set.
+#  6b. --app, OH Framer + mirror on (Task 9): the framed camera shows the
+#      guide at the Windows location: pixel (420, 400) reads luma 74 +-3, and
+#      the owner glances that the "LUFS" label reads correctly (not mirrored).
+#      Skipped, loudly, until Task 11 gives the control API a way to turn the
+#      framer and mirror on and VcamProbe can sample a given pixel.
 #   7. leaks --atExit over a 300 s feed (VCAM_E2E_LEAK_SECONDS) -> no
 #      CMSampleBuffer / CVPixelBuffer leaks.
 #
@@ -278,6 +283,18 @@ if [ "$RUN_APP" = 1 ]; then
     fi
 else
     skip 6 "pass --app to drive the installed app through the control API"
+fi
+
+# ── 6b. OH Framer + mirror on the real camera (Task 9) ──────────────────────
+# Bar: probe pixel (420, 400) luma 74 +-3 with framer and mirror on (the Metal
+# tap mirrors the frame, the framer draws the guides unmirrored over it), plus
+# an owner glance that the "LUFS" label is readable. Needs Task 11's control
+# action for framer/mirror and a VcamProbe pixel-sample option; until then it
+# says so instead of passing.
+if [ "$RUN_APP" = 1 ]; then
+    skip 6b "needs Task 11: no control action turns OH Framer + mirror on, and VcamProbe cannot sample (420, 400) yet"
+else
+    skip 6b "pass --app (and land Task 11) to check the framed camera: (420, 400) luma 74 +-3, LUFS label readable"
 fi
 
 # ── 7. no sample/pixel buffer leaks over a long feed ────────────────────────
