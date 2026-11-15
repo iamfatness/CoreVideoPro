@@ -13,6 +13,22 @@ let package = Package(
             name: "CoreVideoProShell",
             dependencies: ["CameraExtensionKit"],
             path: "Sources/CoreVideoProShell"
+        ),
+        // The CoreMediaIO camera extension (roadmap M9.2). Assembled into
+        // Contents/Library/SystemExtensions/…camera.systemextension by
+        // scripts/make-macos-shell-bundle.sh; never run directly.
+        .executableTarget(
+            name: "CoreVideoProCamera",
+            dependencies: ["CameraExtensionKit"],
+            path: "Sources/CoreVideoProCamera",
+            linkerSettings: [
+                .linkedFramework("CoreMediaIO"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("CoreVideo"),
+                .linkedFramework("IOSurface"),
+                .linkedFramework("Security"),
+                .linkedFramework("VideoToolbox")
+            ]
         )
     ]
 )

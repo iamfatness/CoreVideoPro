@@ -128,7 +128,7 @@ jobs:
         run: |
           for f in scripts/release-macos.sh scripts/macos-sign-lib.sh \
                    scripts/make-macos-shell-bundle.sh scripts/make-macos-engine-bundle.sh \
-                   scripts/run-mac-shell.sh; do
+                   scripts/run-mac-shell.sh scripts/check-macos-camera-extension.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
@@ -148,6 +148,16 @@ jobs:
         run: COREVIDEO_SHELL_TESTS=1 mac-shell/.build/release/CoreVideoProShell
       - name: Redaction + prefs self-check
         run: COREVIDEO_SHELL_SELFCHECK=1 mac-shell/.build/release/CoreVideoProShell
+      # Camera extension (roadmap M9.2). The runner cannot activate a system
+      # extension, so CI proves the STRUCTURE: the ad-hoc bundle embeds it with
+      # the right keys and no restricted entitlement without a profile, and
+      # the check fails at the expected letter on three broken copies.
+      - name: Assemble the ad-hoc app bundle (camera extension embedded)
+        run: COREVIDEO_REQUIRE_HELPERS=0 scripts/make-macos-shell-bundle.sh
+      - name: Camera extension check
+        run: scripts/check-macos-camera-extension.sh "mac-shell/.build/CoreVideo Pro.app"
+      - name: Camera extension check negatives
+        run: scripts/check-macos-camera-extension.sh --negatives "mac-shell/.build/CoreVideo Pro.app"
 
   # Root unit run (services + Companion module tests) and the node:test
   # suites under scripts/.
