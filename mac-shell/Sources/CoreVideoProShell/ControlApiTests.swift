@@ -59,7 +59,7 @@ extension ShellTests {
     // produced by the Windows code (dotnet, this Mac, 2026-11-14). FeedbackFields
     // is compared separately: the Mac lists only the fields its /state publishes.
     static let windowsManifestGolden = #"""
-    {"Version":1,"Root":"/cvp","Actions":[{"Id":"transport.ftb.toggle","Title":"Fade to Black","Description":"Fade Program video to black or back in over 300 ms. Audio and output sessions continue.","OscAddress":"/cvp/transport/ftb/toggle","Params":[]},{"Id":"transport.ftb.set","Title":"Set Fade to Black","Description":"Set Program blackout; repeated identical requests do not reverse the fade.","OscAddress":"/cvp/transport/ftb/set","Params":[{"Name":"enabled","Type":"bool","Required":true}]},{"Id":"transport.take","Title":"Take","Description":"Cut/transition Preview to Program.","OscAddress":"/cvp/transport/take","Params":[]},{"Id":"transport.record.toggle","Title":"Record toggle","Description":"Toggle recording.","OscAddress":"/cvp/transport/record/toggle","Params":[]},{"Id":"transport.record.set","Title":"Record set","Description":"Start or stop recording explicitly.","OscAddress":"/cvp/transport/record/set","Params":[{"Name":"on","Type":"bool","Required":true}]},{"Id":"transport.stream.toggle","Title":"Stream toggle","Description":"Toggle streaming.","OscAddress":"/cvp/transport/stream/toggle","Params":[]},{"Id":"transport.stream.set","Title":"Stream set","Description":"Start or stop streaming explicitly.","OscAddress":"/cvp/transport/stream/set","Params":[{"Name":"on","Type":"bool","Required":true}]},{"Id":"scene.select","Title":"Select scene","Description":"Cue a scene to Preview by id. Unknown scene fails and changes nothing; reply includes previewSceneId when applied.","OscAddress":"/cvp/scene/select","Params":[{"Name":"sceneId","Type":"string","Required":true}]},{"Id":"scene.list","Title":"List scenes","Description":"Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id.","OscAddress":"/cvp/scene/list","Params":[]}],"FeedbackFields":["recording","streaming","ndi","engineOn","canTake","lowerThirdOnAir","zoomStatus","engineStatus","commandStatus","activeSceneId","previewSceneId","previewTilesNamesOn","viewMode","multiviewLayoutMode","multiviewTileCount","automationOn","autoTake","autoAssignInputs","autoLowerThirds","autoCaptions","audioMonitorOn","audioMonitorVolume","masterLimiterOn","input/{slot}/inShow","input/{slot}/kind","input/{slot}/source","input/{slot}/name","ohg/health/engine","ohg/shadow/lastCommand"]}
+    {"Version":1,"Root":"/cvp","Actions":[{"Id":"transport.ftb.toggle","Title":"Fade to Black","Description":"Fade Program video to black or back in over 300 ms. Audio and output sessions continue.","OscAddress":"/cvp/transport/ftb/toggle","Params":[]},{"Id":"transport.ftb.set","Title":"Set Fade to Black","Description":"Set Program blackout; repeated identical requests do not reverse the fade.","OscAddress":"/cvp/transport/ftb/set","Params":[{"Name":"enabled","Type":"bool","Required":true}]},{"Id":"transport.take","Title":"Take","Description":"Cut/transition Preview to Program.","OscAddress":"/cvp/transport/take","Params":[]},{"Id":"transport.record.toggle","Title":"Record toggle","Description":"Toggle recording.","OscAddress":"/cvp/transport/record/toggle","Params":[]},{"Id":"transport.record.set","Title":"Record set","Description":"Start or stop recording explicitly.","OscAddress":"/cvp/transport/record/set","Params":[{"Name":"on","Type":"bool","Required":true}]},{"Id":"transport.stream.toggle","Title":"Stream toggle","Description":"Toggle streaming.","OscAddress":"/cvp/transport/stream/toggle","Params":[]},{"Id":"transport.stream.set","Title":"Stream set","Description":"Start or stop streaming explicitly.","OscAddress":"/cvp/transport/stream/set","Params":[{"Name":"on","Type":"bool","Required":true}]},{"Id":"transport.virtualcam.toggle","Title":"Virtual camera toggle","Description":"Toggle the virtual camera output.","OscAddress":"/cvp/transport/virtualcam/toggle","Params":[]},{"Id":"transport.virtualcam.set","Title":"Virtual camera set","Description":"Turn the virtual camera on or off explicitly.","OscAddress":"/cvp/transport/virtualcam/set","Params":[{"Name":"on","Type":"bool","Required":true}]},{"Id":"transport.virtualcam.mirror.set","Title":"Virtual camera mirror","Description":"Mirror the virtual camera output horizontally.","OscAddress":"/cvp/transport/virtualcam/mirror/set","Params":[{"Name":"on","Type":"bool","Required":true}]},{"Id":"transport.virtualcam.name.set","Title":"Virtual camera name","Description":"Set the virtual camera's display name (blank keeps the default).","OscAddress":"/cvp/transport/virtualcam/name/set","Params":[{"Name":"name","Type":"string","Required":false}]},{"Id":"scene.select","Title":"Select scene","Description":"Cue a scene to Preview by id. Unknown scene fails and changes nothing; reply includes previewSceneId when applied.","OscAddress":"/cvp/scene/select","Params":[{"Name":"sceneId","Type":"string","Required":true}]},{"Id":"scene.list","Title":"List scenes","Description":"Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id.","OscAddress":"/cvp/scene/list","Params":[]}],"FeedbackFields":["recording","streaming","ndi","engineOn","canTake","lowerThirdOnAir","zoomStatus","engineStatus","commandStatus","activeSceneId","previewSceneId","previewTilesNamesOn","viewMode","multiviewLayoutMode","multiviewTileCount","automationOn","autoTake","autoAssignInputs","autoLowerThirds","autoCaptions","audioMonitorOn","audioMonitorVolume","masterLimiterOn","input/{slot}/inShow","input/{slot}/kind","input/{slot}/source","input/{slot}/name","ohg/health/engine","ohg/shadow/lastCommand"]}
     """#
 
     // ── contract: manifest ───────────────────────────────────────────────────
@@ -526,6 +526,48 @@ extension ShellTests {
         expectEqual(state["automationOn"] as? Bool, false, "scene automation is retired: false")
         for field in ControlCatalog.feedbackFields {
             expect(state[field] != nil, "advertised feedback field \(field) is published")
+        }
+    }
+
+    @MainActor
+    static func testControlSurfaceVirtualCameraActions() {
+        let model = AppModel()
+        model.cameraExtension = FakeCameraExtensionActivator(script: [.active])
+        var sent: [JSONObject] = []
+        model.coreCommandCaptureForTesting = { sent.append($0) }
+        let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        func syncs() -> Int {
+            sent.flatMap { ($0["commands"] as? [JSONObject]) ?? [] }
+                .filter { $0["type"] as? String == "sync-virtual-camera" }.count
+        }
+        expectEqual(invoke(surface, "transport.virtualcam.set", [true]), .success, "set true succeeds")
+        expect(model.virtualCamera.enabled, "set true arms the intent")
+        expectEqual(syncs(), 1, "one sync for the change")
+        expectEqual(invoke(surface, "transport.virtualcam.set", [true]), .success, "set true again succeeds")
+        expect(model.virtualCamera.enabled, "set true twice does not toggle off")
+        expectEqual(syncs(), 1, "a repeated set sends nothing (per change, not per call)")
+        expectEqual(invoke(surface, "transport.virtualcam.toggle"), .success, "toggle succeeds")
+        expect(!model.virtualCamera.enabled, "toggle flips the intent off")
+        expectEqual(syncs(), 2, "toggle sends one sync")
+        expectEqual(invoke(surface, "transport.virtualcam.set", [false]), .success, "set false when off")
+        expectEqual(syncs(), 2, "set false when already off sends nothing")
+        expectEqual(invoke(surface, "transport.virtualcam.mirror.set", [true]), .success, "mirror on")
+        expect(model.virtualCamera.mirror, "mirror intent")
+        expectEqual(syncs(), 3, "mirror change sends one sync")
+        _ = invoke(surface, "transport.virtualcam.mirror.set", [true])
+        expectEqual(syncs(), 3, "repeated mirror sends nothing")
+        expectEqual(invoke(surface, "transport.virtualcam.name.set", ["Studio Cam"]), .success, "name set")
+        expectEqual(model.virtualCamera.deviceName, "Studio Cam", "name stored")
+        expectEqual(syncs(), 4, "name change sends one sync")
+        _ = invoke(surface, "transport.virtualcam.name.set", ["Studio Cam"])
+        expectEqual(syncs(), 4, "unchanged name sends nothing")
+        expectEqual(invoke(surface, "transport.virtualcam.name.set"), .success, "omitted name is blank")
+        expectEqual(model.virtualCamera.deviceName, "", "blank name restores the default")
+        // Every registered id is dispatchable (no id falls through to 'Unknown action').
+        for action in ControlCatalog.actions {
+            let args: [Any?] = action.params.map { $0.type == .bool ? true : ($0.type == .string ? "s1" : 0) }
+            let r = invoke(surface, action.id, args)
+            if (r?.error ?? "").hasPrefix("Unknown action") { expect(false, "\(action.id) is not dispatched") }
         }
     }
 

@@ -3298,6 +3298,7 @@ enum ShellTests {
             ("control/auth-and-bind-policy", testControlAuthAndBindPolicyAreWindows),
             ("control/http-parser-bounds", testControlHttpParserBounds),
             ("control/surface-model-paths", testControlSurfaceRoutesThroughTheModel),
+            ("control/surface-virtualcam", testControlSurfaceVirtualCameraActions),
             ("control/surface-ftb-snapshot", testControlSurfaceFtbAndSnapshot),
             ("control/server-end-to-end", testControlServerEndToEnd),
             ("control/server-auth-wire", testControlServerAuthOverTheWire),

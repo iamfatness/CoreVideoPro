@@ -25,9 +25,8 @@
 #   5. --restart-extension (sudo): kill the extension process while feeding ->
 #      the feeder is live again within 3 s and the probe sees program again.
 #   6. --app: launch the app, enable the camera through the control API
-#      (transport.virtualcam.set, Task 11), probe 3 s -> program, snapshot
-#      framesPublished advancing; quit the app -> slate within 1 s. Skipped,
-#      loudly, while the control API has no transport.virtualcam.set.
+#      (transport.virtualcam.set), probe 3 s -> program, snapshot
+#      framesPublished advancing; quit the app -> slate within 1 s.
 #  6b. --app, OH Framer + mirror on (Task 9): the framed camera shows the
 #      guide at the Windows location: pixel (420, 400) reads luma 74 +-3, and
 #      the owner glances that the "LUFS" label reads correctly (not mirrored).
@@ -246,7 +245,7 @@ if [ "$RUN_APP" = 1 ]; then
     for _ in $(seq 1 60); do curl -sf "$CONTROL/manifest" >"$OUT/manifest.json" 2>/dev/null && break; sleep 0.5; done
     [ -s "$OUT/manifest.json" ] || fail 6 "the control API at $CONTROL never answered"
     if ! grep -q '"transport.virtualcam.set"' "$OUT/manifest.json"; then
-        skip 6 "needs Task 11: the control API has no transport.virtualcam.set yet (app left running)"
+        fail 6 "the control manifest has no transport.virtualcam.set (stale app build?)"
     else
         curl -sf -X POST "$CONTROL/invoke" -H 'Content-Type: application/json' \
             -d '{"action":"transport.virtualcam.set","args":[true]}' >"$OUT/invoke-on.json" \
@@ -288,13 +287,13 @@ fi
 # ── 6b. OH Framer + mirror on the real camera (Task 9) ──────────────────────
 # Bar: probe pixel (420, 400) luma 74 +-3 with framer and mirror on (the Metal
 # tap mirrors the frame, the framer draws the guides unmirrored over it), plus
-# an owner glance that the "LUFS" label is readable. Needs Task 11's control
-# action for framer/mirror and a VcamProbe pixel-sample option; until then it
+# an owner glance that the "LUFS" label is readable. Windows' control API has no framer
+# action (mirror has one) and it needs a VcamProbe pixel-sample option; until then it
 # says so instead of passing.
 if [ "$RUN_APP" = 1 ]; then
-    skip 6b "needs Task 11: no control action turns OH Framer + mirror on, and VcamProbe cannot sample (420, 400) yet"
+    skip 6b "Windows has no framer control action (parity: none added; transport.virtualcam.mirror.set exists), and VcamProbe cannot sample (420, 400) yet"
 else
-    skip 6b "pass --app (and land Task 11) to check the framed camera: (420, 400) luma 74 +-3, LUFS label readable"
+    skip 6b "pass --app to check the framed camera: (420, 400) luma 74 +-3, LUFS label readable"
 fi
 
 # ── 7. no sample/pixel buffer leaks over a long feed ────────────────────────
