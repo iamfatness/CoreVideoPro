@@ -150,7 +150,8 @@ cmake -S native -B "$CORE_BUILD" -G Ninja \
     -DCOREVIDEO_WITH_AVF_ENCODER=ON \
     -DCOREVIDEO_WITH_COREAUDIO=ON \
     -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON \
-    -DCOREVIDEO_WITH_RTMP_OUTPUT=ON
+    -DCOREVIDEO_WITH_RTMP_OUTPUT=ON \
+    -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON
 cmake --build "$CORE_BUILD" --target corevideo-native corevideo-plugin-host
 
 # The release gate for the core: the FULL native suite on this exact build,

@@ -281,8 +281,9 @@ jobs:
           -DCOREVIDEO_WITH_COREAUDIO=ON
           -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON
           -DCOREVIDEO_WITH_RTMP_OUTPUT=ON
+          -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON
       # Mirrors scripts/release-macos.sh's core configure (Metal + AVF + CoreAudio +
-      # SCK capture + RTMP), minus the Zoom engine and signing, which need secrets.
+      # SCK capture + RTMP + the CoreMediaIO virtual camera), minus the Zoom engine and signing, which need secrets.
       # RTMP is in the set because its macOS compile break sat unnoticed when CI
       # never built it. RTMP output launches an external `ffmpeg` process at stream
       # time (not linked), so no ffmpeg is needed to compile or run these tests.

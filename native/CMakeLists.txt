@@ -92,6 +92,7 @@ option(COREVIDEO_WITH_AJA "Build the AJA NTV2 capture-device adapter. Requires C
 option(COREVIDEO_WITH_UVC "Build the native UVC (Media Foundation) capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_WGC "Build the Windows.Graphics.Capture screen-capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_VIRTUALCAM "Build the Windows 11 Media Foundation virtual-camera publisher. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_MAC_VIRTUALCAM "Build the macOS CoreMediaIO virtual-camera backend (feeds the CoreVideo Pro Camera extension's sink stream). Apple only; requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_BROWSER_HOST "Build corevideo-browser-host.exe (WebView2 browser-source host, docs/capture-sources-spec.md Phase BR). Windows x64 only; uses the vendored third_party/webview2 SDK." OFF)
 option(COREVIDEO_BUILD_ZOOM_ENGINE "Build the vendored standalone Zoom capture engine helper. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Zoom Meeting SDK." OFF)
 set(COREVIDEO_ZOOM_SDK_ROOT "" CACHE PATH "Root of the extracted Zoom Windows Meeting SDK architecture folder, for example zoom-sdk-windows-7.0.5.39292/x64")
@@ -170,6 +171,7 @@ add_library(corevideo_native
   src/modules/WgcScreenCaptureAdapter.cpp
   src/modules/VirtualCameraPublisher.cpp
   src/modules/AsyncVirtualCameraPublisher.cpp
+  src/modules/SinkVirtualCameraPublisher.cpp
   src/modules/GpuWebcamFramer.cpp
   src/modules/UvcCaptureSupport.cpp
   src/modules/WasapiAudioCaptureSourceAdapter.cpp
@@ -242,6 +244,7 @@ target_compile_definitions(corevideo_native
     COREVIDEO_WITH_UVC=$<BOOL:${COREVIDEO_WITH_UVC}>
     COREVIDEO_WITH_WGC=$<BOOL:${COREVIDEO_WITH_WGC}>
     COREVIDEO_WITH_VIRTUALCAM=$<BOOL:${COREVIDEO_WITH_VIRTUALCAM}>
+    COREVIDEO_WITH_MAC_VIRTUALCAM=$<BOOL:${COREVIDEO_WITH_MAC_VIRTUALCAM}>
 )
 
 if(COREVIDEO_ENABLE_DEV_ADAPTERS)
@@ -382,6 +385,22 @@ if(COREVIDEO_WITH_UVC)
   # mf provides MFEnumDeviceSources/MFCreateDeviceSource; mfreadwrite the source
   # reader; mfplat/mfuuid the core MF runtime + GUIDs; ole32 COM init.
   target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid wmcodecdspuuid ole32)
+endif()
+
+# macOS virtual camera (roadmap M9.2, docs/virtual-camera-macos-spec.md). The
+# portable publisher (SinkVirtualCameraPublisher.cpp) builds everywhere; only the
+# CoreMediaIO transport is Apple-gated here. Non-Apple configures refuse it.
+if(COREVIDEO_WITH_MAC_VIRTUALCAM)
+  if(NOT APPLE)
+    message(FATAL_ERROR "COREVIDEO_WITH_MAC_VIRTUALCAM supports macOS only.")
+  endif()
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_MAC_VIRTUALCAM requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  target_sources(corevideo_native PRIVATE src/modules/CmioVirtualCameraSink.mm)
+  set_source_files_properties(src/modules/CmioVirtualCameraSink.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework CoreMediaIO" "-framework CoreMedia" "-framework CoreVideo" "-framework IOSurface")
 endif()
 
 if(COREVIDEO_WITH_VIRTUALCAM)
@@ -874,6 +893,7 @@ if(BUILD_TESTING)
     tests/D3DCaptureCpuBranchTest.cpp
     tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
+    tests/SinkVirtualCameraPublisherTest.cpp
     tests/GpuWebcamFramerTest.cpp
     tests/VirtualCameraSlateTest.cpp
     tests/VirtualCameraComposeTest.cpp
@@ -1043,7 +1063,8 @@ if(BUILD_TESTING)
     COREVIDEO_WITH_RTMP_INGEST=$<BOOL:${COREVIDEO_WITH_RTMP_INGEST}>
     COREVIDEO_WITH_DECKLINK=$<BOOL:${COREVIDEO_WITH_DECKLINK}>
     COREVIDEO_WITH_AJA=$<BOOL:${COREVIDEO_WITH_AJA}>
-    COREVIDEO_WITH_UVC=$<BOOL:${COREVIDEO_WITH_UVC}>)
+    COREVIDEO_WITH_UVC=$<BOOL:${COREVIDEO_WITH_UVC}>
+    COREVIDEO_WITH_MAC_VIRTUALCAM=$<BOOL:${COREVIDEO_WITH_MAC_VIRTUALCAM}>)
   target_include_directories(corevideo-native-tests PRIVATE tests/share-sdk zoom-engine/engine zoom-engine/shared plugin-host virtualcam-dll)
   # POSIX-only ffmpeg discovery (modules/PosixExecutableLocator.h); Windows
   # resolves ffmpeg on its own unchanged path, so the test is not built there.

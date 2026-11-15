@@ -77,6 +77,10 @@ class IVirtualCameraPublisher {
   virtual void setProgramLoudness(double lufs, bool completeWindow) { (void)lufs; (void)completeWindow; }
   // Operator-set display name; applies on the next start() (optional; no-op default).
   virtual void setDeviceName(const std::string& name) { (void)name; }
+  // True when the producer already mirrored the frame before it reached this
+  // backend (macOS: the Metal tap mirrors on the GPU). The webcam framer then
+  // must not mirror again. Default false keeps Windows exactly as it was.
+  virtual bool mirrorAppliedUpstream() const { return false; }
 };
 
 // Dev-gated (COREVIDEO_WITH_VIRTUALCAM). Returns a no-op stub otherwise, so the
