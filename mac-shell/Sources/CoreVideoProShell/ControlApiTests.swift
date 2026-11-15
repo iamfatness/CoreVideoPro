@@ -782,6 +782,12 @@ extension ShellTests {
     /// holding a menu open or the app was finishing a recording on quit.
     @MainActor
     static func testControlStateStreamDeliversDuringEventTracking() {
+        // Precondition, established explicitly: DispatchQueue.main drains only in the
+        // main run loop's COMMON modes. AppKit adds .eventTracking to them when
+        // NSApplication connects to the window server, which a GUI session always
+        // does but this harness (run from the App initializer on a headless CI
+        // runner) may not have yet. Idempotent; mirrors what AppKit registers.
+        CFRunLoopAddCommonMode(CFRunLoopGetMain(), CFRunLoopMode(RunLoop.Mode.eventTracking.rawValue as CFString))
         let source = PassthroughSubject<Int, Never>()
         let count = Box<Int>()
         count.value = 0
