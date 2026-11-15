@@ -214,8 +214,12 @@ jobs:
         run: cmake --build native/build
       - name: Contract parity (protocol drift gate)
         run: ./native/build/corevideo-native-tests --gtest_filter=ContractParity.*
-      - name: Native stub tests
-        run: ctest --test-dir native/build --output-on-failure
+      # `-LE realtime`: AvfCaptureArrival's 4-10 s cases are wall-clock measurements
+      # (a synthetic camera thread against render ticks); a stalled shared-VM thread
+      # publishes a burst that legitimately overflows the bounded arrival queue.
+      # scripts/release-macos.sh runs them via the full ctest.
+      - name: Native stub tests (excluding realtime)
+        run: ctest --test-dir native/build --output-on-failure -LE realtime
 
   # macOS twin of native-stub: keeps the portable core buildable + green on
   # Apple Silicon for the macOS port (AppleClang has no std parallel
@@ -233,8 +237,12 @@ jobs:
         run: cmake --build native/build
       - name: Contract parity (protocol drift gate)
         run: ./native/build/corevideo-native-tests --gtest_filter=ContractParity.*
-      - name: Native stub tests
-        run: ctest --test-dir native/build --output-on-failure
+      # `-LE realtime`: AvfCaptureArrival's 4-10 s cases are wall-clock measurements
+      # (a synthetic camera thread against render ticks); a stalled shared-VM thread
+      # publishes a burst that legitimately overflows the bounded arrival queue.
+      # scripts/release-macos.sh runs them via the full ctest.
+      - name: Native stub tests (excluding realtime)
+        run: ctest --test-dir native/build --output-on-failure -LE realtime
 
   # Metal GPU compositor build: the real (non-stub) macOS configuration with
   # the Metal adapter enabled. GitHub macOS runners expose an Apple

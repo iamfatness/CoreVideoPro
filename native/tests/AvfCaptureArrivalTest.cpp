@@ -23,7 +23,7 @@ std::shared_ptr<std::vector<uint8_t>> tinyI420() {
   return std::make_shared<std::vector<uint8_t>>(64 * 36 * 3 / 2, 128);
 }
 
-struct Run { int published = 0; uint64_t distinct = 0, duplicateRejected = 0, overflowed = 0; };
+struct Run { int published = 0; uint64_t distinct = 0, duplicateRejected = 0, overflowed = 0, arrivalOverflowed = 0; };
 
 // Camera at `camFps`, render ticks at `tickMs` +- jitter, for `seconds`.
 // `useArrivals` selects the consumer: the ISO arrival queue or the latest-wins sample.
@@ -69,7 +69,10 @@ Run measure(double camFps, double tickMs, double jitterMs, double seconds, bool 
     (void)ingress.drain(std::chrono::milliseconds(0));
   }
   const auto c = ingress.counters()["capture:cam"];
-  return {published.load(), c.distinctSubmitted, c.duplicateRejected, c.queueOverflowed};
+  // The arrival queue's own overflow (frames dropped before ingress ever sees them)
+  // is invisible in the ingress counter; report it so a failure self-diagnoses.
+  return {published.load(), c.distinctSubmitted, c.duplicateRejected, c.queueOverflowed,
+      state.isoArrivals.stats().overflowed};
 }
 
 // Set COREVIDEO_984_SAMPLING=1 to run the assertions against the pre-fix
@@ -78,8 +81,9 @@ bool useArrivalsForAssertions() { return std::getenv("COREVIDEO_984_SAMPLING") =
 
 TEST(AvfCaptureArrival, EveryCameraDeliveryReachesTheIsoRecorderOver10Seconds) {
   const auto r = measure(30.0, 33.0, 3.0, 10.0, useArrivalsForAssertions());
-  std::fprintf(stderr, "[984] published=%d recorded=%llu dupRejected=%llu overflow=%llu\n", r.published,
-      (unsigned long long)r.distinct, (unsigned long long)r.duplicateRejected, (unsigned long long)r.overflowed);
+  std::fprintf(stderr, "[984] published=%d recorded=%llu dupRejected=%llu overflow=%llu arrivalQueueOverflow=%llu\n", r.published,
+      (unsigned long long)r.distinct, (unsigned long long)r.duplicateRejected, (unsigned long long)r.overflowed,
+      (unsigned long long)r.arrivalOverflowed);
   EXPECT_GE(r.published, 295);
   EXPECT_GE(static_cast<int>(r.distinct), r.published) << "camera frames never recorded";
   EXPECT_LE(static_cast<int>(r.distinct), r.published) << "a camera frame was recorded twice";
