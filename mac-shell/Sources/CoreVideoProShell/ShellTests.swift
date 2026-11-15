@@ -16,6 +16,7 @@ import CameraExtensionKit
 import Combine
 import AppKit
 import SwiftUI
+import SystemExtensions
 import Foundation
 
 enum ShellTests {
@@ -510,6 +511,53 @@ enum ShellTests {
         fake.deactivate { seen.append($0) }
         fake.query { seen.append($0) }
         expectEqual(fake.calls, ["activate", "deactivate", "query"], "calls are recorded")
+    }
+
+    private static func testCameraExtensionReducerSequences() {
+        typealias R = CameraExtensionRequestReducer
+        func run(_ kind: R.Kind, _ events: [R.Event], replace: (String, String)? = nil) -> [CameraExtensionState] {
+            var r = R(kind: kind)
+            if let (e, n) = replace { _ = r.replacement(existingVersion: e, newVersion: n) }
+            return events.compactMap { r.reduce($0) }
+        }
+        expectEqual(run(.activate, [.needsUserApproval, .finished(rebootRequired: false)]),
+                    [.needsApproval, .active], "activate -> approval -> completed")
+        expectEqual(run(.activate, [.finished(rebootRequired: true)]), [.needsReboot], "reboot result")
+        expectEqual(run(.activate, [.finished(rebootRequired: false)], replace: ("100", "101")),
+                    [.active], "activate -> replace -> completed")
+        expectEqual(run(.activate, [.failed(domain: extDomain, code: 11)], replace: ("100", "100")),
+                    [.active], "equal version -> cancel -> requestCanceled(11) -> active")
+        expectEqual(run(.activate, [.failed(domain: extDomain, code: 11)]),
+                    [.failed("Couldn't install the virtual camera (code 11).")], "11 without our cancel fails")
+        expectEqual(run(.query, [.foundProperties([(true, false, false)]), .finished(rebootRequired: false)]),
+                    [.active], "a query's didFinish never overwrites the properties state")
+        expectEqual(run(.query, [.finished(rebootRequired: false)]), [], "a bare query finish emits nothing")
+        expectEqual(run(.deactivate, [.finished(rebootRequired: false)]), [.notInstalled], "deactivate completes")
+        expectEqual(run(.activate, [.finished(rebootRequired: false), .failed(domain: extDomain, code: 13)]),
+                    [.active], "events after a request finished are ignored")
+    }
+
+    private static func testCameraExtensionActivatorKeepsRequestsApart() {
+        var submitted: [OSSystemExtensionRequest] = []
+        let a = SystemCameraExtensionActivator(bundlePath: "/Applications/CoreVideo Pro.app",
+                                               hasProfile: true, submit: { submitted.append($0) })
+        var act: [CameraExtensionState] = []
+        var qry: [CameraExtensionState] = []
+        a.activate { act.append($0) }
+        a.query { qry.append($0) }
+        expectEqual(submitted.count, 2, "both requests submitted")
+        guard submitted.count == 2 else { return }
+        let (r1, r2) = (submitted[0], submitted[1])
+        a.requestNeedsUserApproval(r1)
+        a.request(r2, foundProperties: [])
+        a.request(r1, didFinishWithResult: .completed)
+        a.request(r2, didFinishWithResult: .completed)  // late finish of the finished query
+        a.request(r1, didFailWithError: NSError(domain: extDomain, code: 13))  // finished request
+        expectEqual(act, [.activating, .needsApproval, .active], "activation keeps its own states")
+        expectEqual(qry, [.notInstalled], "query keeps its own state, never .active")
+        let stranger = OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: "x", queue: .main)
+        a.requestNeedsUserApproval(stranger)
+        expectEqual(act.count, 3, "an unknown request is ignored")
     }
 
     private static func testCameraExtensionPrefsField() {
@@ -2912,6 +2960,8 @@ enum ShellTests {
             ("vcam-ext/settings-link", testCameraExtensionSettingsLink),
             ("vcam-ext/fake", testCameraExtensionFakeRecordsCalls),
             ("vcam-ext/prefs-field", testCameraExtensionPrefsField),
+            ("vcam-ext/reducer", testCameraExtensionReducerSequences),
+            ("vcam-ext/activator-isolation", testCameraExtensionActivatorKeepsRequestsApart),
             ("overlays/brand-kit-payload", testBrandKitCommandCarriesOnlyWhatTheCoreApplies),
             ("overlays/old-prefs-decode", testOldOverlayPrefsWithRemovedFieldsStillDecode),
             ("overlays/brand-default-all-off-leaves-manual", testBrandDefaultAllOffLeavesTheManualLowerThirdAlone),
