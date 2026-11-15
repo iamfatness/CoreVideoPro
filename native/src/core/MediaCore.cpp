@@ -480,16 +480,31 @@ MediaCore::MediaCore(modules::ModuleSet modules)
   // until start() has run, so no enabled-flag is read across threads here.
   if (modules_.compositor && modules_.compositor->publishesVcamFrames()) {
     compositorPublishesVcam_ = true;
-    auto* publisher = virtualCamera_.get();
-    modules_.compositor->setIdentifiedVcamFrameSink(
-        [publisher](modules::ICompositor::VcamFrameBuffer nv12, int width, int height,
-                    int64_t programSequence, int64_t deliveredAt100ns) {
-          try {
-            publisher->publishNv12Identified(std::move(nv12), width, height, programSequence, deliveredAt100ns);
-          } catch (...) {
-          }
-        });
+    installCompositorVcamSink();
   }
+}
+
+void MediaCore::installCompositorVcamSink() {
+  auto* publisher = virtualCamera_.get();
+  modules_.compositor->setIdentifiedVcamFrameSink(
+      [publisher](modules::ICompositor::VcamFrameBuffer nv12, int width, int height,
+                  int64_t programSequence, int64_t deliveredAt100ns) {
+        try {
+          publisher->publishNv12Identified(std::move(nv12), width, height, programSequence, deliveredAt100ns);
+        } catch (...) {
+        }
+      });
+}
+
+void MediaCore::setVirtualCameraPublisherForTest(std::unique_ptr<modules::IVirtualCameraPublisher> publisher) {
+  if (!publisher) return;
+  // Re-point the compositor's tap at the replacement FIRST (setting the sink
+  // waits for any in-flight call), then let the old publisher go. The default
+  // publisher's constructor has no side effects (start() opens the OS camera),
+  // so a test that swaps before enabling never touches a real camera.
+  std::swap(virtualCamera_, publisher);
+  if (compositorPublishesVcam_) installCompositorVcamSink();
+  if (virtualCameraEnabled_) publisher->stop();
 }
 
 MediaCore::~MediaCore() {
@@ -6044,8 +6059,8 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       (modules_.compositor->programBufferFrames() > 0 || !outputActive) : false;
   // The virtual camera is an output too, but it wants NATIVE resolution (it serves
   // a real webcam), not the 320x180 UI thumbnail. Gate the dedicated full-res
-  // program readback on the vcam being enabled; the publisher (on the audio/output
-  // worker) converts that full BGRA to NV12 for the SHM slot. Independent of
+  // program tap on the vcam being enabled (on the macOS vcam backend that is the
+  // GPU NV12 tap, vcamNv12Tap, below — never the BGRA readback). Independent of
   // skipCpuReadback so the light 60fps display tick still skips the small preview.
   // Streaming needs the same GPU tap as the virtual camera. RTMP previously
   // consumed `ProgramFrame::preview` (a 320x180 UI thumbnail), so YouTube saw

@@ -8652,6 +8652,19 @@ class VcamPlanRecordingCompositor final : public corevideo::modules::ICompositor
  private:
   std::unique_ptr<corevideo::modules::ICompositor> inner_;
 };
+
+// Records start/stop only; never opens an OS camera (review Important #3).
+class FakeVirtualCameraPublisher final : public corevideo::modules::IVirtualCameraPublisher {
+ public:
+  explicit FakeVirtualCameraPublisher(int* starts, int* stops) : starts_(starts), stops_(stops) {}
+  bool start(int, int, int) override { ++*starts_; return true; }
+  void publish(const corevideo::modules::ProgramFrame&) override {}
+  void stop() override { ++*stops_; }
+  corevideo::modules::VirtualCameraStatus status() const override { return {}; }
+ private:
+  int* starts_;
+  int* stops_;
+};
 }  // namespace
 
 // Roadmap M9.2 (controller ruling C6): on the Mac backend the virtual camera is
@@ -8664,6 +8677,10 @@ TEST(MediaCoreCommand, EnablingTheVirtualCameraArmsTheRightProgramTap) {
   auto* compositor = ownedCompositor.get();
   modules.compositor = std::move(ownedCompositor);
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  int publisherStarts = 0;
+  int publisherStops = 0;
+  mediaCore.setVirtualCameraPublisherForTest(
+      std::make_unique<FakeVirtualCameraPublisher>(&publisherStarts, &publisherStops));
 
   mediaCore.renderDisplayTick();
   EXPECT_FALSE(compositor->lastPlan.fullProgramReadback);
@@ -8692,6 +8709,9 @@ TEST(MediaCoreCommand, EnablingTheVirtualCameraArmsTheRightProgramTap) {
   mediaCore.renderDisplayTick();
   EXPECT_FALSE(compositor->lastPlan.vcamNv12Tap);
   EXPECT_FALSE(compositor->lastPlan.fullProgramReadback);
+  // The enable/disable reached the test double, so no real camera was opened.
+  EXPECT_EQ(publisherStarts, 1);
+  EXPECT_EQ(publisherStops, 1);
 }
 
 // #535 slice 4a final review, R1: a "zoom"-kind bus source with no new frame

@@ -742,9 +742,85 @@ CompositorRenderPlan vcamPlan(const char* id, int width, int height) {
   plan.width = width;
   plan.height = height;
   plan.layers.push_back(solidLayer("cam", 0.f, 0.f, 1.f, 1.f));
-  plan.fullProgramReadback = true;
+  // The SHIPPED Mac plan (ruling C6): the camera arms only the GPU NV12 tap,
+  // never the BGRA full-program readback. Only the oracle test turns that on.
+  plan.fullProgramReadback = false;
   plan.vcamNv12Tap = true;
   return plan;
+}
+
+// A sink the test can hold inside its call: while it is held the tap thread
+// cannot copy, so every dispatch made meanwhile keeps its NV12 buffer busy.
+struct HoldableVcamCapture : VcamCapture {
+  bool holdNext = false;
+  bool holding = false;
+  bool released = false;
+};
+
+std::shared_ptr<HoldableVcamCapture> installHoldableCapture(ICompositor& compositor) {
+  auto capture = std::make_shared<HoldableVcamCapture>();
+  compositor.setIdentifiedVcamFrameSink(
+      [capture](ICompositor::VcamFrameBuffer nv12, int width, int height, int64_t sequence,
+                int64_t deliveredAt100ns) {
+        std::unique_lock<std::mutex> lock(capture->mutex);
+        capture->deliveries.push_back({std::move(nv12), width, height, sequence, deliveredAt100ns});
+        if (capture->holdNext) {
+          capture->holdNext = false;
+          capture->holding = true;
+          capture->cv.notify_all();
+          capture->cv.wait(lock, [&] { return capture->released; });
+          capture->holding = false;
+        }
+        capture->cv.notify_all();
+      });
+  return capture;
+}
+
+// Holds the tap thread inside the sink, renders `ticksWhileHeld` light ticks
+// (each dispatch claims a buffer at encode time, so occupancy is exact, not
+// timing-dependent), releases, and drains. Returns the rendered frame numbers
+// of the held ticks.
+std::vector<int64_t> renderWhileTapHeld(ICompositor& compositor, HoldableVcamCapture& capture,
+                                        const CompositorRenderPlan& plan,
+                                        const std::vector<VideoFrame>& frames, int ticksWhileHeld) {
+  {
+    std::lock_guard<std::mutex> lock(capture.mutex);
+    capture.holdNext = true;
+  }
+  {
+    std::unique_lock<std::mutex> lock(capture.mutex);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!capture.holding && std::chrono::steady_clock::now() < deadline) {
+      lock.unlock();
+      compositor.render(plan, frames);
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      lock.lock();
+    }
+    if (!capture.holding) return {};
+  }
+  std::vector<int64_t> held;
+  for (int i = 0; i < ticksWhileHeld; ++i) {
+    held.push_back(compositor.render(plan, frames).frameNumber);
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+  }
+  // Let every held dispatch's GPU work finish before the release, so the
+  // drain below sees them all.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  {
+    std::lock_guard<std::mutex> lock(capture.mutex);
+    capture.released = true;
+  }
+  capture.cv.notify_all();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lock(capture.mutex);
+      if (!capture.deliveries.empty() && capture.deliveries.back().programSequence >= held.back()) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  return held;
 }
 
 TEST(MetalCompositor, VcamTapDeliversBt601Nv12OfTheProgram) {
@@ -770,7 +846,8 @@ TEST(MetalCompositor, VcamTapDeliversBt601Nv12OfTheProgram) {
 TEST(MetalCompositor, VcamTapMatchesTheCpuOracleBitForBitAt1080p) {
   MAKE_COMPOSITOR_OR_SKIP(compositor);
   auto capture = installVcamCapture(*compositor);
-  const auto plan = vcamPlan("vcam-oracle", kVcamW, kVcamH);
+  auto plan = vcamPlan("vcam-oracle", kVcamW, kVcamH);
+  plan.fullProgramReadback = true;  // the test-only oracle input, nothing else
   const std::vector<VideoFrame> frames{gradientFrame("cam", kVcamW, kVcamH)};
   // Read the program back ONCE through the existing full-res BGRA tap (one
   // frame of latency) — the test-only CPU oracle input. The content is static,
@@ -892,6 +969,11 @@ TEST(MetalCompositor, VcamTapDeliversEveryRenderedFrame) {
   auto capture = installVcamCapture(*compositor);
   const auto plan = vcamPlan("vcam-every", kVcamW, kVcamH);
   const std::vector<VideoFrame> frames{gradientFrame("cam", kVcamW, kVcamH)};
+  // Warm up: the tap prepares its pipeline off the render thread on the first
+  // tap tick, so the stream starts once that is done.
+  ASSERT_GE(renderUntilDelivered(*compositor, plan, frames, *capture, 1), 1u);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  capture->clear();
   constexpr int kTicks = 120;
   std::vector<int64_t> rendered;
   const auto period = std::chrono::microseconds(16667);
@@ -917,6 +999,87 @@ TEST(MetalCompositor, VcamTapDeliversEveryRenderedFrame) {
     EXPECT_EQ(delivered[i], delivered[i - 1] + 1) << "sequence gap at delivery " << i;
   }
   EXPECT_EQ(compositor->vcamDispatchSkipped(), 0u);
+}
+// Fix round 1 (review Important #1): the program pass keeps up to 3 command
+// buffers in flight without blocking, so under GPU backlog 3 tap dispatches can
+// be pending while a 4th frame is being copied. The ring must absorb that.
+TEST(MetalCompositor, VcamTapAbsorbsTheProgramInFlightDepthWhileTheTapIsBusy) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto capture = installHoldableCapture(*compositor);
+  auto plan = vcamPlan("vcam-inflight", kVcamW, kVcamH);
+  plan.skipCpuReadback = true;
+  const std::vector<VideoFrame> frames{bgraFrame("cam", 320, 180, 0, 0, 255)};
+  ASSERT_GE(renderUntilDelivered(*compositor, plan, frames, *capture, 1), 1u);
+  const auto held = renderWhileTapHeld(*compositor, *capture, plan, frames, 4);
+  ASSERT_EQ(held.size(), 4u) << "the tap thread was never held";
+  compositor->setIdentifiedVcamFrameSink({});
+  EXPECT_EQ(compositor->vcamDispatchSkipped(), 0u)
+      << "4 dispatches pending behind a busy tap must not skip (3 in flight + 1 copy)";
+  std::set<int64_t> delivered;
+  {
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    for (const auto& d : capture->deliveries) delivered.insert(d.programSequence);
+  }
+  for (const auto sequence : held) EXPECT_TRUE(delivered.count(sequence)) << "frame " << sequence << " lost";
+}
+
+// ...and once every buffer IS busy, the lost frame is counted, not hidden.
+TEST(MetalCompositor, VcamTapCountsASkipWhenEveryBufferIsBusy) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto capture = installHoldableCapture(*compositor);
+  auto plan = vcamPlan("vcam-skip", kVcamW, kVcamH);
+  plan.skipCpuReadback = true;
+  const std::vector<VideoFrame> frames{bgraFrame("cam", 320, 180, 0, 0, 255)};
+  ASSERT_GE(renderUntilDelivered(*compositor, plan, frames, *capture, 1), 1u);
+  const auto held = renderWhileTapHeld(*compositor, *capture, plan, frames, 5);
+  ASSERT_EQ(held.size(), 5u) << "the tap thread was never held";
+  compositor->setIdentifiedVcamFrameSink({});
+  EXPECT_EQ(compositor->vcamDispatchSkipped(), 1u);
+  std::set<int64_t> delivered;
+  {
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    for (const auto& d : capture->deliveries) delivered.insert(d.programSequence);
+  }
+  for (size_t i = 0; i < 4; ++i) EXPECT_TRUE(delivered.count(held[i])) << "frame " << held[i] << " lost";
+  EXPECT_FALSE(delivered.count(held[4])) << "the skipped frame cannot have been delivered";
+}
+
+// Fix round 1 (review Minor, coordinator-mandated): the kernel compile and the
+// 4 x 3 MB buffer allocation never run on the render thread. Every tick from
+// the camera's enable to its first delivery stays near the ordinary
+// light-tick cost.
+TEST(MetalCompositor, VcamTapPreparationNeverStallsTheRenderTick) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto plan = vcamPlan("vcam-prep", kVcamW, kVcamH);
+  plan.skipCpuReadback = true;
+  const std::vector<VideoFrame> frames{bgraFrame("cam", 320, 180, 0, 0, 255)};
+  auto timedRender = [&](const CompositorRenderPlan& p) {
+    const auto start = std::chrono::steady_clock::now();
+    compositor->render(p, frames);
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  };
+  auto idle = plan;
+  idle.vcamNv12Tap = false;
+  double baselineWorst = 0;
+  for (int i = 0; i < 30; ++i) {
+    baselineWorst = std::max(baselineWorst, timedRender(idle));
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+  }
+  auto capture = installVcamCapture(*compositor);
+  double enableWorst = 0;
+  int ticks = 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (capture->count() < 1 && std::chrono::steady_clock::now() < deadline) {
+    enableWorst = std::max(enableWorst, timedRender(plan));
+    ++ticks;
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+  }
+  compositor->setIdentifiedVcamFrameSink({});
+  std::fprintf(stderr, "[metal-test] vcam enable: worst tick %.3f ms over %d ticks (idle worst %.3f ms)\n",
+               enableWorst, ticks, baselineWorst);
+  ASSERT_GE(capture->count(), 1u);
+  EXPECT_LT(enableWorst, baselineWorst + 4.0)
+      << "a tick between enable and first delivery stalled the render thread";
 }
 #endif  // COREVIDEO_WITH_MAC_VIRTUALCAM
 

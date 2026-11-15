@@ -635,10 +635,10 @@ struct CompositorRenderPlan {
   // pipeline every frame) are only needed for the throttled base64 thumbnail.
   bool skipCpuReadback = false;
   // When true, the compositor also reads back the program at FULL resolution
-  // (BGRA) into ProgramFrame::programFullBgra. Set when the virtual camera is
-  // enabled so it publishes native 1080p instead of upscaling the 320x180 UI
-  // thumbnail. Independent of skipCpuReadback (which only gates the small
-  // preview + pixel signature).
+  // (BGRA) into ProgramFrame::programFullBgra. Set for outputs/recording, and
+  // (everywhere except the macOS vcam backend, which uses vcamNv12Tap below)
+  // when the virtual camera is enabled. Independent of skipCpuReadback (which
+  // only gates the small preview + pixel signature).
   bool fullProgramReadback = false;
   // macOS virtual camera only (COREVIDEO_WITH_MAC_VIRTUALCAM, roadmap M9.2):
   // when true, the Metal compositor runs its GPU NV12 tap (resize + mirror +
