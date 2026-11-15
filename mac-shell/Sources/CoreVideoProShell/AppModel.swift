@@ -593,6 +593,7 @@ final class AppModel: ObservableObject {
         monitorVolume = prefs.monitorVolume
         isoRecordingEnabled = prefs.isoRecordingEnabled
         isoSelectedSourceIds = Set(prefs.isoSelectedSourceIds)
+        pruneStaleZoomIsoIntent()   // last meeting's unslotted guests
         autoTakeEnabled = false // Ignore legacy saved auto-take intent in the first release.
         autoConfidenceThreshold = prefs.autoConfidenceThreshold
         autoHoldSeconds = prefs.autoHoldSeconds
@@ -1065,7 +1066,11 @@ final class AppModel: ObservableObject {
         }
         let acceptRoster = rosterProjection.observe(snapshot)
         rosterRecoveryNotice = rosterProjection.notice
-        if acceptRoster { meetingState = snapshot["meetingState"] as? String ?? meetingState }
+        if acceptRoster {
+            let previous = meetingState
+            meetingState = snapshot["meetingState"] as? String ?? meetingState
+            if meetingState == "idle", previous != "idle" { pruneStaleZoomIsoIntent() }
+        }
         if acceptRoster, let participants = snapshot["participants"] as? [JSONObject] {
             // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
             // the WinUI shell consumes): userId/displayName/videoOn/muted/talking.
@@ -1173,7 +1178,7 @@ final class AppModel: ObservableObject {
         } else {
             isoSelectedSourceIds.insert(key)
         }
-        isoRecordingEnabled = !isoSelectedSourceIds.isEmpty
+        isoRecordingEnabled = !visibleIsoSelection.isEmpty
         recomputeFromSlots()
     }
 
@@ -2590,7 +2595,24 @@ final class AppModel: ObservableObject {
         // The selection is the authority; the didSet re-projects the slot flags
         // and normalises the columns (the same path every other writer takes).
         isoSelectedSourceIds = selection
-        isoRecordingEnabled = !isoSelectedSourceIds.isEmpty
+        isoRecordingEnabled = !visibleIsoSelection.isEmpty
+    }
+
+    /// The selected sources the operator can SEE (an assigned slot, so a
+    /// Sources checkbox and a Routing row). The master switch follows this,
+    /// not stale intent for sources that are no longer in a slot.
+    var visibleIsoSelection: Set<String> {
+        isoSelectedSourceIds.intersection(slots.compactMap(\.sourceKey))
+    }
+
+    /// Zoom participant ids are per meeting: once the meeting is over (or on a
+    /// relaunch), `zoom:` intent for a guest who is in no slot can never
+    /// resolve again, and only piles up. Capture ids are stable and stay.
+    /// Windows never prunes, but its matrix does not draw the selection.
+    func pruneStaleZoomIsoIntent() {
+        let assigned = Set(slots.compactMap(\.sourceKey))
+        let stale = isoSelectedSourceIds.filter { $0.hasPrefix("zoom:") && !assigned.contains($0) }
+        if !stale.isEmpty { isoSelectedSourceIds.subtract(stale) }
     }
 
     /// Re-derive the projections of `isoSelectedSourceIds`: each slot's ISO
@@ -2604,9 +2626,12 @@ final class AppModel: ObservableObject {
             let selected = slots[index].sourceKey.map(isoSelectedSourceIds.contains) ?? false
             if slots[index].iso != selected { slots[index].iso = selected }
         }
-        var columns = isoColumnAssignments.filter { isoSelectedSourceIds.contains($0.value) }
+        // Columns only for sources with a Routing row (an assigned slot): stale
+        // intent must not take ISO cells that draw empty and starve a new pick.
+        let visible = visibleIsoSelection
+        var columns = isoColumnAssignments.filter { visible.contains($0.value) }
         let placed = Set(columns.values)
-        for source in isoSelectedSourceIds.sorted() where !placed.contains(source) {
+        for source in visible.sorted() where !placed.contains(source) {
             guard let free = (1...8).first(where: { columns[$0] == nil }) else { break }
             columns[free] = source
         }
@@ -3241,6 +3266,8 @@ final class AppModel: ObservableObject {
 
     /// Test seam: feed a snapshot through the real read path.
     func applySnapshotForTesting(_ snapshot: JSONObject) { applySnapshot(snapshot) }
+    /// Test seam: feed a zoom-snapshot through the real read path.
+    func applyZoomForTesting(_ snapshot: JSONObject) { applyZoom(snapshot) }
 
     private func replyToQuit(_ shouldTerminate: Bool) {
         if let seam = quitReplyForTesting { seam(shouldTerminate); return }

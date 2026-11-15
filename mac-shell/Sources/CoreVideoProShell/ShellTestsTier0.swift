@@ -21,6 +21,7 @@ extension ShellTests {
             ("tier0/iso-survives-first-assignment", testRestoredIsoSelectionSurvivesTheFirstAssignment),
             ("tier0/iso-matrix-one-truth", testIsoMatrixAndSourcesToggleAreOneTruth),
             ("tier0/iso-records-only-assigned-video-sources", testIsoRecordsOnlyAssignedVideoBearingSources),
+            ("tier0/iso-stale-intent-pruned-and-invisible", testStaleIsoIntentIsPrunedAndNeverTakesAColumn),
             ("tier0/sources-rows-fit-the-page", testSourcesRowsFitThePageAtTheMinimumWindow),
             ("tier0/recording-folder-chosen-and-persisted", testRecordingFolderIsChosenPersistedAndUsed),
             ("tier0/recording-folder-falls-back-loudly", testRecordingFolderFallsBackLoudly),
@@ -218,14 +219,17 @@ extension ShellTests {
         var prefs = ShellPrefs()
         prefs.isoRecordingEnabled = true
         prefs.isoSelectedSourceIds = ["capture:cam1", "zoom:7"]
+        prefs.showInputSlots = [PersistedSlot(slotId: 2, kind: "zoom", sourceId: "7",
+                                              name: "Guest", inShow: true)]
         let model = AppModel()
         model.applyRestoredPrefs(prefs)
-        model.assignSlot(2, kind: "zoom", sourceId: "7", name: "Guest")
+        model.assignSlot(3, kind: "capture", sourceId: "cam1", name: "Cam")
         expectEqual(model.isoSelectedSourceIds, ["capture:cam1", "zoom:7"],
                     "the first assignment keeps the restored ISO selection")
         expect(model.isoRecordingEnabled, "and the ISO master switch")
-        expectEqual(model.slots.first { $0.id == 2 }?.iso, true,
+        expectEqual(model.slots.first { $0.id == 3 }?.iso, true,
                     "the assigned slot shows its source's saved ISO state")
+        expectEqual(model.slots.first { $0.id == 2 }?.iso, true, "the restored slot keeps its ISO")
         model.unassignSlot(2)
         expect(model.isoSelectedSourceIds.contains("zoom:7"),
                "unassign keeps the source's ISO intent (Windows ShowInputsCoordinator)")
@@ -261,6 +265,43 @@ extension ShellTests {
         model.isoSelectedSourceIds.insert("capture:cam1")   // selected, connected, NOT assigned
         expectEqual(model.peekIsoSourceIds(recording: false), [],
                     "an unassigned connected camera does not record")
+    }
+
+    /// Fix round 1, I2: Zoom ids change every meeting. Stale `zoom:` intent
+    /// must not take matrix columns, starve a new pick, or hold the ISO
+    /// master switch on.
+    @MainActor
+    static func testStaleIsoIntentIsPrunedAndNeverTakesAColumn() {
+        // Eight stale guests still in the selection (as if left in memory),
+        // plus one live, assigned guest the operator now ticks.
+        let model = AppModel()
+        model.isoSelectedSourceIds = Set((1...8).map { "zoom:old\($0)" })
+        model.assignSlot(1, kind: "zoom", sourceId: "new", name: "New guest")
+        model.toggleSlotIso(1)
+        expect(model.isoColumn(of: "zoom:new") != nil, "a new tick gets a column despite 8 stale ids")
+        expect(model.isoColumnAssignments.values.allSatisfy { $0 == "zoom:new" },
+               "stale ids take no ISO cells")
+        expect(model.isoRecordingEnabled, "ticking a visible ISO arms the master switch")
+        model.toggleSlotIso(1)
+        expect(!model.isoRecordingEnabled,
+               "unticking the last VISIBLE ISO disarms it, whatever stale intent remains")
+
+        // Meeting over: unslotted zoom intent is dropped; capture and slotted stay.
+        model.isoSelectedSourceIds.formUnion(["capture:cam1", "zoom:new"])
+        model.meetingState = "in_meeting"
+        model.applyZoomForTesting(["meetingState": "idle", "participants": [JSONObject]()])
+        expectEqual(model.isoSelectedSourceIds, ["capture:cam1", "zoom:new"],
+                    "leaving the meeting prunes the stale guests, keeps cameras and slotted guests")
+
+        // Relaunch: last meeting's unslotted guests are not restored.
+        var prefs = ShellPrefs()
+        prefs.isoSelectedSourceIds = ["zoom:gone", "zoom:7", "capture:cam1"]
+        prefs.showInputSlots = [PersistedSlot(slotId: 2, kind: "zoom", sourceId: "7",
+                                              name: "Guest", inShow: true)]
+        let relaunched = AppModel()
+        relaunched.applyRestoredPrefs(prefs)
+        expectEqual(relaunched.isoSelectedSourceIds, ["capture:cam1", "zoom:7"],
+                    "a relaunch drops unslotted zoom intent")
     }
 
     /// The matrix kept its own column map, never rebuilt from the selection,
