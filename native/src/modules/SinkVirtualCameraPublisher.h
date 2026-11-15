@@ -22,6 +22,14 @@
 
 namespace corevideo::modules {
 
+// A connect failure identical to the previous one is logged again only on these
+// attempts (the 1 s retry makes that every 30 s), so the log shows the retry is
+// alive. A changed failure and the eventual connect are always logged.
+constexpr std::uint64_t kSinkConnectFailureLogEvery = 30;
+inline bool shouldLogRepeatedSinkConnectFailure(std::uint64_t consecutiveFailures) {
+  return consecutiveFailures > 0 && consecutiveFailures % kSinkConnectFailureLogEvery == 0;
+}
+
 class SinkVirtualCameraPublisher final : public IVirtualCameraPublisher {
  public:
   SinkVirtualCameraPublisher(std::unique_ptr<IVirtualCameraSink> sink, std::function<int64_t()> hostClockNs);
@@ -41,6 +49,7 @@ class SinkVirtualCameraPublisher final : public IVirtualCameraPublisher {
   bool mirrorAppliedUpstream() const override { return true; }  // the Metal tap mirrors (Task 5)
 
   std::uint64_t sequenceGapsForTest() const;
+  std::uint64_t consecutiveConnectFailuresForTest() const;
 
  private:
   void markLostLocked(const char* warning);
@@ -56,6 +65,7 @@ class SinkVirtualCameraPublisher final : public IVirtualCameraPublisher {
   int64_t lastProgramSequence_ = 0;
   std::uint64_t sequenceGaps_ = 0;
   std::uint64_t queueFullDrops_ = 0;
+  std::uint64_t consecutiveConnectFailures_ = 0;  // reset by a successful connect
   // Continuous QueueFull since queueFullSinceNs_ (host clock); reset by an
   // accepted frame, a loss, or a (re)connect.
   bool queueFullStreak_ = false;

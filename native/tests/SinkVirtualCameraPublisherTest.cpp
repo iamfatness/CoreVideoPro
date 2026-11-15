@@ -253,3 +253,28 @@ TEST(SinkVirtualCameraPublisher, StopDisconnectsAndReportsOff) {
 }
 
 }  // namespace
+
+// Live 2026-11-15: the core retried every second but logged only the first
+// failure, so "is the retry running?" had no answer in the log.
+TEST(SinkVirtualCameraPublisher, RepeatedConnectFailuresAreCountedAndResetByAConnect) {
+  Rig rig;
+  for (int i = 0; i < 3; ++i) rig.state->connectResults.push_back("CAMERA_EXTENSION_NOT_FOUND: x");
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_FALSE(rig.camera->start(1920, 1080, 60));
+    rig.camera->stop();
+  }
+  EXPECT_EQ(rig.camera->consecutiveConnectFailuresForTest(), 3u);
+  EXPECT_EQ(rig.state->connects, 3);
+  EXPECT_TRUE(rig.camera->start(1920, 1080, 60));
+  EXPECT_EQ(rig.camera->consecutiveConnectFailuresForTest(), 0u);
+  EXPECT_EQ(rig.camera->status().state, "live");
+}
+
+TEST(SinkVirtualCameraPublisher, ARepeatedFailureIsLoggedAsAHeartbeatNotEverySecond) {
+  EXPECT_FALSE(shouldLogRepeatedSinkConnectFailure(0));
+  EXPECT_FALSE(shouldLogRepeatedSinkConnectFailure(1));
+  EXPECT_FALSE(shouldLogRepeatedSinkConnectFailure(29));
+  EXPECT_TRUE(shouldLogRepeatedSinkConnectFailure(30));
+  EXPECT_FALSE(shouldLogRepeatedSinkConnectFailure(31));
+  EXPECT_TRUE(shouldLogRepeatedSinkConnectFailure(60));
+}

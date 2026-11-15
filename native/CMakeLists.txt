@@ -915,6 +915,7 @@ if(BUILD_TESTING)
     tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
     tests/SinkVirtualCameraPublisherTest.cpp
+    tests/MainRunLoopHostTest.cpp
     tests/GpuWebcamFramerTest.cpp
     tests/VirtualCameraSlateTest.cpp
     tests/VirtualCameraComposeTest.cpp

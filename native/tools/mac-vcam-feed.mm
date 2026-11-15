@@ -13,7 +13,8 @@
 // identity before running it; the e2e script does that.
 //
 // Reconnect: a failed connect or a lost sink is retried every 1 s, the cadence
-// of the core's AsyncVirtualCameraPublisher worker, so e2e step 5 (extension
+// of the core's AsyncVirtualCameraPublisher worker, on a worker thread while the
+// main thread runs the main run loop (as the core does), so e2e step 5 (extension
 // restart) sees the same recovery the app does.
 //
 // Output (stdout): one `[feed] at=<unix ms> t=<s> status=<state> warning=<w>`
@@ -23,6 +24,7 @@
 // [virtualcam] lines from the publisher/sink go to the process log (stderr).
 // Exit 0 when the final status is live and at least one frame was published.
 
+#include "core/MainRunLoopHost.h"
 #include "modules/CmioVirtualCameraSink.h"
 #include "modules/SinkVirtualCameraPublisher.h"
 #include "modules/VirtualCameraFrame.h"
@@ -99,7 +101,10 @@ int main(int argc, char** argv) {
   }
   if (seconds <= 0 || pattern != "red" || (fps != 30 && fps != 60)) usage();
 
-  @autoreleasepool {
+  // Same thread layout as the core (src/main.cpp): the feed loop on a worker,
+  // the main run loop serviced, so a camera extension that restarts mid-feed is
+  // seen again exactly as the core would see it.
+  return corevideo::core::runWithMainRunLoop([&]() -> int { @autoreleasepool {
     SinkVirtualCameraPublisher camera(corevideo::modules::createCmioVirtualCameraSink(),
                                       corevideo::modules::machHostClockNs);
     const auto frame = redFrame();
@@ -159,5 +164,5 @@ int main(int argc, char** argv) {
     const bool ok = status.state == "live" && status.framesPublished > 0;
     camera.stop();
     return ok ? 0 : 1;
-  }
+  } });
 }

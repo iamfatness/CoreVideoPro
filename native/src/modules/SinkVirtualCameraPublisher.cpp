@@ -34,9 +34,18 @@ bool SinkVirtualCameraPublisher::start(int width, int height, int fps) {
   if (!failure.empty()) {
     status_.state = "failed";
     status_.enabled = false;
-    // Logged only when it changes: the owning worker retries every second while
-    // the extension is absent (not installed, awaiting approval, restarting).
-    if (status_.warning != failure) ::corevideo::core::nativeLogf("[virtualcam] mac sink: %s\n", failure.c_str());
+    ++consecutiveConnectFailures_;
+    // The owning worker retries every second while the extension is absent (not
+    // installed, awaiting approval, restarting). A new failure is logged at once;
+    // the same failure again only as a periodic heartbeat, so the log proves the
+    // retry is still running without repeating itself every second.
+    if (status_.warning != failure) {
+      ::corevideo::core::nativeLogf("[virtualcam] mac sink: %s (attempt %llu)\n", failure.c_str(),
+                                    static_cast<unsigned long long>(consecutiveConnectFailures_));
+    } else if (shouldLogRepeatedSinkConnectFailure(consecutiveConnectFailures_)) {
+      ::corevideo::core::nativeLogf("[virtualcam] mac sink: still failing after %llu attempts: %s\n",
+                                    static_cast<unsigned long long>(consecutiveConnectFailures_), failure.c_str());
+    }
     status_.warning = failure;
     return false;
   }
@@ -44,7 +53,9 @@ bool SinkVirtualCameraPublisher::start(int width, int height, int fps) {
   status_.state = "live";
   status_.enabled = true;
   status_.warning.clear();
-  ::corevideo::core::nativeLogf("[virtualcam] mac sink connected %dx%d@%d\n", width, height, fps);
+  ::corevideo::core::nativeLogf("[virtualcam] mac sink connected %dx%d@%d after %llu failed attempt(s)\n", width,
+                                height, fps, static_cast<unsigned long long>(consecutiveConnectFailures_));
+  consecutiveConnectFailures_ = 0;
   return true;
 }
 
@@ -165,6 +176,11 @@ void SinkVirtualCameraPublisher::setDeviceName(const std::string& name) {
   if (name.empty()) return;
   std::lock_guard<std::mutex> lock(mutex_);
   status_.deviceName = name;
+}
+
+std::uint64_t SinkVirtualCameraPublisher::consecutiveConnectFailuresForTest() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return consecutiveConnectFailures_;
 }
 
 std::uint64_t SinkVirtualCameraPublisher::sequenceGapsForTest() const {

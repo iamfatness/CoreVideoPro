@@ -42,11 +42,11 @@ constexpr int kSinkWidth = 1920;
 constexpr int kSinkHeight = 1080;
 constexpr int kPoolMinimumBuffers = 6;
 
-// kCMIOHardwarePropertyRunLoop ('rnlp') is no longer declared by the macOS 26
-// SDK headers. Setting it to NULL tells the HAL to deliver notifications on its
-// own thread instead of the main run loop (the core has no main run loop). An
-// unknown-property error from a newer system is harmless and only logged.
-constexpr CMIOObjectPropertySelector kHardwarePropertyRunLoop = 'rnlp';
+// Device arrivals (the extension starting, updating or restarting after this
+// process first touched CMIO) are applied on the MAIN run loop, which the core
+// services (core/MainRunLoopHost.h, src/main.cpp). kCMIOHardwarePropertyRunLoop
+// ('rnlp') was set to NULL here once; the HAL accepts it and ignores it for
+// device arrivals (measured on macOS 26), so it is not used.
 
 CMIOObjectPropertyAddress globalAddress(CMIOObjectPropertySelector selector) {
   return CMIOObjectPropertyAddress{selector, kCMIOObjectPropertyScopeGlobal, kCMIOObjectPropertyElementMain};
@@ -110,17 +110,6 @@ class CmioVirtualCameraSink final : public IVirtualCameraSink {
 
   std::string connect() override {
     disconnect();
-    static std::once_flag runLoopOnce;
-    std::call_once(runLoopOnce, [] {
-      auto address = globalAddress(kHardwarePropertyRunLoop);
-      CFRunLoopRef none = nullptr;
-      const OSStatus status = CMIOObjectSetPropertyData(kCMIOObjectSystemObject, &address, 0, nullptr,
-                                                        sizeof(none), &none);
-      if (status != noErr)
-        ::corevideo::core::nativeLogf("[virtualcam] cmio run-loop property not set (OSStatus %d)\n",
-                                      static_cast<int>(status));
-    });
-
     device_ = findDevice();
     if (device_ == kCMIOObjectUnknown)
       return "CAMERA_EXTENSION_NOT_FOUND: CoreVideo Pro Camera is not installed, not approved, or restarting.";
