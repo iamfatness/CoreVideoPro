@@ -2709,7 +2709,6 @@ enum ShellTests {
         expect(!P.showAssignmentGuidance(tileCount: 3, multiviewSurfaceId: 0), "tiles present: no guidance")
     }
 
-    @MainActor
     // ── CameraExtensionKit (roadmap M9.2) ────────────────────────────────────
     private static func testStandbySlateMatchesTheCoreSlate() {
         // Fixture invariant: 1080/12 = 90, top = (1080-90)/2 = 495, bottom = 585.
@@ -2766,6 +2765,7 @@ enum ShellTests {
         expect(paddedResult, "padded stride is honoured")
     }
 
+    @MainActor
     static func runAndExit() -> Never {
         // Before ANY test: a run whose prefs resolve to the real file aborts.
         ShellHarness.requireIsolatedPrefsOrExit()
