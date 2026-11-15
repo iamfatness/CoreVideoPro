@@ -1105,8 +1105,11 @@ enum ShellTests {
         // AudioObservationPolicy.cs: <=250 fresh, <=1000 aging, else stale.
         let obs = AudioObservation(sequence: 3, status: "fresh", ageMs: 0)
         let t0 = Date(timeIntervalSince1970: 1_000)
+        // Elapsed time past the shell's own poll period (the allowance) counts.
+        let poll = AudioObservationPolicy.snapshotPollInterval
         func state(_ elapsedMs: Double) -> String {
-            AudioObservationPolicy.state(obs, receivedAt: t0, now: t0.addingTimeInterval(elapsedMs / 1000))
+            AudioObservationPolicy.state(obs, receivedAt: t0,
+                                         now: t0.addingTimeInterval(poll + elapsedMs / 1000))
         }
         expectEqual(state(250), "fresh", "250 ms is fresh")
         expectEqual(state(251), "aging", "251 ms is aging")
@@ -1115,9 +1118,9 @@ enum ShellTests {
         // Owner age is carried, not reset by receipt.
         let owned = AudioObservation(sequence: 3, status: "fresh", ageMs: 50)
         expectEqual(AudioObservationPolicy.state(owned, receivedAt: t0,
-                    now: t0.addingTimeInterval(0.19)), "fresh", "50+190 fresh")
+                    now: t0.addingTimeInterval(poll + 0.19)), "fresh", "50+190 fresh")
         expectEqual(AudioObservationPolicy.state(owned, receivedAt: t0,
-                    now: t0.addingTimeInterval(0.21)), "aging", "50+210 aging")
+                    now: t0.addingTimeInterval(poll + 0.21)), "aging", "50+210 aging")
         expectEqual(AudioObservationPolicy.state(
             AudioObservation(sequence: 4, status: "stale", ageMs: 2000), receivedAt: t0, now: t0),
                     "stale", "published age past 1 s is stale at receipt")
@@ -1136,6 +1139,35 @@ enum ShellTests {
         expect(AudioObservationPolicy.warning(obs, receivedAt: t0, now: t0) == nil, "fresh: no warning")
     }
 
+    // Owner report 2026-11-15 ("the bottom is bouncing with some odd error about
+    // audio"): the shell polls snapshots every 0.5 s, and the policy counted the
+    // time since RECEIPT against the 250 ms fresh budget, so healthy audio read
+    // "meters aging" for the back half of every poll — twice a second.
+    @MainActor
+    private static func testMeterWarningAllowsTheShellPollInterval() {
+        let t0 = Date(timeIntervalSince1970: 7_000)
+        let healthy = AudioObservation(sequence: 9, status: "fresh", ageMs: 20)
+        expect(AudioObservationPolicy.warning(healthy, receivedAt: t0,
+                                              now: t0.addingTimeInterval(0.4)) == nil,
+               "fresh snapshot received 400 ms ago (inside one poll): no warning")
+        expect(AudioObservationPolicy.warning(healthy, receivedAt: t0,
+                                              now: t0.addingTimeInterval(0.5)) == nil,
+               "exactly one poll period since receipt: no warning")
+        expectEqual(AudioObservationPolicy.warning(healthy, receivedAt: t0,
+                                                   now: t0.addingTimeInterval(2)) ?? "",
+                    "meters stale \u{2014} last values held",
+                    "received 2 s ago: a stalled core still goes stale")
+        expectEqual(AudioObservationPolicy.snapshotPollInterval, 0.5,
+                    "the allowance is the shell's own poll period")
+        let model = AppModel()
+        model.observeAudioObservation(
+            ["audioObservation": ["sequence": 1, "ageMs": 20, "status": "fresh"]], now: t0)
+        for step in stride(from: 0.0, through: 0.5, by: 0.05) {
+            expect(model.meterWarning(now: t0.addingTimeInterval(step)) == nil,
+                   "healthy audio between polls never warns (+\(step)s)")
+        }
+    }
+
     @MainActor
     private static func testMeterWarningFollowsSnapshotAgeAndRecovers() {
         let model = AppModel()
@@ -1147,8 +1179,10 @@ enum ShellTests {
         expect(model.meterWarning(now: t0) == nil, "legacy/no envelope: no warning")
         model.observeAudioObservation(snap(1, 20), now: t0)
         expect(model.meterWarning(now: t0) == nil, "fresh observation: levels shown clean")
-        expect(model.meterWarning(now: t0.addingTimeInterval(0.5)) == "meters aging",
-               "no new snapshot for 500 ms: aging")
+        expect(model.meterWarning(now: t0.addingTimeInterval(0.5)) == nil,
+               "one shell poll period without a snapshot is expected, not aging")
+        expect(model.meterWarning(now: t0.addingTimeInterval(1.0)) == "meters aging",
+               "no new snapshot for 1 s (a missed poll): aging")
         expect(model.meterWarning(now: t0.addingTimeInterval(2)) ==
                "meters stale \u{2014} last values held", "no new snapshot for 2 s: stale")
         model.observeAudioObservation(snap(2, 3000), now: t0.addingTimeInterval(2))
@@ -2673,6 +2707,7 @@ enum ShellTests {
             ("scenes/editor-never-program", testSceneEditorNeverTargetsProgram),
             ("meters/observation-thresholds", testAudioObservationThresholdsAreWindows),
             ("meters/warning-recovers", testMeterWarningFollowsSnapshotAgeAndRecovers),
+            ("meters/poll-interval-allowance", testMeterWarningAllowsTheShellPollInterval),
             ("quit/decision", testQuitDecisionAsksOnlyWhenOutputsAreLive),
             ("quit/one-prompt", testQuitGateAllowsOnePromptAtATime),
             ("quit/stop-then-wait", testQuitFinishStopsThenWaitsForTerminalEvidence),

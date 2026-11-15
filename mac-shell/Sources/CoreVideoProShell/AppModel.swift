@@ -806,7 +806,10 @@ final class AppModel: ObservableObject {
         // RPC thread and queues starve one-shot requests (zoom-join sat behind
         // an unbounded sync backlog). Status/meters are fine at 2Hz; the
         // program surface rides push events.
-        syncTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        // The meter-age policy allows exactly this period (AudioObservationPolicy).
+        syncTimer = Timer.scheduledTimer(
+            withTimeInterval: AudioObservationPolicy.snapshotPollInterval, repeats: true
+        ) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in await self.syncTick() }
         }
