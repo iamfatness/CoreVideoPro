@@ -42,6 +42,7 @@ extension ShellTests {
             ("tier0/studio-add-overlay", testStudioAddOverlayPlacesATopMostPreviewLayer),
             ("tier0/studio-rail-row-actions", testSceneRailRowActionsTargetTheRowWithoutCueing),
             ("tier0/studio-multiview-drag-swap", testMultiviewDragSwapsTheTwoInputSlots),
+            ("tier0/drag-swap-never-moves-a-solo-cue", testDragSwapNeverMovesAnOnAirSoloCue),
         ]
     }
 
@@ -1048,6 +1049,47 @@ extension ShellTests {
         }
         expect(canvas.contains("MultiviewDragPolicy.dropTarget(") && canvas.contains("model.swapMultiviewSlots(fromSlot, toSlot)"),
                "the multiview tiles drag-swap")
+    }
+
+    // ── fix round 1 ──────────────────────────────────────────────────────────
+
+    /// Review C1: a multiview solo cue must keep its SOURCE across a drag-swap
+    /// (Windows BuildSoloRoute binds the participant/device, not the slot),
+    /// while a slot-bound preset Program DOES follow the swap (owner ruling:
+    /// Windows parity for slot-bound routes).
+    @MainActor
+    static func testDragSwapNeverMovesAnOnAirSoloCue() {
+        let model = AppModel()
+        model.assignSlot(1, kind: "zoom", sourceId: "42", name: "Guest")
+        model.assignSlot(2, kind: "capture", sourceId: "cam1", name: "Wide cam")
+        model.previewMultiviewSlot(1)                 // cue slot 1 solo...
+        let onAir = model.previewSceneId
+        model.programSceneId = onAir                  // ...and it is on Program
+        model.previewMultiviewSlot(2)                 // Preview: a solo of slot 2
+        let cued = model.previewSceneId
+        func wire(_ sceneId: String) -> [NSDictionary] {
+            model.buildRoutes(for: sceneId, isProgram: sceneId == onAir).map { NSDictionary(dictionary: $0) }
+        }
+        let programBefore = wire(onAir), previewBefore = wire(cued)
+        expectEqual(programBefore.first?["participantId"] as? String, "42", "Program shows the guest solo")
+        model.swapMultiviewSlots(1, 2)
+        expectEqual(wire(onAir), programBefore, "a swap never changes the on-air solo cue")
+        expectEqual(wire(cued), previewBefore, "nor the cued one")
+        expectEqual(model.busLabel(for: onAir), "Guest", "the PGM chip still names the guest")
+
+        // Parity, documented: a preset Program bound to slot order re-resolves.
+        let preset = AppModel()
+        preset.assignSlot(1, kind: "zoom", sourceId: "42", name: "Guest")
+        preset.assignSlot(2, kind: "capture", sourceId: "cam1", name: "Wide cam")
+        preset.scenes = [SceneDef(id: "p", name: "Panel", layout: "two-up"),
+                         SceneDef(id: "q", name: "Other", layout: "single")]
+        preset.programSceneId = "p"
+        let first = preset.buildRoutes(for: "p", isProgram: true).first?["participantId"] as? String
+        preset.swapMultiviewSlots(1, 2)
+        let after = preset.buildRoutes(for: "p", isProgram: true).first
+        expectEqual(first, "42", "the preset's first cell was the guest")
+        expectEqual(after?["captureDeviceId"] as? String, "cam1",
+                    "a slot-bound preset follows the swap (Windows parity, owner ruling)")
     }
 
     // ── source-reading helpers ───────────────────────────────────────────────
