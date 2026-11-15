@@ -1025,17 +1025,33 @@ enum ShellTests {
             "no meeting and no media route: no zoom-mix and no media strip (Windows)")
     }
 
-    private static func testStripSetHidesNonSourcesAndRawClipIds() {
+    private static func testStripSetIsExactlyTheModelledSources() {
         let echo: [JSONObject] = [
             ["participantId": "99"],               // a Zoom guest who is not a source
             ["participantId": "media:clip-1"],     // a clip: governed by "media"
-            ["participantId": "background:bg-1"],  // PCM the shell does not model
+            ["participantId": "capture:gone"],     // an unpaired mic the core still echoes
+            ["participantId": "zoom-mix"],         // the last meeting's mix
         ]
         let ids = AudioConsolePolicy.mergeStrips(
             echo: echo, prior: [], expected: ["11", "media"]).map(\.id)
-        expect(!ids.contains("99"), "a non-source Zoom channel is not on the mixer (MixerChannelSetPolicy)")
-        expect(!ids.contains("media:clip-1"), "a clip has no strip of its own — the media alias governs it")
-        expect(ids.contains("background:bg-1"), "unmodelled PCM keeps a strip, so it is never strip-less")
+        expectEqual(ids, ["11", "media"], "the strip set is exactly the modelled sources")
+    }
+
+    /// Review M1: a strip whose source is gone must leave, even though the core
+    /// keeps echoing the channel it was last sent.
+    @MainActor
+    private static func testUnpairedMicStripLeavesTheConsole() {
+        let model = AppModel()
+        model.slots[0].kind = "capture"; model.slots[0].sourceId = "cam"
+        model.slots[0].audioDeviceId = "mic"; model.slots[0].audioDeviceName = "Mic"
+        model.refreshStrips()
+        expect(model.strips.contains { $0.id == "capture:cam" }, "a paired mic has a strip")
+        model.markAudioConsoleDeliveredForTesting()
+        model.slots[0].audioDeviceId = ""      // unpaired
+        model.applySnapshotForTesting(["audioMixSession": ["participants": [
+            ["participantId": "capture:cam", "outputLevel": 0]]]])   // core still echoes it
+        expect(!model.strips.contains { $0.id == "capture:cam" }, "the unpaired mic's strip is gone")
+        expect(model.scheduledStripIds != nil, "...and the smaller set is synced to the core")
     }
 
     /// #481: the A1's mute is only set by the A1.
@@ -3276,7 +3292,8 @@ enum ShellTests {
             ("zoom-audio/kinds-vs-core", testAudioSubscriptionKindsMatchTheCoreSource),
             ("zoom-audio/push-spine-call-site", testPushSpineSubscribesWallAudioFromTheModel),
             ("audio-console/strips-from-source-set", testStripsComeFromTheSourceSetNotOnlyTheEcho),
-            ("audio-console/hides-non-sources", testStripSetHidesNonSourcesAndRawClipIds),
+            ("audio-console/exactly-modelled-sources", testStripSetIsExactlyTheModelledSources),
+            ("audio-console/unpaired-mic-leaves", testUnpairedMicStripLeavesTheConsole),
             ("audio-console/a1-mute-481", testA1MuteIsNeverAdoptedFromTheEcho),
             ("audio-console/sync-carries-every-strip", testConsoleSyncCarriesEveryStripAndTheA1State),
             ("audio-routing/default-topology", testDefaultRoutingIsTheWindowsPerGuestTopology),

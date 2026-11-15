@@ -22,11 +22,7 @@
 //                   through the core alias (core/AudioControlSourcePolicy.h, T1.6),
 //                   while Program or Preview carries a fixed media route (Windows
 //                   ResolveSceneMediaAudioSourceIds).
-// plus anything else the core echoes (a PCM source the shell does not model yet),
-// EXCEPT a Zoom participant channel outside the source set (Windows
-// MixerChannelSetPolicy: non-sources are not on the mixer) and raw media:<id>
-// clip ids (they are governed by the "media" strip, never a strip of their own —
-// a per-clip strip would bypass the media pre-sum).
+// and nothing else: the core's echo supplies measurements only (see mergeStrips).
 //
 // THE A1's MUTE IS ONLY SET BY THE A1 (#481). A strip's mute, gain, pan and solo
 // are SHELL-OWNED: a new strip starts unmuted at unity, and an existing strip keeps
@@ -94,19 +90,20 @@ enum AudioConsolePolicy {
                             remembered: [String: AudioStrip] = [:],
                             expected: [String]) -> [AudioStrip] {
         var echoById: [String: JSONObject] = [:]
-        var echoOrder: [String] = []
         for entry in echo {
             guard let id = entry["participantId"] as? String, !id.isEmpty,
                   echoById[id] == nil else { continue }
             echoById[id] = entry
-            echoOrder.append(id)
         }
-        let expectedSet = Set(expected)
-        var ids = expected
-        for id in echoOrder where !expectedSet.contains(id) {
-            if isZoomParticipantChannel(id) || isMediaClipId(id) { continue }
-            ids.append(id)
-        }
+        // The strip set is EXACTLY the modelled sources. Echoed ids outside it are
+        // never strips (review M1): after the first sync the core echoes back only
+        // the channels the shell sent, so an echo pass-through could only re-admit
+        // ids the shell itself had synced — an unpaired mic or the meeting's
+        // zoom-mix stayed on the console forever. A Zoom non-source is not on the
+        // mixer (MixerChannelSetPolicy) and a media:<id> clip is governed by the
+        // "media" strip; unmodelled PCM (background:<id>, local audio) has no
+        // route either, so a strip would not make it audible.
+        let ids = expected
         let priorById = Dictionary(prior.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return ids.map { id in
             let entry = echoById[id]
