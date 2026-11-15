@@ -1385,6 +1385,17 @@ struct ZoomPane: View {
                         Button("Join Zoom") { model.joinZoom() }
                             .buttonStyle(AccentButtonStyle())
                             .disabled(model.joinMeetingId.isEmpty)
+                        // #475: shown ONLY after a join failed because this
+                        // account is already in the meeting. It ends the
+                        // operator's own Zoom session, so it is a separate,
+                        // explicit gesture and never the default Join.
+                        if model.canEndOtherZoomSession {
+                            Button("Join and end my other Zoom session") {
+                                model.joinZoom(endOtherMeeting: true)
+                            }
+                            .buttonStyle(GhostButtonStyle())
+                            .help("Ends this Zoom account's other session, including your own Zoom app, and joins here.")
+                        }
                     }
                     Button("Open in Zoom app") { model.openInZoomApp() }
                         .buttonStyle(GhostButtonStyle())

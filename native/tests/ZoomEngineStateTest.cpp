@@ -522,3 +522,68 @@ TEST(ZoomEngineRuntimeState, RecoverableMediaErrorKeepsMeetingConnected) {
   state.apply(eventFrom(R"({"cmd":"error","stage":"raw_media_start_failed","message":"Privilege pending"})"));
   EXPECT_EQ(state.snapshot().meetingState,"in-meeting");
 }
+
+// ── Tier 0.13: the macOS engine answers the same-account prompt ─────────────
+// main-macos.mm had no onEndOtherMeetingToJoinMeetingNotification at all, so a
+// Mac join into a meeting the operator's own Zoom app was already in could not
+// be recovered (and "Join and end my other Zoom session" had nothing to ask).
+// The decision lives in the SDK-free end-other-meeting.h so it is testable here.
+#include "end-other-meeting.h"
+
+#include <fstream>
+#include <sstream>
+
+namespace {
+std::string readMacEngineSource() {
+  std::string here = __FILE__;
+  const auto slash = here.find_last_of("/\\");
+  std::ifstream in(here.substr(0, slash) + "/../zoom-engine/engine/main-macos.mm");
+  std::stringstream text;
+  text << in.rdbuf();
+  return text.str();
+}
+}  // namespace
+
+TEST(MacEngineEndOtherMeeting, TheTakeoverIsReadFromTheJoinLineTheCoreBuilds) {
+  corevideo::modules::ZoomEngineJoinCommand command;
+  command.meetingId = "97682593786";
+  EXPECT_FALSE(engine_join::joinRequestsEndOtherMeeting(
+      corevideo::modules::buildZoomEngineJoinCommand(command)));
+  command.endOtherMeeting = true;
+  EXPECT_TRUE(engine_join::joinRequestsEndOtherMeeting(
+      corevideo::modules::buildZoomEngineJoinCommand(command)));
+}
+
+TEST(MacEngineEndOtherMeeting, TheDefaultAnswerCancelsAndReadsAsOperatorLanguage) {
+  // Never end the operator's own meeting unless this join asked to.
+  EXPECT_EQ(engine_join::answerEndOtherMeeting(false), engine_join::EndOtherMeetingAnswer::Cancel);
+  EXPECT_EQ(engine_join::answerEndOtherMeeting(true), engine_join::EndOtherMeetingAnswer::EndOther);
+
+  corevideo::modules::ZoomEngineRuntimeState cancelled;
+  cancelled.apply(eventFrom(engine_join::endOtherMeetingEventLine(
+      engine_join::EndOtherMeetingAnswer::Cancel)), 0);
+  const auto refused = cancelled.snapshot();
+  EXPECT_EQ(refused.meetingState, "error");
+  ASSERT_FALSE(refused.warnings.empty());
+  EXPECT_NE(refused.warnings.back().find("already in this meeting"), std::string::npos)
+      << refused.warnings.back();
+  EXPECT_NE(refused.warnings.back().find("Join and end my other Zoom session"), std::string::npos);
+
+  // The takeover is a breadcrumb, never a failure.
+  corevideo::modules::ZoomEngineRuntimeState ended;
+  ended.apply(eventFrom(engine_join::endOtherMeetingEventLine(
+      engine_join::EndOtherMeetingAnswer::EndOther)), 0);
+  EXPECT_NE(ended.snapshot().meetingState, "error");
+}
+
+TEST(MacEngineEndOtherMeeting, TheMacEngineAnswersThePromptFromTheJoinLine) {
+  const auto source = readMacEngineSource();
+  ASSERT_FALSE(source.empty()) << "main-macos.mm not found next to the tests";
+  // The delegate method the macOS SDK calls (ZoomSDKMeetingService.h).
+  EXPECT_NE(source.find("- (void)onEndOtherMeetingToJoinMeetingNotification:"), std::string::npos);
+  EXPECT_NE(source.find("engine_join::answerEndOtherMeeting("), std::string::npos);
+  EXPECT_NE(source.find("engine_join::joinRequestsEndOtherMeeting(line)"), std::string::npos);
+  // The SDK's own alert must not pre-empt (or auto-answer) the operator's choice.
+  EXPECT_NE(source.find("hideEndOtherMeetingAlert = YES"), std::string::npos);
+  EXPECT_NE(source.find("enableAutoEndOtherMeeting = NO"), std::string::npos);
+}

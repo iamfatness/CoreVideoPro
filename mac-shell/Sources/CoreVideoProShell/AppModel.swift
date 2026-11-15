@@ -1442,6 +1442,8 @@ final class AppModel: ObservableObject {
     /// or "" (ZoomJoinStatus decides; late truth replaces a timeout).
     @Published private(set) var zoomJoin = ZoomJoinStatusTracker()
     var zoomJoinStatus: String { zoomJoin.line }
+    /// Offer "Join and end my other Zoom session" (Windows CanEndOtherZoomSession).
+    var canEndOtherZoomSession: Bool { zoomJoin.canEndOtherSession }
     @Published var webinar = false
     @Published var recentMeetings: [String] = []
 
@@ -1505,8 +1507,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func joinZoom() {
-        guard let bridge else { return }
+    /// `endOtherMeeting` is the operator's answer to "your account is already
+    /// in this meeting" (#475, Windows EndOtherZoomSessionAndJoinAsync): a
+    /// SECOND, explicit gesture that ends their own Zoom client's session, so
+    /// it is never the ordinary Join and never remembered for the next one.
+    func joinZoom(endOtherMeeting: Bool = false) {
+        guard bridge != nil || quitRequestForTesting != nil else { return }
         let target = Self.parseZoomTarget(joinMeetingId, fallbackPasscode: joinPasscode)
         let meetingId = target.meetingId
         let parsedPasscode = target.passcode
@@ -1527,19 +1533,23 @@ final class AppModel: ObservableObject {
             "displayName": displayName,
             "webinar": webinar,
         ]
-        ShellLog.write("joining meeting \(meetingId)")
+        // Absent, not false, on an ordinary join (the core reads it per join).
+        if endOtherMeeting { payload["endOtherMeeting"] = true }
+        ShellLog.write("joining meeting \(meetingId)\(endOtherMeeting ? " (end my other Zoom session)" : "")")
         Task {
             defer { joinInFlight = false }
             do {
                 // Credentials BEFORE the request timer (the Windows shape):
                 // a fresh ZAK per join, never cached, never logged.
-                if let credentials = await ZoomOAuth.shared.ensureJoinCredentials(),
+                // The harness never reads the operator's Keychain or calls Zoom.
+                if quitRequestForTesting == nil,
+                   let credentials = await ZoomOAuth.shared.ensureJoinCredentials(),
                    let zak = credentials.userZak {
                     payload["userZak"] = zak
                 } else {
                     zoomJoin.joiningAsGuest()
                 }
-                let response = try await bridge.request(
+                let response = try await quitRequest(
                     ["type": "zoom-join", "payload": payload],
                     timeout: ZoomJoinStatus.joinRequestTimeout(
                         environment: ProcessInfo.processInfo.environment))

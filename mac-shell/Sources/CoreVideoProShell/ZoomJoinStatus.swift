@@ -44,11 +44,29 @@ enum ZoomJoinStatus {
         signedIn ? "" : signInMayBeRequired
     }
 
+    /// #475 / Tier 0.13 (Windows ZoomJoinReconciliation.AccountBusyElsewhere):
+    /// the one failure the takeover retry answers — this Zoom account is
+    /// already in the meeting and the engine cancelled the SDK's prompt.
+    /// Matched on the phrase the core's single mapping produces
+    /// (modules/ZoomJoinFailureMessage.h), never on the wire reason. Narrow on
+    /// purpose: offering the takeover after any other failure would invite an
+    /// operator to evict their own Zoom client for nothing.
+    static let accountBusyElsewhere = "already in this meeting"
+
+    /// Windows CanEndOtherSessionAndRetry.
+    static func canEndOtherSessionAndRetry(_ snapshot: JSONObject) -> Bool {
+        snapshot["meetingState"] as? String == "error"
+            && (snapshot["warnings"] as? [String] ?? []).contains { $0.contains(accountBusyElsewhere) }
+    }
+
     /// The join's answer in a failed snapshot: Zoom's own reason beats a
     /// timeout; nil when the snapshot is not a failure.
     static func failure(from snapshot: JSONObject) -> String? {
         guard snapshot["meetingState"] as? String == "error" else { return nil }
         let warnings = (snapshot["warnings"] as? [String] ?? []).filter { !$0.isEmpty }
+        // The actionable collision sentence wins (Windows `actionable`): it
+        // names the button the operator has, whatever the SDK said after it.
+        if let busy = warnings.last(where: { $0.contains(accountBusyElsewhere) }) { return busy }
         if let reason = warnings.last(where: { !isTimeout($0) }) { return reason }
         return warnings.last ?? "Zoom did not say why the join failed."
     }
@@ -77,9 +95,14 @@ enum ZoomJoinStatus {
 struct ZoomJoinStatusTracker: Equatable {
     private(set) var line = ""
     private(set) var joinInFlight = false
+    /// Windows CanEndOtherZoomSession: true only after a join failed because
+    /// this account is already in the meeting; cleared at the start of EVERY
+    /// join so it can never outlive the failure it answers.
+    private(set) var canEndOtherSession = false
 
     mutating func beginJoin(signedIn: Bool) {
         joinInFlight = true
+        canEndOtherSession = false
         line = ZoomJoinStatus.atJoin(signedIn: signedIn)
     }
 
@@ -92,12 +115,26 @@ struct ZoomJoinStatusTracker: Equatable {
     mutating func observe(_ snapshot: JSONObject) {
         guard !joinInFlight else { return }
         line = ZoomJoinStatus.reconcile(current: line, snapshot: snapshot)
+        noteTakeoverOffer(snapshot)
     }
 
     /// The zoom-join reply (nil when the request itself failed).
     mutating func joinAnswered(_ snapshot: JSONObject?) {
         joinInFlight = false
-        if let snapshot { line = ZoomJoinStatus.reconcile(current: line, snapshot: snapshot) }
+        if let snapshot {
+            line = ZoomJoinStatus.reconcile(current: line, snapshot: snapshot)
+            noteTakeoverOffer(snapshot)
+        }
+    }
+
+    /// A late core verdict can still be the collision (Windows
+    /// ObserveLateJoinAsync); joining clears the offer.
+    private mutating func noteTakeoverOffer(_ snapshot: JSONObject) {
+        if ZoomJoinStatus.canEndOtherSessionAndRetry(snapshot) {
+            canEndOtherSession = true
+        } else if ["in_meeting", "in-meeting"].contains(snapshot["meetingState"] as? String ?? "") {
+            canEndOtherSession = false
+        }
     }
 
     /// Sign-in completed: the guest hint no longer applies.

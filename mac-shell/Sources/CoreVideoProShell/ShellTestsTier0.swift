@@ -31,6 +31,8 @@ extension ShellTests {
             ("tier0/monitor-device-falls-back-loudly", testMonitorDeviceFallsBackLoudlyAndReturns),
             ("tier0/monitor-device-every-generation", testMonitorDeviceRidesEveryCoreGeneration),
             ("tier0/monitor-projection-carries-device", testMonitorProjectionCarriesTheDevice),
+            ("tier0/end-other-session-offered-only-on-collision", testEndOtherSessionIsOfferedOnlyOnTheCollision),
+            ("tier0/end-other-session-join-is-explicit", testEndOtherSessionJoinIsExplicitAndNeverSticky),
         ]
     }
 
@@ -667,6 +669,83 @@ extension ShellTests {
         settled.edit(.init(enabled: true, volume: 0.5, deviceId: phones.id, deviceName: "other words"))
         settled.observe(mix(0, device: phones.id))
         expect(settled.draft == nil, "a matching device echo settles the draft (name is display only)")
+    }
+
+    // ── 0.13 "Join and end my other Zoom session" ────────────────────────────
+
+    static let accountBusySentence =
+        "Your Zoom account is already in this meeting, for example in the Zoom app. "
+        + "Leave it there and join again, or choose \"Join and end my other Zoom session\"."
+
+    /// Windows ZoomJoinReconciliationTests: offered for the collision only.
+    @MainActor
+    static func testEndOtherSessionIsOfferedOnlyOnTheCollision() {
+        let busy: JSONObject = ["meetingState": "error",
+                                "warnings": [accountBusySentence, "Zoom meeting failed: 1"]]
+        expect(ZoomJoinStatus.canEndOtherSessionAndRetry(busy), "the collision offers the takeover")
+        expectEqual(ZoomJoinStatus.failure(from: busy), accountBusySentence,
+                    "the actionable sentence is what the pane shows, even with a later warning")
+        let other: JSONObject = ["meetingState": "error", "warnings": ["Zoom meeting failed: 504"]]
+        expect(!ZoomJoinStatus.canEndOtherSessionAndRetry(other), "any other failure does not")
+        let joined: JSONObject = ["meetingState": "in_meeting", "warnings": [accountBusySentence]]
+        expect(!ZoomJoinStatus.canEndOtherSessionAndRetry(joined), "a joined meeting does not")
+
+        var tracker = ZoomJoinStatusTracker()
+        tracker.beginJoin(signedIn: true)
+        tracker.joinAnswered(busy)
+        expect(tracker.canEndOtherSession, "the failed join offers the takeover")
+        tracker.beginJoin(signedIn: true)
+        expect(!tracker.canEndOtherSession, "every new join clears the offer")
+        tracker.joinAnswered(["meetingState": "error", "warnings": ["Timed out waiting for Zoom meeting join result."]])
+        expect(!tracker.canEndOtherSession, "a timeout is not the collision")
+        tracker.observe(busy)
+        expect(tracker.canEndOtherSession, "the core's late verdict can still offer it")
+        tracker.observe(joined)
+        expect(!tracker.canEndOtherSession, "joining withdraws it")
+    }
+
+    /// The Mac could not recover when the operator's own Zoom app was in the
+    /// meeting: no button, and no way to ask the core to end the other session.
+    @MainActor
+    static func testEndOtherSessionJoinIsExplicitAndNeverSticky() {
+        let core = FakeTakeCore()
+        let model = AppModel()
+        var answers: [JSONObject] = [
+            ["meetingState": "error", "warnings": [accountBusySentence]],
+            ["meetingState": "in_meeting", "warnings": [] as [String]],
+            ["meetingState": "in_meeting", "warnings": [] as [String]],
+        ]
+        model.quitRequestForTesting = { body, _ in
+            _ = try await core.handle(body)
+            return await MainActor.run { ["snapshot": answers.isEmpty ? [:] : answers.removeFirst()] }
+        }
+        func joins() -> [JSONObject] {
+            core.bodies.filter { $0["type"] as? String == "zoom-join" }
+                .compactMap { $0["payload"] as? JSONObject }
+        }
+        model.joinMeetingId = "97682593786"
+        model.joinZoom()
+        spin(until: { model.canEndOtherZoomSession }, limit: 3)
+        expectEqual(joins().count, 1, "one ordinary join")
+        expect(joins().first?["endOtherMeeting"] == nil, "an ordinary join never carries the takeover")
+        expect(model.canEndOtherZoomSession, "the collision offers the takeover button")
+        expectEqual(model.zoomJoinStatus, accountBusySentence, "the pane says why and what to do")
+
+        model.joinZoom(endOtherMeeting: true)
+        spin(until: { joins().count == 2 && !model.canEndOtherZoomSession }, limit: 3)
+        expectEqual(joins().last?["endOtherMeeting"] as? Bool, true, "the button's join asks to end the other session")
+        expect(!model.canEndOtherZoomSession, "the offer is withdrawn")
+
+        spin(until: { false }, limit: 0.3)   // let the takeover join finish
+        model.joinZoom()
+        spin(until: { joins().count == 3 }, limit: 3)
+        expect(joins().last?["endOtherMeeting"] == nil, "the takeover is never remembered for the next join")
+
+        guard let shell = sourceFile("ShellApp.swift") else { expect(false, "ShellApp.swift"); return }
+        expect(shell.contains("if model.canEndOtherZoomSession {\n"
+                              + "                            Button(\"Join and end my other Zoom session\") {\n"
+                              + "                                model.joinZoom(endOtherMeeting: true)"),
+               "the Windows button, shown only while the takeover is offered")
     }
 
     // ── source-reading helpers ───────────────────────────────────────────────
