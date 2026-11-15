@@ -192,8 +192,8 @@ extension AppModel {
             return (wireId, name)
         }
 
-        if programSceneId == Self.soloSceneA || programSceneId == Self.soloSceneB {
-            if let slotId = soloSlotId,
+        if Self.isSoloScene(programSceneId) {
+            if let slotId = soloSlotByScene[programSceneId],
                let slot = slots.first(where: { $0.id == slotId }), slot.kind != "unassigned" {
                 candidates.append(label(slot))
             }

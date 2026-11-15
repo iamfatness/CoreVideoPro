@@ -477,7 +477,7 @@ final class AppModel: ObservableObject {
 
     private var lastSavedPrefs = ShellPrefs()
 
-    private func currentPrefs() -> ShellPrefs {
+    func currentPrefs() -> ShellPrefs {
         var prefs = ShellPrefs()
         prefs.joinMeetingId = joinMeetingId
         prefs.displayName = displayName
@@ -511,7 +511,7 @@ final class AppModel: ObservableObject {
             .filter { $0.kind == "zoom" && !$0.dropoutPolicy.isEmpty }
             .map { PersistedSlotPolicy(slotId: $0.id, dropoutPolicy: $0.dropoutPolicy) }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
-        prefs.scenes = scenes.map { scene in
+        prefs.scenes = railScenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
                            backgroundAssetId: scene.backgroundAssetId,
                            layers: scene.layers.map { layer in
@@ -578,7 +578,7 @@ final class AppModel: ObservableObject {
         recentMeetings = prefs.recentMeetings
         webinar = prefs.webinar
         if !prefs.scenes.isEmpty {
-            scenes = prefs.scenes.map { saved in
+            scenes = prefs.scenes.filter { !Self.isSoloScene($0.id) }.map { saved in
                 SceneDef(id: saved.id, name: saved.name, layout: saved.layout,
                          layers: saved.layers.map { layer in
                              SceneLayer(id: layer.id, slotId: layer.slotId,
@@ -1702,8 +1702,10 @@ final class AppModel: ObservableObject {
     }
 
     func buildRoutes(for sceneId: String, isProgram: Bool = false) -> [JSONObject] {
-        if sceneId == Self.soloSceneA || sceneId == Self.soloSceneB {
-            guard let slotId = soloSlotId,
+        if Self.isSoloScene(sceneId) {
+            // Each solo scene owns its source: re-cueing one never touches the
+            // other, so the one on Program never changes without a Take.
+            guard let slotId = soloSlotByScene[sceneId],
                   let slot = slots.first(where: { $0.id == slotId }),
                   slot.kind != "unassigned" else { return [] }
             var route = SceneRoute(
@@ -1889,6 +1891,9 @@ final class AppModel: ObservableObject {
     /// is the on-air scene too, so it is no target either.
     var sceneEditTargetId: String? {
         if previewSceneId.isEmpty || previewSceneId == programSceneId { return nil }
+        // A multiview solo cue is not an operator scene: its route is the cued
+        // source, and canvas layers on it would never render.
+        if Self.isSoloScene(previewSceneId) { return nil }
         return previewSceneId
     }
 
@@ -1906,7 +1911,7 @@ final class AppModel: ObservableObject {
     /// the on-air scene, or the last visible one. Nil when it can go.
     func sceneRemovalRefusal(_ sceneId: String) -> String? {
         if sceneId == programSceneId { return Self.sceneOnAirRefusal }
-        let reserved = sceneId == Self.soloSceneA || sceneId == Self.soloSceneB
+        let reserved = Self.isSoloScene(sceneId)
         if !reserved && railScenes.count <= 1 { return Self.sceneLastRefusal }
         return nil
     }
@@ -1958,7 +1963,7 @@ final class AppModel: ObservableObject {
 
     func newScene(layout: String) {
         let newId = "scene-\(Int(Date().timeIntervalSince1970))"
-        var suffix = scenes.count + 1
+        var suffix = railScenes.count + 1
         var name = "Scene \(suffix)"
         while scenes.contains(where: { $0.name == name }) {
             suffix += 1
@@ -1999,18 +2004,45 @@ final class AppModel: ObservableObject {
     // ── multiview source bus (StudioViewModel.PreviewMultiviewTile) ──────────
     //
     // Clicking a multiviewer source tile CUES that source solo to PREVIEW —
-    // then Take puts it on air. Windows alternates TWO reserved solo scene ids
-    // so consecutive clicks always change the scene id (re-cuing the same id
-    // would no-op and leave preview compositing the previous source); the mac
-    // port keeps that trick verbatim. Solo scenes are reserved: they never
-    // appear in the scene rail.
+    // then Take puts it on air. Ported from Windows PreviewMultiviewTile:
+    //  - TWO reserved solo scene ids; the cue always lands on the one NOT on
+    //    Program, so Preview can never equal Program after a cue (Take stays
+    //    possible) and the on-air solo scene is never re-pointed.
+    //  - The solo scene is a REAL entry in `scenes` (EnsureMultiviewSoloScene),
+    //    because Take and canTake only move scenes that exist.
+    //  - Each solo scene owns its route (`soloSlotByScene`), so a cue changes
+    //    Preview only: "program changes exclusively on Take".
+    // Solo scenes are reserved: never in the rail, never persisted, never in
+    // the control API's scene.list.
     static let soloSceneA = "mv-solo-a"
     static let soloSceneB = "mv-solo-b"
-    @Published var soloSlotId: Int?
+    static let soloSceneName = "Manual one-up"
+    @Published var soloSlotByScene: [String: Int] = [:]
+
+    static func isSoloScene(_ sceneId: String) -> Bool {
+        sceneId == soloSceneA || sceneId == soloSceneB
+    }
 
     // Reserved solo scenes never appear in the rail.
     var railScenes: [SceneDef] {
-        scenes.filter { $0.id != Self.soloSceneA && $0.id != Self.soloSceneB }
+        scenes.filter { !Self.isSoloScene($0.id) }
+    }
+
+    private func ensureSoloScene(_ sceneId: String) {
+        guard !scenes.contains(where: { $0.id == sceneId }) else { return }
+        scenes.append(SceneDef(id: sceneId, name: Self.soloSceneName, layout: "single"))
+    }
+
+    /// The PGM/PVW chip label for a bus scene id: a solo scene names its SOURCE
+    /// (Windows ResolveOnAirSceneLabel), any other scene its name.
+    func busLabel(for sceneId: String) -> String {
+        if Self.isSoloScene(sceneId) {
+            if let slotId = soloSlotByScene[sceneId], let slot = slots.first(where: { $0.id == slotId }) {
+                return slot.name.isEmpty ? "Input \(slotId)" : slot.name
+            }
+            return "Solo"
+        }
+        return scenes.first { $0.id == sceneId }?.name ?? "—"
     }
 
     // Tile ids are wire source ids ("zoom:<pid>" / "capture:<id>").
@@ -2023,9 +2055,12 @@ final class AppModel: ObservableObject {
     func previewMultiviewSlot(_ slotId: Int) {
         guard let slot = slots.first(where: { $0.id == slotId }),
               slot.kind != "unassigned" else { return }
-        soloSlotId = slotId
-        previewSceneId = previewSceneId == Self.soloSceneA ? Self.soloSceneB
-                                                           : Self.soloSceneA
+        let sceneId = programSceneId == Self.soloSceneA ? Self.soloSceneB : Self.soloSceneA
+        ensureSoloScene(sceneId)
+        soloSlotByScene[sceneId] = slotId
+        previewSceneId = sceneId
+        // Always sync, even when the id did not change (a re-cue into the same
+        // solo scene changes only its route — Windows SyncPreviewSceneChangeAsync).
         ShellLog.write("multiview cue → input \(slotId) (\(slot.name))")
         syncScenes()
     }
