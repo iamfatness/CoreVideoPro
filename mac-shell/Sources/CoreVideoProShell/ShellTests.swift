@@ -1116,6 +1116,37 @@ enum ShellTests {
                     "the base matrix uses the core's full-state routing command")
     }
 
+    /// The one-shot rule: a respawned core starts with no channels, mastering or
+    /// routing. The next generation must get the whole console again — and the
+    /// A1's mute must survive the fresh core's "unmuted" echo.
+    @MainActor
+    private static func testCoreRestartReassertsTheWholeAudioConsole() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        model.meetingAudioSubscribed = true
+        model.refreshStrips()
+        model.editStrip("11") { $0.muted = true }
+        model.selectOrRouteSend(source: "zoom-mix", bus: "iso-1")
+        expect(model.operatorRouteEdits[AudioRouteKey(source: "zoom-mix", bus: "iso-1")]?.enabled == true,
+               "an operator crosspoint is kept as intent")
+        model.markAudioConsoleDeliveredForTesting()
+        expect(model.scheduledStripIds == nil && model.lastRoutingBaseSent != nil,
+               "precondition: everything delivered to the old core")
+        model.onConnected()  // the respawned core's handshake
+        expectEqual(model.scheduledStripIds, ["zoom-mix", "11", "media"],
+                    "a new core generation gets the full channel list again")
+        expect(model.lastRoutingBaseSent == nil,
+               "the routing memo is forgotten, so the base matrix is re-sent to the new core")
+        // The fresh core echoes its defaults: unmuted, no gain.
+        model.applySnapshotForTesting(["audioMixSession": ["participants": [
+            ["participantId": "11", "muted": false, "outputLevel": 0]]]])
+        expectEqual(model.strips.first { $0.id == "11" }?.muted, true,
+                    "the restarted core's echo does not un-mute the A1's channel")
+        let base = model.routingBaseCommand()?["sends"] as? [JSONObject] ?? []
+        expect(base.contains { $0["sourceId"] as? String == "zoom-mix" && $0["busId"] as? String == "iso-1" },
+               "the operator's crosspoint rides the re-sent base matrix")
+    }
+
     /// Cross-checks the audio wire strings against the CORE's source, the way the
     /// payload-wrapper contract test does: a rename in C++ fails here, not live.
     @MainActor
@@ -3097,6 +3128,7 @@ enum ShellTests {
             ("audio-console/sync-carries-every-strip", testConsoleSyncCarriesEveryStripAndTheA1State),
             ("audio-routing/default-topology", testDefaultRoutingIsTheWindowsPerGuestTopology),
             ("audio-routing/model-mon-bus", testModelRoutesEverySourceToTheMonitorBus),
+            ("audio-console/core-restart-reasserts", testCoreRestartReassertsTheWholeAudioConsole),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),

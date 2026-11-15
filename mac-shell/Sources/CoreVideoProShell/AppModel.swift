@@ -783,7 +783,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func onConnected() {
+    /// Every core generation (initial handshake AND respawn). Internal: the
+    /// harness drives it to prove the console is re-asserted.
+    func onConnected() {
         monitorControl.resetForProcess()
         audioRouteControl.resetForProcess()
         rosterProjection.resetForProcess()
@@ -795,6 +797,7 @@ final class AppModel: ObservableObject {
         if !gradeIsNeutral { applyColorGrade() }
         audioInputs = AudioInputs.available()
         reassertCaptureAudio()
+        reassertAudioConsole()
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
@@ -2789,7 +2792,7 @@ final class AppModel: ObservableObject {
     /// The operator's own crosspoint edits, kept as INTENT so they ride the base
     /// matrix (AudioConsolePolicy.baseRoutingSends) and survive a core restart.
     private(set) var operatorRouteEdits: [AudioRouteKey: AudioRouteControlProjection.Draft] = [:]
-    private var lastRoutingBaseSent: [JSONObject]?
+    private(set) var lastRoutingBaseSent: [JSONObject]?
 
     private func editRoute(source: String, bus: String, enabled: Bool, gainDb: Double) {
         audioRouteControl.edit(source: source, bus: bus, enabled: enabled, gainDb: gainDb)
@@ -3042,7 +3045,7 @@ final class AppModel: ObservableObject {
     private var lastMixEcho: [JSONObject] = []
     /// The strip ids last sent in a sync-participant-audio-mix (nil = never sent
     /// to this core generation).
-    private var lastSyncedStripIds: [String]?
+    private(set) var lastSyncedStripIds: [String]?
     /// The strip set a channel sync is scheduled for (nil = none pending).
     private(set) var scheduledStripIds: [String]?
 
@@ -3076,6 +3079,29 @@ final class AppModel: ObservableObject {
             }
             return roster.first { $0.id == id }?.name ?? id
         }
+    }
+
+    /// Harness seam: records the console as delivered to the current core, as a
+    /// successful sync would (the harness has no bridge).
+    func markAudioConsoleDeliveredForTesting() {
+        lastSyncedStripIds = strips.map(\.id)
+        scheduledStripIds = nil
+        lastRoutingBaseSent = routingBaseCommand()?["sends"] as? [JSONObject]
+    }
+
+    /// A ONE-SHOT COMMAND MUST BE RE-APPLIED ON EVERY CORE GENERATION (CLAUDE.md).
+    /// The core starts with no channels, no mastering and no routing; the Mac kept
+    /// showing the A1's mutes, faders, inserts and routes while the respawned core
+    /// played everything at unity — and its echoed "unmuted" then overwrote the
+    /// A1's mutes. Forget what this core was sent and send the whole console again:
+    /// every strip with its mute/gain/pan/solo/inserts + mastering, and the base
+    /// routing matrix with the operator's crosspoint edits.
+    func reassertAudioConsole() {
+        lastSyncedStripIds = nil
+        scheduledStripIds = nil
+        lastRoutingBaseSent = nil
+        refreshStrips()
+        pushRoutingBase()
     }
 
     /// Rebuilds the strips from the shell's source set + the last echo, and — the
