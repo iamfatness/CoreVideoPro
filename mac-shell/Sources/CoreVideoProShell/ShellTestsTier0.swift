@@ -20,6 +20,7 @@ extension ShellTests {
             ("tier0/slot-settings-follow-the-source", testPerSourceSettingsFollowTheSourceNotTheSlot),
             ("tier0/iso-survives-first-assignment", testRestoredIsoSelectionSurvivesTheFirstAssignment),
             ("tier0/iso-matrix-one-truth", testIsoMatrixAndSourcesToggleAreOneTruth),
+            ("tier0/iso-records-only-assigned-video-sources", testIsoRecordsOnlyAssignedVideoBearingSources),
             ("tier0/sources-rows-fit-the-page", testSourcesRowsFitThePageAtTheMinimumWindow),
             ("tier0/recording-folder-chosen-and-persisted", testRecordingFolderIsChosenPersistedAndUsed),
             ("tier0/recording-folder-falls-back-loudly", testRecordingFolderFallsBackLoudly),
@@ -228,6 +229,38 @@ extension ShellTests {
         model.unassignSlot(2)
         expect(model.isoSelectedSourceIds.contains("zoom:7"),
                "unassign keeps the source's ISO intent (Windows ShowInputsCoordinator)")
+    }
+
+    /// Fix round 1, I1: intent survives unassign, but what RECORDS is only
+    /// assigned, present, video-bearing sources (Windows
+    /// ComputeEligiblePresentIsoSourceIds, ShowInputsCoordinator.cs:334-365).
+    @MainActor
+    static func testIsoRecordsOnlyAssignedVideoBearingSources() {
+        let model = AppModel()
+        model.roster = [RosterParticipant(id: "7", name: "Guest", hasVideo: true,
+                                          muted: false, talking: false, assigned: false)]
+        model.captureDevices = [CaptureDeviceRow(id: "cam1", name: "Cam", kind: "video", vendor: "",
+                                                 connectionState: "connected", signalPresent: true,
+                                                 warning: "")]
+        model.assignSlot(2, kind: "zoom", sourceId: "7", name: "Guest")
+        model.toggleSlotIso(2)
+        expectEqual(model.peekIsoSourceIds(recording: true), ["zoom:7"], "an assigned guest records")
+        expectEqual(model.resolvedIsoSourceIds(recording: true), ["zoom:7"], "the take arms it")
+        model.unassignSlot(2)
+        expect(model.isoSelectedSourceIds.contains("zoom:7"), "unassign keeps the ISO intent")
+        expectEqual(model.peekIsoSourceIds(recording: true), [],
+                    "an unassigned guest still in the meeting does NOT record")
+        expectEqual(model.resolvedIsoSourceIds(recording: true), [],
+                    "and the live take drops its writer")
+        model.assignSlot(2, kind: "zoom", sourceId: "7", name: "Guest")
+        expectEqual(model.peekIsoSourceIds(recording: true), ["zoom:7"], "re-assigning brings it back")
+        model.roster = [RosterParticipant(id: "7", name: "Guest", hasVideo: false,
+                                          muted: false, talking: false, assigned: true)]
+        expectEqual(model.peekIsoSourceIds(recording: false), [],
+                    "a video-off guest does not take an ISO encoder slot")
+        model.isoSelectedSourceIds.insert("capture:cam1")   // selected, connected, NOT assigned
+        expectEqual(model.peekIsoSourceIds(recording: false), [],
+                    "an unassigned connected camera does not record")
     }
 
     /// The matrix kept its own column map, never rebuilt from the selection,

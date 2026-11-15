@@ -2640,18 +2640,20 @@ final class AppModel: ObservableObject {
 
     private func isoResolve(_ selection: inout RecordingIsoSelection,
                             recording: Bool?) -> [String] {
-        let present = Set(roster.map { "zoom:" + $0.id })
+        // Windows ComputeEligiblePresentIsoSourceIds (ShowInputsCoordinator.cs
+        // :334-365): only ASSIGNED, present sources are eligible, and a video-off
+        // Zoom guest never takes one of the 8 ISO encoder slots. Unassign keeps
+        // the source's ISO intent but removes it from what records.
+        let present = Set(roster.filter(\.hasVideo).map { "zoom:" + $0.id })
             .union(captureDevices.filter { $0.connectionState == "connected" }
                 .map { "capture:" + $0.id })
-        let assigned = Set(slots.filter { $0.kind != "unassigned" }.map {
-            ($0.kind == "zoom" ? "zoom:" : "capture:") + $0.sourceId
-        })
+        let assigned = Set(slots.compactMap(\.sourceKey))
         // While a take is recording, passive roster loss never shrinks the set
         // (#1188); only an operator ISO edit does.
         return selection.resolve(
             recordingRequested: recording ?? isRecordingActive,
             enabled: isoRecordingEnabled, selected: isoSelectedSourceIds,
-            eligible: present.sorted(), assigned: assigned)
+            eligible: present.intersection(assigned).sorted(), assigned: assigned)
     }
 
     func toggleIsoSource(_ sourceId: String) {
