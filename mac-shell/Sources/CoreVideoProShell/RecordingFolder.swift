@@ -81,6 +81,18 @@ extension AppModel {
         recordingFolderChoice.isEmpty ? RecordingFolderPolicy.defaultFolder() : recordingFolderChoice
     }
 
+    /// The Record flyout's folder: the core's own target folder while a
+    /// recording is live (where the files are actually going, fallback
+    /// included), else where the next Record will go.
+    var recordFlyoutFolder: String {
+        if recordingStatus == "recording" || recordingStatus == "warning",
+           let core = (lastSnapshot["recording"] as? JSONObject)?["targetFolder"] as? String,
+           !core.isEmpty {
+            return core
+        }
+        return recordingFolderDisplay
+    }
+
     /// The folder this Record uses. A folder that cannot take recordings falls
     /// back to the default LOUDLY (warning strip + the Settings line); the
     /// operator's choice is kept, so reconnecting the drive restores it.

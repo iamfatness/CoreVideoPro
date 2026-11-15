@@ -26,6 +26,7 @@ extension ShellTests {
             ("tier0/sources-rows-fit-the-page", testSourcesRowsFitThePageAtTheMinimumWindow),
             ("tier0/recording-folder-chosen-and-persisted", testRecordingFolderIsChosenPersistedAndUsed),
             ("tier0/recording-folder-falls-back-loudly", testRecordingFolderFallsBackLoudly),
+            ("tier0/record-flyout-shows-the-effective-folder", testRecordFlyoutShowsTheEffectiveFolder),
             ("tier0/zoom-status-reads-sdk-readiness", testZoomStatusReadsTheCoresSdkReadiness),
             ("tier0/lower-third-keys-a-program-source", testManualLowerThirdKeysAProgramSourceTheCoreGateAdmits),
             ("tier0/lower-third-status-from-core", testLowerThirdStatusComesFromTheCoresOverlayState),
@@ -455,6 +456,26 @@ extension ShellTests {
                "the warning strip says so too")
         expect(!FileManager.default.fileExists(atPath: missing), "nothing is created under /Volumes")
         expectEqual(model.recordingFolderChoice, missing, "the choice is kept for when the drive returns")
+    }
+
+    /// Review I4: the footer Record flyout still printed ~/Movies/CoreVideoPro
+    /// after the operator chose another folder, and after a fallback.
+    @MainActor
+    static func testRecordFlyoutShowsTheEffectiveFolder() {
+        let chosen = scratchDir("flyout")
+        let model = AppModel()
+        model.setRecordingFolder(chosen)
+        expectEqual(model.recordFlyoutFolder, chosen, "idle: the folder the next Record uses")
+        model.recordingStatus = "recording"
+        model.applySnapshotForTesting(["recording": ["status": "recording",
+                                                     "targetFolder": "/fallback/folder"] as JSONObject])
+        expectEqual(model.recordFlyoutFolder, "/fallback/folder",
+                    "recording: the core's own target folder (a fallback included)")
+        guard let footer = sourceFile("StudioFooter.swift") else {
+            expect(false, "StudioFooter.swift not found next to the binary"); return
+        }
+        expect(footer.contains("Text(model.recordFlyoutFolder)"), "the flyout shows the effective folder")
+        expect(!footer.contains("StudioFooterReadout.recordingFolder"), "the fixed ~/Movies readout is gone")
     }
 
     // ── 0.15 Zoom tab status reflects SDK readiness ─────────────────────────

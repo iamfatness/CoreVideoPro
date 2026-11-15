@@ -97,11 +97,6 @@ enum StudioFooterReadout {
         "Virtual camera isn't available on Mac yet \u{2014} it's coming in a later update."
     static let ndiUnavailable =
         "NDI output isn't available on Mac yet \u{2014} it's coming in a later update."
-
-    static var recordingFolder: String {
-        (NSSearchPathForDirectoriesInDomains(.moviesDirectory, .userDomainMask, true).first
-         ?? NSTemporaryDirectory()) + "/CoreVideoPro"
-    }
 }
 
 // ── shapes + small pieces ────────────────────────────────────────────────────
@@ -518,11 +513,16 @@ struct FooterOutputsGroup: View {
                         .foregroundStyle(Studio.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(StudioFooterReadout.recordingFolder)
+                Text(model.recordFlyoutFolder)
                     .font(.plexMono(10)).foregroundStyle(Studio.secondary)
                     .textSelection(.enabled)
                     .accessibilityLabel("Recording folder")
-                    .help(StudioFooterReadout.recordingFolder)
+                    .help(model.recordFlyoutFolder)
+                if !model.recordingFolderWarning.isEmpty {
+                    Text(model.recordingFolderWarning).font(.grotesk(11))
+                        .foregroundStyle(Studio.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 6).fill(Studio.field))
