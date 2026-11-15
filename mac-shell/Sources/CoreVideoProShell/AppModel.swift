@@ -860,6 +860,22 @@ final class AppModel: ObservableObject {
         applyVirtualCamera(next)
     }
 
+    /// Settings "Remove virtual camera". Clears the opt-in first (so a relaunch
+    /// never re-installs it and the clear is persisted with the intent change),
+    /// turns the intent off (one sync-virtual-camera {on:false}), then asks the
+    /// OS to uninstall the extension; its answer reaches the label.
+    func removeVirtualCamera() {
+        cameraExtensionQueryToken = nil
+        cameraExtensionOptedIn = false
+        var next = virtualCamera
+        next.enabled = false
+        applyVirtualCamera(next)
+        persistPrefsNow()
+        cameraExtension.deactivate { [weak self] state in
+            Task { @MainActor in self?.setCameraExtensionState(state) }
+        }
+    }
+
     func setVirtualCameraMirror(_ on: Bool) {
         var next = virtualCamera
         next.mirror = on

@@ -139,7 +139,41 @@ Per CLAUDE.md "Frame-delivery acceptance": 60 fps is per-frame delivery, never a
 2. Pass: no crash, no stuck state, no unexplained warning; the recording is playable and
    in sync; the app quits cleanly.
 
+## 12. Virtual camera
+
+Roadmap M9.2. Run with the notarized `.pkg` build. Items marked "after Task 8/10" need the
+camera rename (Task 8) and the 720p behaviour (Task 10), which land in the owner session; do
+not run them against a build without those tasks.
+
+1. Fresh install from the notarized `.pkg`, first enable of Virtual camera, approval prompt.
+   Expected: after approval, "CoreVideo Pro Camera" shows Program in **Photo Booth**,
+   **FaceTime**, **Zoom**, **Teams in Chrome**, **Google Meet in Chrome and in Safari**, and
+   **OBS** (Video Capture Device).
+2. Approval denied, then granted later. Expected: the flyout moves from the approval text to
+   live with no relaunch.
+3. Launch the app from the DMG without installing. Expected: "Move CoreVideo Pro to the
+   Applications folder to use the virtual camera." and nothing is installed.
+4. Sleep 2 minutes in the middle of a Zoom call, then wake. Expected: Zoom shows the slate
+   during the gap and Program again within 5 s of the core resuming; never a frozen frame.
+5. Quit the app mid-call. Expected: slate within 1 s. Relaunch: Program again with no toggle
+   (the intent persisted).
+6. Update: install build N+1 over N while Zoom is closed. Expected: the first launch replaces
+   the extension silently (`systemextensionsctl list` shows N+1) and the camera works.
+7. (after Task 8/10) Set Camera name to "Studio A", toggle the camera off and on. Expected:
+   Photo Booth lists "Studio A". Also check the 720p behaviour Task 10 defines.
+8. Turn on OH Framer and Mirror. Expected: both visible in Zoom's self-view; the Program
+   recording stays clean (check the recorded file's pixels at a guide location).
+9. Settings > System > Remove virtual camera (enter the password if asked). Expected: the
+   device disappears from Photo Booth after relaunching it, and the next enable asks for
+   approval again.
+10. After the first signed launch of the camera build, the stream key and Zoom sign-in are
+    still present (Review Focus 5).
+11. Per-frame delivery: a live 1080p60 Program with framer and mirror on for 60 s. Expected:
+    core `framesPublished` delta >= 3599, `mac publication gaps 0`, `skipped 0`, and the e2e
+    probe reports consumer-side fps >= 59 at 60 fps. If the probe cannot measure the worst
+    interval, report it as unverified (CLAUDE.md frame-delivery rule); a mean never waives this.
+
 ## Known not on the Mac in 1.0
 
-Graphics designer/operate, Comms, social review, Tiles, the multiview inspector and the
-virtual camera. See CHANGELOG.md. These are not acceptance items.
+Graphics designer/operate, Comms, social review, Tiles and the multiview inspector.
+See CHANGELOG.md. These are not acceptance items.

@@ -67,3 +67,12 @@ Enabled from the footer and approved in System Settings: TBD.
 | (d) | Quitting the app shows the slate | TBD | |
 
 Owner go-ahead for Task 8: TBD.
+
+## Task 12 (release gates, removal, docs) — results
+
+- Release preflight now runs `verify_profile` on both profiles before the build (fails under 14 days of profile or signing-certificate life, warns under 60; certificate expires 2027-02-01, 78 days at time of writing). A missing profile fails in seconds naming `COREVIDEO_APP_PROFILE` / `COREVIDEO_CAMERA_PROFILE`, instead of after the build.
+- `--skip-notarize` rehearsal passed end to end; `manifest.json` carries `cameraExtension {bundleVersion, profileExpires, certificateExpires}`; `make-macos-pkg.sh` payload assertion ran and passed. The notarized run and `spctl -a -vv -t install` on the pkg are owner-scheduled and not done.
+- Mutation: skipping the certificate-membership check lets a CMS-signed profile with an empty `DeveloperCertificates` pass; with the check it fails. Membership is therefore independently enforced; an extension profile used for the app fails on the app-id mismatch first.
+- Reviewer-only, not run: removing the pkg payload assertion.
+- Settings "Remove virtual camera" added (`AppModel.removeVirtualCamera`). Owner acceptance section 12 written; items 7 and the 720p behaviour are marked "after Task 8/10".
+- Ruling on the owner's behalf: removal also clears the opt-in, so the next enable prompts for approval again.

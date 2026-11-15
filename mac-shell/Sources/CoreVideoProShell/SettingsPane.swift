@@ -195,6 +195,14 @@ struct SettingsPane: View {
                 row("Media core", statusText)
                 row("Renderer", rendererText)
                 row("Virtual camera", model.virtualCameraLabel)
+                labeled("") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Button("Remove virtual camera") { model.removeVirtualCamera() }
+                            .buttonStyle(GhostButtonStyle())
+                        Text("macOS may ask for your password. The camera disappears from other apps.")
+                            .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                    }
+                }
                 labeled("Logs") {
                     HStack(spacing: 6) {
                         Button("Shell log") { reveal("CoreVideoPro-shell.log") }

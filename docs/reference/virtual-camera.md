@@ -426,3 +426,71 @@ summary validates evidence, not continuity; run `camera-pixel-receiver.mjs`
 separately. A lower delivered sample cadence fails even if successive identities
 are consecutive. Compare full content latency and A/V using the final
 qualification harness, rather than treating publication age as display latency.
+
+## macOS
+
+The Mac virtual camera is a CoreMediaIO Camera Extension
+(`us.iamfatness.corevideopro.shell.camera`) shipped inside the app at
+`Contents/Library/SystemExtensions/`. The core publishes Program frames to it; Zoom,
+FaceTime, Photo Booth, Teams, Meet and OBS see "CoreVideo Pro Camera" (or the name set
+under Camera name). It needs a Developer ID build installed in `/Applications`.
+
+### Install and approve
+
+1. Install from the notarized `.pkg` (or drag the app from the DMG into `/Applications`).
+2. Turn on **Virtual camera** in the footer flyout. macOS shows an approval prompt.
+3. Approve under System Settings: macOS 15+ General, Login Items & Extensions, Camera
+   Extensions; macOS 13/14 Privacy & Security, then Allow next to the CoreVideo Pro message.
+   The flyout moves to live on its own; no relaunch.
+4. The first enable records the opt-in, so every later launch re-activates silently (and
+   replaces the extension after an app update).
+
+### Remove
+
+Settings > System > **Remove virtual camera**. macOS may ask for your password. The
+camera disappears from other apps (relaunch them to refresh their lists). This also clears
+the opt-in; the next enable asks for approval again.
+
+### Troubleshooting by status text
+
+| Status text | Meaning and fix |
+|---|---|
+| Virtual camera off | The toggle is off. |
+| Installing the virtual camera... | The OS request is in flight. Wait. |
+| Allow CoreVideo Pro Camera in System Settings to finish setup. | Approval pending. Use "Open System Settings", approve, no relaunch needed. |
+| Move CoreVideo Pro to the Applications folder to use the virtual camera. | The app runs from the DMG or another folder. Install to `/Applications`. |
+| Restart your Mac to finish installing the virtual camera. | The OS asked for a reboot. |
+| This build can't install the virtual camera (development build without a provisioning profile). | An unsigned dev bundle; use a release build. |
+| This copy of CoreVideo Pro isn't signed to install the camera. / macOS policy blocked the camera extension. | The signing or provisioning profile does not authorize the extension, or MDM blocks it. |
+| Couldn't install the virtual camera (code N). | OSSystemExtensionErrorDomain code N; see the shell log. |
+| Connecting to CoreVideo Pro Camera... | The extension is installed but not reachable yet (restarting, or updated). The core retries every second. |
+| Virtual camera live (WxH) | Working. |
+| Virtual camera failed / a core warning | The core's own failure; see the core log. |
+
+Other apps show a slate (not a frozen frame) whenever the core is not publishing.
+
+### End-to-end script
+
+`scripts/macos-vcam-e2e.sh [--app] [--restart-extension]` runs on the owner's Mac with the
+signed app installed and the extension approved. It probes the device as a real consumer
+(no producer: slate; red feeder: program pixels; feeder gone: slate; optional extension
+kill; `--app`: the control API, framer, mirror and quit-to-slate). Output goes to
+`dist/vcam-e2e/<timestamp>/`.
+
+### Logs
+
+- Extension: `log show --predicate 'subsystem == "us.iamfatness.corevideopro.camera"' --last 10m`
+  (categories source, sink, auth).
+- Shell: `~/Library/Logs/CoreVideoPro-shell.log` (`vcam-ext:` lines); core: `CoreVideoPro-core.log`
+  (`[virtualcam]` lines). Settings > System has Reveal buttons.
+- Registration: `systemextensionsctl list` shows the installed build.
+
+### Release gates
+
+`scripts/release-macos.sh` verifies both provisioning profiles before building (the
+release fails when the signing certificate or a profile has under 14 days left, warns
+under 60; the certificate expires 2027-02-01), runs
+`scripts/check-macos-camera-extension.sh --release` on the built app, and records
+`cameraExtension` (`bundleVersion`, `profileExpires`, `certificateExpires`) in
+`manifest.json`. `scripts/make-macos-pkg.sh` fails if the pkg payload lacks the extension
+binary.

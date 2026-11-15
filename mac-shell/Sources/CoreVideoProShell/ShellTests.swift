@@ -771,6 +771,32 @@ enum ShellTests {
         expectEqual(silent.cameraExtensionState, .notInstalled, "a query that never answers times out to notInstalled")
     }
 
+    /// Settings "Remove virtual camera": one deactivate, the opt-in cleared (so a
+    /// relaunch does not re-install it), intent off, and the core told once.
+    @MainActor
+    private static func testRemoveVirtualCameraCallsDeactivateAndClearsOptIn() {
+        let model = AppModel()
+        let fake = FakeCameraExtensionActivator(script: [.active])
+        model.cameraExtension = fake
+        var sent: [JSONObject] = []
+        model.coreCommandCaptureForTesting = { sent.append($0) }
+        model.setVirtualCamera(enabled: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(model.cameraExtensionOptedIn, true, "precondition: opted in")
+        sent.removeAll()
+        model.removeVirtualCamera()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(fake.calls.filter { $0 == "deactivate" }.count, 1, "exactly one deactivate call")
+        expectEqual(model.cameraExtensionOptedIn, false, "the opt-in is cleared")
+        expectEqual(model.virtualCamera.enabled, false, "intent is off")
+        expectEqual(model.cameraExtensionState, .notInstalled, "the deactivation result reaches the model")
+        let syncs = sent.flatMap { ($0["commands"] as? [JSONObject]) ?? [] }
+            .filter { $0["type"] as? String == "sync-virtual-camera" }
+        expectEqual(syncs.count, 1, "one sync-virtual-camera is sent")
+        expectEqual(syncs.first?["on"] as? Bool, false, "and it says off")
+        model.stopTimersForTesting()
+    }
+
     /// The flyout toggles draw their own track: on and off must be told apart,
     /// and the off track must be visible against the flyout's panel.
     private static func testStudioToggleTrackIsVisibleInBothStates() {
@@ -3228,6 +3254,7 @@ enum ShellTests {
             ("vcam/prefs-round-trip-older-file", testVirtualCameraPrefsRoundTripAndOlderFile),
             ("vcam/resent-each-core-generation", testVirtualCameraResentOnNewCoreGeneration),
             ("vcam/activation-wiring", testVirtualCameraActivationWiring),
+            ("vcam/remove-deactivates-and-clears-opt-in", testRemoveVirtualCameraCallsDeactivateAndClearsOptIn),
             ("vcam/toggle-track-visible", testStudioToggleTrackIsVisibleInBothStates),
             ("vcam/unchanged-name-sends-nothing", testVirtualCameraUnchangedNameSendsNothing),
             ("vcam/proof-needs-snapshot", testVirtualCameraProofNeedsTheSnapshotVariable),
