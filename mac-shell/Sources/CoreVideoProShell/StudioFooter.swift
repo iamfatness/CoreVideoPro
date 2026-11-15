@@ -292,9 +292,9 @@ struct FooterGraphicsGroup: View {
     /// "building-out" truncates instead of reflowing the row.
     private var status: String {
         switch model.lowerThirdPhase {
-        case "hidden": return model.lowerThirdName.isEmpty ? "No source" : "Ready"
-        case "building-in": return "Building in"
-        case "on-air": return "On air"
+        case "hidden": return model.programLowerThirdSubject() == nil ? "No source" : "Ready"
+        case "building-in": return model.lowerThirdVisible ? "Building in" : "Sync pending"
+        case "on-air": return model.lowerThirdVisible ? "On air" : "Sync pending"
         case "building-out": return "Building out"
         default: return model.lowerThirdPhase
         }
@@ -332,11 +332,10 @@ struct FooterGraphicsGroup: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(!onAir && model.lowerThirdName.isEmpty)
                 .accessibilityLabel(onAir ? "Lower third, key out" : "Lower third, key in")
-                .help(model.lowerThirdName.isEmpty
-                      ? "Lower third: set a name in Graphics first."
-                      : (onAir ? "Key the lower third out" : "Key in \u{201C}\(model.lowerThirdName)\u{201D}"))
+                .help(onAir ? "Key the lower third out"
+                      : (model.programLowerThirdSubject().map { "Key in \u{201C}\($0.name)\u{201D}" }
+                         ?? "Take a scene with a source first"))
                 Button { optionsShown.toggle() } label: {
                     FooterChevron()
                         .frame(width: 30, height: 48)
@@ -354,9 +353,9 @@ struct FooterGraphicsGroup: View {
 
     private var options: some View {
         FooterFlyout(title: "Lower third controls", width: 300) {
-            FooterMutedText(onAir ? "Key on air: \(model.lowerThirdName)"
-                            : (model.lowerThirdName.isEmpty ? "No name set \u{2014} edit it in Graphics."
-                               : "Ready: \(model.lowerThirdName)"))
+            FooterMutedText(onAir ? model.lowerThirdKeyStatus
+                            : (model.programLowerThirdSubject().map { "Ready: \($0.name)" }
+                               ?? "Take a scene with a source first"))
             VStack(alignment: .leading, spacing: 4) {
                 Text("Position").font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 Picker("", selection: $model.lowerThirdPosition) {
@@ -881,7 +880,9 @@ enum FooterSnapshotHarness {
         model.streamingDesired = true
         model.streamStatus = "live"
         model.lowerThirdName = "Jordan Wallace"
+        model.lowerThirdKeyedName = "Jordan Wallace"
         model.lowerThirdPhase = "on-air"
+        model.lowerThirdVisible = true
         model.programSceneId = "fullscreen"
         model.shortTermLufs = -16.4
         model.truePeakDbfs = -3.2

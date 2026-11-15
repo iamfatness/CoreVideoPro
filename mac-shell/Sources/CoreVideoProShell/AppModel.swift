@@ -404,6 +404,14 @@ final class AppModel: ObservableObject {
     @Published var lowerThirdTitle = ""
     @Published var lowerThirdPosition = "lower-left"
     @Published var lowerThirdPhase = "hidden"  // truthful phase from overlayState
+    /// The core's overlayState `visible` for key:lower-third: true only when the
+    /// keyed source is on rendered Program and the key is actually drawn.
+    @Published var lowerThirdVisible = false
+    /// The source the manual key names (a Program source, never "mac:manual").
+    @Published var lowerThirdKeyedSourceId = ""
+    @Published var lowerThirdKeyedName = ""
+    /// The last Key in / Key out outcome ("Lower third needs a program source").
+    @Published var lowerThirdCommandStatus = ""
     @Published var overlaysOnAir = 0
     // Director recommendation (core-computed, shell-actuated — the core NEVER
     // switches scenes itself; recommend-auto-production is a documented no-op).
@@ -1035,8 +1043,11 @@ final class AppModel: ObservableObject {
                    $0["overlayId"] as? String == "key:lower-third"
                }) {
                 lowerThirdPhase = key["keyPhase"] as? String ?? lowerThirdPhase
+                lowerThirdVisible = key["visible"] as? Bool ?? false
+                if let name = key["sourceName"] as? String, !name.isEmpty { lowerThirdKeyedName = name }
             } else {
                 lowerThirdPhase = "hidden"
+                lowerThirdVisible = false
             }
         }
     }
@@ -1260,8 +1271,10 @@ final class AppModel: ObservableObject {
     /// Test seam: shortens the build-out settle delay.
     var lowerThirdSettleOverrideNs: UInt64?
     /// How many keyed graphics are on air (the WinUI "N on air" readout).
+    /// Counted from what the core DRAWS (overlayState visible), not the phase
+    /// the shell requested: a key the on-Program gate suppresses is not on air.
     var lowerThirdOnAirCount: Int {
-        (lowerThirdPhase == "on-air" || lowerThirdPhase == "building-in") ? 1 : 0
+        lowerThirdVisible && (lowerThirdPhase == "on-air" || lowerThirdPhase == "building-in") ? 1 : 0
     }
 
     @Published var streamCodec = "h264"
@@ -2897,14 +2910,24 @@ final class AppModel: ObservableObject {
 
     // ── lower third ──────────────────────────────────────────────────────────
 
+    /// Key in: names the source the core reports on rendered Program, as the
+    /// Windows Key in does (LegacyLowerThirdCommands.cs:7-45). The core's
+    /// on-Program gate drops a lower third whose sourceId is not a Program
+    /// layer, so the old "mac:manual" key was never drawn (ProgramLowerThird.swift).
     func showLowerThird() {
-        guard !lowerThirdName.isEmpty else { return }
+        guard let subject = programLowerThirdSubject() else {
+            lowerThirdCommandStatus = LowerThirdKeyReadout.needsSource
+            return
+        }
+        lowerThirdKeyedSourceId = subject.source.sourceId
+        lowerThirdKeyedName = subject.name
+        lowerThirdCommandStatus = "Lower third keyed in"
         cancelPendingLowerThirdRetire()
         // building-in only — the core auto-advances to on-air itself.
         sendOverlay([
             "type": "set-overlay-asset", "overlayId": "key:lower-third",
-            "text": lowerThirdName, "position": "lower-third", "enabled": true,
-            "sourceId": "mac:manual", "sourceName": lowerThirdName,
+            "text": subject.name, "position": "lower-third", "enabled": true,
+            "sourceId": subject.source.sourceId, "sourceName": subject.name,
             "title": lowerThirdTitle, "org": "",
             "keyPosition": lowerThirdPosition, "keyPhase": "building-in",
             "buildInMs": overlays.buildInMs, "buildOutMs": overlays.buildOutMs,
@@ -2926,13 +2949,16 @@ final class AppModel: ObservableObject {
         lowerThirdRetireInFlight = true
         lowerThirdRetireGeneration += 1
         let generation = lowerThirdRetireGeneration
+        lowerThirdCommandStatus = "Lower third keyed out"
         // Two-step retire: shell-timed build-out, then the hidden ack (an
         // enabled:false WITHOUT keyPhase:"hidden" would start a second native
         // build-out — the WinUI RunLowerThirdKeyOutAsync shape).
+        // The build-out keeps the keyed source's id, or the on-Program gate
+        // would cut the key instead of animating it out.
         sendOverlay([
             "type": "set-overlay-asset", "overlayId": "key:lower-third",
-            "text": lowerThirdName, "position": "lower-third", "enabled": true,
-            "sourceId": "mac:manual", "sourceName": lowerThirdName,
+            "text": lowerThirdKeyedName, "position": "lower-third", "enabled": true,
+            "sourceId": lowerThirdKeyedSourceId, "sourceName": lowerThirdKeyedName,
             "title": lowerThirdTitle, "org": "",
             "keyPosition": lowerThirdPosition, "keyPhase": "building-out",
             "buildInMs": overlays.buildInMs, "buildOutMs": overlays.buildOutMs,

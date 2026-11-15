@@ -24,6 +24,9 @@ extension ShellTests {
             ("tier0/recording-folder-chosen-and-persisted", testRecordingFolderIsChosenPersistedAndUsed),
             ("tier0/recording-folder-falls-back-loudly", testRecordingFolderFallsBackLoudly),
             ("tier0/zoom-status-reads-sdk-readiness", testZoomStatusReadsTheCoresSdkReadiness),
+            ("tier0/lower-third-keys-a-program-source", testManualLowerThirdKeysAProgramSourceTheCoreGateAdmits),
+            ("tier0/lower-third-status-from-core", testLowerThirdStatusComesFromTheCoresOverlayState),
+            ("tier0/lower-third-resolver-is-windows", testLowerThirdResolverIsTheWindowsRule),
         ]
     }
 
@@ -382,6 +385,142 @@ extension ShellTests {
         expect(shell.contains("ZoomOperatorStatus.chipLabel(readiness, inMeeting: inMeeting)"),
                "the Zoom tab's status chip comes from the core's readiness")
         expect(!shell.contains(": \"Ready to join Zoom\")"), "no fixed \"Ready to join Zoom\" chip")
+    }
+
+    // ── 0.6 manual lower third ───────────────────────────────────────────────
+
+    /// A rendered Program frame carrying one Zoom guest (the core's
+    /// programFrame.videoSources shape, RenderedProgramSources.h).
+    @MainActor
+    static func seedProgramSource(_ model: AppModel, pid: String = "42", name: String = "Guest") {
+        model.programSceneId = "s-prog"
+        model.roster = [RosterParticipant(id: pid, name: name, hasVideo: true,
+                                          muted: false, talking: false, assigned: true)]
+        model.lastSnapshot = ["programFrame": [
+            "frameNumber": 120, "sceneId": "s-prog", "renderPlanId": "s-prog:1:0",
+            "videoSources": [["kind": "participant-video", "layerId": "route:s-prog-0",
+                              "participantId": pid, "sourceId": "zoom:" + pid]],
+        ] as JSONObject]
+    }
+
+    /// The video kinds and id comparison of the core's "bind lower thirds to
+    /// rendered Program" gate, read from MediaCore.cpp (like the payload
+    /// contract test reads JsonRpcServer.cpp).
+    static func lowerThirdGateFromCoreSource() -> (kinds: Set<String>, comparesIds: Bool)? {
+        var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        var source: String?
+        for _ in 0..<8 {
+            let candidate = dir.appendingPathComponent("native/src/core/MediaCore.cpp")
+            if let text = try? String(contentsOf: candidate, encoding: .utf8) { source = text; break }
+            dir = dir.deletingLastPathComponent()
+        }
+        guard let text = source,
+              let start = text.range(of: "isLowerThird && !asset->sourceId.empty()") else { return nil }
+        let window = String(text[start.lowerBound...].prefix(1500))
+        guard let close = window.range(of: "continue;") else { return nil }
+        let gate = String(window[..<close.lowerBound])
+        var kinds: Set<String> = []
+        var rest = gate[...]
+        while let hit = rest.range(of: "video.kind == \"") {
+            let after = rest[hit.upperBound...]
+            guard let end = after.firstIndex(of: "\"") else { break }
+            kinds.insert(String(after[..<end]))
+            rest = after[end...]
+        }
+        let compares = gate.contains("video.sourceId == asset->sourceId")
+            && gate.contains("video.participantId == asset->sourceId")
+        return (kinds, compares)
+    }
+
+    /// The Mac keyed sourceId "mac:manual", which no Program layer ever has, so
+    /// the core's on-Program gate dropped the key while the tab said on air.
+    @MainActor
+    static func testManualLowerThirdKeysAProgramSourceTheCoreGateAdmits() {
+        guard let gate = lowerThirdGateFromCoreSource() else {
+            expect(false, "the core's lower-third gate (MediaCore.cpp) was not found — re-read the contract")
+            return
+        }
+        expect(gate.comparesIds, "the gate admits a key whose sourceId is a Program layer's sourceId/participantId")
+        expect(ProgramLowerThirdSource.subjectKinds.isSubset(of: gate.kinds),
+               "every kind the shell can key is one the gate admits (gate: \(gate.kinds.sorted()))")
+
+        let model = AppModel()
+        seedProgramSource(model, pid: "42", name: "Jordan")
+        model.assignSlot(1, kind: "zoom", sourceId: "42", name: "Jordan Wallace")
+        var sent: [JSONObject] = []
+        model.overlayCommandObserver = { sent.append($0) }
+        model.showLowerThird()
+        let key = sent.first { $0["keyPhase"] as? String == "building-in" }
+        let keyed = key?["sourceId"] as? String ?? ""
+        expect(keyed != "mac:manual", "the key never carries the synthetic mac:manual id")
+        let programIds = ((model.lastSnapshot["programFrame"] as? JSONObject)?["videoSources"]
+                          as? [JSONObject] ?? []).compactMap { $0["sourceId"] as? String }
+        expect(programIds.contains(keyed), "the key names a source on rendered Program (\(keyed))")
+        expectEqual(key?["sourceName"] as? String, "Jordan Wallace", "it keys the Sources display name")
+        expectEqual(key?["text"] as? String, "Jordan Wallace", "as the keyed text")
+
+        // Nothing on Program: refuse with the Windows wording, send nothing.
+        let empty = AppModel()
+        var none: [JSONObject] = []
+        empty.overlayCommandObserver = { none.append($0) }
+        empty.showLowerThird()
+        expect(none.isEmpty, "no source on Program sends no key")
+        expectEqual(empty.lowerThirdCommandStatus, "Lower third needs a program source", "and says so")
+
+        // Key out keeps the keyed id, so the build-out animates instead of cutting.
+        model.hideLowerThird()
+        let out = sent.first { $0["keyPhase"] as? String == "building-out" }
+        expectEqual(out?["sourceId"] as? String, keyed, "the build-out carries the keyed source id")
+    }
+
+    /// "Key on air" came from the requested phase; it must come from the
+    /// core's overlayState visible flag (the gate can suppress a key).
+    @MainActor
+    static func testLowerThirdStatusComesFromTheCoresOverlayState() {
+        func overlay(_ phase: String, visible: Bool) -> JSONObject {
+            ["overlayState": ["onAirCount": 1, "overlays": [[
+                "overlayId": "key:lower-third", "keyPhase": phase, "visible": visible,
+                "sourceId": "zoom:42", "sourceName": "Jordan Wallace"]]] as JSONObject]
+        }
+        let model = AppModel()
+        model.applySnapshotForTesting(overlay("on-air", visible: false))
+        expectEqual(model.lowerThirdOnAirCount, 0, "a suppressed key is not counted on air")
+        expectEqual(model.lowerThirdKeyStatus, LowerThirdKeyReadout.syncPending,
+                    "a requested-but-undrawn key says the core has not confirmed it")
+        model.applySnapshotForTesting(overlay("on-air", visible: true))
+        expectEqual(model.lowerThirdOnAirCount, 1, "a drawn key is on air")
+        expectEqual(model.lowerThirdKeyStatus, "Key on air — Jordan Wallace", "and names its source")
+        model.applySnapshotForTesting(["overlayState": ["overlays": []] as JSONObject])
+        expectEqual(model.lowerThirdKeyStatus, "Key off — no source keyed", "no key: off")
+        guard let overlays = sourceFile("Overlays.swift") else {
+            expect(false, "Overlays.swift not found next to the binary"); return
+        }
+        expect(overlays.contains("Text(model.lowerThirdKeyStatus)"), "the keyer status line reads the core's state")
+        expect(!overlays.contains("Text(onAir ? \"Key on air\""), "no request-derived \"Key on air\"")
+    }
+
+    /// Port of Windows RenderedLowerThirdSourceResolver: rendered layers only,
+    /// incoming side of a take, camera-on guests, sticky first.
+    @MainActor
+    static func testLowerThirdResolverIsTheWindowsRule() {
+        func frame(_ sources: [JSONObject], plan: String = "p:1:0", scene: String = "s") -> JSONObject {
+            ["frameNumber": 9, "sceneId": scene, "renderPlanId": plan, "videoSources": sources]
+        }
+        let a: JSONObject = ["kind": "participant-video", "layerId": "route:a", "participantId": "1", "sourceId": "zoom:1"]
+        let b: JSONObject = ["kind": "participant-video", "layerId": "take-in:b", "participantId": "2", "sourceId": "zoom:2"]
+        let cam: JSONObject = ["kind": "participant-video", "layerId": "route:c", "participantId": "", "sourceId": "capture:cam"]
+        func pick(_ f: JSONObject, sticky: String = "", video: Set<String> = ["1", "2"],
+                  devices: Set<String> = ["cam"], scene: String = "s") -> String? {
+            ProgramLowerThirdSource.resolve(programFrame: f, programSceneId: scene, stickySourceId: sticky,
+                                            rosterWithVideo: video, captureDeviceIds: devices)?.sourceId
+        }
+        expectEqual(pick(frame([a, b])), "zoom:1", "first rendered guest")
+        expectEqual(pick(frame([a, b]), sticky: "zoom:2"), "zoom:2", "sticky wins while still on Program")
+        expectEqual(pick(frame([a, b], plan: "take:x")), "zoom:2", "a transition keys the incoming side")
+        expectEqual(pick(frame([a]), video: []), nil, "a camera-off guest is not a subject")
+        expectEqual(pick(frame([cam])), "capture:cam", "a connected camera is a subject")
+        expectEqual(pick(frame([cam]), devices: []), nil, "an unknown capture device is not")
+        expectEqual(pick(frame([a], scene: "other")), nil, "a frame from another scene is not trusted")
     }
 
     // ── source-reading helpers ───────────────────────────────────────────────

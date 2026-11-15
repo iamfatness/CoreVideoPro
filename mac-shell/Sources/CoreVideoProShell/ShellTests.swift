@@ -1481,6 +1481,7 @@ enum ShellTests {
         model.overlays.defaultOverlayBehavior = behavior
         model.lowerThirdPhase = phase
         model.lowerThirdName = "Guest"
+        seedProgramSource(model)   // Key in names a rendered Program source (Tier 0.6)
         model.lowerThirdSettleOverrideNs = 5_000_000  // 5ms, not the real build-out wait
         var seen: [JSONObject] = []
         model.overlayCommandObserver = { seen.append($0) }
