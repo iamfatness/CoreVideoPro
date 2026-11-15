@@ -26,9 +26,16 @@ keeping your settings, recordings and downloaded media.
 1. Download `CoreVideoPro-<version>-arm64.dmg` and its `.sha256` checksum from
    the releases page. The Mac build runs on Apple Silicon (M-series) Macs with
    macOS 13 or later; there is no Intel build.
-2. Open the DMG and drag **CoreVideo Pro** onto **Applications**. The app is
-   signed with a Developer ID and notarized by Apple, so it opens without a
-   Gatekeeper override.
+2. Install with either of the two release artifacts (both carry the same
+   notarized app):
+   - **DMG (drag install):** open `CoreVideoPro-<version>-arm64.dmg` and drag
+     **CoreVideo Pro** onto **Applications**.
+   - **.pkg (guided install):** double-click `CoreVideoPro-<version>-arm64.pkg`
+     and follow the installer; it places the app in `/Applications` (asks for an
+     admin password).
+
+   The app, DMG and .pkg are signed with a Developer ID and notarized by Apple,
+   so they open without a Gatekeeper override.
 3. On first use, macOS asks for camera and microphone permission (and screen
    recording permission for a screen source). If a prompt was dismissed, allow
    it in System Settings > Privacy & Security.
@@ -121,7 +128,15 @@ The rehearsal builds and signs everything but submits nothing to Apple, and its
 output is named `-UNNOTARIZED` so it cannot be mistaken for a release. The real run
 notarizes and staples the app and the DMG, verifies them, and only then moves the
 result into `dist/macos/<v>/` (DMG, `.sha256` and `manifest.json`); a previous
-good release is kept if any step fails. It needs the Zoom macOS SDK
+good release is kept if any step fails. A release now has two installers: the DMG
+and `CoreVideoPro-<v>-arm64.pkg` (built by `scripts/make-macos-pkg.sh` from the
+stapled app, then notarized and stapled on its own; `.sha256` files and the
+manifest's `pkg` entry cover it). The .pkg is signed with the **Developer ID
+Installer** certificate, a different certificate from the Developer ID Application
+one that signs the app; the release needs both in the login keychain
+(`COREVIDEO_PKG_SIGN_IDENTITY` overrides the default) and the preflight fails early
+if the Installer identity is missing. The rehearsal also builds and signs the .pkg,
+named `-UNNOTARIZED`. It needs the Zoom macOS SDK
 (`ZOOM_SDK_DIR`) and the Developer ID identity in the login keychain. Before
 publishing, work through `docs/qa/macos-1.0-owner-acceptance.md`.
 
