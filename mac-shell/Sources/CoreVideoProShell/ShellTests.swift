@@ -718,7 +718,8 @@ enum ShellTests {
                "the OBS plugin's Keychain item must never be touched")
     }
 
-    /// The broker pins the app return URI; changing the scheme 400s every sign-in.
+    /// The corevideo:// FALLBACK (older brokers, manual links) keeps its exact
+    /// allowlisted spelling; the normal path is the loopback listener.
     private static func testOAuthReturnUriMatchesTheBrokerAllowlist() {
         expectEqual(ZoomOAuth.appReturnUri, "corevideo://oauth/callback",
                     "the broker allowlists exactly this return uri")
@@ -2746,6 +2747,12 @@ enum ShellTests {
             ("oauth/expiry-slack", testExpiryLeavesSlackBeforeTheRealDeadline),
             ("oauth/keychain-identity", testKeychainServiceIsNeverTheObsPluginItem),
             ("oauth/return-uri", testOAuthReturnUriMatchesTheBrokerAllowlist),
+            ("oauth/loopback-request-line", testOAuthLoopbackParsesTheRequestLine),
+            ("oauth/loopback-page", testOAuthLoopbackPageSaysWhatHappened),
+            ("oauth/loopback-lifecycle", testOAuthLoopbackLifecycleIsOneShot),
+            ("oauth/loopback-broker-url", testOAuthBrokerUrlCarriesTheLoopbackReturnUri),
+            ("oauth/loopback-end-to-end", testOAuthLoopbackListenerEndToEnd),
+            ("zoom/join-status-late-truth", testZoomJoinStatusPrefersZoomsReasonOverATimeout),
             ("encoder/no-unlicensed-codecs", testShellOffersOnlyEncodableCodecs),
             ("telemetry/dropped-frames", testDroppedFrameReadout),
             ("chromakey/enabled-only", testChromaKeyNodeOnlySentWhenEnabled),

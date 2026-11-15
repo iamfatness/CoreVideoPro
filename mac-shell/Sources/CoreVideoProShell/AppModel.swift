@@ -702,6 +702,13 @@ final class AppModel: ObservableObject {
         if let key = UserDefaults.standard.string(forKey: "zoomPublicAppKey"), !key.isEmpty {
             env["COREVIDEO_ZOOM_PUBLIC_APP_KEY"] = key
         }
+        // The core waits this long for SDK auth, then again for the join
+        // verdict. Its built-in default is 7 s, which the Windows shell has
+        // never used (MediaCorePaths.cs sets 45000). Unset here, a Mac join
+        // reported "Timed out waiting for Zoom meeting join result." 7 s in,
+        // a moment before Zoom's real answer (2026-11-15, signed 1.0.0).
+        env["COREVIDEO_ZOOM_JOIN_WAIT_MS"] = ProcessInfo.processInfo
+            .environment["COREVIDEO_ZOOM_JOIN_WAIT_MS"] ?? ZoomJoinStatus.coreJoinWaitMs
         // VST3 discovery. `resolvePluginHostExecutablePath` (MediaCore.cpp) only
         // does sibling-of-the-exe lookup under _WIN32, so on macOS the core finds
         // the host ONLY through this env var — without it pluginHost.status is
@@ -1004,6 +1011,7 @@ final class AppModel: ObservableObject {
             return
         }
         if !snapshot.isEmpty { lastZoomSnapshot = snapshot }
+        zoomJoinStatus = ZoomJoinStatus.reconcile(current: zoomJoinStatus, snapshot: snapshot)
         rawMediaActive = snapshot["rawMediaActive"] as? Bool ?? rawMediaActive
         if let error = snapshot["lastError"] as? String, !error.isEmpty {
             pushWarning("zoom: \(error)")
@@ -1355,12 +1363,19 @@ final class AppModel: ObservableObject {
     // record-permission dance) — the product's designed flow.
     @Published var zoomSignedIn = false
     @Published var zoomOAuthStatus = ""
+    /// The Zoom pane's join line: the sign-in hint, Zoom's own failure reason,
+    /// or "" (ZoomJoinStatus decides; late truth replaces a timeout).
+    @Published var zoomJoinStatus = ""
     @Published var webinar = false
     @Published var recentMeetings: [String] = []
 
     func signInWithZoom() {
         zoomOAuthStatus = "Waiting for the browser…"
-        Task { await ZoomOAuth.shared.beginSignIn() }
+        Task {
+            await ZoomOAuth.shared.beginSignIn { [weak self] status in
+                Task { @MainActor in await self?.finishOAuthSignIn(status) }
+            }
+        }
     }
 
     func signOutZoom() {
@@ -1371,16 +1386,33 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The corevideo:// fallback (older brokers / a manual link). The normal
+    /// path is the loopback listener, which reports through finishOAuthSignIn.
     func handleOAuthCallback(_ url: URL) {
         Task {
             let error = await ZoomOAuth.shared.handleCallback(url)
-            zoomOAuthStatus = error
-            zoomSignedIn = await ZoomOAuth.shared.signedIn
-            if error.isEmpty {
-                ShellLog.write("zoom sign-in complete")
-            } else {
-                pushWarning("zoom sign-in: \(error)")
+            await finishOAuthSignIn(error)
+        }
+    }
+
+    /// One place both callback paths land ("" = signed in). Brings the app
+    /// forward: the operator is looking at a browser tab when this fires.
+    func finishOAuthSignIn(_ error: String) async {
+        zoomOAuthStatus = error
+        zoomSignedIn = await ZoomOAuth.shared.signedIn
+        if error.isEmpty {
+            ShellLog.write("zoom sign-in complete")
+            if zoomJoinStatus == ZoomJoinStatus.signInMayBeRequired {
+                zoomJoinStatus = ""
             }
+        } else {
+            pushWarning("zoom sign-in: \(error)")
+        }
+        // A timeout is not the operator coming back from the browser: don't
+        // steal focus five minutes later for it.
+        if error != ZoomOAuth.signInTimedOut,
+           !ShellHarness.detect(in: ProcessInfo.processInfo.environment) {
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
@@ -1407,6 +1439,9 @@ final class AppModel: ObservableObject {
         joinPasscode = parsedPasscode
         guard !meetingId.isEmpty, !joinInFlight else { return }
         joinInFlight = true
+        // Never blocks the join (some meetings allow guests) — just says why it
+        // may fail before Zoom does.
+        zoomJoinStatus = ZoomJoinStatus.atJoin(signedIn: zoomSignedIn)
         recentMeetings.removeAll { $0 == joinMeetingId }
         recentMeetings.insert(joinMeetingId, at: 0)
         recentMeetings = Array(recentMeetings.prefix(5))
@@ -1427,9 +1462,12 @@ final class AppModel: ObservableObject {
                 if let credentials = await ZoomOAuth.shared.ensureJoinCredentials(),
                    let zak = credentials.userZak {
                     payload["userZak"] = zak
+                } else {
+                    zoomJoinStatus = ZoomJoinStatus.atJoin(signedIn: false)
                 }
                 let response = try await bridge.request(
-                    ["type": "zoom-join", "payload": payload], timeout: 45)
+                    ["type": "zoom-join", "payload": payload],
+                    timeout: ZoomJoinStatus.joinRequestTimeout)
                 if let snapshot = response["snapshot"] as? JSONObject {
                     applyZoom(snapshot)
                     for warning in snapshot["warnings"] as? [String] ?? [] {

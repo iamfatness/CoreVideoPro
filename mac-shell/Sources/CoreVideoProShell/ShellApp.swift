@@ -1335,6 +1335,7 @@ struct ZoomPane: View {
                 ? "Connected — raw media live"
                 : "Connected — capture is off"
         }
+        if !model.zoomJoinStatus.isEmpty { return model.zoomJoinStatus }
         return model.meetingState == "error" ? "See Health for the engine warning"
                                              : "Not connected"
     }
