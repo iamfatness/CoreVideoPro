@@ -123,6 +123,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key><true/>
     <key>NSCameraUsageDescription</key><string>CoreVideo Pro captures cameras as production sources.</string>
     <key>NSMicrophoneUsageDescription</key><string>CoreVideo Pro captures audio inputs for the production mix.</string>
+    <key>NSRemovableVolumesUsageDescription</key><string>CoreVideo Pro saves recordings to the folder you choose, including external drives.</string>
 </dict>
 </plist>
 PLIST
