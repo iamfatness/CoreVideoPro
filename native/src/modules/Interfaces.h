@@ -640,6 +640,14 @@ struct CompositorRenderPlan {
   // thumbnail. Independent of skipCpuReadback (which only gates the small
   // preview + pixel signature).
   bool fullProgramReadback = false;
+  // macOS virtual camera only (COREVIDEO_WITH_MAC_VIRTUALCAM, roadmap M9.2):
+  // when true, the Metal compositor runs its GPU NV12 tap (resize + mirror +
+  // BT.601 in one compute pass) after the program pass on EVERY tick and pushes
+  // the finished 1920x1080 NV12 to the identified vcam sink. It does NOT arm the
+  // 8 MB BGRA full-program readback above. MediaCore sets it only under
+  // __APPLE__ + COREVIDEO_WITH_MAC_VIRTUALCAM; every other compositor ignores it,
+  // so it is inert on Windows.
+  bool vcamNv12Tap = false;
   // When true, the GPU compositor ALSO composites the native graphics
   // instances on this plan (layers with a graphicsInstanceId) into their own
   // transparent BGRA target and publishes it, straight-alpha, through
@@ -1526,6 +1534,14 @@ class ICompositor {
   // Does this compositor push frames to that sink? When it does, MediaCore must
   // NOT also publish from the output worker or every frame is published twice.
   [[nodiscard]] virtual bool publishesVcamFrames() const { return false; }
+  // macOS virtual camera: mirror the vcam tap horizontally ON THE GPU (the
+  // Mac backend's mirrorAppliedUpstream() contract). Default no-op: the
+  // Windows publisher mirrors on its own path and never calls this.
+  virtual void setVcamMirror(bool /*mirror*/) {}
+  // Vcam tap dispatches skipped because both NV12 buffers were busy. Every
+  // skip is a lost camera frame (per-frame delivery rule). 0 for compositors
+  // without a GPU vcam tap.
+  [[nodiscard]] virtual uint64_t vcamDispatchSkipped() const { return 0; }
 
   // #597 Lever A: FEED THE ENCODER FEWER FRAMES, at the one place that actually
   // paces it. The hardware encoder's thread advances on the KEYED MUTEX of the

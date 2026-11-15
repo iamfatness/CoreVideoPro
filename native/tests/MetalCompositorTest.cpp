@@ -9,11 +9,15 @@
 #include <IOSurface/IOSurface.h>
 
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "compositor/CompositorLayout.h"
@@ -21,6 +25,7 @@
 #include "modules/Interfaces.h"
 #include "core/ProgramBlackout.h"
 #include "modules/ProgramFramePreview.h"
+#include "modules/VirtualCameraFrame.h"
 
 namespace {
 
@@ -613,6 +618,307 @@ TEST(MetalCompositor, SourcelessFillColorLayerPaintsItsParsedColour) {
   EXPECT_NEAR(pixel[1], 0x66, 2);  // G
   EXPECT_NEAR(pixel[0], 0xCC, 2);  // B
 }
+
+#if COREVIDEO_WITH_MAC_VIRTUALCAM
+// ── GPU NV12 tap for the macOS virtual camera (roadmap M9.2, Task 5) ─────────
+//
+// Every expected value below is a fixture constant hand-computed from the
+// integer BT.601 formula (VirtualCameraFrame.h convertBgraToNv12), never from
+// the code under test:
+//   red  (r=255,g=0,b=0): Y=(66*255+128)/256+16=82  U=(-38*255+128)/256+128=91
+//                         V=(112*255+128)/256+128=240
+//   blue (r=0,g=0,b=255): Y=(25*255+128)/256+16=41
+// The +-1 tolerance is only for the BGRA unorm round trip through the program
+// texture; the bit-exact property is pinned by the CPU-oracle test.
+
+constexpr int kVcamW = 1920;
+constexpr int kVcamH = 1080;
+constexpr size_t kVcamBytes = 3110400;  // 1920*1080*3/2
+
+struct VcamDelivery {
+  ICompositor::VcamFrameBuffer nv12;
+  int width = 0;
+  int height = 0;
+  int64_t programSequence = 0;
+  int64_t deliveredAt100ns = -1;
+};
+
+struct VcamCapture {
+  std::mutex mutex;
+  std::condition_variable cv;
+  std::vector<VcamDelivery> deliveries;
+
+  size_t count() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return deliveries.size();
+  }
+  VcamDelivery last() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return deliveries.empty() ? VcamDelivery{} : deliveries.back();
+  }
+  void clear() {
+    std::lock_guard<std::mutex> lock(mutex);
+    deliveries.clear();
+  }
+};
+
+// The capture is shared-owned by the sink so a test that returns early can
+// never leave the tap thread calling into a destroyed stack object.
+std::shared_ptr<VcamCapture> installVcamCapture(ICompositor& compositor) {
+  auto capture = std::make_shared<VcamCapture>();
+  compositor.setIdentifiedVcamFrameSink(
+      [capture](ICompositor::VcamFrameBuffer nv12, int width, int height, int64_t sequence,
+                int64_t deliveredAt100ns) {
+        std::lock_guard<std::mutex> lock(capture->mutex);
+        capture->deliveries.push_back({std::move(nv12), width, height, sequence, deliveredAt100ns});
+        capture->cv.notify_all();
+      });
+  return capture;
+}
+
+// Renders at ~60 Hz until the capture holds at least `wanted` deliveries or
+// two seconds pass. Returns the delivery count reached.
+size_t renderUntilDelivered(ICompositor& compositor, const CompositorRenderPlan& plan,
+                            const std::vector<VideoFrame>& frames, VcamCapture& capture,
+                            size_t wanted) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (capture.count() < wanted && std::chrono::steady_clock::now() < deadline) {
+    compositor.render(plan, frames);
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+  }
+  return capture.count();
+}
+
+int nv12Y(const std::vector<uint8_t>& nv12, int x, int y) {
+  return nv12[static_cast<size_t>(y) * kVcamW + x];
+}
+int nv12U(const std::vector<uint8_t>& nv12, int x, int y) {
+  return nv12[static_cast<size_t>(kVcamW) * kVcamH + static_cast<size_t>(y / 2) * kVcamW + (x & ~1)];
+}
+int nv12V(const std::vector<uint8_t>& nv12, int x, int y) {
+  return nv12[static_cast<size_t>(kVcamW) * kVcamH + static_cast<size_t>(y / 2) * kVcamW + (x & ~1) + 1];
+}
+
+// b = x % 256, g = y % 256, r = (x + y) % 256: every 2x2 block differs in all
+// three channels, so a wrong chroma average, a swapped plane or a float
+// division in place of int shows up somewhere in the frame.
+VideoFrame gradientFrame(const std::string& participantId, int width, int height) {
+  VideoFrame frame = bgraFrame(participantId, width, height, 0, 0, 0);
+  auto pixels = std::make_shared<std::vector<uint8_t>>(*frame.pixels);
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const size_t offset = (static_cast<size_t>(y) * width + x) * 4u;
+      (*pixels)[offset + 0] = static_cast<uint8_t>(x % 256);
+      (*pixels)[offset + 1] = static_cast<uint8_t>(y % 256);
+      (*pixels)[offset + 2] = static_cast<uint8_t>((x + y) % 256);
+      (*pixels)[offset + 3] = 0xff;
+    }
+  }
+  frame.pixels = std::move(pixels);
+  return frame;
+}
+
+// Left half one colour, right half another (BGR order like bgraFrame).
+VideoFrame splitFrame(const std::string& participantId, int width, int height,
+                      std::array<uint8_t, 3> leftBgr, std::array<uint8_t, 3> rightBgr) {
+  VideoFrame frame = bgraFrame(participantId, width, height, 0, 0, 0);
+  auto pixels = std::make_shared<std::vector<uint8_t>>(*frame.pixels);
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const auto& c = x < width / 2 ? leftBgr : rightBgr;
+      const size_t offset = (static_cast<size_t>(y) * width + x) * 4u;
+      (*pixels)[offset + 0] = c[0];
+      (*pixels)[offset + 1] = c[1];
+      (*pixels)[offset + 2] = c[2];
+    }
+  }
+  frame.pixels = std::move(pixels);
+  return frame;
+}
+
+CompositorRenderPlan vcamPlan(const char* id, int width, int height) {
+  CompositorRenderPlan plan;
+  plan.renderPlanId = id;
+  plan.width = width;
+  plan.height = height;
+  plan.layers.push_back(solidLayer("cam", 0.f, 0.f, 1.f, 1.f));
+  plan.fullProgramReadback = true;
+  plan.vcamNv12Tap = true;
+  return plan;
+}
+
+TEST(MetalCompositor, VcamTapDeliversBt601Nv12OfTheProgram) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  ASSERT_TRUE(compositor->publishesVcamFrames());
+  auto capture = installVcamCapture(*compositor);
+  const auto plan = vcamPlan("vcam-bt601", kVcamW, kVcamH);
+  const std::vector<VideoFrame> frames{bgraFrame("cam", 320, 180, 0, 0, 255)};
+  ASSERT_GE(renderUntilDelivered(*compositor, plan, frames, *capture, 2), 1u) << "the vcam sink never fired";
+  const auto delivery = capture->last();
+  ASSERT_TRUE(delivery.nv12);
+  EXPECT_EQ(delivery.width, kVcamW);
+  EXPECT_EQ(delivery.height, kVcamH);
+  EXPECT_EQ(delivery.deliveredAt100ns, 0);
+  EXPECT_GT(delivery.programSequence, 0);
+  ASSERT_EQ(delivery.nv12->size(), kVcamBytes);
+  EXPECT_NEAR(nv12Y(*delivery.nv12, 960, 540), 82, 1);
+  EXPECT_NEAR(nv12U(*delivery.nv12, 960, 540), 91, 1);
+  EXPECT_NEAR(nv12V(*delivery.nv12, 960, 540), 240, 1);
+  compositor->setIdentifiedVcamFrameSink({});
+}
+
+TEST(MetalCompositor, VcamTapMatchesTheCpuOracleBitForBitAt1080p) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto capture = installVcamCapture(*compositor);
+  const auto plan = vcamPlan("vcam-oracle", kVcamW, kVcamH);
+  const std::vector<VideoFrame> frames{gradientFrame("cam", kVcamW, kVcamH)};
+  // Read the program back ONCE through the existing full-res BGRA tap (one
+  // frame of latency) — the test-only CPU oracle input. The content is static,
+  // so every vcam delivery after the first frame is the same picture.
+  std::vector<uint8_t> programBgra;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline && (programBgra.empty() || capture->count() < 3)) {
+    auto frame = compositor->render(plan, frames);
+    if (programBgra.empty() && !frame.programFullBgra.bgra.empty()) {
+      ASSERT_EQ(frame.programFullBgra.width, kVcamW);
+      ASSERT_EQ(frame.programFullBgra.height, kVcamH);
+      programBgra = frame.programFullBgra.bgra;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+  }
+  ASSERT_EQ(programBgra.size(), static_cast<size_t>(kVcamW) * kVcamH * 4u);
+  ASSERT_GE(capture->count(), 3u);
+  std::vector<uint8_t> oracle;
+  ASSERT_TRUE(convertBgraToNv12(programBgra.data(), kVcamW, kVcamH, oracle));
+  const auto gpu = capture->last();
+  ASSERT_TRUE(gpu.nv12);
+  ASSERT_EQ(gpu.nv12->size(), oracle.size());
+  size_t mismatches = 0;
+  size_t first = oracle.size();
+  for (size_t i = 0; i < oracle.size(); ++i) {
+    if ((*gpu.nv12)[i] != oracle[i]) {
+      if (first == oracle.size()) first = i;
+      ++mismatches;
+    }
+  }
+  EXPECT_EQ(mismatches, 0u) << "first mismatch at byte " << first
+                            << (first < oracle.size()
+                                    ? " gpu=" + std::to_string((*gpu.nv12)[first]) +
+                                          " cpu=" + std::to_string(oracle[first])
+                                    : std::string());
+  compositor->setIdentifiedVcamFrameSink({});
+}
+
+TEST(MetalCompositor, VcamTapMirrorsOnTheGpu) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto capture = installVcamCapture(*compositor);
+  const auto plan = vcamPlan("vcam-mirror", kVcamW, kVcamH);
+  // left red (b=0,g=0,r=255), right blue (b=255,g=0,r=0)
+  const std::vector<VideoFrame> frames{splitFrame("cam", kVcamW, kVcamH, {0, 0, 255}, {255, 0, 0})};
+
+  compositor->setVcamMirror(true);
+  capture->clear();
+  ASSERT_GE(renderUntilDelivered(*compositor, plan, frames, *capture, 4), 4u);
+  auto mirrored = capture->last();
+  ASSERT_TRUE(mirrored.nv12);
+  EXPECT_NEAR(nv12Y(*mirrored.nv12, 100, 540), 41, 1) << "mirror on: the left edge shows the blue right half";
+  EXPECT_NEAR(nv12Y(*mirrored.nv12, 1819, 540), 82, 1);
+
+  compositor->setVcamMirror(false);
+  capture->clear();
+  ASSERT_GE(renderUntilDelivered(*compositor, plan, frames, *capture, 4), 4u);
+  auto plain = capture->last();
+  ASSERT_TRUE(plain.nv12);
+  EXPECT_NEAR(nv12Y(*plain.nv12, 100, 540), 82, 1) << "mirror off: the left edge is red";
+  EXPECT_NEAR(nv12Y(*plain.nv12, 1819, 540), 41, 1);
+  compositor->setIdentifiedVcamFrameSink({});
+}
+
+TEST(MetalCompositor, VcamTapRunsOnLightTicksWithoutCpuReadback) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto capture = installVcamCapture(*compositor);
+  auto plan = vcamPlan("vcam-light", kVcamW, kVcamH);
+  plan.skipCpuReadback = true;
+  const std::vector<VideoFrame> frames{bgraFrame("cam", 320, 180, 0, 0, 255)};
+  bool previewEverRead = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (capture->count() < 1 && std::chrono::steady_clock::now() < deadline) {
+    const auto frame = compositor->render(plan, frames);
+    previewEverRead = previewEverRead || !frame.preview.bgra.empty() || !frame.programFullBgra.bgra.empty();
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+  }
+  EXPECT_GE(capture->count(), 1u) << "the vcam tap must run on the light display tick";
+  EXPECT_FALSE(previewEverRead) << "a light tick must not do a CPU readback";
+  compositor->setIdentifiedVcamFrameSink({});
+}
+
+TEST(MetalCompositor, VcamTapScalesANon1080pCanvasTo1080p) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto capture = installVcamCapture(*compositor);
+  const auto plan = vcamPlan("vcam-720p", 1280, 720);
+  const std::vector<VideoFrame> frames{bgraFrame("cam", 320, 180, 0, 0, 255)};
+  ASSERT_GE(renderUntilDelivered(*compositor, plan, frames, *capture, 2), 1u);
+  const auto delivery = capture->last();
+  ASSERT_TRUE(delivery.nv12);
+  EXPECT_EQ(delivery.width, kVcamW);
+  EXPECT_EQ(delivery.height, kVcamH);
+  ASSERT_EQ(delivery.nv12->size(), kVcamBytes);
+  EXPECT_NEAR(nv12Y(*delivery.nv12, 960, 540), 82, 1);
+  EXPECT_NEAR(nv12Y(*delivery.nv12, 0, 0), 82, 1);
+  EXPECT_NEAR(nv12Y(*delivery.nv12, 1919, 1079), 82, 1);
+  compositor->setIdentifiedVcamFrameSink({});
+}
+
+TEST(MetalCompositor, ClearingTheVcamSinkStopsDelivery) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto capture = installVcamCapture(*compositor);
+  const auto plan = vcamPlan("vcam-clear", kVcamW, kVcamH);
+  const std::vector<VideoFrame> frames{bgraFrame("cam", 320, 180, 0, 0, 255)};
+  ASSERT_GE(renderUntilDelivered(*compositor, plan, frames, *capture, 1), 1u);
+  compositor->setIdentifiedVcamFrameSink({});  // waits for any in-flight call
+  const size_t settled = capture->count();
+  for (int i = 0; i < 10; ++i) {
+    compositor->render(plan, frames);
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_EQ(capture->count(), settled);
+}
+
+// Paced at 60 Hz like the product's render thread (controller ruling C7), so
+// the two ping-pong buffers are exercised at the real cadence, not flooded.
+TEST(MetalCompositor, VcamTapDeliversEveryRenderedFrame) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto capture = installVcamCapture(*compositor);
+  const auto plan = vcamPlan("vcam-every", kVcamW, kVcamH);
+  const std::vector<VideoFrame> frames{gradientFrame("cam", kVcamW, kVcamH)};
+  constexpr int kTicks = 120;
+  std::vector<int64_t> rendered;
+  const auto period = std::chrono::microseconds(16667);
+  auto next = std::chrono::steady_clock::now();
+  for (int i = 0; i < kTicks; ++i) {
+    rendered.push_back(compositor->render(plan, frames).frameNumber);
+    next += period;
+    std::this_thread::sleep_until(next);
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (capture->count() < static_cast<size_t>(kTicks) && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  compositor->setIdentifiedVcamFrameSink({});
+  std::vector<int64_t> delivered;
+  {
+    std::lock_guard<std::mutex> lock(capture->mutex);
+    for (const auto& d : capture->deliveries) delivered.push_back(d.programSequence);
+  }
+  EXPECT_EQ(delivered.size(), static_cast<size_t>(kTicks));
+  EXPECT_EQ(delivered, rendered) << "every rendered frame is delivered once, in order";
+  for (size_t i = 1; i < delivered.size(); ++i) {
+    EXPECT_EQ(delivered[i], delivered[i - 1] + 1) << "sequence gap at delivery " << i;
+  }
+  EXPECT_EQ(compositor->vcamDispatchSkipped(), 0u);
+}
+#endif  // COREVIDEO_WITH_MAC_VIRTUALCAM
 
 }  // namespace
 

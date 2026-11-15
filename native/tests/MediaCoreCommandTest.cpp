@@ -8635,6 +8635,65 @@ std::string onAirHealthFor(corevideo::core::MediaCore& mediaCore, OnAirRecording
 }
 }  // namespace
 
+namespace {
+class VcamPlanRecordingCompositor final : public corevideo::modules::ICompositor {
+ public:
+  explicit VcamPlanRecordingCompositor(std::unique_ptr<corevideo::modules::ICompositor> inner)
+      : inner_(std::move(inner)) {}
+  std::string rendererName() const override { return inner_->rendererName(); }
+  corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    lastPlan = plan;
+    return inner_->render(plan, frames);
+  }
+  void setVcamMirror(bool mirror) override { mirrorCalls.push_back(mirror); }
+  corevideo::modules::CompositorRenderPlan lastPlan;
+  std::vector<bool> mirrorCalls;
+ private:
+  std::unique_ptr<corevideo::modules::ICompositor> inner_;
+};
+}  // namespace
+
+// Roadmap M9.2 (controller ruling C6): on the Mac backend the virtual camera is
+// fed ONLY by the compositor's GPU NV12 tap — enabling it alone must not arm
+// the 8 MB BGRA full-program readback. Every other build keeps the legacy
+// rule (vcam enabled => fullProgramReadback), byte for byte.
+TEST(MediaCoreCommand, EnablingTheVirtualCameraArmsTheRightProgramTap) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<VcamPlanRecordingCompositor>(std::move(modules.compositor));
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  mediaCore.renderDisplayTick();
+  EXPECT_FALSE(compositor->lastPlan.fullProgramReadback);
+  EXPECT_FALSE(compositor->lastPlan.vcamNv12Tap);
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "sync-virtual-camera"}, {"on", true}, {"mirror", true}}});
+  mediaCore.renderDisplayTick();
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  EXPECT_TRUE(compositor->lastPlan.vcamNv12Tap);
+  EXPECT_FALSE(compositor->lastPlan.fullProgramReadback)
+      << "the Mac vcam must not arm the BGRA full-program readback";
+#else
+  EXPECT_TRUE(compositor->lastPlan.fullProgramReadback);
+  EXPECT_FALSE(compositor->lastPlan.vcamNv12Tap);
+#endif
+#if defined(__APPLE__)
+  ASSERT_FALSE(compositor->mirrorCalls.empty());
+  EXPECT_TRUE(compositor->mirrorCalls.back()) << "the mirror reaches the GPU tap";
+#else
+  EXPECT_TRUE(compositor->mirrorCalls.empty());
+#endif
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "sync-virtual-camera"}, {"on", false}}});
+  mediaCore.renderDisplayTick();
+  EXPECT_FALSE(compositor->lastPlan.vcamNv12Tap);
+  EXPECT_FALSE(compositor->lastPlan.fullProgramReadback);
+}
+
 // #535 slice 4a final review, R1: a "zoom"-kind bus source with no new frame
 // for >= 1.5s reads "stalled" on the render-plan layer (the on-air rule),
 // even though SourceBus's own 200ms diagnostic health would already call it

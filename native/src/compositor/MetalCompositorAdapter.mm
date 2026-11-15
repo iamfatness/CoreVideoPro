@@ -18,7 +18,8 @@
 //  - The render target uses storageModeShared (Apple-silicon unified memory),
 //    so the CPU readbacks are a plain getBytes after waitUntilCompleted — no
 //    staging-texture dance. fullProgramReadback fills ProgramFrame::
-//    programFullBgra directly (there is no vcam tap on macOS yet).
+//    programFullBgra (the recording/encoder feed). The virtual camera has its
+//    own GPU NV12 tap under COREVIDEO_WITH_MAC_VIRTUALCAM (vcamNv12Tap).
 //  - programPixelSignature hashes the preview pixels (the stub's semantics)
 //    rather than a center-pixel staging read.
 
@@ -32,6 +33,10 @@
 #include <cstdio>
 #include <cstring>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -240,6 +245,9 @@ uint32_t previewPixelSignature(const ProgramFramePreviewPixels& preview) {
 class MetalCompositor final : public ICompositor {
  public:
   ~MetalCompositor() override {
+#if COREVIDEO_WITH_MAC_VIRTUALCAM
+    stopVcamTap();
+#endif
     tapStop_.store(true, std::memory_order_release);
     if (tapWake_) {
       dispatch_semaphore_signal(tapWake_);
@@ -287,6 +295,13 @@ class MetalCompositor final : public ICompositor {
     // throttled FULL renders only, which is also what feeds the encoder.
     const bool fullTick = !renderPlan.skipCpuReadback;
     renderPassInto(program_, deterministicPlan, frames, /*waitForCompletion=*/fullTick);
+#if COREVIDEO_WITH_MAC_VIRTUALCAM
+    // EVERY tick, light ticks included: the camera is a 60 fps per-frame
+    // output, and the light display tick IS the 60 Hz tick. No CPU wait here.
+    if (renderPlan.vcamNv12Tap) {
+      dispatchVcamTap();
+    }
+#endif
 
     frame.gpuComposed = true;
     frame.sharedTexture.iosurfaceId = program_.iosurfaceId;
@@ -327,6 +342,29 @@ class MetalCompositor final : public ICompositor {
   CompositorSourceTexStats sourceTexStats() const override { return stats_; }
 
   bool wantsFullProgramReadbackForRecording() const override { return true; }
+
+#if COREVIDEO_WITH_MAC_VIRTUALCAM
+  // ── macOS virtual camera: GPU NV12 tap (roadmap M9.2) ──────────────────────
+  // The sink runs on the vcam tap thread holding NO compositor lock. Setting or
+  // clearing it waits for any in-flight call (MediaCore's teardown barrier).
+  void setVcamFrameSink(VcamFrameSink sink) override {
+    std::lock_guard<std::mutex> lock(vcamSinkMutex_);
+    vcamSink_ = std::move(sink);
+    identifiedVcamSink_ = {};
+    vcamSinkPresent_.store(static_cast<bool>(vcamSink_), std::memory_order_release);
+  }
+  void setIdentifiedVcamFrameSink(IdentifiedVcamFrameSink sink) override {
+    std::lock_guard<std::mutex> lock(vcamSinkMutex_);
+    vcamSink_ = {};
+    identifiedVcamSink_ = std::move(sink);
+    vcamSinkPresent_.store(static_cast<bool>(identifiedVcamSink_), std::memory_order_release);
+  }
+  [[nodiscard]] bool publishesVcamFrames() const override { return true; }
+  void setVcamMirror(bool mirror) override { vcamMirror_.store(mirror, std::memory_order_release); }
+  [[nodiscard]] uint64_t vcamDispatchSkipped() const override {
+    return vcamShared_->skipped.load(std::memory_order_acquire);
+  }
+#endif
 
   // Second compositor pass: the whole multiview grid into its own
   // IOSurface-backed texture (the OBS/broadcast-multiviewer model). Mirrors
@@ -660,6 +698,229 @@ class MetalCompositor final : public ICompositor {
       }
     });
   }
+
+#if COREVIDEO_WITH_MAC_VIRTUALCAM
+  // ── vcam GPU NV12 tap ──────────────────────────────────────────────────────
+  //
+  // Render thread: encode vcamBgraToNv12 (program texture -> one of two shared
+  // NV12 MTLBuffers) into its own command buffer right after the program pass
+  // and commit; never waits. The completion handler marks the dispatch done
+  // and wakes the tap thread. Tap thread: copies the finished NV12 ONCE into an
+  // immutable shared buffer (the only CPU work: a 3,110,400-byte memcpy), frees
+  // the GPU buffer, then calls the sink. Dispatches are delivered strictly in
+  // dispatch order (FIFO), never by completion-handler arrival order.
+  //
+  // Everything the completion handler touches lives in VcamTapShared, owned by
+  // shared_ptr, so a handler firing after the compositor is gone touches
+  // nothing freed.
+  static constexpr int kVcamWidth = 1920;
+  static constexpr int kVcamHeight = 1080;
+  static constexpr size_t kVcamNv12Bytes = static_cast<size_t>(kVcamWidth) * kVcamHeight * 3 / 2;
+  static constexpr int kVcamBufferCount = 2;
+  static constexpr uint64_t kVcamLogEveryFrames = 600;
+
+  enum class VcamSlotState { Free, Gpu, Copying };
+
+  struct VcamPending {
+    int slot = 0;
+    int64_t sequence = 0;
+    bool completed = false;
+    bool gpuError = false;
+    double gpuMs = 0.0;
+  };
+
+  struct VcamTapShared {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<std::shared_ptr<VcamPending>> fifo;
+    VcamSlotState slots[kVcamBufferCount] = {VcamSlotState::Free, VcamSlotState::Free};
+    bool stop = false;
+    std::atomic<uint64_t> skipped{0};
+  };
+
+  struct VcamNv12ParamsHost {
+    uint32_t srcWidth;
+    uint32_t srcHeight;
+    uint32_t mirror;
+    uint32_t exact;
+  };
+
+  bool ensureVcamPipeline() {
+    if (vcamPipeline_) {
+      return true;
+    }
+    if (vcamPipelineFailed_) {
+      return false;
+    }
+    NSError* error = nil;
+    id<MTLLibrary> library =
+        [device_ newLibraryWithSource:[NSString stringWithUTF8String:kVcamNv12KernelSource]
+                              options:nil
+                                error:&error];
+    id<MTLFunction> function = library ? [library newFunctionWithName:@"vcamBgraToNv12"] : nil;
+    if (function) {
+      vcamPipeline_ = [device_ newComputePipelineStateWithFunction:function error:&error];
+    }
+    for (int i = 0; i < kVcamBufferCount && vcamPipeline_; ++i) {
+      vcamBuffers_[i] = [device_ newBufferWithLength:kVcamNv12Bytes options:MTLResourceStorageModeShared];
+      if (!vcamBuffers_[i]) {
+        vcamPipeline_ = nil;
+      }
+    }
+    if (!vcamPipeline_) {
+      vcamPipelineFailed_ = true;
+      ::corevideo::core::nativeLogf("[virtualcam] mac gpu tap unavailable: %s\n",
+                                    error ? error.localizedDescription.UTF8String : "no diagnostics");
+      return false;
+    }
+    return true;
+  }
+
+  void dispatchVcamTap() {
+    if (!vcamSinkPresent_.load(std::memory_order_acquire) || !program_.texture) {
+      return;
+    }
+    if (!ensureVcamPipeline()) {
+      return;
+    }
+    ensureVcamTapThread();
+    auto shared = vcamShared_;
+    auto pending = std::make_shared<VcamPending>();
+    pending->sequence = frameNumber_;
+    {
+      std::lock_guard<std::mutex> lock(shared->mutex);
+      int slot = -1;
+      for (int i = 0; i < kVcamBufferCount; ++i) {
+        if (shared->slots[i] == VcamSlotState::Free) {
+          slot = i;
+          break;
+        }
+      }
+      if (slot < 0) {
+        // Both buffers busy (GPU still writing / tap still copying). This is a
+        // lost camera frame — counted, logged, never hidden.
+        const uint64_t skipped = shared->skipped.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (skipped == 1 || skipped % 60 == 0) {
+          ::corevideo::core::nativeLogf("[virtualcam] mac gpu tap skipped dispatch (both NV12 buffers busy) frame %lld skipped %llu\n",
+                                        static_cast<long long>(frameNumber_),
+                                        static_cast<unsigned long long>(skipped));
+        }
+        return;
+      }
+      shared->slots[slot] = VcamSlotState::Gpu;
+      pending->slot = slot;
+      shared->fifo.push_back(pending);
+    }
+    const VcamNv12ParamsHost params{
+        static_cast<uint32_t>(program_.width), static_cast<uint32_t>(program_.height),
+        vcamMirror_.load(std::memory_order_acquire) ? 1u : 0u,
+        (program_.width == kVcamWidth && program_.height == kVcamHeight) ? 1u : 0u};
+    @autoreleasepool {
+      id<MTLCommandBuffer> commandBuffer = [queue_ commandBuffer];
+      id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+      [encoder setComputePipelineState:vcamPipeline_];
+      [encoder setTexture:program_.texture atIndex:0];
+      [encoder setBuffer:vcamBuffers_[pending->slot] offset:0 atIndex:0];
+      [encoder setBytes:&params length:sizeof(params) atIndex:1];
+      [encoder dispatchThreads:MTLSizeMake(kVcamWidth / 2, kVcamHeight / 2, 1)
+          threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+      [encoder endEncoding];
+      [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+        std::lock_guard<std::mutex> lock(shared->mutex);
+        pending->completed = true;
+        pending->gpuError = completed.status != MTLCommandBufferStatusCompleted;
+        pending->gpuMs = (completed.GPUEndTime - completed.GPUStartTime) * 1000.0;
+        shared->cv.notify_all();
+      }];
+      [commandBuffer commit];
+    }
+  }
+
+  void ensureVcamTapThread() {
+    if (vcamThread_.joinable()) {
+      return;
+    }
+    auto shared = vcamShared_;
+    id<MTLBuffer> buffers[kVcamBufferCount] = {vcamBuffers_[0], vcamBuffers_[1]};
+    vcamThread_ = std::thread([this, shared, b0 = buffers[0], b1 = buffers[1]] {
+      id<MTLBuffer> slotBuffers[kVcamBufferCount] = {b0, b1};
+      uint64_t windowFrames = 0;
+      double gpuSum = 0, gpuMax = 0, copySum = 0, copyMax = 0;
+      int64_t windowFirstSequence = 0;
+      auto windowStart = std::chrono::steady_clock::now();
+      for (;;) {
+        std::shared_ptr<VcamPending> next;
+        {
+          std::unique_lock<std::mutex> lock(shared->mutex);
+          shared->cv.wait(lock, [&] {
+            return shared->stop || (!shared->fifo.empty() && shared->fifo.front()->completed);
+          });
+          if (shared->stop) {
+            return;
+          }
+          next = shared->fifo.front();
+          shared->fifo.pop_front();
+          shared->slots[next->slot] = VcamSlotState::Copying;
+        }
+        ICompositor::VcamFrameBuffer frame;
+        double copyMs = 0;
+        if (!next->gpuError) {
+          const auto copyStart = std::chrono::steady_clock::now();
+          const auto* bytes = static_cast<const uint8_t*>(slotBuffers[next->slot].contents);
+          frame = std::make_shared<const std::vector<uint8_t>>(bytes, bytes + kVcamNv12Bytes);
+          copyMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - copyStart).count();
+        }
+        {
+          std::lock_guard<std::mutex> lock(shared->mutex);
+          shared->slots[next->slot] = VcamSlotState::Free;
+        }
+        if (!frame) {
+          ::corevideo::core::nativeLogf("[virtualcam] mac gpu tap command buffer failed; frame %lld lost\n",
+                                        static_cast<long long>(next->sequence));
+          continue;
+        }
+        {
+          std::lock_guard<std::mutex> lock(vcamSinkMutex_);
+          if (identifiedVcamSink_) {
+            identifiedVcamSink_(frame, kVcamWidth, kVcamHeight, next->sequence, 0);
+          } else if (vcamSink_) {
+            vcamSink_(frame, kVcamWidth, kVcamHeight);
+          }
+        }
+        if (windowFrames == 0) {
+          windowFirstSequence = next->sequence;
+          windowStart = std::chrono::steady_clock::now();
+        }
+        ++windowFrames;
+        gpuSum += next->gpuMs;
+        gpuMax = std::max(gpuMax, next->gpuMs);
+        copySum += copyMs;
+        copyMax = std::max(copyMax, copyMs);
+        if (windowFrames == kVcamLogEveryFrames) {
+          ::corevideo::core::nativeVerboseLogf(
+              "[virtualcam] mac gpu tap gpu %.3f ms copy %.3f ms skipped %llu (600 frames) max gpu %.3f ms copy %.3f ms seq %lld-%lld span %.1f ms\n",
+              gpuSum / windowFrames, copySum / windowFrames,
+              static_cast<unsigned long long>(shared->skipped.load(std::memory_order_acquire)), gpuMax, copyMax,
+              static_cast<long long>(windowFirstSequence), static_cast<long long>(next->sequence),
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - windowStart).count());
+          windowFrames = 0;
+          gpuSum = gpuMax = copySum = copyMax = 0;
+        }
+      }
+    });
+  }
+
+  void stopVcamTap() {
+    {
+      std::lock_guard<std::mutex> lock(vcamShared_->mutex);
+      vcamShared_->stop = true;
+    }
+    vcamShared_->cv.notify_all();
+    if (vcamThread_.joinable()) {
+      vcamThread_.join();
+    }
+  }
+#endif  // COREVIDEO_WITH_MAC_VIRTUALCAM
 
   void readTargetBgra() {
     readbackBgra_.resize(static_cast<size_t>(program_.width) * static_cast<size_t>(program_.height) * 4u);
@@ -1383,6 +1644,18 @@ class MetalCompositor final : public ICompositor {
   uint64_t tapPublishedGeneration_ = 0;
   uint64_t tapConsumedGeneration_ = 0;
   std::vector<uint8_t> readbackBgra_;
+#if COREVIDEO_WITH_MAC_VIRTUALCAM
+  id<MTLComputePipelineState> vcamPipeline_ = nil;
+  bool vcamPipelineFailed_ = false;
+  id<MTLBuffer> vcamBuffers_[kVcamBufferCount] = {nil, nil};
+  std::shared_ptr<VcamTapShared> vcamShared_ = std::make_shared<VcamTapShared>();
+  std::thread vcamThread_;
+  std::atomic<bool> vcamMirror_{false};
+  std::atomic<bool> vcamSinkPresent_{false};
+  std::mutex vcamSinkMutex_;
+  VcamFrameSink vcamSink_;
+  IdentifiedVcamFrameSink identifiedVcamSink_;
+#endif
   std::unordered_map<std::string, SourceTex> sourceTextures_;
   OverlayTex overlayTex_;
   CompositorSourceTexStats stats_;

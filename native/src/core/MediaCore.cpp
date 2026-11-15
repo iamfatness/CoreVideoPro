@@ -3064,6 +3064,12 @@ void MediaCore::syncVirtualCamera(const rpc::Json& command) {
   const std::string deviceName = command.get("deviceName") ? command.get("deviceName")->asString() : "";
 
   virtualCamera_->setMirror(mirror);
+#if defined(__APPLE__)
+  // macOS: the Mac backend's mirrorAppliedUpstream() contract — the mirror is
+  // done on the GPU inside the compositor's NV12 tap (roadmap M9.2). Default
+  // no-op on any compositor without that tap.
+  if (modules_.compositor) modules_.compositor->setVcamMirror(mirror);
+#endif
   virtualCamera_->setFramerEnabled(command.get("framerEnabled") && command.get("framerEnabled")->asBool());
   virtualCamera_->setDeviceName(deviceName);
   if (on && !virtualCameraEnabled_) {
@@ -6045,9 +6051,20 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // consumed `ProgramFrame::preview` (a 320x180 UI thumbnail), so YouTube saw
   // the connection but could not render the declared 4K program correctly.
   // The tap scales on-GPU to 1080p and converts to NV12 on its own thread.
+#if defined(__APPLE__) && defined(COREVIDEO_WITH_MAC_VIRTUALCAM) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  // macOS virtual camera (roadmap M9.2): the camera is fed ONLY by the Metal
+  // compositor's GPU NV12 tap (resize + mirror + BT.601 on the GPU, a single
+  // 3 MB memcpy of finished NV12 on the tap thread). Enabling it must NOT arm
+  // the 8 MB BGRA full-program readback — that stays for recording/encoding.
+  renderPlan.vcamNv12Tap = virtualCameraEnabled_;
+  renderPlan.fullProgramReadback = outputActive ||
+      ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
+       modules_.compositor->wantsFullProgramReadbackForRecording());
+#else
   renderPlan.fullProgramReadback = virtualCameraEnabled_ || outputActive ||
       ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
        modules_.compositor->wantsFullProgramReadbackForRecording());
+#endif
   // NDI graphics key: only while the operator's destination list carries it.
   // The compositor frees the key target and its reader thread the first tick
   // this reads false again, so an idle destination costs nothing.
