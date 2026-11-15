@@ -589,7 +589,7 @@ struct VirtualCameraFlyout: View {
                 Toggle("OH Framer (webcam only)", isOn: Binding(
                     get: { model.virtualCamera.framerEnabled },
                     set: { model.setVirtualCameraFramer($0) }))
-                    .toggleStyle(.switch).controlSize(.small).tint(Studio.accent)
+                    .toggleStyle(StudioToggleStyle())
                     .font(.grotesk(13, .semibold)).foregroundStyle(Studio.textPrimary)
                 caption("Framing guides over live video. Program, Preview, recordings and streams stay clean.")
                 Text(model.virtualCameraFramerLabel)
@@ -600,7 +600,7 @@ struct VirtualCameraFlyout: View {
                 Toggle("Mirror (self-view)", isOn: Binding(
                     get: { model.virtualCamera.mirror },
                     set: { model.setVirtualCameraMirror($0) }))
-                    .toggleStyle(.switch).controlSize(.small).tint(Studio.accent)
+                    .toggleStyle(StudioToggleStyle())
                     .font(.grotesk(13, .semibold)).foregroundStyle(Studio.textPrimary)
                 caption("Flips the camera horizontally, like most webcam self-views.")
             }
@@ -642,7 +642,7 @@ struct VirtualCameraFlyout: View {
     }
 
     private func commitName() {
-        if nameDraft != model.virtualCamera.deviceName { model.setVirtualCameraDeviceName(nameDraft) }
+        model.setVirtualCameraDeviceName(nameDraft)  // the model drops an unchanged name
     }
 }
 

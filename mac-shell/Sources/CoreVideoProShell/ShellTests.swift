@@ -597,7 +597,7 @@ enum ShellTests {
                     "Connecting to CoreVideo Pro Camera\u{2026}", "8 lost")
         expectEqual(P.label(intent: true, ext: .active,
                             core: vcamCore("failed", warning: "SINK_START_FAILED: queue refused: busy")),
-                    "queue refused: busy", "9 other warning: text after the FIRST \": \"")
+                    "SINK_START_FAILED: queue refused: busy", "9 other warning is shown whole (Windows)")
         expectEqual(P.label(intent: true, ext: .active, core: vcamCore("failed", warning: "plain words")),
                     "plain words", "9 warning without a code prefix is shown whole")
         expectEqual(P.label(intent: true, ext: .active, core: vcamCore("failed")),
@@ -765,6 +765,55 @@ enum ShellTests {
         silent.startCameraExtensionAtLaunch()
         RunLoop.current.run(until: Date().addingTimeInterval(0.4))
         expectEqual(silent.cameraExtensionState, .notInstalled, "a query that never answers times out to notInstalled")
+    }
+
+    /// The flyout toggles draw their own track: on and off must be told apart,
+    /// and the off track must be visible against the flyout's panel.
+    private static func testStudioToggleTrackIsVisibleInBothStates() {
+        func rgba(_ c: Color) -> (r: Double, g: Double, b: Double, a: Double) {
+            let n = NSColor(c).usingColorSpace(.sRGB) ?? .black
+            return (Double(n.redComponent), Double(n.greenComponent), Double(n.blueComponent), Double(n.alphaComponent))
+        }
+        func luminance(_ c: Color) -> Double {
+            let v = rgba(c)
+            func lin(_ x: Double) -> Double { x <= 0.03928 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4) }
+            return 0.2126 * lin(v.r) + 0.7152 * lin(v.g) + 0.0722 * lin(v.b)
+        }
+        func contrast(_ a: Color, _ b: Color) -> Double {
+            let (x, y) = (luminance(a), luminance(b))
+            return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+        }
+        let on = StudioToggleStyle.trackColor(isOn: true)
+        let off = StudioToggleStyle.trackColor(isOn: false)
+        expect(on == Studio.accent, "on track is the accent")
+        expectEqual(rgba(off).a, 1, "off track is opaque (a translucent white vanishes on the panel)")
+        expect(contrast(off, Studio.panel) >= 2.5, "off track stands out from Studio.panel")
+        expect(contrast(on, off) >= 1.5, "on and off tracks are distinguishable")
+        expect(contrast(StudioToggleStyle.knobColor(isOn: false), off) >= 2.5, "off knob visible on its track")
+        expect(contrast(StudioToggleStyle.knobColor(isOn: true), on) >= 2.5, "on knob visible on its track")
+    }
+
+    @MainActor
+    private static func testVirtualCameraUnchangedNameSendsNothing() {
+        let model = AppModel()
+        model.cameraExtension = FakeCameraExtensionActivator(script: [.active])
+        var sent = 0
+        model.coreCommandCaptureForTesting = { _ in sent += 1 }
+        model.setVirtualCameraDeviceName("Booth")
+        expectEqual(sent, 1, "a new name is sent")
+        model.setVirtualCameraDeviceName("  Booth  ")
+        expectEqual(sent, 1, "the same name (after sanitizing) sends nothing")
+        model.setVirtualCameraDeviceName("")
+        expectEqual(sent, 2, "clearing the name is a change (back to the default)")
+        model.setVirtualCameraDeviceName(CameraConstants.defaultDeviceName)
+        expectEqual(sent, 2, "typing the default over a blank name sends nothing (same wire value)")
+    }
+
+    private static func testVirtualCameraProofNeedsTheSnapshotVariable() {
+        expect(!AppModel.vcamProofRequested(["COREVIDEO_SHELL_VCAM": "live"]), "VCAM alone is inert")
+        expect(!AppModel.vcamProofRequested(["COREVIDEO_SHELL_SNAPSHOT": "/tmp/x.png"]), "SNAPSHOT alone stages nothing")
+        expect(AppModel.vcamProofRequested(["COREVIDEO_SHELL_VCAM": "live", "COREVIDEO_SHELL_SNAPSHOT": "/tmp/x.png"]),
+               "both variables stage the proof")
     }
 
     private static func testCameraExtensionPrefsField() {
@@ -3175,6 +3224,9 @@ enum ShellTests {
             ("vcam/prefs-round-trip-older-file", testVirtualCameraPrefsRoundTripAndOlderFile),
             ("vcam/resent-each-core-generation", testVirtualCameraResentOnNewCoreGeneration),
             ("vcam/activation-wiring", testVirtualCameraActivationWiring),
+            ("vcam/toggle-track-visible", testStudioToggleTrackIsVisibleInBothStates),
+            ("vcam/unchanged-name-sends-nothing", testVirtualCameraUnchangedNameSendsNothing),
+            ("vcam/proof-needs-snapshot", testVirtualCameraProofNeedsTheSnapshotVariable),
             ("overlays/brand-kit-payload", testBrandKitCommandCarriesOnlyWhatTheCoreApplies),
             ("overlays/old-prefs-decode", testOldOverlayPrefsWithRemovedFieldsStillDecode),
             ("overlays/brand-default-all-off-leaves-manual", testBrandDefaultAllOffLeavesTheManualLowerThirdAlone),

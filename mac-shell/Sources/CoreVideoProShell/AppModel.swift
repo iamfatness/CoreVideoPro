@@ -4,6 +4,7 @@
 // Mirrors (in miniature) the WinUI TransportCoordinator/ShowInputsCoordinator
 // responsibilities; their characterization tests are the porting spec.
 
+import CameraExtensionKit
 import Foundation
 import SwiftUI
 
@@ -499,9 +500,6 @@ final class AppModel: ObservableObject {
     /// command or wire field reaches it. When set, commands this seam covers are
     /// handed to it instead of the bridge.
     var coreCommandCaptureForTesting: ((JSONObject) -> Void)?
-    /// Proof-shot only (COREVIDEO_SHELL_VCAM): keeps a live core's snapshots
-    /// from replacing the virtual camera state being photographed.
-    var virtualCameraProofHold = false
 
     private func currentPrefs() -> ShellPrefs {
         var prefs = ShellPrefs()
@@ -652,7 +650,7 @@ final class AppModel: ObservableObject {
         controlApi.start(model: self)
         // Camera extension (roadmap M9.2): activate after an earlier opt-in,
         // else only query. Proof shots stage their own state instead.
-        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_VCAM"] == nil {
+        if !Self.vcamProofRequested(ProcessInfo.processInfo.environment) {
             startCameraExtensionAtLaunch()
         }
         // Self-snapshot harness: render our own window to PNG (no TCC, no
@@ -689,11 +687,12 @@ final class AppModel: ObservableObject {
                     QuitPromptPanel.show(model: self)
                 }
             }
-            // Proof-shot only: COREVIDEO_SHELL_VCAM=off|live|needsApproval photographs
+            // Proof-shot only: COREVIDEO_SHELL_VCAM=off|live|mixed|needsApproval photographs
             // the virtual camera flyout in that state. It is staged on a SEPARATE,
             // never-started model, so nothing is sent, persisted or activated.
             var vcamProofView: NSView?
-            if let vcamProof = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_VCAM"] {
+            if Self.vcamProofRequested(ProcessInfo.processInfo.environment),
+               let vcamProof = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_VCAM"] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
                     let proofModel = AppModel()
                     proofModel.stageVirtualCameraProof(vcamProof)
@@ -877,6 +876,8 @@ final class AppModel: ObservableObject {
     /// operator's text is kept as typed (trimmed); the wire sanitizes it and a
     /// blank name sends the default.
     func setVirtualCameraDeviceName(_ name: String) {
+        // An unchanged name (as the core would receive it) sends nothing.
+        guard DeviceNamePolicy.sanitized(name) != DeviceNamePolicy.sanitized(virtualCamera.deviceName) else { return }
         var next = virtualCamera
         next.deviceName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         applyVirtualCamera(next)
@@ -959,13 +960,18 @@ final class AppModel: ObservableObject {
         cameraExtensionState = state
     }
 
+    /// A virtual camera proof shot needs BOTH variables: COREVIDEO_SHELL_VCAM
+    /// alone is inert (it neither stages a flyout nor skips the launch check).
+    nonisolated static func vcamProofRequested(_ env: [String: String]) -> Bool {
+        env["COREVIDEO_SHELL_VCAM"] != nil && env["COREVIDEO_SHELL_SNAPSHOT"] != nil
+    }
+
     /// Proof-shot only (COREVIDEO_SHELL_VCAM): keeps the staged model and its window alive.
     static var vcamProofRetain: (AppModel, NSWindow)?
 
     /// Proof-shot only: stages a flyout state on a never-started model by
     /// assigning fields directly (no send, no persist, no activation).
     func stageVirtualCameraProof(_ name: String) {
-        virtualCameraProofHold = true
         switch name {
         case "live":
             virtualCamera = PersistedVirtualCamera(enabled: true, mirror: true, framerEnabled: true,
@@ -974,6 +980,14 @@ final class AppModel: ObservableObject {
             var core = VirtualCameraReadModel()
             core.enabled = true; core.status = "live"; core.width = 1920; core.height = 1080
             core.framerState = "active"; core.framesPublished = 600
+            virtualCameraCore = core
+        case "mixed":  // framer ON next to mirror OFF in one frame
+            virtualCamera = PersistedVirtualCamera(enabled: true, mirror: false, framerEnabled: true,
+                                                   deviceName: "Booth Cam")
+            cameraExtensionState = .active
+            var core = VirtualCameraReadModel()
+            core.enabled = true; core.status = "live"; core.width = 1920; core.height = 1080
+            core.framerState = "active"
             virtualCameraCore = core
         case "needsApproval":
             virtualCamera = PersistedVirtualCamera(enabled: true)
@@ -1106,7 +1120,7 @@ final class AppModel: ObservableObject {
             observeAudioObservation(snapshot)
         }
         if !snapshot.isEmpty { applyProgramBlackout(snapshot) }
-        if !snapshot.isEmpty, !virtualCameraProofHold {
+        if !snapshot.isEmpty {
             virtualCameraCore = VirtualCameraReadModel.parse(snapshot)
         }
         let formatter = DateFormatter()

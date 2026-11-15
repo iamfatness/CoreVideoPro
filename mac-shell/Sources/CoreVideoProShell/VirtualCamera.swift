@@ -95,13 +95,9 @@ enum VirtualCameraPresentation {
             if connectingPrefixes.contains(where: { core.warning.hasPrefix($0) }) {
                 return "Connecting to CoreVideo Pro Camera\u{2026}"
             }
-            // Windows: an empty warning reads "Virtual camera failed".
-            if core.warning.isEmpty { return "Virtual camera failed" }
-            if let range = core.warning.range(of: ": ") {
-                let rest = String(core.warning[range.upperBound...])
-                return rest.isEmpty ? core.warning : rest
-            }
-            return core.warning
+            // Windows wording: an empty warning reads "Virtual camera failed";
+            // any other warning is shown whole.
+            return core.warning.isEmpty ? "Virtual camera failed" : core.warning
         default:
             return "Virtual camera on"
         }
