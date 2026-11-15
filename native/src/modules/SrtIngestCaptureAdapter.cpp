@@ -37,6 +37,8 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include "modules/PosixExecutableLocator.h"
 #endif
 
 namespace corevideo::modules {
@@ -116,6 +118,14 @@ std::string resolveFfmpegExecutable() {
     if (std::filesystem::is_regular_file(candidate, ec)) {
       return candidate.string();
     }
+  }
+#else
+  // PATH, then the Homebrew/MacPorts bin dirs (a Finder/Dock launch's PATH
+  // has neither). Shared with the RTMP/SRT senders: PosixExecutableLocator.h.
+  if (auto found = posix_exec::findOnPathThenFallbacks(
+          kExeName, std::getenv("PATH"), posix_exec::defaultFfmpegFallbackDirectories());
+      !found.empty()) {
+    return found;
   }
 #endif
   return kExeName;  // rely on PATH

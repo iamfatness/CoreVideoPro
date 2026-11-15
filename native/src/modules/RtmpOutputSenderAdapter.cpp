@@ -40,6 +40,10 @@
 #include <utility>
 #include <vector>
 
+#if !defined(_WIN32)
+#include "modules/PosixExecutableLocator.h"
+#endif
+
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -403,7 +407,7 @@ std::filesystem::path currentExecutableDirectory() {
     buffer.resize(buffer.size() * 2);
   }
 #else
-  return {};
+  return posix_exec::currentExecutableDirectory();
 #endif
 }
 
@@ -440,15 +444,12 @@ std::string resolveFfmpegExecutable(const std::string& configuredBinDirectory) {
     return resolved;
   }
 #else
-  if (const char* pathEnv = std::getenv("PATH"); pathEnv && *pathEnv) {
-    std::stringstream pathStream(pathEnv);
-    std::string entry;
-    while (std::getline(pathStream, entry, ':')) {
-      const auto candidate = std::filesystem::path(entry) / executableName;
-      if (fileExists(candidate)) {
-        return candidate.string();
-      }
-    }
+  // PATH, then the Homebrew/MacPorts bin dirs: a Finder/Dock launch inherits
+  // launchd's PATH, which never contains them (PosixExecutableLocator.h).
+  if (auto found = posix_exec::findOnPathThenFallbacks(
+          executableName, std::getenv("PATH"), posix_exec::defaultFfmpegFallbackDirectories());
+      !found.empty()) {
+    return found;
   }
 #endif
   return {};
@@ -986,8 +987,10 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     activeStage_.store(useGpuDirect_ ? "encoder-submit" : "raw-video-write", std::memory_order_relaxed);
     // Buffered frames carry their exact delivery deadline; record where the
     // delivery grid sits relative to frame numbers (#538 slot clock).
+#if defined(_WIN32)  // slotClock_ feeds only the Windows encoder sink (#538)
     if (frame->deliverySequence > 0)
       slotClock_.observe(frame->frameNumber, frame->timelineTimestamp100ns, (std::max)(1, configuredFps_));
+#endif
     const bool videoWriteOk =
         useGpuDirect_ ? submitFrameToGpuEncoder(*frame) : writeFrameToFfmpeg(*frame);
     if (!videoWriteOk) {
@@ -2274,6 +2277,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     return dropped;
   }
 
+#endif  // _WIN32 (paused: resetBackpressureForNewRun is called on every platform)
   // #597 THE POLICY AND ITS PER-RUN COUNTERS ARE ONE UNIT OF LIFETIME.
   //
   // FINAL-REVIEW FINDING 2, and it is a CROSS-TASK defect no per-task review
@@ -2306,6 +2310,7 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
     ++backpressureRunId_;
     sender_.backpressure.reset();
   }
+#if defined(_WIN32)  // resumes the Windows-only bitstream-queue block
 
   // Observe this destination's own outgoing queue once per sync. The policy's
   // historical divisor remains diagnostic; MediaCore no longer applies it to

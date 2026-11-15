@@ -4,6 +4,60 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [macOS 1.0.0] - unreleased
+
+First Apple Silicon release of the native macOS app. This is its own version line,
+independent of the Windows 1.0.0 below (macOS 13+, arm64 only; no Intel
+build). Acceptance by the owner is pending: see `docs/qa/macos-1.0-owner-acceptance.md`.
+
+### Added
+
+- **Live production on the Mac.** Take with Fade or Cut and rollback when the transition
+  cannot start; Fade to Black that fades to true black and restores; keyboard Space /
+  Cmd+Return / Cmd+Shift+B (Space typed into a text field does not Take); remote-control
+  footer and health line.
+- **Native media core.** Metal compositor, AVFoundation/VideoToolbox recording with ISO
+  recordings, CoreAudio, AVFoundation camera and ScreenCaptureKit capture, RTMP output
+  (now compiled and built in CI; needs an external FFmpeg), and Zoom ingest through the separately signed Zoom engine.
+- **Local control API on `127.0.0.1:8011`** with the Windows contract (Take, Fade to Black,
+  Record, Stream, scene select/list). LAN access needs `COREVIDEO_HTTP_LAN=1` and
+  `COREVIDEO_CONTROL_TOKEN`. The Companion module accepts both PascalCase and camelCase
+  manifests.
+- **Signed, notarized DMG** from `scripts/release-macos.sh` (rehearsal builds are marked
+  `-UNNOTARIZED` and cannot overwrite a release). The script runs the full native test
+  suite on the release core, including the `realtime` AVF timing tests CI excludes, and
+  stops the release on any failure. FFmpeg is not bundled; Homebrew and
+  MacPorts installs are found automatically, including from a Finder launch.
+- **Quit protection.** Cmd+Q while recording or streaming asks first, finishes the files so
+  the recording stays playable, and falls back to a standalone panel when the main window
+  is closed.
+
+### Fixed
+
+- The main window is single-instance: File > New Window is gone, and a Dock click or
+  reopen brings the existing window forward. Opening a second main window used to
+  re-run startup, overwriting live settings and launching a second media core that
+  orphaned the first, possibly mid-recording.
+- Companion/WebSocket feedback no longer freezes while a menu is open, the window is
+  being resized, or the app is finishing files on quit.
+
+- Quit-confirmation panel (main window closed) now has real margins around its card instead
+  of sitting flush to the panel edge.
+- A native build configured with the AVFoundation encoder and dev adapters but
+  `COREVIDEO_STUB=ON` no longer fails to link.
+- `release-macos.sh` no longer deletes the previous release before the new one is moved in.
+
+### Not yet on the Mac
+
+- Graphics designer and graphics operate surfaces.
+- Comms (Zoom talkback).
+- Social review.
+- Tiles and the multiview inspector.
+- Virtual camera.
+- Anything that needs the Windows-only WinUI shell.
+- SRT output and SRT/RTMP ingest. RTMP output is the only network output, and it needs an
+  external FFmpeg.
+
 ## [Unreleased]
 
 ### Added

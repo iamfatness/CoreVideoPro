@@ -40,6 +40,8 @@
 
 #include "modules/MacCaptureSupport.h"
 #include "modules/UvcCaptureSupport.h"
+#include "modules/AvfCaptureSessionState.h"
+#include "modules/SourceVideoDemand.h"
 
 @class CvpAvfCaptureDelegate;
 
@@ -56,17 +58,6 @@ int64_t avfMonotonicMs() {
       .count();
 }
 
-struct AvfSessionState {
-  std::mutex mutex;
-  std::vector<uint8_t> latestI420;
-  int width = 0;
-  int height = 0;
-  bool fullRange = false;
-  bool bt601 = false;
-  int64_t frameId = 0;
-  int64_t startedAtMs = 0;
-  std::string error;
-};
 
 }  // namespace
 }  // namespace corevideo::modules
@@ -123,13 +114,8 @@ struct AvfSessionState {
   }
   const auto hints =
       corevideo::modules::maccapture::deriveMacYuvColorHints(fourcc, matrix, height);
-  std::lock_guard<std::mutex> lock(state->mutex);
-  state->latestI420 = std::move(i420);
-  state->width = width;
-  state->height = height;
-  state->fullRange = hints.fullRange;
-  state->bt601 = hints.bt601;
-  ++state->frameId;
+  state->publish(std::make_shared<std::vector<uint8_t>>(std::move(i420)), width, height,
+                 hints.fullRange, hints.bt601);
 }
 @end
 
@@ -165,6 +151,8 @@ struct AvfDevicesState {
   // Set by the TCC completion handler (arbitrary queue) — consumed on the
   // next poll tick under the mutex.
   std::atomic<bool> retryAfterPermission{false};
+  // #984: which sources the core wants a CPU arrival stream for (ISO recording).
+  std::vector<SourceVideoDemand> demands;
 };
 
 class AvfCaptureDevice final : public ICaptureDevice {
@@ -234,6 +222,33 @@ class AvfCaptureDevice final : public ICaptureDevice {
     return snapshotLocked();
   }
 
+  static std::string frameKeyLocked(const AvfDeviceEntry& entry) {
+    return "capture:" + (entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId);
+  }
+
+  // #984 (Windows 5d45a906): the camera's own deliveries, in order, for the ISO
+  // recorder. Render-tick sampling keeps only the newest picture, so a camera
+  // delivering faster than, or out of phase with, the tick loses frames.
+  void setVideoConsumerDemand(const std::vector<SourceVideoDemand>& demands) override {
+    std::lock_guard<std::mutex> lock(shared_->mutex);
+    shared_->demands = demands;
+    for (auto& [id, entry] : shared_->devices) {
+      if (entry.state) entry.state->isoArrivals.require(sourceNeedsCpuVideo(demands, frameKeyLocked(entry)));
+    }
+  }
+
+  std::vector<VideoFrame> takeCpuVideoFrames() override {
+    std::vector<VideoFrame> result;
+    std::lock_guard<std::mutex> lock(shared_->mutex);
+    for (auto& [id, entry] : shared_->devices) {
+      if (!entry.state) continue;
+      auto batch = entry.state->isoArrivals.take();
+      result.insert(result.end(), std::make_move_iterator(batch.begin()),
+                    std::make_move_iterator(batch.end()));
+    }
+    return result;
+  }
+
   void captureVideoTick(int64_t timestampMs) override {
     std::lock_guard<std::mutex> lock(shared_->mutex);
     // Consent arrived after a connect bailed — start those sessions now.
@@ -259,19 +274,12 @@ class AvfCaptureDevice final : public ICaptureDevice {
       {
         std::lock_guard<std::mutex> stateLock(entry.state->mutex);
         error = entry.state->error;
-        frameId = entry.state->frameId;
         startedAtMs = entry.state->startedAtMs;
-        if (frameId > 0 && !entry.state->latestI420.empty()) {
-          frame.i420 = std::make_shared<std::vector<uint8_t>>(entry.state->latestI420);
-          frame.i420Width = entry.state->width;
-          frame.i420Height = entry.state->height;
-          frame.i420FullRange = entry.state->fullRange;
-          frame.i420Bt601 = entry.state->bt601;
-          frame.width = entry.state->width;
-          frame.height = entry.state->height;
-          frame.frameId = frameId;
-        }
       }
+      // The held picture keeps the identity (epoch, frameId, capture time) it
+      // was published with, so a consumer that already took this arrival from
+      // the ISO queue recognises the re-emitted copy and does not record it twice.
+      entry.state->sampleLatest(frame, frameId);
       // The no-first-frame watchdog, evaluated lazily (the session's dispatch
       // queue replaces the UVC readLoop): negotiated-but-silent devices fail
       // LOUD and release the camera.
@@ -313,9 +321,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
               "camera — quit it, or disconnect and reconnect this source.";
           entry.info.width = frame.i420Width;
           entry.info.height = frame.i420Height;
-          const std::string stalledKey =
-              entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId;
-          frame.participantId = "capture:" + stalledKey;
+          frame.participantId = frameKeyLocked(entry);
           frame.naturalWidth = frame.i420Width;
           frame.naturalHeight = frame.i420Height;
           frame.timestampMs = timestampMs + entry.info.audioSyncOffsetMs;
@@ -333,9 +339,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
         entry.info.warning.clear();
         entry.info.width = frame.i420Width;
         entry.info.height = frame.i420Height;
-        const std::string key =
-            entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId;
-        frame.participantId = "capture:" + key;
+        frame.participantId = frameKeyLocked(entry);
         frame.naturalWidth = frame.i420Width;
         frame.naturalHeight = frame.i420Height;
         frame.timestampMs = timestampMs + entry.info.audioSyncOffsetMs;
@@ -484,8 +488,9 @@ class AvfCaptureDevice final : public ICaptureDevice {
                    entry.info.name.c_str());
       return;
     }
-    entry.state = std::make_shared<AvfSessionState>();
+    entry.state = std::make_shared<AvfSessionState>(frameKeyLocked(entry));
     entry.state->startedAtMs = avfMonotonicMs();
+    entry.state->isoArrivals.require(sourceNeedsCpuVideo(shared_->demands, frameKeyLocked(entry)));
     entry.session = [[AVCaptureSession alloc] init];
     [entry.session beginConfiguration];
     if (![entry.session canAddInput:input]) {
@@ -549,6 +554,16 @@ class AvfCaptureDevice final : public ICaptureDevice {
     out.reserve(shared_->devices.size());
     for (const auto& [id, entry] : shared_->devices) {
       out.push_back(entry.info);
+      if (entry.state) {
+        auto& info = out.back();
+        const auto arrivals = entry.state->isoArrivals.stats();
+        info.isoCpuArrivals = arrivals;
+        info.isoCpuArrivals->sourceId = frameKeyLocked(entry);
+        info.droppedFrames += static_cast<int64_t>(arrivals.overflowed);
+        if (arrivals.overflowed) {
+          info.warning = "Camera ISO arrival queue overflowed; recording lost source frames.";
+        }
+      }
     }
     return out;
   }

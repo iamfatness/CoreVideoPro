@@ -124,6 +124,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Design-token lint (mac-shell)
         run: bash scripts/lint-mac-design.sh
+      - name: Syntax-check the macOS release and signing scripts
+        run: |
+          for f in scripts/release-macos.sh scripts/macos-sign-lib.sh \
+                   scripts/make-macos-shell-bundle.sh scripts/make-macos-engine-bundle.sh \
+                   scripts/run-mac-shell.sh; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
 
   # The shell had ZERO tests for ~9k lines, so every regression reached the
   # owner in a live session first — including a prefs bug that silently wiped
@@ -206,8 +214,12 @@ jobs:
         run: cmake --build native/build
       - name: Contract parity (protocol drift gate)
         run: ./native/build/corevideo-native-tests --gtest_filter=ContractParity.*
-      - name: Native stub tests
-        run: ctest --test-dir native/build --output-on-failure
+      # `-LE realtime`: AvfCaptureArrival's 4-10 s cases are wall-clock measurements
+      # (a synthetic camera thread against render ticks); a stalled shared-VM thread
+      # publishes a burst that legitimately overflows the bounded arrival queue.
+      # scripts/release-macos.sh runs them via the full ctest.
+      - name: Native stub tests (excluding realtime)
+        run: ctest --test-dir native/build --output-on-failure -LE realtime
 
   # macOS twin of native-stub: keeps the portable core buildable + green on
   # Apple Silicon for the macOS port (AppleClang has no std parallel
@@ -225,8 +237,12 @@ jobs:
         run: cmake --build native/build
       - name: Contract parity (protocol drift gate)
         run: ./native/build/corevideo-native-tests --gtest_filter=ContractParity.*
-      - name: Native stub tests
-        run: ctest --test-dir native/build --output-on-failure
+      # `-LE realtime`: AvfCaptureArrival's 4-10 s cases are wall-clock measurements
+      # (a synthetic camera thread against render ticks); a stalled shared-VM thread
+      # publishes a burst that legitimately overflows the bounded arrival queue.
+      # scripts/release-macos.sh runs them via the full ctest.
+      - name: Native stub tests (excluding realtime)
+        run: ctest --test-dir native/build --output-on-failure -LE realtime
 
   # Metal GPU compositor build: the real (non-stub) macOS configuration with
   # the Metal adapter enabled. GitHub macOS runners expose an Apple
@@ -238,6 +254,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install build tools
         run: brew install ninja
+      # This job builds the release config, RTMP included, and RTMP runs an external
+      # ffmpeg. macOS runners ship none: without it the sender takes the
+      # runtime-missing path (RtmpOutputSenderAdapter.cpp, appendSendProof(nullptr,
+      # "runtime-missing")) and OutputSenderAdapter.RtmpWritesSendProofArtifactWhenArmed
+      # cannot see the encoder frame fields. Same step as mac-show-drill.
+      - name: Install ffmpeg (RTMP sender runtime)
+        run: brew install ffmpeg
       - name: Configure Metal build
         run: >
           cmake -S native -B native/build-metal -G Ninja
@@ -247,6 +270,12 @@ jobs:
           -DCOREVIDEO_WITH_AVF_ENCODER=ON
           -DCOREVIDEO_WITH_COREAUDIO=ON
           -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON
+          -DCOREVIDEO_WITH_RTMP_OUTPUT=ON
+      # Mirrors scripts/release-macos.sh's core configure (Metal + AVF + CoreAudio +
+      # SCK capture + RTMP), minus the Zoom engine and signing, which need secrets.
+      # RTMP is in the set because its macOS compile break sat unnoticed when CI
+      # never built it. RTMP output launches an external `ffmpeg` process at stream
+      # time (not linked), so no ffmpeg is needed to compile or run these tests.
       - name: Build
         run: cmake --build native/build-metal
       - name: Metal compositor tests
@@ -257,8 +286,14 @@ jobs:
         run: ./native/build-metal/corevideo-native-tests --gtest_filter='CoreAudioAdapters.*'
       - name: macOS capture tests
         run: ./native/build-metal/corevideo-native-tests --gtest_filter='MacCapture*'
-      - name: Full native tests (Metal configuration)
-        run: ctest --test-dir native/build-metal --output-on-failure
+      # `-LE realtime`: the Mac AVF recordings (~36 s of real wall-clock capture and
+      # encode, ctest label `realtime`, only the 4-10 s measurement cases; the
+      # deterministic AVF cases stay in the main ctest) are timing-sensitive and a shared runner
+      # cannot hold the cadence they assert. scripts/release-macos.sh runs them: it
+      # runs the FULL ctest (realtime included) on the release core build and stops
+      # the release on any failure.
+      - name: Full native tests (Metal configuration, excluding realtime)
+        run: ctest --test-dir native/build-metal --output-on-failure -LE realtime
       # #933: a segfault on the paravirtual runner left no stack. Keep the macOS
       # crash reports for the test binary so the next occurrence is attributable
       # (test code vs AVFoundation/VideoToolbox vs runner) instead of a bare exit 139.

@@ -7,9 +7,10 @@
 // All of this is SHELL work — the core already accepts:
 //   set-overlay-asset   text/imageUri/position/title/org/keyPosition/keyer
 //                       + buildInMs/buildOutMs (clamped 50-2000 core-side)
-//   set-brand-kit       name/logoText/brandColor/accentColor/backgroundColor
-//                       /fontFamily/lowerThirdStyle/captionStyle
-//                       /defaultOverlayBehavior
+//   set-brand-kit       name/brandColor/accentColor/backgroundColor
+//                       (#764: the core no longer stores logoText,
+//                       lowerThirdStyle, captionStyle or defaultOverlayBehavior,
+//                       so the shell neither offers nor sends them)
 //   set-caption-enabled, push-caption-cue
 // and publishes `brandKit` in the snapshot.
 //
@@ -70,21 +71,19 @@ struct OverlaysState: Codable, Equatable {
     var buildInMs = 1000
     var buildOutMs = 500
     var motionTiming = MotionTiming.standard.rawValue
-    var lowerThirdStyle = "gradient"
     var brandName = "CoreVideo"
-    var logoText = "CoreVideo"
     var brandColor = "#44c1a1"
     var accentColor = "#f0a85c"
     var backgroundColor = "#0c1118"
+    // Shell-side only (Windows keeps this control: StudioViewModel.ApplyBrandOverlayDefaults);
+    // never sent to the core (#764).
     var defaultOverlayBehavior = "all-off"
-    var captionStyle = "standard"
     var captionsEnabled = false
 }
 
 extension AppModel {
     static let buildMsRange: ClosedRange<Double> = 50...2000
-    static let lowerThirdStyles = ["gradient", "solid", "outline", "minimal"]
-    static let defaultOverlayBehaviors = ["all-off", "restore-last", "lower-third-only"]
+    static let defaultOverlayBehaviors = ["all-off", "manual"]  // Windows BrandDefaultOverlayBehaviorOptions
 
     /// Pushes the brand kit. Coalesced: colour pickers and text fields emit a
     /// change per keystroke/drag, and one request per delta is what starved the
@@ -98,20 +97,47 @@ extension AppModel {
         }
     }
 
-    @MainActor
-    func pushBrandKit() async {
-        let o = overlays
-        sendOverlay([
+    /// The set-brand-kit command for the given settings. Static so the field
+    /// set is testable without a bridge.
+    nonisolated static func brandKitCommand(_ o: OverlaysState) -> JSONObject {
+        [
             "type": "set-brand-kit",
             "name": o.brandName,
-            "logoText": o.logoText,
             "brandColor": o.brandColor,
             "accentColor": o.accentColor,
             "backgroundColor": o.backgroundColor,
-            "lowerThirdStyle": o.lowerThirdStyle,
-            "captionStyle": o.captionStyle,
-            "defaultOverlayBehavior": o.defaultOverlayBehavior,
-        ])
+        ]
+    }
+
+    @MainActor
+    func pushBrandKit() async {
+        pushBrandKitNow()
+    }
+
+    /// Brand-kit apply (Windows StudioViewModel.SetBrandKit): send the kit.
+    @MainActor
+    func pushBrandKitNow() {
+        applyBrandOverlayDefaults(overlays.defaultOverlayBehavior)
+        sendOverlay(Self.brandKitCommand(overlays))
+    }
+
+    /// Windows StudioViewModel.ApplyBrandOverlayDefaults (:1060): "manual" is a
+    /// no-op; "all-off" disables every GRAPHICS ROW; anything else leaves them.
+    /// It never touches the operator's MANUAL lower third: on Windows that key
+    /// is independent (StudioViewModel.cs:13851 ShouldEnableProgramLowerThird =
+    /// manuallyEnabled || graphicLowerThirdEnabled || ...). The Mac has no
+    /// Graphics rows yet (the graphics backend is a later milestone), so today
+    /// all-off is a deliberate no-op here. When graphics rows exist, all-off
+    /// disables THEM in this function — still never the manual lower third.
+    /// Runs only on a brand-kit apply, never on an ordinary sync.
+    @MainActor
+    func applyBrandOverlayDefaults(_ behavior: String) {
+        switch behavior {
+        case "all-off":
+            break  // graphics rows only; none exist on the Mac yet
+        default:  // "manual" and every other value leave graphics unchanged
+            break
+        }
     }
 
     func setCaptionsEnabled(_ enabled: Bool) {
@@ -189,13 +215,6 @@ struct OverlaysPane: View {
                     Text("Center").tag("center")
                 }.labelsHidden().frame(width: 170)
             }
-            labeled("Style") {
-                Picker("", selection: Binding(
-                    get: { model.overlays.lowerThirdStyle },
-                    set: { model.overlays.lowerThirdStyle = $0; model.applyBrandKit() })) {
-                    ForEach(AppModel.lowerThirdStyles, id: \.self) { Text($0).tag($0) }
-                }.labelsHidden().frame(width: 170)
-            }
 
             // Build timing — previously hardcoded at 250/200ms with no way to
             // change it. The core clamps to 50-2000, so the stepper matches.
@@ -252,12 +271,6 @@ struct OverlaysPane: View {
                 TextField("CoreVideo", text: Binding(
                     get: { model.overlays.brandName },
                     set: { model.overlays.brandName = $0; model.applyBrandKit() }))
-                    .textFieldStyle(StudioFieldStyle()).frame(width: 200)
-            }
-            labeled("Logo text") {
-                TextField("CoreVideo", text: Binding(
-                    get: { model.overlays.logoText },
-                    set: { model.overlays.logoText = $0; model.applyBrandKit() }))
                     .textFieldStyle(StudioFieldStyle()).frame(width: 200)
             }
             labeled("Logo asset") {
@@ -322,15 +335,6 @@ struct OverlaysPane: View {
                 get: { model.overlays.captionsEnabled },
                 set: { model.setCaptionsEnabled($0) }))
                 .font(.grotesk(12))
-            labeled("Caption style") {
-                Picker("", selection: Binding(
-                    get: { model.overlays.captionStyle },
-                    set: { model.overlays.captionStyle = $0; model.applyBrandKit() })) {
-                    Text("Standard").tag("standard")
-                    Text("Boxed").tag("boxed")
-                    Text("Minimal").tag("minimal")
-                }.labelsHidden().frame(width: 170)
-            }
             // Honest about the whole feature: the core RENDERS cues a shell
             // pushes, but nothing in this product generates them. Saying so
             // beats an enabled-looking control that can never show text.

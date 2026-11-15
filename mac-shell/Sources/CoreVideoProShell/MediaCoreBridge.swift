@@ -98,6 +98,40 @@ final class MediaCoreBridge {
         }
     }
 
+    /// App-exit stop (T1.8 parity, Windows `StopForAppExit`): close the core's
+    /// stdin so it finalizes and exits on EOF, keep draining its stdout, give it
+    /// `grace` seconds to leave on its own, and only then terminate. A plain
+    /// `stop()` SIGTERMs at once, which truncates any writer still open (the
+    /// MP4 has no moov atom). Returns true when the core exited by itself.
+    @discardableResult
+    func stopForAppExit(grace: TimeInterval) async -> Bool {
+        let detached = stateQueue.sync { () -> (Process?, FileHandle?, [CompletionBox]) in
+            _ = policy.invalidate(stopped: true)
+            let retired = detachChild()
+            let waiters = Array(pending.values)
+            pending.removeAll()
+            return (retired.0, retired.1, waiters)
+        }
+        callbackQueue.async {
+            for waiter in detached.2 { waiter.finish(with: .failure(BridgeError.processExited)) }
+        }
+        guard let proc = detached.0 else { try? detached.1?.close(); return true }
+        proc.terminationHandler = nil
+        // The stdout/stderr handlers stay installed on purpose: they keep the
+        // pipes drained (the stale-token guard drops the data) so the core can
+        // never block on a full pipe while it finalizes.
+        try? detached.1?.close()
+        let deadline = Date().addingTimeInterval(grace)
+        while proc.isRunning, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let exitedOnItsOwn = !proc.isRunning
+        (proc.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+        (proc.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+        if proc.isRunning { proc.terminate() }
+        return exitedOnItsOwn
+    }
+
     // stateQueue only.
     private func detachChild() -> (Process?, FileHandle?) {
         let detached = (process, stdinHandle)

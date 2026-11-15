@@ -30,6 +30,7 @@ rec/
 audiotap/
 audiotap-soak/
 mac-shell/.build/
+mac-shell/.build-release/
 
 # SDD scratch (ledger, briefs, review packages)
 .superpowers/

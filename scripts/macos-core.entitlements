@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for corevideo-native, the headless core the shell spawns.
+  No double hyphens in this comment: XML forbids them and codesign fails with
+  a bare syntax error.
+
+  disable-library-validation: the core dlopens the NDI runtime
+  (NdiOutputSenderAdapter.cpp) which is signed by another team. Library
+  validation under hardened runtime would refuse it and NDI output would
+  silently report the runtime missing.
+
+  device.camera and device.audio-input: the core itself opens capture devices
+  (AvfCaptureDeviceAdapter, CoreAudioCaptureSourceAdapter), so hardened runtime
+  needs these on this binary, not only on the shell. Screen capture
+  (SckScreenCaptureAdapter) has no entitlement, only a TCC grant.
+
+  Not granted: allow-jit, allow-unsigned-executable-memory, network or
+  filesystem entitlements. The core uses none of them.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+</dict>
+</plist>

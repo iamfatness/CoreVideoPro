@@ -6,6 +6,35 @@
 
 import Foundation
 
+/// The in-binary harnesses (COREVIDEO_SHELL_TESTS / COREVIDEO_SHELL_SELFCHECK).
+/// ONE predicate, read once: prefs, the shell log and anything else that must
+/// never touch the operator's real files ask this, never the environment.
+enum ShellHarness {
+    static func detect(in environment: [String: String]) -> Bool {
+        environment["COREVIDEO_SHELL_TESTS"] != nil
+            || environment["COREVIDEO_SHELL_SELFCHECK"] != nil
+    }
+
+    static let isActive: Bool = detect(in: ProcessInfo.processInfo.environment)
+
+    /// Why a harness run must not proceed, or nil when prefs are isolated.
+    static func prefsIsolationFailure(path: String, realPath: String) -> String? {
+        path == realPath
+            ? "shell harness ABORTED: prefs resolve to the operator's real file (\(realPath)); "
+                + "refusing to run any test that could read or replace it."
+            : nil
+    }
+
+    /// First thing every harness entry does, before any test or save runs.
+    static func requireIsolatedPrefsOrExit() {
+        if let failure = prefsIsolationFailure(path: ShellPrefs.path, realPath: ShellPrefs.realPath) {
+            FileHandle.standardError.write(Data((failure + "\n").utf8))
+            print(failure)
+            exit(3)
+        }
+    }
+}
+
 // A saved scene: identity + layout preset + the edited canvas layers.
 struct PersistedScene: Codable, Equatable {
     var id = ""
@@ -183,8 +212,18 @@ struct ShellPrefs: Codable, Equatable {
             : "a field survives encode but NOT decode — it is missing from init(from:)"
     }
 
-    static let path = NSHomeDirectory()
+    /// The operator's real preferences file. Never touched by a test run.
+    static let realPath = NSHomeDirectory()
         + "/Library/Application Support/CoreVideoPro/shell-preferences.json"
+
+    /// Structural isolation: under COREVIDEO_SHELL_TESTS or COREVIDEO_SHELL_SELFCHECK
+    /// every load/save goes to a per-process temp file, so no harness run (CI or
+    /// local) can read or replace the operator's saved scenes and settings.
+    static let path: String = {
+        guard ShellHarness.isActive else { return realPath }
+        let dir = NSTemporaryDirectory() + "corevideo-shell-harness-\(getpid())"
+        return dir + "/shell-preferences.json"
+    }()
 
     static func load() -> ShellPrefs {
         guard let data = FileManager.default.contents(atPath: path),

@@ -19,6 +19,37 @@ enum StudioTab: String, CaseIterable {
     case automation = "Automation"
     case settings = "Settings"
     case diagnose = "Diagnose"
+
+    // Top navigation, matching Windows 1.0 (StudioWorkspace.xaml): one "Produce"
+    // group — Studio, Zoom, Sources, Scenes, Routing, Graphics, Audio, Media,
+    // Health. Comms and OHG Show are not on Mac in 1.0, so they are omitted
+    // rather than shown disabled. Settings trails: Windows reaches its Zoom
+    // connection page through "Zoom", which is Mac's Zoom pane; Mac Settings
+    // (output/recording/stream) has no Windows nav counterpart.
+    static let navGroups = ["Produce"]
+    static let navigation: [StudioTab] = [
+        .studio, .zoom, .sources, .scenes, .routing, .overlays, .audio, .media,
+        .diagnose, .settings,
+    ]
+
+    /// Operator-facing label. rawValue stays the stable identifier (control
+    /// state, COREVIDEO_SHELL_TAB); Windows calls these Graphics and Health.
+    var navLabel: String {
+        switch self {
+        case .overlays: return "Graphics"
+        case .diagnose: return "Health"
+        default: return rawValue
+        }
+    }
+
+    /// Resolves a tab by identifier or current label, case-insensitively.
+    init?(name: String) {
+        let n = name.lowercased()
+        guard let tab = StudioTab.allCases.first(where: {
+            $0.rawValue.lowercased() == n || $0.navLabel.lowercased() == n
+        }) else { return nil }
+        self = tab
+    }
 }
 
 // A scene route mirrors ONLY what the core parses (loadSceneGraph): modes are
@@ -60,7 +91,7 @@ struct SceneRoute {
 // (the previous behavior), non-empty = the canvas editor owns this scene.
 struct SceneDef: Identifiable {
     let id: String
-    let name: String
+    var name: String
     let layout: String
     var layers: [SceneLayer] = []
     // SuperSource background: a media asset composited full-canvas BEHIND every
@@ -294,7 +325,12 @@ final class AppModel: ObservableObject {
     @Published var roster: [RosterParticipant] = []
     @Published var assignedIds: Set<String> = []
     @Published var recordingStatus = "idle"
-    @Published var recordingDesired = false
+    @Published var recordingDesired = false {
+        // Take over: the next take arms from presence again (Windows
+        // ResetRecordingIsoSelection on RecordingRequested -> false).
+        didSet { if !recordingDesired { recordingIso.reset() } }
+    }
+    private var recordingIso = RecordingIsoSelection()
     private var recordingCommands = RecordingCommandPolicy()
     @Published var recordingStartedAt: Date?
     @Published var recordingArtifactPath = ""
@@ -320,6 +356,9 @@ final class AppModel: ObservableObject {
     @Published var vstChannelSelection: [String: String] = [:]  // stripId -> "vst:<name>"
     @Published var vstParamLocal: [UInt32: Double] = [:]        // held during a drag only
     let vstScratch = VstScratch()  // debounce task + quiet-window bookkeeping
+    // #870: the core's audioObservation envelope + when the shell received it.
+    @Published var audioObservation: AudioObservation?
+    var audioObservationReceivedAt = Date()
     @Published var shortTermLufs = -120.0
     @Published var truePeakDbfs = -120.0
     @Published var limiterActive = false
@@ -389,17 +428,43 @@ final class AppModel: ObservableObject {
     @Published var streamDetail = ""       // lastResultCode / warning
 
     // The LAST snapshots as the core sent them. applySnapshot/applyZoom cherry-
-    // pick the slices the panes bind to; the Diagnose surface and the support
+    // pick the slices the panes bind to; the Health surface and the support
     // bundle need the WHOLE thing (health/encoderSession/outputSenderSession/
     // recording.proof/zoom.readiness were all on the wire and thrown away).
     // Never render these raw — Diagnostics.swift redacts before anything is
     // written to disk.
     @Published var lastSnapshot: JSONObject = [:]
     @Published var lastZoomSnapshot: JSONObject = [:]
+    /// Lock-protected copy of `lastSnapshot` + its receipt time for the control
+    /// API's GET /snapshot (ControlSurface.swift): served from any thread with no
+    /// main-actor hop and no core round-trip (Windows reads the reference the
+    /// bridge already published). Redacted at the boundary, never here.
+    nonisolated let controlSnapshotBox = ControlSnapshotBox()
+    let controlApi = ControlApiHost()
 
     // Readable (not settable) outside this file so cross-file extensions
     // (VstInserts.swift) can issue their own RPCs; the lifecycle stays owned here.
     private(set) var bridge: MediaCoreBridge?
+    // Quit guard (T1.8 parity, QuitGuard.swift). The gate allows one prompt at a
+    // time; `snapshotSequence` lets the finish wait accept only snapshots that
+    // arrived AFTER the stop landed (a stale pre-stop `completed` never counts).
+    private var quitGate = QuitGate()
+    private(set) var snapshotSequence = 0
+    @Published var quitPromptVisible = false
+    @Published var quitFinishing = false
+    /// Test seam: replaces the real stop/finish/shutdown so the flow can be driven
+    /// without a core. Production leaves it nil.
+    var quitReplyForTesting: ((Bool) -> Void)?
+    /// Test seams (production leaves them at their defaults): the request path,
+    /// the "core is gone" answer when that path is replaced, and the timings.
+    var quitRequestForTesting: ((JSONObject, TimeInterval) async throws -> JSONObject)?
+    var quitCoreGoneForTesting = false
+    /// Test seams for where the quit prompt is presented (production: nil).
+    var quitPresentForTesting: ((QuitPromptPlacement) -> Void)?
+    var mainWindowAvailableForTesting: Bool?
+    var quitFinishTimeout = QuitGuardPolicy.finishTimeout
+    var quitCoreGrace = QuitGuardPolicy.coreExitGrace
+    var quitPollInterval: TimeInterval = 0.1
     private var syncTimer: Timer?
     private var zoomTimer: Timer?
     private var startedAt = Date()
@@ -524,17 +589,71 @@ final class AppModel: ObservableObject {
         lastSavedPrefs = prefs
     }
 
+    /// True once start() has run its setup. start() is reached from the main
+    /// window's .onAppear, and a second main-window view (File > New Window, or a
+    /// Dock reopen after the main window was closed) would otherwise re-restore
+    /// prefs over live state, add a second autosave timer and launch a second core
+    /// while orphaning the first. Everything start() sets up happens once per process.
+    private(set) var didStart = false
+    /// Test seam: replaces start()'s setup body so the once-only gate can be
+    /// exercised without launching a core or reading the operator's files.
+    var startBodyForTesting: (() -> Void)?
+
     func start() {
+        guard !didStart else {
+            ShellLog.write("start: already started; ignoring repeat call from a new main-window view")
+            return
+        }
+        didStart = true
+        if let body = startBodyForTesting { body(); return }
+        performStart()
+    }
+
+    private func performStart() {
         refreshMediaBin()
         restorePrefs()
+        // Local control API (Companion / Stream Deck): 127.0.0.1:8011 by default.
+        // Never in the TESTS/SELFCHECK harness; a bind failure is a warning.
+        controlApi.start(model: self)
         // Self-snapshot harness: render our own window to PNG (no TCC, no
         // focus games — AX/screen-recording automation proved unreliable) and
         // exit. Pairs with COREVIDEO_SHELL_TAB for per-tab proof shots.
         if let snapshotPath =
             ProcessInfo.processInfo.environment["COREVIDEO_SHELL_SNAPSHOT"] {
+            // Proof-shot only: COREVIDEO_SHELL_FTB=black shows the transport in its
+            // settled-black state.
+            if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_FTB"] == "black" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+                    self?.applyProgramBlackout(["programBlackout": true, "programBlackoutOpacity": 1.0])
+                    self?.blackoutProofHold = true
+                }
+            }
+            // Proof-shot only: COREVIDEO_SHELL_WINDOW=WxH sizes the window for the
+            // narrow/wide footer comparison.
+            if let size = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_WINDOW"] {
+                let parts = size.split(separator: "x").compactMap { Double($0) }
+                if parts.count == 2 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                        NSApplication.shared.windows.first?.setContentSize(
+                            NSSize(width: parts[0], height: parts[1]))
+                    }
+                }
+            }
+            // Proof-shot only: COREVIDEO_SHELL_QUITPANEL=1 raises the main-window-closed
+            // quit panel and snapshots THAT panel at its real size (clipping check).
+            let quitPanelProof = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_QUITPANEL"] == "1"
+            if quitPanelProof {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                    guard let self else { return }
+                    self.quitPromptVisible = true
+                    QuitPromptPanel.show(model: self)
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
-                if let window = NSApplication.shared.windows.first,
-                   let view = window.contentView,
+                let target: NSView? = quitPanelProof
+                    ? QuitPromptPanel.proofView
+                    : NSApplication.shared.windows.first?.contentView
+                if let view = target,
                    let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                     view.cacheDisplay(in: view.bounds, to: bitmap)
                     if let data = bitmap.representation(using: .png, properties: [:]) {
@@ -548,9 +667,7 @@ final class AppModel: ObservableObject {
         // skip the Keychain read — every ad-hoc rebuild is a new signing
         // identity and the access prompt would nag the operator.
         if let tabName = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB"],
-           let tab = StudioTab.allCases.first(where: {
-               $0.rawValue.lowercased() == tabName.lowercased()
-           }) {
+           let tab = StudioTab(name: tabName) {
             selectedTab = tab
         } else {
             refreshZoomSignedIn()
@@ -734,11 +851,31 @@ final class AppModel: ObservableObject {
         applyZoom(snapshot)
     }
 
+    /// Footer health readouts, derived from the last core snapshot (StudioHealth.swift).
+    var stalledFeedsLine: String? { StudioHealthReadout.stalledFeeds(lastSnapshot) }
+    var streamDegradationLine: String? { StudioHealthReadout.streamDegradation(lastSnapshot) }
+
+    func observeAudioObservation(_ snapshot: JSONObject, now: Date = Date()) {
+        audioObservation = AudioObservation(snapshot)
+        audioObservationReceivedAt = now
+    }
+
+    /// Words for the meters when the audio observation is aging/stale (nil = live).
+    func meterWarning(now: Date = Date()) -> String? {
+        AudioObservationPolicy.warning(audioObservation, receivedAt: audioObservationReceivedAt, now: now)
+    }
+
     private func applySnapshot(_ snapshot: JSONObject) {
+        snapshotSequence &+= 1
         // Keep the last NON-EMPTY snapshot: a failed/empty sync must not blank
-        // the Diagnose surface (an operator reads it hardest right when the
+        // the Health surface (an operator reads it hardest right when the
         // core is unhappy).
-        if !snapshot.isEmpty { lastSnapshot = snapshot }
+        if !snapshot.isEmpty {
+            lastSnapshot = snapshot
+            controlSnapshotBox.publish(snapshot, at: Date())
+            observeAudioObservation(snapshot)
+        }
+        if !snapshot.isEmpty { applyProgramBlackout(snapshot) }
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         clockText = formatter.string(from: Date())
@@ -757,7 +894,8 @@ final class AppModel: ObservableObject {
         }
         if let recording = snapshot["recording"] as? JSONObject {
             let nextStatus = RecordingLifecycleReadModel.status(recording)
-            recordingCommands.observe(nextStatus)
+            recordingCommands.observe(
+                nextStatus, sessionId: RecordingLifecycleReadModel.sessionId(recording))
             recordingDesired = recordingCommands.desired
             if nextStatus == "recording", recordingStatus != "recording" {
                 recordingStartedAt = Date()
@@ -767,7 +905,7 @@ final class AppModel: ObservableObject {
             // FRAME DROPS. The core has always published these; nothing read
             // them, so a recording could be losing frames with no sign of it
             // anywhere in the operator's view. A dropped frame is a compromised
-            // master — it belongs on the status strip, not buried in Diagnose.
+            // master — it belongs on the status strip, not buried in Health.
             recordingDroppedFrames =
                 (recording["totalDroppedFrames"] as? NSNumber)?.intValue ?? recordingDroppedFrames
             recordingFramesWritten =
@@ -960,6 +1098,7 @@ final class AppModel: ObservableObject {
 
     func toggleSlotIso(_ slotId: Int) {
         guard let index = slots.firstIndex(where: { $0.id == slotId }) else { return }
+        recordingIso.noteOperatorEdit()
         slots[index].iso.toggle()
         recomputeFromSlots()
     }
@@ -1050,6 +1189,13 @@ final class AppModel: ObservableObject {
     @Published var audioInputs: [AudioInputDevice] = []
     var captureAudioSyncTask: Task<Void, Never>?
     var brandSyncTask: Task<Void, Never>?
+    /// Test seam: sees every overlay command before it goes to the bridge.
+    var overlayCommandObserver: ((JSONObject) -> Void)?
+    /// Retire bookkeeping for hideLowerThird (see cancelPendingLowerThirdRetire).
+    var lowerThirdRetireGeneration = 0
+    var lowerThirdRetireInFlight = false
+    /// Test seam: shortens the build-out settle delay.
+    var lowerThirdSettleOverrideNs: UInt64?
     /// How many keyed graphics are on air (the WinUI "N on air" readout).
     var lowerThirdOnAirCount: Int {
         (lowerThirdPhase == "on-air" || lowerThirdPhase == "building-in") ? 1 : 0
@@ -1669,11 +1815,67 @@ final class AppModel: ObservableObject {
         sceneSaveStatus = "Saved \(formatter.string(from: Date()))"
     }
 
-    func renameScene(_ sceneId: String, to name: String) {
-        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
-        scenes[index] = SceneDef(id: scenes[index].id, name: name,
-                                 layout: scenes[index].layout,
-                                 layers: scenes[index].layers)
+    // ── scene naming + removal rules (Windows #1196 / #1070) ─────────────────
+    // Ported from SceneNamingPolicy.Validate and SceneCatalogPolicy.RemovalRefusal;
+    // the message text is the Windows text, verbatim.
+    static let sceneNameBlankMessage = "Enter a scene name."
+    static let sceneNameDuplicateMessage =
+        "A scene with that name already exists. Choose a different name."
+    static let sceneOnAirRefusal = "The on-air scene cannot be removed"
+    static let sceneLastRefusal = "The last scene cannot be removed"
+
+    /// Operator-facing result of the last rename/delete (refusal text or "").
+    @Published var sceneEditMessage = ""
+
+    /// How many scene-graph syncs have been requested. Test seam: a refused
+    /// edit must leave this unchanged (nothing reached the wire).
+    private(set) var sceneSyncRequestCount = 0
+
+    /// The scene the Scenes tab edits: the PREVIEW scene only. With Preview
+    /// empty there is nothing to edit — it never falls back to Program, which
+    /// is live (#1196: editing must not change what is on air). Preview ==
+    /// Program (the on-air rail row clicked, or the one-scene launch fallback)
+    /// is the on-air scene too, so it is no target either.
+    var sceneEditTargetId: String? {
+        if previewSceneId.isEmpty || previewSceneId == programSceneId { return nil }
+        return previewSceneId
+    }
+
+    /// SceneNamingPolicy.Validate: blank, or another scene's name
+    /// (case-insensitive, trimmed) -> the Windows message; nil when fine.
+    func sceneNameRefusal(sceneId: String?, name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return Self.sceneNameBlankMessage }
+        let clash = railScenes.contains { $0.id != sceneId
+            && $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame }
+        return clash ? Self.sceneNameDuplicateMessage : nil
+    }
+
+    /// Why a scene cannot be removed right now (SceneCatalogPolicy.RemovalRefusal):
+    /// the on-air scene, or the last visible one. Nil when it can go.
+    func sceneRemovalRefusal(_ sceneId: String) -> String? {
+        if sceneId == programSceneId { return Self.sceneOnAirRefusal }
+        let reserved = sceneId == Self.soloSceneA || sceneId == Self.soloSceneB
+        if !reserved && railScenes.count <= 1 { return Self.sceneLastRefusal }
+        return nil
+    }
+
+    /// Metadata only: every other field (layers, background) is carried, and
+    /// nothing is synced — a name never reaches the wire. Returns the refusal
+    /// message, or nil when applied (the trimmed name is stored).
+    @discardableResult
+    func renameScene(_ sceneId: String, to name: String) -> String? {
+        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else {
+            return "This scene is no longer available."
+        }
+        if let refusal = sceneNameRefusal(sceneId: sceneId, name: name) {
+            sceneEditMessage = refusal
+            return refusal
+        }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if scenes[index].name != trimmed { scenes[index].name = trimmed }
+        sceneEditMessage = ""
+        return nil
     }
 
     func duplicateScene(_ sceneId: String) {
@@ -1685,15 +1887,19 @@ final class AppModel: ObservableObject {
             suffix += 1
         }
         let newId = source.id + "-copy-\(Int(Date().timeIntervalSince1970))"
-        scenes.append(SceneDef(id: newId, name: name, layout: source.layout,
-                               layers: source.layers.map { layer in
-                                   SceneLayer(id: newId + "-" + layer.id,
-                                              slotId: layer.slotId,
-                                              x: layer.x, y: layer.y,
-                                              width: layer.width, height: layer.height,
-                                              fitMode: layer.fitMode,
-                                              opacity: layer.opacity)
-                               }))
+        // Every field is carried (background included); only identity and
+        // the per-layer ids change.
+        let copy = SceneDef(id: newId, name: name, layout: source.layout,
+                            layers: source.layers.map { layer in
+                                var l = layer
+                                l = SceneLayer(id: newId + "-" + layer.id,
+                                               slotId: l.slotId, x: l.x, y: l.y,
+                                               width: l.width, height: l.height,
+                                               fitMode: l.fitMode, opacity: l.opacity)
+                                return l
+                            },
+                            backgroundAssetId: source.backgroundAssetId)
+        scenes.append(copy)
         previewSceneId = newId
         syncScenes()
         saveScenes()
@@ -1714,15 +1920,22 @@ final class AppModel: ObservableObject {
         saveScenes()
     }
 
-    func deleteScene(_ sceneId: String) {
-        guard scenes.count > 1 else { return }
+    /// Windows #1070: the on-air scene and the last visible scene are refused
+    /// (message in `sceneEditMessage`, nothing synced). Removing the Preview
+    /// scene empties Preview; Program is never touched here.
+    @discardableResult
+    func deleteScene(_ sceneId: String) -> String? {
+        if let refusal = sceneRemovalRefusal(sceneId) {
+            sceneEditMessage = refusal
+            return refusal
+        }
+        guard let scene = scenes.first(where: { $0.id == sceneId }) else { return nil }
         scenes.removeAll { $0.id == sceneId }
         if previewSceneId == sceneId { previewSceneId = "" }
-        if programSceneId == sceneId, let first = scenes.first {
-            programSceneId = first.id
-        }
+        sceneEditMessage = "\(scene.name) removed"
         syncScenes()
         saveScenes()
+        return nil
     }
 
     // Back to the layout preset (drops the edited canvas).
@@ -1773,14 +1986,248 @@ final class AppModel: ObservableObject {
         syncScenes()
     }
 
-    func take() {
-        // There is no `take` wire command: Take = swap the two scene ids and
-        // resend both scene graphs in one batch (TransportCoordinator shape).
-        guard !previewSceneId.isEmpty, previewSceneId != programSceneId else { return }
+    /// Session-only like Windows (`_takeTransitionMode`, not persisted).
+    @Published var takeTransitionMode = "fade"
+    @Published var takeStatus = ""
+    @Published private(set) var takeInFlight = false
+    private var takeRevision = 0
+
+    enum TakeResult: Equatable {
+        case success
+        case failed(String)
+    }
+
+    /// Windows `NormalizeTakeTransitionMode`: cut/dip/wipe pass, anything else is fade.
+    static func normalizeTakeTransitionMode(_ mode: String?) -> String {
+        switch mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "cut": return "cut"
+        case "dip": return "dip"
+        case "wipe": return "wipe"
+        default: return "fade"
+        }
+    }
+
+    /// Windows `SetTakeTransition`: normalize, then announce.
+    func setTakeTransition(_ mode: String?) {
+        takeTransitionMode = Self.normalizeTakeTransitionMode(mode)
+        takeStatus = "Take transition set to \(takeTransitionLabel)"
+    }
+
+    var takeTransitionLabel: String {
+        switch takeTransitionMode {
+        case "cut": return "Cut"
+        case "dip": return "Dip"
+        case "wipe": return "Wipe"
+        default: return "Fade"
+        }
+    }
+
+    /// Windows `CanTake` (StudioViewModel.cs:4275) minus the Shot Layout and
+    /// draft terms Mac has no equivalent of, plus the coordinator's in-flight
+    /// guard. Deliberately NOT gated on `quitFinishing`: Windows CanTake has no
+    /// quit term (only Record/Stream do).
+    var canTake: Bool {
+        !takeInFlight
+            && scenes.contains { $0.id == previewSceneId }
+            && scenes.contains { $0.id == programSceneId }
+            && previewSceneId != programSceneId
+    }
+
+    /// The one Take entry (button, and later keyboard / Companion): a port of
+    /// `TransportCoordinator.TakeAsync`. Swaps Program/Preview, sends
+    /// `begin-take-transition` first in the SAME media-core-sync batch as the
+    /// scene graphs (no 120 ms debounce), and rolls both ids back when the core
+    /// rejects or the request fails, unless the operator has edited them since
+    /// (the #286 rule: newer edits are preserved, never clobbered).
+    @discardableResult
+    func take() async -> TakeResult {
+        if takeInFlight { return .failed("A Take is already in progress.") }
+        takeInFlight = true
+        defer { takeInFlight = false }
+        let previousProgram = programSceneId
         let taken = previewSceneId
-        previewSceneId = programSceneId
+        guard scenes.contains(where: { $0.id == taken }),
+              scenes.contains(where: { $0.id == previousProgram }) else {
+            let unavailable = "Take unavailable - select an available Preview scene."
+            takeStatus = unavailable
+            return .failed(unavailable)
+        }
+        guard taken != previousProgram else {
+            let same = "Take unavailable - Preview is already on Program."
+            takeStatus = same
+            return .failed(same)
+        }
+        previewSceneId = previousProgram
         programSceneId = taken
-        syncScenes()
+        sceneSyncTask?.cancel()           // the Take batch carries the full current state
+        sceneSyncRequestCount += 1
+        guard bridge != nil || quitRequestForTesting != nil else {
+            let offline = "Program selected locally; Take was not sent because the media core is offline."
+            takeStatus = offline
+            return .failed(offline)
+        }
+        takeRevision += 1
+        let transition: JSONObject = [
+            "type": "begin-take-transition",
+            "operationId": UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(),
+            "revision": takeRevision,
+            "mode": Self.normalizeTakeTransitionMode(takeTransitionMode),
+            "durationMs": 300,
+            "direction": "left-to-right",
+            "dipColor": "#000000",
+        ]
+        let batch = sceneSyncBatch(transition: transition)
+        do {
+            _ = try await outputRequest([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": batch,
+            ])
+            takeStatus = "Program updated"
+            return .success
+        } catch {
+            let untouched = programSceneId == taken && previewSceneId == previousProgram
+            let failure: String
+            if untouched {
+                programSceneId = previousProgram
+                previewSceneId = taken
+                syncScenes()              // reconcile the core with the restored scenes
+                failure = "Take was not confirmed; previous local Program restored. "
+                    + "Verify live output before retrying. \(error.localizedDescription)"
+            } else {
+                failure = "Take was not confirmed; newer local edits preserved. "
+                    + "Verify live output. \(error.localizedDescription)"
+            }
+            takeStatus = failure
+            pushWarning(failure)
+            return .failed(failure)
+        }
+    }
+
+    // ── Fade to Black (audit §2; Windows StudioViewModel.ProgramBlackout.cs) ──
+    /// Core-owned state, observed from the snapshot (`programBlackout` /
+    /// `programBlackoutOpacity`). No preference engages it; a new session starts clear.
+    @Published private(set) var programBlackout = false
+    @Published private(set) var programBlackoutLabel = "Fade to Black"
+    private var blackoutInFlight = false
+
+    enum BlackoutResult: Equatable {
+        case success
+        case failed(String)
+    }
+
+    /// Windows `ApplyProgramBlackoutSnapshot` label switch, case for case.
+    static func programBlackoutLabel(blackout: Bool?, opacity: Double) -> String {
+        switch blackout {
+        case true? where opacity < 0.999: return "Fading to black"
+        case true?: return "BLACK · Restore"
+        case false? where opacity > 0.001: return "Restoring picture"
+        default: return "Fade to Black"
+        }
+    }
+
+    /// JSON booleans only (an int or string is "no observation", as with
+    /// System.Text.Json's `bool?` on Windows).
+    private static func strictBool(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
+    /// Proof-shot only (COREVIDEO_SHELL_FTB): keeps a live core's snapshots from clearing the shown state.
+    private var blackoutProofHold = false
+
+    private func applyProgramBlackout(_ snapshot: JSONObject) {
+        if blackoutProofHold { return }
+        let observed = Self.strictBool(snapshot["programBlackout"])
+        let opacity = (snapshot["programBlackoutOpacity"] as? NSNumber)?.doubleValue ?? 0
+        programBlackout = observed == true
+        programBlackoutLabel = Self.programBlackoutLabel(blackout: observed, opacity: opacity)
+    }
+
+    /// Windows `SetProgramBlackoutAsync`: every caller (button, keyboard, later
+    /// the control API) shares this admission and the native observation.
+    /// Every refusal and failure is both returned and left in `takeStatus`, so a
+    /// direct caller (the control API) can report it without the button wrapper.
+    func setProgramBlackout(_ enabled: Bool?) async -> BlackoutResult {
+        let result = await performProgramBlackout(enabled)
+        if case .failed(let why) = result { takeStatus = why }
+        return result
+    }
+
+    private func performProgramBlackout(_ enabled: Bool?) async -> BlackoutResult {
+        if blackoutInFlight { return .failed("FTB command is already in progress.") }
+        guard bridge != nil || quitRequestForTesting != nil else {
+            return .failed("FTB unavailable: media core is offline.")
+        }
+        blackoutInFlight = true
+        defer { blackoutInFlight = false }
+        do {
+            // Poll first: an older core without the observation rejects FTB.
+            let polled = try await outputRequest([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [JSONObject](),
+            ])
+            guard let current = Self.strictBool((polled["snapshot"] as? JSONObject)?["programBlackout"]) else {
+                return .failed("This media core does not support Fade to Black.")
+            }
+            let target = enabled ?? !current
+            let response = try await outputRequest([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                "commands": [["type": "program-blackout", "enabled": target, "durationMs": 300] as JSONObject],
+            ])
+            let snapshot = response["snapshot"] as? JSONObject ?? [:]
+            applySnapshot(snapshot)
+            guard Self.strictBool(snapshot["programBlackout"]) == target else {
+                return .failed("Media core did not acknowledge FTB.")
+            }
+            takeStatus = target ? "Fading Program to black — audio continues" : "Restoring Program picture"
+            return .success
+        } catch {
+            return .failed("FTB unavailable: \(error.localizedDescription)")
+        }
+    }
+
+    /// Windows `ToggleProgramBlackout` command: the button and Cmd+Shift+B.
+    func toggleProgramBlackout() async {
+        _ = await setProgramBlackout(nil)
+    }
+
+    // ── keyboard Take / FTB (audit §5) ───────────────────────────────────────
+    let transportHotkeys = TransportHotkeyMonitor()
+
+    /// Installed only while the Studio tab is the active tab.
+    func syncTransportHotkeys() {
+        transportHotkeys.setActive(selectedTab == .studio) { [weak self] nsEvent in
+            guard let self else { return false }
+            let key = TransportKeys.event(
+                from: nsEvent, isStudioTab: self.selectedTab == .studio,
+                firstResponder: nsEvent.window?.firstResponder)
+            return self.handleTransportKey(key)
+        }
+    }
+
+    /// Executes a routed key against the real commands; returns whether it was
+    /// consumed. `takeOverride` lets tests observe a Take without a core.
+    func handleTransportKey(_ event: TransportKeyEvent, takeOverride: (() -> Void)? = nil) -> Bool {
+        func fireTake() {
+            if let takeOverride { takeOverride() } else { Task { @MainActor in await self.take() } }
+        }
+        // The in-window quit prompt owns the keyboard: pass keys through so Space
+        // can activate its focused button and nothing is Taken under it.
+        if quitPromptVisible || quitFinishing { return false }
+        switch TransportKeys.decide(event) {
+        case .ignore: return false
+        case .swallow: return true
+        case .take:
+            // Consumed even when Take is unavailable: Space must never activate
+            // whatever control happened to hold focus.
+            if canTake { fireTake() }
+            return true
+        case .alternateTake:
+            guard canTake else { return false }
+            fireTake()
+            return true
+        case .toggleBlackout:
+            Task { @MainActor in await self.toggleProgramBlackout() }
+            return true
+        }
     }
 
     private var sceneSyncTask: Task<Void, Never>?
@@ -1791,6 +2238,7 @@ final class AppModel: ObservableObject {
     // until every command times out — the owner hit exactly that. Callers stay
     // naive; the debounce is here.
     func syncScenes() {
+        sceneSyncRequestCount += 1
         sceneSyncTask?.cancel()
         sceneSyncTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 120_000_000)
@@ -1825,9 +2273,11 @@ final class AppModel: ObservableObject {
         syncScenes()
     }
 
-    private func pushScenes() async {
-        guard let bridge else { return }
+    /// The scene-graph half of a sync. A Take prepends `begin-take-transition`
+    /// (Windows BuildSyncCommands: the transition leads the batch).
+    private func sceneSyncBatch(transition: JSONObject? = nil) -> [JSONObject] {
         var commands: [JSONObject] = []
+        if let transition { commands.append(transition) }
         if !programSceneId.isEmpty {
             var graph: JSONObject = [
                 "type": "load-scene-graph", "sceneId": programSceneId,
@@ -1848,10 +2298,15 @@ final class AppModel: ObservableObject {
             }
             commands.append(preview)
         }
-        let batch = Self.appendSourcePolicies(to: commands, slots: slots)
+        return Self.appendSourcePolicies(to: commands, slots: slots)
+    }
+
+    private func pushScenes() async {
+        guard bridge != nil || quitRequestForTesting != nil else { return }
+        let batch = sceneSyncBatch()
         guard !batch.isEmpty else { return }
         do {
-            _ = try await bridge.request([
+            _ = try await outputRequest([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
                 "commands": batch,
             ])
@@ -1928,8 +2383,13 @@ final class AppModel: ObservableObject {
         previewSceneId = target
         syncScenes()
         if autoTakeEnabled {
-            take()
-            autoStatus = "Took \(target) (\(autoRuleId))"
+            autoStatus = "Taking \(target) (\(autoRuleId))…"
+            Task { @MainActor in
+                switch await self.take() {
+                case .success: self.autoStatus = "Took \(target) (\(self.autoRuleId))"
+                case .failed(let why): self.autoStatus = "Take of \(target) failed — \(why)"
+                }
+            }
         } else {
             autoStatus = "Queued \(target) on preview"
         }
@@ -1971,6 +2431,7 @@ final class AppModel: ObservableObject {
     }
 
     func toggleIsoCell(column: Int, sourceId: String) {
+        recordingIso.noteOperatorEdit()
         if isoColumnAssignments[column] == sourceId {
             isoColumnAssignments[column] = nil
         } else {
@@ -2002,15 +2463,37 @@ final class AppModel: ObservableObject {
 
     // OFF → empty (program byte-identical to pre-ISO); drop departed sources;
     // cap 8. Zoom → zoom:<pid>, capture → capture:<id> (already scheme-qualified).
-    func resolvedIsoSourceIds() -> [String] {
-        guard isoRecordingEnabled else { return [] }
+    // Command-send paths only: this MUTATES the take state. Views use
+    // peekIsoSourceIds() instead.
+    func resolvedIsoSourceIds(recording: Bool? = nil) -> [String] {
+        isoResolve(&recordingIso, recording: recording)
+    }
+
+    // What resolve would send right now, without touching take state — safe
+    // from a SwiftUI body.
+    func peekIsoSourceIds(recording: Bool? = nil) -> [String] {
+        var copy = recordingIso
+        return isoResolve(&copy, recording: recording)
+    }
+
+    private func isoResolve(_ selection: inout RecordingIsoSelection,
+                            recording: Bool?) -> [String] {
         let present = Set(roster.map { "zoom:" + $0.id })
             .union(captureDevices.filter { $0.connectionState == "connected" }
                 .map { "capture:" + $0.id })
-        return isoSelectedSourceIds.sorted().filter(present.contains).prefix(8).map { $0 }
+        let assigned = Set(slots.filter { $0.kind != "unassigned" }.map {
+            ($0.kind == "zoom" ? "zoom:" : "capture:") + $0.sourceId
+        })
+        // While a take is recording, passive roster loss never shrinks the set
+        // (#1188); only an operator ISO edit does.
+        return selection.resolve(
+            recordingRequested: recording ?? isRecordingActive,
+            enabled: isoRecordingEnabled, selected: isoSelectedSourceIds,
+            eligible: present.sorted(), assigned: assigned)
     }
 
     func toggleIsoSource(_ sourceId: String) {
+        recordingIso.noteOperatorEdit()
         if isoSelectedSourceIds.contains(sourceId) {
             isoSelectedSourceIds.remove(sourceId)
         } else {
@@ -2033,11 +2516,11 @@ final class AppModel: ObservableObject {
 
     // start-program-output is FULL-STATE for the destination set, so record
     // and stream always resend the union of what should be live.
-    private func startProgramOutput(recording: Bool, streaming: Bool) -> JSONObject {
+    func startProgramOutput(recording: Bool, streaming: Bool) -> JSONObject {
         var destinations: [String] = []
         if recording { destinations.append("recording") }
         if streaming { destinations.append("rtmp") }
-        let isoIds = resolvedIsoSourceIds()
+        let isoIds = resolvedIsoSourceIds(recording: recording)
         var command: JSONObject = [
             "type": "start-program-output", "destinations": destinations,
             "isoSourceIds": isoIds,
@@ -2059,7 +2542,8 @@ final class AppModel: ObservableObject {
     }
 
     func toggleStreaming() {
-        guard let bridge else { return }
+        guard bridge != nil || quitRequestForTesting != nil else { return }
+        guard !quitFinishing else { return }   // outputs are closing (quit)
         if streamingDesired {
             streamingDesired = false
             let commands: [JSONObject] = isRecordingActive
@@ -2067,7 +2551,7 @@ final class AppModel: ObservableObject {
                 : [["type": "stop-encoder-session",
                     "reason": "Streaming stopped by operator."]]
             Task {
-                _ = try? await bridge.request([
+                _ = try? await self.outputRequest([
                     "type": "media-core-sync", "elapsedMs": elapsedMs(),
                     "commands": commands,
                 ])
@@ -2084,7 +2568,7 @@ final class AppModel: ObservableObject {
         streamingDesired = true
         Task {
             do {
-                _ = try await bridge.request([
+                _ = try await outputRequest([
                     "type": "media-core-sync", "elapsedMs": elapsedMs(),
                     "commands": [startProgramOutput(recording: isRecordingActive,
                                                     streaming: true)],
@@ -2264,6 +2748,7 @@ final class AppModel: ObservableObject {
 
     func showLowerThird() {
         guard !lowerThirdName.isEmpty else { return }
+        cancelPendingLowerThirdRetire()
         // building-in only — the core auto-advances to on-air itself.
         sendOverlay([
             "type": "set-overlay-asset", "overlayId": "key:lower-third",
@@ -2276,7 +2761,20 @@ final class AppModel: ObservableObject {
         ])
     }
 
+    /// A show (or a newer retire) supersedes a retire whose hidden ack has not
+    /// been sent yet: that ack would otherwise land on the freshly shown key.
+    func cancelPendingLowerThirdRetire() {
+        lowerThirdRetireGeneration += 1
+        lowerThirdRetireInFlight = false
+    }
+
     func hideLowerThird() {
+        // Idempotent while a retire is in flight: a second building-out would
+        // restart the native build-out and a second ack would race the first.
+        guard !lowerThirdRetireInFlight else { return }
+        lowerThirdRetireInFlight = true
+        lowerThirdRetireGeneration += 1
+        let generation = lowerThirdRetireGeneration
         // Two-step retire: shell-timed build-out, then the hidden ack (an
         // enabled:false WITHOUT keyPhase:"hidden" would start a second native
         // build-out — the WinUI RunLowerThirdKeyOutAsync shape).
@@ -2291,10 +2789,14 @@ final class AppModel: ObservableObject {
         ])
         // Wait the operator's OWN build-out time (plus a little) before the
         // retire ack, or a long build-out is cut off mid-animation.
-        let settle = UInt64(max(50, overlays.buildOutMs) + 40) * 1_000_000
+        let settle = lowerThirdSettleOverrideNs
+            ?? UInt64(max(50, overlays.buildOutMs) + 40) * 1_000_000
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: settle)
-            self?.sendOverlay([
+            // Skip the ack if a show or a newer retire moved the generation.
+            guard let self, self.lowerThirdRetireGeneration == generation else { return }
+            self.lowerThirdRetireInFlight = false
+            self.sendOverlay([
                 "type": "set-overlay-asset", "overlayId": "key:lower-third",
                 "text": "", "position": "lower-third", "enabled": false,
                 "keyPhase": "hidden", "buildInMs": 250, "buildOutMs": 200,
@@ -2317,6 +2819,7 @@ final class AppModel: ObservableObject {
     // Internal (not private): AutomationExtras.swift keys the automatic lower
     // third through the same single-command path.
     func sendOverlay(_ command: JSONObject) {
+        overlayCommandObserver?(command)
         guard let bridge else { return }
         Task {
             do {
@@ -2418,15 +2921,208 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // ── quit guard ───────────────────────────────────────────────────────────
+
+    var quitOutputs: QuitOutputs {
+        QuitOutputs(recordingStatus: recordingStatus, recordingDesired: recordingDesired,
+                    streamingDesired: streamingDesired, streamStatus: streamStatus)
+    }
+
+    /// NSApplicationDelegate.applicationShouldTerminate. Idle quits at once;
+    /// live outputs defer the quit behind the in-app confirmation.
+    func handleQuitRequest() -> NSApplication.TerminateReply {
+        switch quitGate.request(quitOutputs) {
+        case .quitNow: return .terminateNow
+        case .ask:
+            quitPromptVisible = true
+            presentQuitPrompt()
+            return .terminateLater
+        case .ignore:
+            // A repeat quit while asking or finishing re-presents what is
+            // pending, so the operator always has something visible to answer.
+            presentQuitPrompt()
+            return .terminateCancel
+        }
+    }
+
+    /// Shows the pending prompt (or the finishing notice) where it can be seen:
+    /// the main RootView window when it is on screen, otherwise a standalone
+    /// design-system panel. Never `windows.first` (a pop-out, or nothing).
+    private func presentQuitPrompt() {
+        let available = mainWindowAvailableForTesting ?? MainWindowTracker.isAvailable
+        let placement = QuitPromptPresenterPolicy.placement(mainWindowAvailable: available)
+        if let seam = quitPresentForTesting { seam(placement); return }
+        guard quitReplyForTesting == nil else { return }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        switch placement {
+        case .mainWindow: MainWindowTracker.bringForward()
+        case .fallbackPanel: QuitPromptPanel.show(model: self)
+        }
+    }
+
+    /// "Keep running".
+    func cancelQuit() {
+        guard quitPromptVisible else { return }
+        quitGate.cancel()
+        quitPromptVisible = false
+        replyToQuit(false)
+    }
+
+    /// "Stop and quit": stop streams, then the recording, wait (bounded by ONE
+    /// deadline) for the truthful terminal lifecycle, then retire the core with
+    /// the stdin-EOF grace.
+    func confirmQuit() {
+        guard quitGate.confirm() else { return }
+        quitFinishing = true        // before the prompt flips off: the panel stays up
+        quitPromptVisible = false
+        let recordingWasLive = QuitGuardPolicy.recordingLive(quitOutputs)
+        let streamWasLive = QuitGuardPolicy.streamLive(quitOutputs)
+        ShellLog.write("quit: stopping outputs recording=\(recordingWasLive) stream=\(streamWasLive)")
+        let timeout = quitFinishTimeout
+        Task { @MainActor in
+            var baseline = Int.max   // set when the stop lands; only later snapshots count
+            let outcome = await QuitFlow.finishOutputs(
+                stop: { @MainActor [weak self] remaining in
+                    guard let self else { return true }
+                    let landed = await self.sendQuitStops(recording: recordingWasLive,
+                                                          stream: streamWasLive,
+                                                          budget: remaining)
+                    if landed { baseline = self.snapshotSequence }
+                    return landed
+                },
+                isFinished: { @MainActor [weak self] remaining in
+                    guard let self else { return true }
+                    // A missing or exited core can write nothing more: terminal
+                    // (Windows treats core exit as the end of the wait).
+                    if self.quitCoreGone { return true }
+                    // Poll a snapshot directly. The 0.5 s syncTimer is default-mode
+                    // only and does not fire while AppKit holds a .terminateLater.
+                    do {
+                        let response = try await self.quitRequest(
+                            ["type": "media-core-sync", "elapsedMs": self.elapsedMs(),
+                             "commands": []], timeout: min(2, max(0.1, remaining)))
+                        if let snapshot = response["snapshot"] as? JSONObject {
+                            self.applySnapshot(snapshot)
+                        }
+                    } catch {
+                        if self.quitCoreGone { return true }
+                        if case BridgeError.notRunning = error { return true }
+                        if case BridgeError.processExited = error { return true }
+                    }
+                    guard self.snapshotSequence > baseline else { return false }
+                    let recordingDone = !recordingWasLive
+                        || QuitGuardPolicy.recordingTerminal(self.recordingStatus)
+                    let streamDone = !streamWasLive
+                        || !QuitGuardPolicy.streamLive(
+                            QuitOutputs(streamStatus: self.streamStatus))
+                    return recordingDone && streamDone
+                },
+                timeout: timeout, poll: quitPollInterval)
+            if outcome == .timedOut {
+                let message = "quit: outputs did not finish within "
+                    + "\(String(format: "%g", timeout)) s; quitting anyway"
+                ShellLog.write(message)
+                pushWarning(message)
+            } else {
+                ShellLog.write("quit: outputs finished")
+            }
+            // Stop the control server before the core goes away, not only at willTerminate.
+            controlApi.stop()
+            let exited = await bridge?.stopForAppExit(grace: quitCoreGrace) ?? true
+            ShellLog.write("quit: core \(exited ? "exited on EOF" : "terminated after grace")")
+            quitFinishing = false
+            quitGate.reset()
+            replyToQuit(true)
+        }
+    }
+
+    private var quitCoreGone: Bool {
+        if quitRequestForTesting != nil { return quitCoreGoneForTesting }
+        if bridge == nil { return true }
+        switch status {
+        case .exited, .failed: return true
+        default: return false
+        }
+    }
+
+    private func quitRequest(_ body: JSONObject, timeout: TimeInterval) async throws -> JSONObject {
+        if let seam = quitRequestForTesting { return try await seam(body, timeout) }
+        guard let bridge else { throw BridgeError.notRunning }
+        return try await bridge.request(body, timeout: timeout)
+    }
+
+    /// The operator's Record/Stream buttons go through here so the harness can
+    /// drive the REAL start/stop paths (intent bookkeeping included) through the
+    /// same seam the quit flow uses. Production: the bridge, default timeout.
+    private func outputRequest(_ body: JSONObject) async throws -> JSONObject {
+        if let seam = quitRequestForTesting { return try await seam(body, 6) }
+        guard let bridge else { throw BridgeError.notRunning }
+        return try await bridge.request(body)
+    }
+
+    /// Test seam: feed a snapshot through the real read path.
+    func applySnapshotForTesting(_ snapshot: JSONObject) { applySnapshot(snapshot) }
+
+    private func replyToQuit(_ shouldTerminate: Bool) {
+        if let seam = quitReplyForTesting { seam(shouldTerminate); return }
+        NSApplication.shared.reply(toApplicationShouldTerminate: shouldTerminate)
+    }
+
+    /// The same transport stops the operator's buttons send: streams first, then
+    /// the recording session, each bounded by what is left of the quit deadline.
+    /// True when every needed stop was accepted.
+    private func sendQuitStops(recording: Bool, stream: Bool, budget: TimeInterval) async -> Bool {
+        if quitCoreGone { return true }   // no core: nothing left to stop
+        let deadline = Date().addingTimeInterval(budget)
+        func left(_ cap: TimeInterval) -> TimeInterval { min(cap, max(0.1, deadline.timeIntervalSinceNow)) }
+        var ok = true
+        if stream {
+            streamingDesired = false
+            // Keep recording in the destination set ONLY while the operator still
+            // wants it (toggleStreaming's rule). A stop already in flight
+            // (finalizing/stopping, intent off) must NOT be re-requested: the
+            // core no longer owns it and would open a NEW session that nothing
+            // ever stops (final review CRITICAL 1).
+            let commands: [JSONObject] = recording && recordingDesired
+                ? [startProgramOutput(recording: true, streaming: false)]
+                : [["type": "stop-encoder-session", "reason": "Streaming stopped on quit."]]
+            do {
+                _ = try await quitRequest([
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": commands,
+                ], timeout: left(15))
+            } catch { ok = false }
+        }
+        // Already stopping/finalizing: the stop landed on an earlier attempt.
+        let recordingInFlight = ["stopping", "finalizing"].contains(recordingStatus)
+        if recording, !recordingInFlight {
+            let operation = recordingCommands.beginStop()
+            recordingDesired = recordingCommands.desired
+            do {
+                _ = try await quitRequest([
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                    "commands": [["type": "stop-recording-session", "reason": "Quit."]],
+                ], timeout: left(30))
+                recordingCommands.finish(operation, failed: false)
+            } catch {
+                recordingCommands.finish(operation, failed: true)
+                ok = false
+            }
+            recordingDesired = recordingCommands.desired
+        }
+        return ok
+    }
+
     func toggleRecording() {
-        guard let bridge else { return }
+        guard bridge != nil || quitRequestForTesting != nil else { return }
+        // Windows CanSetRecording: no Record/Stop while outputs are closing.
+        guard !quitFinishing else { return }
         let operation = recordingCommands.begin()
         let stop = operation.stop
         recordingDesired = recordingCommands.desired
         Task {
             do {
                 if stop {
-                    _ = try await bridge.request([
+                    _ = try await outputRequest([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(),
                         "commands": [["type": "stop-recording-session"]],
                     ])
@@ -2434,9 +3130,12 @@ final class AppModel: ObservableObject {
                     // Arm the encoder ONLY here: start-program-output flips the
                     // core into per-tick full readbacks (by design, for the
                     // encoder feed) — armed-at-startup starved the RPC thread.
-                    let folder = (NSSearchPathForDirectoriesInDomains(
-                        .moviesDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory())
-                        + "/CoreVideoPro"
+                    // The in-binary harness never creates folders in ~/Movies.
+                    let folder = ShellHarness.isActive
+                        ? NSTemporaryDirectory() + "corevideo-shell-harness-\(getpid())/recordings"
+                        : (NSSearchPathForDirectoriesInDomains(
+                            .moviesDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory())
+                            + "/CoreVideoPro"
                     // The core refuses (loudly) rather than mkdir -p'ing.
                     try? FileManager.default.createDirectory(
                         atPath: folder, withIntermediateDirectories: true)
@@ -2450,7 +3149,7 @@ final class AppModel: ObservableObject {
                         rawMediaActive: lastZoomSnapshot["rawMediaActive"] as? Bool) {
                         pushWarning(warning)
                     }
-                    _ = try await bridge.request([
+                    _ = try await outputRequest([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(),
                         "commands": [
                             startProgramOutput(recording: true, streaming: streamingDesired),
@@ -2734,6 +3433,9 @@ enum ShellLog {
     static func write(_ message: String) {
         let line = "\(Date()) \(message)\n"
         print("shell: \(message)")
+        // The in-binary harness must never touch the operator's real log.
+        // Cached harness predicate (tests AND selfcheck), not an env read per line.
+        if ShellHarness.isActive { return }
         if let handle = FileHandle(forWritingAtPath: path) {
             handle.seekToEndOfFile()
             handle.write(Data(line.utf8))

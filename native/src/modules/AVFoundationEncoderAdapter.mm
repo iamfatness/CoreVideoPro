@@ -32,9 +32,12 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include "modules/AvfEncoderTestProbe.h"
 #include "modules/Interfaces.h"
+#include "modules/IsoFrameConform.h"
 #include "modules/RecordingArtifactNaming.h"
 #include "modules/RecordingPtsClock.h"
 
@@ -64,6 +67,8 @@ class AvfMp4Writer {
             VideoInput videoInput = VideoInput::Bgra) {
     (void)codec;  // H.264-only, matching the product default
     finalize();
+    lastVideoPts100ns_ = 0;
+    lastAudioEnd100ns_ = 0;
     inputKind_ = videoInput;
     if (inputKind_ == VideoInput::Nv12) {
       width &= ~1;  // NV12 needs even luma dims (mirrors the MF writer)
@@ -116,6 +121,11 @@ class AvfMp4Writer {
                                    sourcePixelBufferAttributes:adaptorAttrs];
     return true;
   }
+
+  // The size this writer opened at (even-aligned for NV12). An MP4 video track
+  // has one size for its lifetime, so later frames are conformed to it.
+  int openedWidth() const { return width_; }
+  int openedHeight() const { return height_; }
 
   bool ensureAudioStream(int channels, int sampleRate, int audioBitrateKbps,
                          std::string& errorOut) {
@@ -181,6 +191,9 @@ class AvfMp4Writer {
     CVPixelBufferLockBaseAddress(buffer, 0);
     auto* dst = static_cast<uint8_t*>(CVPixelBufferGetBaseAddress(buffer));
     const size_t dstStride = CVPixelBufferGetBytesPerRow(buffer);
+    // Legacy crop/pad of a mismatched source (top-left copy). The ISO caller now
+    // guarantees matching sizes (it conforms I420 and refuses BGRA size changes
+    // before calling); only Program still relies on this branch.
     const int copyWidth = std::min(srcWidth, width_);
     const int copyHeight = std::min(srcHeight, height_);
     for (int y = 0; y < height_; ++y) {
@@ -198,6 +211,7 @@ class AvfMp4Writer {
     }
     CVPixelBufferUnlockBaseAddress(buffer, 0);
     const BOOL appended = [adaptor_ appendPixelBuffer:buffer withPresentationTime:ptsToTime(pts100ns)];
+    if (appended) holdLastVideo(buffer);
     CVPixelBufferRelease(buffer);
     if (!appended) {
       errorOut = std::string("appendPixelBuffer failed: ") +
@@ -205,6 +219,7 @@ class AvfMp4Writer {
       return false;
     }
     ++videoFrameCount_;
+    lastVideoPts100ns_ = pts100ns;
     return true;
   }
 
@@ -227,6 +242,9 @@ class AvfMp4Writer {
       return false;
     }
     CVPixelBufferLockBaseAddress(buffer, 0);
+    // Legacy crop/pad of a mismatched source (top-left copy). The ISO caller now
+    // guarantees matching sizes (it conforms I420 and refuses BGRA size changes
+    // before calling); only Program still relies on this branch.
     const int copyWidth = std::min(srcWidth & ~1, width_);
     const int copyHeight = std::min(srcHeight & ~1, height_);
     auto* yDst = static_cast<uint8_t*>(CVPixelBufferGetBaseAddressOfPlane(buffer, 0));
@@ -258,6 +276,7 @@ class AvfMp4Writer {
     }
     CVPixelBufferUnlockBaseAddress(buffer, 0);
     const BOOL appended = [adaptor_ appendPixelBuffer:buffer withPresentationTime:ptsToTime(pts100ns)];
+    if (appended) holdLastVideo(buffer);
     CVPixelBufferRelease(buffer);
     if (!appended) {
       errorOut = std::string("appendPixelBuffer (NV12) failed: ") +
@@ -265,11 +284,13 @@ class AvfMp4Writer {
       return false;
     }
     ++videoFrameCount_;
+    lastVideoPts100ns_ = pts100ns;
     return true;
   }
 
   // Silence-fill for gapped ISO stems (0.1s chunks like the MF writer).
-  bool writeAudioSilence(int64_t frames, int64_t ptsStart100ns, std::string& errorOut) {
+  bool writeAudioSilence(int64_t frames, int64_t ptsStart100ns, std::string& errorOut,
+                         bool mustAccept = false) {
     constexpr int kChunkFrames = 4800;
     std::vector<float> zeros;
     int64_t written = 0;
@@ -277,7 +298,7 @@ class AvfMp4Writer {
       const int chunk = static_cast<int>(std::min<int64_t>(kChunkFrames, frames - written));
       zeros.assign(static_cast<size_t>(chunk) * audioChannels_, 0.f);
       const int64_t pts = ptsStart100ns + written * kHundredNsPerSecond / audioSampleRate_;
-      if (!writeAudio(zeros.data(), chunk, pts, errorOut)) {
+      if (!writeAudio(zeros.data(), chunk, pts, errorOut, mustAccept)) {
         return false;
       }
       written += chunk;
@@ -285,13 +306,19 @@ class AvfMp4Writer {
     return true;
   }
 
+  // `mustAccept`: a refused buffer is an error, not a silent drop (tail alignment).
   bool writeAudio(const float* interleaved, int frameCount, int64_t pts100ns,
-                  std::string& errorOut) {
+                  std::string& errorOut, bool mustAccept = false) {
     if (!writing_ || !audioConfigured_ || !audioInput_) {
       errorOut = "audio stream not configured";
       return false;
     }
+    if (mustAccept && !waitUntilReady(audioInput_, errorOut)) return false;
     if (!audioInput_.readyForMoreMediaData) {
+      if (mustAccept) {
+        errorOut = "audio input was not ready to accept the tail silence";
+        return false;
+      }
       return true;  // drop under backpressure; the async sink already budgets
     }
     const size_t sampleCount = static_cast<size_t>(frameCount) * audioChannels_;
@@ -344,12 +371,105 @@ class AvfMp4Writer {
     }
     ++audioPacketCount_;
     audioSampleCount_ += frameCount;
+    lastAudioEnd100ns_ = pts100ns + static_cast<int64_t>(frameCount) * kHundredNsPerSecond / audioSampleRate_;
     return true;
   }
 
-  bool finalize(std::string* errorOut = nullptr) {
+  // ISO writers hold the final picture with one real sample (Windows ISO rule);
+  // Program extends its last picture without encoding a second copy.
+  void setTailHoldsRealSample(bool value) { tailHoldsRealSample_ = value; }
+
+  // Brief bounded wait for a busy input at close; ordinary realtime backpressure
+  // must not turn a normal stop into a warning. Only a WRITING writer can become
+  // ready again: a failed or cancelled one fails fast with its own error instead
+  // of spending the whole 200 ms (per call) on a wait that cannot succeed.
+  bool waitUntilReady(AVAssetWriterInput* input, std::string& errorOut) {
+    if (!writer_ || writer_.status != AVAssetWriterStatusWriting) {
+      errorOut = notWritingError();
+      return false;
+    }
+    for (int i = 0; i < 40 && !input.readyForMoreMediaData; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
+  }
+
+  std::string notWritingError() const {
+    if (writer_ && writer_.error) return writer_.error.localizedDescription.UTF8String;
+    return "AVAssetWriter is not writing (status " +
+           std::to_string(writer_ ? static_cast<long>(writer_.status) : -1L) + ")";
+  }
+
+  // #1186 (Windows 03ebd1c3 Mp4Writer::reconcileTail): bring both tracks to one
+  // endpoint before finalize, with no tolerance. target = max(video end, audio
+  // end), where the video end includes the last frame's own period. A short audio
+  // tail is padded with silence; a short video tail is held. Nothing recorded is
+  // cut. The session end only trims: it cannot extend the last real sample on its
+  // own, so a short video tail needs a sample at the target (Program: trimmed away
+  // by the session end, no second picture; ISO: one real held sample, MF ISO rule).
+  // When video is already the longer track nothing is appended, so a busy video
+  // input cannot raise a false warning.
+  bool reconcileTail(std::string& errorOut) {
+    if (!writing_ || !audioConfigured_ || videoFrameCount_ <= 0 || audioPacketCount_ <= 0 ||
+        !lastVideoBuffer_) {
+      return true;
+    }
+    const int64_t frameDuration = kHundredNsPerSecond / fps_;
+    const int64_t videoEnd = lastVideoPts100ns_ + frameDuration;
+    const int64_t target = std::max(videoEnd, lastAudioEnd100ns_);
+    if (lastAudioEnd100ns_ < target) {
+      const int64_t rate = std::max(1, audioSampleRate_);
+      const int64_t frames = ((target - lastAudioEnd100ns_) * rate + kHundredNsPerSecond - 1) / kHundredNsPerSecond;
+      if (!writeAudioSilence(frames, lastAudioEnd100ns_, errorOut, true)) return false;
+    }
+    const bool videoShort = videoEnd < target;
+    int64_t holdPts = target;
+    if (tailHoldsRealSample_) {
+      if (!videoShort) return true;
+      holdPts = std::max(lastVideoPts100ns_ + 1, target - frameDuration);
+    }
+    if (videoShort) {
+      if (!waitUntilReady(videoInput_, errorOut)) return false;
+      if (!videoInput_.readyForMoreMediaData) {
+        errorOut = "video input was not ready to accept the held tail picture";
+        return false;
+      }
+      if (![adaptor_ appendPixelBuffer:lastVideoBuffer_ withPresentationTime:ptsToTime(holdPts)]) {
+        errorOut = std::string("append held tail picture: ") +
+                   (writer_.error ? writer_.error.localizedDescription.UTF8String : "unknown");
+        return false;
+      }
+      lastVideoPts100ns_ = holdPts;
+    }
+    [writer_ endSessionAtSourceTime:ptsToTime(target)];
+    return true;
+  }
+
+  void holdLastVideo(CVPixelBufferRef buffer) {
+    CVPixelBufferRetain(buffer);
+    if (lastVideoBuffer_) CVPixelBufferRelease(lastVideoBuffer_);
+    lastVideoBuffer_ = buffer;
+  }
+  void dropHeldVideo() {
+    if (lastVideoBuffer_) CVPixelBufferRelease(lastVideoBuffer_);
+    lastVideoBuffer_ = nullptr;
+  }
+
+  bool finalize(std::string* errorOut = nullptr, std::string* tailError = nullptr) {
     bool finalized = true;
     if (writer_ && writing_) {
+      std::string tail;
+      if (!reconcileTail(tail) && tailError) *tailError = tail;
+    }
+    if (writer_ && writing_ && writer_.status != AVAssetWriterStatusWriting) {
+      // Failed or cancelled mid-session: finishWriting raises on such a writer
+      // ("Cannot call method when status is 4"), so report it, never call it.
+      finalized = false;
+      if (errorOut) *errorOut = notWritingError();
+      std::error_code ec;
+      const auto size = std::filesystem::file_size(path_, ec);
+      bytesWritten_ = ec ? 0 : static_cast<int64_t>(size);
+    } else if (writer_ && writing_) {
       [videoInput_ markAsFinished];
       if (audioInput_) {
         [audioInput_ markAsFinished];
@@ -372,6 +492,7 @@ class AvfMp4Writer {
       const auto size = std::filesystem::file_size(path_, ec);
       bytesWritten_ = ec ? 0 : static_cast<int64_t>(size);
     }
+    dropHeldVideo();
     writer_ = nil;
     videoInput_ = nil;
     audioInput_ = nil;
@@ -380,6 +501,11 @@ class AvfMp4Writer {
     audioConfigured_ = false;
     return finalized;
   }
+
+  // Test-only (probeStoppedWriterForTest): a writer that stops writing mid-session.
+  void cancelForTest() { [writer_ cancelWriting]; }
+  bool reconcileTailForTest(std::string& errorOut) { return reconcileTail(errorOut); }
+  int64_t lastAudioEnd100nsForTest() const { return lastAudioEnd100ns_; }
 
   bool audioConfigured() const { return audioConfigured_; }
   int64_t videoFrameCount() const { return videoFrameCount_; }
@@ -406,6 +532,10 @@ class AvfMp4Writer {
   int64_t videoFrameCount_ = 0;
   int64_t audioPacketCount_ = 0;
   int64_t audioSampleCount_ = 0;
+  int64_t lastVideoPts100ns_ = 0;
+  int64_t lastAudioEnd100ns_ = 0;
+  bool tailHoldsRealSample_ = false;
+  CVPixelBufferRef lastVideoBuffer_ = nullptr;
   int64_t bytesWritten_ = 0;
 };
 
@@ -463,30 +593,37 @@ class AVFoundationEncoderSink final : public IEncoderSink {
         continue;  // same frame resubmitted this tick
       }
       std::string error;
-      if (!entry.opened) {
-        // Lazy open at the source's FIRST frame, sized to its native dims.
-        const int width = isI420 ? frame.i420Width : frame.pixelWidth;
-        const int height = isI420 ? frame.i420Height : frame.pixelHeight;
-        if (!entry.writer->open(entry.status.path, width, height, request_.fps,
-                                request_.targetBitrateMbps, request_.videoCodec, error,
-                                isI420 ? VideoInput::Nv12 : VideoInput::Bgra) ||
-            (entry.hasAudio &&
-             !entry.writer->ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) ||
-            !entry.writer->beginWriting(error)) {
-          entry.failed = true;
-          entry.status.warning = "ISO writer open failed: " + error;
-          raiseWarning("ISO " + entry.status.displayName + ": " + entry.status.warning);
-          continue;
-        }
-        entry.opened = true;
-        entry.status.trackOpen = true;
+      if (!entry.opened && !openIsoWriter(entry, frame, error)) {
+        continue;
       }
       bool ok = false;
       if (isI420) {
-        i420ToNv12(frame.i420->data(), frame.i420Width & ~1, frame.i420Height & ~1,
-                   entry.nv12Scratch);
-        ok = entry.writer->writeVideoNv12(entry.nv12Scratch.data(), frame.i420Width & ~1,
-                                          frame.i420Height & ~1, *pts, error);
+        const int openedW = entry.writer->openedWidth();
+        const int openedH = entry.writer->openedHeight();
+        if (frame.i420Width != openedW || frame.i420Height != openedH) {
+          // #482 / #1203: aspect-preserving, centred, legal-black letterbox —
+          // never a crop of the top-left corner.
+          conformI420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height, openedW,
+                            openedH, entry.nv12Scratch);
+        } else {
+          i420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height, entry.nv12Scratch);
+        }
+        ok = entry.writer->writeVideoNv12(entry.nv12Scratch.data(), openedW, openedH, *pts, error);
+      } else if (frame.pixelWidth != entry.writer->openedWidth() ||
+                 frame.pixelHeight != entry.writer->openedHeight()) {
+        // Same ruling as Windows: no BGRA scaler exists, so a size change after
+        // open is refused loudly rather than silently cropped/padded.
+        if (!entry.loggedSizeChange) {
+          entry.loggedSizeChange = true;
+          entry.status.warning = "ISO " + entry.status.displayName + " (" + source.sourceId +
+                                 ") changed size " + std::to_string(frame.pixelWidth) + "x" +
+                                 std::to_string(frame.pixelHeight) + " after its writer opened at " +
+                                 std::to_string(entry.writer->openedWidth()) + "x" +
+                                 std::to_string(entry.writer->openedHeight()) +
+                                 "; frames at the new size are not recorded.";
+          raiseWarning(entry.status.warning);
+        }
+        continue;
       } else {
         ok = entry.writer->writeVideo(frame.pixels->data(), frame.pixelWidth, frame.pixelHeight,
                                       frame.pixelStride, *pts, error);
@@ -513,6 +650,26 @@ class AVFoundationEncoderSink final : public IEncoderSink {
       auto& entry = it->second;
       if (!entry.writer->audioConfigured()) {
         continue;  // video-only ISO (hasAudio=false): no fabricated stem
+      }
+      if (source.departed && (source.frameCount <= 0 || source.pcm.empty())) {
+        // #1030/#1183, same rule as the Windows sink: never queue silence for a
+        // participant who has left. Skipping the tick (before the clock sees
+        // it) leaves the stem at its last real media, so the file finalizes at
+        // Stop with the real duration; a guest who returns resumes this same
+        // file and isoAudioAdvance bridges the gap with silence at that point.
+        if (!entry.departureLogged) {
+          entry.departureLogged = true;
+          ::corevideo::core::nativeLogf(
+                       "[recording] iso %s (%s) participant left the meeting; stem "
+                       "silence-fill stopped, file ends at its last real media\n",
+                       entry.status.displayName.c_str(), source.sourceId.c_str());
+        }
+        continue;
+      }
+      if (entry.departureLogged && !source.departed) {
+        entry.departureLogged = false;
+        ::corevideo::core::nativeLogf("[recording] iso %s (%s) participant is back in the meeting\n",
+                     entry.status.displayName.c_str(), source.sourceId.c_str());
       }
       const int64_t timelineNow =
           source.timelineTimestamp100ns > 0 ? source.timelineTimestamp100ns : now100ns();
@@ -597,13 +754,24 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     if (!recordingArmed_) {
       return;
     }
-    std::string finalizeError;
-    if (!writer_.finalize(&finalizeError)) failRecording(finalizeError);
+    std::string finalizeError, tailError;
+    if (!writer_.finalize(&finalizeError, &tailError)) failRecording(finalizeError);
+    if (!tailError.empty() && session_.recordingWarning.empty()) {
+      session_.recordingWarning = "Program recording could not align its A/V tail: " + tailError + ".";
+      raiseWarning(session_.recordingWarning);
+    }
     // Each ISO finalizes independently — its own moov, no 0-byte tails.
     for (auto& [sourceId, entry] : isoWriters_) {
       if (entry.opened) {
-        std::string isoFinalizeError;
-        if (!entry.writer->finalize(&isoFinalizeError)) {
+        std::string isoFinalizeError, isoTailError;
+        const bool isoFinalized = entry.writer->finalize(&isoFinalizeError, &isoTailError);
+        if (!isoTailError.empty()) {
+          // Windows parity: on the ISO track only; never the session-wide Program warning.
+          entry.status.warning = "ISO writer could not align its A/V tail: " + isoTailError;
+          ::corevideo::core::nativeLogf("[avf-encoder] %s (%s)\n", entry.status.warning.c_str(),
+                                        sourceId.c_str());
+        }
+        if (!isoFinalized) {
           entry.status.warning = "ISO finalization failed for " + sourceId + ": " + isoFinalizeError;
           failRecording(entry.status.warning);
         }
@@ -648,6 +816,8 @@ class AVFoundationEncoderSink final : public IEncoderSink {
         IsoWriterEntry entry;
         entry.writer = std::make_unique<AvfMp4Writer>();
         entry.hasAudio = selection.hasAudio;
+        entry.targetWidth = selection.targetWidth;
+        entry.targetHeight = selection.targetHeight;
         entry.status.sourceId = selection.sourceId;
         entry.status.displayName = selection.displayName;
         char number[8];
@@ -752,9 +922,41 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     bool hasAudio = false;
     bool opened = false;
     bool failed = false;
+    bool loggedSizeChange = false;
+    bool departureLogged = false;  // #1030: one log per departure
+    int targetWidth = 0;   // selected canvas for a Zoom camera; 0 = source-native
+    int targetHeight = 0;
     std::vector<uint8_t> nv12Scratch;
     std::vector<float> stereoScratch;
   };
+
+  // Lazily open one ISO writer when its first real frame arrives. A Zoom camera
+  // (target size selected at join, #1203) opens at that size regardless of the
+  // first frame's size; any other source opens at its native frame size.
+  bool openIsoWriter(IsoWriterEntry& entry, const VideoFrame& frame, std::string& error) {
+    const bool isI420 = frame.hasI420();
+    int width = isI420 ? frame.i420Width : frame.pixelWidth;
+    int height = isI420 ? frame.i420Height : frame.pixelHeight;
+    if (isI420 && entry.targetWidth > 0 && entry.targetHeight > 0) {
+      width = entry.targetWidth;
+      height = entry.targetHeight;
+    }
+    entry.writer->setTailHoldsRealSample(true);
+    if (!entry.writer->open(entry.status.path, width, height, request_.fps,
+                            request_.targetBitrateMbps, request_.videoCodec, error,
+                            isI420 ? VideoInput::Nv12 : VideoInput::Bgra) ||
+        (entry.hasAudio &&
+         !entry.writer->ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) ||
+        !entry.writer->beginWriting(error)) {
+      entry.failed = true;
+      entry.status.warning = "ISO writer open failed: " + error;
+      raiseWarning("ISO " + entry.status.displayName + ": " + entry.status.warning);
+      return false;
+    }
+    entry.opened = true;
+    entry.status.trackOpen = true;
+    return true;
+  }
 
   RecordingSessionRequest request_;
   OutputSession session_;
@@ -769,6 +971,39 @@ class AVFoundationEncoderSink final : public IEncoderSink {
 
 std::unique_ptr<IEncoderSink> createAVFoundationEncoderSink() {
   return std::make_unique<AVFoundationEncoderSink>();
+}
+
+AvfStoppedWriterProbe probeStoppedWriterForTest(const std::string& path) {
+  AvfStoppedWriterProbe probe;
+  AvfMp4Writer writer;
+  std::string error;
+  if (!writer.open(path, 64, 64, 30, 2.0, "h264", error) ||
+      !writer.ensureAudioStream(2, 48000, 128, error) || !writer.beginWriting(error)) {
+    probe.setUpError = error;
+    return probe;
+  }
+  std::vector<uint8_t> picture(64 * 64 * 4, 0x40);
+  std::vector<float> audio(4800 * 2, 0.f);
+  if (!writer.writeVideo(picture.data(), 64, 64, 64 * 4, 0, error) ||
+      !writer.writeAudio(audio.data(), 4800, 0, error, true)) {
+    probe.setUpError = error;
+    return probe;
+  }
+  writer.cancelForTest();
+  using Clock = std::chrono::steady_clock;
+  const auto ms = [](Clock::time_point from) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - from).count();
+  };
+  auto t0 = Clock::now();
+  probe.silenceRefused =
+      !writer.writeAudioSilence(48000, writer.lastAudioEnd100nsForTest(), probe.silenceError, true);
+  probe.silenceMs = ms(t0);
+  t0 = Clock::now();
+  probe.tailRefused = !writer.reconcileTailForTest(probe.tailError);
+  probe.tailMs = ms(t0);
+  probe.finalizeRefused = !writer.finalize(&probe.finalizeError);
+  probe.setUp = true;
+  return probe;
 }
 
 }  // namespace corevideo::modules

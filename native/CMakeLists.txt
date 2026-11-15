@@ -921,10 +921,13 @@ if(BUILD_TESTING)
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
     tests/EngineIpcShmNameTest.cpp
+    tests/EngineCommandTest.cpp
     tests/MetalCompositorTest.cpp
     tests/AvfEncoderRecordingTest.cpp
     tests/CoreAudioAdapterTest.cpp
     tests/MacCaptureSupportTest.cpp
+    tests/AvfCaptureArrivalTest.cpp
+    tests/AvfProgramTailTest.cpp
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/LockHoldGuardrailTest.cpp
@@ -991,6 +994,11 @@ if(BUILD_TESTING)
     tests/ZoomEngineStateTest.cpp
   )
   target_link_libraries(corevideo-native-tests PRIVATE corevideo_native corevideo_comms_core)
+  if(COREVIDEO_WITH_AVF_ENCODER AND NOT COREVIDEO_STUB)  # frameworks are only linked in the non-stub config
+    # AVAssetReader decode helper for the Mac ISO recording pixel tests.
+    target_sources(corevideo-native-tests PRIVATE tests/AvfMp4Decode.mm)
+    set_source_files_properties(tests/AvfMp4Decode.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  endif()
   # Comms: core relay, engine comms core/protocol, and ZComms' own tests for
   # the ported pieces (tests/comms/test_util.h maps ZC_CHECK onto the shim).
   target_sources(corevideo-native-tests PRIVATE
@@ -1037,6 +1045,11 @@ if(BUILD_TESTING)
     COREVIDEO_WITH_AJA=$<BOOL:${COREVIDEO_WITH_AJA}>
     COREVIDEO_WITH_UVC=$<BOOL:${COREVIDEO_WITH_UVC}>)
   target_include_directories(corevideo-native-tests PRIVATE tests/share-sdk zoom-engine/engine zoom-engine/shared plugin-host virtualcam-dll)
+  # POSIX-only ffmpeg discovery (modules/PosixExecutableLocator.h); Windows
+  # resolves ffmpeg on its own unchanged path, so the test is not built there.
+  if(NOT WIN32)
+    target_sources(corevideo-native-tests PRIVATE tests/PosixExecutableLocatorTest.cpp)
+  endif()
   if(GTest_FOUND)
     target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_USE_SYSTEM_GTEST=1)
     target_link_libraries(corevideo-native-tests PRIVATE GTest::gtest)
@@ -1068,6 +1081,36 @@ if(BUILD_TESTING)
     # rebuilt instead of silently exercising an older host left on disk.
     add_dependencies(corevideo-native-tests corevideo-plugin-host)
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests.exe")
+  elseif(APPLE)
+    # Every Apple configuration (stub included: AvfCaptureArrival compiles there too,
+    # AvfProgramTail only under the AVF encoder; names not compiled in a
+    # configuration simply match nothing) splits the wall-clock cases the same way.
+    # The Mac realtime AVF recordings (~36 s of wall-clock capture/encode) run as
+    # their own ctest, LABELS realtime, so a busy machine can skip them with
+    # `ctest -LE realtime`. Plain `ctest` still runs them (RUN_SERIAL: they are
+    # timing measurements and must not share the box with the main suite).
+    # Only the cases that measure wall-clock capture/encode (4-10 s each) carry the
+    # label; the sub-second deterministic cases (NoIsoDemandMeansNoRetainedFrames,
+    # HeldPictureKeepsItsArrivalIdentity..., StopUnderVideoBackpressure...) stay in
+    # the main ctest so CI runs them.
+    set(COREVIDEO_REALTIME_TEST_FILTER
+      "AvfCaptureArrival.EveryCameraDeliveryReachesTheIsoRecorderOver10Seconds"
+      ":AvfCaptureArrival.FastCameraIsNotDecimatedToTheTickRate"
+      ":AvfCaptureArrival.IsoMp4HoldsOneFramePerCameraDeliveryOver10Seconds"
+      ":AvfProgramTail.SteadyStopKeepsEveryPictureAndAlignedEnds"
+      ":AvfProgramTail.VideoStalledBeforeStopHoldsTheFinalPictureToTheAudioEnd"
+      ":AvfProgramTail.SubThresholdVideoSkewIsStillReconciled"
+      ":AvfProgramTail.SubThresholdAudioSkewIsStillPadded"
+      ":AvfProgramTail.AudioStalledBeforeStopIsPaddedWithSilenceNotCut"
+      ":AvfProgramTail.IsoVideoStalledBeforeStopIsHeldToItsAudioEnd")
+    string(CONCAT COREVIDEO_REALTIME_TEST_FILTER ${COREVIDEO_REALTIME_TEST_FILTER})
+    add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests"
+      "--gtest_filter=-${COREVIDEO_REALTIME_TEST_FILTER}")
+    add_test(NAME corevideo-native-tests-realtime
+      COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests"
+        "--gtest_filter=${COREVIDEO_REALTIME_TEST_FILTER}")
+    set_tests_properties(corevideo-native-tests-realtime PROPERTIES
+      LABELS realtime RUN_SERIAL TRUE TIMEOUT 900)
   else()
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests")
   endif()

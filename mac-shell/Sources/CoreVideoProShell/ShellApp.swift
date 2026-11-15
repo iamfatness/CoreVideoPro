@@ -1,6 +1,6 @@
 // CoreVideo Pro — macOS shell. Composition mirrors the Windows product
 // (ground truth: artifacts/alpha-evidence/soak-*.png + StudioWorkspace.xaml):
-// header with pill tabs under Produce/Setup group labels + Capture/Zoom Live
+// header with pill tabs under the Produce group label + Capture/Zoom Live
 // pills, readiness strip, and the Studio workspace — scene rail (numbered
 // rows, PGM amber / PVW green), PROGRAM + PREVIEW monitors (preview LEFT),
 // show-inputs strip, "Video in room" participant rail — over the transport
@@ -8,6 +8,7 @@
 // status row with the MASTER meter. Palette from App.xaml.
 
 import AppKit
+import Combine
 import IOSurface
 import SwiftUI
 
@@ -20,8 +21,36 @@ struct StudioPanel: ViewModifier {
     }
 }
 
+// Routes Cmd-Q / Dock Quit through the quit guard (QuitGuard.swift). The model
+// registers itself on start(); until then (and in the test/selfcheck harnesses)
+// a quit is immediate.
+final class ShellAppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor static weak var quitHost: AppModel?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            guard let host = Self.quitHost else { return .terminateNow }
+            return host.handleQuitRequest()
+        }
+    }
+
+    // Dock click / `reopen` AppleEvent. The main window is single-instance: bring
+    // the existing one forward; only when it has been CLOSED does one get made,
+    // and that one shares the same AppModel (start() is once-per-process).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        MainActor.assumeIsolated {
+            switch MainWindowTracker.reopenAction(otherWindowsVisible: flag) {
+            case .broughtForward: return false
+            case .openedMain: return false
+            case .letSwiftUIOpenMain: return true
+            }
+        }
+    }
+}
+
 @main
 struct ShellApp: App {
+    @NSApplicationDelegateAdaptor(ShellAppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
     init() {
@@ -52,14 +81,28 @@ struct ShellApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("CoreVideo Pro") {
+        // The console is SINGLE-INSTANCE. A WindowGroup (kept so closing the
+        // console does not quit a recording app, and the quit prompt can fall back
+        // to its panel) would otherwise mint a second console on File > New Window
+        // or on an external URL; New Window is removed below, external events are
+        // routed to the existing window, and Dock reopen is handled in the delegate.
+        WindowGroup("CoreVideo Pro", id: MainWindowTracker.sceneId) {
             RootView()
                 .environmentObject(model)
-                .onAppear { model.start() }
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+                .modifier(MainWindowOpenerRegistration())
+                .onAppear {
+                    ShellAppDelegate.quitHost = model
+                    model.start()
+                }
                 .modifier(PopoutAutoOpen())
                 .onOpenURL { url in model.handleOAuthCallback(url) }
                 .frame(minWidth: 1360, minHeight: 860)
                 .studioChrome()
+        }
+        .commands {
+            // No File > New Window (⌘N): there is exactly one console.
+            CommandGroup(replacing: .newItem) {}
         }
 
         // POP-OUTS — `Window`, not `WindowGroup`. WindowGroup mints a NEW window
@@ -78,6 +121,7 @@ struct ShellApp: App {
         Window("Multiviewer", id: PopoutWindow.multiview) {
             MultiviewerCanvas(isPopout: true)
                 .environmentObject(model)
+                .modifier(MainWindowOpenerRegistration())
                 .padding(8)
                 .frame(minWidth: 640, minHeight: 400)
                 .studioChrome()
@@ -86,6 +130,7 @@ struct ShellApp: App {
         Window("Program / Preview", id: PopoutWindow.busMonitor) {
             BusMonitorPopout()
                 .environmentObject(model)
+                .modifier(MainWindowOpenerRegistration())
                 .frame(minWidth: 720, minHeight: 260)
                 .studioChrome()
         }
@@ -95,6 +140,7 @@ struct ShellApp: App {
         Window("Color Grade", id: PopoutWindow.colorGrade) {
             ColorGradePane()
                 .environmentObject(model)
+                .modifier(MainWindowOpenerRegistration())
                 .frame(minWidth: 420, minHeight: 320)
                 .studioChrome()
         }
@@ -102,6 +148,7 @@ struct ShellApp: App {
         Window("Audio Mixer", id: PopoutWindow.audioMixer) {
             AudioPane(isPopout: true)
                 .environmentObject(model)
+                .modifier(MainWindowOpenerRegistration())
                 .frame(minWidth: 900, minHeight: 520)
                 .studioChrome()
         }
@@ -219,6 +266,176 @@ struct RootView: View {
             OutputsStatusRow()
         }
         .background(Studio.background)
+        .overlay { QuitConfirmation() }
+        // Identifies THE main window for the quit prompt (not windows.first,
+        // which can be a pop-out).
+        .background(MainWindowReader())
+        .onAppear { model.syncTransportHotkeys() }
+        .onChange(of: model.selectedTab) { _ in model.syncTransportHotkeys() }
+    }
+}
+
+// ── Quit prompt placement (final review IMPORTANT 7) ─────────────────────────
+// The confirmation is mounted in RootView, so it can only be answered while the
+// main window is on screen. The WindowGroup app keeps running with that window
+// closed; then the same design-system view is hosted in its own panel.
+
+@MainActor
+enum MainWindowTracker {
+    private static weak var window: NSWindow?
+
+    static func track(_ candidate: NSWindow?) {
+        if let candidate { window = candidate }
+    }
+
+    static func isMain(_ candidate: NSWindow?) -> Bool {
+        guard let candidate, let window else { return false }
+        return candidate === window
+    }
+
+    static var isAvailable: Bool {
+        guard let window else { return false }
+        return window.isVisible || window.isMiniaturized
+    }
+
+    static func bringForward() {
+        guard let window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Scene id of the single console window.
+    static let sceneId = "main"
+    /// Opens the console scene; registered by every window's view so the Dock
+    /// handler can reach SwiftUI's openWindow while only a pop-out is on screen.
+    static var openMain: (() -> Void)?
+
+    enum ReopenAction: Equatable { case broughtForward, openedMain, letSwiftUIOpenMain }
+
+    /// The console exists (visible or minimized) -> bring it forward, never a new
+    /// one. It was closed while a pop-out is still up -> open the ONE console
+    /// (SwiftUI does nothing when any window is visible). Nothing on screen ->
+    /// SwiftUI's default reopen makes the one console.
+    static func reopenAction(otherWindowsVisible: Bool) -> ReopenAction {
+        if isAvailable { bringForward(); return .broughtForward }
+        if otherWindowsVisible, let openMain { openMain(); return .openedMain }
+        return .letSwiftUIOpenMain
+    }
+}
+
+struct MainWindowOpenerRegistration: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            let open = openWindow
+            MainWindowTracker.openMain = { open(id: MainWindowTracker.sceneId) }
+        }
+    }
+}
+
+struct MainWindowReader: NSViewRepresentable {
+    final class Probe: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            MainWindowTracker.track(window)
+        }
+    }
+
+    func makeNSView(context: Context) -> NSView { Probe() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+@MainActor
+enum QuitPromptPanel {
+    private static var panel: NSPanel?
+    private static var watch: AnyCancellable?
+    /// Proof-shot only (COREVIDEO_SHELL_QUITPANEL): the panel's content view.
+    static var proofView: NSView? { panel?.contentView }
+
+    static func show(model: AppModel) {
+        if let panel {
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
+        let host = NSHostingController(
+            rootView: QuitConfirmation(standalone: true).environmentObject(model))
+        let created = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 200),
+                              styleMask: [.titled, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        created.titleVisibility = .hidden
+        created.titlebarAppearsTransparent = true
+        created.isReleasedWhenClosed = false
+        created.level = .modalPanel
+        created.contentViewController = host
+        created.center()
+        created.makeKeyAndOrderFront(nil)
+        panel = created
+        // Close once nothing is pending (Keep running). Checked on the next
+        // turn: confirm flips the prompt off and the finishing notice on.
+        watch = model.$quitPromptVisible.combineLatest(model.$quitFinishing)
+            .sink { [weak model] _, _ in
+                DispatchQueue.main.async {
+                    guard let model, !model.quitPromptVisible, !model.quitFinishing else { return }
+                    close()
+                }
+            }
+    }
+
+    static func close() {
+        panel?.orderOut(nil)
+        panel = nil
+        watch = nil
+    }
+}
+
+// In-app "Stop outputs and quit?" confirmation (design-system styled — no stock
+// alert). Keep running is the default action (Return / Esc).
+struct QuitConfirmation: View {
+    @EnvironmentObject var model: AppModel
+    /// Hosted in its own panel (main window closed): no dimming scrim.
+    var standalone = false
+
+    var body: some View {
+        if model.quitPromptVisible || model.quitFinishing {
+            ZStack {
+                if standalone {
+                    Studio.background.ignoresSafeArea()
+                } else {
+                    Color.black.opacity(0.55).ignoresSafeArea()
+                }
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(model.quitFinishing ? "Finishing your files" : "Stop outputs and quit?")
+                        .font(.grotesk(16, .semibold))
+                        .foregroundStyle(Studio.textPrimary)
+                    Text(model.quitFinishing
+                         ? "Waiting for the recording to close so it stays playable. CoreVideo Pro quits when it is done."
+                         : "A recording or stream is live. Quitting stops it and finishes the files first, so the recording stays playable.")
+                        .font(.grotesk(13))
+                        .foregroundStyle(Studio.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !model.quitFinishing {
+                        HStack(spacing: 10) {
+                            Spacer()
+                            Button("Stop and quit") { model.confirmQuit() }
+                                .buttonStyle(GhostButtonStyle(tint: Studio.red))
+                            Button("Keep running") { model.cancelQuit() }
+                                .buttonStyle(AccentButtonStyle())
+                                .keyboardShortcut(.defaultAction)
+                        }
+                    }
+                }
+                .padding(20)
+                .frame(width: 420)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
+                .onExitCommand { if !model.quitFinishing { model.cancelQuit() } }
+            }
+            // The standalone panel sizes to its content, so give the 420pt card real
+            // margins (it was flush to the panel edge, its border clipped).
+            .frame(minWidth: standalone ? 470 : nil, minHeight: standalone ? 240 : nil)
+            .transition(.opacity)
+        }
     }
 }
 
@@ -235,15 +452,8 @@ struct HeaderBar: View {
                 Text("Live production").font(.grotesk(11))
                     .foregroundStyle(Studio.secondary)
             }
-            GroupLabel("Produce")
-            TabPill(tab: .studio)
-            GroupLabel("Setup")
-            ForEach([StudioTab.zoom, .sources, .scenes, .routing], id: \.self) { TabPill(tab: $0) }
-            ForEach([StudioTab.overlays, .audio, .media], id: \.self) {
-                TabPill(tab: $0)
-            }
-            GroupLabel("Diagnose")
-            ForEach([StudioTab.diagnose, .settings], id: \.self) { TabPill(tab: $0) }
+            GroupLabel(StudioTab.navGroups[0])
+            ForEach(StudioTab.navigation, id: \.self) { TabPill(tab: $0) }
             Spacer()
             CapturePill()
             if model.meetingState == "in_meeting" {
@@ -279,7 +489,7 @@ struct TabPill: View {
 
     var body: some View {
         // Nav button spec: ghost, 12px SemiBold, padding 12x8, 10px radius.
-        Button(tab.rawValue) { model.selectedTab = tab }
+        Button(tab.navLabel) { model.selectedTab = tab }
             .buttonStyle(.plain)
             .font(.grotesk(12, .semibold))
             .foregroundStyle(active ? Studio.accent : Studio.textPrimary)
@@ -610,7 +820,9 @@ struct MultiviewerCanvas: View {
                             }
                     }
                 }
-                if model.multiviewTiles.isEmpty {
+                if MultiviewEmptyStatePolicy.showAssignmentGuidance(
+                    tileCount: model.multiviewTiles.count,
+                    multiviewSurfaceId: model.multiviewSurfaceId) {
                     VStack(spacing: 6) {
                         Text("Multiviewer")
                             .font(.grotesk(14, .semibold))
@@ -1108,7 +1320,13 @@ struct TransportBar: View {
         return live.isEmpty ? "Outputs idle" : "Outputs live: " + live.joined(separator: " + ")
     }
 
-    var body: some View {
+    // RC footer (StudioFooterLayoutPanel.cs): Graphics + Outputs are a left-aligned
+    // group with a fixed gap, only the space before the transport grows, and
+    // Take / transition choice / FTB are anchored far right. If the three groups
+    // cannot fit one row, Graphics sits on its own row and Outputs + transport
+    // share the second (the Windows wrap rule). The health/audio row is separate
+    // (OutputsStatusRow, below).
+    private var graphicsGroup: some View {
         HStack(spacing: 10) {
             HStack(spacing: 4) {
                 Text("LT")
@@ -1128,50 +1346,29 @@ struct TransportBar: View {
             TransportChip(title: "DSK",
                           detail: model.lowerThirdPhase == "hidden" ? "Off" : "In",
                           lit: model.lowerThirdPhase != "hidden")
-            Spacer()
-            Text(outputsLabel).font(.grotesk(10)).foregroundStyle(Studio.secondary)
-            // Take — amber, the director's commit button.
-            Button {
-                model.take()
-            } label: {
-                HStack(spacing: 4) {
-                    Text("Take").font(.grotesk(12, .bold))
-                    Text("Cut").font(.grotesk(9))
-                        .foregroundStyle(Studio.onAccent.opacity(0.7))
-                }
-                .foregroundStyle(Studio.onAccent)
-                .padding(.horizontal, 14).padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 8).fill(
-                    model.previewSceneId.isEmpty
-                        || model.previewSceneId == model.programSceneId
-                        ? Studio.amber.opacity(0.35) : Studio.amber))
-            }
-            .buttonStyle(.plain)
-            .disabled(model.previewSceneId.isEmpty
-                      || model.previewSceneId == model.programSceneId)
+        }
+    }
+
+    private var outputsGroup: some View {
+        HStack(spacing: 8) {
             // Record — red outline with format subtitle.
             Button {
                 model.toggleRecording()
             } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: recording ? "stop.fill" : "record.circle")
-                        .font(.system(size: 10))  // design-lint: allow
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(recording ? "Stop Rec" : "Record")
-                            .font(.grotesk(11, .semibold))
-                        Text(model.isoRecordingEnabled
-                             ? "MP4 + \(model.resolvedIsoSourceIds().count) ISOs" : "MP4")
-                            .font(.grotesk(8)).foregroundStyle(Studio.secondary)
-                    }
-                }
+                Image(systemName: recording ? "stop.fill" : "record.circle")
+                    .font(.system(size: 13))  // design-lint: allow
                 .foregroundStyle(recording ? .white : Studio.red)
-                .padding(.horizontal, 10).padding(.vertical, 5)
+                .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 8)
                     .fill(recording ? Studio.red : Studio.red.opacity(0.10)))
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .stroke(Studio.red.opacity(0.8), lineWidth: 1))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(recording ? "Stop recording" : "Record")
+            .help(recording ? "Stop recording"
+                  : (model.isoRecordingEnabled
+                     ? "Record MP4 + \(model.peekIsoSourceIds().count) ISOs" : "Record MP4"))
             Toggle("ISOs", isOn: $model.isoRecordingEnabled)
                 .toggleStyle(.checkbox)
                 .font(.grotesk(10))
@@ -1179,8 +1376,81 @@ struct TransportBar: View {
             StreamControl()
             VirtualCamChip()
         }
+    }
+
+    private var transportGroup: some View {
+        HStack(spacing: 10) {
+            Text(outputsLabel).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+            if !model.takeStatus.isEmpty {
+                Text(model.takeStatus).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+                    .lineLimit(1).truncationMode(.tail).frame(maxWidth: 260)
+            }
+            // Take — amber, the director's commit button.
+            Button {
+                Task { await model.take() }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("Take").font(.grotesk(12, .bold))
+                    Text(model.takeTransitionLabel).font(.grotesk(9))
+                        .foregroundStyle(Studio.onAccent.opacity(0.7))
+                }
+                .foregroundStyle(Studio.onAccent)
+                .padding(.horizontal, 14).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 8).fill(
+                    model.canTake ? Studio.amber : Studio.amber.opacity(0.35)))
+            }
+            .buttonStyle(.plain)
+            .disabled(!model.canTake)
+            .help("Take Preview to Program using \(model.takeTransitionLabel), then swap the previous Program back to Preview.")
+            // Cut / Fade — Windows footer flyout ("Instant" vs "· 300 ms").
+            Picker("", selection: Binding(
+                get: { model.takeTransitionMode == "cut" ? "cut" : "fade" },
+                set: { model.setTakeTransition($0) })) {
+                Text("Cut").tag("cut")
+                Text("Fade").tag("fade")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("Cut is instant; Fade is 300 ms.")
+            // Fade to Black — RC key: black fill, no visible text, red outline when
+            // black is selected. The label lives in help/accessibility only.
+            Button {
+                Task { await model.toggleProgramBlackout() }
+            } label: {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.black)
+                    .frame(width: 34, height: 26)
+                    .overlay(RoundedRectangle(cornerRadius: 6)
+                        .stroke(model.programBlackout ? Studio.red : Studio.border,
+                                lineWidth: model.programBlackout ? 2 : 1))
+            }
+            .buttonStyle(.plain)
+            .help("\(model.programBlackoutLabel) (⌘⇧B). Fades Program video over 300 ms; audio continues.")
+            .accessibilityLabel(model.programBlackoutLabel)
+        }
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                graphicsGroup
+                outputsGroup
+                Spacer(minLength: 12)
+                transportGroup
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                graphicsGroup
+                HStack(spacing: 12) {
+                    outputsGroup
+                    Spacer(minLength: 12)
+                    transportGroup
+                }
+            }
+        }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Studio.panel)
         .overlay(Rectangle().frame(height: 1).foregroundStyle(Studio.stroke),
                  alignment: .top)
@@ -1212,17 +1482,16 @@ struct TransportChip: View {
 // pretending to be available.
 struct VirtualCamChip: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Virtual Cam").font(.grotesk(11, .semibold))
-            Text("Needs Developer ID").font(.grotesk(9))
-                .foregroundStyle(Studio.textDim)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
-        .opacity(0.6)
-        .help("The CoreMediaIO camera extension requires a signed, notarized "
-              + "build — blocked on the Apple Developer ID.")
+        Image(systemName: "web.camera")
+            .font(.system(size: 12))  // design-lint: allow
+            .foregroundStyle(Studio.textDim)
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
+            .opacity(0.6)
+            .accessibilityLabel("Virtual camera, needs Developer ID")
+            .help("Virtual Cam: the CoreMediaIO camera extension requires a signed, "
+                  + "notarized build — blocked on the Apple Developer ID.")
     }
 }
 
@@ -1243,28 +1512,19 @@ struct StreamControl: View {
                     model.toggleStreaming()
                 }
             } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "dot.radiowaves.left.and.right")
-                        .font(.system(size: 10))  // design-lint: allow
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(live ? "Stop Stream" : "Stream")
-                            .font(.grotesk(11, .semibold))
-                        Text(live ? (model.streamDetail.isEmpty ? "starting…"
-                                     : model.streamDetail)
-                             : "RTMP 6 Mbps")
-                            .font(.grotesk(8)).foregroundStyle(
-                                live ? Studio.blue : Studio.secondary)
-                            .lineLimit(1)
-                    }
-                }
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 13))  // design-lint: allow
                 .foregroundStyle(live ? .white : Studio.blue)
-                .padding(.horizontal, 10).padding(.vertical, 5)
+                .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(RoundedRectangle(cornerRadius: 8)
                     .fill(live ? Studio.blue : Studio.blue.opacity(0.10)))
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .stroke(Studio.blue.opacity(0.8), lineWidth: 1))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(live ? "Stop streaming" : "Start streaming")
+            .help(live ? "Stop streaming (RTMP)\(model.streamDetail.isEmpty ? "" : " — " + model.streamDetail)"
+                  : "Start streaming (RTMP, 6 Mbps)")
             Button {
                 showSettings = true
             } label: {
@@ -1324,7 +1584,7 @@ struct OutputsStatusRow: View {
             OutputColumn(title: "PROGRAM", value: "1080p60",
                          detail: model.programSceneId.isEmpty ? "idle" : "live")
             OutputColumn(title: "STREAM",
-                         value: model.streamingDesired ? "6 Mbps" : "—",
+                         value: model.streamingDesired ? (model.streamDegradationLine ?? "6 Mbps") : "—",
                          detail: model.streamingDesired
                              ? (model.streamStatus.isEmpty ? "starting" : model.streamStatus)
                              : "Idle")
@@ -1353,6 +1613,12 @@ struct OutputsStatusRow: View {
                         detail: "")
                 }
             }
+            // #1074: two facts, never a cause. Nothing shows when the condition is absent.
+            if let health = model.stalledFeedsLine {
+                Text(health).font(.grotesk(10, .semibold)).foregroundStyle(Studio.amber)
+                    .lineLimit(1).truncationMode(.tail)
+                    .accessibilityLabel("Stream health: \(health)")
+            }
             Spacer()
             Toggle(isOn: Binding(
                 get: { model.monitorEnabled },
@@ -1369,6 +1635,11 @@ struct OutputsStatusRow: View {
                     Text(lufsLabel).font(.plexMono(11, .semibold))
                 }
                 MeterBar(level: model.masterLevel).frame(width: 170)
+                TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                    if let warning = model.meterWarning(now: context.date) {
+                        Text(warning).font(.plexMono(8, .bold)).foregroundStyle(Studio.amber)
+                    }
+                }
             }
             if !peakLabel.isEmpty {
                 Text(peakLabel).font(.plexMono(9))
@@ -1432,7 +1703,7 @@ struct ZoomPane: View {
                 ? "Connected — raw media live"
                 : "Connected — capture is off"
         }
-        return model.meetingState == "error" ? "See Diagnose for the engine warning"
+        return model.meetingState == "error" ? "See Health for the engine warning"
                                              : "Not connected"
     }
 
@@ -1975,7 +2246,7 @@ struct AutomationPane: View {
     }
 }
 
-// DiagnosePane now lives in Diagnostics.swift (the full DIAGNOSE surface plus
+// DiagnosePane now lives in Diagnostics.swift (the full Health (DIAGNOSE) surface plus
 // the redacted support-bundle export).
 
 // ── Meters ───────────────────────────────────────────────────────────────────

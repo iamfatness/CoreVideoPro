@@ -12,6 +12,8 @@
 // rather than toward coverage percentage. Every case below maps to a real defect
 // that reached the owner in a live session or shipped to main.
 
+import Combine
+import AppKit
 import Foundation
 
 enum ShellTests {
@@ -127,7 +129,7 @@ enum ShellTests {
         expect(projection.notice.isEmpty, "fresh roster clears reconciliation notice")
     }
 
-    private static func expect(_ condition: Bool, _ what: String,
+    static func expect(_ condition: Bool, _ what: String,
                                _ file: StaticString = #file, _ line: UInt = #line) {
         checks += 1
         if !condition {
@@ -135,7 +137,7 @@ enum ShellTests {
         }
     }
 
-    private static func expectEqual<T: Equatable>(_ actual: T, _ expected: T, _ what: String,
+    static func expectEqual<T: Equatable>(_ actual: T, _ expected: T, _ what: String,
                                                   _ file: StaticString = #file,
                                                   _ line: UInt = #line) {
         checks += 1
@@ -220,6 +222,46 @@ enum ShellTests {
         stopped.finish(restarted, failed: false)
         stopped.observe("recording")
         expect(stopped.desired, "fresh recording after explicit Start remains armed")
+    }
+
+    // #976: a retained terminal state from the PREVIOUS take must not cancel a new Start.
+    private static func testRecordingRetainedTerminalStateDoesNotCancelNewStart() {
+        for terminal in ["failed", "interrupted"] {
+            var policy = RecordingCommandPolicy()
+            policy.observe(terminal, sessionId: "take-1")
+            let start = policy.begin()
+            expect(!start.stop && policy.desired, "\(terminal): Start arms intent")
+            policy.observe(terminal, sessionId: "take-1")
+            expect(policy.desired, "\(terminal): retained previous-take state cannot cancel pending Start")
+            policy.finish(start, failed: false)
+            policy.observe(terminal, sessionId: "take-1")
+            expect(policy.desired, "\(terminal): retained state after ack cannot cancel the Start")
+            policy.observe("starting", sessionId: "take-2")
+            policy.observe("recording", sessionId: "take-2")
+            expect(policy.desired, "\(terminal): new take goes live with intent intact")
+            policy.observe("failed", sessionId: "take-2")
+            expect(!policy.desired, "\(terminal): the NEW take's own failure still clears intent")
+        }
+        var missing = RecordingCommandPolicy()
+        missing.observe("failed", sessionId: "take-1")
+        missing.finish(missing.begin(), failed: false)
+        missing.observe("failed", sessionId: nil)
+        expect(!missing.desired, "missing identity is never proof of an old failure")
+        var bounded = RecordingCommandPolicy()
+        bounded.observe("failed", sessionId: "take-1")
+        bounded.finish(bounded.begin(), failed: false)
+        bounded.observe("recording", sessionId: nil)
+        bounded.observe("failed", sessionId: "take-1")
+        expect(!bounded.desired, "supersession ends once the new take shows progress")
+        var reused = RecordingCommandPolicy()
+        reused.observe("failed", sessionId: "take-1")
+        reused.finish(reused.begin(), failed: false)
+        reused.observe("failed", sessionId: "take-9")
+        expect(!reused.desired, "a different session's failure cancels the Start")
+        expectEqual(RecordingLifecycleReadModel.sessionId(
+            ["lifecycle": ["sessionId": "abc"], "sessionId": "zzz"]), "abc", "lifecycle sessionId read")
+        expectEqual(RecordingLifecycleReadModel.sessionId(["sessionId": "zzz"]), "zzz", "legacy sessionId read")
+        expect(RecordingLifecycleReadModel.sessionId(["status": "idle"]) == nil, "no sessionId -> nil")
     }
 
     private static func testBridgeGenerationRejectsStaleWork() {
@@ -912,6 +954,342 @@ enum ShellTests {
                     "the policy command comes after every scene command")
     }
 
+    // ── #1196 / #1070: scene editing never changes what is on air ───────────
+
+    @MainActor
+    static func sceneEditModel() -> AppModel {
+        let model = AppModel()
+        model.scenes = [
+            SceneDef(id: "s1", name: "Intro", layout: "single",
+                     layers: [SceneLayer(id: "s1-layer-0", slotId: 2, x: 0.1, y: 0.2,
+                                         width: 0.5, height: 0.6, fitMode: "fit",
+                                         opacity: 0.75)],
+                     backgroundAssetId: "bg-asset"),
+            SceneDef(id: "s2", name: "Panel", layout: "two-up"),
+            SceneDef(id: "s3", name: "Closing", layout: "pip"),
+        ]
+        model.programSceneId = "s2"
+        model.previewSceneId = "s1"
+        return model
+    }
+
+    @MainActor
+    private static func testSceneRenameKeepsEveryOtherField() {
+        let model = sceneEditModel()
+        let before = model.scenes[0]
+        let syncs = model.sceneSyncRequestCount
+        expect(model.renameScene("s1", to: "  Opening  ") == nil, "rename accepted")
+        let after = model.scenes[0]
+        expectEqual(after.name, "Opening", "name trimmed + applied")
+        expectEqual(after.backgroundAssetId, "bg-asset", "rename keeps the background")
+        expectEqual(after.layers, before.layers, "rename keeps layers byte-equal")
+        expectEqual(after.layout, before.layout, "rename keeps layout")
+        expectEqual(after.id, before.id, "rename keeps id")
+        expectEqual(model.sceneSyncRequestCount, syncs, "rename sends no scene command")
+        expectEqual(model.programSceneId, "s2", "rename leaves Program alone")
+    }
+
+    @MainActor
+    private static func testSceneRenameValidationIsTheWindowsPolicy() {
+        let model = sceneEditModel()
+        expectEqual(model.renameScene("s1", to: "   ") ?? "", "Enter a scene name.",
+                    "blank refused with the Windows text")
+        expectEqual(model.renameScene("s1", to: "  PANEL ") ?? "",
+                    "A scene with that name already exists. Choose a different name.",
+                    "case-insensitive duplicate refused with the Windows text")
+        expectEqual(model.scenes[0].name, "Intro", "refused rename changes nothing")
+        expect(model.renameScene("s1", to: "  INTRO  ") == nil, "own name (any case) allowed")
+        expect(model.renameScene("s1", to: "主題 – Montréal") == nil, "unicode allowed")
+    }
+
+    @MainActor
+    private static func testSceneDuplicateCopiesEveryField() {
+        let model = sceneEditModel()
+        let source = model.scenes[0]
+        model.duplicateScene("s1")
+        guard let copy = model.scenes.last, copy.id != "s1" else {
+            expect(false, "duplicate appended a scene"); return
+        }
+        expectEqual(copy.backgroundAssetId, source.backgroundAssetId, "duplicate keeps background")
+        expectEqual(copy.layout, source.layout, "duplicate keeps layout")
+        expectEqual(copy.layers.count, source.layers.count, "duplicate keeps layer count")
+        let l = copy.layers[0], o = source.layers[0]
+        expect(l.slotId == o.slotId && l.x == o.x && l.y == o.y && l.width == o.width
+               && l.height == o.height && l.fitMode == o.fitMode && l.opacity == o.opacity,
+               "duplicate layer geometry/fit/opacity/slot equal")
+        expect(copy.name != source.name, "duplicate has its own name")
+        expectEqual(model.programSceneId, "s2", "duplicate leaves Program alone")
+    }
+
+    @MainActor
+    private static func testSceneDeleteRefusesOnAirAndLast() {
+        let model = sceneEditModel()
+        let syncs = model.sceneSyncRequestCount
+        expectEqual(model.deleteScene("s2") ?? "", "The on-air scene cannot be removed",
+                    "Program delete refused with the Windows text")
+        expect(model.scenes.contains { $0.id == "s2" }, "Program scene still exists")
+        expectEqual(model.programSceneId, "s2", "Program did not switch")
+        expectEqual(model.sceneSyncRequestCount, syncs, "refused delete sends no scene command")
+        expectEqual(model.sceneEditMessage, "The on-air scene cannot be removed",
+                    "refusal is surfaced to the UI")
+        // Program == Preview: still the on-air scene.
+        model.previewSceneId = "s2"
+        expect(model.deleteScene("s2") != nil, "Program delete refused even when also Preview")
+        // Last scene.
+        let solo = AppModel()
+        solo.scenes = [SceneDef(id: "only", name: "Only", layout: "single")]
+        solo.programSceneId = "other"
+        expectEqual(solo.deleteScene("only") ?? "", "The last scene cannot be removed",
+                    "last scene refused with the Windows text")
+        // A non-air scene goes; Program is untouched.
+        let ok = sceneEditModel()
+        expect(ok.deleteScene("s3") == nil, "off-air scene deletes")
+        expectEqual(ok.scenes.map(\.id), ["s1", "s2"], "only the target removed")
+        expectEqual(ok.programSceneId, "s2", "Program untouched by a delete")
+        // Deleting the Preview scene empties Preview, never moves Program.
+        expect(ok.deleteScene("s1") == nil, "preview scene deletes")
+        expectEqual(ok.previewSceneId, "", "Preview empties")
+        expectEqual(ok.programSceneId, "s2", "Program still untouched")
+    }
+
+    @MainActor
+    private static func testHarnessNeverTouchesRealPrefs() {
+        expect(ShellPrefs.path != ShellPrefs.realPath, "harness prefs path is not the real path")
+        expect(ShellPrefs.path.hasPrefix(NSTemporaryDirectory()), "harness prefs live under the temp dir")
+        let real = FileManager.default.attributesOfItemOrNil(ShellPrefs.realPath)
+        let model = sceneEditModel()
+        model.duplicateScene("s1")
+        _ = model.deleteScene("s3")
+        model.newScene(layout: "single")
+        model.saveScenes()
+        expect(FileManager.default.fileExists(atPath: ShellPrefs.path), "saves went to the harness path")
+        let after = FileManager.default.attributesOfItemOrNil(ShellPrefs.realPath)
+        expect(real == after, "real prefs file untouched by scene saves")
+    }
+
+    private static func testHarnessPredicateIsOneAndAbortsOnRealPrefs() {
+        expect(ShellHarness.detect(in: ["COREVIDEO_SHELL_TESTS": "1"]), "TESTS is a harness run")
+        expect(ShellHarness.detect(in: ["COREVIDEO_SHELL_SELFCHECK": "1"]),
+               "SELFCHECK is a harness run (the shell log must not be written)")
+        expect(!ShellHarness.detect(in: [:]), "a normal launch is not")
+        expect(ShellHarness.isActive, "this run is a harness run")
+        expect(ShellHarness.prefsIsolationFailure(path: "/x/real.json", realPath: "/x/real.json") != nil,
+               "prefs resolving to the real file is an abort")
+        expect(ShellHarness.prefsIsolationFailure(path: ShellPrefs.path, realPath: ShellPrefs.realPath) == nil,
+               "this run's prefs are isolated")
+    }
+
+    @MainActor
+    private static func testSceneEditorNeverTargetsProgram() {
+        let model = sceneEditModel()
+        expectEqual(model.sceneEditTargetId ?? "<nil>", "s1", "editor targets Preview")
+        model.previewSceneId = ""
+        expect(model.sceneEditTargetId == nil, "empty Preview -> no edit target (not Program)")
+        // Preview == Program (the on-air row clicked, or the one-scene launch
+        // fallback): the editor must not target the live scene.
+        model.previewSceneId = model.programSceneId
+        expect(model.sceneEditTargetId == nil, "Preview == Program -> no edit target (on air)")
+        model.previewSceneId = ""
+        // The Program scene graph is identical before and after an editor-less state.
+        let programBefore = model.buildRoutes(for: "s2", isProgram: true).count
+        _ = model.deleteScene("s3")
+        expectEqual(model.buildRoutes(for: "s2", isProgram: true).count, programBefore,
+                    "Program routes unchanged")
+    }
+
+
+    // ── #870: meters say aging / stale when the audio observation ages ───────
+
+    @MainActor
+    private static func testAudioObservationThresholdsAreWindows() {
+        // AudioObservationPolicy.cs: <=250 fresh, <=1000 aging, else stale.
+        let obs = AudioObservation(sequence: 3, status: "fresh", ageMs: 0)
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        func state(_ elapsedMs: Double) -> String {
+            AudioObservationPolicy.state(obs, receivedAt: t0, now: t0.addingTimeInterval(elapsedMs / 1000))
+        }
+        expectEqual(state(250), "fresh", "250 ms is fresh")
+        expectEqual(state(251), "aging", "251 ms is aging")
+        expectEqual(state(1000), "aging", "1000 ms is aging")
+        expectEqual(state(1001), "stale", "1001 ms is stale")
+        // Owner age is carried, not reset by receipt.
+        let owned = AudioObservation(sequence: 3, status: "fresh", ageMs: 50)
+        expectEqual(AudioObservationPolicy.state(owned, receivedAt: t0,
+                    now: t0.addingTimeInterval(0.19)), "fresh", "50+190 fresh")
+        expectEqual(AudioObservationPolicy.state(owned, receivedAt: t0,
+                    now: t0.addingTimeInterval(0.21)), "aging", "50+210 aging")
+        expectEqual(AudioObservationPolicy.state(
+            AudioObservation(sequence: 4, status: "stale", ageMs: 2000), receivedAt: t0, now: t0),
+                    "stale", "published age past 1 s is stale at receipt")
+        expectEqual(AudioObservationPolicy.state(
+            AudioObservation(sequence: 0, status: "unobserved", ageMs: 0), receivedAt: t0, now: t0),
+                    "unobserved", "sequence 0 is unobserved")
+        expectEqual(AudioObservationPolicy.warning(
+            AudioObservation(sequence: 4, status: "stale", ageMs: 2000), receivedAt: t0, now: t0) ?? "",
+                    "meters stale \u{2014} last values held", "stale wording is Windows")
+        expectEqual(AudioObservationPolicy.warning(
+            AudioObservation(sequence: 1, status: "aging", ageMs: 500), receivedAt: t0, now: t0) ?? "",
+                    "meters aging", "aging wording is Windows")
+        expectEqual(AudioObservationPolicy.warning(
+            AudioObservation(sequence: 0, status: "unobserved", ageMs: 0), receivedAt: t0, now: t0) ?? "",
+                    "awaiting measured audio", "unobserved wording is Windows")
+        expect(AudioObservationPolicy.warning(obs, receivedAt: t0, now: t0) == nil, "fresh: no warning")
+    }
+
+    @MainActor
+    private static func testMeterWarningFollowsSnapshotAgeAndRecovers() {
+        let model = AppModel()
+        let t0 = Date(timeIntervalSince1970: 5_000)
+        func snap(_ seq: Int, _ ageMs: Double, level: Int = 60) -> [String: Any] {
+            ["audioObservation": ["sequence": seq, "ageMs": ageMs, "status": "fresh"],
+             "audioMixSession": ["masterLevel": level]]
+        }
+        expect(model.meterWarning(now: t0) == nil, "legacy/no envelope: no warning")
+        model.observeAudioObservation(snap(1, 20), now: t0)
+        expect(model.meterWarning(now: t0) == nil, "fresh observation: levels shown clean")
+        expect(model.meterWarning(now: t0.addingTimeInterval(0.5)) == "meters aging",
+               "no new snapshot for 500 ms: aging")
+        expect(model.meterWarning(now: t0.addingTimeInterval(2)) ==
+               "meters stale \u{2014} last values held", "no new snapshot for 2 s: stale")
+        model.observeAudioObservation(snap(2, 3000), now: t0.addingTimeInterval(2))
+        expect(model.meterWarning(now: t0.addingTimeInterval(2)) ==
+               "meters stale \u{2014} last values held", "core-published age past 1 s: stale")
+        model.observeAudioObservation(snap(3, 10), now: t0.addingTimeInterval(2.1))
+        expect(model.meterWarning(now: t0.addingTimeInterval(2.1)) == nil, "fresh again: recovers")
+        model.observeAudioObservation(["audioMixSession": [:]], now: t0.addingTimeInterval(2.2))
+        expect(model.meterWarning(now: t0.addingTimeInterval(9)) == nil, "envelope gone: no warning")
+    }
+
+    // ── #1188: output start/stop mid-take must not shrink the armed ISO set ──
+
+    @MainActor
+    private static func isoTakeModel() -> AppModel {
+        let model = AppModel()
+        func guest(_ id: String) -> RosterParticipant {
+            RosterParticipant(id: id, name: id, hasVideo: true, muted: false,
+                              talking: false, assigned: true)
+        }
+        model.roster = [guest("a"), guest("b"), guest("c")]
+        for (slot, id) in [(1, "a"), (2, "b"), (3, "c")] {
+            model.assignSlot(slot, kind: "zoom", sourceId: id, name: id)
+        }
+        model.toggleSlotIso(1)
+        model.toggleSlotIso(2)
+        return model
+    }
+
+    private static func isoIds(_ command: JSONObject) -> [String] {
+        command["isoSourceIds"] as? [String] ?? ["<missing>"]
+    }
+
+    @MainActor
+    private static func testIsoTakeSurvivesRosterLossAcrossStreamToggle() {
+        let model = isoTakeModel()
+        model.recordingDesired = true
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: false)),
+                    ["zoom:a", "zoom:b"], "take arms both ISOs")
+        model.roster = []          // transient empty roster (#1183)
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: true)),
+                    ["zoom:a", "zoom:b"], "Stream ON mid-take keeps both ISOs")
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: false)),
+                    ["zoom:a", "zoom:b"], "Stream OFF mid-take keeps both ISOs")
+        // Recovery must not admit a source that was never in the take.
+        model.roster = [RosterParticipant(id: "c", name: "c", hasVideo: true, muted: false,
+                                          talking: false, assigned: true)]
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: true)),
+                    ["zoom:a", "zoom:b"], "recovery does not change the take")
+    }
+
+    @MainActor
+    private static func testIsoTakeOperatorDeselectIsAuthoritative() {
+        let model = isoTakeModel()
+        model.recordingDesired = true
+        _ = model.startProgramOutput(recording: true, streaming: false)
+        model.roster = []
+        model.toggleSlotIso(1)     // operator deselects a
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: true)),
+                    ["zoom:b"], "operator deselect removes exactly that id")
+        model.unassignSlot(2)      // operator unassigns b
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: true)),
+                    [], "unassign / master off empties the take")
+    }
+
+    @MainActor
+    private static func testIsoNextTakeFiltersByPresenceAgain() {
+        let model = isoTakeModel()
+        model.recordingDesired = true
+        _ = model.startProgramOutput(recording: true, streaming: false)
+        model.roster = []
+        model.recordingDesired = false     // take over
+        expectEqual(isoIds(model.startProgramOutput(recording: false, streaming: true)),
+                    [], "between takes the present-filter applies")
+        model.roster = [RosterParticipant(id: "b", name: "b", hasVideo: true, muted: false,
+                                          talking: false, assigned: true)]
+        model.recordingDesired = true      // new take arms from presence
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: false)),
+                    ["zoom:b"], "new take arms only present sources")
+    }
+
+    @MainActor
+    private static func testIsoDisplayReadDoesNotConsumeOperatorEdit() {
+        let model = isoTakeModel()
+        model.recordingDesired = true
+        _ = model.startProgramOutput(recording: true, streaming: false)
+        model.roster = [RosterParticipant(id: "c", name: "c", hasVideo: true, muted: false,
+                                          talking: false, assigned: true)]
+        model.toggleSlotIso(3)     // operator selects c (edit pending)
+        let first = model.peekIsoSourceIds()
+        expectEqual(first, ["zoom:a", "zoom:b", "zoom:c"], "peek shows the pending edit")
+        expectEqual(model.peekIsoSourceIds(), first, "peek is repeatable")
+        // If peek had resolved (mutated), c would now be locked into the take.
+        model.roster = []
+        expectEqual(isoIds(model.startProgramOutput(recording: true, streaming: false)),
+                    ["zoom:a", "zoom:b"],
+                    "display reads must not change what the next command sends")
+    }
+
+    private static func testRecordingIsoSelectionPort() {
+        var sel = RecordingIsoSelection()
+        let abc: Set<String> = ["zoom:a", "zoom:b", "zoom:c"]
+        func r(_ eligible: [String], _ assigned: Set<String>? = nil) -> [String] {
+            sel.resolve(recordingRequested: true, enabled: true, selected: abc,
+                        eligible: eligible, assigned: assigned ?? abc)
+        }
+        expectEqual(r(["zoom:a", "zoom:b"]), ["zoom:a", "zoom:b"], "arm filters by presence")
+        expectEqual(r([]), ["zoom:a", "zoom:b"], "passive loss keeps the take")
+        expectEqual(r(["zoom:c", "zoom:b"]), ["zoom:a", "zoom:b"], "recovery does not admit c")
+        expectEqual(r(["zoom:c", "zoom:b"], abc.union(["zoom:unselected"])),
+                    ["zoom:a", "zoom:b"], "unrelated assignment is not an ISO edit")
+        sel.noteOperatorEdit()
+        expectEqual(r(["zoom:c", "zoom:b"]), ["zoom:a", "zoom:b", "zoom:c"],
+                    "an operator edit re-derives from presence + take")
+        // Explicit authority (ExplicitDeselectUnassignAndMasterOffRemainAuthoritative).
+        var auth = RecordingIsoSelection()
+        let ab: Set<String> = ["zoom:a", "zoom:b"]
+        func a(_ selected: Set<String>, enabled: Bool = true, eligible: [String] = [],
+               assigned: Set<String>) -> [String] {
+            auth.resolve(recordingRequested: true, enabled: enabled, selected: selected,
+                         eligible: eligible, assigned: assigned)
+        }
+        _ = a(ab, eligible: Array(ab), assigned: ab)
+        expectEqual(a(["zoom:b"], assigned: ab), ["zoom:b"],
+                    "smaller selected set mid-take removes the id")
+        expectEqual(a(ab, assigned: []), [], "empty assigned set empties the take")
+        _ = a(ab, eligible: Array(ab), assigned: ab)
+        expectEqual(a(ab, enabled: false, eligible: Array(ab), assigned: ab), [],
+                    "master off while recording returns empty")
+        expectEqual(a(ab, assigned: ab), [], "master-off reset: no stale take, empty roster")
+        var nine = RecordingIsoSelection()
+        let ids = (1...9).map { "zoom:\($0)" }
+        expectEqual(nine.resolve(recordingRequested: true, enabled: true, selected: Set(ids),
+                                 eligible: ids, assigned: Set(ids)), Array(ids.prefix(8)),
+                    "eight-writer cap")
+        nine.noteOperatorEdit()
+        expectEqual(nine.resolve(recordingRequested: true, enabled: true, selected: Set(ids),
+                                 eligible: [ids[8]], assigned: Set(ids)), Array(ids.prefix(8)),
+                    "retained sources keep their slots under the cap")
+    }
+
     private static func testIsoPreflightWarnsLoudly() {
         // The Windows T3.7 defect mirrored: 7 ISO streams sat at framesWritten 0,
         // no file, recording.warning null. The counts are the fixture constants;
@@ -950,10 +1328,1283 @@ enum ShellTests {
                "intent OFF is itself observed — the shell owns the Capture toggle")
     }
 
+    // #764: the core stopped storing/applying logoText, lowerThirdStyle,
+    // captionStyle and defaultOverlayBehavior; Windows stopped sending them
+    // (MediaCoreCommandBuilderTests brand-kit test) and removed the Logo text
+    // box, lower-third Style combo and Caption style combo.
+    private static func testBrandKitCommandCarriesOnlyWhatTheCoreApplies() {
+        let cmd = AppModel.brandKitCommand(OverlaysState())
+        expectEqual(cmd["type"] as? String, "set-brand-kit", "brand kit command type")
+        expectEqual(Set(cmd.keys),
+                    Set(["type", "name", "brandColor", "accentColor", "backgroundColor"]),
+                    "set-brand-kit carries exactly the fields the core applies")
+        for dead in ["logoText", "lowerThirdStyle", "captionStyle", "defaultOverlayBehavior",
+                     "logoAssetId", "logoAssetName", "logoAssetPath"] {
+            expect(cmd[dead] == nil, "set-brand-kit no longer sends \(dead)")
+        }
+    }
+
+    private static func testOldOverlayPrefsWithRemovedFieldsStillDecode() {
+        let json = """
+        {"buildInMs":700,"buildOutMs":300,"motionTiming":"custom","lowerThirdStyle":"solid",
+         "brandName":"Acme","logoText":"ACME","brandColor":"#112233","accentColor":"#445566",
+         "backgroundColor":"#000000","defaultOverlayBehavior":"restore-last",
+         "captionStyle":"boxed","captionsEnabled":true}
+        """
+        let decoded = try? JSONDecoder().decode(OverlaysState.self, from: Data(json.utf8))
+        expect(decoded != nil, "an overlays block still carrying the removed keys decodes")
+        expectEqual(decoded?.brandName, "Acme", "kept fields survive the removed keys")
+        expectEqual(decoded?.buildInMs, 700, "build timing survives")
+        expectEqual(decoded?.captionsEnabled, true, "captions toggle survives")
+        expectEqual(decoded?.brandColor, "#112233", "brand colour survives")
+        // Whole prefs file, through the real decoder.
+        let full = "{\"overlays\":" + json + "}"
+        let prefs = try? JSONDecoder().decode(ShellPrefs.self, from: Data(full.utf8))
+        expectEqual(prefs?.overlays?.brandName, "Acme", "ShellPrefs keeps the overlays block")
+    }
+
+    // Windows ApplyBrandOverlayDefaults (StudioViewModel.cs:1060), run from
+    // SetBrandKit (:1024) only: manual no-op, all-off disables every graphic,
+    // anything else leaves them alone.
+    @MainActor
+    private static func brandDefaultsModel(_ behavior: String, phase: String)
+        -> (AppModel, () -> [JSONObject]) {
+        let model = AppModel()
+        model.overlays.defaultOverlayBehavior = behavior
+        model.lowerThirdPhase = phase
+        model.lowerThirdName = "Guest"
+        model.lowerThirdSettleOverrideNs = 5_000_000  // 5ms, not the real build-out wait
+        var seen: [JSONObject] = []
+        model.overlayCommandObserver = { seen.append($0) }
+        return (model, { seen })
+    }
+
+    /// Lets the main-actor settle Task run (the harness has no async context).
+    @MainActor
+    private static func spin(_ seconds: Double = 0.15) {
+        RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    private static func hiddenAcks(_ cmds: [JSONObject]) -> Int {
+        cmds.filter {
+            ($0["overlayId"] as? String) == "key:lower-third"
+                && ($0["keyPhase"] as? String) == "hidden"
+        }.count
+    }
+
+    private static func buildOuts(_ cmds: [JSONObject]) -> Int {
+        cmds.filter { ($0["keyPhase"] as? String) == "building-out" }.count
+    }
+
+    private static func lowerThirdHides(_ cmds: [JSONObject]) -> Bool {
+        cmds.contains {
+            ($0["overlayId"] as? String) == "key:lower-third"
+                && ($0["keyPhase"] as? String) == "building-out"
+        }
+    }
+
+    /// CONTROLLER RULING (final review): Windows ApplyBrandOverlayDefaults
+    /// disables Graphics rows only; the manual lower third is independent
+    /// (StudioViewModel.cs:13851 ShouldEnableProgramLowerThird = manuallyEnabled
+    /// || ...). The Mac has no Graphics rows yet, so all-off must leave an
+    /// on-air manual lower third alone, on a brand-kit apply AND a brand edit.
+    @MainActor
+    private static func testBrandDefaultAllOffLeavesTheManualLowerThirdAlone() {
+        for phase in ["on-air", "building-in"] {
+            let (model, seen) = brandDefaultsModel("all-off", phase: phase)
+            model.pushBrandKitNow()
+            expect(seen().contains { ($0["type"] as? String) == "set-brand-kit" },
+                   "brand kit still goes out (\(phase))")
+            expect(!lowerThirdHides(seen()), "all-off does not retire the manual \(phase) lower third")
+            spin()
+            expectEqual(hiddenAcks(seen()), 0, "no hidden ack either (\(phase))")
+            expectEqual(model.lowerThirdPhase, phase, "the phase is untouched (\(phase))")
+        }
+        let (edited, seenEdited) = brandDefaultsModel("all-off", phase: "on-air")
+        edited.overlays.brandName = "Acme"
+        edited.applyBrandKit()               // the coalesced brand-edit path
+        spin(0.45)
+        expect(seenEdited().contains { ($0["type"] as? String) == "set-brand-kit" }, "the edit pushed the kit")
+        expect(!lowerThirdHides(seenEdited()) && hiddenAcks(seenEdited()) == 0,
+               "a brand-kit edit with all-off never takes the manual lower third off air")
+    }
+
+    /// The manual Hide's two-step retire: idempotent while in flight, and a
+    /// Show inside the window cancels the pending hidden ack.
+    @MainActor
+    private static func testLowerThirdRetireIsIdempotentAndShowWins() {
+        let (twice, seenTwice) = brandDefaultsModel("manual", phase: "on-air")
+        twice.hideLowerThird()
+        twice.hideLowerThird()
+        expectEqual(buildOuts(seenTwice()), 1, "repeated Hide sends one building-out")
+        spin()
+        expectEqual(hiddenAcks(seenTwice()), 1, "repeated Hide sends one hidden ack")
+        twice.hideLowerThird()
+        expectEqual(buildOuts(seenTwice()), 2, "a Hide after the first completed is allowed")
+        spin()
+
+        let (shown, seenShown) = brandDefaultsModel("manual", phase: "on-air")
+        shown.hideLowerThird()
+        shown.showLowerThird()
+        spin()
+        expectEqual(hiddenAcks(seenShown()), 0, "Show inside the retire window cancels the hidden ack")
+        expect(seenShown().contains { ($0["keyPhase"] as? String) == "building-in" },
+               "the show itself went out")
+    }
+
+    @MainActor
+    private static func testBrandDefaultOptionsAreWindows() {
+        expectEqual(AppModel.defaultOverlayBehaviors, ["all-off", "manual"],
+                    "Default overlay options match Windows BrandDefaultOverlayBehaviorOptions")
+        expectEqual(OverlaysState().defaultOverlayBehavior, "all-off",
+                    "default matches Windows ProductionCatalog.BrandKit (all-off)")
+    }
+
+    @MainActor
+    private static func testBrandDefaultManualAndUnknownAreNoOps() {
+        for behavior in ["manual", "bogus"] {
+            let (model, seen) = brandDefaultsModel(behavior, phase: "on-air")
+            model.pushBrandKitNow()
+            expect(!lowerThirdHides(seen()), "\(behavior) leaves an enabled overlay enabled")
+            expectEqual(model.lowerThirdPhase, "on-air", "\(behavior) leaves the phase alone")
+        }
+    }
+
+    @MainActor
+    private static func testBrandDefaultsAreNotRerunBySyncs() {
+        let (model, seen) = brandDefaultsModel("all-off", phase: "on-air")
+        model.setCaptionsEnabled(true)
+        model.applyMotionTiming(.gentle)
+        model.showLowerThird()
+        expect(!lowerThirdHides(seen()),
+               "captions / motion / show never apply the brand default; only a brand-kit apply does")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
+
+    // ── quit guard (T1.8 parity) ─────────────────────────────────────────────
+
+    private static func runBlocking<T: Sendable>(_ body: @escaping @Sendable () async -> T) -> T {
+        let box = QuitProbeResult<T>()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached { box.value = await body(); done.signal() }
+        done.wait()
+        return box.value!
+    }
+
+    private static func testQuitDecisionAsksOnlyWhenOutputsAreLive() {
+        func outputs(_ recording: String = "idle", desired: Bool = false,
+                     streaming: Bool = false, stream: String = "") -> QuitOutputs {
+            QuitOutputs(recordingStatus: recording, recordingDesired: desired,
+                        streamingDesired: streaming, streamStatus: stream)
+        }
+        for idle in ["idle", "completed", "failed", "interrupted"] {
+            var gate = QuitGate()
+            expectEqual(gate.request(outputs(idle)), .quitNow, "\(idle) recording quits immediately")
+        }
+        var fresh = QuitGate()
+        expectEqual(fresh.request(outputs()), .quitNow, "idle app quits immediately")
+        for live in ["recording", "starting", "producing", "stopping", "finalizing", "warning", "unknown"] {
+            var gate = QuitGate()
+            expectEqual(gate.request(outputs(live)), .ask, "\(live) recording asks first")
+        }
+        var intent = QuitGate()
+        expectEqual(intent.request(outputs(desired: true)), .ask, "a recording intent asks even before the core reports live")
+        var streaming = QuitGate()
+        expectEqual(streaming.request(outputs(streaming: true)), .ask, "streaming intent asks")
+        var senderLive = QuitGate()
+        expectEqual(senderLive.request(outputs(stream: "live")), .ask, "a live sender asks")
+        var senderGone = QuitGate()
+        expectEqual(senderGone.request(outputs(stream: "failed")), .quitNow, "a failed sender does not ask")
+    }
+
+    private static func testQuitGateAllowsOnePromptAtATime() {
+        let live = QuitOutputs(recordingStatus: "recording", recordingDesired: true)
+        var gate = QuitGate()
+        expectEqual(gate.request(live), .ask, "first quit asks")
+        expectEqual(gate.request(live), .ignore, "a second quit while the dialog is open is ignored")
+        expect(gate.confirm(), "confirm from the dialog proceeds")
+        expectEqual(gate.request(live), .ignore, "a quit while outputs finish is ignored, never a force-exit")
+        var kept = QuitGate()
+        _ = kept.request(live)
+        kept.cancel()
+        expectEqual(kept.request(live), .ask, "Keep running re-arms the next quit")
+        var stray = QuitGate()
+        expect(!stray.confirm(), "confirm without a dialog does nothing")
+        expect(QuitGuardPolicy.recordingTerminal("completed") && QuitGuardPolicy.recordingTerminal("failed"),
+               "completed and failed are terminal")
+        expect(!QuitGuardPolicy.recordingTerminal("idle") && !QuitGuardPolicy.recordingTerminal("stopping")
+               && !QuitGuardPolicy.recordingTerminal("finalizing"),
+               "idle, stopping and finalizing are NOT terminal evidence")
+        expectEqual(QuitGuardPolicy.finishTimeout, 15, "wait bound matches Windows OutputShutdownCoordinator (15 s)")
+        expectEqual(QuitGuardPolicy.coreExitGrace, 2, "core exit grace matches Windows ShutdownBudget (2 s)")
+    }
+
+    private static func testQuitFinishStopsThenWaitsForTerminalEvidence() {
+        let probe = QuitProbe()
+        let outcome = runBlocking {
+            await QuitFlow.finishOutputs(
+                stop: { _ in probe.stop(landing: true) },
+                isFinished: { _ in probe.check(finishedAfter: 3) },
+                timeout: 5, poll: 0.01)
+        }
+        expectEqual(outcome, .finished, "finishes once terminal evidence arrives")
+        expectEqual(probe.order.first ?? "", "stop", "the stop is sent before any evidence is read")
+        expect(probe.order.filter { $0 == "check" }.count >= 3, "it kept waiting until the terminal state")
+        expectEqual(probe.stops, 1, "a stop that landed is not re-sent")
+    }
+
+    private static func testQuitFinishTimesOutLoudlyAndResendsAStopThatDidNotLand() {
+        let probe = QuitProbe()
+        let started = Date()
+        let outcome = runBlocking {
+            await QuitFlow.finishOutputs(
+                stop: { _ in probe.stop(landing: false) },
+                isFinished: { _ in probe.check(finishedAfter: Int.max) },
+                timeout: 0.35, poll: 0.01, resendEvery: 0.1)
+        }
+        expectEqual(outcome, .timedOut, "never-terminal outputs end in a bounded timeout")
+        expect(Date().timeIntervalSince(started) < 3, "the wait is bounded")
+        expect(probe.stops >= 2, "a stop that did not land is re-sent")
+        expect(!probe.order.contains("check"), "no evidence counts before a stop has landed")
+    }
+
+
+    /// File > New Window and Dock-reopen after closing the main window both mint a
+    /// new main-window view whose .onAppear calls start() again. A second run
+    /// re-restored prefs over live state, doubled the autosave timer and launched a
+    /// second core, orphaning the first (possibly mid-recording). Everything start()
+    /// sets up must happen exactly once per process.
+    @MainActor
+    private static func testStartRunsItsSetupExactlyOncePerProcess() {
+        let model = AppModel()
+        var runs = 0
+        model.startBodyForTesting = { runs += 1 }
+        model.start()
+        model.start()
+        model.start()
+        expectEqual(runs, 1, "start() runs its setup (prefs restore, timers, bridge launch) once")
+        expect(model.didStart, "the model records that it has started")
+    }
+
+    private static func testBridgeAppExitClosesStdinAndGivesTheCoreAGraceBeforeTerminating() {
+        // /bin/cat exits on stdin EOF, like the core (it finalizes on EOF).
+        let polite = MediaCoreBridge(corePath: "/bin/cat", environmentExtras: [:])
+        polite.start()
+        Thread.sleep(forTimeInterval: 0.4)
+        let t0 = Date()
+        let exitedByItself = runBlocking { await polite.stopForAppExit(grace: 3) }
+        expect(exitedByItself, "a core that honours EOF exits by itself within the grace")
+        expect(Date().timeIntervalSince(t0) < 2.5, "it does not burn the whole grace when the core exits")
+        // A core that ignores stdin: the grace runs out, then it is terminated.
+        let script = NSTemporaryDirectory() + "cv-quit-stubborn-\(UUID().uuidString).sh"
+        try? "#!/bin/sh\nexec sleep 30\n".write(toFile: script, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script)
+        defer { try? FileManager.default.removeItem(atPath: script) }
+        let stubborn = MediaCoreBridge(corePath: script, environmentExtras: [:])
+        stubborn.start()
+        Thread.sleep(forTimeInterval: 0.4)
+        let t1 = Date()
+        let graceful = runBlocking { await stubborn.stopForAppExit(grace: 0.4) }
+        expect(!graceful, "a core that ignores EOF is reported as terminated after the grace")
+        expect(Date().timeIntervalSince(t1) < 3, "the grace is bounded")
+    }
+
+
+    private static func testQuitDeadlineHoldsWhenAStopRequestHangs() {
+        let started = Date()
+        let outcome = runBlocking {
+            await QuitFlow.finishOutputs(
+                stop: { _ in try? await Task.sleep(nanoseconds: 30_000_000_000); return true },
+                isFinished: { _ in true },
+                timeout: 0.4, poll: 0.01)
+        }
+        expectEqual(outcome, .timedOut, "a hung stop cannot extend the wait")
+        expect(Date().timeIntervalSince(started) < 3, "one deadline covers the whole flow, hung stop included")
+    }
+
+    /// Scripted core: records every command it is sent (types AND bodies) and
+    /// answers snapshots from a small recording lifecycle: a start makes it
+    /// `live`; a stop (or `markStopping`) walks it through `stopState` to
+    /// `completed`. `liveAfterStopPolls` answers that many post-stop requests
+    /// (the stop's own ack counts as one) with `live` still — a poll issued
+    /// before the stop landed core-side.
+    private final class FakeQuitCore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _commands: [String] = [], _sent: [[String: Any]] = []
+        private var _polls = 0, stopped = false, started = false, _hang = false
+        var completeAfterPolls = 2
+        var liveAfterStopPolls = 0
+        var stopState = "stopping"
+        var commands: [String] { lock.lock(); defer { lock.unlock() }; return _commands }
+        var sent: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return _sent }
+        var hang: Bool { get { lock.lock(); defer { lock.unlock() }; return _hang }
+                         set { lock.lock(); _hang = newValue; lock.unlock() } }
+        /// The core already saw a stop before the scenario begins.
+        func markStopping() { lock.lock(); stopped = true; _polls = 0; lock.unlock() }
+        func handle(_ body: [String: Any]) async throws -> [String: Any] {
+            if hang { try? await Task.sleep(nanoseconds: 30_000_000_000) }
+            return respond(body)
+        }
+        private func respond(_ body: [String: Any]) -> [String: Any] {
+            lock.lock(); defer { lock.unlock() }
+            let raw = body["commands"] as? [[String: Any]] ?? []
+            let cmds = raw.compactMap { $0["type"] as? String }
+            _commands += cmds
+            _sent += raw
+            if cmds.contains("start-recording-session") { started = true; stopped = false }
+            if cmds.contains("stop-recording-session") { stopped = true; _polls = 0 }
+            var state = started ? "live" : "producing"
+            if stopped {
+                _polls += 1
+                if _polls <= liveAfterStopPolls {
+                    state = "live"
+                } else {
+                    state = _polls > liveAfterStopPolls + completeAfterPolls ? "completed" : stopState
+                }
+            }
+            return ["ok": true, "snapshot": Self.snapshot(state: state, desired: !stopped)]
+        }
+        static func snapshot(state: String, desired: Bool) -> [String: Any] {
+            let lifecycle: [String: Any] = ["sessionId": "s", "desiredActive": desired, "state": state,
+                                            "health": "healthy", "finalized": state == "completed"]
+            return ["recording": ["lifecycle": lifecycle] as [String: Any]]
+        }
+    }
+
+    @MainActor
+    private static func quitModel(core: FakeQuitCore, timeout: TimeInterval = 15)
+        -> (AppModel, replies: () -> [Bool]) {
+        let model = AppModel()
+        let box = RepliesBox()
+        model.quitReplyForTesting = { box.values.append($0) }
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.quitFinishTimeout = timeout
+        model.quitCoreGrace = 0.1
+        model.quitPollInterval = 0.01
+        model.status = .connected(renderer: "test")
+        return (model, { box.values })
+    }
+
+    @MainActor
+    static func spin(until condition: () -> Bool, limit: TimeInterval) {
+        let end = Date().addingTimeInterval(limit)
+        while !condition(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    }
+
+    /// Drives the operator's REAL Record start (intent through recordingCommands)
+    /// and waits for its acknowledgement to be finished.
+    @MainActor
+    private static func startRecordingThroughTheRealPath(_ model: AppModel, _ core: FakeQuitCore) {
+        model.toggleRecording()
+        spin(until: { core.commands.contains("start-recording-session") }, limit: 3)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))   // let finish() land
+        model.applySnapshotForTesting(FakeQuitCore.snapshot(state: "live", desired: true))
+    }
+
+    @MainActor
+    private static func testQuitFlowStopsInOrderAndFinishesAtTheTerminalSnapshot() {
+        let core = FakeQuitCore()
+        // The first poll after the stop still says `recording` (issued before
+        // the stop landed core-side). A stop that bypassed recordingCommands
+        // left the policy's intent ON, and that poll re-flipped it.
+        core.liveAfterStopPolls = 2   // the stop's own ack + the first quit poll
+        let (model, replies) = quitModel(core: core, timeout: 15)
+        model.streamingDesired = true
+        startRecordingThroughTheRealPath(model, core)
+        expect(model.recordingDesired && model.recordingStatus == "recording",
+               "intent primed through the real start path")
+        var history: [Bool] = []
+        let watch = model.$recordingDesired.dropFirst().sink { history.append($0) }
+        defer { watch.cancel() }
+        let before = core.commands.count
+        expect(model.handleQuitRequest() == .terminateLater, "live outputs defer the quit")
+        expect(model.quitPromptVisible, "the confirmation is shown")
+        expect(model.handleQuitRequest() == .terminateCancel, "a second quit while asking is cancelled, never forced")
+        let t0 = Date()
+        model.confirmQuit()
+        spin(until: { !replies().isEmpty }, limit: 5)
+        expectEqual(replies(), [true], "exactly one reply, to terminate")
+        expect(Date().timeIntervalSince(t0) < 3, "finishes when the terminal snapshot arrives, far before the 15 s bound")
+        expectEqual(Array(core.commands.dropFirst(before)), ["start-program-output", "stop-recording-session"],
+                    "stream stop first, then the recording stop")
+        expectEqual(model.recordingStatus, "completed", "the direct poll applied the terminal snapshot")
+        expect(!history.contains(true),
+               "recording intent never re-arms after the quit stop (a post-stop `recording` poll included): \(history)")
+        expect(!model.recordingDesired, "recording intent stays off after the quit stop")
+        expect(!model.quitFinishing, "the finishing state is cleared")
+        expect(!model.warnings.contains { $0.contains("did not finish") }, "no false timeout warning")
+    }
+
+    private static func recordingDestinations(_ sent: [[String: Any]]) -> [[String]] {
+        sent.filter { ($0["type"] as? String) == "start-program-output" }
+            .map { $0["destinations"] as? [String] ?? ["<missing>"] }
+    }
+
+    /// Final-review CRITICAL 1: Stop Rec, then Cmd-Q while the shell still reads
+    /// `finalizing` with a stream up. The stream stop must not ask the core for
+    /// a "recording" destination (the core no longer owns it and would open a
+    /// NEW session folder that nothing ever stops).
+    @MainActor
+    private static func testQuitWhileFinalizingNeverReopensARecording() {
+        let core = FakeQuitCore()
+        core.markStopping()
+        core.stopState = "finalizing"
+        let (model, replies) = quitModel(core: core, timeout: 5)
+        model.recordingStatus = "finalizing"
+        model.recordingDesired = false
+        model.streamingDesired = true
+        expect(model.handleQuitRequest() == .terminateLater, "a live stream asks")
+        model.confirmQuit()
+        spin(until: { !replies().isEmpty }, limit: 6)
+        expectEqual(replies(), [true], "the quit completes")
+        expect(!recordingDestinations(core.sent).contains { $0.contains("recording") },
+               "no start-program-output carries a recording destination: \(recordingDestinations(core.sent))")
+        expectEqual(core.commands, ["stop-encoder-session"],
+                    "the stream stop is the operator's stop; no second recording stop while finalizing")
+    }
+
+    /// Whole-branch quit: ISO take armed, roster emptied mid-take, stream up,
+    /// operator stops the recording, then quits. Asserts EXACTLY what reached the
+    /// wire, in order, and that no ISO re-arms from presence afterwards.
+    @MainActor
+    private static func testWholeBranchQuitAfterStoppingAnIsoTakeWithAStreamUp() {
+        let core = FakeQuitCore()
+        core.stopState = "finalizing"
+        core.completeAfterPolls = 3
+        let (model, replies) = quitModel(core: core, timeout: 5)
+        func guest(_ id: String) -> RosterParticipant {
+            RosterParticipant(id: id, name: id, hasVideo: true, muted: false, talking: false, assigned: true)
+        }
+        model.roster = [guest("a"), guest("b")]
+        model.assignSlot(1, kind: "zoom", sourceId: "a", name: "a")
+        model.assignSlot(2, kind: "zoom", sourceId: "b", name: "b")
+        model.toggleSlotIso(1)
+        model.toggleSlotIso(2)
+        model.streamingDesired = true            // stream up
+        startRecordingThroughTheRealPath(model, core)
+        model.roster = []                        // transient roster loss mid-take (#1183)
+        model.toggleRecording()                  // operator stops the recording
+        spin(until: { core.commands.contains("stop-recording-session") }, limit: 3)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        model.applySnapshotForTesting(FakeQuitCore.snapshot(state: "finalizing", desired: false))
+        expectEqual(model.recordingStatus, "finalizing", "the shell still shows the file finishing")
+        expect(!model.recordingDesired, "operator intent is off")
+        model.roster = [guest("a"), guest("b")]  // presence returns before the quit
+        expect(model.handleQuitRequest() == .terminateLater, "stream + finalizing asks")
+        model.confirmQuit()
+        spin(until: { !replies().isEmpty }, limit: 6)
+        expectEqual(replies(), [true], "the quit completes")
+        expectEqual(core.commands, ["start-program-output", "set-recording-targets", "start-recording-session",
+                                    "stop-recording-session", "stop-encoder-session"],
+                    "exactly: the take's start trio, the operator's stop, the quit's stream stop")
+        let starts = core.sent.filter { ($0["type"] as? String) == "start-program-output" }
+        expectEqual(starts.count, 1, "only the take's own start-program-output was sent")
+        expectEqual(starts.first?["destinations"] as? [String] ?? [], ["recording", "rtmp"],
+                    "the take started recording alongside the live stream")
+        expectEqual(starts.first?["isoSourceIds"] as? [String] ?? [], ["zoom:a", "zoom:b"], "the take armed both ISOs")
+        expect(!model.warnings.contains { $0.contains("did not finish") }, "finished, no timeout")
+    }
+
+    /// Windows CanSetRecording refuses while _outputsClosing: once Stop-and-quit
+    /// is running, the Record / Stream buttons change nothing.
+    @MainActor
+    private static func testOutputTogglesRefuseWhileQuitting() {
+        let core = FakeQuitCore()
+        core.hang = true
+        let (model, replies) = quitModel(core: core, timeout: 0.5)
+        model.streamingDesired = true            // a stream-only quit
+        _ = model.handleQuitRequest()
+        model.confirmQuit()
+        expect(model.quitFinishing, "the quit flow is running")
+        model.toggleRecording()
+        expect(!model.recordingDesired, "Record is refused while quitting (no new take starts)")
+        model.toggleStreaming()
+        expect(model.streamingDesired, "Stream is refused while quitting (intent unchanged)")
+        spin(until: { !replies().isEmpty }, limit: 6)
+    }
+
+
+    // ── Take is a real transition with rollback (audit §3/§4) ────────────────
+    // Windows: TransportCoordinatorTests Take_DoubleInvocationWhileAwaitingSync-
+    // DoesNotSwapBack / Take_FailureRestoresPriorProgramAndRetainsPreviewForRetry;
+    // MediaCoreCommandBuilder.BuildSyncCommands puts begin-take-transition first.
+
+    final class FakeTakeCore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _bodies: [[String: Any]] = []
+        private var _hold = false, _failure: String?
+        var bodies: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return _bodies }
+        var hold: Bool { get { lock.lock(); defer { lock.unlock() }; return _hold }
+                         set { lock.lock(); _hold = newValue; lock.unlock() } }
+        var failure: String? { get { lock.lock(); defer { lock.unlock() }; return _failure }
+                               set { lock.lock(); _failure = newValue; lock.unlock() } }
+        private func record(_ body: [String: Any]) { lock.lock(); _bodies.append(body); lock.unlock() }
+        func handle(_ body: [String: Any]) async throws -> [String: Any] {
+            record(body)
+            while hold { try? await Task.sleep(nanoseconds: 5_000_000) }
+            if let failure { throw BridgeError.remote(failure) }
+            return ["ok": true]
+        }
+        func types(_ index: Int = 0) -> [String] {
+            ((bodies[index]["commands"] as? [[String: Any]]) ?? []).compactMap { $0["type"] as? String }
+        }
+    }
+
+    @MainActor
+    static func takeModel(_ core: FakeTakeCore) -> AppModel {
+        let model = sceneEditModel()   // Program s2, Preview s1
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.status = .connected(renderer: "test")
+        return model
+    }
+
+    @MainActor
+    private static func runTake(_ model: AppModel, wait: Bool = true) -> TakeBox {
+        let box = TakeBox()
+        Task { @MainActor in box.result = await model.take() }
+        if wait { spin(until: { box.result != nil }, limit: 3) }
+        return box
+    }
+
+    final class TakeBox { var result: AppModel.TakeResult? }
+
+    @MainActor
+    private static func testTakeBatchOrderAndFields() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        let box = runTake(model)
+        expectEqual(box.result, .success, "Take succeeds")
+        expectEqual(core.bodies.count, 1, "Take is ONE media-core-sync request")
+        guard core.bodies.count == 1 else { return }
+        let types = core.types()
+        expectEqual(types.first ?? "", "begin-take-transition", "the transition leads the batch")
+        let load = types.firstIndex(of: "load-scene-graph") ?? -1
+        expect(load > 0, "load-scene-graph follows begin-take-transition")
+        expect(types.contains("set-preview-scene"), "preview rides the same batch")
+        let cmds = core.bodies[0]["commands"] as? [[String: Any]] ?? []
+        let t = cmds[0]
+        expectEqual(t["mode"] as? String ?? "", "fade", "default mode is fade")
+        expectEqual(t["durationMs"] as? Int ?? -1, 300, "300 ms")
+        expectEqual(t["direction"] as? String ?? "", "left-to-right", "direction")
+        expectEqual(t["dipColor"] as? String ?? "", "#000000", "dip colour")
+        expect(!(t["operationId"] as? String ?? "").isEmpty, "operation id present")
+        expect(t["revision"] as? Int != nil, "revision present")
+        expectEqual(cmds[load]["sceneId"] as? String ?? "", "s1", "the taken scene loads as Program")
+        expectEqual(model.programSceneId, "s1", "Program is the taken scene")
+        expectEqual(model.previewSceneId, "s2", "Preview is the previous Program")
+        expectEqual(model.takeStatus, "Program updated", "Windows success status")
+    }
+
+    @MainActor
+    private static func testTakeTransitionPickerAndNormalizer() {
+        expectEqual(AppModel().takeTransitionMode, "fade", "default Fade")
+        expectEqual(AppModel.normalizeTakeTransitionMode(nil), "fade", "nil -> fade")
+        expectEqual(AppModel.normalizeTakeTransitionMode(" CUT "), "cut", "trim + case")
+        expectEqual(AppModel.normalizeTakeTransitionMode("dip"), "dip", "dip kept")
+        expectEqual(AppModel.normalizeTakeTransitionMode("wipe"), "wipe", "wipe kept")
+        expectEqual(AppModel.normalizeTakeTransitionMode("zoom"), "fade", "unknown -> fade")
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        model.setTakeTransition("cut")
+        expectEqual(model.takeStatus, "Take transition set to Cut", "Windows picker status")
+        _ = runTake(model)
+        guard let body = core.bodies.first else { expect(false, "Cut Take sent"); return }
+        let cmds = body["commands"] as? [[String: Any]] ?? []
+        expectEqual(cmds.first?["mode"] as? String ?? "", "cut", "Cut picked -> mode cut")
+        model.setTakeTransition("bogus")
+        expectEqual(model.takeTransitionMode, "fade", "picker normalizes")
+    }
+
+    @MainActor
+    private static func testTakeBypassesTheSceneDebounce() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        model.syncScenes()                     // a debounced sync is pending
+        _ = runTake(model, wait: false)
+        spin(until: { !core.bodies.isEmpty }, limit: 0.08)
+        expectEqual(core.bodies.count, 1, "Take reached the core inside the 120 ms debounce")
+        spin(until: { false }, limit: 0.3)
+        expectEqual(core.bodies.count, 1, "the pending debounced sync was cancelled, not sent after the Take")
+    }
+
+    @MainActor
+    private static func testTakeFailureRestoresProgramAndPreview() {
+        let core = FakeTakeCore()
+        core.failure = "native rejected scene"
+        let model = takeModel(core)
+        let syncsBefore = model.sceneSyncRequestCount
+        let box = runTake(model)
+        let expected = "Take was not confirmed; previous local Program restored. "
+            + "Verify live output before retrying. native rejected scene"
+        expectEqual(box.result, .failed(expected), "failed with the Windows rollback text")
+        expectEqual(model.takeStatus, expected, "status carries the same text")
+        expectEqual(model.programSceneId, "s2", "Program restored")
+        expectEqual(model.previewSceneId, "s1", "Preview retained for retry")
+        expectEqual(model.sceneSyncRequestCount, syncsBefore + 2,
+                    "Take counted once, and the rollback requested a reconcile sync")
+        core.failure = nil
+        let retry = runTake(model)
+        expectEqual(retry.result, .success, "retry succeeds")
+        expectEqual(model.programSceneId, "s1", "retry takes")
+    }
+
+    @MainActor
+    private static func testTakeRollbackRefusedWhenNewerEditsLanded() {
+        let core = FakeTakeCore()
+        core.hold = true
+        core.failure = "gone"
+        let model = takeModel(core)
+        let box = runTake(model, wait: false)
+        spin(until: { !core.bodies.isEmpty }, limit: 2)
+        model.previewSceneId = "s3"            // operator re-cues while the Take is pending
+        core.hold = false
+        spin(until: { box.result != nil }, limit: 3)
+        expectEqual(box.result, .failed("Take was not confirmed; newer local edits preserved. "
+                                        + "Verify live output. gone"), "Windows preserved-edits text")
+        expectEqual(model.previewSceneId, "s3", "the newer cue is kept")
+        expectEqual(model.programSceneId, "s1", "Program is not clobbered")
+    }
+
+    @MainActor
+    private static func testSecondTakeWhileInFlightIsRefused() {
+        let core = FakeTakeCore()
+        core.hold = true
+        let model = takeModel(core)
+        let first = runTake(model, wait: false)
+        spin(until: { !core.bodies.isEmpty }, limit: 2)
+        expect(!model.canTake, "Take is disabled while one is in flight")
+        let second = runTake(model)
+        expectEqual(second.result, .failed("A Take is already in progress."), "refused")
+        expectEqual(core.bodies.count, 1, "no second request")
+        expectEqual(model.programSceneId, "s1", "no swap back")
+        expectEqual(model.previewSceneId, "s2", "preview not swapped back")
+        core.hold = false
+        spin(until: { first.result != nil }, limit: 3)
+        expectEqual(first.result, .success, "first completes")
+        expect(model.canTake, "Take is available again once the first completed")
+    }
+
+    @MainActor
+    private static func testTakeRefusalsAndOffline() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        model.previewSceneId = "ghost"
+        let box = runTake(model)
+        expectEqual(box.result, .failed("Take unavailable - select an available Preview scene."),
+                    "unavailable Preview refused")
+        expect(core.bodies.isEmpty, "nothing sent")
+        expectEqual(model.programSceneId, "s2", "Program untouched")
+        // Offline: no bridge and no seam.
+        let offline = sceneEditModel()
+        let off = runTake(offline)
+        expectEqual(off.result, .failed("Program selected locally; Take was not sent because the media core is offline."),
+                    "offline is not reported as on-air success")
+        expectEqual(offline.programSceneId, "s1", "Windows keeps the local selection offline")
+    }
+
+    @MainActor
+    private static func testTakeIsNotBlockedByTheQuitGuard() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        model.quitFinishing = true     // Windows CanTake has no quit term (only Record/Stream do)
+        expect(model.canTake, "CanTake ignores the quit guard")
+        expectEqual(runTake(model).result, .success, "Take still runs")
+    }
+
+    // ── Fade to Black (audit §2) + keyboard Take/FTB (audit §5) ──────────────
+    // Windows: StudioViewModel.ProgramBlackout.cs (SetProgramBlackoutAsync,
+    // ApplyProgramBlackoutSnapshot); Views/StudioWorkspace.TransportHotkeys.cs.
+
+    final class FakeFtbCore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _bodies: [[String: Any]] = []
+        private var _hold = false
+        var pollSnapshot: [String: Any] = ["programBlackout": false, "programBlackoutOpacity": 0.0]
+        /// nil = echo the requested target; otherwise this snapshot comes back.
+        var commandSnapshot: [String: Any]?
+        var failure: String?
+        private func record(_ body: [String: Any]) { lock.lock(); _bodies.append(body); lock.unlock() }
+        var bodies: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return _bodies }
+        var hold: Bool { get { lock.lock(); defer { lock.unlock() }; return _hold }
+                         set { lock.lock(); _hold = newValue; lock.unlock() } }
+        func handle(_ body: [String: Any]) async throws -> [String: Any] {
+            record(body)
+            let commands = (body["commands"] as? [[String: Any]]) ?? []
+            guard let ftb = commands.first(where: { $0["type"] as? String == "program-blackout" })
+            else { return ["snapshot": pollSnapshot] }
+            while hold { try? await Task.sleep(nanoseconds: 5_000_000) }
+            if let failure { throw BridgeError.remote(failure) }
+            if let commandSnapshot { return ["snapshot": commandSnapshot] }
+            let target = ftb["enabled"] as? Bool ?? false
+            return ["snapshot": ["programBlackout": target, "programBlackoutOpacity": target ? 1.0 : 0.0]]
+        }
+        var commands: [[String: Any]] {
+            bodies.flatMap { ($0["commands"] as? [[String: Any]]) ?? [] }
+                .filter { $0["type"] as? String == "program-blackout" }
+        }
+    }
+
+    @MainActor
+    static func ftbModel(_ core: FakeFtbCore) -> AppModel {
+        let model = sceneEditModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.status = .connected(renderer: "test")
+        return model
+    }
+
+    @MainActor
+    private static func runFtb(_ model: AppModel, _ enabled: Bool? = nil, wait: Bool = true) -> FtbBox {
+        let box = FtbBox()
+        Task { @MainActor in box.result = await model.setProgramBlackout(enabled) }
+        if wait { spin(until: { box.result != nil }, limit: 3) }
+        return box
+    }
+
+    final class FtbBox { var result: AppModel.BlackoutResult? }
+
+    @MainActor
+    private static func testFtbSendsTheWireCommandAndAppliesTheEcho() {
+        let core = FakeFtbCore()
+        let model = ftbModel(core)
+        let box = runFtb(model)
+        expectEqual(box.result, .success, "toggle from clear succeeds")
+        expectEqual(core.commands.count, 1, "one program-blackout command")
+        let command = core.commands.first ?? [:]
+        expectEqual(command["type"] as? String, "program-blackout", "wire type")
+        expectEqual(command["enabled"] as? Bool, true, "toggle from clear targets black")
+        expectEqual(command["durationMs"] as? Int, 300, "300 ms fade")
+        expect(model.programBlackout, "the echoed snapshot is applied")
+        expectEqual(model.programBlackoutLabel, "BLACK · Restore", "settled black label")
+        expectEqual(model.takeStatus, "Fading Program to black — audio continues", "Windows status")
+        // Toggle back: pressing again restores.
+        core.pollSnapshot = ["programBlackout": true, "programBlackoutOpacity": 1.0]
+        let back = runFtb(model)
+        expectEqual(back.result, .success, "toggle from black succeeds")
+        expectEqual(core.commands.last?["enabled"] as? Bool, false, "toggle from black targets clear")
+        expectEqual(model.takeStatus, "Restoring Program picture", "Windows restore status")
+        expect(!model.programBlackout, "restored")
+        // Explicit set is idempotent-friendly (remote set action later).
+        let set = runFtb(model, true)
+        expectEqual(set.result, .success, "explicit set")
+        expectEqual(core.commands.last?["enabled"] as? Bool, true, "explicit target wins over toggle")
+    }
+
+    @MainActor
+    private static func testFtbAdmissionRefusals() {
+        // Offline: no bridge and no seam.
+        let offline = sceneEditModel()
+        expectEqual(runFtb(offline).result, .failed("FTB unavailable: media core is offline."),
+                    "offline refused")
+        // Older core: snapshot without a boolean programBlackout.
+        let core = FakeFtbCore()
+        core.pollSnapshot = ["recording": [:]]
+        let model = ftbModel(core)
+        expectEqual(runFtb(model).result, .failed("This media core does not support Fade to Black."),
+                    "no observation: rejected rather than implying success")
+        expect(core.commands.isEmpty, "no command sent to an older core")
+        core.pollSnapshot = ["programBlackout": "yes"]
+        expectEqual(runFtb(model).result, .failed("This media core does not support Fade to Black."),
+                    "non-bool observation rejected")
+        expect(core.commands.isEmpty, "still nothing sent")
+    }
+
+    @MainActor
+    private static func testFtbRequiresTheEchoAndReportsFailure() {
+        let core = FakeFtbCore()
+        core.commandSnapshot = ["programBlackout": false, "programBlackoutOpacity": 0.0]
+        let model = ftbModel(core)
+        expectEqual(runFtb(model).result, .failed("Media core did not acknowledge FTB."),
+                    "an echo that disagrees with the target is not success")
+        expect(!model.programBlackout, "state follows the snapshot, not the intent")
+        core.commandSnapshot = [:]   // missing observation also fails
+        expectEqual(runFtb(model).result, .failed("Media core did not acknowledge FTB."),
+                    "missing echo fails")
+        core.commandSnapshot = nil
+        core.failure = "boom"
+        let failed = runFtb(model)
+        guard case .failed(let why)? = failed.result else { expect(false, "request failure surfaced"); return }
+        expect(why.hasPrefix("FTB unavailable: "), "failure is worded like Windows: \(why)")
+        expect(model.takeStatus.hasPrefix("FTB unavailable: "), "status shows it")
+        core.failure = nil
+        expectEqual(runFtb(model).result, .success, "in-flight flag cleared after a failure")
+    }
+
+    @MainActor
+    private static func testFtbInFlightGuard() {
+        let core = FakeFtbCore()
+        core.hold = true
+        let model = ftbModel(core)
+        let first = runFtb(model, wait: false)
+        spin(until: { !core.commands.isEmpty }, limit: 2)
+        let second = runFtb(model)
+        expectEqual(second.result, .failed("FTB command is already in progress."), "second refused")
+        expectEqual(core.commands.count, 1, "no second command")
+        core.hold = false
+        spin(until: { first.result != nil }, limit: 3)
+        expectEqual(first.result, .success, "first completes")
+    }
+
+    @MainActor
+    private static func testFtbLabelsFromOpacity() {
+        // Windows ApplyProgramBlackoutSnapshot, case for case.
+        expectEqual(AppModel.programBlackoutLabel(blackout: true, opacity: 0.4), "Fading to black", "fading")
+        expectEqual(AppModel.programBlackoutLabel(blackout: true, opacity: 0.998), "Fading to black", "<.999")
+        expectEqual(AppModel.programBlackoutLabel(blackout: true, opacity: 0.999), "BLACK · Restore", "settled")
+        expectEqual(AppModel.programBlackoutLabel(blackout: true, opacity: 1), "BLACK · Restore", "full")
+        expectEqual(AppModel.programBlackoutLabel(blackout: false, opacity: 0.5), "Restoring picture", "restoring")
+        expectEqual(AppModel.programBlackoutLabel(blackout: false, opacity: 0.002), "Restoring picture", ">.001")
+        expectEqual(AppModel.programBlackoutLabel(blackout: false, opacity: 0.001), "Fade to Black", "clear")
+        expectEqual(AppModel.programBlackoutLabel(blackout: false, opacity: 0), "Fade to Black", "clear 0")
+        expectEqual(AppModel.programBlackoutLabel(blackout: nil, opacity: 0.9), "Fade to Black", "unobserved")
+        let model = AppModel()
+        expectEqual(model.programBlackoutLabel, "Fade to Black", "a new session starts clear")
+        expect(!model.programBlackout, "no preference engages FTB")
+        model.applySnapshotForTesting(["programBlackout": true, "programBlackoutOpacity": 0.5])
+        expect(model.programBlackout, "snapshot sets black")
+        expectEqual(model.programBlackoutLabel, "Fading to black", "label tracks the snapshot")
+        // Another scene Take does not release the blackout (core owns it; shell just observes).
+        model.applySnapshotForTesting(["programBlackout": true, "programBlackoutOpacity": 1.0])
+        expectEqual(model.programBlackoutLabel, "BLACK · Restore", "settled")
+        model.applySnapshotForTesting(["programBlackout": false, "programBlackoutOpacity": 0.5])
+        expectEqual(model.programBlackoutLabel, "Restoring picture", "restoring")
+        model.applySnapshotForTesting(["recording": [:]])   // no observation -> not black
+        expect(!model.programBlackout, "a snapshot without the field reads as not black (Windows == true)")
+    }
+
+    @MainActor
+    private static func testTakeWhileBlackDoesNotReleaseTheBlackout() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        model.applySnapshotForTesting(["programBlackout": true, "programBlackoutOpacity": 1.0])
+        expectEqual(runTake(model).result, .success, "Take while black succeeds")
+        expect(!core.types().contains("program-blackout"), "Take never sends a blackout command")
+        expect(model.programBlackout, "still black after Take")
+    }
+
+    private static func key(_ kind: TransportKeyEvent.Kind, _ mods: TransportKeyEvent.Modifiers = [],
+                            studio: Bool = true, text: Bool = false, repeating: Bool = false) -> TransportKeyDecision {
+        TransportKeys.decide(TransportKeyEvent(kind: kind, modifiers: mods, isRepeat: repeating,
+                                               isStudioTab: studio, isTextEntryFocus: text))
+    }
+
+    private static func testTransportKeyRouting() {
+        // Space (Windows OnTransportPreviewKeyDown).
+        expectEqual(key(.space), .take, "Space takes")
+        expectEqual(key(.space, repeating: true), .swallow, "held Space is consumed but fires once")
+        expectEqual(key(.space, studio: false), .ignore, "Studio tab only")
+        expectEqual(key(.space, text: true), .ignore, "text entry keeps its Space")
+        for mod in [TransportKeyEvent.Modifiers.command, .shift, .option, .control] {
+            expectEqual(key(.space, mod), .ignore, "any modifier on Space is ignored: \(mod)")
+        }
+        // Cmd+Return (Windows Ctrl+Enter accelerator).
+        expectEqual(key(.returnKey, .command), .alternateTake, "Cmd+Return is the alternate Take")
+        expectEqual(key(.returnKey), .ignore, "bare Return is nothing")
+        expectEqual(key(.returnKey, [.command, .shift]), .ignore, "extra modifier is not the accelerator")
+        expectEqual(key(.returnKey, .command, text: true), .ignore, "text entry ignored")
+        expectEqual(key(.returnKey, .command, studio: false), .ignore, "Studio only")
+        expectEqual(key(.returnKey, .command, repeating: true), .swallow, "held accelerator does not re-fire")
+        // Cmd+Shift+B (Windows Ctrl+Shift+B).
+        expectEqual(key(.b, [.command, .shift]), .toggleBlackout, "Cmd+Shift+B is FTB")
+        expectEqual(key(.b, .command), .ignore, "Cmd+B alone is not FTB")
+        expectEqual(key(.b, [.command, .shift, .option]), .ignore, "exact modifier set")
+        expectEqual(key(.b, [.command, .shift], text: true), .ignore, "text entry ignored")
+        expectEqual(key(.b, [.command, .shift], studio: false), .ignore, "Studio only")
+        expectEqual(key(.b, [.command, .shift], repeating: true), .swallow, "no FTB flapping on key repeat")
+        expectEqual(key(.other, .command), .ignore, "other keys untouched")
+    }
+
+    @MainActor
+    private static func testTransportKeyTextEntryDetection() {
+        let field = NSTextField(frame: .zero)
+        let editor = NSTextView(frame: .zero)
+        let button = NSButton(frame: .zero)
+        let secure = NSSecureTextField(frame: .zero)
+        expect(TransportKeys.isTextEntry(field), "NSTextField is text entry")
+        expect(TransportKeys.isTextEntry(editor), "the field editor (NSTextView) is text entry")
+        expect(TransportKeys.isTextEntry(secure), "secure field is text entry")
+        let readOnly = NSTextView(frame: .zero)
+        readOnly.isEditable = false
+        expect(!TransportKeys.isTextEntry(readOnly), "read-only selectable text is not text entry")
+        let label = NSTextField(labelWithString: "x")
+        expect(!TransportKeys.isTextEntry(label), "a label (non-editable NSTextField) is not text entry")
+        expect(!TransportKeys.isTextEntry(button), "a focused button is NOT text entry (Space still Takes)")
+        expect(!TransportKeys.isTextEntry(nil), "no responder")
+    }
+
+    @MainActor
+    private static func testTransportKeyHandlerCallsTheRealCommands() {
+        let ftb = FakeFtbCore()
+        let model = ftbModel(ftb)
+        var takes = 0
+        // Space with Take unavailable is still consumed and never fires a Take.
+        model.previewSceneId = model.programSceneId
+        expect(!model.canTake, "precondition: Take unavailable")
+        let consumed = model.handleTransportKey(
+            TransportKeyEvent(kind: .space, modifiers: [], isRepeat: false, isStudioTab: true, isTextEntryFocus: false),
+            takeOverride: { takes += 1 })
+        expect(consumed, "Space is consumed even when Take is unavailable")
+        expectEqual(takes, 0, "no Take fired while unavailable")
+        // Available: routes into take().
+        let core = FakeTakeCore()
+        let takeModel = takeModel(core)
+        let spaceEvent = TransportKeyEvent(kind: .space, modifiers: [], isRepeat: false,
+                                           isStudioTab: true, isTextEntryFocus: false)
+        expect(takeModel.handleTransportKey(spaceEvent), "Space handled")
+        spin(until: { !core.bodies.isEmpty }, limit: 3)
+        expectEqual(core.types(), ["begin-take-transition", "load-scene-graph", "set-preview-scene"],
+                    "keyboard Take goes through take() (transition leads the batch)")
+        // Alternate Take when unavailable is NOT consumed (Windows CanExecute false -> unhandled).
+        let unavailable = model.handleTransportKey(
+            TransportKeyEvent(kind: .returnKey, modifiers: .command, isRepeat: false,
+                              isStudioTab: true, isTextEntryFocus: false))
+        expect(!unavailable, "Cmd+Return unavailable passes through")
+        // FTB.
+        let fired = model.handleTransportKey(
+            TransportKeyEvent(kind: .b, modifiers: [.command, .shift], isRepeat: false,
+                              isStudioTab: true, isTextEntryFocus: false))
+        expect(fired, "Cmd+Shift+B consumed")
+        spin(until: { !ftb.commands.isEmpty }, limit: 3)
+        expectEqual(ftb.commands.first?["type"] as? String, "program-blackout", "keyboard FTB sends the wire command")
+    }
+
+    @MainActor
+    private static func testTransportKeysPassThroughWhileTheQuitPromptIsUp() {
+        for (visible, finishing) in [(true, false), (false, true), (true, true)] {
+            let ftb = FakeFtbCore()
+            let model = ftbModel(ftb)
+            let core = FakeTakeCore()
+            let tm = takeModel(core)
+            for m in [model, tm] { m.quitPromptVisible = visible; m.quitFinishing = finishing }
+            for (kind, mods) in [(TransportKeyEvent.Kind.space, TransportKeyEvent.Modifiers()),
+                                 (.returnKey, [.command]), (.b, [.command, .shift])] {
+                let event = TransportKeyEvent(kind: kind, modifiers: mods, isRepeat: false,
+                                              isStudioTab: true, isTextEntryFocus: false)
+                expect(!tm.handleTransportKey(event), "\(kind) passes through (prompt \(visible)/\(finishing))")
+                expect(!model.handleTransportKey(event), "\(kind) not consumed on FTB model")
+            }
+            spin(until: { false }, limit: 0.2)
+            expect(core.bodies.isEmpty, "no Take fired under the quit prompt")
+            expect(ftb.commands.isEmpty, "no FTB fired under the quit prompt")
+        }
+    }
+
+    // Windows 1.0 nav (StudioWorkspace.xaml): one "Produce" group, Studio, Zoom,
+    // Sources, Scenes, Routing, Graphics, Audio, (Comms), Media, Health, (OHG
+    // Show). Comms/OHG are not on Mac 1.0. Settings trails (no Windows
+    // counterpart: Windows' Zoom button opens its connection page, whose
+    // content is Mac's Zoom pane; Mac Settings is output/recording config).
+    @MainActor
+    private static func testNavigationMatchesWindowsOrderAndLabels() {
+        expectEqual(StudioTab.navigation.map(\.navLabel),
+                    ["Studio", "Zoom", "Sources", "Scenes", "Routing", "Graphics",
+                     "Audio", "Media", "Health", "Settings"],
+                    "Mac nav order + labels follow Windows 1.0")
+        expectEqual(StudioTab.navigation.map(\.rawValue),
+                    ["Studio", "Zoom", "Sources", "Scenes", "Routing", "Overlays",
+                     "Audio", "Media", "Diagnose", "Settings"],
+                    "tab identifiers are unchanged")
+        expect(!StudioTab.navigation.contains(.automation), "no Automation pill")
+        expectEqual(StudioTab.navGroups, ["Produce"], "one group label")
+    }
+
+    @MainActor
+    private static func testTabNamesResolveWithAliases() {
+        expectEqual(StudioTab(name: "Overlays"), .overlays, "old name Overlays")
+        expectEqual(StudioTab(name: "graphics"), .overlays, "Graphics alias")
+        expectEqual(StudioTab(name: "Diagnose"), .diagnose, "old name Diagnose")
+        expectEqual(StudioTab(name: "HEALTH"), .diagnose, "Health alias")
+        expectEqual(StudioTab(name: "settings"), .settings, "Settings")
+        expectEqual(StudioTab(name: "zoom"), .zoom, "case-insensitive")
+        expect(StudioTab(name: "nope") == nil, "unknown name")
+    }
+
+    @MainActor
+    private static func testTransportMonitorLifecycleFollowsTheStudioTab() {
+        let model = AppModel()
+        model.selectedTab = .zoom
+        model.syncTransportHotkeys()
+        expect(!model.transportHotkeys.isInstalled, "not installed off Studio")
+        model.selectedTab = .studio
+        model.syncTransportHotkeys()
+        expect(model.transportHotkeys.isInstalled, "installed on Studio")
+        model.syncTransportHotkeys()
+        expect(model.transportHotkeys.isInstalled, "second sync keeps one monitor")
+        model.selectedTab = .audio
+        model.syncTransportHotkeys()
+        expect(!model.transportHotkeys.isInstalled, "removed when leaving Studio")
+        model.selectedTab = .studio
+        model.syncTransportHotkeys()
+        expect(model.transportHotkeys.isInstalled, "reinstalled on return")
+        model.transportHotkeys.remove()
+    }
+
+    @MainActor
+    private static func testFtbRefusalsSurfaceAsStatusForDirectCallers() {
+        let offline = sceneEditModel()
+        _ = runFtb(offline)
+        expectEqual(offline.takeStatus, "FTB unavailable: media core is offline.", "offline status set by the shared path")
+        let core = FakeFtbCore()
+        core.hold = true
+        let model = ftbModel(core)
+        let first = runFtb(model, wait: false)
+        spin(until: { !core.commands.isEmpty }, limit: 2)
+        _ = runFtb(model)
+        expectEqual(model.takeStatus, "FTB command is already in progress.", "in-flight status set by the shared path")
+        core.hold = false
+        spin(until: { first.result != nil }, limit: 3)
+        let old = FakeFtbCore()
+        old.pollSnapshot = [:]
+        let om = ftbModel(old)
+        _ = runFtb(om)
+        expectEqual(om.takeStatus, "This media core does not support Fade to Black.", "unsupported status")
+    }
+
+    /// Final-review IMPORTANT 7: Cmd-Q with the main window closed must still
+    /// show something the operator can answer, and a repeat Cmd-Q re-presents it.
+    @MainActor
+    private static func testQuitPromptIsAlwaysAnswerable() {
+        let core = FakeQuitCore()
+        let (model, _) = quitModel(core: core)
+        var shown: [QuitPromptPlacement] = []
+        model.quitPresentForTesting = { shown.append($0) }
+        model.recordingStatus = "recording"
+        model.recordingDesired = true
+        model.mainWindowAvailableForTesting = false
+        expect(model.handleQuitRequest() == .terminateLater, "live recording asks")
+        expectEqual(shown, [.fallbackPanel], "no main window: the prompt goes in its own panel")
+        expect(model.handleQuitRequest() == .terminateCancel, "a repeat quit is not a force-exit")
+        expectEqual(shown, [.fallbackPanel, .fallbackPanel], "a repeat quit re-presents the pending prompt")
+        model.cancelQuit()
+        model.mainWindowAvailableForTesting = true
+        shown = []
+        _ = model.handleQuitRequest()
+        expectEqual(shown, [.mainWindow], "with the main window available the prompt shows there")
+        model.cancelQuit()
+        // While outputs finish there is nothing to answer: a repeat quit does
+        // not re-open a prompt (the finishing notice is already up).
+        shown = []
+        model.mainWindowAvailableForTesting = false
+        core.hang = true
+        model.quitFinishTimeout = 0.3
+        _ = model.handleQuitRequest()
+        model.confirmQuit()
+        shown = []
+        expect(model.handleQuitRequest() == .terminateCancel, "a quit while finishing is ignored")
+        expectEqual(shown, [.fallbackPanel], "the finishing notice is brought forward, never a second prompt")
+        spin(until: { !model.quitFinishing }, limit: 4)
+    }
+
+    @MainActor
+    private static func testQuitCancelRepliesFalseOnceAndSendsNothing() {
+        let core = FakeQuitCore()
+        let (model, replies) = quitModel(core: core)
+        model.recordingStatus = "recording"
+        model.recordingDesired = true
+        _ = model.handleQuitRequest()
+        model.cancelQuit()
+        model.cancelQuit()
+        expectEqual(replies(), [false], "Keep running replies false exactly once")
+        expect(core.commands.isEmpty, "nothing is stopped")
+        expect(model.handleQuitRequest() == .terminateLater, "the next quit asks again")
+        model.cancelQuit()
+    }
+
+    @MainActor
+    private static func testQuitIdleQuitsImmediately() {
+        let core = FakeQuitCore()
+        let (model, replies) = quitModel(core: core)
+        expect(model.handleQuitRequest() == .terminateNow, "idle quits at once")
+        expect(replies().isEmpty && !model.quitPromptVisible, "no prompt, no reply to await")
+    }
+
+    @MainActor
+    private static func testQuitWithADeadCoreFinishesImmediately() {
+        let core = FakeQuitCore()
+        let (model, replies) = quitModel(core: core, timeout: 15)
+        model.recordingStatus = "interrupted"
+        model.recordingDesired = true
+        model.quitCoreGoneForTesting = true
+        _ = model.handleQuitRequest()
+        let t0 = Date()
+        model.confirmQuit()
+        spin(until: { !replies().isEmpty }, limit: 5)
+        expectEqual(replies(), [true], "a dead core still lets the quit complete")
+        expect(Date().timeIntervalSince(t0) < 2, "no 15 s wait on a core that cannot write anything")
+        expect(core.commands.isEmpty, "no stop is sent to a dead core")
+        expect(!model.warnings.contains { $0.contains("did not finish") }, "no false timeout warning")
+    }
+
+    @MainActor
+    private static func testQuitDeadlineIsHonouredWhenTheCoreHangs() {
+        let core = FakeQuitCore()
+        core.hang = true
+        let (model, replies) = quitModel(core: core, timeout: 0.5)
+        model.recordingStatus = "recording"
+        model.recordingDesired = true
+        _ = model.handleQuitRequest()
+        let t0 = Date()
+        model.confirmQuit()
+        spin(until: { !replies().isEmpty }, limit: 6)
+        expectEqual(replies(), [true], "a hung core cannot hold the quit forever")
+        expect(Date().timeIntervalSince(t0) < 3, "the bounded wait ends near its deadline")
+        expect(model.warnings.contains { $0.contains("did not finish") }, "the timeout is loud")
+    }
+
+
+    // ── footer health line + multiview placeholder (Task 3) ──────────────────
+    // Ported from CoreVideoPro.MediaCore.Tests StalledFeedsReadoutTests /
+    // StreamDegradationReadoutTests and WinUI.Tests MultiviewEmptyStatePolicyTests.
+
+    private static func hSource(_ id: String, _ kind: String, _ health: String,
+                                age: Double? = 2000, hasVideo: Bool = true) -> JSONObject {
+        var row: JSONObject = ["sourceId": id, "kind": kind, "health": health, "hasVideo": hasVideo]
+        row["sinceLastNewFrameMs"] = age.map { $0 as Any } ?? NSNull()
+        return row
+    }
+    private static func hZoom(_ id: String, _ age: Double = 2000) -> JSONObject {
+        hSource(id, "zoom", "stalled", age: age)
+    }
+    private static func hSnap(_ bp: JSONObject?, _ sources: [JSONObject], status: String = "live",
+                              fps: Int = 60, lifecycle: String? = nil) -> JSONObject {
+        var sender: JSONObject = ["senderId": "rtmp", "destination": "rtmp", "status": status]
+        if let bp { sender["backpressure"] = bp }
+        if let lifecycle { sender["lifecycle"] = ["state": lifecycle] }
+        return ["outputProfile": ["fps": fps],
+                "outputSenderSession": ["status": status, "senders": [sender]],
+                "sources": sources]
+    }
+    private static let hLevel1Queue445: JSONObject =
+        ["divisor": 2, "appliedDivisor": 1, "level": 1, "bufferedMs": 445]
+
+    private static func testStalledFeedsReadout() {
+        // The 2026-10-31 live-show shape: no claimed cause.
+        let line = StudioHealthReadout.stalledFeeds(hSnap(hLevel1Queue445,
+            [hZoom("1"), hZoom("2"), hZoom("3"), hSource("4", "zoom", "producing", age: 16)]))
+        expectEqual(line, "Stream 445 ms behind and 3 Zoom feeds stalled", "live-show line")
+        expect(!(line ?? "").localizedCaseInsensitiveContains("network")
+               && !(line ?? "").localizedCaseInsensitiveContains("congest"), "never claims a cause")
+        let rate: JSONObject = ["divisor": 3, "appliedDivisor": 3, "level": 2, "bufferedMs": 900]
+        expectEqual(StudioHealthReadout.stalledFeeds(hSnap(rate, [hZoom("1"), hZoom("2")])),
+                    "Stream at 1/3 rate and 2 Zoom feeds stalled", "applied divisor reads as a rate")
+        let drained: JSONObject = ["divisor": 2, "appliedDivisor": 1, "level": 1, "bufferedMs": 0]
+        expectEqual(StudioHealthReadout.stalledFeeds(hSnap(drained, [hZoom("1"), hZoom("2")])),
+                    "Stream backpressure level 1 and 2 Zoom feeds stalled", "drained queue reports level")
+        // Static screen captures never light the line.
+        let captures = [hSource("capture:screen-1", "capture", "stalled", age: 120_000),
+                        hSource("capture:screen-2", "capture", "stalled", age: 300_000)]
+        expectEqual(StudioHealthReadout.stalledFeedCount(captures), 0, "captures are not feeds")
+        expect(StudioHealthReadout.stalledFeeds(hSnap(hLevel1Queue445, captures)) == nil, "captures: no line")
+        // On-air 1.5 s edges.
+        for (age, counted) in [(200.0, false), (1499.0, false), (1500.0, true), (3000.0, true)] {
+            let rows = [hZoom("1", age), hZoom("2", age)]
+            expectEqual(StudioHealthReadout.stalledFeedCount(rows), counted ? 2 : 0, "age \(age) count")
+            expectEqual(StudioHealthReadout.stalledFeeds(hSnap(hLevel1Queue445, rows)) != nil, counted,
+                        "age \(age) line")
+        }
+        expectEqual(StudioHealthReadout.stalledFeedCount(
+            [hSource("1", "zoom", "stalled", age: nil), hSource("2", "zoom", "stalled", age: nil)]), 0,
+            "row without age never counted")
+        expect(StudioHealthReadout.stalledFeeds(hSnap(hLevel1Queue445,
+            [hZoom("1"), hSource("2", "zoom", "producing", age: 16)])) == nil, "one stalled feed is one guest's problem")
+        let healthy: JSONObject = ["divisor": 1, "appliedDivisor": 1, "level": 0]
+        expect(StudioHealthReadout.stalledFeeds(hSnap(healthy, [hZoom("1"), hZoom("2")])) == nil,
+               "no pressure: nothing")
+        expect(StudioHealthReadout.stalledFeeds(hSnap(nil, [hZoom("1"), hZoom("2")])) == nil,
+               "no backpressure node: nothing")
+        for status in ["starting", "failed", "idle"] {
+            expect(StudioHealthReadout.stalledFeeds(
+                hSnap(hLevel1Queue445, [hZoom("1"), hZoom("2")], status: status)) == nil,
+                   "non-producing sender (\(status)) is not backpressure")
+        }
+        let mixed = [hSource("still:logo", "still", "stalled", age: 60_000),
+                     hSource("media:clip", "media", "stalled", age: 60_000),
+                     hSource("tiles:s", "composed", "stalled", age: 60_000),
+                     hSource("zoom-slate", "zoom-slate", "stalled", age: 60_000),
+                     hSource("9", "zoom", "stalled", age: 60_000, hasVideo: false), hZoom("1")]
+        expectEqual(StudioHealthReadout.stalledFeedCount(mixed), 1, "only zoom video feeds count")
+        expect(StudioHealthReadout.stalledFeeds(hSnap(hLevel1Queue445, mixed)) == nil, "mixed: one feed, no line")
+        // Core wire shape (SourceVideoIngress.cpp / CoreStateCapture.cpp), through real JSON.
+        let json = """
+        {"sources":[{"sourceId":"12","kind":"zoom","hasVideo":true,"health":"stalled","sinceLastNewFrameMs":1730},
+                    {"sourceId":"13","kind":"zoom","hasVideo":false,"health":"warming","sinceLastNewFrameMs":null},
+                    {"sourceId":"14","kind":"zoom","hasVideo":true,"health":"stalled","sinceLastNewFrameMs":1900}],
+         "outputProfile":{"fps":60},
+         "outputSenderSession":{"status":"live","senders":[{"senderId":"rtmp","destination":"rtmp","status":"live",
+           "lifecycle":{"state":"producing"},
+           "backpressure":{"divisor":2,"appliedDivisor":1,"level":1,"bufferedMs":445,"queuedChunks":3}}]}}
+        """
+        let wire = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? JSONObject ?? [:]
+        expectEqual(StudioHealthReadout.stalledFeeds(wire),
+                    "Stream 445 ms behind and 2 Zoom feeds stalled", "wire shape binds")
+        // Both readouts agree on what pressure is.
+        let snap = hSnap(hLevel1Queue445, [hZoom("1"), hZoom("2")])
+        expect(StudioHealthReadout.streamDegradation(snap) != nil && StudioHealthReadout.stalledFeeds(snap) != nil,
+               "both readouts see the pressure")
+        let recovered = hSnap(["divisor": 1, "appliedDivisor": 1, "level": 0], [hZoom("1"), hZoom("2")])
+        expect(StudioHealthReadout.streamDegradation(recovered) == nil
+               && StudioHealthReadout.stalledFeeds(recovered) == nil, "recovery clears both")
+    }
+
+    private static func testStreamDegradationReadout() {
+        for (fps, divisor, expected) in [(60, 4, "15 fps feed"), (30, 4, "7.5 fps feed"), (25, 3, "8.33 fps feed")] {
+            let line = StudioHealthReadout.streamDegradation(
+                hSnap(["appliedDivisor": divisor, "level": 0], [], fps: fps))
+            expect((line ?? "").contains(expected), "cadence \(fps)/\(divisor) -> \(expected), got \(line ?? "nil")")
+        }
+        expectEqual(StudioHealthReadout.streamDegradation(
+            hSnap(["divisor": 4, "appliedDivisor": 1, "level": 3, "bufferedMs": 0], [])),
+            "RTMP degraded · 60 fps feed", "requested divisor does not pretend the feed was reduced")
+        for status in ["starting", "failed", "idle"] {
+            expect(StudioHealthReadout.streamDegradation(
+                hSnap(["appliedDivisor": 4, "level": 3], [], status: status)) == nil,
+                   "\(status) does not advertise degradation")
+        }
+        expect(StudioHealthReadout.streamDegradation(hSnap(["appliedDivisor": 1, "level": 0], [])) == nil,
+               "recovery clears")
+        expect((StudioHealthReadout.streamDegradation(hSnap(["appliedDivisor": 4, "level": 3], [], fps: 0)) ?? "")
+            .contains("feed rate unknown"), "fps 0 unknown")
+        expect((StudioHealthReadout.streamDegradation(hSnap(["appliedDivisor": 0, "level": 3], [])) ?? "")
+            .contains("feed rate unknown"), "divisor 0 unknown")
+        expect(StudioHealthReadout.streamDegradation(
+            hSnap(["appliedDivisor": 4, "level": 3], [], lifecycle: "interrupted")) == nil,
+               "lifecycle other than producing is not degraded streaming")
+    }
+
+    private static func testMultiviewEmptyStatePolicy() {
+        typealias P = MultiviewEmptyStatePolicy
+        let slate = P.Surface(status: "Waiting for video frames")
+        expect(P.showAssignmentGuidance(tileCount: 0, surface: nil), "empty, no surface: guidance")
+        expect(P.showAssignmentGuidance(tileCount: 0, surface: slate), "empty generic slate: guidance")
+        expect(!P.showAssignmentGuidance(tileCount: 2, surface: slate), "populated slate: no guidance")
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: P.Surface(status: "Renderer failed")),
+               "failure status stays visible")
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: P.Surface(status: "Capture paused")),
+               "unknown status stays visible")
+        for generic in ["Waiting for video frames", "Preparing video", "Preparing Program"] {
+            expect(P.showAssignmentGuidance(tileCount: 0, surface: P.Surface(status: generic)), "\(generic) is generic")
+        }
+        var picture = slate; picture.hasPreviewBitmap = true
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: picture), "available picture never covered")
+        var frames = slate; frames.hasFrames = true
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: frames), "published frame keeps surface")
+        var gpu = slate; gpu.awaitingGpuHandle = true
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: gpu), "pending GPU handle keeps surface")
+        var media = slate; media.mediaAssetPath = "/x.mp4"
+        expect(!P.showAssignmentGuidance(tileCount: 0, surface: media), "media path keeps surface")
+        // The Mac mapping: a published IOSurface is a picture.
+        expect(P.showAssignmentGuidance(tileCount: 0, multiviewSurfaceId: 0), "no IOSurface: guidance")
+        // An allocated IOSurface with no tiles holds no real picture yet (grid, nothing
+        // assigned): the guidance stays. The core publishes no multiview frame signal.
+        expect(P.showAssignmentGuidance(tileCount: 0, multiviewSurfaceId: 7),
+               "surface present but 0 tiles: guidance still shown")
+        expect(!P.showAssignmentGuidance(tileCount: 3, multiviewSurfaceId: 0), "tiles present: no guidance")
+    }
 
     @MainActor
     static func runAndExit() -> Never {
+        // Before ANY test: a run whose prefs resolve to the real file aborts.
+        ShellHarness.requireIsolatedPrefsOrExit()
         failures = []
         checks = 0
 
@@ -962,6 +2613,7 @@ enum ShellTests {
             ("audio-route/revisioned-projection", testAudioRouteControlProjection),
             ("zoom-roster/recovery-projection", testZoomRosterProjection),
             ("recording/command-retry", testRecordingCommandRetriesAndSupersession),
+            ("recording/retained-terminal-vs-new-start", testRecordingRetainedTerminalStateDoesNotCancelNewStart),
             ("bridge/generation-lifecycle", testBridgeGenerationRejectsStaleWork),
             ("wire/shared-lifecycle-contracts", testSharedLifecycleContracts),
             ("prefs/older-file", testPrefsSurviveAnOlderFile),
@@ -998,8 +2650,86 @@ enum ShellTests {
             ("budget/wire-shape", testSpineSubscriptionWireShape),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
+            ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),
+            ("iso/take-operator-deselect", testIsoTakeOperatorDeselectIsAuthoritative),
+            ("iso/next-take-refilters", testIsoNextTakeFiltersByPresenceAgain),
+            ("iso/display-read-pure", testIsoDisplayReadDoesNotConsumeOperatorEdit),
+            ("iso/selection-port", testRecordingIsoSelectionPort),
             ("iso/preflight-loud", testIsoPreflightWarnsLoudly),
             ("iso/preflight-unobserved", testIsoPreflightNeverWarnsOnAnUnobservedState),
+            ("overlays/brand-kit-payload", testBrandKitCommandCarriesOnlyWhatTheCoreApplies),
+            ("overlays/old-prefs-decode", testOldOverlayPrefsWithRemovedFieldsStillDecode),
+            ("overlays/brand-default-all-off-leaves-manual", testBrandDefaultAllOffLeavesTheManualLowerThirdAlone),
+            ("overlays/brand-default-noops", testBrandDefaultManualAndUnknownAreNoOps),
+            ("overlays/lower-third-retire-race", testLowerThirdRetireIsIdempotentAndShowWins),
+            ("overlays/brand-default-options", testBrandDefaultOptionsAreWindows),
+            ("overlays/brand-default-not-on-sync", testBrandDefaultsAreNotRerunBySyncs),
+            ("scenes/rename-keeps-fields", testSceneRenameKeepsEveryOtherField),
+            ("scenes/rename-policy", testSceneRenameValidationIsTheWindowsPolicy),
+            ("scenes/duplicate-copies-all", testSceneDuplicateCopiesEveryField),
+            ("scenes/delete-refusals", testSceneDeleteRefusesOnAirAndLast),
+            ("scenes/harness-prefs-isolated", testHarnessNeverTouchesRealPrefs),
+            ("harness/one-predicate-and-abort", testHarnessPredicateIsOneAndAbortsOnRealPrefs),
+            ("scenes/editor-never-program", testSceneEditorNeverTargetsProgram),
+            ("meters/observation-thresholds", testAudioObservationThresholdsAreWindows),
+            ("meters/warning-recovers", testMeterWarningFollowsSnapshotAgeAndRecovers),
+            ("quit/decision", testQuitDecisionAsksOnlyWhenOutputsAreLive),
+            ("quit/one-prompt", testQuitGateAllowsOnePromptAtATime),
+            ("quit/stop-then-wait", testQuitFinishStopsThenWaitsForTerminalEvidence),
+            ("quit/bridge-app-exit", testBridgeAppExitClosesStdinAndGivesTheCoreAGraceBeforeTerminating),
+            ("quit/deadline-hung-stop", testQuitDeadlineHoldsWhenAStopRequestHangs),
+            ("quit/flow-order-terminal", testQuitFlowStopsInOrderAndFinishesAtTheTerminalSnapshot),
+            ("quit/finalizing-never-reopens-recording", testQuitWhileFinalizingNeverReopensARecording),
+            ("quit/whole-branch-iso-stream-stop-quit", testWholeBranchQuitAfterStoppingAnIsoTakeWithAStreamUp),
+            ("quit/toggles-refused-while-quitting", testOutputTogglesRefuseWhileQuitting),
+            ("quit/prompt-always-answerable", testQuitPromptIsAlwaysAnswerable),
+            ("take/batch-order-fields", testTakeBatchOrderAndFields),
+            ("take/picker-normalizer", testTakeTransitionPickerAndNormalizer),
+            ("take/bypasses-debounce", testTakeBypassesTheSceneDebounce),
+            ("take/failure-rollback", testTakeFailureRestoresProgramAndPreview),
+            ("take/rollback-refused-newer-edits", testTakeRollbackRefusedWhenNewerEditsLanded),
+            ("take/in-flight-refused", testSecondTakeWhileInFlightIsRefused),
+            ("take/refusals-offline", testTakeRefusalsAndOffline),
+            ("take/not-blocked-by-quit", testTakeIsNotBlockedByTheQuitGuard),
+            ("ftb/wire-and-echo", testFtbSendsTheWireCommandAndAppliesTheEcho),
+            ("ftb/admission-refusals", testFtbAdmissionRefusals),
+            ("ftb/echo-required", testFtbRequiresTheEchoAndReportsFailure),
+            ("ftb/in-flight-guard", testFtbInFlightGuard),
+            ("ftb/labels-from-opacity", testFtbLabelsFromOpacity),
+            ("ftb/take-while-black", testTakeWhileBlackDoesNotReleaseTheBlackout),
+            ("keys/routing-decision", testTransportKeyRouting),
+            ("keys/text-entry-detection", testTransportKeyTextEntryDetection),
+            ("keys/handler-real-commands", testTransportKeyHandlerCallsTheRealCommands),
+            ("keys/quit-prompt-passthrough", testTransportKeysPassThroughWhileTheQuitPromptIsUp),
+            ("nav/windows-order", testNavigationMatchesWindowsOrderAndLabels),
+            ("nav/tab-aliases", testTabNamesResolveWithAliases),
+            ("keys/monitor-lifecycle", testTransportMonitorLifecycleFollowsTheStudioTab),
+            ("ftb/refusal-status", testFtbRefusalsSurfaceAsStatusForDirectCallers),
+            ("health/stalled-feeds", testStalledFeedsReadout),
+            ("health/stream-degradation", testStreamDegradationReadout),
+            ("multiview/empty-state-policy", testMultiviewEmptyStatePolicy),
+            ("quit/cancel", testQuitCancelRepliesFalseOnceAndSendsNothing),
+            ("quit/idle", testQuitIdleQuitsImmediately),
+            ("quit/dead-core", testQuitWithADeadCoreFinishesImmediately),
+            ("quit/core-hang-deadline", testQuitDeadlineIsHonouredWhenTheCoreHangs),
+            ("quit/timeout-resend", testQuitFinishTimesOutLoudlyAndResendsAStopThatDidNotLand),
+            ("control/manifest-golden", testControlManifestMatchesWindowsGolden),
+            ("control/invoke-rejections", testControlInvokeRejectsLikeWindows),
+            ("control/invoke-bind-and-replies", testControlInvokeBindsAndShapesReplies),
+            ("control/snapshot-envelope", testControlSnapshotEnvelopeIsWindows),
+            ("control/snapshot-redaction", testControlSnapshotRedactionIsWindows),
+            ("control/auth-and-bind-policy", testControlAuthAndBindPolicyAreWindows),
+            ("control/http-parser-bounds", testControlHttpParserBounds),
+            ("control/surface-model-paths", testControlSurfaceRoutesThroughTheModel),
+            ("control/surface-ftb-snapshot", testControlSurfaceFtbAndSnapshot),
+            ("control/server-end-to-end", testControlServerEndToEnd),
+            ("control/server-auth-wire", testControlServerAuthOverTheWire),
+            ("control/server-real-model", testControlServerDrivesTheRealModel),
+            ("control/state-stream-throttle", testControlStateStreamIsAThrottleNotADebounce),
+            ("control/state-stream-event-tracking", testControlStateStreamDeliversDuringEventTracking),
+            ("lifecycle/start-is-idempotent", testStartRunsItsSetupExactlyOncePerProcess),
+            ("control/ws-origin-rule", testControlWebSocketOriginRule),
+            ("control/ws-slow-client-dropped", testControlSlowWebSocketClientIsDropped),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
@@ -1017,3 +2747,31 @@ enum ShellTests {
         exit(1)
     }
 }
+
+private extension FileManager {
+    /// Existence + mtime + size of a file, nil when absent (isolation guard).
+    func attributesOfItemOrNil(_ path: String) -> String? {
+        guard let a = try? attributesOfItem(atPath: path) else { return nil }
+        return "\(a[.modificationDate] as? Date ?? .distantPast)|\(a[.size] as? Int ?? -1)"
+    }
+}
+
+private final class QuitProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _stops = 0, _checks = 0, _order: [String] = []
+    var stops: Int { lock.lock(); defer { lock.unlock() }; return _stops }
+    var order: [String] { lock.lock(); defer { lock.unlock() }; return _order }
+    func stop(landing: Bool) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        _stops += 1; _order.append("stop"); return landing
+    }
+    func check(finishedAfter n: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        _checks += 1; _order.append("check")
+        return _checks >= n
+    }
+}
+
+private final class QuitProbeResult<T>: @unchecked Sendable { var value: T? }
+
+private final class RepliesBox { var values: [Bool] = [] }

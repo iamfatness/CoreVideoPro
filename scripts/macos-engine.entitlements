@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for corevideo-zoom-engine.app, the process that links the Zoom
+  Meeting SDK. Ported from the CoreVideo OBS plugin recipe. Only the engine
+  carries these; the shell and core do not load the Zoom SDK.
+
+  NOTE ON STYLE: no double hyphens anywhere in this comment. XML forbids them
+  inside comments and Apple's AMFIUnserializeXML enforces that strictly, so a
+  double hyphen fails every codesign call with a bare syntax error.
+
+  disable-library-validation is LOAD BEARING. ZoomSDK.framework is not self
+  contained: at auth it loads sibling BUNDLES (ssb_sdk, zNet, zPTUIEx and
+  others) through the MAIN BUNDLE Contents/Frameworks directory, not via rpath.
+  Hardened runtime turns library validation on and that load is refused. The
+  failure is sdkAuth returning Failed(1) synchronously with no delegate
+  callback, and it only shows up once the build is signed with the runtime.
+
+  The camera and audio-input entitlements are for the SDK own UI (camera
+  picker, meeting audio). TCC still needs the usage description strings in the
+  engine Info.plist, which make-macos-engine-bundle.sh writes.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+</dict>
+</plist>

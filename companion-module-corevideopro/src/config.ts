@@ -15,7 +15,7 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			width: 12,
 			label: 'CoreVideo Pro remote control',
 			value:
-				'Drives CoreVideo Pro over its HTTP/WebSocket control API. Enable it in the app (it listens on 127.0.0.1:8011 by default; set COREVIDEO_OSC_LAN=1 for LAN and COREVIDEO_CONTROL_TOKEN for a token). Actions are generated live from the app manifest; feedback streams over the WebSocket.',
+				'Drives CoreVideo Pro over its HTTP/WebSocket control API. Enable it in the app (it listens on 127.0.0.1:8011 by default; set COREVIDEO_HTTP_LAN=1 for LAN and COREVIDEO_CONTROL_TOKEN for a token). Actions are generated live from the app manifest; feedback streams over the WebSocket.',
 		},
 		{
 			type: 'textinput',

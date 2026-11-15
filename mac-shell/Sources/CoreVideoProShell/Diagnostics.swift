@@ -702,7 +702,7 @@ enum DiagnosticsSelfCheck {
 
     /// Headless export of the CURRENT on-disk logs, for the case the UI itself
     /// is the thing that is broken (a Finder launch has no console, so an
-    /// operator who cannot reach the Diagnose tab has no other way to produce a
+    /// operator who cannot reach the Health tab has no other way to produce a
     /// bundle). There is no live core here, so the snapshot files are skip
     /// notes — the log tails are the payload.
     ///     COREVIDEO_SHELL_EXPORT_BUNDLE=1 .build/release/CoreVideoProShell
@@ -726,6 +726,8 @@ enum DiagnosticsSelfCheck {
 
     /// Entry point for the env-var harness run.
     static func runAndExit() -> Never {
+        // Before anything can load or save prefs: refuse a non-isolated run.
+        ShellHarness.requireIsolatedPrefsOrExit()
         var failures = run()
         // Prefs round-trip rides the same harness: a field that encodes but
         // never decodes silently drops an operator's setting, which is the same
@@ -885,7 +887,7 @@ struct DiagnosePane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Diagnose").font(.grotesk(14, .semibold))
+            Text("Health").font(.grotesk(14, .semibold))
             if snap.isEmpty {
                 DiagNote(text: "No core snapshot received yet — every reading below stays "
                          + "blank until the media core answers a sync.")

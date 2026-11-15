@@ -14,27 +14,8 @@ import { getConfigFields, type CvpConfig } from './config.js'
 import { buildFeedbacks, FEEDBACK_FLAGS } from './feedbacks.js'
 import { buildVariables, VARIABLE_FIELDS } from './variables.js'
 import { buildPresets } from './presets.js'
+import { fetchManifest, invokeAction, type Manifest, type ManifestParam } from './manifest.js'
 import { expandFeedbackFields, isTallyField, variableIdFor, withoutShellScalarFields } from './ohgFields.js'
-
-interface ManifestParam {
-	name: string
-	type: 'string' | 'int' | 'double' | 'bool'
-	required: boolean
-	description?: string
-}
-interface ManifestAction {
-	id: string
-	title: string
-	description: string
-	oscAddress: string
-	params: ManifestParam[]
-}
-interface Manifest {
-	version: number
-	root: string
-	actions: ManifestAction[]
-	feedbackFields: string[]
-}
 
 /** Reuse the same red used for "recording"/"streaming" in feedbacks.ts — the tally lamp color. */
 const OHG_TALLY_COLOR = combineRgb(200, 40, 40)
@@ -127,11 +108,9 @@ class CvpInstance extends InstanceBase<CvpConfig> {
 
 	private async loadManifest(): Promise<void> {
 		try {
-			const res = await fetch(`${this.baseUrl()}/manifest`, { headers: this.headers() })
-			if (!res.ok) throw new Error(`HTTP ${res.status}`)
-			const manifest = (await res.json()) as Manifest
+			const manifest = await fetchManifest(this.baseUrl(), this.headers())
 			this.setActionDefinitions(this.buildActions(manifest))
-			this.ohgFields = withoutShellScalarFields(expandFeedbackFields(manifest.feedbackFields ?? []))
+			this.ohgFields = withoutShellScalarFields(expandFeedbackFields(manifest.feedbackFields))
 			this.applyDefinitions()
 		} catch (err) {
 			this.log('warn', `Could not load manifest: ${String(err)}`)
@@ -186,11 +165,7 @@ class CvpInstance extends InstanceBase<CvpConfig> {
 
 	private async invoke(action: string, args: unknown[]): Promise<void> {
 		try {
-			const res = await fetch(`${this.baseUrl()}/invoke`, {
-				method: 'POST',
-				headers: this.headers(),
-				body: JSON.stringify({ action, args }),
-			})
+			const res = await invokeAction(this.baseUrl(), this.headers(), action, args)
 			if (!res.ok) {
 				const body = await res.text().catch(() => '')
 				this.log('warn', `Action ${action} failed: HTTP ${res.status} ${body}`)
