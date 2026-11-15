@@ -1034,7 +1034,7 @@ final class AppModel: ObservableObject {
         let acceptRoster = rosterProjection.observe(snapshot)
         rosterRecoveryNotice = rosterProjection.notice
         if acceptRoster { meetingState = snapshot["meetingState"] as? String ?? meetingState }
-        if acceptRoster, Self.meetingStateIsInMeeting(snapshot["meetingState"] as? String ?? "") == false {
+        if acceptRoster, Self.meetingHasEnded(snapshot["meetingState"] as? String ?? "") {
             endMeetingAudioSession()
         }
         if acceptRoster, let participants = snapshot["participants"] as? [JSONObject] {
@@ -1543,6 +1543,33 @@ final class AppModel: ObservableObject {
 
     private func pushSpine() async {
         guard let bridge else { return }
+        let requests = spinePushRequests()
+        for request in requests {
+            do {
+                _ = try await bridge.request(request)
+            } catch {
+                if request["type"] as? String == "media-core-sync" {
+                    // Not delivered: forget the memo so the debounced paths retry.
+                    lastSyncedStripIds = nil
+                    lastRoutingBaseSent = nil
+                    pushWarning("audio console sync failed: \(error.localizedDescription)")
+                } else {
+                    pushWarning("assign failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// The ordered requests one spine push sends. When the audio console changed
+    /// with this source set, the channel list and/or base routing go FIRST, in
+    /// their own media-core-sync, AHEAD of the zoom-media-spine-sync that
+    /// subscribes the audio (round-2 review): a returning A1-muted guest's mute
+    /// (I2's memory) — and the routing that keeps the core off its raw unmuted
+    /// fallback sum — must be in the core before that guest's PCM can be mixed.
+    /// The core's mailbox is FIFO and pushSpine awaits each request in order; the
+    /// 150 ms mix debounce used to let the subscription win by that much.
+    /// Internal: the harness checks the order.
+    func spinePushRequests() -> [JSONObject] {
         let participants: [JSONObject] = roster.map { participant in
             [
                 "sdkUserId": participant.id,
@@ -1555,7 +1582,20 @@ final class AppModel: ObservableObject {
         }
         let subscriptions = resolveSpineSubscriptions()
         refreshStrips()  // the console follows the audio source set just decided
-        pushRoutingBase()  // ...and so does the default routing (no source is unrouted)
+        var audio: [JSONObject] = []
+        let stripIds = Set(strips.map(\.id))
+        if !strips.isEmpty, stripIds != lastSyncedStripIds {
+            mixSyncTask?.cancel()
+            scheduledStripIds = nil
+            audio.append(audioMixCommand())
+            lastSyncedStripIds = stripIds
+        }
+        if let routing = routingBaseCommand(), let sends = routing["sends"] as? [JSONObject],
+           !(lastRoutingBaseSent.map { NSArray(array: $0).isEqual(to: sends) } ?? false) {
+            routingBaseTask?.cancel()
+            audio.append(routing)
+            lastRoutingBaseSent = sends
+        }
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
@@ -1596,14 +1636,13 @@ final class AppModel: ObservableObject {
             "warnings": [],
             "summary": "mac shell spine sync",
         ]
-        do {
-            _ = try await bridge.request([
-                "type": "zoom-media-spine-sync", "spinePayload": payload,
-                "elapsedMs": elapsedMs(),
-            ])
-        } catch {
-            pushWarning("assign failed: \(error.localizedDescription)")
+        var requests: [JSONObject] = []
+        if !audio.isEmpty {
+            requests.append(["type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": audio])
         }
+        requests.append(["type": "zoom-media-spine-sync", "spinePayload": payload,
+                         "elapsedMs": elapsedMs()])
+        return requests
     }
 
     /// The spine `subscriptions` array for the current show, and — as the one
@@ -3209,10 +3248,20 @@ final class AppModel: ObservableObject {
     /// and a reused id must never inherit another person's mute or fader.
     private(set) var rememberedStripSettings: [String: AudioStrip] = [:]
 
-    /// nil = unknown (no state yet), true = in a meeting, false = KNOWN not.
-    static func meetingStateIsInMeeting(_ state: String) -> Bool? {
-        if state.isEmpty { return nil }
-        return state == "in_meeting" || state == "in-meeting"
+    /// The meeting is KNOWN to be over. ONLY terminal states clear per-guest audio
+    /// memory (round-2 review): ZoomEngineRuntimeState reports idle (initial, and
+    /// after the engine's "left" — which the macOS engine sends for both SDK
+    /// Disconnecting and Ended, i.e. Leave and meeting-ended), joining, in-meeting
+    /// (published as "in_meeting") and error (auth/join failure, meeting_failed, or
+    /// engine_disconnected — the engine lost; a mid-meeting error never demotes
+    /// the state). The SDK adapter's names add ended / leaving / status-N.
+    /// "joining", "leaving", "status-N" (waiting room, breakout moves, reconnects)
+    /// and anything unknown are NOT terminal: wiping the A1's mutes there would
+    /// put guests back live at unity mid-meeting — the I2 failure.
+    static let terminalMeetingStates: Set<String> = ["idle", "ended", "error", "left", "failed"]
+
+    static func meetingHasEnded(_ state: String) -> Bool {
+        terminalMeetingStates.contains(state)
     }
 
     /// The meeting ended (a KNOWN not-in-meeting state; an unknown state never

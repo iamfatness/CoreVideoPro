@@ -1338,6 +1338,73 @@ enum ShellTests {
         expectEqual(model.spineSyncRequests, afterJoin + 2, "a camera-off guest leaving re-pushes")
     }
 
+    /// Round-2 review: only TERMINAL meeting states clear per-guest audio memory.
+    @MainActor
+    private static func testOnlyTerminalMeetingStatesForgetGuestAudio() {
+        func primed() -> AppModel {
+            let model = AppModel()
+            model.zoomAudioSourceIds = ["11"]
+            model.meetingAudioSubscribed = true
+            model.refreshStrips()
+            model.editStrip("11") { $0.muted = true; $0.manualGainDb = -5 }
+            model.selectOrRouteSend(source: "11", bus: "iso-1")
+            model.applyZoomForTesting(["meetingState": "in_meeting"])
+            return model
+        }
+        for transient in ["joining", "leaving", "status-6", "status-12", "in-meeting", "reconnecting"] {
+            let model = primed()
+            model.applyZoomForTesting(["meetingState": transient])
+            expectEqual(model.rememberedStripSettings["11"]?.muted, true,
+                        "\(transient) mid-meeting keeps the guest's mute (breakout / waiting room / reconnect)")
+            expectEqual(model.rememberedStripSettings["11"]?.manualGainDb, -5, "\(transient) keeps the fader")
+            expect(model.operatorRouteEdits[AudioRouteKey(source: "11", bus: "iso-1")] != nil,
+                   "\(transient) keeps the guest's route edits")
+            expectEqual(model.strips.first { $0.id == "11" }?.muted, true, "\(transient) keeps the strip muted")
+        }
+        // Leave / meeting ended (engine "left" -> idle), the SDK's ended, and a
+        // lost engine or failed meeting (error) all clear.
+        for terminal in ["idle", "ended", "error", "left", "failed"] {
+            let model = primed()
+            model.applyZoomForTesting(["meetingState": terminal])
+            expect(model.rememberedStripSettings["11"] == nil, "\(terminal) forgets the guest's strip settings")
+            expect(model.operatorRouteEdits[AudioRouteKey(source: "11", bus: "iso-1")] == nil,
+                   "\(terminal) forgets the guest's route edits")
+        }
+    }
+
+    /// Round-2 review (I2 gap): a returning A1-muted guest's mute — and the base
+    /// routing — reach the core in a request AHEAD of the spine that re-subscribes
+    /// the guest's audio, never 150 ms after it.
+    @MainActor
+    private static func testReturningMutedGuestsMuteGoesAheadOfTheSpine() {
+        let model = AppModel()
+        model.roster = [RosterParticipant(id: "11", name: "G", hasVideo: true, muted: false,
+                                          talking: false, assigned: true)]
+        model.slots[0].kind = "zoom"; model.slots[0].sourceId = "11"; model.slots[0].inShow = true
+        let first = model.spinePushRequests()
+        expect(((first.first?["commands"] as? [JSONObject]) ?? []).contains {
+            $0["type"] as? String == "sync-audio-routing-matrix" },
+            "a new guest's routing goes ahead of the spine (no raw unmuted fallback window)")
+        model.editStrip("11") { $0.muted = true }
+        model.markAudioConsoleDeliveredForTesting()
+        model.slots[0].inShow = false            // off the wall...
+        _ = model.spinePushRequests()
+        model.slots[0].inShow = true             // ...and back
+        let requests = model.spinePushRequests()
+        expectEqual(requests.map { $0["type"] as? String ?? "" },
+                    ["media-core-sync", "zoom-media-spine-sync"],
+                    "the console request goes AHEAD of the spine that re-subscribes the audio")
+        let commands = requests.first?["commands"] as? [JSONObject] ?? []
+        let mix = commands.first { $0["type"] as? String == "sync-participant-audio-mix" }
+        let channel = (mix?["channels"] as? [JSONObject])?.first { $0["participantId"] as? String == "11" }
+        expectEqual(channel?["muted"] as? Bool, true, "the returning guest's remembered mute is in it")
+        let subs = (requests.last?["spinePayload"] as? JSONObject)?["subscriptions"] as? [JSONObject] ?? []
+        expect(subs.contains { $0["kind"] as? String == "participant-audio" && $0["participantId"] as? String == "11" },
+               "the spine after it re-subscribes the guest's audio")
+        let again = model.spinePushRequests()
+        expectEqual(again.count, 1, "an unchanged console adds nothing ahead of the next spine")
+    }
+
     /// Cross-checks the audio wire strings against the CORE's source, the way the
     /// payload-wrapper contract test does: a rename in C++ fails here, not live.
     @MainActor
@@ -3328,6 +3395,8 @@ enum ShellTests {
             ("audio-routing/slider-coalesced", testSendGainDragCoalescesTheRoutingPush),
             ("audio-routing/media-follows-program", testMediaRoutingFollowsTheProgramMediaRoute),
             ("zoom-audio/roster-change-repushes-spine", testRosterMembershipChangeRepushesTheSpine),
+            ("audio-console/only-terminal-states-forget", testOnlyTerminalMeetingStatesForgetGuestAudio),
+            ("audio-console/returning-mute-ahead-of-spine", testReturningMutedGuestsMuteGoesAheadOfTheSpine),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),
