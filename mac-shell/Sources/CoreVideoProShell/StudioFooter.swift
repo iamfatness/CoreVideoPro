@@ -95,11 +95,6 @@ enum StudioFooterReadout {
     //    no NDI destination — the NDI sender path is Windows-only.
     static let ndiUnavailable =
         "NDI output isn't available on Mac yet \u{2014} it's coming in a later update."
-
-    static var recordingFolder: String {
-        (NSSearchPathForDirectoriesInDomains(.moviesDirectory, .userDomainMask, true).first
-         ?? NSTemporaryDirectory()) + "/CoreVideoPro"
-    }
 }
 
 // ── shapes + small pieces ────────────────────────────────────────────────────
@@ -290,9 +285,9 @@ struct FooterGraphicsGroup: View {
     /// "building-out" truncates instead of reflowing the row.
     private var status: String {
         switch model.lowerThirdPhase {
-        case "hidden": return model.lowerThirdName.isEmpty ? "No source" : "Ready"
-        case "building-in": return "Building in"
-        case "on-air": return "On air"
+        case "hidden": return model.programLowerThirdSubject() == nil ? "No source" : "Ready"
+        case "building-in": return model.lowerThirdVisible ? "Building in" : "Sync pending"
+        case "on-air": return model.lowerThirdVisible ? "On air" : "Sync pending"
         case "building-out": return "Building out"
         default: return model.lowerThirdPhase
         }
@@ -330,11 +325,10 @@ struct FooterGraphicsGroup: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(!onAir && model.lowerThirdName.isEmpty)
                 .accessibilityLabel(onAir ? "Lower third, key out" : "Lower third, key in")
-                .help(model.lowerThirdName.isEmpty
-                      ? "Lower third: set a name in Graphics first."
-                      : (onAir ? "Key the lower third out" : "Key in \u{201C}\(model.lowerThirdName)\u{201D}"))
+                .help(onAir ? "Key the lower third out"
+                      : (model.programLowerThirdSubject().map { "Key in \u{201C}\($0.name)\u{201D}" }
+                         ?? "Take a scene with a source first"))
                 Button { optionsShown.toggle() } label: {
                     FooterChevron()
                         .frame(width: 30, height: 48)
@@ -352,9 +346,9 @@ struct FooterGraphicsGroup: View {
 
     private var options: some View {
         FooterFlyout(title: "Lower third controls", width: 300) {
-            FooterMutedText(onAir ? "Key on air: \(model.lowerThirdName)"
-                            : (model.lowerThirdName.isEmpty ? "No name set \u{2014} edit it in Graphics."
-                               : "Ready: \(model.lowerThirdName)"))
+            FooterMutedText(onAir ? model.lowerThirdKeyStatus
+                            : (model.programLowerThirdSubject().map { "Ready: \($0.name)" }
+                               ?? "Take a scene with a source first"))
             VStack(alignment: .leading, spacing: 4) {
                 Text("Position").font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 Picker("", selection: $model.lowerThirdPosition) {
@@ -513,11 +507,16 @@ struct FooterOutputsGroup: View {
                         .foregroundStyle(Studio.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(StudioFooterReadout.recordingFolder)
+                Text(model.recordFlyoutFolder)
                     .font(.plexMono(10)).foregroundStyle(Studio.secondary)
                     .textSelection(.enabled)
                     .accessibilityLabel("Recording folder")
-                    .help(StudioFooterReadout.recordingFolder)
+                    .help(model.recordFlyoutFolder)
+                if !model.recordingFolderWarning.isEmpty {
+                    Text(model.recordingFolderWarning).font(.grotesk(11))
+                        .foregroundStyle(Studio.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 6).fill(Studio.field))
@@ -554,7 +553,9 @@ struct FooterOutputsGroup: View {
                     .font(.grotesk(11)).foregroundStyle(Studio.textDim)
             }
             HStack {
-                Text("1080p30 H.264 (VideoToolbox via ffmpeg) \u{00B7} 6 Mbps CBR \u{00B7} AAC 160 kbps")
+                Text(ProductionSettingsPolicy.streamRecipeLabel(
+                    bitrateMbps: model.streamBitrateMbps,
+                    height: model.coreOutputProfile?.height ?? model.canvasHeight))
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
@@ -790,7 +791,7 @@ struct FooterTelemetry: View {
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
             FooterStat(title: "Program",
-                       value: "\(model.canvasHeight)p\(model.canvasFps)",
+                       value: model.coreCanvasLabel,
                        health: model.programSceneId.isEmpty ? "Idle" : "Live",
                        healthColor: model.programSceneId.isEmpty ? Studio.secondary : Studio.accent,
                        width: 110)
@@ -947,7 +948,9 @@ enum FooterSnapshotHarness {
         model.streamingDesired = true
         model.streamStatus = "live"
         model.lowerThirdName = "Jordan Wallace"
+        model.lowerThirdKeyedName = "Jordan Wallace"
         model.lowerThirdPhase = "on-air"
+        model.lowerThirdVisible = true
         model.programSceneId = "fullscreen"
         model.shortTermLufs = -16.4
         model.truePeakDbfs = -3.2

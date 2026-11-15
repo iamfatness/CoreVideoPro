@@ -9,11 +9,6 @@ import SwiftUI
 struct SettingsPane: View {
     @EnvironmentObject var model: AppModel
 
-    var recordingFolder: String {
-        (NSSearchPathForDirectoriesInDomains(.moviesDirectory, .userDomainMask, true).first
-         ?? NSTemporaryDirectory()) + "/CoreVideoPro"
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             card("Zoom account") {
@@ -143,15 +138,28 @@ struct SettingsPane: View {
                         .frame(width: 160)
                 }
                 labeled("Recording folder") {
-                    HStack(spacing: 6) {
-                        Text(recordingFolder).font(.plexMono(10))
-                            .foregroundStyle(Studio.secondary)
-                            .lineLimit(1).truncationMode(.head)
-                        Button("Reveal") {
-                            NSWorkspace.shared.selectFile(
-                                nil, inFileViewerRootedAtPath: recordingFolder)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(model.recordingFolderDisplay).font(.plexMono(10))
+                                .foregroundStyle(Studio.secondary)
+                                .lineLimit(1).truncationMode(.head)
+                                .help(model.recordingFolderDisplay)
+                            Button("Browse\u{2026}") { model.chooseRecordingFolder() }
+                                .buttonStyle(GhostButtonStyle())
+                            Button("Open folder") { model.openRecordingFolder() }
+                                .buttonStyle(GhostButtonStyle())
+                            if !model.recordingFolderChoice.isEmpty {
+                                Button("Use default") { model.useDefaultRecordingFolder() }
+                                    .buttonStyle(GhostButtonStyle())
+                            }
                         }
-                        .buttonStyle(GhostButtonStyle())
+                        Text(RecordingFolderPolicy.note)
+                            .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                        if !model.recordingFolderWarning.isEmpty {
+                            Text(model.recordingFolderWarning)
+                                .font(.grotesk(11)).foregroundStyle(Studio.amber)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 labeled("Stream URL") {

@@ -55,13 +55,27 @@ struct PersistedLayer: Codable, Equatable {
     var opacity = 1.0
 }
 
-/// A persisted capture->microphone pairing. Keyed by SLOT rather than device id
-/// so re-assigning a slot to a different camera does not silently inherit the
-/// previous camera's microphone.
+/// One show-input slot assignment (Windows ShowInputSlotRecord,
+/// ShowInputRosterStore.cs): operator INTENT — kind + source + name + in-show —
+/// restored even when the source is not present yet (it reads offline until the
+/// roster or device list produces it).
+struct PersistedSlot: Codable, Equatable {
+    var slotId = 0
+    var kind = "unassigned"
+    var sourceId = ""
+    var name = ""
+    var inShow = false
+}
+
+/// A persisted capture->microphone pairing. Reattached by `sourceKey`
+/// ("capture:<id>") — the SOURCE it belongs to — so it can never land on
+/// whatever else ends up in that slot. `slotId` is the legacy key, used only
+/// for a record written before `sourceKey` existed.
 struct CapturePairing: Codable, Equatable {
     var slotId = 0
     var audioDeviceId = ""
     var audioDeviceName = ""
+    var sourceKey: String?
 }
 
 /// Chroma key settings for a slot. Only ENABLED keys are persisted — a saved
@@ -73,6 +87,7 @@ struct PersistedChromaKey: Codable, Equatable {
     var similarity = 0.4
     var smoothness = 0.1
     var spill = 0.2
+    var sourceKey: String?   // see CapturePairing
 }
 
 /// Per-source dropout policy (core contract #535 slice 4a, `set-source-policy`).
@@ -81,6 +96,7 @@ struct PersistedChromaKey: Codable, Equatable {
 struct PersistedSlotPolicy: Codable, Equatable {
     var slotId = 0
     var dropoutPolicy = ""
+    var sourceKey: String?   // see CapturePairing
 }
 
 struct ShellPrefs: Codable, Equatable {
@@ -124,6 +140,24 @@ struct ShellPrefs: Codable, Equatable {
     var cameraExtensionOptedIn: Bool?
     // Virtual camera intent (roadmap M9.2, VirtualCamera.swift). OPTIONAL: nil = never set.
     var virtualCamera: PersistedVirtualCamera?
+    // Production settings (the Windows ProductionSettingsWindow values that
+    // production-output-preferences.json keeps: canvas size/fps, stream bitrate,
+    // recording format/prefix, multiview layout + tile count). OPTIONAL: nil
+    // means "never saved", and the model keeps its built-in default. A 4K or
+    // 30 fps show used to come back as 1080p60 on every launch.
+    var canvasWidth: Int?
+    var canvasHeight: Int?
+    var canvasFps: Int?
+    var streamBitrateMbps: Double?
+    var recordFormat: String?
+    var recordPrefix: String?
+    var multiviewLayoutMode: String?
+    var multiviewTileCount: Int?
+    // Show-input slot assignments (Tier 0.8). nil = a file written before this
+    // existed: slots start empty, exactly as before.
+    var showInputSlots: [PersistedSlot]?
+    // Recording folder (Tier 0.11). nil/"" = the default ~/Movies/CoreVideoPro.
+    var recordingFolder: String?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -176,6 +210,18 @@ struct ShellPrefs: Codable, Equatable {
                                                           forKey: .cameraExtensionOptedIn)) ?? nil)
         virtualCamera = ((try? c.decodeIfPresent(PersistedVirtualCamera.self,
                                                  forKey: .virtualCamera)) ?? nil)
+        canvasWidth = ((try? c.decodeIfPresent(Int.self, forKey: .canvasWidth)) ?? nil)
+        canvasHeight = ((try? c.decodeIfPresent(Int.self, forKey: .canvasHeight)) ?? nil)
+        canvasFps = ((try? c.decodeIfPresent(Int.self, forKey: .canvasFps)) ?? nil)
+        streamBitrateMbps = ((try? c.decodeIfPresent(Double.self, forKey: .streamBitrateMbps)) ?? nil)
+        recordFormat = ((try? c.decodeIfPresent(String.self, forKey: .recordFormat)) ?? nil)
+        recordPrefix = ((try? c.decodeIfPresent(String.self, forKey: .recordPrefix)) ?? nil)
+        multiviewLayoutMode = ((try? c.decodeIfPresent(String.self,
+                                                       forKey: .multiviewLayoutMode)) ?? nil)
+        multiviewTileCount = ((try? c.decodeIfPresent(Int.self, forKey: .multiviewTileCount)) ?? nil)
+        showInputSlots = ((try? c.decodeIfPresent([PersistedSlot].self,
+                                                  forKey: .showInputSlots)) ?? nil)
+        recordingFolder = ((try? c.decodeIfPresent(String.self, forKey: .recordingFolder)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -208,13 +254,26 @@ struct ShellPrefs: Codable, Equatable {
         p.colorGrade = [1, 2, 3, 4]
         p.automation = AutomationExtrasState()
         p.overlays = OverlaysState()
-        p.capturePairings = [CapturePairing(slotId: 1, audioDeviceId: "d", audioDeviceName: "Mic")]
-        p.chromaKeys = [PersistedChromaKey(slotId: 1)]
-        p.slotDropoutPolicies = [PersistedSlotPolicy(slotId: 2, dropoutPolicy: "black")]
+        p.capturePairings = [CapturePairing(slotId: 1, audioDeviceId: "d", audioDeviceName: "Mic",
+                                            sourceKey: "capture:cam")]
+        p.chromaKeys = [PersistedChromaKey(slotId: 1, sourceKey: "capture:cam")]
+        p.slotDropoutPolicies = [PersistedSlotPolicy(slotId: 2, dropoutPolicy: "black",
+                                                     sourceKey: "zoom:42")]
+        p.showInputSlots = [PersistedSlot(slotId: 1, kind: "capture", sourceId: "cam",
+                                          name: "Cam", inShow: true)]
+        p.recordingFolder = "/Volumes/Show/Recordings"
         p.vstChannelSelections = ["ch1": "vst:Test"]
         p.cameraExtensionOptedIn = true
         p.virtualCamera = PersistedVirtualCamera(enabled: true, mirror: true,
                                                  framerEnabled: true, deviceName: "Round Trip Cam")
+        p.canvasWidth = 3840
+        p.canvasHeight = 2160
+        p.canvasFps = 30
+        p.streamBitrateMbps = 12.5
+        p.recordFormat = "mov"
+        p.recordPrefix = "gala"
+        p.multiviewLayoutMode = "grid"
+        p.multiviewTileCount = 6
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
             return "decode failed"

@@ -74,6 +74,9 @@ struct ShellApp: App {
         if let dir = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_FOOTER_SNAPSHOT"] {
             MainActor.assumeIsolated { FooterSnapshotHarness.runAndExit(dir: dir) }
         }
+        if let dir = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT"] {
+            MainActor.assumeIsolated { TabSnapshotHarness.runAndExit(dir: dir) }
+        }
         // A bare (non-bundled) executable defaults to an activation policy
         // whose windows cannot become KEY — text fields silently refuse
         // input (the engine-bundle lesson). Force Regular + activate.
@@ -755,7 +758,7 @@ struct MultiviewerCanvas: View {
         VStack(spacing: 6) {
             HStack(spacing: 8) {
                 Text("MULTIVIEWER").font(.grotesk(12, .semibold))
-                MonoChip("1080p60")
+                MonoChip(model.coreCanvasLabel)
                 Text("\(model.liveInputCount) live inputs")
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 Spacer()
@@ -1210,29 +1213,11 @@ struct ParticipantCard: View {
 struct TabPage: View {
     @EnvironmentObject var model: AppModel
 
+    // Width per tab comes from TabPageLayout (a flat 720 pt cap clipped the
+    // Sources rows and the Routing grid).
     var body: some View {
         ScrollView {
-            HStack {
-                Spacer(minLength: 0)
-                Group {
-                    switch model.selectedTab {
-                    case .studio: EmptyView()
-                    case .zoom: ZoomPane()
-                    case .sources: SourcesPane()
-                    case .scenes: ScenesPane()
-                    case .routing: RoutingPane()
-                    case .overlays: OverlaysPane()
-                    case .audio: AudioPane()
-                    case .media: MediaPane()
-                    case .automation: AutomationPane()
-                    case .settings: SettingsPane()
-                    case .diagnose: DiagnosePane()
-                    }
-                }
-                .frame(maxWidth: 720)
-                Spacer(minLength: 0)
-            }
-            .padding(12)
+            TabPageContent(tab: model.selectedTab)
         }
     }
 }
@@ -1416,21 +1401,25 @@ struct ZoomPane: View {
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
 
             VStack(alignment: .leading, spacing: 8) {
+                // From the core's zoom.readiness, like the Windows SDK chip
+                // (SettingsPage.xaml:148-167) — not a fixed "Ready".
+                let readiness = ZoomOperatorStatus.readiness(snapshot: model.lastSnapshot)
+                let blocked = ZoomOperatorStatus.isBlocked(readiness, inMeeting: inMeeting)
                 Text("Zoom status").font(.grotesk(14, .semibold))
-                Text(inMeeting ? "In the meeting — \(model.roster.count) in room"
-                               : "Ready to join Zoom")
+                Text(ZoomOperatorStatus.chipLabel(readiness, inMeeting: inMeeting))
                     .font(.grotesk(12, .medium))
-                    .foregroundStyle(inMeeting ? Studio.accent : Studio.textPrimary)
+                    .foregroundStyle(blocked ? Studio.red : (inMeeting ? Studio.accent : Studio.textPrimary))
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
                     .overlay(RoundedRectangle(cornerRadius: 8)
-                        .stroke(Studio.accent.opacity(0.6), lineWidth: 1))
-                Text(inMeeting
-                     ? "Assign participants from the Studio room rail; "
-                     + "press Capture to start raw media."
-                     : "Enter a meeting link or ID above when you are ready to connect.")
+                        .stroke((blocked ? Studio.red : Studio.accent).opacity(0.6), lineWidth: 1))
+                Text(ZoomOperatorStatus.guidance(readiness, inMeeting: inMeeting))
                     .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                if blocked, let reason = ZoomOperatorStatus.blockingReason(snapshot: model.lastSnapshot) {
+                    Text(reason).font(.plexMono(10)).foregroundStyle(Studio.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(14)
             .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
@@ -1558,7 +1547,7 @@ struct SourcesPane: View {
                     .stroke(Studio.border, lineWidth: 1))
             }
         }
-        .frame(maxWidth: 900)
+        .frame(maxWidth: TabPageLayout.maxWidth(for: .sources))
     }
 }
 

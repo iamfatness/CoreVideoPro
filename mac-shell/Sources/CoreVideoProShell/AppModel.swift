@@ -416,6 +416,14 @@ final class AppModel: ObservableObject {
     @Published var lowerThirdTitle = ""
     @Published var lowerThirdPosition = "lower-left"
     @Published var lowerThirdPhase = "hidden"  // truthful phase from overlayState
+    /// The core's overlayState `visible` for key:lower-third: true only when the
+    /// keyed source is on rendered Program and the key is actually drawn.
+    @Published var lowerThirdVisible = false
+    /// The source the manual key names (a Program source, never "mac:manual").
+    @Published var lowerThirdKeyedSourceId = ""
+    @Published var lowerThirdKeyedName = ""
+    /// The last Key in / Key out outcome ("Lower third needs a program source").
+    @Published var lowerThirdCommandStatus = ""
     @Published var overlaysOnAir = 0
     // Director recommendation (core-computed, shell-actuated — the core NEVER
     // switches scenes itself; recommend-auto-production is a documented no-op).
@@ -436,7 +444,13 @@ final class AppModel: ObservableObject {
     // does not own key:lower-third (the manual lower third may).
     @Published var autoLowerThirdSourceId = ""
     @Published var isoRecordingEnabled = false
-    @Published var isoSelectedSourceIds: Set<String> = []
+    /// THE ISO selection (Windows ShowInputsCoordinator.IsoSelectedSourceIds):
+    /// scheme-qualified source ids. The Sources-tab ISO toggles, the Routing
+    /// matrix and the footer all write THIS; the slot `iso` flags and the
+    /// matrix columns are projections of it, re-derived on every change.
+    @Published var isoSelectedSourceIds: Set<String> = [] {
+        didSet { projectIsoSelection() }
+    }
     @Published var streamUrl = "rtmp://a.rtmp.youtube.com/live2"
     @Published var streamKey = ""
     @Published var streamingDesired = false
@@ -536,18 +550,27 @@ final class AppModel: ObservableObject {
         prefs.capturePairings = slots
             .filter { !$0.audioDeviceId.isEmpty }
             .map { CapturePairing(slotId: $0.id, audioDeviceId: $0.audioDeviceId,
-                                  audioDeviceName: $0.audioDeviceName) }
+                                  audioDeviceName: $0.audioDeviceName,
+                                  sourceKey: $0.sourceKey) }
         prefs.chromaKeys = slots.filter(\.keyEnabled).map {
             PersistedChromaKey(slotId: $0.id, colorHex: $0.keyColorHex,
                                similarity: $0.keySimilarity,
-                               smoothness: $0.keySmoothness, spill: $0.keySpill)
+                               smoothness: $0.keySmoothness, spill: $0.keySpill,
+                               sourceKey: $0.sourceKey)
         }
         prefs.slotDropoutPolicies = slots
             .filter { $0.kind == "zoom" && !$0.dropoutPolicy.isEmpty }
-            .map { PersistedSlotPolicy(slotId: $0.id, dropoutPolicy: $0.dropoutPolicy) }
+            .map { PersistedSlotPolicy(slotId: $0.id, dropoutPolicy: $0.dropoutPolicy,
+                                       sourceKey: $0.sourceKey) }
+        prefs.showInputSlots = slots.filter { $0.sourceKey != nil }.map {
+            PersistedSlot(slotId: $0.id, kind: $0.kind, sourceId: $0.sourceId,
+                          name: $0.name, inShow: $0.inShow)
+        }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.cameraExtensionOptedIn = cameraExtensionOptedIn
         prefs.virtualCamera = virtualCamera == PersistedVirtualCamera() ? nil : virtualCamera
+        storeProductionSettings(into: &prefs)
+        prefs.recordingFolder = recordingFolderChoice.isEmpty ? nil : recordingFolderChoice
         prefs.scenes = railScenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
                            backgroundAssetId: scene.backgroundAssetId,
@@ -563,10 +586,17 @@ final class AppModel: ObservableObject {
     }
 
     private func restorePrefs() {
-        let prefs = ShellPrefs.load()
+        applyRestoredPrefs(ShellPrefs.load())
+        streamKey = StreamKeychain.load()
+    }
+
+    /// Everything a relaunch restores from the prefs file, minus the file read
+    /// and the Keychain (so the harness can drive the real restore path).
+    func applyRestoredPrefs(_ prefs: ShellPrefs) {
         overlays = prefs.overlays ?? OverlaysState()
+        restoreSlotAssignments(prefs.showInputSlots ?? [])
         for key in prefs.chromaKeys ?? [] {
-            if let index = slots.firstIndex(where: { $0.id == key.slotId }) {
+            if let index = restoredSlotIndex(sourceKey: key.sourceKey, legacySlotId: key.slotId) {
                 slots[index].keyEnabled = true
                 slots[index].keyColorHex = key.colorHex
                 slots[index].keySimilarity = key.similarity
@@ -575,13 +605,15 @@ final class AppModel: ObservableObject {
             }
         }
         for pairing in prefs.capturePairings ?? [] {
-            if let index = slots.firstIndex(where: { $0.id == pairing.slotId }) {
+            if let index = restoredSlotIndex(sourceKey: pairing.sourceKey,
+                                             legacySlotId: pairing.slotId) {
                 slots[index].audioDeviceId = pairing.audioDeviceId
                 slots[index].audioDeviceName = pairing.audioDeviceName
             }
         }
         for policy in prefs.slotDropoutPolicies ?? [] {
-            if let index = slots.firstIndex(where: { $0.id == policy.slotId }), slots[index].kind == "zoom" {
+            if let index = restoredSlotIndex(sourceKey: policy.sourceKey, legacySlotId: policy.slotId),
+               slots[index].kind == "zoom" {
                 slots[index].dropoutPolicy = policy.dropoutPolicy
             }
         }
@@ -598,6 +630,7 @@ final class AppModel: ObservableObject {
         monitorVolume = prefs.monitorVolume
         isoRecordingEnabled = prefs.isoRecordingEnabled
         isoSelectedSourceIds = Set(prefs.isoSelectedSourceIds)
+        pruneStaleZoomIsoIntent()   // last meeting's unslotted guests
         autoTakeEnabled = false // Ignore legacy saved auto-take intent in the first release.
         autoConfidenceThreshold = prefs.autoConfidenceThreshold
         autoHoldSeconds = prefs.autoHoldSeconds
@@ -628,7 +661,8 @@ final class AppModel: ObservableObject {
         }
         cameraExtensionOptedIn = prefs.cameraExtensionOptedIn
         virtualCamera = prefs.virtualCamera ?? PersistedVirtualCamera()
-        streamKey = StreamKeychain.load()
+        restoreProductionSettings(prefs)
+        recordingFolderChoice = prefs.recordingFolder ?? ""
         lastSavedPrefs = prefs
         prefsRestored = true
     }
@@ -842,13 +876,20 @@ final class AppModel: ObservableObject {
 
     func configureMultiviewer(mode: String) {
         multiviewLayoutMode = mode
-        guard let bridge else { return }
-        Task {
-            _ = try? await bridge.request([
-                "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                "commands": [["type": "configure-multiviewer", "layoutMode": mode]],
-            ])
-        }
+        applyMultiviewConfig()
+    }
+
+    /// Every core generation (first handshake AND a supervisor respawn) starts
+    /// at its built-in 1920x1080@60 / grid defaults. Re-send the operator's
+    /// production settings, or a respawned core silently renders the wrong
+    /// canvas while Settings still shows the right one (gotchas.md: a one-shot
+    /// command must be re-applied on every core generation).
+    func reassertProductionSettings() {
+        let body: JSONObject = [
+            "type": "media-core-sync", "elapsedMs": elapsedMs(),
+            "commands": productionSettingsCommands(),
+        ]
+        Task { _ = try? await self.outputRequest(body) }
     }
 
     // ── virtual camera: intent, wire, activation ─────────────────────────────
@@ -1066,7 +1107,10 @@ final class AppModel: ObservableObject {
         // mics, scenes with media): see reassertAudioConsole.
         reassertAudioConsole()
         setMonitor(enabled: monitorEnabled, volume: monitorVolume)
-        applyMultiviewConfig()
+        reassertProductionSettings()
+        // A fresh core generation has no capture devices connected.
+        captureReconnectPending.formUnion(
+            slots.filter { $0.kind == "capture" }.map(\.sourceId))
         // Re-assert a restored grade: the core starts neutral every launch, so
         // a persisted grade that is never pushed silently does nothing.
         if !gradeIsNeutral { applyColorGrade() }
@@ -1192,6 +1236,7 @@ final class AppModel: ObservableObject {
                     warning: entry["warning"] as? String ?? "")
             }
             refreshSlotHealth()
+            reconnectRestoredCaptures()
         }
         if let recording = snapshot["recording"] as? JSONObject {
             let nextStatus = RecordingLifecycleReadModel.status(recording)
@@ -1286,8 +1331,11 @@ final class AppModel: ObservableObject {
                    $0["overlayId"] as? String == "key:lower-third"
                }) {
                 lowerThirdPhase = key["keyPhase"] as? String ?? lowerThirdPhase
+                lowerThirdVisible = key["visible"] as? Bool ?? false
+                if let name = key["sourceName"] as? String, !name.isEmpty { lowerThirdKeyedName = name }
             } else {
                 lowerThirdPhase = "hidden"
+                lowerThirdVisible = false
             }
         }
     }
@@ -1305,7 +1353,11 @@ final class AppModel: ObservableObject {
         }
         let acceptRoster = rosterProjection.observe(snapshot)
         rosterRecoveryNotice = rosterProjection.notice
-        if acceptRoster { meetingState = snapshot["meetingState"] as? String ?? meetingState }
+        if acceptRoster {
+            let previous = meetingState
+            meetingState = snapshot["meetingState"] as? String ?? meetingState
+            if meetingState == "idle", previous != "idle" { pruneStaleZoomIsoIntent() }
+        }
         if acceptRoster, Self.meetingHasEnded(snapshot["meetingState"] as? String ?? "") {
             endMeetingAudioSession()
         }
@@ -1351,6 +1403,9 @@ final class AppModel: ObservableObject {
     }
 
     private var manuallyUnassigned: Set<String> = []
+    /// Capture device ids whose slot was restored (or survived a core respawn)
+    /// and still need a connect once the core lists them.
+    var captureReconnectPending: Set<String> = []
 
     // ── show-input slots (inputs 1–10, the Sources patch bay) ────────────────
 
@@ -1367,11 +1422,11 @@ final class AppModel: ObservableObject {
     private func recomputeFromSlots() {
         assignedIds = Set(slots.filter { $0.kind == "zoom" && $0.inShow }
             .map(\.sourceId))
-        isoSelectedSourceIds = Set(slots.filter(\.iso).compactMap { slot in
-            slot.kind == "zoom" ? "zoom:" + slot.sourceId
-                : slot.kind == "capture" ? "capture:" + slot.sourceId : nil
-        })
-        isoRecordingEnabled = !isoSelectedSourceIds.isEmpty
+        // Project the selection onto the (possibly new) slot set. This used to
+        // REBUILD the selection from the slot flags, and a freshly assigned slot
+        // has iso=false — so the first assignment after a relaunch wiped the
+        // restored ISO selection (sources audit row 76).
+        projectIsoSelection()
         syncSpine()
         syncScenes()
     }
@@ -1411,9 +1466,15 @@ final class AppModel: ObservableObject {
     }
 
     func toggleSlotIso(_ slotId: Int) {
-        guard let index = slots.firstIndex(where: { $0.id == slotId }) else { return }
+        guard let slot = slots.first(where: { $0.id == slotId }),
+              let key = slot.sourceKey else { return }
         recordingIso.noteOperatorEdit()
-        slots[index].iso.toggle()
+        if isoSelectedSourceIds.contains(key) {
+            isoSelectedSourceIds.remove(key)
+        } else {
+            isoSelectedSourceIds.insert(key)
+        }
+        isoRecordingEnabled = !visibleIsoSelection.isEmpty
         recomputeFromSlots()
     }
 
@@ -1511,8 +1572,10 @@ final class AppModel: ObservableObject {
     /// Test seam: shortens the build-out settle delay.
     var lowerThirdSettleOverrideNs: UInt64?
     /// How many keyed graphics are on air (the WinUI "N on air" readout).
+    /// Counted from what the core DRAWS (overlayState visible), not the phase
+    /// the shell requested: a key the on-Program gate suppresses is not on air.
     var lowerThirdOnAirCount: Int {
-        (lowerThirdPhase == "on-air" || lowerThirdPhase == "building-in") ? 1 : 0
+        lowerThirdVisible && (lowerThirdPhase == "on-air" || lowerThirdPhase == "building-in") ? 1 : 0
     }
 
     @Published var streamCodec = "h264"
@@ -1526,6 +1589,10 @@ final class AppModel: ObservableObject {
         ("h264", "H.264 (VideoToolbox)"),
     ]
     @Published var recordFormat = "mp4"
+    /// The operator's recording folder ("" = default). See RecordingFolder.swift.
+    @Published var recordingFolderChoice = ""
+    /// Why the chosen folder was refused or not used ("" = fine).
+    @Published var recordingFolderWarning = ""
     @Published var recordPrefix = "show"
     @Published var multiviewTileCount = 10  // ATEM-style 10-way wall
 
@@ -1586,15 +1653,11 @@ final class AppModel: ObservableObject {
 
     func applyOutputProfile() {
         guard let bridge else { return }
+        let command = outputProfileCommand()
         Task {
             _ = try? await bridge.request([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                "commands": [[
-                    "type": "set-output-profile",
-                    "width": canvasWidth, "height": canvasHeight, "fps": canvasFps,
-                    "targetBitrateMbps": streamBitrateMbps, "codec": streamCodec,
-                    "resolution": "\(canvasWidth)x\(canvasHeight)",
-                ]],
+                "commands": [command],
             ])
         }
         syncScenes()
@@ -1602,14 +1665,11 @@ final class AppModel: ObservableObject {
 
     func applyMultiviewConfig() {
         guard let bridge else { return }
+        let command = multiviewConfigCommand()
         Task {
             _ = try? await bridge.request([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                "commands": [[
-                    "type": "configure-multiviewer",
-                    "layoutMode": multiviewLayoutMode,
-                    "tileCount": multiviewTileCount,
-                ]],
+                "commands": [command],
             ])
         }
     }
@@ -2921,23 +2981,64 @@ final class AppModel: ObservableObject {
 
     func toggleIsoCell(column: Int, sourceId: String) {
         recordingIso.noteOperatorEdit()
+        var selection = isoSelectedSourceIds
         if isoColumnAssignments[column] == sourceId {
             isoColumnAssignments[column] = nil
+            selection.remove(sourceId)
         } else {
-            // Exclusive per column AND one column per source.
+            // Exclusive per column AND one column per source: the column's
+            // previous occupant leaves the ISO set; this source moves here.
+            if let occupant = isoColumnAssignments[column] { selection.remove(occupant) }
             if let previous = isoColumn(of: sourceId) {
                 isoColumnAssignments[previous] = nil
             }
             isoColumnAssignments[column] = sourceId
+            selection.insert(sourceId)
         }
-        // The recording payload reads the flat selection; matrix is authority.
-        isoSelectedSourceIds = Set(isoColumnAssignments.values)
-        isoRecordingEnabled = !isoColumnAssignments.isEmpty
-        for index in slots.indices where slots[index].kind != "unassigned" {
-            let sid = (slots[index].kind == "zoom" ? "zoom:" : "capture:")
-                + slots[index].sourceId
-            slots[index].iso = isoSelectedSourceIds.contains(sid)
+        // The selection is the authority; the didSet re-projects the slot flags
+        // and normalises the columns (the same path every other writer takes).
+        isoSelectedSourceIds = selection
+        isoRecordingEnabled = !visibleIsoSelection.isEmpty
+    }
+
+    /// The selected sources the operator can SEE (an assigned slot, so a
+    /// Sources checkbox and a Routing row). The master switch follows this,
+    /// not stale intent for sources that are no longer in a slot.
+    var visibleIsoSelection: Set<String> {
+        isoSelectedSourceIds.intersection(slots.compactMap(\.sourceKey))
+    }
+
+    /// Zoom participant ids are per meeting: once the meeting is over (or on a
+    /// relaunch), `zoom:` intent for a guest who is in no slot can never
+    /// resolve again, and only piles up. Capture ids are stable and stay.
+    /// Windows never prunes, but its matrix does not draw the selection.
+    func pruneStaleZoomIsoIntent() {
+        let assigned = Set(slots.compactMap(\.sourceKey))
+        let stale = isoSelectedSourceIds.filter { $0.hasPrefix("zoom:") && !assigned.contains($0) }
+        if !stale.isEmpty { isoSelectedSourceIds.subtract(stale) }
+    }
+
+    /// Re-derive the projections of `isoSelectedSourceIds`: each slot's ISO
+    /// flag, and the matrix columns (Windows VideoRoutingMatrixViewModel
+    /// :130-157 keeps existing column choices across rebuilds and normalises).
+    /// A selected source keeps its column; one without a column takes the
+    /// lowest free one (sorted, so a relaunch draws the same matrix); a column
+    /// whose source left the selection is cleared.
+    func projectIsoSelection() {
+        for index in slots.indices {
+            let selected = slots[index].sourceKey.map(isoSelectedSourceIds.contains) ?? false
+            if slots[index].iso != selected { slots[index].iso = selected }
         }
+        // Columns only for sources with a Routing row (an assigned slot): stale
+        // intent must not take ISO cells that draw empty and starve a new pick.
+        let visible = visibleIsoSelection
+        var columns = isoColumnAssignments.filter { visible.contains($0.value) }
+        let placed = Set(columns.values)
+        for source in visible.sorted() where !placed.contains(source) {
+            guard let free = (1...8).first(where: { columns[$0] == nil }) else { break }
+            columns[free] = source
+        }
+        if columns != isoColumnAssignments { isoColumnAssignments = columns }
     }
 
     func toggleMultiviewCell(sourceId: String) {
@@ -2967,18 +3068,20 @@ final class AppModel: ObservableObject {
 
     private func isoResolve(_ selection: inout RecordingIsoSelection,
                             recording: Bool?) -> [String] {
-        let present = Set(roster.map { "zoom:" + $0.id })
+        // Windows ComputeEligiblePresentIsoSourceIds (ShowInputsCoordinator.cs
+        // :334-365): only ASSIGNED, present sources are eligible, and a video-off
+        // Zoom guest never takes one of the 8 ISO encoder slots. Unassign keeps
+        // the source's ISO intent but removes it from what records.
+        let present = Set(roster.filter(\.hasVideo).map { "zoom:" + $0.id })
             .union(captureDevices.filter { $0.connectionState == "connected" }
                 .map { "capture:" + $0.id })
-        let assigned = Set(slots.filter { $0.kind != "unassigned" }.map {
-            ($0.kind == "zoom" ? "zoom:" : "capture:") + $0.sourceId
-        })
+        let assigned = Set(slots.compactMap(\.sourceKey))
         // While a take is recording, passive roster loss never shrinks the set
         // (#1188); only an operator ISO edit does.
         return selection.resolve(
             recordingRequested: recording ?? isRecordingActive,
             enabled: isoRecordingEnabled, selected: isoSelectedSourceIds,
-            eligible: present.sorted(), assigned: assigned)
+            eligible: present.intersection(assigned).sorted(), assigned: assigned)
     }
 
     func toggleIsoSource(_ sourceId: String) {
@@ -2996,7 +3099,9 @@ final class AppModel: ObservableObject {
         [[
             "id": "rtmp", "label": "Stream", "protocol": "rtmp",
             "url": streamUrl, "streamKey": streamKey,
-            "fps": 30, "targetBitrateMbps": 6.0, "audioBitrateKbps": 160,
+            // An explicit destination bitrate WINS over streamOutputProfile in
+            // the core (#606), so this must be the operator's value too.
+            "fps": 30, "targetBitrateMbps": streamBitrateMbps, "audioBitrateKbps": 160,
             "videoCodec": "h264", "encoderMode": "auto",
             "keyframeIntervalSeconds": 2.0, "rateControl": "cbr",
             "h264Profile": "high", "bFrames": 2, "allowEnhancedRtmp": false,
@@ -3017,10 +3122,7 @@ final class AppModel: ObservableObject {
                 .map { String($0.dropFirst(5)) },
         ]
         if streaming {
-            command["streamOutputProfile"] = [
-                "width": 1920, "height": 1080, "fps": 30,
-                "targetBitrateMbps": 6.0, "videoCodec": "h264",
-            ]
+            command["streamOutputProfile"] = streamOutputProfile()
             command["destinationSettings"] = streamDestinationSettings()
         }
         return command
@@ -3313,14 +3415,24 @@ final class AppModel: ObservableObject {
 
     // ── lower third ──────────────────────────────────────────────────────────
 
+    /// Key in: names the source the core reports on rendered Program, as the
+    /// Windows Key in does (LegacyLowerThirdCommands.cs:7-45). The core's
+    /// on-Program gate drops a lower third whose sourceId is not a Program
+    /// layer, so the old "mac:manual" key was never drawn (ProgramLowerThird.swift).
     func showLowerThird() {
-        guard !lowerThirdName.isEmpty else { return }
+        guard let subject = programLowerThirdSubject() else {
+            lowerThirdCommandStatus = LowerThirdKeyReadout.needsSource
+            return
+        }
+        lowerThirdKeyedSourceId = subject.source.sourceId
+        lowerThirdKeyedName = subject.name
+        lowerThirdCommandStatus = "Lower third keyed in"
         cancelPendingLowerThirdRetire()
         // building-in only — the core auto-advances to on-air itself.
         sendOverlay([
             "type": "set-overlay-asset", "overlayId": "key:lower-third",
-            "text": lowerThirdName, "position": "lower-third", "enabled": true,
-            "sourceId": "mac:manual", "sourceName": lowerThirdName,
+            "text": subject.name, "position": "lower-third", "enabled": true,
+            "sourceId": subject.source.sourceId, "sourceName": subject.name,
             "title": lowerThirdTitle, "org": "",
             "keyPosition": lowerThirdPosition, "keyPhase": "building-in",
             "buildInMs": overlays.buildInMs, "buildOutMs": overlays.buildOutMs,
@@ -3342,13 +3454,16 @@ final class AppModel: ObservableObject {
         lowerThirdRetireInFlight = true
         lowerThirdRetireGeneration += 1
         let generation = lowerThirdRetireGeneration
+        lowerThirdCommandStatus = "Lower third keyed out"
         // Two-step retire: shell-timed build-out, then the hidden ack (an
         // enabled:false WITHOUT keyPhase:"hidden" would start a second native
         // build-out — the WinUI RunLowerThirdKeyOutAsync shape).
+        // The build-out keeps the keyed source's id, or the on-Program gate
+        // would cut the key instead of animating it out.
         sendOverlay([
             "type": "set-overlay-asset", "overlayId": "key:lower-third",
-            "text": lowerThirdName, "position": "lower-third", "enabled": true,
-            "sourceId": "mac:manual", "sourceName": lowerThirdName,
+            "text": lowerThirdKeyedName, "position": "lower-third", "enabled": true,
+            "sourceId": lowerThirdKeyedSourceId, "sourceName": lowerThirdKeyedName,
             "title": lowerThirdTitle, "org": "",
             "keyPosition": lowerThirdPosition, "keyPhase": "building-out",
             "buildInMs": overlays.buildInMs, "buildOutMs": overlays.buildOutMs,
@@ -3793,6 +3908,7 @@ final class AppModel: ObservableObject {
 
     /// Test seam: feed a snapshot through the real read path.
     func applySnapshotForTesting(_ snapshot: JSONObject) { applySnapshot(snapshot) }
+    /// Test seam: feed a zoom-snapshot through the real read path.
     func applyZoomForTesting(_ snapshot: JSONObject) { applyZoom(snapshot) }
 
     private func replyToQuit(_ shouldTerminate: Bool) {
@@ -3862,12 +3978,9 @@ final class AppModel: ObservableObject {
                     // Arm the encoder ONLY here: start-program-output flips the
                     // core into per-tick full readbacks (by design, for the
                     // encoder feed) — armed-at-startup starved the RPC thread.
-                    // The in-binary harness never creates folders in ~/Movies.
-                    let folder = ShellHarness.isActive
-                        ? NSTemporaryDirectory() + "corevideo-shell-harness-\(getpid())/recordings"
-                        : (NSSearchPathForDirectoriesInDomains(
-                            .moviesDirectory, .userDomainMask, true).first ?? NSTemporaryDirectory())
-                            + "/CoreVideoPro"
+                    // The operator's folder, or the default when it is gone
+                    // (unplugged drive) or unwritable — loudly, never silently.
+                    let folder = recordingTargetFolder()
                     // The core refuses (loudly) rather than mkdir -p'ing.
                     try? FileManager.default.createDirectory(
                         atPath: folder, withIntermediateDirectories: true)

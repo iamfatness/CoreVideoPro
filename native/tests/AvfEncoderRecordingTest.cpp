@@ -122,6 +122,47 @@ TEST(AvfEncoderRecording, RecordsProgramAvToPlayableFile) {
   fs::remove_all(dir);
 }
 
+// The operator's MOV choice used to be ignored: every file was .mp4.
+std::string containerBrand(const std::string& path) {
+  std::FILE* file = std::fopen(path.c_str(), "rb");
+  if (!file) return {};
+  char header[12] = {};
+  const size_t read = std::fread(header, 1, sizeof(header), file);
+  std::fclose(file);
+  if (read < 12 || std::string(header + 4, 4) != "ftyp") return {};
+  return std::string(header + 8, 4);
+}
+
+TEST(AvfEncoderRecording, MovFormatWritesAQuickTimeMovie) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("mov");
+  auto request = testRequest(dir.string());
+  request.format = "mov";
+  encoder->configureRecording(request);
+  (void)encoder->start({"recording"}, {});
+  recordSomeAv(*encoder, 20);
+  encoder->stopRecording();
+  const auto session = encoder->session();
+  EXPECT_EQ(session.recordingStatus, "stopped");
+  EXPECT_GT(session.recordingVideoFrameCount, 0);
+  ASSERT_FALSE(session.recordingArtifactPath.empty());
+  EXPECT_EQ(fs::path(session.recordingArtifactPath).extension(), ".mov");
+  EXPECT_EQ(containerBrand(session.recordingArtifactPath), "qt  ");
+
+  // MP4 stays MP4.
+  auto mp4 = createAVFoundationEncoderSink();
+  const auto mp4Dir = freshTempDir("mp4-brand");
+  mp4->configureRecording(testRequest(mp4Dir.string()));
+  (void)mp4->start({"recording"}, {});
+  recordSomeAv(*mp4, 20);
+  mp4->stopRecording();
+  const auto mp4Path = mp4->session().recordingArtifactPath;
+  EXPECT_EQ(fs::path(mp4Path).extension(), ".mp4");
+  EXPECT_NE(containerBrand(mp4Path), "qt  ");
+  fs::remove_all(dir);
+  fs::remove_all(mp4Dir);
+}
+
 TEST(AvfEncoderRecording, DoubleStartStillMuxesAudio) {
   // The #286 mirror: the live flow calls start() twice per recording
   // (start-program-output arms it, start-recording-session restarts it). The

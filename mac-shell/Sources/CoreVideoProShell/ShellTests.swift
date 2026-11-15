@@ -2462,6 +2462,7 @@ enum ShellTests {
         model.overlays.defaultOverlayBehavior = behavior
         model.lowerThirdPhase = phase
         model.lowerThirdName = "Guest"
+        seedProgramSource(model)   // Key in names a rendered Program source (Tier 0.6)
         model.lowerThirdSettleOverrideNs = 5_000_000  // 5ms, not the real build-out wait
         var seen: [JSONObject] = []
         model.overlayCommandObserver = { seen.append($0) }
@@ -4070,7 +4071,7 @@ enum ShellTests {
             ("camera-kit/frame-selector", testFrameSelectorHoldAndStop),
             ("camera-kit/device-name", testDeviceNamePolicy),
             ("camera-kit/slate-classifier", testSlateClassifier),
-        ]
+        ] + tier0Cases
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
             body()
