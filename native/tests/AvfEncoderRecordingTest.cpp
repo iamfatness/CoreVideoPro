@@ -402,8 +402,16 @@ TEST(AvfEncoderRecording, DepartedIsoFinalizesAtItsRealDurationWhileSiblingKeeps
   encoder->configureRecording(twoZoomIsoRequest(dir.string()));
   (void)encoder->start({"recording"}, {"zoom:101", "zoom:102"});
   int64_t frameId = 1;
-  for (int i = 0; i < 25; ++i) departureTick(*encoder, frameId, true, false);       // ~0.5 s together
-  for (int i = 0; i < 125; ++i) departureTick(*encoder, frameId, false, true);      // ~2.5 s Alice gone
+  // ISO video PTS follow the wall clock (no capture timestamp is submitted) and a
+  // tick takes 20 ms plus encode time, which is longer on a runner without a
+  // hardware encoder. Measure each phase and assert relative to what really elapsed.
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int i = 0; i < 25; ++i) departureTick(*encoder, frameId, true, false);       // together
+  const auto t1 = std::chrono::steady_clock::now();
+  for (int i = 0; i < 125; ++i) departureTick(*encoder, frameId, false, true);      // Alice gone
+  const auto t2 = std::chrono::steady_clock::now();
+  const double togetherWall = std::chrono::duration<double>(t1 - t0).count();
+  const double departedWall = std::chrono::duration<double>(t2 - t1).count();
   encoder->stopRecording();
 
   const auto session = encoder->session();
@@ -413,8 +421,13 @@ TEST(AvfEncoderRecording, DepartedIsoFinalizesAtItsRealDurationWhileSiblingKeeps
   const auto aliceSecs = corevideo::testing::mp4DurationSeconds(alice.path);
   const auto carolSecs = corevideo::testing::mp4DurationSeconds(carol.path);
   EXPECT_GT(aliceSecs, 0.2);
-  EXPECT_LT(aliceSecs, 1.4) << "departed ISO kept growing with silence until Stop";
-  EXPECT_GT(carolSecs, 2.4) << "the present guest must keep recording";
+  EXPECT_LE(aliceSecs, togetherWall + 0.5)
+      << "departed ISO kept growing with silence until Stop (together=" << togetherWall
+      << "s departed=" << departedWall << "s)";
+  EXPECT_GE(carolSecs, togetherWall + 0.8 * departedWall) << "the present guest must keep recording";
+  // The discriminating property: Alice stopped growing while Carol kept going.
+  EXPECT_LT(aliceSecs, carolSecs - 0.5 * departedWall);
+  // Audio counts are PCM submitted (25 live ticks vs 150), not wall time.
   EXPECT_LT(alice.audioSampleCount, 48000 * 1.4);
   EXPECT_GT(carol.audioSampleCount, 48000 * 2.4);
   const auto decoded = corevideo::testing::decodeMp4VideoToBgra(alice.path);
