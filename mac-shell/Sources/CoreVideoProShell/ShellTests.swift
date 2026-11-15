@@ -1147,6 +1147,32 @@ enum ShellTests {
                "the operator's crosspoint rides the re-sent base matrix")
     }
 
+    /// #481 pre-mute meter: a muted guest who is talking shows, dimmed.
+    private static func testMutedTalkingGuestShowsADimmedPreMuteMeter() {
+        expectEqual(AudioConsolePolicy.meterLevel(dbfs: -60), 0, "Windows scale: -60 dBFS is 0")
+        expectEqual(AudioConsolePolicy.meterLevel(dbfs: -24), 60, "Windows scale: -24 dBFS is 60")
+        expectEqual(AudioConsolePolicy.meterLevel(dbfs: 0), 100, "Windows scale: 0 dBFS is 100")
+        var prior = AudioStrip(id: "11", outputLevel: 0, manualGainDb: 0, muted: true,
+                               solo: false, pan: 0, status: "")
+        prior.inputLevel = 0
+        let merged = AudioConsolePolicy.mergeStrips(
+            echo: [["participantId": "11", "muted": true, "outputLevel": 0,
+                    "inputPeakDbfs": -12.0, "inputRmsDbfs": -18.0]],
+            prior: [prior], expected: ["11"])
+        let strip = merged.first ?? prior
+        expectEqual(strip.inputLevel, 80, "the core's pre-mute input peak reaches the strip")
+        let reading = AudioConsolePolicy.meterReading(strip)
+        expectEqual(reading.level, 80, "a muted, talking guest is not shown as silence")
+        expect(reading.dimmed, "...and the meter is dimmed: nothing reaches a bus")
+        var live = strip
+        live.muted = false
+        live.outputLevel = 55
+        expect(AudioConsolePolicy.meterReading(live) == (55, false), "unmuted: the output level, undimmed")
+        let native = AudioConsolePolicy.mergeStrips(
+            echo: [["participantId": "11", "inputLevel": 42]], prior: [], expected: ["11"])
+        expectEqual(native.first?.inputLevel, 42, "before any sync the native mixer's inputLevel is used")
+    }
+
     /// Cross-checks the audio wire strings against the CORE's source, the way the
     /// payload-wrapper contract test does: a rename in C++ fails here, not live.
     @MainActor
@@ -3129,6 +3155,7 @@ enum ShellTests {
             ("audio-routing/default-topology", testDefaultRoutingIsTheWindowsPerGuestTopology),
             ("audio-routing/model-mon-bus", testModelRoutesEverySourceToTheMonitorBus),
             ("audio-console/core-restart-reasserts", testCoreRestartReassertsTheWholeAudioConsole),
+            ("audio-console/pre-mute-meter", testMutedTalkingGuestShowsADimmedPreMuteMeter),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),

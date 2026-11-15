@@ -132,6 +132,9 @@ struct AudioStrip: Identifiable, Equatable {
     var solo: Bool
     var pan: Double
     var status: String
+    /// PRE-MUTE input level, 0..100 (#481): measured before mute/fader, so a muted
+    /// guest who is talking still shows on a dimmed meter instead of silence.
+    var inputLevel = 0
 }
 
 // Show-input slot (inputs 1–10): the operator's stable mapping from "what's

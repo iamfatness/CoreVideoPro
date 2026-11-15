@@ -96,6 +96,7 @@ enum AudioConsolePolicy {
             // Measurements only.
             strip.outputLevel = entry?["outputLevel"] as? Int ?? 0
             strip.status = entry?["status"] as? String ?? "waiting-for-pcm"
+            strip.inputLevel = inputLevel(entry)
             return strip
         }
     }
@@ -136,5 +137,30 @@ enum AudioConsolePolicy {
             ["sourceId": key.source, "busId": key.bus, "gainDb": matrix[key] ?? 0,
              "busPluginInserts": [] as [String]]
         }
+    }
+
+    /// Windows AudioMeterScale.ToLevel: a calibrated -60..0 dBFS -> 0..100 scale.
+    static func meterLevel(dbfs: Double) -> Int {
+        guard dbfs.isFinite else { return 0 }
+        return Int((max(-60, min(0, dbfs)) + 60) / 60 * 100)
+    }
+
+    /// The pre-mute input level from an echo entry: the core's measured
+    /// `inputPeakDbfs` (published per channel once the console is synced, #481),
+    /// else the native mixer's own 0..100 `inputLevel` (before any sync).
+    static func inputLevel(_ entry: JSONObject?) -> Int {
+        guard let entry else { return 0 }
+        if let peak = (entry["inputPeakDbfs"] as? NSNumber)?.doubleValue {
+            return meterLevel(dbfs: peak)
+        }
+        return max(0, min(100, entry["inputLevel"] as? Int ?? 0))
+    }
+
+    /// What a strip's meter shows (Windows ResolveChannelMeterLevel +
+    /// ShowLevelWhileMuted): live, the output level; muted, the PRE-MUTE input
+    /// level, dimmed. A muted strip used to read silence even while the guest
+    /// talked — the A1 could not see who was speaking into a muted channel.
+    static func meterReading(_ strip: AudioStrip) -> (level: Int, dimmed: Bool) {
+        strip.muted ? (strip.inputLevel, true) : (strip.outputLevel, false)
     }
 }

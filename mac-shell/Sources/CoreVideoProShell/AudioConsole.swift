@@ -346,7 +346,8 @@ struct ConsoleStrip: View {
                     .frame(width: 150)
                     .rotationEffect(.degrees(-90))
                     .frame(width: 26, height: 150)
-                SegmentedMeter(level: strip.muted ? 0 : strip.outputLevel)
+                let reading = AudioConsolePolicy.meterReading(strip)
+                SegmentedMeter(level: reading.level, dimmed: reading.dimmed)
                     .frame(width: 12, height: 150)
             }
             Text(label).font(.grotesk(10, .medium))
@@ -417,6 +418,9 @@ struct MasterLufsRail: View {
 
 struct SegmentedMeter: View {
     let level: Int  // 0..100
+    /// Dimmed = a muted strip's PRE-MUTE input (#481): visible, but plainly not
+    /// reaching any bus.
+    var dimmed = false
 
     var body: some View {
         Canvas { context, size in
@@ -429,8 +433,9 @@ struct SegmentedMeter: View {
                     x: 0, y: CGFloat(index) * (height + gap),
                     width: size.width, height: height)
                 let lit = Double(level) >= threshold
-                let color: Color = threshold > 90 ? Studio.red
+                let hot: Color = threshold > 90 ? Studio.red
                     : threshold > 70 ? Studio.amber : Studio.accent
+                let color = dimmed ? hot.opacity(0.35) : hot
                 context.fill(Path(rect),
                              with: .color(lit ? color : Studio.surfaceRaised))
             }
