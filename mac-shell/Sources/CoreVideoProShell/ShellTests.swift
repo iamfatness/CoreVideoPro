@@ -2192,6 +2192,51 @@ enum ShellTests {
     }
 
     @MainActor
+    private static func testTakeRollbackRefusedWhenASoloSceneWasRecuedMidTake() {
+        // Windows StudioViewModel.Transport.cs: the rollback snapshots BOTH scenes'
+        // routes and refuses if either changed while the Take was pending.
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        _ = runTake(model)              // Program = solo A (11), Preview = s2
+        core.hold = true
+        core.failure = "gone"
+        let box = runTake(model, wait: false)
+        spin(until: { core.bodies.count >= 2 }, limit: 2)
+        expectEqual(model.programSceneId, "s2", "Take of s2 is pending")
+        model.previewMultiviewSlot(2)   // Program is s2 locally -> re-cues solo A
+        expectEqual(model.previewSceneId, AppModel.soloSceneA, "the mid-Take cue reuses solo A")
+        core.hold = false
+        spin(until: { box.result != nil }, limit: 3)
+        expectEqual(box.result, .failed("Take was not confirmed; newer local edits preserved. "
+                                        + "Verify live output. gone"),
+                    "a re-pointed solo scene refuses the rollback")
+        expectEqual(model.programSceneId, "s2",
+                    "solo A (now showing a source never Taken) is not put back on Program")
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "22", "the newer cue is kept")
+    }
+
+    @MainActor
+    private static func testSoloSceneCapturesItsSourceWhenCued() {
+        // Windows BuildSoloRoute copies the participant / capture device id into
+        // the route at cue time; later slot edits never reach it.
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        _ = runTake(model)              // Program = solo A showing 11
+        model.slots[0].kind = "unassigned"
+        model.slots[0].sourceId = ""
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "11",
+                    "unassigning the slot does not black Program")
+        model.slots[0].kind = "zoom"
+        model.slots[0].sourceId = "44"
+        model.slots[0].name = "Guest 44"
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "11",
+                    "reassigning the slot does not change Program")
+        expectEqual(model.busLabel(for: AppModel.soloSceneA), "Guest 11", "PGM still names the Taken source")
+    }
+
+    @MainActor
     private static func testSoloScenesStayOutOfTheRailAndPrefs() {
         let core = FakeTakeCore()
         let model = soloModel(core)
@@ -2900,6 +2945,8 @@ enum ShellTests {
             ("take/multiview-cue-never-changes-program", testMultiviewCueNeverChangesProgram),
             ("take/multiview-recue-resyncs", testMultiviewRecueResyncsTheSameSoloScene),
             ("take/solo-scenes-out-of-rail-and-prefs", testSoloScenesStayOutOfTheRailAndPrefs),
+            ("take/rollback-refused-on-mid-take-solo-recue", testTakeRollbackRefusedWhenASoloSceneWasRecuedMidTake),
+            ("take/solo-scene-captures-source-at-cue", testSoloSceneCapturesItsSourceWhenCued),
             ("take/not-blocked-by-quit", testTakeIsNotBlockedByTheQuitGuard),
             ("ftb/wire-and-echo", testFtbSendsTheWireCommandAndAppliesTheEcho),
             ("ftb/admission-refusals", testFtbAdmissionRefusals),

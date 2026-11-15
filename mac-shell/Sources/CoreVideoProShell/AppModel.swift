@@ -1705,8 +1705,9 @@ final class AppModel: ObservableObject {
         if Self.isSoloScene(sceneId) {
             // Each solo scene owns its source: re-cueing one never touches the
             // other, so the one on Program never changes without a Take.
-            guard let slotId = soloSlotByScene[sceneId],
-                  let slot = slots.first(where: { $0.id == slotId }),
+            // The source captured at cue time (Windows BuildSoloRoute), never the
+            // slot's current assignment: a slot edit must not change Program.
+            guard let slot = soloCueByScene[sceneId],
                   slot.kind != "unassigned" else { return [] }
             var route = SceneRoute(
                 routeId: sceneId + "-solo", mode: "fixed",
@@ -2010,14 +2011,17 @@ final class AppModel: ObservableObject {
     //    possible) and the on-air solo scene is never re-pointed.
     //  - The solo scene is a REAL entry in `scenes` (EnsureMultiviewSoloScene),
     //    because Take and canTake only move scenes that exist.
-    //  - Each solo scene owns its route (`soloSlotByScene`), so a cue changes
-    //    Preview only: "program changes exclusively on Take".
+    //  - Each solo scene owns its route (`soloCueByScene`), so a cue changes
+    //    Preview only: "program changes exclusively on Take". The entry is a
+    //    SNAPSHOT of the slot taken at cue time — Windows BuildSoloRoute copies
+    //    the participant / capture device id into the route — so unassigning or
+    //    reassigning that slot later never re-points (or blacks) Program.
     // Solo scenes are reserved: never in the rail, never persisted, never in
     // the control API's scene.list.
     static let soloSceneA = "mv-solo-a"
     static let soloSceneB = "mv-solo-b"
     static let soloSceneName = "Manual one-up"
-    @Published var soloSlotByScene: [String: Int] = [:]
+    @Published var soloCueByScene: [String: ShowInputSlot] = [:]
 
     static func isSoloScene(_ sceneId: String) -> Bool {
         sceneId == soloSceneA || sceneId == soloSceneB
@@ -2037,8 +2041,8 @@ final class AppModel: ObservableObject {
     /// (Windows ResolveOnAirSceneLabel), any other scene its name.
     func busLabel(for sceneId: String) -> String {
         if Self.isSoloScene(sceneId) {
-            if let slotId = soloSlotByScene[sceneId], let slot = slots.first(where: { $0.id == slotId }) {
-                return slot.name.isEmpty ? "Input \(slotId)" : slot.name
+            if let slot = soloCueByScene[sceneId] {
+                return slot.name.isEmpty ? "Input \(slot.id)" : slot.name
             }
             return "Solo"
         }
@@ -2057,7 +2061,7 @@ final class AppModel: ObservableObject {
               slot.kind != "unassigned" else { return }
         let sceneId = programSceneId == Self.soloSceneA ? Self.soloSceneB : Self.soloSceneA
         ensureSoloScene(sceneId)
-        soloSlotByScene[sceneId] = slotId
+        soloCueByScene[sceneId] = slot
         previewSceneId = sceneId
         // Always sync, even when the id did not change (a re-cue into the same
         // solo scene changes only its route — Windows SyncPreviewSceneChangeAsync).
@@ -2143,6 +2147,11 @@ final class AppModel: ObservableObject {
             takeStatus = same
             return .failed(same)
         }
+        // Windows snapshots BOTH scenes' routes and refuses the rollback if either
+        // changed while the Take was pending. Only solo scenes can be re-pointed
+        // without an id change (a mid-Take multiview cue reuses the id not on the
+        // new Program), so their captured cues are the routes to compare.
+        let cuesAtTake = (soloCueByScene[taken], soloCueByScene[previousProgram])
         previewSceneId = previousProgram
         programSceneId = taken
         sceneSyncTask?.cancel()           // the Take batch carries the full current state
@@ -2171,6 +2180,8 @@ final class AppModel: ObservableObject {
             return .success
         } catch {
             let untouched = programSceneId == taken && previewSceneId == previousProgram
+                && soloCueByScene[taken] == cuesAtTake.0
+                && soloCueByScene[previousProgram] == cuesAtTake.1
             let failure: String
             if untouched {
                 programSceneId = previousProgram
