@@ -254,6 +254,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install build tools
         run: brew install ninja
+      # This job builds the release config, RTMP included, and RTMP runs an external
+      # ffmpeg. macOS runners ship none: without it the sender takes the
+      # runtime-missing path (RtmpOutputSenderAdapter.cpp, appendSendProof(nullptr,
+      # "runtime-missing")) and OutputSenderAdapter.RtmpWritesSendProofArtifactWhenArmed
+      # cannot see the encoder frame fields. Same step as mac-show-drill.
+      - name: Install ffmpeg (RTMP sender runtime)
+        run: brew install ffmpeg
       - name: Configure Metal build
         run: >
           cmake -S native -B native/build-metal -G Ninja
