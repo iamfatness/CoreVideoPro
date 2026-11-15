@@ -8,6 +8,11 @@ namespace {
 constexpr const char* kLostWarning = "CAMERA_EXTENSION_LOST: CoreVideo Pro Camera restarted; reconnecting.";
 constexpr std::uint64_t kGapLogEveryFrames = 600;
 constexpr std::uint64_t kDropLogEvery = 300;
+// Review Focus 1 (Task 7): the queue full continuously this long, with no device
+// change, means the extension stopped draining it. That is a loss, not back-pressure.
+constexpr int64_t kStalledQueueLostNs = 2'000'000'000;
+constexpr const char* kStalledWarning =
+    "CAMERA_EXTENSION_LOST: CoreVideo Pro Camera stopped taking frames; reconnecting.";
 }  // namespace
 
 SinkVirtualCameraPublisher::SinkVirtualCameraPublisher(std::unique_ptr<IVirtualCameraSink> sink,
@@ -24,6 +29,7 @@ bool SinkVirtualCameraPublisher::start(int width, int height, int fps) {
   status_.fps = fps;
   status_.state = "starting";
   lastProgramSequence_ = 0;
+  queueFullStreak_ = false;
   const std::string failure = sink_ ? sink_->connect() : std::string("CAMERA_SINK_FAILED: no sink.");
   if (!failure.empty()) {
     status_.state = "failed";
@@ -103,6 +109,7 @@ void SinkVirtualCameraPublisher::publishLocked(const std::uint8_t* nv12, std::si
   const int64_t hostTimeNs = hostClockNs_ ? hostClockNs_() : 0;
   switch (sink_->enqueueNv12(nv12, width, height, hostTimeNs)) {
     case SinkEnqueueResult::Ok:
+      queueFullStreak_ = false;
       ++status_.framesPublished;
       if (status_.framesPublished % kGapLogEveryFrames == 0) {
         ::corevideo::core::nativeLogf("[virtualcam] mac publication gaps %llu published %llu\n",
@@ -116,16 +123,29 @@ void SinkVirtualCameraPublisher::publishLocked(const std::uint8_t* nv12, std::si
         ::corevideo::core::nativeLogf("[virtualcam] mac sink queue full; dropped %llu frame(s)\n",
                                       static_cast<unsigned long long>(queueFullDrops_));
       }
-      break;
+      if (!queueFullStreak_) {
+        queueFullStreak_ = true;
+        queueFullSinceNs_ = hostTimeNs;
+      } else if (hostTimeNs - queueFullSinceNs_ >= kStalledQueueLostNs) {
+        ::corevideo::core::nativeLogf("[virtualcam] mac sink queue full for %lld ms; extension stopped draining; reconnecting\n",
+                                      static_cast<long long>((hostTimeNs - queueFullSinceNs_) / 1'000'000));
+        markLostLocked(kStalledWarning);
+      }
+      return;
     case SinkEnqueueResult::Lost:
-      sink_->disconnect();
-      connected_ = false;
-      status_.state = "failed";
-      status_.enabled = false;
-      status_.warning = kLostWarning;
       ::corevideo::core::nativeLogf("[virtualcam] mac sink lost; reconnecting\n");
-      break;
+      markLostLocked(kLostWarning);
+      return;
   }
+}
+
+void SinkVirtualCameraPublisher::markLostLocked(const char* warning) {
+  sink_->disconnect();
+  connected_ = false;
+  queueFullStreak_ = false;
+  status_.state = "failed";
+  status_.enabled = false;
+  status_.warning = warning;
 }
 
 VirtualCameraStatus SinkVirtualCameraPublisher::status() const {

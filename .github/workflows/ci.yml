@@ -128,7 +128,8 @@ jobs:
         run: |
           for f in scripts/release-macos.sh scripts/macos-sign-lib.sh \
                    scripts/make-macos-shell-bundle.sh scripts/make-macos-engine-bundle.sh \
-                   scripts/run-mac-shell.sh scripts/check-macos-camera-extension.sh; do
+                   scripts/run-mac-shell.sh scripts/check-macos-camera-extension.sh \
+                   scripts/macos-vcam-e2e.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done

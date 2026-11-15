@@ -43,6 +43,7 @@ class SinkVirtualCameraPublisher final : public IVirtualCameraPublisher {
   std::uint64_t sequenceGapsForTest() const;
 
  private:
+  void markLostLocked(const char* warning);
   void publishLocked(const std::uint8_t* nv12, std::size_t bytes, int width, int height, int64_t programSequence);
 
   mutable std::mutex mutex_;
@@ -55,6 +56,10 @@ class SinkVirtualCameraPublisher final : public IVirtualCameraPublisher {
   int64_t lastProgramSequence_ = 0;
   std::uint64_t sequenceGaps_ = 0;
   std::uint64_t queueFullDrops_ = 0;
+  // Continuous QueueFull since queueFullSinceNs_ (host clock); reset by an
+  // accepted frame, a loss, or a (re)connect.
+  bool queueFullStreak_ = false;
+  int64_t queueFullSinceNs_ = 0;
 };
 
 }  // namespace corevideo::modules

@@ -598,6 +598,10 @@ enum ShellTests {
         expectEqual(P.label(intent: true, ext: .active,
                             core: vcamCore("failed", warning: "SINK_START_FAILED: queue refused: busy")),
                     "SINK_START_FAILED: queue refused: busy", "9 other warning is shown whole (Windows)")
+        expectEqual(P.label(intent: true, ext: .active,
+                            core: vcamCore("failed", warning: "CAMERA_TAP_PREP_FAILED: the GPU camera tap could not be prepared; restart CoreVideo Pro.")),
+                    "CAMERA_TAP_PREP_FAILED: the GPU camera tap could not be prepared; restart CoreVideo Pro.",
+                    "9 a failed GPU tap preparation is shown whole, never as connecting")
         expectEqual(P.label(intent: true, ext: .active, core: vcamCore("failed", warning: "plain words")),
                     "plain words", "9 warning without a code prefix is shown whole")
         expectEqual(P.label(intent: true, ext: .active, core: vcamCore("failed")),

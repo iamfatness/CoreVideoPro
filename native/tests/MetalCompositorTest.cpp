@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include "compositor/CompositorFaultInjection.h"
 #include "compositor/CompositorLayout.h"
 #include "compositor/CompositorShaderParams.h"
 #include "modules/Interfaces.h"
@@ -1080,6 +1081,42 @@ TEST(MetalCompositor, VcamTapPreparationNeverStallsTheRenderTick) {
   ASSERT_GE(capture->count(), 1u);
   EXPECT_LT(enableWorst, baselineWorst + 4.0)
       << "a tick between enable and first delivery stalled the render thread";
+}
+
+// Carried fix (Task 7): a failed tap preparation (kernel compile or buffer
+// allocation) used to be one log line and nothing else: the camera stayed
+// "live" with no frames, forever. It must surface as the tap warning MediaCore
+// folds into the virtualCamera snapshot.
+TEST(MetalCompositor, AFailedVcamTapPreparationIsReportedAsAWarning) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  EXPECT_EQ(compositor->vcamTapWarning(), "") << "no warning before the tap is ever asked for";
+  corevideo::compositor::setVcamTapPrepFailureForTest(true);
+  auto capture = installVcamCapture(*compositor);
+  auto plan = vcamPlan("vcam-prep-fail", kVcamW, kVcamH);
+  plan.skipCpuReadback = true;
+  const std::vector<VideoFrame> frames{bgraFrame("cam", 320, 180, 0, 0, 255)};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (compositor->vcamTapWarning().empty() && std::chrono::steady_clock::now() < deadline) {
+    compositor->render(plan, frames);
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+  }
+  corevideo::compositor::setVcamTapPrepFailureForTest(false);
+  const std::string warning = compositor->vcamTapWarning();
+  compositor->setIdentifiedVcamFrameSink({});
+  EXPECT_EQ(warning.rfind("CAMERA_TAP_PREP_FAILED:", 0), 0u) << warning;
+  EXPECT_EQ(capture->count(), 0u) << "a tap that never prepared delivers nothing";
+}
+
+// ...and a healthy preparation never reports one.
+TEST(MetalCompositor, AHealthyVcamTapReportsNoWarning) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto capture = installVcamCapture(*compositor);
+  auto plan = vcamPlan("vcam-prep-ok", kVcamW, kVcamH);
+  plan.skipCpuReadback = true;
+  const std::vector<VideoFrame> frames{bgraFrame("cam", 320, 180, 0, 0, 255)};
+  ASSERT_GE(renderUntilDelivered(*compositor, plan, frames, *capture, 1), 1u);
+  compositor->setIdentifiedVcamFrameSink({});
+  EXPECT_EQ(compositor->vcamTapWarning(), "");
 }
 #endif  // COREVIDEO_WITH_MAC_VIRTUALCAM
 

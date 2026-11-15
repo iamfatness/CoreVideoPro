@@ -191,6 +191,56 @@ TEST(SinkVirtualCameraPublisher, ALostSinkReconnectsWithoutAToggle) {
   EXPECT_EQ(rig.camera->status().framesPublished, 1u);
 }
 
+// Review Focus 1 (Task 7): a queue that stays full for ~2 s with no device change
+// means the extension stopped draining. That is a loss: disconnect, report
+// CAMERA_EXTENSION_LOST (the shell reads it as "connecting"; the async worker
+// retries on its 1 s cadence). The Rig clock advances 16.67 ms per enqueue.
+TEST(SinkVirtualCameraPublisher, AQueueFullForTwoSecondsIsALostSink) {
+  Rig rig;
+  rig.state->capacity = 1;
+  ASSERT_TRUE(rig.camera->start(1920, 1080, 60));
+  rig.camera->publishNv12IdentifiedOnWorker(frame(1920, 1080), 1920, 1080, 1, 0);  // Ok, fills the queue
+  // 1.5 s of continuous QueueFull: still live, nothing disconnected.
+  for (int i = 2; i <= 91; ++i)
+    rig.camera->publishNv12IdentifiedOnWorker(frame(1920, 1080), 1920, 1080, i, 0);
+  EXPECT_EQ(rig.camera->status().state, "live");
+  EXPECT_EQ(rig.state->disconnects, 0);
+  // Past 2 s of continuous QueueFull: lost.
+  for (int i = 92; i <= 140; ++i)
+    rig.camera->publishNv12IdentifiedOnWorker(frame(1920, 1080), 1920, 1080, i, 0);
+  auto status = rig.camera->status();
+  EXPECT_EQ(status.state, "failed");
+  EXPECT_FALSE(status.enabled);
+  EXPECT_EQ(status.warning.rfind("CAMERA_EXTENSION_LOST:", 0), 0u) << status.warning;
+  EXPECT_EQ(rig.state->disconnects, 1);
+  // The retry reconnects, and the stall clock starts over: one QueueFull right
+  // after the reconnect is not a loss.
+  rig.camera->stop();
+  ASSERT_TRUE(rig.camera->start(1920, 1080, 60));
+  rig.camera->publishNv12IdentifiedOnWorker(frame(1920, 1080), 1920, 1080, 141, 0);
+  status = rig.camera->status();
+  EXPECT_EQ(status.state, "live");
+  EXPECT_EQ(rig.state->disconnects, 1);
+}
+
+TEST(SinkVirtualCameraPublisher, AnAcceptedFrameRestartsTheStallClock) {
+  Rig rig;
+  rig.state->capacity = 1;
+  ASSERT_TRUE(rig.camera->start(1920, 1080, 60));
+  rig.camera->publishNv12IdentifiedOnWorker(frame(1920, 1080), 1920, 1080, 1, 0);
+  for (int i = 2; i <= 91; ++i)  // 1.5 s full
+    rig.camera->publishNv12IdentifiedOnWorker(frame(1920, 1080), 1920, 1080, i, 0);
+  rig.state->held.clear();  // the consumer drained once
+  rig.camera->publishNv12IdentifiedOnWorker(frame(1920, 1080), 1920, 1080, 92, 0);  // Ok
+  for (int i = 93; i <= 182; ++i)  // another 1.5 s full: 3 s of mostly-full, never 2 s continuous
+    rig.camera->publishNv12IdentifiedOnWorker(frame(1920, 1080), 1920, 1080, i, 0);
+  const auto status = rig.camera->status();
+  EXPECT_EQ(status.state, "live");
+  EXPECT_TRUE(status.warning.empty()) << status.warning;
+  EXPECT_EQ(rig.state->disconnects, 0);
+  EXPECT_EQ(status.framesPublished, 2u);
+}
+
 TEST(SinkVirtualCameraPublisher, StopDisconnectsAndReportsOff) {
   Rig rig;
   ASSERT_TRUE(rig.camera->start(1920, 1080, 60));

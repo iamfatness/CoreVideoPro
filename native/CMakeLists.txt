@@ -653,6 +653,15 @@ endif()
 add_executable(corevideo-native src/main.cpp)
 target_link_libraries(corevideo-native PRIVATE corevideo_native)
 
+# macOS virtual camera e2e feeder (roadmap M9.2, Task 7): feeds red NV12
+# through SinkVirtualCameraPublisher + the real CMIO sink. Built on demand by
+# scripts/macos-vcam-e2e.sh, never by default, never shipped.
+if(APPLE AND COREVIDEO_WITH_MAC_VIRTUALCAM)
+  add_executable(corevideo-vcam-feed EXCLUDE_FROM_ALL tools/mac-vcam-feed.mm)
+  target_link_libraries(corevideo-vcam-feed PRIVATE corevideo_native "-framework Foundation")
+  set_source_files_properties(tools/mac-vcam-feed.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+endif()
+
 if(WIN32)
   add_executable(corevideo-webcam-framer-qa EXCLUDE_FROM_ALL ../tools/webcam-framer-worker-qa.cpp)
   target_link_libraries(corevideo-webcam-framer-qa PRIVATE corevideo_native)

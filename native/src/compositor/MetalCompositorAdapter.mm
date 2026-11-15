@@ -44,6 +44,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "compositor/CompositorFaultInjection.h"
 #include "compositor/CompositorLayout.h"
 #include "compositor/CompositorShaderParams.h"
 #include "compositor/AdvancedGrade.h"
@@ -363,6 +364,13 @@ class MetalCompositor final : public ICompositor {
   void setVcamMirror(bool mirror) override { vcamMirror_.store(mirror, std::memory_order_release); }
   [[nodiscard]] uint64_t vcamDispatchSkipped() const override {
     return vcamShared_->skipped.load(std::memory_order_acquire);
+  }
+  // Carried fix (Task 7): a failed preparation is permanent for this
+  // compositor (the camera can never produce a frame), so it is reported, not
+  // just logged once. MediaCore folds it into the virtualCamera snapshot.
+  [[nodiscard]] std::string vcamTapWarning() const override {
+    if (vcamPrepState_.load(std::memory_order_acquire) != kVcamPrepFailed) return {};
+    return "CAMERA_TAP_PREP_FAILED: the GPU camera tap could not be prepared; restart CoreVideo Pro.";
   }
 #endif
 
@@ -766,6 +774,10 @@ class MetalCompositor final : public ICompositor {
   // render and tap threads read only after observing kVcamPrepReady (acquire).
   bool buildVcamPipeline(id<MTLDevice> device) {
     @autoreleasepool {
+      if (::corevideo::compositor::vcamTapPrepFailureArmed()) {
+        ::corevideo::core::nativeLogf("[virtualcam] mac gpu tap unavailable: forced by test\n");
+        return false;
+      }
       NSError* error = nil;
       id<MTLLibrary> library =
           [device newLibraryWithSource:[NSString stringWithUTF8String:kVcamNv12KernelSource]

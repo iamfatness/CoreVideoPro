@@ -2586,7 +2586,22 @@ rpc::Json CoreStateCapture::captureDevicesState() const {
 }
 
 rpc::Json CoreStateCapture::virtualCameraState() const {
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  // Task 7 carried fix: a GPU tap that failed to prepare can never feed the
+  // camera, so while the camera is on it overrides the publisher's own state
+  // (the sink can be connected and "live" with nothing to send). The shell
+  // label shows a failed warning whole. Every other build: untouched.
+  auto status = virtualCamera_->status();
+  if (status.state != "off" && modules_.compositor) {
+    auto tapWarning = modules_.compositor->vcamTapWarning();
+    if (!tapWarning.empty()) {
+      status.state = "failed";
+      status.warning = std::move(tapWarning);
+    }
+  }
+#else
   const auto status = virtualCamera_->status();
+#endif
   return rpc::Json::Object{
       {"enabled", status.enabled},
       {"status", status.state},

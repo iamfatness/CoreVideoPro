@@ -1542,6 +1542,11 @@ class ICompositor {
   // skip is a lost camera frame (per-frame delivery rule). 0 for compositors
   // without a GPU vcam tap.
   [[nodiscard]] virtual uint64_t vcamDispatchSkipped() const { return 0; }
+  // macOS virtual camera: "" while the GPU vcam tap is healthy (or absent);
+  // otherwise a warning beginning "CAMERA_TAP_PREP_FAILED:" (kernel compile or
+  // buffer allocation failed, so no camera frame will ever be produced).
+  // MediaCore folds it into the virtualCamera snapshot on the Mac backend only.
+  [[nodiscard]] virtual std::string vcamTapWarning() const { return {}; }
 
   // #597 Lever A: FEED THE ENCODER FEWER FRAMES, at the one place that actually
   // paces it. The hardware encoder's thread advances on the KEYED MUTEX of the

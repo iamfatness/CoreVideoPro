@@ -29,6 +29,19 @@ let package = Package(
                 .linkedFramework("Security"),
                 .linkedFramework("VideoToolbox")
             ]
+        ),
+        // Capture probe for the virtual camera's local e2e check
+        // (scripts/macos-vcam-e2e.sh, roadmap M9.2 Task 7). A developer tool:
+        // never bundled into the app.
+        .executableTarget(
+            name: "VcamProbe",
+            dependencies: ["CameraExtensionKit"],
+            path: "Sources/VcamProbe",
+            linkerSettings: [
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("CoreVideo")
+            ]
         )
     ]
 )

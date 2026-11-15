@@ -8714,6 +8714,76 @@ TEST(MediaCoreCommand, EnablingTheVirtualCameraArmsTheRightProgramTap) {
   EXPECT_EQ(publisherStops, 1);
 }
 
+namespace {
+// Reports a fixed tap warning, as a Metal compositor whose GPU NV12 tap failed
+// to prepare does (Task 7 carried fix).
+class TapWarningCompositor final : public corevideo::modules::ICompositor {
+ public:
+  explicit TapWarningCompositor(std::unique_ptr<corevideo::modules::ICompositor> inner)
+      : inner_(std::move(inner)) {}
+  std::string rendererName() const override { return inner_->rendererName(); }
+  corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    return inner_->render(plan, frames);
+  }
+  std::string vcamTapWarning() const override { return warning; }
+  std::string warning;
+ private:
+  std::unique_ptr<corevideo::modules::ICompositor> inner_;
+};
+
+class StatusVirtualCameraPublisher final : public corevideo::modules::IVirtualCameraPublisher {
+ public:
+  bool start(int width, int height, int fps) override {
+    status_.enabled = true; status_.state = "live"; status_.width = width; status_.height = height; status_.fps = fps;
+    return true;
+  }
+  void publish(const corevideo::modules::ProgramFrame&) override {}
+  void stop() override { status_.enabled = false; status_.state = "off"; }
+  corevideo::modules::VirtualCameraStatus status() const override { return status_; }
+ private:
+  corevideo::modules::VirtualCameraStatus status_;
+};
+}  // namespace
+
+// Task 7 carried fix: a failed GPU tap preparation is visible in the
+// virtualCamera snapshot (status failed + the CAMERA_TAP_PREP_FAILED: warning,
+// which the shell label shows whole). Mac backend only; every other build
+// ignores the compositor's tap warning, byte for byte.
+TEST(MediaCoreCommand, AFailedVcamTapPreparationShowsInTheVirtualCameraSnapshot) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<TapWarningCompositor>(std::move(modules.compositor));
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.setVirtualCameraPublisherForTest(std::make_unique<StatusVirtualCameraPublisher>());
+  compositor->warning = "CAMERA_TAP_PREP_FAILED: the GPU camera tap could not be prepared (test).";
+
+  // Camera off: a stale tap failure says nothing.
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  ASSERT_NE(state.get("virtualCamera"), nullptr);
+  EXPECT_EQ(state.get("virtualCamera")->getString("status"), "off");
+  EXPECT_EQ(state.get("virtualCamera")->getString("warning"), "");
+
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "sync-virtual-camera"}, {"on", true}}});
+  const auto* camera = state.get("virtualCamera");
+  ASSERT_NE(camera, nullptr);
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  EXPECT_EQ(camera->getString("status"), "failed");
+  EXPECT_EQ(camera->getString("warning"), compositor->warning);
+#else
+  EXPECT_EQ(camera->getString("status"), "live") << "the tap warning is inert outside the Mac backend";
+  EXPECT_EQ(camera->getString("warning"), "");
+#endif
+
+  // A healthy tap leaves the publisher's own status alone.
+  compositor->warning.clear();
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  EXPECT_EQ(state.get("virtualCamera")->getString("status"), "live");
+  EXPECT_EQ(state.get("virtualCamera")->getString("warning"), "");
+}
+
 // #535 slice 4a final review, R1: a "zoom"-kind bus source with no new frame
 // for >= 1.5s reads "stalled" on the render-plan layer (the on-air rule),
 // even though SourceBus's own 200ms diagnostic health would already call it

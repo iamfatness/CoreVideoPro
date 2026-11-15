@@ -155,11 +155,17 @@ struct StudioToggleStyle: ToggleStyle {
 }
 
 // Text field: #0E1112 fill, 1px border, 8px radius (replaces .roundedBorder).
+// The text colour is explicit and the field's own colour scheme is pinned dark:
+// the fill is always dark, but a popover or sheet need not inherit the window's
+// dark scheme, and the ambient (light) default made both the typed text and the
+// system placeholder dark-on-dark there.
 struct StudioFieldStyle: TextFieldStyle {
     func _body(configuration: TextField<Self._Label>) -> some View {
         configuration
             .textFieldStyle(.plain)
             .font(.grotesk(12))
+            .foregroundStyle(Studio.textPrimary)
+            .environment(\.colorScheme, .dark)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
