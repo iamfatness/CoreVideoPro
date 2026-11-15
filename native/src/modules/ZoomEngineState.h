@@ -87,6 +87,13 @@ class ZoomEngineRuntimeState {
   void setSpeakerExclusions(std::vector<std::uint32_t> excludedParticipantIds,
                             std::uint64_t nowMs);
   void reset();
+  // A join the core already retired as timed out can still get the SDK's real
+  // verdict a moment later (Mac 1.0.0, 2026-11-15: meeting_failed 504 landed
+  // just after "Timed out waiting for Zoom meeting join result."). The later
+  // truth REPLACES the timeout text. Returns false (and changes nothing) for
+  // any event that is not a join/auth failure.
+  bool applyLateJoinFailure(const ZoomEngineEvent& event);
+  [[nodiscard]] static bool isJoinTimeoutWarning(const std::string& warning);
 
   [[nodiscard]] ZoomEngineRuntimeSnapshot snapshot() const;
   [[nodiscard]] rpc::Json subscriptionSdkEvidence() const { return sdkEvidence_.json(); }

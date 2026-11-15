@@ -397,6 +397,48 @@ TEST(ZoomEngineRuntimeState, AnUnmappedJoinFailureIsStillReported) {
   EXPECT_NE(snapshot.warnings.back().find("SDKERR_SOMETHING_NEW"), std::string::npos);
 }
 
+// Mac 1.0.0, 2026-11-15: the SDK's own join verdict (MeetingFailCode, spelled
+// MEETING_FAIL_* by both engines) reached the warnings as raw wire text. The
+// operator must read what to do, and an unmapped code must still be loud.
+TEST(ZoomEngineRuntimeState, MeetingFailCodesReadAsOperatorLanguage) {
+  const auto warningFor = [](const std::string& line) {
+    corevideo::modules::ZoomEngineRuntimeState state;
+    state.apply(eventFrom(line), 0);
+    const auto snapshot = state.snapshot();
+    EXPECT_EQ(snapshot.meetingState, "error");
+    return snapshot.warnings.empty() ? std::string{} : snapshot.warnings.back();
+  };
+  EXPECT_EQ(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":504,"reason":"MEETING_FAIL_APP_CAN_NOT_ANONYMOUS_JOIN_MEETING"})"),
+            "Zoom requires you to sign in to join this meeting. Use Sign in with Zoom, then join again.");
+  EXPECT_EQ(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":82,"reason":"MEETING_FAIL_NEED_SIGN_IN_FOR_PRIVATE_MEETING"})"),
+            "Zoom requires you to sign in to join this meeting. Use Sign in with Zoom, then join again.");
+  EXPECT_NE(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":4,"reason":"MEETING_FAIL_PASSWORD_ERR"})").find("passcode"),
+            std::string::npos);
+  EXPECT_NE(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":7,"reason":"MEETING_FAIL_MEETING_NOT_START"})").find("not started"),
+            std::string::npos);
+  EXPECT_NE(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":12,"reason":"MEETING_FAIL_CONFLOCKED"})").find("locked"),
+            std::string::npos);
+  // Unknown: verbatim, so a new SDK failure stays loud.
+  EXPECT_EQ(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":1,"reason":"MEETING_FAIL_CONNECTION_ERR"})"),
+            "meeting_failed: MEETING_FAIL_CONNECTION_ERR");
+}
+
+// The later truth replaces the timeout; non-failure chatter does not.
+TEST(ZoomEngineRuntimeState, ALateJoinFailureReplacesTheTimeoutWarning) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply({corevideo::modules::ZoomEngineEventKind::Error, "error", "", "join",
+               "Timed out waiting for Zoom meeting join result."}, 0);
+  EXPECT_FALSE(state.applyLateJoinFailure(eventFrom(R"({"cmd":"joined"})")));
+  ASSERT_EQ(state.snapshot().warnings.size(), 1u);
+  EXPECT_TRUE(state.applyLateJoinFailure(eventFrom(
+      R"({"cmd":"error","msg":"meeting_failed","code":504,"reason":"MEETING_FAIL_APP_CAN_NOT_ANONYMOUS_JOIN_MEETING"})")));
+  const auto snapshot = state.snapshot();
+  EXPECT_EQ(snapshot.meetingState, "error");
+  ASSERT_EQ(snapshot.warnings.size(), 1u);
+  EXPECT_EQ(snapshot.warnings[0],
+            "Zoom requires you to sign in to join this meeting. Use Sign in with Zoom, then join again.");
+}
+
 // Task 4 (source bus slice 2), fix round 1: the Sources page prints a
 // per-feed fps from this field, and until now it was a constant 30
 // regardless of what the engine actually delivered. measuredDeliveredFps

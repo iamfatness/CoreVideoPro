@@ -225,6 +225,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   {
     std::lock_guard<EngineMutex> lock(mutex_);
     restart = restartBeforeJoin_;
+    lateJoinTruthGeneration_ = 0;  // a new join owns the warnings from here
     if (restart) {
       ++processGeneration_;
       purgeQueuedEngineSendsLocked("join after retired helper");
@@ -369,6 +370,7 @@ void ZoomEngineRuntime::retireTimedOutJoinLocked(const char* stage, const char* 
   // the next explicit join terminates it outside the runtime lock before restart.
   acceptJoinEvents_ = false;
   restartBeforeJoin_ = true;
+  lateJoinTruthGeneration_ = processGeneration_;
   ++processGeneration_;
   purgeQueuedEngineSendsLocked("join timeout");
   state_.apply({ZoomEngineEventKind::Error, "error", "", stage, message});
@@ -382,6 +384,7 @@ rpc::Json ZoomEngineRuntime::leave() {
   std::lock_guard<EngineMutex> lock(mutex_);
   acceptJoinEvents_ = false;
   restartBeforeJoin_ = true;
+  lateJoinTruthGeneration_ = 0;
   if (process_ && process_->running()) {
     enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
   }
@@ -983,15 +986,20 @@ void ZoomEngineRuntime::readerLoop() {
     std::uint64_t generation;
     {
       std::lock_guard<EngineMutex> lock(mutex_);
-      if (!readerRunning_ || restartBeforeJoin_ || !process_) {
+      // A timeout-retired helper is still read, but only so its late join
+      // verdict can replace the timeout text (applyEvent takes nothing else).
+      const bool lateTruthOnly = restartBeforeJoin_ && lateJoinTruthGeneration_ != 0;
+      if (!readerRunning_ || (restartBeforeJoin_ && !lateTruthOnly) || !process_) {
         return;
       }
       if (!process_->running()) {
-        reportEngineLossLocked("Zoom SDK helper exited unexpectedly. Rejoin the meeting to restore Zoom media.");
+        if (!lateTruthOnly) {
+          reportEngineLossLocked("Zoom SDK helper exited unexpectedly. Rejoin the meeting to restore Zoom media.");
+        }
         return;
       }
       process = process_;
-      generation = processGeneration_;
+      generation = lateTruthOnly ? lateJoinTruthGeneration_ : processGeneration_;
     }
 
     auto event = process->readEvent();
@@ -1027,6 +1035,15 @@ void ZoomEngineRuntime::reportEngineLossLocked(const std::string& message) {
 
 void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<std::uint64_t> generation) {
   std::lock_guard<EngineMutex> lock(mutex_);
+  if (!shuttingDown_ && restartBeforeJoin_ && lateJoinTruthGeneration_ != 0 && generation &&
+      *generation == lateJoinTruthGeneration_) {
+    // The ONE thing a timeout-retired helper may still tell us: why the join
+    // it was running failed. Joined/roster/media from it stay quarantined.
+    if (state_.applyLateJoinFailure(event)) {
+      lateJoinTruthGeneration_ = 0;
+    }
+    return;
+  }
   if (shuttingDown_ || restartBeforeJoin_ || (generation && *generation != processGeneration_)) return;
   if (event.kind == ZoomEngineEventKind::CommsState) {
     // Comms reports never touch the meeting/roster state machine.

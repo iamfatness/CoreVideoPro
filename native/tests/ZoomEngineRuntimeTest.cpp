@@ -1552,6 +1552,103 @@ TEST(ZoomEngineRuntime, AuthAndJoinTimeoutsRetireHelperAndRejectLateEvents) {
   unsetEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS");
 }
 
+// Mac 1.0.0, 2026-11-15: shell log "Timed out waiting for Zoom meeting join
+// result." while the engine reported, a moment later,
+// meeting_failed 504 MEETING_FAIL_APP_CAN_NOT_ANONYMOUS_JOIN_MEETING. The
+// retired helper's verdict for THAT join must replace the timeout text; the
+// rest of what it says (a late Joined, a roster) stays quarantined.
+TEST(ZoomEngineRuntime, ALateJoinVerdictFromTheTimedOutHelperReplacesTheTimeout) {
+  using namespace corevideo::modules;
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  setEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS", "0");
+  const auto lateFailure = parseZoomEngineEvent(
+      R"({"cmd":"error","msg":"meeting_failed","code":504,"reason":"MEETING_FAIL_APP_CAN_NOT_ANONYMOUS_JOIN_MEETING"})").value();
+  const auto warningsOf = [](ZoomEngineRuntime& runtime) {
+    std::vector<std::string> out;
+    const auto snapshot = runtime.snapshot();
+    if (const auto* warnings = snapshot.get("warnings")) {
+      for (const auto& w : warnings->asArray()) out.push_back(w.asString());
+    }
+    return out;
+  };
+  {
+    ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+    ZoomEngineRuntimeTestAccess::markInitialized(runtime);
+    const auto retired = ZoomEngineRuntimeTestAccess::generation(runtime);
+    runtime.join(corevideo::rpc::Json::Object{{"meetingNumber", "98928664310"}});
+    ASSERT_EQ(warningsOf(runtime), std::vector<std::string>{"Timed out waiting for Zoom meeting join result."});
+    // A late Joined from the retired helper changes nothing.
+    ZoomEngineRuntimeTestAccess::applyFromGeneration(runtime, {ZoomEngineEventKind::Joined}, retired);
+    // A failure from some OTHER generation is not this join's verdict.
+    ZoomEngineRuntimeTestAccess::applyFromGeneration(runtime, lateFailure, retired + 7);
+    ASSERT_EQ(warningsOf(runtime), std::vector<std::string>{"Timed out waiting for Zoom meeting join result."});
+    ZoomEngineRuntimeTestAccess::applyFromGeneration(runtime, lateFailure, retired);
+    EXPECT_EQ(runtime.snapshot().getString("meetingState"), "error");
+    EXPECT_EQ(warningsOf(runtime), std::vector<std::string>{
+        "Zoom requires you to sign in to join this meeting. Use Sign in with Zoom, then join again."});
+  }
+  {
+    // After Leave the retired helper's word is no longer wanted.
+    ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+    ZoomEngineRuntimeTestAccess::markInitialized(runtime);
+    const auto retired = ZoomEngineRuntimeTestAccess::generation(runtime);
+    runtime.join(corevideo::rpc::Json::Object{{"meetingNumber", "98928664310"}});
+    runtime.leave();
+    ZoomEngineRuntimeTestAccess::applyFromGeneration(runtime, lateFailure, retired);
+    for (const auto& w : warningsOf(runtime)) EXPECT_EQ(w.find("sign in"), std::string::npos) << w;
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+  unsetEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS");
+}
+
+// The same rule through the real reader loop: after the timeout the reader
+// must keep reading the retired helper long enough to take its verdict (it
+// used to return on restartBeforeJoin_ and the 504 was never read).
+TEST(ZoomEngineRuntime, TheReaderKeepsReadingATimedOutHelperForItsVerdict) {
+  using namespace corevideo::modules;
+  class ScriptedClient : public FakeZoomEngineProcessClient {
+   public:
+    std::optional<ZoomEngineEvent> readEvent() override {
+      std::lock_guard<std::mutex> lock(m_);
+      if (script_.empty()) return std::nullopt;
+      auto next = script_.front();
+      script_.erase(script_.begin());
+      return next;
+    }
+    void push(ZoomEngineEvent event) {
+      std::lock_guard<std::mutex> lock(m_);
+      script_.push_back(std::move(event));
+    }
+   private:
+    std::mutex m_;
+    std::vector<ZoomEngineEvent> script_;
+  };
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  setEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS", "0");
+  {
+    ZoomEngineRuntime runtime;
+    auto fake = std::make_shared<ScriptedClient>();
+    runtime.installEngineProcessForTest(fake);
+    ZoomEngineRuntimeTestAccess::markInitialized(runtime);
+    runtime.join(corevideo::rpc::Json::Object{{"meetingNumber", "98928664310"}});
+    fake->push({ZoomEngineEventKind::Joined});  // quarantined
+    fake->push(parseZoomEngineEvent(
+        R"({"cmd":"error","msg":"meeting_failed","code":504,"reason":"MEETING_FAIL_APP_CAN_NOT_ANONYMOUS_JOIN_MEETING"})").value());
+    ZoomEngineRuntimeTestAccess::runReader(runtime);
+    const auto snapshot = runtime.snapshot();
+    EXPECT_EQ(snapshot.getString("meetingState"), "error");
+    ASSERT_TRUE(snapshot.get("warnings") != nullptr);
+    const auto& warnings = snapshot.get("warnings")->asArray();
+    ASSERT_EQ(warnings.size(), 1u);
+    EXPECT_EQ(warnings[0].asString(),
+              "Zoom requires you to sign in to join this meeting. Use Sign in with Zoom, then join again.");
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+  unsetEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS");
+}
+
 TEST(ZoomEngineRuntime, ActiveJoinRetiresOldHelperInsteadOfReturningItsJoinedState) {
   using namespace corevideo::modules;
   setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/missing/corevideo-zoom-engine.exe");

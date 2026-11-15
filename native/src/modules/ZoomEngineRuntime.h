@@ -225,6 +225,12 @@ class ZoomEngineRuntime {
   bool initialized_ = false;
   bool acceptJoinEvents_ = true;
   bool restartBeforeJoin_ = false;
+  // Non-zero while a helper retired by a join/auth TIMEOUT may still deliver
+  // the SDK's real verdict for that join (the generation it was retired from).
+  // The reader keeps reading that helper only to take this one failure report;
+  // everything else it says stays quarantined. Cleared by the verdict, by
+  // Leave, and by the next join (which terminates the helper).
+  std::uint64_t lateJoinTruthGeneration_ = 0;
   bool mediaStarted_ = false;
   // Monotonic engine-process instance counter (guarded by mutex_). Bumped every
   // time a new process client is installed; queued sends carry the generation

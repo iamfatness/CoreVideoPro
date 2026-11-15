@@ -294,6 +294,25 @@ void ZoomEngineRuntimeState::addWarning(const std::string& warning) {
   }
 }
 
+bool ZoomEngineRuntimeState::isJoinTimeoutWarning(const std::string& warning) {
+  return warning.rfind("Timed out waiting for Zoom ", 0) == 0;
+}
+
+bool ZoomEngineRuntimeState::applyLateJoinFailure(const ZoomEngineEvent& event) {
+  const bool joinFailure =
+      event.kind == ZoomEngineEventKind::Error &&
+      (event.message.rfind("meeting_failed", 0) == 0 || event.message.rfind("join_failed", 0) == 0);
+  if (!joinFailure && event.kind != ZoomEngineEventKind::AuthFail) {
+    return false;
+  }
+  warnings_.erase(std::remove_if(warnings_.begin(), warnings_.end(), isJoinTimeoutWarning),
+                  warnings_.end());
+  // The normal paths phrase it (zoomJoinFailureMessage for Error, the auth
+  // text for AuthFail); state is already "error" from the timeout.
+  apply(event);
+  return true;
+}
+
 void ZoomEngineRuntimeState::reset() {
   authoritativeRoster_ = false;
   sdkEvidence_.reset();
