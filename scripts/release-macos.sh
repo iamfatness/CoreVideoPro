@@ -327,7 +327,9 @@ if [ "$NOTARIZE" = "1" ]; then
     echo "app inside the mounted DMG: stapled + Notarized Developer ID"
 fi
 
-pkgutil --check-signature "$PKG" | grep -q "Developer ID Installer" \
+# Capture first: `cmd | grep -q` under pipefail can fail on SIGPIPE.
+pkgsig="$(pkgutil --check-signature "$PKG" 2>&1 || true)"
+grep -q "Developer ID Installer" <<<"$pkgsig" \
     || die "pkg is not signed by a Developer ID Installer identity"
 if [ "$NOTARIZE" = "1" ]; then
     assess="$(spctl -a -vv -t install "$PKG" 2>&1 || true)"
