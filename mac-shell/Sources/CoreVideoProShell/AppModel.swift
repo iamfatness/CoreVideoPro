@@ -424,7 +424,13 @@ final class AppModel: ObservableObject {
     // does not own key:lower-third (the manual lower third may).
     @Published var autoLowerThirdSourceId = ""
     @Published var isoRecordingEnabled = false
-    @Published var isoSelectedSourceIds: Set<String> = []
+    /// THE ISO selection (Windows ShowInputsCoordinator.IsoSelectedSourceIds):
+    /// scheme-qualified source ids. The Sources-tab ISO toggles, the Routing
+    /// matrix and the footer all write THIS; the slot `iso` flags and the
+    /// matrix columns are projections of it, re-derived on every change.
+    @Published var isoSelectedSourceIds: Set<String> = [] {
+        didSet { projectIsoSelection() }
+    }
     @Published var streamUrl = "rtmp://a.rtmp.youtube.com/live2"
     @Published var streamKey = ""
     @Published var streamingDesired = false
@@ -501,15 +507,22 @@ final class AppModel: ObservableObject {
         prefs.capturePairings = slots
             .filter { !$0.audioDeviceId.isEmpty }
             .map { CapturePairing(slotId: $0.id, audioDeviceId: $0.audioDeviceId,
-                                  audioDeviceName: $0.audioDeviceName) }
+                                  audioDeviceName: $0.audioDeviceName,
+                                  sourceKey: $0.sourceKey) }
         prefs.chromaKeys = slots.filter(\.keyEnabled).map {
             PersistedChromaKey(slotId: $0.id, colorHex: $0.keyColorHex,
                                similarity: $0.keySimilarity,
-                               smoothness: $0.keySmoothness, spill: $0.keySpill)
+                               smoothness: $0.keySmoothness, spill: $0.keySpill,
+                               sourceKey: $0.sourceKey)
         }
         prefs.slotDropoutPolicies = slots
             .filter { $0.kind == "zoom" && !$0.dropoutPolicy.isEmpty }
-            .map { PersistedSlotPolicy(slotId: $0.id, dropoutPolicy: $0.dropoutPolicy) }
+            .map { PersistedSlotPolicy(slotId: $0.id, dropoutPolicy: $0.dropoutPolicy,
+                                       sourceKey: $0.sourceKey) }
+        prefs.showInputSlots = slots.filter { $0.sourceKey != nil }.map {
+            PersistedSlot(slotId: $0.id, kind: $0.kind, sourceId: $0.sourceId,
+                          name: $0.name, inShow: $0.inShow)
+        }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         storeProductionSettings(into: &prefs)
         prefs.scenes = railScenes.map { scene in
@@ -535,8 +548,9 @@ final class AppModel: ObservableObject {
     /// and the Keychain (so the harness can drive the real restore path).
     func applyRestoredPrefs(_ prefs: ShellPrefs) {
         overlays = prefs.overlays ?? OverlaysState()
+        restoreSlotAssignments(prefs.showInputSlots ?? [])
         for key in prefs.chromaKeys ?? [] {
-            if let index = slots.firstIndex(where: { $0.id == key.slotId }) {
+            if let index = restoredSlotIndex(sourceKey: key.sourceKey, legacySlotId: key.slotId) {
                 slots[index].keyEnabled = true
                 slots[index].keyColorHex = key.colorHex
                 slots[index].keySimilarity = key.similarity
@@ -545,13 +559,15 @@ final class AppModel: ObservableObject {
             }
         }
         for pairing in prefs.capturePairings ?? [] {
-            if let index = slots.firstIndex(where: { $0.id == pairing.slotId }) {
+            if let index = restoredSlotIndex(sourceKey: pairing.sourceKey,
+                                             legacySlotId: pairing.slotId) {
                 slots[index].audioDeviceId = pairing.audioDeviceId
                 slots[index].audioDeviceName = pairing.audioDeviceName
             }
         }
         for policy in prefs.slotDropoutPolicies ?? [] {
-            if let index = slots.firstIndex(where: { $0.id == policy.slotId }), slots[index].kind == "zoom" {
+            if let index = restoredSlotIndex(sourceKey: policy.sourceKey, legacySlotId: policy.slotId),
+               slots[index].kind == "zoom" {
                 slots[index].dropoutPolicy = policy.dropoutPolicy
             }
         }
@@ -798,6 +814,9 @@ final class AppModel: ObservableObject {
         rosterRecoveryNotice = rosterProjection.notice
         setMonitor(enabled: monitorEnabled, volume: monitorVolume)
         reassertProductionSettings()
+        // A fresh core generation has no capture devices connected.
+        captureReconnectPending.formUnion(
+            slots.filter { $0.kind == "capture" }.map(\.sourceId))
         // Re-assert a restored grade: the core starts neutral every launch, so
         // a persisted grade that is never pushed silently does nothing.
         if !gradeIsNeutral { applyColorGrade() }
@@ -919,6 +938,7 @@ final class AppModel: ObservableObject {
                     warning: entry["warning"] as? String ?? "")
             }
             refreshSlotHealth()
+            reconnectRestoredCaptures()
         }
         if let recording = snapshot["recording"] as? JSONObject {
             let nextStatus = RecordingLifecycleReadModel.status(recording)
@@ -1069,6 +1089,9 @@ final class AppModel: ObservableObject {
     }
 
     private var manuallyUnassigned: Set<String> = []
+    /// Capture device ids whose slot was restored (or survived a core respawn)
+    /// and still need a connect once the core lists them.
+    var captureReconnectPending: Set<String> = []
 
     // ── show-input slots (inputs 1–10, the Sources patch bay) ────────────────
 
@@ -1085,11 +1108,11 @@ final class AppModel: ObservableObject {
     private func recomputeFromSlots() {
         assignedIds = Set(slots.filter { $0.kind == "zoom" && $0.inShow }
             .map(\.sourceId))
-        isoSelectedSourceIds = Set(slots.filter(\.iso).compactMap { slot in
-            slot.kind == "zoom" ? "zoom:" + slot.sourceId
-                : slot.kind == "capture" ? "capture:" + slot.sourceId : nil
-        })
-        isoRecordingEnabled = !isoSelectedSourceIds.isEmpty
+        // Project the selection onto the (possibly new) slot set. This used to
+        // REBUILD the selection from the slot flags, and a freshly assigned slot
+        // has iso=false — so the first assignment after a relaunch wiped the
+        // restored ISO selection (sources audit row 76).
+        projectIsoSelection()
         syncSpine()
         syncScenes()
     }
@@ -1129,9 +1152,15 @@ final class AppModel: ObservableObject {
     }
 
     func toggleSlotIso(_ slotId: Int) {
-        guard let index = slots.firstIndex(where: { $0.id == slotId }) else { return }
+        guard let slot = slots.first(where: { $0.id == slotId }),
+              let key = slot.sourceKey else { return }
         recordingIso.noteOperatorEdit()
-        slots[index].iso.toggle()
+        if isoSelectedSourceIds.contains(key) {
+            isoSelectedSourceIds.remove(key)
+        } else {
+            isoSelectedSourceIds.insert(key)
+        }
+        isoRecordingEnabled = !isoSelectedSourceIds.isEmpty
         recomputeFromSlots()
     }
 
@@ -2525,23 +2554,44 @@ final class AppModel: ObservableObject {
 
     func toggleIsoCell(column: Int, sourceId: String) {
         recordingIso.noteOperatorEdit()
+        var selection = isoSelectedSourceIds
         if isoColumnAssignments[column] == sourceId {
             isoColumnAssignments[column] = nil
+            selection.remove(sourceId)
         } else {
-            // Exclusive per column AND one column per source.
+            // Exclusive per column AND one column per source: the column's
+            // previous occupant leaves the ISO set; this source moves here.
+            if let occupant = isoColumnAssignments[column] { selection.remove(occupant) }
             if let previous = isoColumn(of: sourceId) {
                 isoColumnAssignments[previous] = nil
             }
             isoColumnAssignments[column] = sourceId
+            selection.insert(sourceId)
         }
-        // The recording payload reads the flat selection; matrix is authority.
-        isoSelectedSourceIds = Set(isoColumnAssignments.values)
-        isoRecordingEnabled = !isoColumnAssignments.isEmpty
-        for index in slots.indices where slots[index].kind != "unassigned" {
-            let sid = (slots[index].kind == "zoom" ? "zoom:" : "capture:")
-                + slots[index].sourceId
-            slots[index].iso = isoSelectedSourceIds.contains(sid)
+        // The selection is the authority; the didSet re-projects the slot flags
+        // and normalises the columns (the same path every other writer takes).
+        isoSelectedSourceIds = selection
+        isoRecordingEnabled = !isoSelectedSourceIds.isEmpty
+    }
+
+    /// Re-derive the projections of `isoSelectedSourceIds`: each slot's ISO
+    /// flag, and the matrix columns (Windows VideoRoutingMatrixViewModel
+    /// :130-157 keeps existing column choices across rebuilds and normalises).
+    /// A selected source keeps its column; one without a column takes the
+    /// lowest free one (sorted, so a relaunch draws the same matrix); a column
+    /// whose source left the selection is cleared.
+    func projectIsoSelection() {
+        for index in slots.indices {
+            let selected = slots[index].sourceKey.map(isoSelectedSourceIds.contains) ?? false
+            if slots[index].iso != selected { slots[index].iso = selected }
         }
+        var columns = isoColumnAssignments.filter { isoSelectedSourceIds.contains($0.value) }
+        let placed = Set(columns.values)
+        for source in isoSelectedSourceIds.sorted() where !placed.contains(source) {
+            guard let free = (1...8).first(where: { columns[$0] == nil }) else { break }
+            columns[free] = source
+        }
+        if columns != isoColumnAssignments { isoColumnAssignments = columns }
     }
 
     func toggleMultiviewCell(sourceId: String) {

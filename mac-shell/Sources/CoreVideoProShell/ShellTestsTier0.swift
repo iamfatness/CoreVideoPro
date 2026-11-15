@@ -14,6 +14,10 @@ extension ShellTests {
             ("tier0/production-settings-every-generation",
              testProductionSettingsAreReassertedOnEveryCoreGeneration),
             ("tier0/production-labels-and-bitrate", testProductionLabelsAndStreamBitrateAreReal),
+            ("tier0/slots-survive-relaunch", testSlotAssignmentsSurviveARelaunch),
+            ("tier0/slot-settings-follow-the-source", testPerSourceSettingsFollowTheSourceNotTheSlot),
+            ("tier0/iso-survives-first-assignment", testRestoredIsoSelectionSurvivesTheFirstAssignment),
+            ("tier0/iso-matrix-one-truth", testIsoMatrixAndSourcesToggleAreOneTruth),
         ]
     }
 
@@ -124,6 +128,127 @@ extension ShellTests {
             return
         }
         expect(!shell.contains("MonoChip(\"1080p60\")"), "no hard-coded 1080p60 multiview chip")
+    }
+
+    // ── 0.8 slot assignments + ISO selection persist ────────────────────────
+
+    @MainActor
+    static func relaunched(_ before: AppModel) -> AppModel? {
+        guard let data = try? JSONEncoder().encode(before.currentPrefs()),
+              let saved = try? JSONDecoder().decode(ShellPrefs.self, from: data) else { return nil }
+        let after = AppModel()
+        after.applyRestoredPrefs(saved)
+        return after
+    }
+
+    /// Capture rows vanished every launch (sources audit row 75).
+    @MainActor
+    static func testSlotAssignmentsSurviveARelaunch() {
+        let before = AppModel()
+        before.assignSlot(3, kind: "capture", sourceId: "cam1", name: "Wide cam")
+        before.assignSlot(1, kind: "zoom", sourceId: "42", name: "Guest")
+        before.toggleSlotInShow(1)   // parked, not in show
+        guard let after = relaunched(before) else { expect(false, "relaunch"); return }
+        let cam = after.slots.first { $0.id == 3 }
+        expectEqual(cam?.kind, "capture", "capture assignment restored")
+        expectEqual(cam?.sourceId, "cam1", "capture source restored")
+        expectEqual(cam?.name, "Wide cam", "display name restored")
+        expectEqual(cam?.inShow, true, "in-show restored")
+        expectEqual(cam?.offline, true, "a restored source reads offline until it is seen")
+        let guest = after.slots.first { $0.id == 1 }
+        expectEqual(guest?.sourceId, "42", "zoom assignment restored")
+        expectEqual(guest?.inShow, false, "a parked slot stays parked")
+        expect(after.captureReconnectPending.contains("cam1"),
+               "a restored capture slot reconnects its device when the core lists it")
+        let empty = AppModel()
+        empty.applyRestoredPrefs(ShellPrefs())
+        expect(empty.slots.allSatisfy { $0.kind == "unassigned" },
+               "an older prefs file (no slots key) starts with empty slots, as before")
+    }
+
+    /// Key / mic / dropout were keyed by SLOT NUMBER, so they reattached to
+    /// whatever source landed in that slot.
+    @MainActor
+    static func testPerSourceSettingsFollowTheSourceNotTheSlot() {
+        var prefs = ShellPrefs()
+        // The camera now sits in slot 5; its settings were saved from slot 3.
+        prefs.showInputSlots = [
+            PersistedSlot(slotId: 3, kind: "capture", sourceId: "other", name: "Other", inShow: true),
+            PersistedSlot(slotId: 5, kind: "capture", sourceId: "cam1", name: "Cam", inShow: true),
+            PersistedSlot(slotId: 2, kind: "zoom", sourceId: "42", name: "Guest", inShow: true),
+        ]
+        prefs.chromaKeys = [PersistedChromaKey(slotId: 3, colorHex: "#0000ff", sourceKey: "capture:cam1")]
+        prefs.capturePairings = [CapturePairing(slotId: 3, audioDeviceId: "mic", audioDeviceName: "Mic",
+                                                sourceKey: "capture:cam1")]
+        prefs.slotDropoutPolicies = [PersistedSlotPolicy(slotId: 7, dropoutPolicy: "black",
+                                                         sourceKey: "zoom:42")]
+        let model = AppModel()
+        model.applyRestoredPrefs(prefs)
+        let cam = model.slots.first { $0.id == 5 }
+        let other = model.slots.first { $0.id == 3 }
+        expectEqual(cam?.keyEnabled, true, "the key reattaches to its source's slot")
+        expectEqual(cam?.keyColorHex, "#0000ff", "with its own settings")
+        expectEqual(other?.keyEnabled, false, "never to whatever now sits in the old slot")
+        expectEqual(cam?.audioDeviceId, "mic", "the mic pairing follows the camera")
+        expectEqual(other?.audioDeviceId, "", "the old slot does not inherit the mic")
+        expectEqual(model.slots.first { $0.id == 2 }?.dropoutPolicy, "black",
+                    "the dropout policy follows the guest")
+
+        // Saving writes the source identity, so the next restore can do this.
+        let saved = model.currentPrefs()
+        expectEqual(saved.chromaKeys?.first?.sourceKey, "capture:cam1", "keys save their source")
+        expectEqual(saved.capturePairings?.first?.sourceKey, "capture:cam1", "pairings save their source")
+        expectEqual(saved.slotDropoutPolicies?.first?.sourceKey, "zoom:42", "policies save their source")
+    }
+
+    /// recomputeFromSlots rebuilt the selection from slot flags; a freshly
+    /// assigned slot has iso=false, so the first assignment wiped it.
+    @MainActor
+    static func testRestoredIsoSelectionSurvivesTheFirstAssignment() {
+        var prefs = ShellPrefs()
+        prefs.isoRecordingEnabled = true
+        prefs.isoSelectedSourceIds = ["capture:cam1", "zoom:7"]
+        let model = AppModel()
+        model.applyRestoredPrefs(prefs)
+        model.assignSlot(2, kind: "zoom", sourceId: "7", name: "Guest")
+        expectEqual(model.isoSelectedSourceIds, ["capture:cam1", "zoom:7"],
+                    "the first assignment keeps the restored ISO selection")
+        expect(model.isoRecordingEnabled, "and the ISO master switch")
+        expectEqual(model.slots.first { $0.id == 2 }?.iso, true,
+                    "the assigned slot shows its source's saved ISO state")
+        model.unassignSlot(2)
+        expect(model.isoSelectedSourceIds.contains("zoom:7"),
+               "unassign keeps the source's ISO intent (Windows ShowInputsCoordinator)")
+    }
+
+    /// The matrix kept its own column map, never rebuilt from the selection,
+    /// so after a relaunch or a Sources-tab toggle it showed no ISO dots while
+    /// ISOs were armed — and the next click replaced the whole selection.
+    @MainActor
+    static func testIsoMatrixAndSourcesToggleAreOneTruth() {
+        var prefs = ShellPrefs()
+        prefs.isoRecordingEnabled = true
+        prefs.isoSelectedSourceIds = ["capture:cam1"]
+        prefs.showInputSlots = [
+            PersistedSlot(slotId: 1, kind: "capture", sourceId: "cam1", name: "Cam", inShow: true),
+            PersistedSlot(slotId: 2, kind: "zoom", sourceId: "7", name: "Guest", inShow: true),
+        ]
+        let model = AppModel()
+        model.applyRestoredPrefs(prefs)
+        expectEqual(model.isoColumn(of: "capture:cam1"), 1, "the matrix shows the restored ISO")
+        model.toggleSlotIso(2)      // Sources tab
+        expect(model.isoColumn(of: "zoom:7") != nil, "a Sources-tab ISO toggle appears in the matrix")
+        model.toggleIsoCell(column: 5, sourceId: "zoom:7")   // move to ISO 5
+        expectEqual(model.isoColumn(of: "zoom:7"), 5, "the matrix move keeps its column")
+        expectEqual(model.isoSelectedSourceIds, ["capture:cam1", "zoom:7"],
+                    "a matrix click edits the selection, it does not replace it")
+        model.toggleSlotIso(1)      // Sources tab: cam1 off
+        expectEqual(model.isoColumn(of: "capture:cam1"), nil, "unchecking in Sources clears its matrix cell")
+        expectEqual(model.slots.first { $0.id == 1 }?.iso, false, "and its Sources checkbox")
+        model.toggleIsoCell(column: 5, sourceId: "capture:cam1")  // takes zoom:7's column
+        expectEqual(model.isoSelectedSourceIds, ["capture:cam1"], "column-exclusive: the occupant leaves")
+        expectEqual(model.slots.first { $0.id == 2 }?.iso, false, "and its Sources checkbox follows")
+        expectEqual(model.slots.first { $0.id == 1 }?.iso, true, "the matrix pick shows in Sources")
     }
 
     // ── source-reading helpers ───────────────────────────────────────────────
