@@ -194,8 +194,7 @@ struct SettingsPane: View {
             card("System") {
                 row("Media core", statusText)
                 row("Renderer", rendererText)
-                row("Virtual camera", "Unavailable — needs an Apple Developer ID "
-                    + "(signed + notarized system extension)")
+                row("Virtual camera", StudioFooterReadout.virtualCameraUnavailable)
                 labeled("Logs") {
                     HStack(spacing: 6) {
                         Button("Shell log") { reveal("CoreVideoPro-shell.log") }

@@ -336,6 +336,10 @@ final class AppModel: ObservableObject {
     @Published var recordingArtifactPath = ""
     @Published var recordingWarning = ""
     @Published var masterLevel = 0
+    // Footer MASTER L/R (StudioFooterReadout.masterLevels): measured bus-tap
+    // peaks per side, else the mono masterLevel on both.
+    @Published var masterLevelLeft = 0
+    @Published var masterLevelRight = 0
     @Published var recordingDroppedFrames = 0
     @Published var recordingFramesWritten = 0
 
@@ -924,6 +928,9 @@ final class AppModel: ObservableObject {
             monitorControlNotice = monitorControl.notice
             masterLevel = mix["masterLevel"] as? Int ?? masterLevel
             limiterActive = mix["limiterActive"] as? Bool ?? limiterActive
+            let sides = StudioFooterReadout.masterLevels(snapshot: snapshot, fallback: masterLevel)
+            masterLevelLeft = sides.left
+            masterLevelRight = sides.right
             if monitorAccepted {
                 monitorStatus = mix["monitorStatus"] as? String ?? monitorStatus
                 monitorFeedbackRisk = mix["monitorFeedbackRisk"] as? Bool ?? monitorFeedbackRisk

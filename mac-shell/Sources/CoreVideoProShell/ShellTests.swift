@@ -14,6 +14,7 @@
 
 import Combine
 import AppKit
+import SwiftUI
 import Foundation
 
 enum ShellTests {
@@ -1166,6 +1167,78 @@ enum ShellTests {
             expect(model.meterWarning(now: t0.addingTimeInterval(step)) == nil,
                    "healthy audio between polls never warns (+\(step)s)")
         }
+    }
+
+    // ── Studio footer parity (owner report 2026-11-15) ──────────────────────
+
+    @MainActor
+    private static func testStudioFooterReadoutsAreWindows() {
+        expectEqual(StudioFooterReadout.transitions.map(\.mode), ["cut", "fade", "dip", "wipe"],
+                    "transition menu is Cut / Fade / Dip / Wipe (all built by the shared core)")
+        for option in StudioFooterReadout.transitions {
+            expectEqual(AppModel.normalizeTakeTransitionMode(option.mode), option.mode,
+                        "\(option.label) survives the take-transition normalizer")
+        }
+        expectEqual(StudioFooterReadout.transitionDuration("cut"), "Instant", "cut has no duration")
+        expectEqual(StudioFooterReadout.transitionDuration("dip"), "\u{00B7} 300 ms", "dip is 300 ms")
+        var slots = (1...10).map { ShowInputSlot(id: $0) }
+        expectEqual(StudioFooterReadout.setupSummary(slots: slots, guests: 0),
+                    "0 inputs \u{00B7} 0 Zoom guests", "Windows SetupProgressSummary, empty")
+        slots[0].kind = "zoom"; slots[0].inShow = true
+        slots[1].kind = "capture"; slots[1].inShow = false
+        expectEqual(StudioFooterReadout.setupSummary(slots: slots, guests: 1),
+                    "1 input \u{00B7} 1 Zoom guest", "only in-show assigned slots count; singulars")
+        expectEqual(StudioFooterReadout.lufsLabel(-120), "LUFS \u{2014}", "no loudness yet")
+        expectEqual(StudioFooterReadout.lufsLabel(-16.44), "-16.4 LUFS", "measured loudness")
+        expectEqual(StudioFooterReadout.masterStatusLine(warning: "meters aging", limiterActive: true),
+                    "meters aging", "the meter warning takes the status line's place")
+        expectEqual(StudioFooterReadout.masterStatusLine(warning: nil, limiterActive: true),
+                    "Limiter reducing", "limiter state when healthy")
+        let taps: [String: Any] = ["audioRoutingMatrix": ["busTaps": [
+            ["busId": "pgm-l", "frames": 480, "peakDbfs": -6.0],
+            ["busId": "pgm-r", "frames": 480, "peakDbfs": -30.0],
+        ]]]
+        let sides = StudioFooterReadout.masterLevels(snapshot: taps, fallback: 5)
+        expectEqual(sides.left, 90, "L from the pgm-l tap (-6 dBFS on the -60..0 scale)")
+        expectEqual(sides.right, 50, "R from the pgm-r tap")
+        let none = StudioFooterReadout.masterLevels(snapshot: [:], fallback: 42)
+        expect(none.left == 42 && none.right == 42, "no taps: mono master level on both sides")
+        for text in [StudioFooterReadout.virtualCameraUnavailable, StudioFooterReadout.ndiUnavailable] {
+            expect(text.contains("isn't available on Mac yet"), "unavailable output says so plainly")
+            expect(!text.contains("Developer ID"), "the app IS Developer ID signed; never blame it")
+        }
+    }
+
+    /// The bounce itself: status that comes and goes must never resize the footer.
+    @MainActor
+    private static func testStudioFooterHeightIgnoresStatus() {
+        func height(_ configure: (AppModel) -> Void) -> CGFloat {
+            let model = AppModel()
+            configure(model)
+            let host = NSHostingView(rootView: StudioFooter().environmentObject(model)
+                .frame(width: 1600))
+            host.frame = NSRect(x: 0, y: 0, width: 1600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            return host.fittingSize.height
+        }
+        let t0 = Date()
+        let calm = height { model in
+            model.observeAudioObservation(
+                ["audioObservation": ["sequence": 1, "ageMs": 20, "status": "fresh"]], now: t0)
+        }
+        expect(calm > 100, "footer measured (\(calm) pt)")
+        let warned = height { model in
+            model.observeAudioObservation(
+                ["audioObservation": ["sequence": 1, "ageMs": 5000, "status": "stale"]], now: t0)
+        }
+        expectEqual(warned, calm, "a meter warning does not change the footer height")
+        let busy = height { model in
+            FooterSnapshotHarness.seedLive(model, now: t0)
+            model.recordingWarning = "disk nearly full"
+            model.takeStatus = String(repeating: "Take failed: a very long reason ", count: 6)
+            model.lowerThirdPhase = "building-out"
+        }
+        expectEqual(busy, calm, "recording/stream/take/lower-third status does not change the height")
     }
 
     @MainActor
@@ -2708,6 +2781,8 @@ enum ShellTests {
             ("meters/observation-thresholds", testAudioObservationThresholdsAreWindows),
             ("meters/warning-recovers", testMeterWarningFollowsSnapshotAgeAndRecovers),
             ("meters/poll-interval-allowance", testMeterWarningAllowsTheShellPollInterval),
+            ("footer/readouts-windows", testStudioFooterReadoutsAreWindows),
+            ("footer/height-ignores-status", testStudioFooterHeightIgnoresStatus),
             ("quit/decision", testQuitDecisionAsksOnlyWhenOutputsAreLive),
             ("quit/one-prompt", testQuitGateAllowsOnePromptAtATime),
             ("quit/stop-then-wait", testQuitFinishStopsThenWaitsForTerminalEvidence),
