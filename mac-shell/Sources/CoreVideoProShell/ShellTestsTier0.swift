@@ -43,6 +43,7 @@ extension ShellTests {
             ("tier0/studio-rail-row-actions", testSceneRailRowActionsTargetTheRowWithoutCueing),
             ("tier0/studio-multiview-drag-swap", testMultiviewDragSwapsTheTwoInputSlots),
             ("tier0/drag-swap-never-moves-a-solo-cue", testDragSwapNeverMovesAnOnAirSoloCue),
+            ("tier0/removing-preview-resyncs-pvw", testRemovingThePreviewSceneResyncsThePreviewBus),
         ]
     }
 
@@ -1090,6 +1091,22 @@ extension ShellTests {
         expectEqual(first, "42", "the preset's first cell was the guest")
         expectEqual(after?["captureDeviceId"] as? String, "cam1",
                     "a slot-bound preset follows the swap (Windows parity, owner ruling)")
+    }
+
+    /// Review I1: removing the Preview scene emptied Preview, so no
+    /// set-preview-scene was sent and PVW kept the deleted scene.
+    @MainActor
+    static func testRemovingThePreviewSceneResyncsThePreviewBus() {
+        let core = FakeTakeCore()
+        let model = sceneEditModel()   // Program s2, Preview s1
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        expect(model.deleteScene("s1") == nil, "the Preview scene is removed")
+        expectEqual(model.previewSceneId, "s2", "Preview moves to Program (Windows PreviewAfterRemoval)")
+        expect(!model.canTake, "PVW == PGM: nothing to Take")
+        spin(until: { !core.bodies.isEmpty }, limit: 3)
+        let commands = (core.bodies.last?["commands"] as? [JSONObject]) ?? []
+        let preview = commands.first { $0["type"] as? String == "set-preview-scene" }
+        expectEqual(preview?["sceneId"] as? String, "s2", "the PVW bus is re-synced to a real scene")
     }
 
     // ── source-reading helpers ───────────────────────────────────────────────

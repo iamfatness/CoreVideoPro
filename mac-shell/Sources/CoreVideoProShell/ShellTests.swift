@@ -2029,9 +2029,10 @@ enum ShellTests {
         expect(ok.deleteScene("s3") == nil, "off-air scene deletes")
         expectEqual(ok.scenes.map(\.id), ["s1", "s2"], "only the target removed")
         expectEqual(ok.programSceneId, "s2", "Program untouched by a delete")
-        // Deleting the Preview scene empties Preview, never moves Program.
+        // Deleting the Preview scene moves Preview to Program (Windows
+        // PreviewAfterRemoval), never moves Program.
         expect(ok.deleteScene("s1") == nil, "preview scene deletes")
-        expectEqual(ok.previewSceneId, "", "Preview empties")
+        expectEqual(ok.previewSceneId, "s2", "Preview moves to Program")
         expectEqual(ok.programSceneId, "s2", "Program still untouched")
     }
 

@@ -2498,7 +2498,11 @@ final class AppModel: ObservableObject {
         }
         guard let scene = scenes.first(where: { $0.id == sceneId }) else { return nil }
         scenes.removeAll { $0.id == sceneId }
-        if previewSceneId == sceneId { previewSceneId = "" }
+        // Windows SceneCatalogPolicy.PreviewAfterRemoval: Preview moves to
+        // Program. An EMPTY Preview sends no set-preview-scene, so the core's
+        // PVW bus kept compositing the deleted scene while the chip read blank.
+        // PVW == PGM keeps Take disabled; the on-air scene is never removable.
+        if previewSceneId == sceneId { previewSceneId = programSceneId }
         sceneEditMessage = "\(scene.name) removed"
         syncScenes()
         saveScenes()
