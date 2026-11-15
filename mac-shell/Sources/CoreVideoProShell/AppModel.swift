@@ -1539,6 +1539,7 @@ final class AppModel: ObservableObject {
         }
         let subscriptions = resolveSpineSubscriptions()
         refreshStrips()  // the console follows the audio source set just decided
+        pushRoutingBase()  // ...and so does the default routing (no source is unrouted)
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
@@ -2757,12 +2758,12 @@ final class AppModel: ObservableObject {
         if bus.hasPrefix("iso-") {
             for (otherSource, _) in audioSends where audioSends[otherSource]?[bus] != nil {
                 audioSends[otherSource]?[bus] = nil
-                audioRouteControl.edit(source: otherSource, bus: bus, enabled: false, gainDb: 0)
+                editRoute(source: otherSource, bus: bus, enabled: false, gainDb: 0)
             }
         }
         busesForSource[bus] = 0
         audioSends[source] = busesForSource
-        audioRouteControl.edit(source: source, bus: bus, enabled: true, gainDb: 0)
+        editRoute(source: source, bus: bus, enabled: true, gainDb: 0)
         audioRouteControlNotice = audioRouteControl.notice
         selectedSend = (source, bus)
         syncAudioRouting()
@@ -2770,7 +2771,7 @@ final class AppModel: ObservableObject {
 
     func removeSend(source: String, bus: String) {
         audioSends[source]?[bus] = nil
-        audioRouteControl.edit(source: source, bus: bus, enabled: false, gainDb: 0)
+        editRoute(source: source, bus: bus, enabled: false, gainDb: 0)
         audioRouteControlNotice = audioRouteControl.notice
         if selectedSend?.source == source, selectedSend?.bus == bus { selectedSend = nil }
         syncAudioRouting()
@@ -2779,10 +2780,58 @@ final class AppModel: ObservableObject {
     func setSendGain(source: String, bus: String, gainDb: Double) {
         guard audioSends[source]?[bus] != nil else { return }
         audioSends[source]?[bus] = max(-60, min(10, gainDb))
-        audioRouteControl.edit(source: source, bus: bus, enabled: true,
+        editRoute(source: source, bus: bus, enabled: true,
                                gainDb: max(-60, min(10, gainDb)))
         audioRouteControlNotice = audioRouteControl.notice
         syncAudioRouting()
+    }
+
+    /// The operator's own crosspoint edits, kept as INTENT so they ride the base
+    /// matrix (AudioConsolePolicy.baseRoutingSends) and survive a core restart.
+    private(set) var operatorRouteEdits: [AudioRouteKey: AudioRouteControlProjection.Draft] = [:]
+    private var lastRoutingBaseSent: [JSONObject]?
+
+    private func editRoute(source: String, bus: String, enabled: Bool, gainDb: Double) {
+        audioRouteControl.edit(source: source, bus: bus, enabled: enabled, gainDb: gainDb)
+        operatorRouteEdits[AudioRouteKey(source: source, bus: bus)] =
+            AudioRouteControlProjection.Draft(enabled: enabled, gainDb: gainDb)
+        pushRoutingBase()
+    }
+
+    /// The base sync-audio-routing-matrix for the current show, or nil when it
+    /// would be empty (never send an empty matrix: the core holds-last for 25
+    /// syncs and an empty one reads as "unroute everything"). Internal: the
+    /// harness checks it.
+    func routingBaseCommand() -> JSONObject? {
+        let sends = AudioConsolePolicy.baseRoutingSends(
+            zoomAudioIds: zoomAudioSourceIds,
+            captureAudioIds: slots
+                .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
+                .map { "capture:" + $0.sourceId },
+            operatorEdits: operatorRouteEdits)
+        guard !sends.isEmpty else { return nil }
+        return ["type": "sync-audio-routing-matrix", "sends": sends,
+                "busSends": [] as [JSONObject], "monitorBusId": ""]
+    }
+
+    /// Sends the base matrix when it changed (or after a core restart reset the
+    /// memo). Internal so VstInserts/AudioInputs-style extensions can call it.
+    func pushRoutingBase() {
+        guard let command = routingBaseCommand(), let bridge else { return }
+        let sends = command["sends"] as? [JSONObject] ?? []
+        if let last = lastRoutingBaseSent, NSArray(array: last).isEqual(to: sends) { return }
+        lastRoutingBaseSent = sends
+        Task { [weak self] in
+            do {
+                _ = try await bridge.request([
+                    "type": "media-core-sync", "elapsedMs": self?.elapsedMs() ?? 0,
+                    "commands": [command],
+                ])
+            } catch {
+                self?.lastRoutingBaseSent = nil  // not delivered: the next push retries
+                self?.pushWarning("audio routing sync failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private var routingSyncTask: Task<Void, Never>?

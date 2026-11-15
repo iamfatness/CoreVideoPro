@@ -99,4 +99,42 @@ enum AudioConsolePolicy {
             return strip
         }
     }
+
+    /// The BASE routing matrix the shell sends (sync-audio-routing-matrix): the
+    /// Windows defaults (EnsureDefaultZoomAudioRoutingSends in its default
+    /// PerGuestIso topology, EnsureDefaultCaptureAudioRoutingSends,
+    /// EnsureDefaultMediaAudioRoutingSends) with the operator's own crosspoint
+    /// edits applied on top.
+    ///
+    /// - every Zoom audio source (its isolated stem, through its own strip),
+    ///   every paired capture mic and the "media" strip -> master, pgm-l, pgm-r,
+    ///   stream, mon at 0 dB;
+    /// - zoom-mix gets NO default send: summing the meeting mix with the stems
+    ///   doubles every voice (~110 ms skew, the measured internal echo). Its strip
+    ///   exists; routing it is a deliberate operator choice.
+    ///
+    /// A fresh Mac console used to route nothing. Once anything is routed the
+    /// core stops falling back to the raw unmuted sum (MediaCore: "a routed console
+    /// never falls back"), so every source the shell knows must be in this base or
+    /// it is silent. Carrying the operator's edits in the base (not only in the
+    /// revisioned set-audio-route-control overrides, which a core restart loses)
+    /// is what lets a respawned core get the operator's routing back.
+    static func baseRoutingSends(
+        zoomAudioIds: [String], captureAudioIds: [String],
+        operatorEdits: [AudioRouteKey: AudioRouteControlProjection.Draft]
+    ) -> [JSONObject] {
+        var matrix: [AudioRouteKey: Double] = [:]
+        for source in zoomAudioIds + captureAudioIds + [mediaId] where !source.isEmpty {
+            for bus in defaultSendBuses {
+                matrix[AudioRouteKey(source: source, bus: bus)] = 0
+            }
+        }
+        for (key, edit) in operatorEdits {
+            if edit.enabled { matrix[key] = max(-60, min(10, edit.gainDb)) } else { matrix[key] = nil }
+        }
+        return matrix.keys.sorted().map { key in
+            ["sourceId": key.source, "busId": key.bus, "gainDb": matrix[key] ?? 0,
+             "busPluginInserts": [] as [String]]
+        }
+    }
 }

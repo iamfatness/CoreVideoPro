@@ -1076,6 +1076,46 @@ enum ShellTests {
         expectEqual(model.audioSourceLabel("zoom-mix"), "Zoom program mix", "Windows strip label")
     }
 
+    // ── default routing: a fresh Mac console routed nothing ─────────────────
+
+    private static func testDefaultRoutingIsTheWindowsPerGuestTopology() {
+        let sends = AudioConsolePolicy.baseRoutingSends(
+            zoomAudioIds: ["11"], captureAudioIds: ["capture:cam"], operatorEdits: [:])
+        func buses(_ source: String) -> [String] {
+            sends.filter { $0["sourceId"] as? String == source }.compactMap { $0["busId"] as? String }.sorted()
+        }
+        let program = ["master", "mon", "pgm-l", "pgm-r", "stream"]
+        expectEqual(buses("11"), program, "a Zoom source's stem reaches program, stream and MON")
+        expectEqual(buses("capture:cam"), program, "a paired capture mic gets the same defaults")
+        expectEqual(buses("media"), program, "the media strip is routed by default (T1.6 alias)")
+        expectEqual(buses("zoom-mix"), [], "zoom-mix is NOT summed with the stems (doubled voices)")
+        expect(sends.allSatisfy { ($0["gainDb"] as? Double) == 0 }, "defaults are unity")
+        let edited = AudioConsolePolicy.baseRoutingSends(
+            zoomAudioIds: ["11"], captureAudioIds: [],
+            operatorEdits: [
+                AudioRouteKey(source: "11", bus: "stream"): .init(enabled: false, gainDb: 0),
+                AudioRouteKey(source: "zoom-mix", bus: "iso-1"): .init(enabled: true, gainDb: -6),
+            ])
+        expect(!edited.contains { $0["sourceId"] as? String == "11" && $0["busId"] as? String == "stream" },
+               "an operator's removal wins over the default")
+        expect(edited.contains { $0["sourceId"] as? String == "zoom-mix" && $0["busId"] as? String == "iso-1"
+                && $0["gainDb"] as? Double == -6 }, "an operator's own crosspoint rides the base")
+    }
+
+    @MainActor
+    private static func testModelRoutesEverySourceToTheMonitorBus() {
+        let model = AppModel()
+        model.roster = [RosterParticipant(id: "22", name: "Off", hasVideo: false, muted: false,
+                                          talking: false, assigned: true)]
+        model.slots[0].kind = "zoom"; model.slots[0].sourceId = "22"; model.slots[0].inShow = true
+        _ = model.resolveSpineSubscriptions()
+        let sends = model.routingBaseCommand()?["sends"] as? [JSONObject] ?? []
+        expect(sends.contains { $0["sourceId"] as? String == "22" && $0["busId"] as? String == "mon" },
+               "the camera-off wall guest is on MON: the Monitor toggle produces sound")
+        expectEqual(model.routingBaseCommand()?["type"] as? String, "sync-audio-routing-matrix",
+                    "the base matrix uses the core's full-state routing command")
+    }
+
     /// Cross-checks the audio wire strings against the CORE's source, the way the
     /// payload-wrapper contract test does: a rename in C++ fails here, not live.
     @MainActor
@@ -3055,6 +3095,8 @@ enum ShellTests {
             ("audio-console/hides-non-sources", testStripSetHidesNonSourcesAndRawClipIds),
             ("audio-console/a1-mute-481", testA1MuteIsNeverAdoptedFromTheEcho),
             ("audio-console/sync-carries-every-strip", testConsoleSyncCarriesEveryStripAndTheA1State),
+            ("audio-routing/default-topology", testDefaultRoutingIsTheWindowsPerGuestTopology),
+            ("audio-routing/model-mon-bus", testModelRoutesEverySourceToTheMonitorBus),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),
