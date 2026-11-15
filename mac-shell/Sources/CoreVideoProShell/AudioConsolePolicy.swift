@@ -19,9 +19,9 @@
 //   - every Zoom audio SOURCE (the participant-audio set, camera-off included);
 //   - "capture:<id>" for every capture slot with a paired microphone;
 //   - "media"     — the ONE media strip that governs every media:<assetId> clip
-//                   through the core alias (core/AudioControlSourcePolicy.h, T1.6).
-//                   Always present, like Windows' always-present Media row, so a
-//                   clip that starts later is never strip-less.
+//                   through the core alias (core/AudioControlSourcePolicy.h, T1.6),
+//                   while Program or Preview carries a fixed media route (Windows
+//                   ResolveSceneMediaAudioSourceIds).
 // plus anything else the core echoes (a PCM source the shell does not model yet),
 // EXCEPT a Zoom participant channel outside the source set (Windows
 // MixerChannelSetPolicy: non-sources are not on the mixer) and raw media:<id>
@@ -70,13 +70,15 @@ enum AudioConsolePolicy {
     }
 
     /// The strips the console must have, in console order.
+    /// `mediaStrip`: Program or Preview carries a fixed media route (Windows
+    /// ResolveSceneMediaAudioSourceIds over both buses' routes).
     static func expectedSourceIds(meetingAudio: Bool, zoomAudioIds: [String],
-                                  captureAudioIds: [String]) -> [String] {
+                                  captureAudioIds: [String], mediaStrip: Bool) -> [String] {
         var ids: [String] = []
         if meetingAudio { ids.append(meetingMixId) }
         ids.append(contentsOf: zoomAudioIds)
         ids.append(contentsOf: captureAudioIds)
-        ids.append(mediaId)
+        if mediaStrip { ids.append(mediaId) }
         var seen: Set<String> = []
         return ids.filter { !$0.isEmpty && seen.insert($0).inserted }
     }
@@ -139,12 +141,17 @@ enum AudioConsolePolicy {
     /// it is silent. Carrying the operator's edits in the base (not only in the
     /// revisioned set-audio-route-control overrides, which a core restart loses)
     /// is what lets a respawned core get the operator's routing back.
+    /// `mediaRouted`: PROGRAM carries a fixed media route — Windows seeds the
+    /// "media" sends only then (EnsureDefaultMediaAudioRoutingSends gated on
+    /// ResolveSceneMediaAudioSourceIds(programRoutes)), so a clip cued only on
+    /// Preview is never audible on master.
     static func baseRoutingSends(
-        zoomAudioIds: [String], captureAudioIds: [String],
+        zoomAudioIds: [String], captureAudioIds: [String], mediaRouted: Bool,
         operatorEdits: [AudioRouteKey: AudioRouteControlProjection.Draft]
     ) -> [JSONObject] {
         var matrix: [AudioRouteKey: Double] = [:]
-        for source in zoomAudioIds + captureAudioIds + [mediaId] where !source.isEmpty {
+        for source in zoomAudioIds + captureAudioIds + (mediaRouted ? [mediaId] : [])
+            where !source.isEmpty {
             for bus in defaultSendBuses {
                 matrix[AudioRouteKey(source: source, bus: bus)] = 0
             }

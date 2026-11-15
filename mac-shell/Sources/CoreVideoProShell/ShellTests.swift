@@ -1004,7 +1004,8 @@ enum ShellTests {
     /// come from the shell's own source set, or the FADER LAW drops the guest.
     private static func testStripsComeFromTheSourceSetNotOnlyTheEcho() {
         let expected = AudioConsolePolicy.expectedSourceIds(
-            meetingAudio: true, zoomAudioIds: ["11", "22"], captureAudioIds: ["capture:cam"])
+            meetingAudio: true, zoomAudioIds: ["11", "22"], captureAudioIds: ["capture:cam"],
+            mediaStrip: true)
         expectEqual(expected, ["zoom-mix", "11", "22", "capture:cam", "media"],
                     "zoom-mix, the Zoom audio sources, paired mics, and the media strip")
         // The core echoes only what was synced before guest 22 arrived.
@@ -1018,10 +1019,10 @@ enum ShellTests {
                     "a source with no PCM yet gets a waiting strip (Windows)")
         expectEqual(strips.first { $0.id == "zoom-mix" }?.outputLevel, 40, "levels come from the echo")
         expect(strips.contains { $0.id == "zoom-mix" }, "the Zoom program mix always has a fader")
-        expect(strips.contains { $0.id == "media" }, "the media strip exists before any clip plays")
+        expect(strips.contains { $0.id == "media" }, "a media route on a bus: the media strip exists")
         expectEqual(AudioConsolePolicy.expectedSourceIds(
-            meetingAudio: false, zoomAudioIds: [], captureAudioIds: []), ["media"],
-            "no meeting: no zoom-mix strip")
+            meetingAudio: false, zoomAudioIds: [], captureAudioIds: [], mediaStrip: false), [],
+            "no meeting and no media route: no zoom-mix and no media strip (Windows)")
     }
 
     private static func testStripSetHidesNonSourcesAndRawClipIds() {
@@ -1064,12 +1065,12 @@ enum ShellTests {
         model.zoomAudioSourceIds = ["11", "22"]
         model.meetingAudioSubscribed = true
         model.refreshStrips()
-        expectEqual(model.scheduledStripIds, Set(["zoom-mix", "11", "22", "media"]),
+        expectEqual(model.scheduledStripIds, Set(["zoom-mix", "11", "22"]),
                     "a changed strip SET schedules a full channel sync (late guests get a fader)")
         model.editStrip("22") { $0.muted = true }
         let channels = model.audioMixCommand()["channels"] as? [JSONObject] ?? []
         expectEqual(channels.compactMap { $0["participantId"] as? String },
-                    ["zoom-mix", "11", "22", "media"],
+                    ["zoom-mix", "11", "22"],
                     "sync-participant-audio-mix carries a strip for every source (FADER LAW)")
         expectEqual(channels.first { $0["participantId"] as? String == "22" }?["muted"] as? Bool, true,
                     "the A1's mute rides the wire")
@@ -1080,7 +1081,8 @@ enum ShellTests {
 
     private static func testDefaultRoutingIsTheWindowsPerGuestTopology() {
         let sends = AudioConsolePolicy.baseRoutingSends(
-            zoomAudioIds: ["11"], captureAudioIds: ["capture:cam"], operatorEdits: [:])
+            zoomAudioIds: ["11"], captureAudioIds: ["capture:cam"], mediaRouted: true,
+            operatorEdits: [:])
         func buses(_ source: String) -> [String] {
             sends.filter { $0["sourceId"] as? String == source }.compactMap { $0["busId"] as? String }.sorted()
         }
@@ -1091,7 +1093,7 @@ enum ShellTests {
         expectEqual(buses("zoom-mix"), [], "zoom-mix is NOT summed with the stems (doubled voices)")
         expect(sends.allSatisfy { ($0["gainDb"] as? Double) == 0 }, "defaults are unity")
         let edited = AudioConsolePolicy.baseRoutingSends(
-            zoomAudioIds: ["11"], captureAudioIds: [],
+            zoomAudioIds: ["11"], captureAudioIds: [], mediaRouted: false,
             operatorEdits: [
                 AudioRouteKey(source: "11", bus: "stream"): .init(enabled: false, gainDb: 0),
                 AudioRouteKey(source: "zoom-mix", bus: "iso-1"): .init(enabled: true, gainDb: -6),
@@ -1142,7 +1144,7 @@ enum ShellTests {
                     "mix FIRST, then routing, then the mics: a muted source is never heard at unity (M6)")
         let channels = batch.first?["channels"] as? [JSONObject] ?? []
         expectEqual(Set(channels.compactMap { $0["participantId"] as? String }),
-                    Set(["zoom-mix", "11", "media"]), "the full channel list again")
+                    Set(["zoom-mix", "11"]), "the full channel list again")
         expectEqual(channels.first { $0["participantId"] as? String == "11" }?["muted"] as? Bool, true,
                     "the A1's mute is in the very first command the new core applies")
         let resent = (batch.count > 1 ? batch[1]["sends"] as? [JSONObject] : nil) ?? []
@@ -1196,12 +1198,12 @@ enum ShellTests {
         model.meetingAudioSubscribed = true
         model.zoomAudioSourceIds = ["22", "11"]   // 22 is on Program
         model.refreshStrips()
-        expectEqual(model.strips.map(\.id), ["zoom-mix", "11", "22", "media"],
+        expectEqual(model.strips.map(\.id), ["zoom-mix", "11", "22"],
                     "Zoom strips follow the roster, not the budget")
         model.markAudioConsoleDeliveredForTesting()
         model.zoomAudioSourceIds = ["11", "22"]   // a Take swaps Program and Preview
         model.refreshStrips()
-        expectEqual(model.strips.map(\.id), ["zoom-mix", "11", "22", "media"],
+        expectEqual(model.strips.map(\.id), ["zoom-mix", "11", "22"],
                     "a cue or Take does not move the A1's faders")
         expect(model.scheduledStripIds == nil, "an order-only change sends no channel sync")
     }
@@ -1275,6 +1277,27 @@ enum ShellTests {
                     "opted in to core mailbox coalescing")
         expectEqual(sent.last?["coalescingKey"] as? String, "audio-routing-base",
                     "coalescing needs a non-empty key (CommandMailbox::push)")
+    }
+
+    /// Review M3: Windows routes "media" only when PROGRAM has a fixed media
+    /// route, and shows its strip when Program or Preview does.
+    @MainActor
+    private static func testMediaRoutingFollowsTheProgramMediaRoute() {
+        let model = AppModel()
+        model.programSceneId = model.scenes[0].id
+        model.previewSceneId = model.scenes[1].id
+        func mediaSends() -> [JSONObject] {
+            (model.routingBaseCommand()?["sends"] as? [JSONObject] ?? [])
+                .filter { $0["sourceId"] as? String == "media" }
+        }
+        expect(mediaSends().isEmpty, "no media route on Program: media is not routed")
+        expect(!model.strips.contains { $0.id == "media" }, "no media route on a bus: no media strip")
+        model.logoBug = MediaAsset(id: "bug", name: "Bug", kind: "media-video", relativePath: "bug.mov", filePath: "/tmp/bug.mov",
+                                   naturalWidth: 200, naturalHeight: 100)
+        expect(model.sceneHasMediaRoute(model.programSceneId, isProgram: true),
+               "precondition: the logo bug is a fixed media route on Program")
+        expectEqual(mediaSends().count, 5, "a media route on Program: media gets the default sends")
+        expect(model.strips.contains { $0.id == "media" }, "...and the media strip appears")
     }
 
     /// Cross-checks the audio wire strings against the CORE's source, the way the
@@ -3264,6 +3287,7 @@ enum ShellTests {
             ("audio-console/mute-survives-source-exit", testMutedGuestStaysMutedAcrossASourceSetExit),
             ("audio-console/meeting-end-forgets", testMeetingEndForgetsPerGuestAudioState),
             ("audio-routing/slider-coalesced", testSendGainDragCoalescesTheRoutingPush),
+            ("audio-routing/media-follows-program", testMediaRoutingFollowsTheProgramMediaRoute),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),

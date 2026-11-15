@@ -404,11 +404,13 @@ final class AppModel: ObservableObject {
         SceneDef(id: "two-up", name: "Side by side", layout: "two-up"),
         SceneDef(id: "pip", name: "Picture in picture", layout: "pip"),
     ]
-    @Published var programSceneId = ""
-    @Published var previewSceneId = ""
+    @Published var programSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != programSceneId) } }
+    @Published var previewSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != previewSceneId) } }
     @Published var mediaAssets: [MediaAsset] = []
     @Published var selectedAssetId = ""
-    @Published var logoBug: MediaAsset?  // rides every scene as a top-right route
+    @Published var logoBug: MediaAsset? {  // rides every scene as a top-right route
+        didSet { mediaAudioSceneChanged(oldValue?.id != logoBug?.id) }
+    }
     @Published var lowerThirdName = ""
     @Published var lowerThirdTitle = ""
     @Published var lowerThirdPosition = "lower-left"
@@ -2818,6 +2820,7 @@ final class AppModel: ObservableObject {
             captureAudioIds: slots
                 .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
                 .map { "capture:" + $0.sourceId },
+            mediaRouted: sceneHasMediaRoute(programSceneId, isProgram: true),
             operatorEdits: operatorRouteEdits)
         guard !sends.isEmpty else { return nil }
         return ["type": "sync-audio-routing-matrix", "sends": sends,
@@ -3100,7 +3103,26 @@ final class AppModel: ObservableObject {
                 zoomAudioSourceIds, roster: roster.map(\.id)),
             captureAudioIds: slots
                 .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
-                .map { "capture:" + $0.sourceId })
+                .map { "capture:" + $0.sourceId },
+            mediaStrip: sceneHasMediaRoute(programSceneId, isProgram: true)
+                || sceneHasMediaRoute(previewSceneId, isProgram: false))
+    }
+
+    /// Whether a bus's scene carries a FIXED media route — read off the real route
+    /// wire (buildRoutes), the same thing the core is sent.
+    func sceneHasMediaRoute(_ sceneId: String, isProgram: Bool) -> Bool {
+        guard !sceneId.isEmpty, scenes.contains(where: { $0.id == sceneId }) else { return false }
+        return buildRoutes(for: sceneId, isProgram: isProgram).contains {
+            ($0["mode"] as? String) == "fixed" && !(($0["mediaAssetId"] as? String) ?? "").isEmpty
+        }
+    }
+
+    /// A bus scene or the logo bug changed: the media strip and its default sends
+    /// follow (review M3).
+    private func mediaAudioSceneChanged(_ changed: Bool) {
+        guard changed else { return }
+        refreshStrips()
+        pushRoutingBase()
     }
 
     /// Operator-facing name for an audio source id (Windows labels: "Zoom program
