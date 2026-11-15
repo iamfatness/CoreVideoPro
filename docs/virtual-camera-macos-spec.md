@@ -18,18 +18,14 @@ activated by the app with `OSSystemExtensionRequest`, approved once by the user.
 camera publisher (`AsyncVirtualCameraPublisher`: lifecycle worker, framer fork, retry,
 snapshot status). A new Mac backend behind `IVirtualCameraPublisher` feeds the extension's
 **sink stream** through the CoreMediaIO C API (the pattern of Apple's sample and OBS
-`mac-virtualcam`). Frames reach it from a new Metal-compositor NV12 tap — the Mac twin of
-the D3D11 `setIdentifiedVcamFrameSink` path.
+`mac-virtualcam`). Frames come from a new GPU NV12 tap in the Metal compositor (the twin of D3D11 `setIdentifiedVcamFrameSink`).
 
 **Built without Xcode project files.** `swift build` (a new executable target in
 `mac-shell/Package.swift`) + a hand-written Info.plist + `codesign` with the embedded
 Developer ID profile, exactly as the shell is built today. Nothing here needs xcodebuild.
 
-Facts verified 2026-11-15 against the macOS 26 SDK on the owner's Mac:
-`CMIOExtensionStreamDirectionSink`, `consumeSampleBufferFromClient:`,
-`CMIOExtensionPropertyStreamSinkBufferQueueSize`, `CMIOExtensionClient.signingID` (13.0),
-`CMIOStreamCopyBufferQueue`, `OSSystemExtensionRequest.propertiesRequest` (12.0) and
-`OSSystemExtensionErrorUnsupportedParentBundleLocation` all exist. Both provisioning
+Verified in the macOS 26 SDK (2026-11-15): sink streams, `consumeSampleBufferFromClient:`,
+`CMIOExtensionClient.signingID` (13.0), `CMIOStreamCopyBufferQueue`, `propertiesRequest`. Both provisioning
 profiles expire 2044-11-10. The certificate inside them, `Developer ID Application:
 John Wallace (42394L3353)`, expires **2027-02-01**. That is the date that matters: after
 it, builds need a new certificate and new profiles.
@@ -38,11 +34,11 @@ it, builds need a new certificate and new profiles.
 
 ```
 corevideo-native (core, our signature)                      camera extension (sandboxed,
-  Metal compositor ── tap thread: blit→readback→NV12 1080p   runs under a system role user)
+  Metal compositor ── GPU kernel: resize+mirror+BT.601 NV12   runs under a system role user)
         │ setIdentifiedVcamFrameSink                          ┌──────────────────────────┐
-  AsyncVirtualCameraPublisher (worker: framer, retry)         │ sink stream  "…Sink"     │
+  AsyncVirtualCameraPublisher (worker: Metal framer, retry)   │ sink stream  "…Sink"     │
         │ publishNv12IdentifiedOnWorker                       │   consume → latest buffer│
-  SinkVirtualCameraPublisher (mirror, size gate, lost→retry)  │ FrameSelector            │
+  SinkVirtualCameraPublisher (size gate, lost→retry, gaps)    │ FrameSelector            │
         │ IVirtualCameraSink                                  │   fresh ≤500 ms → Program│
   CmioVirtualCameraSink ── IOSurface CVPixelBuffer ──CMSimpleQueue──▶ else → standby slate│
                                                               │ source stream (timer @fps)│
@@ -79,9 +75,15 @@ the extension) so consumers that ask for 720p get it without a second producer s
    camera shows the slate. **Mac deviation:** the device stays listed while the
    extension is installed (as with OBS and Camo), because a system extension cannot
    appear and vanish per enable. "Remove virtual camera" in Settings deactivates it.
-4. **No pixel work on the audio worker or the render tick.** NV12 conversion runs on the
-   compositor's tap thread. Mirror and enqueue run on the publisher worker. The
-   extension does its own work on its own dispatch queues.
+4. **No CPU per-pixel work (CLAUDE.md north star).** Resize, mirror and BGRA→NV12
+   (integer BT.601, bit-identical to `convertBgraToNv12`) run in one Metal compute pass
+   after the program pass. Only the finished 3,110,400-byte NV12 is read back. OH Framer
+   is a Metal port of `WebcamFramer.hlsl`. The CPU does only bulk copies: at most 3 per
+   frame, never on the render thread. The camera must publish **60 frames per second
+   with no missed frame** at idle 1080p60. That is a per-frame requirement, not an
+   average. The byte-buffer interface the Windows tap uses is kept, so shared and
+   Windows code are untouched. The extension does its own work on its own dispatch
+   queues.
 5. **Everything logged.** Core `[virtualcam]` lines: connect, lost, reconnect, rename.
    Extension: `os_log` subsystem `us.iamfatness.corevideopro.camera` (start/stop per
    stream, producer authorized/denied, slate↔program transitions). Shell: every
@@ -116,5 +118,6 @@ reconnects. The rule matches Windows: "takes effect next time you enable the cam
 
 ## 7. Out of scope
 
-Audio (virtual microphone). An Intel slice. macOS < 13. Moving NV12 conversion onto the
-GPU is a follow-up if the measured publish rate at 1080p60 is under 50 fps (plan Task 5).
+Audio (virtual microphone). An Intel slice. macOS < 13. Zero-copy hand-off (render
+straight into the sink's IOSurface pool): revisit only if the measured copies threaten the
+60 fps per-frame requirement, as its own task with its own Windows-unchanged proof.

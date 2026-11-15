@@ -4,7 +4,7 @@
 
 **Goal:** Program appears as the system camera "CoreVideo Pro Camera" in Zoom, Teams, Meet, FaceTime, OBS and Photo Booth on macOS. It has Windows' controls (enable, OH Framer, mirror, rename, status) plus the Mac approval flow.
 
-**Architecture:** A sandboxed CoreMediaIO Camera Extension (Swift, built by `swift build`, no Xcode project) is embedded in the app. It serves a source stream to consumers and accepts frames on a sink stream; when no fresh frame is available it serves the standby slate. The C++ core feeds the sink through a new `SinkVirtualCameraPublisher` behind the existing `IVirtualCameraPublisher` / `AsyncVirtualCameraPublisher`. Its frames come from a new Metal-compositor NV12 tap. The SwiftUI shell activates the extension with `OSSystemExtensionRequest`, sends the existing `sync-virtual-camera` command, and reads the existing `virtualCamera` snapshot.
+**Architecture:** A sandboxed CoreMediaIO Camera Extension (Swift, built by `swift build`, no Xcode project) is embedded in the app. It serves a source stream to consumers and accepts frames on a sink stream; when no fresh frame is available it serves the standby slate. The C++ core feeds the sink through a new `SinkVirtualCameraPublisher` behind the existing `IVirtualCameraPublisher` / `AsyncVirtualCameraPublisher`. Its frames come from a new Metal-compositor NV12 tap: resize, mirror and BGRA→NV12 run as a GPU compute pass, and only the finished 1920×1080 NV12 is read back. OH Framer is a Metal port of `WebcamFramer.hlsl`. The SwiftUI shell activates the extension with `OSSystemExtensionRequest`, sends the existing `sync-virtual-camera` command, and reads the existing `virtualCamera` snapshot.
 
 **Tech Stack:** Swift 5.9 tools / SwiftUI (macOS 13), CoreMediaIO (`CMIOExtension*` and the C HAL API), SystemExtensions, CoreVideo/CoreMedia/IOSurface, C++17 + ObjC++ (core), Metal, gtest, the in-binary shell harness (`COREVIDEO_SHELL_TESTS=1`), bash packaging scripts.
 
@@ -26,6 +26,8 @@
   - Legacy device ID `us.iamfatness.corevideopro.camera.device`.
   - Device and source stream name `CoreVideo Pro Camera`; sink stream name `CoreVideo Pro Camera Sink`.
 - Sink format 1920×1080 NV12 `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`, BT.601 matrix attachment. Hold window **500 ms**. Retry cadence **1 s** (existing).
+- **North star (CLAUDE.md, binding): no CPU per-pixel work on the camera path.** Resize, mirror, BGRA→NV12 and the OH Framer overlay all run on the GPU (Metal compute). The CPU may only do bulk `memcpy` of finished NV12 (at most 3 per frame: tap readback → frame buffer, framer upload/readback when on, sink → `CVPixelBuffer`). `convertBgraToNv12`, `resizeBgraBilinear` and `mirrorNv12InPlace` are never called on the Mac camera path in production; they remain test oracles only.
+- **Delivery requirement: 60 publications per second, per frame.** At idle 1080p60 Program with the camera enabled, a 10 s window must show `framesPublished` delta ≥ 599 and **zero** `programSequence` gaps. It is never an average, and there is no fallback threshold.
 - Copy that matches Windows is verbatim (StudioWorkspace.xaml): "OH Framer (webcam only)", "Framing guides over live video. Program, Preview, recordings and streams stay clean.", "Mirror (self-view)", "Flips the camera horizontally, like most webcam self-views.", "Camera name", placeholder "CoreVideo Pro Camera", "The name apps show in their camera list. Takes effect next time you enable the camera.", "Virtual camera off", "Virtual camera live (WxH)", "Virtual camera on".
 - Builds on this Mac: native per `2026-11-14-mac-parity-m0-fixes.md` Global Constraints, plus `-DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON` once Task 4 lands. Shell: `cd mac-shell && swift build -c release && COREVIDEO_SHELL_TESTS=1 .build/release/CoreVideoProShell`. `bash scripts/lint-mac-design.sh` must stay green. Attach a `COREVIDEO_SHELL_SNAPSHOT` PNG for visible changes.
 - CI realities: macOS runners have no window server and cannot activate system extensions. Metal tests self-skip without a device. Everything CI runs goes through fakes. Activation and real CMIO run only in the local e2e script and the owner checklist.
@@ -37,8 +39,8 @@
 1. **The extension restarts, crashes, or is replaced by an app update while the core is feeding.** The camera must come back on its own within ~2 s, with no toggle. Expected: the snapshot goes `failed` + `CAMERA_EXTENSION_LOST:` and then back to `live`. Owner: Task 4 `ALostSinkReconnectsWithoutAToggle` and `AsyncVirtualCameraPublisher.PublicationLossSchedulesTheRegistrationRetry`.
 2. **The approval is never granted, or the app runs from `~/Downloads` or a mounted DMG.** The flyout must say exactly what to do and must never read "live". Owner: Task 3 `testCameraExtensionErrorMapping` and Task 6 `testVirtualCameraLabelPrecedence`.
 3. **The Mac sleeps or wakes, the app quits, or the core crashes mid-call.** The consumer sees the slate within 500 ms and never a frozen Program frame. Owner: Task 1 `testFrameSelectorHoldAndStop` and the Task 7 e2e step "stop feed → slate ≤ 1 s".
-4. **Ad-hoc and CI builds.** A restricted entitlement without a profile gets the binary killed by AMFI at launch, and a mismatched profile fails activation silently. Owner: Task 2 check-script negative tests.
-5. **Keychain items survive the new `application-identifier` entitlement.** The stream key and Zoom tokens must stay readable after the shell is signed with it. Owner: Task 2 Step 7 (owner check on the signed dev bundle) and Task 12 acceptance.
+4. **Ad-hoc and CI builds, and the new signing entitlements.** A restricted entitlement without a profile gets the binary killed by AMFI at launch, and a mismatched profile fails activation silently. The stream key and Zoom tokens must stay readable once the shell carries `application-identifier`. Owner: Task 2 check-script negative tests and Task 2 Step 7 (owner check on the signed dev bundle).
+5. **Mirror plus OH Framer together.** With both on, the consumer must see mirrored video and *readable* guides and labels, never reversed text, and the guides must be in exactly the place Windows puts them. Mirror now happens upstream on the GPU, so the framer must not mirror its overlay a second time. Owner: Task 4 `AsyncVirtualCameraPublisher.UpstreamMirrorIsNotAppliedTwiceToTheFramer`, Task 9 `GpuWebcamFramer.MacMirroredPathMatchesWindowsComposition`.
 
 ---
 
@@ -260,7 +262,7 @@ final class FakeCameraExtensionActivator: CameraExtensionActivating   // scripte
 - Test: `native/tests/SinkVirtualCameraPublisherTest.cpp` (registered in `corevideo-native-tests` for every config, because it is portable), `native/tests/AsyncVirtualCameraPublisherTest.cpp`
 
 **Interfaces:**
-- Consumes: `IVirtualCameraPublisher`, `VirtualCameraStatus`, `mirrorNv12InPlace`, `nv12FrameSize`, `resizeBgraBilinear`, `convertBgraToNv12` (existing).
+- Consumes: `IVirtualCameraPublisher`, `VirtualCameraStatus`, `nv12FrameSize` (existing).
 - Produces:
 
 ```cpp
@@ -281,7 +283,10 @@ class SinkVirtualCameraPublisher final : public IVirtualCameraPublisher {
  public:
   SinkVirtualCameraPublisher(std::unique_ptr<IVirtualCameraSink> sink, std::function<int64_t()> hostClockNs);
   // start/stop/publish/publishNv12/publishNv12IdentifiedOnWorker/status/setMirror/setDeviceName overrides
+  bool mirrorAppliedUpstream() const override { return true; }   // the Metal tap mirrors (Task 5)
 };
+// New on IVirtualCameraPublisher (VirtualCameraPublisher.h), default keeps Windows unchanged:
+//   virtual bool mirrorAppliedUpstream() const { return false; }
 std::unique_ptr<IVirtualCameraSink> createCmioVirtualCameraSink();   // Apple + option only
 }
 ```
@@ -289,12 +294,15 @@ std::unique_ptr<IVirtualCameraSink> createCmioVirtualCameraSink();   // Apple + 
 - Behaviour:
   - `start(w,h,fps)` records the size and calls `connect()`. On a non-empty result: `state="failed"`, `enabled=false`, `warning=<result>`, returns false. On success: `state="live"`, `enabled=true`, warning cleared, and a `[virtualcam] mac sink connected` log line.
   - A publish with a size other than the declared one is a no-op (Windows parity).
-  - Mirror writes into a scratch buffer, never into the caller's buffer.
+  - **No pixel work at all.** `setMirror` only records the state; the compositor mirrors on the GPU (Task 5). The bytes are handed to `enqueueNv12` exactly as received.
+  - Track the last non-zero `programSequence`. A jump greater than 1 adds `(jump - 1)` to `sequenceGaps_`. Log `[virtualcam] mac publication gaps N published M` every 600 frames. This is the evidence behind the 60/s requirement (Task 5 Step 5).
   - `Ok` → `++framesPublished`. `QueueFull` → the frame is dropped, logged at most once per 300 drops. `Lost` → `disconnect()`, `state="failed"`, `enabled=false`, `warning="CAMERA_EXTENSION_LOST: CoreVideo Pro Camera restarted; reconnecting."`
-  - `publish(ProgramFrame)` resizes to the declared size and converts (the Windows `publish` recipe), then takes the same enqueue path.
+  - `publish(ProgramFrame)` (the CPU-BGRA fallback) is **refused** on Mac: it does nothing, logs `[virtualcam] mac backend ignores CPU program frames; waiting for the GPU tap` once, and counts nothing. A Mac build that reaches it is missing the Task 5 tap, and that must be visible, not quietly converted on the CPU.
   - `stop()` disconnects and sets `state="off"`.
-  - All members are guarded by one mutex. Pixel work happens under it, as on Windows. Callers are only the publisher worker and the command thread.
-- `AsyncVirtualCameraPublisher` change: after `observed = backend_->status()`, if `on && !observed.enabled && observed.state == "failed" && observed.warning.rfind("CAMERA_", 0) == 0 && retryAt == max`, set `retryAt = now + 1s`.
+  - All members are guarded by one mutex. Only the sink's plane `memcpy` runs under it. Callers are only the publisher worker and the command thread.
+- `AsyncVirtualCameraPublisher` changes (shared code, inert on Windows because the default is false):
+  - Pass `mirror && !backend_->mirrorAppliedUpstream()` to `framer->apply(...)`.
+  - After `observed = backend_->status()`, if `on && !observed.enabled && observed.state == "failed" && observed.warning.rfind("CAMERA_", 0) == 0 && retryAt == max`, set `retryAt = now + 1s`.
 - Factory: `#elif COREVIDEO_WITH_MAC_VIRTUALCAM` returns `make_unique<AsyncVirtualCameraPublisher>(make_unique<SinkVirtualCameraPublisher>(createCmioVirtualCameraSink(), machHostClockNs))`.
 - `CmioVirtualCameraSink`:
   - `connect`: set `kCMIOHardwarePropertyRunLoop` to NULL once. Enumerate `kCMIOHardwarePropertyDevices` and match `kCMIODevicePropertyDeviceUID` ∈ {legacy ID, UUID string}. Pick the stream whose `kCMIOObjectPropertyName` == `CoreVideo Pro Camera Sink`. Call `CMIOStreamCopyBufferQueue(stream, proc, this, &queue)` and then `CMIODeviceStartStream`. Build a `CVPixelBufferPool` (1920×1080 '420v', IOSurface-backed, minimum 6 buffers) and a cached format description. Add a device-list listener block that sets an atomic `devicesChanged_`.
@@ -308,8 +316,13 @@ TEST(SinkVirtualCameraPublisher, ConnectFailureIsACameraRetryableFailure)
   // connect() -> "CAMERA_EXTENSION_NOT_FOUND: x": start returns false; status {failed, enabled=false, warning starts "CAMERA_"}
 TEST(SinkVirtualCameraPublisher, PublishesOnlyTheDeclaredSizeAndCountsAcceptedFrames)
   // start(1920,1080,60); 1280x720 frame -> fake saw 0; 1920x1080 frame -> fake saw 1, framesPublished == 1
-TEST(SinkVirtualCameraPublisher, MirrorFlipsTheEnqueuedCopyNotTheCallersBuffer)
-  // Fixture: Y row ramp 0..255 across width (row 0 col 0 = 0, last col = 255): fake's Y[0] == 255, caller buffer Y[0] still 0
+TEST(SinkVirtualCameraPublisher, MirrorIsUpstreamAndBytesPassThroughUntouched)
+  // setMirror(true); Fixture: Y row ramp 0..255 across width (col 0 = 0, last col = 255): fake's Y[0] == 0 and Y[1919] == 255
+  // (byte-identical pass-through); mirrorAppliedUpstream() == true
+TEST(SinkVirtualCameraPublisher, CpuProgramFramesAreRefused)
+  // publish(ProgramFrame{programFullBgra 1920x1080 red}): fake saw 0 enqueues, framesPublished == 0
+TEST(SinkVirtualCameraPublisher, CountsProgramSequenceGaps)
+  // publishNv12IdentifiedOnWorker with sequences 1,2,3,6,7: gaps == 2 (exposed via a test accessor), framesPublished == 5
 TEST(SinkVirtualCameraPublisher, AFullQueueDropsTheNewFrameWithoutFailing)
   // capacity 2, publish 5: fake holds 2, framesPublished == 2, status live
 TEST(SinkVirtualCameraPublisher, ALostSinkReconnectsWithoutAToggle)
@@ -317,6 +330,10 @@ TEST(SinkVirtualCameraPublisher, ALostSinkReconnectsWithoutAToggle)
   // start() again with connect() -> "" -> live, next publish accepted
 TEST(AsyncVirtualCameraPublisher, PublicationLossSchedulesTheRegistrationRetry)
   // backend whose publish flips status to failed/CAMERA_EXTENSION_LOST; within 2.5 s start() was called a 2nd time without stop()/start() from the caller
+TEST(AsyncVirtualCameraPublisher, UpstreamMirrorIsNotAppliedTwiceToTheFramer)
+  // Metal build only (COREVIDEO_FRAMER_RENDERS): backend reports mirrorAppliedUpstream()==true, framer on, setMirror(true).
+  // Published bytes equal GpuWebcamFramer.apply(clean, w, h, mirror=false) for the same clean frame: guide luma at (420,400) == 74.
+  // A Windows-default backend (false) under the same inputs gets apply(..., mirror=true), whose guide pixel sits at (1499,400).
 TEST(AsyncVirtualCameraPublisher, NonCameraPublicationFailureDoesNotRetry)
   // warning "Virtual camera operation failed." -> no second start within 2.5 s
 ```
@@ -328,52 +345,79 @@ TEST(AsyncVirtualCameraPublisher, NonCameraPublicationFailureDoesNotRetry)
 - [ ] **Step 6: Mutations:**
   - Delete the Async retry block. `PublicationLossSchedules…` must go red.
   - Drop the `"CAMERA_"` prefix check. `NonCameraPublicationFailure…` must go red.
-  - Mirror in place on the caller's buffer. The caller-buffer assertion must go red.
+  - Re-add a CPU `mirrorNv12InPlace` in the sink publisher. The pass-through test must go red.
+  - Pass the raw `mirror` to the framer (drop the `!mirrorAppliedUpstream()` term). `UpstreamMirrorIsNotAppliedTwice…` must go red.
+  - Make `publish(ProgramFrame)` convert. `CpuProgramFramesAreRefused` must go red.
   - Treat `QueueFull` as `Lost`. The full-queue test must go red.
 - [ ] **Step 7: Commit** `native: macOS virtual camera backend feeds the CMIO sink stream (reconnects on loss)`.
 
-### Task 5: Metal compositor NV12 tap for the virtual camera
+### Task 5: Metal compositor GPU NV12 tap (resize + mirror + BT.601 on the GPU)
+
+**Delivery choice, recorded:** keep the existing byte interface (`ICompositor::VcamFrameBuffer` = `shared_ptr<const vector<uint8_t>>` → `IVirtualCameraPublisher::publishNv12Identified`). The GPU writes finished NV12 into a shared-storage `MTLBuffer`, and the tap thread does a single 3,110,400-byte `memcpy` into the frame buffer. The zero-copy alternative is to render straight into an IOSurface `CVPixelBuffer` from the sink's pool. It was rejected for this plan because the buffer type is the contract `AsyncVirtualCameraPublisher`, `GpuWebcamFramer` and the Windows D3D11 tap all share: changing it ripples into Windows code for a saving of two bulk copies (≈0.3 ms each on unified memory) with no per-pixel CPU math on either path. If Step 5's measurement shows the copies matter, revisit it as its own task with its own Windows-unchanged proof.
 
 **Files:**
-- Modify: `native/src/compositor/MetalCompositorAdapter.mm`
+- Create: `native/shaders/VcamNv12.metal` (compiled the way the adapter already builds its Metal library; if the adapter uses runtime source strings, add `kVcamNv12KernelSource` beside its existing shader source instead)
+- Modify: `native/src/compositor/MetalCompositorAdapter.mm`; `native/src/modules/Interfaces.h` (add `virtual void setVcamMirror(bool) {}` beside `publishesVcamFrames`, a default no-op); `native/src/core/MediaCore.cpp` `syncVirtualCamera` (call `modules_.compositor->setVcamMirror(mirror)` inside `#if defined(__APPLE__)`, keeping Windows token-identical)
 - Test: `native/tests/MetalCompositorTest.cpp`
 
 **Interfaces:**
-- Consumes: `ICompositor::setVcamFrameSink` / `setIdentifiedVcamFrameSink` / `publishesVcamFrames` (Interfaces.h:1515-1528); `resizeBgraBilinear`, `convertBgraToNv12`.
+- Consumes: `ICompositor::setIdentifiedVcamFrameSink` / `publishesVcamFrames` (Interfaces.h:1515-1528); Task 4's `mirrorAppliedUpstream()` contract (this task is where it becomes true).
 - Produces:
-  - Under `COREVIDEO_WITH_MAC_VIRTUALCAM`, `publishesVcamFrames()` returns true and `setIdentifiedVcamFrameSink` is overridden. The sink is called on the tap thread with an immutable `shared_ptr` NV12 buffer of exactly 1920×1080 (3,110,400 bytes), `programSequence` = the frame number recorded at kick time, and `deliveredAt100ns` = 0.
-  - Setting or clearing the sink waits for any in-flight call (a sink mutex held around the call).
+  - Under `COREVIDEO_WITH_MAC_VIRTUALCAM`, `publishesVcamFrames()` returns true, `setIdentifiedVcamFrameSink` is overridden, and `setVcamMirror(bool)` is overridden. The sink is called on the tap thread with an immutable 1920×1080 NV12 buffer (3,110,400 bytes), `programSequence` = the frame number recorded at dispatch, and `deliveredAt100ns` = 0. Setting or clearing the sink waits for any in-flight call.
+  - Kernel `vcamBgraToNv12`. Grid: one thread per 2×2 luma block of the 1920×1080 destination. Inputs: the program texture (BGRA8Unorm), the source width and height, and `mirror`. Output: a `device uchar*` NV12 buffer (Y plane, then interleaved UV).
+- Kernel algorithm (the one thing the signature does not determine):
+  - For destination pixel `(x, y)`, the source x is `mirror ? 1919 - x : x`.
+  - When the canvas is exactly 1920×1080, use `texture.read(uint2)` (no filtering, exact). Otherwise sample bilinearly with normalized coordinates at pixel centres.
+  - Convert each channel with `int c = int(round(v * 255.0))`.
+  - `Y = clamp((66*r + 129*g + 25*b + 128) / 256 + 16, 0, 255)`.
+  - Chroma from the integer box average of the 4 block pixels: `r = (r0+r1+r2+r3)/4`, likewise g and b. Then `U = (-38*r - 74*g + 112*b + 128) / 256 + 128` and `V = (112*r - 94*g - 18*b + 128) / 256 + 128`.
+  - Use **int** arithmetic with truncating division, which is the same in MSL as in C++, so it matches `convertBgraToNv12` (VirtualCameraFrame.h:52-75) bit for bit.
 - Behaviour:
-  - When `renderPlan.fullProgramReadback` is set and a sink is present, kick the tap blit on **every** tick, light ticks included. A light tick keeps its no-CPU-wait, no-preview-readback rule.
-  - A kick is skipped while the tap thread is still reading `tapTex_` (atomic `tapReadInFlight_`). That keeps a blit from overwriting a texture mid-readback (no tearing); the newest frame wins.
-  - The tap thread converts after readback, before the existing `tapPublished_` swap: resize to 1920×1080 when the canvas differs, then convert.
-  - Log `[virtualcam] mac tap convert mean X ms max Y ms (300 frames)` once per 300 frames via `nativeVerboseLogf`.
+  - When `renderPlan.fullProgramReadback` is set and a sink is present, encode the kernel into a command buffer after the program pass on **every** tick, light ticks included. There is no CPU wait on the render thread; the completion handler signals the tap thread.
+  - Two NV12 `MTLBuffer`s, ping-pong. A dispatch never targets the buffer the tap thread is copying from. If both are busy, skip the dispatch and count it in `vcamDispatchSkipped_`. Any skip is a delivery failure under Global Constraints, so the counter is logged.
+  - The tap thread does `memcpy` → `make_shared<vector<uint8_t>>` and calls the sink.
+  - The existing BGRA `programFullBgra` tap for the encoder is untouched.
+  - Log `[virtualcam] mac gpu tap gpu X ms copy Y ms skipped Z (600 frames)` via `nativeVerboseLogf`.
 
-- [ ] **Step 1: Write the failing tests** (use the existing `MAKE_COMPOSITOR_OR_SKIP`, `solidLayer` and `bgraFrame` helpers):
+- [ ] **Step 1: Write the failing tests** (use the existing `MAKE_COMPOSITOR_OR_SKIP`, `solidLayer` and `bgraFrame` helpers; every expected value is a fixture constant hand-computed from the integer formula, never from the code under test):
 
 ```cpp
 TEST(MetalCompositor, VcamTapDeliversBt601Nv12OfTheProgram)
-  // full-canvas bgraFrame("cam",320,180, b=0,g=0,r=255); plan.fullProgramReadback=true; sink set; render until sink fires (<=2 s)
-  // Expected (hand-computed from the BT.601 integer formula in VirtualCameraFrame.h, independent of the code under test):
-  // size == 3110400; Y[540*1920+960] == 82 ±2; U at center == 91 ±2; V at center == 240 ±2
+  // full-canvas bgraFrame("cam",320,180, b=0,g=0,r=255); fullProgramReadback; sink set; render until sink fires (<=2 s)
+  // size == 3110400; Y[540*1920+960] == 82 ±1; U == 91 ±1; V == 240 ±1  (±1 only for the BGRA unorm round trip)
+TEST(MetalCompositor, VcamTapMatchesTheCpuOracleBitForBitAt1080p)
+  // 1920x1080 canvas, a bgraFrame filled with a deterministic gradient (b = x%256, g = y%256, r = (x+y)%256) as a full-canvas layer;
+  // read the program back ONCE in the test (renderPlan full tick) and run convertBgraToNv12 on it in the test;
+  // GPU NV12 == CPU NV12 for every byte. (Test-only CPU oracle; the production path never calls it.)
+TEST(MetalCompositor, VcamTapMirrorsOnTheGpu)
+  // left half red (r=255), right half blue (b=255); setVcamMirror(true): Y at (100,540) == 41 ±1 (BT.601 blue: (25*255+128)/256+16 = 41),
+  // Y at (1819,540) == 82 ±1; setVcamMirror(false): the reverse
 TEST(MetalCompositor, VcamTapRunsOnLightTicksWithoutCpuReadback)
-  // plan.skipCpuReadback=true, fullProgramReadback=true, sink set: sink fires within 2 s AND frame.preview.bgra.empty()
+  // skipCpuReadback=true, fullProgramReadback=true: sink fires within 2 s AND frame.preview.bgra.empty()
 TEST(MetalCompositor, VcamTapScalesANon1080pCanvasTo1080p)
-  // compositor canvas 3840x2160 (or 1280x720 if the adapter cannot allocate 4K on the runner): sink width/height == 1920/1080
+  // 1280x720 canvas (4K if the runner allows): sink width/height == 1920/1080; solid red still Y 82 ±1
 TEST(MetalCompositor, ClearingTheVcamSinkStopsDelivery)
   // set sink, receive >=1, clear sink, render 10 more ticks: count unchanged
+TEST(MetalCompositor, VcamTapDeliversEveryRenderedFrame)
+  // 120 consecutive full ticks with the sink set: 120 deliveries, programSequence strictly consecutive, vcamDispatchSkipped_ == 0
 ```
 
 - [ ] **Step 2:** Run `--gtest_filter='MetalCompositor.Vcam*:MetalCompositor.ClearingTheVcamSink*'`. Expected: FAIL (the sink never fires).
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run the filter, then all `MetalCompositor.*`, then full ctest. Expected: PASS.
-- [ ] **Step 5: Measurement** (owner Mac, not CI). Run the core with an idle 1080p60 Program and the vcam enabled, and read the snapshot `virtualCamera.framesPublished` delta over 10 s. **Required ≥ 50/s.** If it is lower, record the convert/readback means from the log and open a `backlog` issue "Metal NV12 compute tap" (spec §7). Do not lower the requirement.
+- [ ] **Step 3:** Implement the kernel, the dispatch, the ping-pong buffers, `setVcamMirror` and the MediaCore call.
+- [ ] **Step 4:** Run the filter, then all `MetalCompositor.*`, then full ctest. Expected: PASS. Confirm the stub config still builds (the Interfaces.h default).
+- [ ] **Step 5: Delivery measurement (owner Mac, release core, quiet machine).** Run the core with an idle 1080p60 Program and the camera enabled through `sync-virtual-camera`, and observe for 10 s:
+  - snapshot `virtualCamera.framesPublished` delta **≥ 599**;
+  - the Task 4 `mac publication gaps` line reports **0**;
+  - `skipped 0` in the tap log.
+
+  Record the GPU and copy means and maximums and the exact hardware. Any gap fails the task and gets fixed in the pipeline; never relax the threshold (CLAUDE.md frame-delivery rule). Run it again with OH Framer on after Task 9.
 - [ ] **Step 6: Mutations:**
-  - Remove the light-tick kick. `RunsOnLightTicks` must go red.
-  - Swap the U and V order. The U/V assertions must go red.
-  - Skip the resize. `ScalesANon1080pCanvas` must go red.
-  - Remove the `tapReadInFlight_` guard. No test can catch this one; report it as a reviewer-only property (rule 8).
-- [ ] **Step 7: Commit** `native: Metal compositor publishes a 1080p NV12 tap to the virtual camera`.
+  - Float division in place of int for U. The bit-exact oracle test must go red.
+  - Drop the mirror term. `VcamTapMirrorsOnTheGpu` must go red.
+  - Remove the light-tick dispatch. `RunsOnLightTicks` must go red.
+  - Swap U and V. The U/V assertions must go red.
+  - Use one NV12 buffer in place of two. `DeliversEveryRenderedFrame` should go red through skips. If it stays green on the runner, label it confirmatory and rely on the Step 5 measurement (rule 8).
+- [ ] **Step 7: Commit** `native: Metal compositor GPU NV12 tap (resize, mirror, BT.601) for the virtual camera`.
 
 ### Task 6: Shell — footer button, flyout, wire command, persistence
 
@@ -501,28 +545,38 @@ E2E steps (the script's asserts):
   - Apply the rename while streaming. This is extension-side and reviewer-only; check it on the owner Mac by renaming mid-call in Zoom: the name must not change until the call stops using the camera.
 - [ ] **Step 6: Commit** `mac: camera rename reaches the extension via a custom CMIO property`.
 
-### Task 9: OH Framer on Mac — CPU twin of `GpuWebcamFramer`
+### Task 9: OH Framer on Mac — Metal port of `WebcamFramer.hlsl`
 
 **Files:**
-- Create: `native/src/modules/WebcamFramerCpu.{h,cpp}` (portable blend), `native/src/modules/WebcamFramerAppleDecode.mm` (PNG via ImageIO → straight RGBA)
-- Modify: `native/src/modules/GpuWebcamFramer.cpp` (`#elif defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM` Impl delegating to the CPU twin), `native/CMakeLists.txt`, `native/tests/GpuWebcamFramerTest.cpp` (introduce `COREVIDEO_FRAMER_RENDERS` = `(_WIN32 && COREVIDEO_WITH_D3D11) || (__APPLE__ && COREVIDEO_WITH_MAC_VIRTUALCAM)` and use it in place of the Windows-only guards)
+- Create: `native/shaders/WebcamFramer.metal` (built like Task 5's kernel), `native/src/modules/WebcamFramerAppleDecode.mm` (PNG via ImageIO → straight RGBA → immutable `MTLTexture`, decoded once in `prepare`)
+- Modify: `native/src/modules/GpuWebcamFramer.cpp` → keep it as the Windows/stub TU; add `native/src/modules/GpuWebcamFramerMetal.mm` providing the `GpuWebcamFramer::Impl` and methods under `defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM` (CMake picks one TU per platform; the D3D11 TU is untouched). Also `native/CMakeLists.txt`, and `native/tests/GpuWebcamFramerTest.cpp`: introduce `COREVIDEO_FRAMER_RENDERS` = `(_WIN32 && COREVIDEO_WITH_D3D11) || (__APPLE__ && COREVIDEO_WITH_MAC_VIRTUALCAM)` and use it in place of the Windows-only guards.
 
 **Interfaces:**
-- Consumes: `webcamFramerPng` (generated header), `WebcamLoudnessOverlay`, `shaders/WebcamFramer.hlsl` (the reference algorithm).
+- Consumes: `webcamFramerPng` (generated header), `WebcamLoudnessOverlay`, `shaders/WebcamFramer.hlsl` (the reference algorithm), Task 4's `mirrorAppliedUpstream()` handling in `AsyncVirtualCameraPublisher`.
 - Produces:
-  - `bool decodeEmbeddedPngStraightRgba(const uint8_t* png, size_t size, std::vector<uint8_t>& rgba, int& w, int& h, std::string& error)`. It draws into a premultiplied RGBA context, then un-premultiplies (the `StillMediaFrameCache` approach) and requires 1920×1080.
-  - `class WebcamFramerCpu { bool prepare(int w, int h, std::string& error); void apply(const uint8_t* clean, uint8_t* out, int w, int h, bool mirror, WebcamLoudnessOverlay meter); }`. This is a line-for-line port of `WebcamFramer.hlsl` (`glyph`, `meterPixel`, `pixel`, `yuv`, `blend`) in `float` arithmetic, so it rounds like the GPU.
-  - Cache per (w, h, mirror) the list of luma spans whose overlay alpha > 0. Recompute the meter rectangle every frame only when `meter.show`.
+  - The same `GpuWebcamFramer` public API. `prepare(w, h)` creates the device and queue, compiles the kernel, uploads the overlay texture, and allocates two shared-storage `MTLBuffer`s of `w*h*3/2`. `apply(clean, w, h, mirror, meter)` copies `clean` into the input buffer (bulk `memcpy`), dispatches, waits for that command buffer on the camera worker (never the render thread), and copies the result into the reused output vector (same reuse rule as D3D11: reuse only when `use_count()==1`).
+  - Kernel `webcamFramer`: a line-for-line MSL port of `WebcamFramer.hlsl` (`font[140]`, `glyph`, `meterPixel`, `pixel` with its `mirror` coordinate flip, `yuv` with its BT.709 coefficients, `blend` with `floor(lerp(...)+.5)` in `float`, and 4 bytes per thread over `words`). Constants buffer layout = the HLSL `Dimensions` cbuffer (8 × 32-bit). Warnings use the same wording pattern: "OH Framer: <operation> failed. Clean video continues."
+  - Mirror is GPU in both places. The whole-frame flip happens in the Task 5 tap. The overlay-coordinate flip is in this kernel and is used only when `mirrorAppliedUpstream()` is false. On Mac it is false at the framer, per Task 4.
 
-- [ ] **Step 1:** Change the test guards. Run `--gtest_filter='GpuWebcamFramer.*:WebcamLoudnessOverlay.*'` on `build-metal` with the option ON. Expected: FAIL. These are the **unchanged Windows oracle values**: 100, 170, 58, 149, 74, the 235 glyph pixel, the mirror equivalence and the panel-only diff.
-- [ ] **Step 2:** Implement.
-- [ ] **Step 3:** Run the filter. Expected: PASS, including `Warm1080pProcessingReportsCost`, which now prints on Mac. Record mean and worst; the target is a mean ≤ 4 ms on the owner Mac, reported rather than asserted (Windows parity). Run full ctest.
-- [ ] **Step 4:** Run the e2e `--app` step with the framer on. The probe's centerY is unchanged and a guide pixel at (420, 400) reads luma 74 ±3. Add this as e2e step 6b.
+- [ ] **Step 1:** Change the test guards and add the Mac composition test:
+
+```cpp
+TEST(GpuWebcamFramer, MacMirroredPathMatchesWindowsComposition)
+  // COREVIDEO_FRAMER_RENDERS only. Windows order: W = mirrorNv12InPlace(apply(clean, mirror=true)).
+  // Mac order: M = apply(mirrorNv12InPlace(copy of clean), mirror=false).
+  // Expect M == W byte for byte (mirrorNv12InPlace is the test-side oracle).
+```
+
+  Run `--gtest_filter='GpuWebcamFramer.*:WebcamLoudnessOverlay.*'` on `build-metal` with the option ON. Expected: FAIL. The bar is the **unchanged Windows oracle values**: 100, 170, 58, 149, 74, the 235 glyph pixel, the mirror equivalence and the panel-only diff.
+- [ ] **Step 2:** Implement the kernel, the decode and the Metal Impl.
+- [ ] **Step 3:** Run the filter. Expected: PASS. `Warm1080pProcessingReportsCost` now prints on Mac; record mean and worst. Requirement: worst ≤ 8 ms, so that the framer plus the tap stay inside one 16.7 ms period off the render thread. Re-run the Task 5 Step 5 delivery measurement with the framer on: ≥ 599 published per 10 s, 0 gaps. Run full ctest.
+- [ ] **Step 4:** Run the e2e `--app` step with framer and mirror on. A guide pixel at the Windows location (420, 400) reads luma 74 ±3, and the "LUFS" label is readable (owner glance; add it as e2e step 6b).
 - [ ] **Step 5: Mutations:**
-  - Use `double` in place of `float` in `blend`. Watch whether any exact-value assertion moves (report either way; this checks whether float parity is load-bearing).
-  - Drop the chroma 2×2 averaging. The value 149 must go red.
-  - Skip the mirror of the overlay coordinate. `GuidesRemainReadableAfterBackendMirror` must go red.
-- [ ] **Step 6: Commit** `native: OH Framer on macOS (CPU twin of the D3D11 shader, Windows oracle values)`.
+  - Compute `blend` in `half`. The exact values (58, 149) should go red; report it.
+  - Drop the 2×2 chroma averaging. 149 must go red.
+  - Remove the kernel's overlay mirror flip. `GuidesRemainReadableAfterBackendMirror` must go red.
+  - Pass `mirror=true` to the framer on Mac (undo Task 4's term). `MacMirroredPathMatchesWindowsComposition` stays green, because it drives the framer directly. `UpstreamMirrorIsNotAppliedTwice…` (Task 4) is the guard; confirm it reds.
+- [ ] **Step 6: Commit** `native: OH Framer on macOS as a Metal kernel (Windows oracle values)`.
 
 ### Task 10: 720p and 30/60 fps for consumers
 
@@ -594,7 +648,7 @@ E2E steps (the script's asserts):
   8. OH Framer and mirror visible in Zoom's self-view; Program recording stays clean (check the recorded file's pixels at a guide location).
   9. "Remove virtual camera" → the device disappears from Photo Booth after relaunching it.
   10. Stream key and Zoom sign-in still present after the first signed launch (Review Focus 5).
-  11. Per-frame delivery: the e2e probe at 60 fps for 60 s reports ≥ 59 fps with the vcam fed from a live 1080p60 Program (CLAUDE.md frame-delivery rule; report the worst interval as unverified if the probe cannot measure it).
+  11. Per-frame delivery: a live 1080p60 Program with framer and mirror on for 60 s gives core `framesPublished` delta ≥ 3599, `mac publication gaps 0`, `skipped 0`. The e2e probe also reports consumer-side fps ≥ 59 at 60 fps; report its worst interval as unverified if the probe cannot measure it (CLAUDE.md frame-delivery rule).
 
 - [ ] **Step 1: Failing tests:**
   - Shell `testRemoveVirtualCameraCallsDeactivateAndClearsOptIn`, with the fake activator: one `deactivate` call; `cameraExtensionOptedIn == false`; intent off; one `sync-virtual-camera {on:false}` sent.
@@ -615,7 +669,7 @@ E2E steps (the script's asserts):
   - §1 platform: Tasks 2–3.
   - §2 frame path: Tasks 4–5.
   - §3 formats: Tasks 2 and 10.
-  - §4 laws. Law 1: Task 4 (copy-on-enqueue, full queue drops new). Law 2: Tasks 1, 2 and 7. Law 3: Tasks 3, 6 and 12. Law 4: Tasks 5 and 4. Law 5: logging in Tasks 2, 3 and 4. Law 6: Task 2 `ProducerAuthorizer` plus the e2e feeder signing.
+  - §4 laws. Law 1: Task 4 (copy-on-enqueue, full queue drops new). Law 2: Tasks 1, 2 and 7. Law 3: Tasks 3, 6 and 12. Law 4: Task 5 (GPU convert and mirror, no render-thread wait) and Task 9 (GPU framer on the camera worker). Law 5: logging in Tasks 2, 3 and 4. Law 6: Task 2 `ProducerAuthorizer` plus the e2e feeder signing.
   - §5 health: Tasks 4 and 6.
   - §6 rename: Task 8.
   - The framer is in the Windows feature set: Task 9.
@@ -627,4 +681,5 @@ E2E steps (the script's asserts):
   - Whether activation needs notarization (5c).
   - That the custom-property string format `4cc_<sel>_glob_0000` is honoured (Task 8 Step 4). It is not in the SDK headers; it comes from WWDC22 material and Apple forum replies.
 - **Type consistency:** `CameraExtensionState`, `IVirtualCameraSink`, `SinkEnqueueResult`, `PersistedVirtualCamera` and `VirtualCameraReadModel` have the same names in every task that uses them. `setDeviceName` is declared in Task 4 and implemented in Task 8.
+- **North star check:** no production step calls `convertBgraToNv12`, `resizeBgraBilinear` or `mirrorNv12InPlace` on Mac. They appear only as test oracles (Tasks 5 and 9), and Task 4 refuses the CPU `publish(ProgramFrame)` fallback. The remaining CPU work is ≤ 3 bulk copies per frame, measured in Task 5 Step 5.
 - **Proportion:** signatures, tests and values only. No function bodies except the test assertions and the label precedence, which is exact copy.
