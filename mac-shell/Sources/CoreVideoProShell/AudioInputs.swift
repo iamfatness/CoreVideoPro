@@ -65,6 +65,16 @@ extension AppModel {
     @MainActor
     func pushCaptureAudio() async {
         guard let bridge else { return }
+        _ = try? await bridge.request([
+            "type": "media-core-sync", "elapsedMs": elapsedMs(),
+            "commands": [captureAudioSourcesCommand()],
+        ])
+    }
+
+    /// The full-state sync-capture-audio-sources command. Internal: the core
+    /// restart path sends it in the SAME request as, and after, the console mix.
+    @MainActor
+    func captureAudioSourcesCommand() -> JSONObject {
         // FULL STATE, including capture slots with NO microphone: the core
         // clears its map from this command, so omitting an unpaired source is
         // the same as sending it — but sending it explicitly keeps the audio
@@ -85,10 +95,7 @@ extension AppModel {
                 }
                 return entry
             }
-        _ = try? await bridge.request([
-            "type": "media-core-sync", "elapsedMs": elapsedMs(),
-            "commands": [["type": "sync-capture-audio-sources", "sources": sources]],
-        ])
+        return ["type": "sync-capture-audio-sources", "sources": sources]
     }
 
     func pairAudio(slotId: Int, device: AudioInputDevice?) {

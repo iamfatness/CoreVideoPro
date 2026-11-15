@@ -1132,11 +1132,22 @@ enum ShellTests {
         model.markAudioConsoleDeliveredForTesting()
         expect(model.scheduledStripIds == nil && model.lastRoutingBaseSent != nil,
                "precondition: everything delivered to the old core")
+        var batches: [[JSONObject]] = []
+        model.audioReassertObserver = { batches.append($0) }
         model.onConnected()  // the respawned core's handshake
-        expectEqual(model.scheduledStripIds, Set(["zoom-mix", "11", "media"]),
-                    "a new core generation gets the full channel list again")
-        expect(model.lastRoutingBaseSent == nil,
-               "the routing memo is forgotten, so the base matrix is re-sent to the new core")
+        expectEqual(batches.count, 1, "a new core generation gets the console in ONE request")
+        let batch = batches.first ?? []
+        expectEqual(batch.map { $0["type"] as? String ?? "" },
+                    ["sync-participant-audio-mix", "sync-audio-routing-matrix", "sync-capture-audio-sources"],
+                    "mix FIRST, then routing, then the mics: a muted source is never heard at unity (M6)")
+        let channels = batch.first?["channels"] as? [JSONObject] ?? []
+        expectEqual(Set(channels.compactMap { $0["participantId"] as? String }),
+                    Set(["zoom-mix", "11", "media"]), "the full channel list again")
+        expectEqual(channels.first { $0["participantId"] as? String == "11" }?["muted"] as? Bool, true,
+                    "the A1's mute is in the very first command the new core applies")
+        let resent = (batch.count > 1 ? batch[1]["sends"] as? [JSONObject] : nil) ?? []
+        expect(resent.contains { $0["sourceId"] as? String == "zoom-mix" && $0["busId"] as? String == "iso-1" },
+               "the base routing (with the operator's crosspoint) is re-sent to the new core")
         // The fresh core echoes its defaults: unmuted, no gain.
         model.applySnapshotForTesting(["audioMixSession": ["participants": [
             ["participantId": "11", "muted": false, "outputLevel": 0]]]])

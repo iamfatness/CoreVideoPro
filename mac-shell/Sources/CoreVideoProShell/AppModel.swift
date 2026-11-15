@@ -793,14 +793,15 @@ final class AppModel: ObservableObject {
         audioRouteControl.resetForProcess()
         rosterProjection.resetForProcess()
         rosterRecoveryNotice = rosterProjection.notice
+        // FIRST, before anything that can make a source audible (monitor, capture
+        // mics, scenes with media): see reassertAudioConsole.
+        reassertAudioConsole()
         setMonitor(enabled: monitorEnabled, volume: monitorVolume)
         applyMultiviewConfig()
         // Re-assert a restored grade: the core starts neutral every launch, so
         // a persisted grade that is never pushed silently does nothing.
         if !gradeIsNeutral { applyColorGrade() }
         audioInputs = AudioInputs.available()
-        reassertCaptureAudio()
-        reassertAudioConsole()
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
@@ -3133,13 +3134,49 @@ final class AppModel: ObservableObject {
     /// A1's mutes. Forget what this core was sent and send the whole console again:
     /// every strip with its mute/gain/pan/solo/inserts + mastering, and the base
     /// routing matrix with the operator's crosspoint edits.
+    ///
+    /// ONE request, mix FIRST (review M6): the respawned core has no channels, and
+    /// with no channels the FADER LAW does not apply — every routed source plays at
+    /// unity. Sending the routing now and the mix 150 ms later (the debounce) made
+    /// A1-muted sources audible for that window. The mix, the base routing and the
+    /// capture-mic pairings (the only thing that can bring PCM into a fresh core
+    /// at this point — its Zoom engine is new and not yet in a meeting, and scenes
+    /// with media are synced after this) go together, in that order; the core
+    /// applies a request's commands in order and its mailbox is FIFO.
     func reassertAudioConsole() {
+        mixSyncTask?.cancel()
+        routingBaseTask?.cancel()
         lastSyncedStripIds = nil
         scheduledStripIds = nil
         lastRoutingBaseSent = nil
-        refreshStrips()
-        pushRoutingBase()
+        strips = AudioConsolePolicy.mergeStrips(
+            echo: [], prior: strips, remembered: rememberedStripSettings,
+            expected: expectedAudioSourceIds)
+        var commands: [JSONObject] = [audioMixCommand()]
+        let routing = routingBaseCommand()
+        if let routing { commands.append(routing) }
+        commands.append(captureAudioSourcesCommand())
+        lastSyncedStripIds = Set(strips.map(\.id))
+        lastRoutingBaseSent = routing?["sends"] as? [JSONObject]
+        if let observer = audioReassertObserver { observer(commands); return }
+        guard let bridge else { return }
+        Task { [weak self] in
+            do {
+                _ = try await bridge.request([
+                    "type": "media-core-sync", "elapsedMs": self?.elapsedMs() ?? 0,
+                    "commands": commands,
+                ])
+            } catch {
+                self?.lastSyncedStripIds = nil
+                self?.lastRoutingBaseSent = nil
+                self?.refreshStrips()
+                self?.pushRoutingBase()
+            }
+        }
     }
+
+    /// Harness seam: receives the restart re-assert batch instead of the bridge.
+    var audioReassertObserver: (([JSONObject]) -> Void)?
 
     /// The A1's per-id strip settings for the current meeting (review I2). Cleared
     /// for Zoom ids when the meeting ends: Zoom reuses user ids across meetings,
