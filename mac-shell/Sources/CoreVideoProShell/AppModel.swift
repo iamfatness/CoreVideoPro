@@ -323,6 +323,12 @@ final class AppModel: ObservableObject {
     @Published var meetingState = "idle"
     @Published var rawMediaActive = false
     @Published var roster: [RosterParticipant] = []
+    /// The Zoom audio source set last placed on the spine (participant-audio ids,
+    /// in budget order) and whether meeting-audio was subscribed with it. The audio
+    /// console builds its strips from these — the FADER LAW needs a strip for
+    /// every source the core is sent, not only for the ones it has echoed.
+    @Published var zoomAudioSourceIds: [String] = []
+    @Published var meetingAudioSubscribed = false
     @Published var assignedIds: Set<String> = []
     @Published var recordingStatus = "idle"
     @Published var recordingDesired = false {
@@ -1023,6 +1029,7 @@ final class AppModel: ObservableObject {
             // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
             // the WinUI shell consumes): userId/displayName/videoOn/muted/talking.
             let cameraOnBefore = Set(roster.filter(\.hasVideo).map(\.id))
+            let presentBefore = Set(roster.map(\.id))
             roster = RosterParticipant.parse(participants, assignedIds: assignedIds)
             // Auto-assign video participants into empty slots (the Windows
             // AutomationAutoAssignInputsEnabled default) — join → tiles with
@@ -1048,7 +1055,12 @@ final class AppModel: ObservableObject {
             // camera-on, so without this the participant never re-subscribes (the
             // Windows 2026-08-09 frozen-tile defect, mirrored).
             let cameraOnAfter = Set(roster.filter(\.hasVideo).map(\.id))
-            if cameraOnAfter != cameraOnBefore && !assignedAny {
+            // ...and so must any change of WHO is in the room: the audio source set
+            // keeps camera-off sources and drops departed ones, and meeting-audio
+            // exists only while the meeting has participants. A camera-off guest
+            // returning to their slot must get their audio back.
+            let presentAfter = Set(roster.map(\.id))
+            if (cameraOnAfter != cameraOnBefore || presentAfter != presentBefore) && !assignedAny {
                 syncSpine()
             }
         }
@@ -1525,22 +1537,7 @@ final class AppModel: ObservableObject {
                 "talking": participant.talking,
             ]
         }
-        // Budget-ordered, camera-on-filtered, capped (E1/E2/E5 — see
-        // ZoomSourceBudget.swift). Replaces the old `assignedIds` Set, which was
-        // nondeterministic, uncapped and subscribed camera-off participants.
-        let programRouted = programSceneId.isEmpty
-            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: programSceneId, isProgram: true))
-        let previewRouted = previewSceneId.isEmpty
-            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: previewSceneId))
-        let multiviewAssigned = slots
-            .filter { $0.kind == "zoom" && $0.inShow && !$0.offline }
-            .map(\.sourceId)
-        let isoArmed = isoRecordingEnabled
-            ? slots.filter { $0.kind == "zoom" && $0.iso }.map(\.sourceId) : []
-        let cameraOn = Set(roster.filter(\.hasVideo).map(\.id))
-        let subscriptions = Self.spineSubscriptionPayloads(ZoomSourceBudget.videoEntries(
-            programRouted: programRouted, previewRouted: previewRouted,
-            multiviewAssigned: multiviewAssigned, isoArmed: isoArmed, cameraOn: cameraOn))
+        let subscriptions = resolveSpineSubscriptions()
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
@@ -1591,22 +1588,88 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // The exact objects placed in the spine `subscriptions` array. kind
-    // "participant-video" (E3/E4/E6, ZoomSubscriptionResolutionPolicy.h) is the
-    // tiered kind: the core grants 1080P to the first 8 camera-on entries in
-    // this budget order, and its engine-side identity
-    // ("participant-video-<pid>-camera") excludes purpose, so the real
-    // `entry.purpose` rides the wire without churning the subscription on a
-    // bus move.
-    static func spineSubscriptionPayloads(_ entries: [ZoomSourceBudget.Entry]) -> [JSONObject] {
-        entries.enumerated().map { index, entry in
-            [
+    /// The spine `subscriptions` array for the current show, and — as the one
+    /// place the audio source set is decided — records it for the audio console
+    /// (`zoomAudioSourceIds` / `meetingAudioSubscribed`). Internal so the harness
+    /// drives the real call site, not a hand-copied list.
+    func resolveSpineSubscriptions() -> [JSONObject] {
+        // Budget-ordered, camera-on-filtered, capped (E1/E2/E5 — see
+        // ZoomSourceBudget.swift). Replaces the old `assignedIds` Set, which was
+        // nondeterministic, uncapped and subscribed camera-off participants.
+        let programRouted = programSceneId.isEmpty
+            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: programSceneId, isProgram: true))
+        let previewRouted = previewSceneId.isEmpty
+            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: previewSceneId))
+        let multiviewAssigned = slots
+            .filter { $0.kind == "zoom" && $0.inShow && !$0.offline }
+            .map(\.sourceId)
+        let isoArmed = isoRecordingEnabled
+            ? slots.filter { $0.kind == "zoom" && $0.iso }.map(\.sourceId) : []
+        let cameraOn = Set(roster.filter(\.hasVideo).map(\.id))
+        let audioIds = ZoomSourceBudget.audioParticipantIds(
+            programRouted: programRouted, previewRouted: previewRouted,
+            multiviewAssigned: multiviewAssigned, isoArmed: isoArmed,
+            present: Set(roster.map(\.id)))
+        zoomAudioSourceIds = audioIds
+        meetingAudioSubscribed = !roster.isEmpty
+        return Self.spineSubscriptionPayloads(
+            ZoomSourceBudget.videoEntries(
+                programRouted: programRouted, previewRouted: previewRouted,
+                multiviewAssigned: multiviewAssigned, isoArmed: isoArmed, cameraOn: cameraOn),
+            audioParticipantIds: audioIds,
+            meetingHasParticipants: !roster.isEmpty)
+    }
+
+    // The exact objects placed in the spine `subscriptions` array — the Windows
+    // ZoomMediaSpinePayloadBuilder.BuildSubscriptions shape, field for field:
+    //
+    //  - `meeting-audio` for the synthetic MeetingMixParticipantId ("0"), purpose
+    //    "program", priority 0, whenever the meeting has participants. The Zoom
+    //    program mix is an audio source in its own right and is deliberately NOT
+    //    narrowed to the source set. Without it there is no "zoom-mix" PCM at all.
+    //  - `participant-video` per budget entry, priority 10+i. The tiered kind
+    //    (E3/E4/E6, ZoomSubscriptionResolutionPolicy.h): the core grants 1080P to
+    //    the first 8 camera-on entries in this order, and its engine-side identity
+    //    ("participant-video-<pid>-camera") excludes purpose, so the real
+    //    `entry.purpose` rides the wire without churning on a bus move.
+    //  - `participant-audio` per audio source (camera-off sources included),
+    //    purpose "mix", priority 40+i. The engine identity for audio DOES include
+    //    purpose ("participant-audio-<pid>-mix", ZoomEngineRuntime.cpp), so "mix" is
+    //    a fixed constant — never a bus purpose that could churn the subscription.
+    //
+    // Until this shipped the Mac subscribed VIDEO ONLY: a live 9-guest meeting had
+    // raw media active and audioMixSession.participants == 0 — no channels, nothing
+    // to monitor.
+    static func spineSubscriptionPayloads(
+        _ entries: [ZoomSourceBudget.Entry], audioParticipantIds: [String],
+        meetingHasParticipants: Bool
+    ) -> [JSONObject] {
+        var payloads: [JSONObject] = []
+        if meetingHasParticipants {
+            payloads.append([
+                "participantId": ZoomSourceBudget.meetingMixParticipantId,
+                "kind": "meeting-audio",
+                "purpose": "program",
+                "priority": 0,
+            ])
+        }
+        for (index, entry) in entries.enumerated() {
+            payloads.append([
                 "participantId": entry.participantId,
                 "kind": "participant-video",
                 "purpose": entry.purpose,
-                "priority": index,
-            ]
+                "priority": 10 + index,
+            ])
         }
+        for (index, id) in audioParticipantIds.enumerated() {
+            payloads.append([
+                "participantId": id,
+                "kind": "participant-audio",
+                "purpose": "mix",
+                "priority": 40 + index,
+            ])
+        }
+        return payloads
     }
 
     // Per-source dropout policy commands (core contract #535 slice 4a,

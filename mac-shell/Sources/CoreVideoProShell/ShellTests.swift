@@ -899,10 +899,13 @@ enum ShellTests {
     private static func testSpineSubscriptionWireShape() {
         let entries = [ZoomSourceBudget.Entry(participantId: "p1", purpose: "program"),
                        ZoomSourceBudget.Entry(participantId: "p2", purpose: "multiview")]
-        let payloads = AppModel.spineSubscriptionPayloads(entries)
+        let payloads = AppModel.spineSubscriptionPayloads(
+            entries, audioParticipantIds: [], meetingHasParticipants: false)
         expectEqual(payloads.count, 2, "one subscription per budget entry")
         expectEqual(payloads[0]["participantId"] as? String, "p1", "payload order is budget order")
-        expectEqual(payloads[0]["priority"] as? Int, 0, "priority is the budget index")
+        // Windows ZoomMediaSpinePayloadBuilder: video priorities are 10+i (0 is the
+        // meeting mix, 40+i the per-participant audio).
+        expectEqual(payloads[0]["priority"] as? Int, 10, "video priority is 10 + budget index")
         // participant-video is the tiered kind: the core grants 1080P to the first
         // 8 camera-on entries IN THIS ORDER (ZoomSubscriptionResolutionPolicy.h),
         // which is the entire point of the budget. Identity is purpose-free for
@@ -911,7 +914,121 @@ enum ShellTests {
                     "the tiered kind — 1080P eligible, budget-order granted")
         expectEqual(payloads[0]["purpose"] as? String, "program", "the entry's real purpose")
         expectEqual(payloads[1]["purpose"] as? String, "multiview", "the entry's real purpose")
-        expectEqual(payloads[1]["priority"] as? Int, 1, "priority is the budget index")
+        expectEqual(payloads[1]["priority"] as? Int, 11, "video priority is 10 + budget index")
+    }
+
+    /// The live defect (2026-11-15): a real 9-guest meeting, raw media on, and
+    /// audioMixSession.participants == 0 — the Mac spine subscribed video only.
+    @MainActor
+    private static func testSpineSubscribesTheMeetingMixAndSourceAudio() {
+        let video = [ZoomSourceBudget.Entry(participantId: "101", purpose: "program")]
+        let payloads = AppModel.spineSubscriptionPayloads(
+            video, audioParticipantIds: ["101", "202"], meetingHasParticipants: true)
+        let mix = payloads.filter { $0["kind"] as? String == "meeting-audio" }
+        expectEqual(mix.count, 1, "exactly one meeting-audio subscription while in a meeting")
+        expectEqual(mix.first?["participantId"] as? String, "0",
+                    "the meeting mix rides the synthetic MeetingMixParticipantId, never a guest's id (#465)")
+        expectEqual(mix.first?["purpose"] as? String, "program", "Windows: meeting-audio purpose program")
+        expectEqual(mix.first?["priority"] as? Int, 0, "Windows: meeting-audio priority 0")
+        let audio = payloads.filter { $0["kind"] as? String == "participant-audio" }
+        expectEqual(audio.map { $0["participantId"] as? String ?? "" }, ["101", "202"],
+                    "one participant-audio per audio source, in source order")
+        expectEqual(audio.map { $0["purpose"] as? String ?? "" }, ["mix", "mix"],
+                    "participant-audio purpose is the constant \"mix\" (it is part of the engine identity)")
+        expectEqual(audio.map { $0["priority"] as? Int ?? -1 }, [40, 41],
+                    "Windows: participant-audio priority 40 + index")
+        let idle = AppModel.spineSubscriptionPayloads(
+            [], audioParticipantIds: [], meetingHasParticipants: false)
+        expect(idle.isEmpty, "no meeting participants: no meeting-audio subscription")
+    }
+
+    private static func testAudioSourceSetKeepsCameraOffAndRefusesNonSources() {
+        // p-off: a camera-off wall guest. p-nobody: in the room, routed nowhere.
+        // p-gone: still in a slot but left the meeting.
+        let ids = ZoomSourceBudget.audioParticipantIds(
+            programRouted: ["p-pgm"], previewRouted: ["p-pvw", "p-pgm"],
+            multiviewAssigned: ["p-off", "p-gone"], isoArmed: ["p-iso"],
+            present: ["p-pgm", "p-pvw", "p-off", "p-iso", "p-nobody"])
+        expectEqual(ids, ["p-pgm", "p-pvw", "p-off", "p-iso"],
+                    "Program -> Preview -> wall -> ISO order, deduped keep-first")
+        expect(ids.contains("p-off"), "a camera-OFF source keeps its audio (owner rule #478)")
+        expect(!ids.contains("p-nobody"), "a non-source is never subscribed for audio (sources only)")
+        expect(!ids.contains("p-gone"), "a participant who left is not a source")
+        let wall = (0..<14).map { "w\($0)" }
+        expectEqual(ZoomSourceBudget.audioParticipantIds(
+            programRouted: [], previewRouted: [], multiviewAssigned: wall, isoArmed: [],
+            present: Set(wall)).count, 14, "audio is uncapped (only video is capped at 10)")
+        let video = ZoomSourceBudget.videoEntries(
+            programRouted: [], previewRouted: [], multiviewAssigned: ["p-off"], isoArmed: [],
+            cameraOn: [])
+        expect(video.isEmpty, "the same camera-off source spends no VIDEO budget")
+    }
+
+    /// The REAL call site (pushSpine's subscription array): slots + roster in, the
+    /// audio set out — a camera-off wall guest is subscribed for audio, a guest in
+    /// no slot is not, and the meeting mix rides along.
+    @MainActor
+    private static func testPushSpineSubscribesWallAudioFromTheModel() {
+        let model = AppModel()
+        model.roster = [
+            RosterParticipant(id: "11", name: "On", hasVideo: true, muted: false,
+                              talking: false, assigned: true),
+            RosterParticipant(id: "22", name: "Off", hasVideo: false, muted: false,
+                              talking: false, assigned: true),
+            RosterParticipant(id: "33", name: "Audience", hasVideo: true, muted: false,
+                              talking: false, assigned: false),
+        ]
+        for (index, pid) in ["11", "22"].enumerated() {
+            model.slots[index].kind = "zoom"
+            model.slots[index].sourceId = pid
+            model.slots[index].inShow = true
+        }
+        let subs = model.resolveSpineSubscriptions()
+        func ids(_ kind: String) -> [String] {
+            subs.filter { $0["kind"] as? String == kind }.compactMap { $0["participantId"] as? String }
+        }
+        expectEqual(ids("meeting-audio"), ["0"], "in a meeting: the Zoom program mix is subscribed")
+        expectEqual(ids("participant-audio"), ["11", "22"],
+                    "every wall source gets audio, the camera-off one included")
+        expect(!ids("participant-audio").contains("33"), "a non-source gets no audio")
+        expectEqual(ids("participant-video"), ["11"], "only the camera-on source spends video")
+        expectEqual(model.zoomAudioSourceIds, ["11", "22"],
+                    "the console's Zoom source set is the one just subscribed")
+        expect(model.meetingAudioSubscribed, "the console knows the meeting mix is subscribed")
+    }
+
+    /// Cross-checks the audio wire strings against the CORE's source, the way the
+    /// payload-wrapper contract test does: a rename in C++ fails here, not live.
+    @MainActor
+    private static func testAudioSubscriptionKindsMatchTheCoreSource() {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard let runtime = try? String(contentsOf: root.appendingPathComponent(
+            "native/src/modules/ZoomEngineRuntime.cpp"), encoding: .utf8) else {
+            FileHandle.standardError.write(
+                "  SKIPPED audio-kind cross-check (core source not alongside the shell)\n"
+                    .data(using: .utf8)!)
+            return
+        }
+        guard let line = runtime.split(separator: "\n").first(where: {
+            $0.contains("const bool isAudioSubscription =")
+        }) else {
+            expect(false, "the core no longer declares isAudioSubscription — re-derive the audio kinds")
+            return
+        }
+        let quoted = line.split(separator: "\"").enumerated()
+            .filter { $0.offset % 2 == 1 }.map { String($0.element) }
+        let emitted = Set(AppModel.spineSubscriptionPayloads(
+            [], audioParticipantIds: ["1"], meetingHasParticipants: true)
+            .compactMap { $0["kind"] as? String })
+        expectEqual(emitted, Set(quoted),
+                    "the shell's audio kinds are exactly the core's audio subscription kinds")
+        expect(runtime.contains("command.isolateAudio = kind == \"participant-audio\""),
+               "the core isolates per-guest audio on kind participant-audio")
+        expect(runtime.contains("std::string(\"zoom-mix\")"),
+               "the core ingests the meeting mix as the \"zoom-mix\" source (the strip id)")
+        expect(runtime.contains("kind + \"-\" + participantId + \"-\" + purpose"),
+               "audio identity includes purpose — why participant-audio purpose must stay constant")
     }
 
     // ── dropout policy (per-source, #535 slice 4a reaching Mac) ─────────────
@@ -2851,6 +2968,10 @@ enum ShellTests {
             ("budget/iso-dedupe-determinism", testBudgetIsoTierAndDeterminism),
             ("budget/route-shape", testRoutedZoomPidsReadTheRealRouteShape),
             ("budget/wire-shape", testSpineSubscriptionWireShape),
+            ("zoom-audio/spine-subscribes-audio", testSpineSubscribesTheMeetingMixAndSourceAudio),
+            ("zoom-audio/source-set", testAudioSourceSetKeepsCameraOffAndRefusesNonSources),
+            ("zoom-audio/kinds-vs-core", testAudioSubscriptionKindsMatchTheCoreSource),
+            ("zoom-audio/push-spine-call-site", testPushSpineSubscribesWallAudioFromTheModel),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),

@@ -55,6 +55,34 @@ struct ZoomSourceBudget {
         return Array(entries.prefix(maxVideoSubscriptions))
     }
 
+    /// The synthetic participant id the Zoom MEETING MIX (`meeting-audio`) is
+    /// subscribed under. Windows: ZoomMediaSpinePayloadBuilder.MeetingMixParticipantId.
+    /// Never a real guest's id: the mix callback carries no user id, and keying it at
+    /// a guest's id made that guest's isolate strip silent (#465). The core ingests
+    /// it as the "zoom-mix" source (ZoomEngineRuntime.cpp, pendingKey "zoom-mix").
+    static let meetingMixParticipantId = "0"
+
+    /// AUDIO: the SAME source set as video (#478 owner rule "sources only"), in the
+    /// same tier order, but a camera-OFF source KEEPS its audio (a wall guest with
+    /// the camera off can still speak) and audio is UNCAPPED. Windows:
+    /// ZoomSourceSetPolicy.AudioParticipantIds over Resolve(). A pid not in the live
+    /// roster (`present`) is not a source — Windows' Resolve requires the
+    /// participant to be in the room. A non-source is never subscribed and is
+    /// inaudible in Program: nothing is on air unless it is an input.
+    static func audioParticipantIds(
+        programRouted: [String], previewRouted: [String],
+        multiviewAssigned: [String], isoArmed: [String], present: Set<String>
+    ) -> [String] {
+        var seen: Set<String> = []
+        var ids: [String] = []
+        for id in programRouted + previewRouted + multiviewAssigned + isoArmed
+            where present.contains(id) && !seen.contains(id) {
+            seen.insert(id)
+            ids.append(id)
+        }
+        return ids
+    }
+
     /// Ordered, de-duplicated (keep-first) participant ids of fixed zoom routes —
     /// a route with no `participantId` (an unbound active-speaker layer, or a
     /// capture-input route whose id lives under `captureDeviceId`) contributes
