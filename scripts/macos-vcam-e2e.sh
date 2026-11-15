@@ -36,6 +36,8 @@
 #                            -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON (native/build-metal)
 #   COREVIDEO_SIGN_IDENTITY  (Developer ID Application: John Wallace (42394L3353))
 #   VCAM_E2E_LEAK_SECONDS    step 7 feed length (300)
+#   JUDGE_LEAKS_LOG          self-test: judge this saved leaks log as step 7
+#                            would, and do nothing else
 #
 # Camera permission: the probe captures from Terminal (or whichever app runs
 # this script). macOS asks once; if access was denied the probe says how to
@@ -116,6 +118,31 @@ wait_feed() {
     return $code
 }
 
+# Step 7's verdict on a `leaks --atExit` log. A pass needs positive evidence:
+# leaks' own "Process N: K leaks for …" summary (absent when leaks could not
+# inspect the process — then nothing was checked) and the feeder's final JSON
+# reporting "status":"live". Only then does "no CMSampleBuffer/CVPixelBuffer in
+# the report" mean anything. The feeder's own output never names those types.
+judge_leaks_log() {
+    local log="$1" summary
+    grep -q '"status":"live"' "$log" \
+        || fail 7 "the feeder did not end live under leaks (no \"status\":\"live\" in its final JSON; see $log)"
+    summary="$(grep -E '^Process [0-9]+: [0-9]+ leaks? for ' "$log" | head -1)"
+    [ -n "$summary" ] \
+        || fail 7 "no leaks summary line (\"Process N: K leaks for …\"): leaks did not inspect the feeder (see $log)"
+    grep -qE 'CMSampleBuffer|CVPixelBuffer|CVBuffer' "$log" \
+        && fail 7 "leaks reported CMSampleBuffer/CVPixelBuffer leaks (see $log)"
+    pass 7 "no CMSampleBuffer/CVPixelBuffer leaks over $LEAK_SECONDS s ($summary)"
+}
+
+# Self-test of the step 7 verdict against a saved or fixture log; runs nothing
+# else (no app, no extension, no feed).
+if [ -n "${JUDGE_LEAKS_LOG:-}" ]; then
+    trap 'rmdir "$OUT" 2>/dev/null' EXIT
+    judge_leaks_log "$JUDGE_LEAKS_LOG"
+    exit 0
+fi
+
 # ── 1. installed and activated ──────────────────────────────────────────────
 [ -d "$APP" ] || fail 1 "$APP is not installed"
 APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist" 2>/dev/null)"
@@ -184,12 +211,15 @@ pass 4 "slate after the feed: $FRAMES frames"
 
 # ── 5. extension restart while feeding ──────────────────────────────────────
 if [ "$RUN_RESTART" = 1 ]; then
+    # Authenticate BEFORE the feed starts: a password prompt must not eat the
+    # feed or count against the 3 s recovery budget.
+    sudo -v || fail 5 "sudo authentication failed"
     start_feed step5 14
     sleep 3
     EXT_PID="$(pgrep -x "$EXT_EXECUTABLE" | head -1)"
     [ -n "$EXT_PID" ] || fail 5 "no running $EXT_EXECUTABLE process to kill"
-    KILL_AT="$(now_ms)"
-    sudo kill -9 "$EXT_PID" || fail 5 "sudo kill -9 $EXT_PID failed"
+    sudo -n kill -9 "$EXT_PID" || fail 5 "sudo kill -9 $EXT_PID failed"
+    KILL_AT="$(now_ms)"  # after the kill returned: the recovery clock starts here
     echo "    killed $EXT_EXECUTABLE pid $EXT_PID at $KILL_AT"
     sleep 4
     LIVE_AT="$(awk -v k="$KILL_AT" '/^\[feed\]/ { split($2, a, "="); if (a[2] + 0 > k + 0 && $4 == "status=live") { print a[2]; exit } }' "$OUT/feed-step5.log")"
@@ -253,11 +283,6 @@ fi
 # ── 7. no sample/pixel buffer leaks over a long feed ────────────────────────
 echo "    step 7 feeds for $LEAK_SECONDS s under leaks --atExit…"
 leaks --atExit -- "$FEED" --seconds "$LEAK_SECONDS" --pattern red >"$OUT/feed-step7.log" 2>&1
-grep -q '"framesPublished"' "$OUT/feed-step7.log" || fail 7 "the feeder did not run to completion under leaks (see $OUT/feed-step7.log)"
-# The feeder's own output never names these types, so any line that does is
-# part of the leaks report (a ROOT LEAK, a leaked node in a tree, or a summary).
-LEAKED="$(grep -cE 'CMSampleBuffer|CVPixelBuffer|CVBuffer' "$OUT/feed-step7.log")"
-[ "$LEAKED" = 0 ] || fail 7 "leaks reported CMSampleBuffer/CVPixelBuffer leaks (see $OUT/feed-step7.log)"
-pass 7 "no CMSampleBuffer/CVPixelBuffer leaks over $LEAK_SECONDS s ($(grep -E '^Process [0-9]+: [0-9]+ leaks' "$OUT/feed-step7.log" | head -1))"
+judge_leaks_log "$OUT/feed-step7.log"
 
 echo "E2E PASS"
