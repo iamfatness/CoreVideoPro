@@ -2823,23 +2823,52 @@ final class AppModel: ObservableObject {
                 "busSends": [] as [JSONObject], "monitorBusId": ""]
     }
 
+    private var routingBaseTask: Task<Void, Never>?
+    /// Harness seam: receives the base-routing request instead of the bridge.
+    var routingBaseSendObserver: ((JSONObject) -> Void)?
+
+    /// The media-core-sync envelope for a base routing push. Opted in to the core
+    /// mailbox's coalescing (CommandMailbox::replaceable: replaceableFullState +
+    /// a non-empty coalescingKey, sync-audio-routing-matrix only), so a queued
+    /// older matrix is REPLACED by a newer one instead of both occupying the
+    /// 128-entry mailbox. A replaced request is answered `superseded: true`.
+    func routingBaseEnvelope(_ command: JSONObject) -> JSONObject {
+        ["type": "media-core-sync", "elapsedMs": elapsedMs(),
+         "replaceableFullState": true, "coalescingKey": "audio-routing-base",
+         "commands": [command]]
+    }
+
     /// Sends the base matrix when it changed (or after a core restart reset the
-    /// memo). Internal so VstInserts/AudioInputs-style extensions can call it.
+    /// memo). DEBOUNCED latest-wins (review I3): the send-gain slider calls this on
+    /// every tick, and an uncoalesced full matrix per tick could fill the core's
+    /// 128-entry command mailbox mid-drag and get unrelated commands refused.
+    /// One pending push; the matrix is computed when it fires.
     func pushRoutingBase() {
-        guard let command = routingBaseCommand(), let bridge else { return }
+        routingBaseTask?.cancel()
+        routingBaseTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.sendRoutingBaseNow()
+        }
+    }
+
+    private func sendRoutingBaseNow() async {
+        guard let command = routingBaseCommand() else { return }
         let sends = command["sends"] as? [JSONObject] ?? []
         if let last = lastRoutingBaseSent, NSArray(array: last).isEqual(to: sends) { return }
+        let envelope = routingBaseEnvelope(command)
+        if let observer = routingBaseSendObserver {
+            lastRoutingBaseSent = sends
+            observer(envelope)
+            return
+        }
+        guard let bridge else { return }
         lastRoutingBaseSent = sends
-        Task { [weak self] in
-            do {
-                _ = try await bridge.request([
-                    "type": "media-core-sync", "elapsedMs": self?.elapsedMs() ?? 0,
-                    "commands": [command],
-                ])
-            } catch {
-                self?.lastRoutingBaseSent = nil  // not delivered: the next push retries
-                self?.pushWarning("audio routing sync failed: \(error.localizedDescription)")
-            }
+        do {
+            _ = try await bridge.request(envelope)
+        } catch {
+            lastRoutingBaseSent = nil  // not delivered: the next push retries
+            pushWarning("audio routing sync failed: \(error.localizedDescription)")
         }
     }
 

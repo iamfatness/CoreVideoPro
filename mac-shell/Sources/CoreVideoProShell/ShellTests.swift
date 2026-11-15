@@ -1242,6 +1242,30 @@ enum ShellTests {
                     "a reused id starts unmuted in the next meeting")
     }
 
+    /// Review I3: a send-gain drag must not put one full routing matrix per
+    /// slider tick into the core's 128-entry mailbox.
+    @MainActor
+    private static func testSendGainDragCoalescesTheRoutingPush() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11"]
+        var sent: [JSONObject] = []
+        model.routingBaseSendObserver = { sent.append($0) }
+        model.selectOrRouteSend(source: "11", bus: "iso-1")
+        for tick in 0..<40 {
+            model.setSendGain(source: "11", bus: "iso-1", gainDb: -Double(tick) / 4)
+        }
+        spin(until: { !sent.isEmpty }, limit: 2)
+        spin(0.3)
+        expectEqual(sent.count, 1, "a 40-tick drag sends ONE routing matrix (latest wins)")
+        let gain = ((sent.last?["commands"] as? [JSONObject])?.first?["sends"] as? [JSONObject])?
+            .first { $0["sourceId"] as? String == "11" && $0["busId"] as? String == "iso-1" }?["gainDb"] as? Double
+        expectEqual(gain, -39.0 / 4, "the one push carries the LAST slider value")
+        expectEqual(sent.last?["replaceableFullState"] as? Bool, true,
+                    "opted in to core mailbox coalescing")
+        expectEqual(sent.last?["coalescingKey"] as? String, "audio-routing-base",
+                    "coalescing needs a non-empty key (CommandMailbox::push)")
+    }
+
     /// Cross-checks the audio wire strings against the CORE's source, the way the
     /// payload-wrapper contract test does: a rename in C++ fails here, not live.
     @MainActor
@@ -3228,6 +3252,7 @@ enum ShellTests {
             ("audio-console/roster-order-stable", testStripOrderIsRosterOrderAndStableAcrossACue),
             ("audio-console/mute-survives-source-exit", testMutedGuestStaysMutedAcrossASourceSetExit),
             ("audio-console/meeting-end-forgets", testMeetingEndForgetsPerGuestAudioState),
+            ("audio-routing/slider-coalesced", testSendGainDragCoalescesTheRoutingPush),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),
