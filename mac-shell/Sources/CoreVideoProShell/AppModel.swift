@@ -501,7 +501,7 @@ final class AppModel: ObservableObject {
     /// handed to it instead of the bridge.
     var coreCommandCaptureForTesting: ((JSONObject) -> Void)?
 
-    private func currentPrefs() -> ShellPrefs {
+    func currentPrefs() -> ShellPrefs {
         var prefs = ShellPrefs()
         prefs.joinMeetingId = joinMeetingId
         prefs.displayName = displayName
@@ -537,7 +537,7 @@ final class AppModel: ObservableObject {
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.cameraExtensionOptedIn = cameraExtensionOptedIn
         prefs.virtualCamera = virtualCamera == PersistedVirtualCamera() ? nil : virtualCamera
-        prefs.scenes = scenes.map { scene in
+        prefs.scenes = railScenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
                            backgroundAssetId: scene.backgroundAssetId,
                            layers: scene.layers.map { layer in
@@ -604,7 +604,7 @@ final class AppModel: ObservableObject {
         recentMeetings = prefs.recentMeetings
         webinar = prefs.webinar
         if !prefs.scenes.isEmpty {
-            scenes = prefs.scenes.map { saved in
+            scenes = prefs.scenes.filter { !Self.isSoloScene($0.id) }.map { saved in
                 SceneDef(id: saved.id, name: saved.name, layout: saved.layout,
                          layers: saved.layers.map { layer in
                              SceneLayer(id: layer.id, slotId: layer.slotId,
@@ -755,6 +755,13 @@ final class AppModel: ObservableObject {
         if let key = UserDefaults.standard.string(forKey: "zoomPublicAppKey"), !key.isEmpty {
             env["COREVIDEO_ZOOM_PUBLIC_APP_KEY"] = key
         }
+        // The core waits this long for SDK auth, then again for the join
+        // verdict. Its built-in default is 7 s, which the Windows shell has
+        // never used (MediaCorePaths.cs sets 45000). Unset here, a Mac join
+        // reported "Timed out waiting for Zoom meeting join result." 7 s in,
+        // a moment before Zoom's real answer (2026-11-15, signed 1.0.0).
+        env["COREVIDEO_ZOOM_JOIN_WAIT_MS"] = ProcessInfo.processInfo
+            .environment["COREVIDEO_ZOOM_JOIN_WAIT_MS"] ?? ZoomJoinStatus.coreJoinWaitMs
         // VST3 discovery. `resolvePluginHostExecutablePath` (MediaCore.cpp) only
         // does sibling-of-the-exe lookup under _WIN32, so on macOS the core finds
         // the host ONLY through this env var — without it pluginHost.status is
@@ -1276,6 +1283,7 @@ final class AppModel: ObservableObject {
             return
         }
         if !snapshot.isEmpty { lastZoomSnapshot = snapshot }
+        zoomJoin.observe(snapshot)
         rawMediaActive = snapshot["rawMediaActive"] as? Bool ?? rawMediaActive
         if let error = snapshot["lastError"] as? String, !error.isEmpty {
             pushWarning("zoom: \(error)")
@@ -1627,12 +1635,20 @@ final class AppModel: ObservableObject {
     // record-permission dance) — the product's designed flow.
     @Published var zoomSignedIn = false
     @Published var zoomOAuthStatus = ""
+    /// The Zoom pane's join line: the sign-in hint, Zoom's own failure reason,
+    /// or "" (ZoomJoinStatus decides; late truth replaces a timeout).
+    @Published private(set) var zoomJoin = ZoomJoinStatusTracker()
+    var zoomJoinStatus: String { zoomJoin.line }
     @Published var webinar = false
     @Published var recentMeetings: [String] = []
 
     func signInWithZoom() {
         zoomOAuthStatus = "Waiting for the browser…"
-        Task { await ZoomOAuth.shared.beginSignIn() }
+        Task {
+            await ZoomOAuth.shared.beginSignIn { [weak self] status in
+                Task { @MainActor in await self?.finishOAuthSignIn(status) }
+            }
+        }
     }
 
     func signOutZoom() {
@@ -1643,16 +1659,31 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The corevideo:// fallback (older brokers / a manual link). The normal
+    /// path is the loopback listener, which reports through finishOAuthSignIn.
     func handleOAuthCallback(_ url: URL) {
         Task {
             let error = await ZoomOAuth.shared.handleCallback(url)
-            zoomOAuthStatus = error
-            zoomSignedIn = await ZoomOAuth.shared.signedIn
-            if error.isEmpty {
-                ShellLog.write("zoom sign-in complete")
-            } else {
-                pushWarning("zoom sign-in: \(error)")
-            }
+            await finishOAuthSignIn(error)
+        }
+    }
+
+    /// One place both callback paths land ("" = signed in). Brings the app
+    /// forward: the operator is looking at a browser tab when this fires.
+    func finishOAuthSignIn(_ error: String) async {
+        zoomOAuthStatus = error
+        zoomSignedIn = await ZoomOAuth.shared.signedIn
+        if error.isEmpty {
+            ShellLog.write("zoom sign-in complete")
+            zoomJoin.signedIn()
+        } else {
+            pushWarning("zoom sign-in: \(error)")
+        }
+        // A timeout is not the operator coming back from the browser: don't
+        // steal focus five minutes later for it.
+        if error != ZoomOAuth.signInTimedOut,
+           !ShellHarness.detect(in: ProcessInfo.processInfo.environment) {
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
@@ -1679,6 +1710,9 @@ final class AppModel: ObservableObject {
         joinPasscode = parsedPasscode
         guard !meetingId.isEmpty, !joinInFlight else { return }
         joinInFlight = true
+        // Never blocks the join (some meetings allow guests) — just says why it
+        // may fail before Zoom does.
+        zoomJoin.beginJoin(signedIn: zoomSignedIn)
         recentMeetings.removeAll { $0 == joinMeetingId }
         recentMeetings.insert(joinMeetingId, at: 0)
         recentMeetings = Array(recentMeetings.prefix(5))
@@ -1699,16 +1733,23 @@ final class AppModel: ObservableObject {
                 if let credentials = await ZoomOAuth.shared.ensureJoinCredentials(),
                    let zak = credentials.userZak {
                     payload["userZak"] = zak
+                } else {
+                    zoomJoin.joiningAsGuest()
                 }
                 let response = try await bridge.request(
-                    ["type": "zoom-join", "payload": payload], timeout: 45)
-                if let snapshot = response["snapshot"] as? JSONObject {
+                    ["type": "zoom-join", "payload": payload],
+                    timeout: ZoomJoinStatus.joinRequestTimeout(
+                        environment: ProcessInfo.processInfo.environment))
+                let snapshot = response["snapshot"] as? JSONObject
+                zoomJoin.joinAnswered(snapshot)
+                if let snapshot {
                     applyZoom(snapshot)
                     for warning in snapshot["warnings"] as? [String] ?? [] {
                         pushWarning("zoom: \(warning)")
                     }
                 }
             } catch {
+                zoomJoin.joinAnswered(nil)
                 pushWarning("join failed: \(error.localizedDescription)")
             }
         }
@@ -1933,9 +1974,12 @@ final class AppModel: ObservableObject {
     }
 
     func buildRoutes(for sceneId: String, isProgram: Bool = false) -> [JSONObject] {
-        if sceneId == Self.soloSceneA || sceneId == Self.soloSceneB {
-            guard let slotId = soloSlotId,
-                  let slot = slots.first(where: { $0.id == slotId }),
+        if Self.isSoloScene(sceneId) {
+            // Each solo scene owns its source: re-cueing one never touches the
+            // other, so the one on Program never changes without a Take.
+            // The source captured at cue time (Windows BuildSoloRoute), never the
+            // slot's current assignment: a slot edit must not change Program.
+            guard let slot = soloCueByScene[sceneId],
                   slot.kind != "unassigned" else { return [] }
             var route = SceneRoute(
                 routeId: sceneId + "-solo", mode: "fixed",
@@ -2120,6 +2164,9 @@ final class AppModel: ObservableObject {
     /// is the on-air scene too, so it is no target either.
     var sceneEditTargetId: String? {
         if previewSceneId.isEmpty || previewSceneId == programSceneId { return nil }
+        // A multiview solo cue is not an operator scene: its route is the cued
+        // source, and canvas layers on it would never render.
+        if Self.isSoloScene(previewSceneId) { return nil }
         return previewSceneId
     }
 
@@ -2137,7 +2184,7 @@ final class AppModel: ObservableObject {
     /// the on-air scene, or the last visible one. Nil when it can go.
     func sceneRemovalRefusal(_ sceneId: String) -> String? {
         if sceneId == programSceneId { return Self.sceneOnAirRefusal }
-        let reserved = sceneId == Self.soloSceneA || sceneId == Self.soloSceneB
+        let reserved = Self.isSoloScene(sceneId)
         if !reserved && railScenes.count <= 1 { return Self.sceneLastRefusal }
         return nil
     }
@@ -2189,7 +2236,7 @@ final class AppModel: ObservableObject {
 
     func newScene(layout: String) {
         let newId = "scene-\(Int(Date().timeIntervalSince1970))"
-        var suffix = scenes.count + 1
+        var suffix = railScenes.count + 1
         var name = "Scene \(suffix)"
         while scenes.contains(where: { $0.name == name }) {
             suffix += 1
@@ -2230,18 +2277,48 @@ final class AppModel: ObservableObject {
     // ── multiview source bus (StudioViewModel.PreviewMultiviewTile) ──────────
     //
     // Clicking a multiviewer source tile CUES that source solo to PREVIEW —
-    // then Take puts it on air. Windows alternates TWO reserved solo scene ids
-    // so consecutive clicks always change the scene id (re-cuing the same id
-    // would no-op and leave preview compositing the previous source); the mac
-    // port keeps that trick verbatim. Solo scenes are reserved: they never
-    // appear in the scene rail.
+    // then Take puts it on air. Ported from Windows PreviewMultiviewTile:
+    //  - TWO reserved solo scene ids; the cue always lands on the one NOT on
+    //    Program, so Preview can never equal Program after a cue (Take stays
+    //    possible) and the on-air solo scene is never re-pointed.
+    //  - The solo scene is a REAL entry in `scenes` (EnsureMultiviewSoloScene),
+    //    because Take and canTake only move scenes that exist.
+    //  - Each solo scene owns its route (`soloCueByScene`), so a cue changes
+    //    Preview only: "program changes exclusively on Take". The entry is a
+    //    SNAPSHOT of the slot taken at cue time — Windows BuildSoloRoute copies
+    //    the participant / capture device id into the route — so unassigning or
+    //    reassigning that slot later never re-points (or blacks) Program.
+    // Solo scenes are reserved: never in the rail, never persisted, never in
+    // the control API's scene.list.
     static let soloSceneA = "mv-solo-a"
     static let soloSceneB = "mv-solo-b"
-    @Published var soloSlotId: Int?
+    static let soloSceneName = "Manual one-up"
+    @Published var soloCueByScene: [String: ShowInputSlot] = [:]
+
+    static func isSoloScene(_ sceneId: String) -> Bool {
+        sceneId == soloSceneA || sceneId == soloSceneB
+    }
 
     // Reserved solo scenes never appear in the rail.
     var railScenes: [SceneDef] {
-        scenes.filter { $0.id != Self.soloSceneA && $0.id != Self.soloSceneB }
+        scenes.filter { !Self.isSoloScene($0.id) }
+    }
+
+    private func ensureSoloScene(_ sceneId: String) {
+        guard !scenes.contains(where: { $0.id == sceneId }) else { return }
+        scenes.append(SceneDef(id: sceneId, name: Self.soloSceneName, layout: "single"))
+    }
+
+    /// The PGM/PVW chip label for a bus scene id: a solo scene names its SOURCE
+    /// (Windows ResolveOnAirSceneLabel), any other scene its name.
+    func busLabel(for sceneId: String) -> String {
+        if Self.isSoloScene(sceneId) {
+            if let slot = soloCueByScene[sceneId] {
+                return slot.name.isEmpty ? "Input \(slot.id)" : slot.name
+            }
+            return "Solo"
+        }
+        return scenes.first { $0.id == sceneId }?.name ?? "—"
     }
 
     // Tile ids are wire source ids ("zoom:<pid>" / "capture:<id>").
@@ -2254,9 +2331,12 @@ final class AppModel: ObservableObject {
     func previewMultiviewSlot(_ slotId: Int) {
         guard let slot = slots.first(where: { $0.id == slotId }),
               slot.kind != "unassigned" else { return }
-        soloSlotId = slotId
-        previewSceneId = previewSceneId == Self.soloSceneA ? Self.soloSceneB
-                                                           : Self.soloSceneA
+        let sceneId = programSceneId == Self.soloSceneA ? Self.soloSceneB : Self.soloSceneA
+        ensureSoloScene(sceneId)
+        soloCueByScene[sceneId] = slot
+        previewSceneId = sceneId
+        // Always sync, even when the id did not change (a re-cue into the same
+        // solo scene changes only its route — Windows SyncPreviewSceneChangeAsync).
         ShellLog.write("multiview cue → input \(slotId) (\(slot.name))")
         syncScenes()
     }
@@ -2339,6 +2419,11 @@ final class AppModel: ObservableObject {
             takeStatus = same
             return .failed(same)
         }
+        // Windows snapshots BOTH scenes' routes and refuses the rollback if either
+        // changed while the Take was pending. Only solo scenes can be re-pointed
+        // without an id change (a mid-Take multiview cue reuses the id not on the
+        // new Program), so their captured cues are the routes to compare.
+        let cuesAtTake = (soloCueByScene[taken], soloCueByScene[previousProgram])
         previewSceneId = previousProgram
         programSceneId = taken
         sceneSyncTask?.cancel()           // the Take batch carries the full current state
@@ -2367,6 +2452,8 @@ final class AppModel: ObservableObject {
             return .success
         } catch {
             let untouched = programSceneId == taken && previewSceneId == previousProgram
+                && soloCueByScene[taken] == cuesAtTake.0
+                && soloCueByScene[previousProgram] == cuesAtTake.1
             let failure: String
             if untouched {
                 programSceneId = previousProgram

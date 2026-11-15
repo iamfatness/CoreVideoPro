@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build, sign, notarize and staple a CoreVideo Pro macOS release DMG.
 #
-#   scripts/release-macos.sh [--skip-notarize]
+#   scripts/release-macos.sh [--skip-notarize] [--skip-dmg]
 #
 # Output: dist/macos/<version>/
 #   CoreVideoPro-<version>-arm64.dmg         signed, notarized, stapled
@@ -65,9 +65,17 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
 NOTARIZE=1
+MAKE_DMG=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-notarize) NOTARIZE=0; shift ;;
+        # --skip-dmg: build only the .pkg. Needed when macOS App Management
+        # blocks the host terminal from writing an .app copy into hdiutil's
+        # temporary volume ("Could not access /Volumes/CoreVideo Pro/...app
+        # - Operation not permitted"), which starts once a signed CoreVideo
+        # Pro is installed on the build Mac. The fix is granting the terminal
+        # App Management; this flag ships the pkg in the meantime.
+        --skip-dmg) MAKE_DMG=0; shift ;;
         -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
         *) echo "error: unknown argument '$1'" >&2; exit 2 ;;
     esac
@@ -296,6 +304,7 @@ notarize() {  # notarize <file> <label>
 
 APP_SUBMISSION="skipped"
 DMG_SUBMISSION="skipped"
+SHA256=""
 if [ "$NOTARIZE" = "1" ]; then
     log "notarize app"
     # ditto --keepParent, never plain zip: keeps framework symlinks intact.
@@ -306,14 +315,15 @@ if [ "$NOTARIZE" = "1" ]; then
 fi
 
 # ── DMG ─────────────────────────────────────────────────────────────────────
+# Assembled in $WORK; published to $OUT only after verification.
+PUB="$WORK/out"
+mkdir -p "$PUB"
+if [ "$MAKE_DMG" = "1" ]; then
 log "build DMG"
 STAGE="$WORK/dmg"
 mkdir -p "$STAGE"
 ditto "$APP" "$STAGE/CoreVideo Pro.app"
 ln -s /Applications "$STAGE/Applications"
-# Assembled in $WORK; published to $OUT only after verification.
-PUB="$WORK/out"
-mkdir -p "$PUB"
 DMG="$PUB/$DMG_NAME"
 hdiutil create -volname "CoreVideo Pro" -srcfolder "$STAGE" -fs HFS+ \
     -format UDZO -imagekey zlib-level=9 -ov "$DMG" >/dev/null
@@ -329,6 +339,7 @@ if [ "$NOTARIZE" = "1" ]; then
     xcrun stapler staple "$DMG"
     xcrun stapler validate "$DMG"
     cp "$WORK"/notary-*.json "$PUB/" 2>/dev/null || true
+fi
 fi
 
 # ── PKG (guided installer; built from the stapled app) ──────────────────────
@@ -352,6 +363,7 @@ if [ "$NOTARIZE" = "1" ]; then
     echo "$assess"
     grep -q "source=Notarized Developer ID" <<<"$assess" \
         || die "app is not assessed as Notarized Developer ID"
+  if [ "$MAKE_DMG" = "1" ]; then
     assess="$(spctl --assess --type open --context context:primary-signature -vv "$DMG" 2>&1 || true)"
     echo "$assess"
     grep -q "source=Notarized Developer ID" <<<"$assess" \
@@ -365,6 +377,7 @@ if [ "$NOTARIZE" = "1" ]; then
     grep -q "source=Notarized Developer ID" <<<"$assess" || die "app inside DMG not notarized"
     hdiutil detach "$MOUNT" -quiet; MOUNT=""
     echo "app inside the mounted DMG: stapled + Notarized Developer ID"
+  fi
 fi
 
 # Capture first: `cmd | grep -q` under pipefail can fail on SIGPIPE.
@@ -380,8 +393,10 @@ fi
 
 # ── Artifacts ───────────────────────────────────────────────────────────────
 log "write $OUT"
-( cd "$PUB" && shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256" )
-SHA256="$(cut -d' ' -f1 "$PUB/$DMG_NAME.sha256")"
+if [ "$MAKE_DMG" = "1" ]; then
+    ( cd "$PUB" && shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256" )
+    SHA256="$(cut -d' ' -f1 "$PUB/$DMG_NAME.sha256")"
+fi
 ( cd "$PUB" && shasum -a 256 "$PKG_NAME" > "$PKG_NAME.sha256" )
 PKG_SHA256="$(cut -d' ' -f1 "$PUB/$PKG_NAME.sha256")"
 HELPERS="$(cd "$APP/Contents/Resources" && ls -d corevideo-* | paste -sd, -)"
@@ -405,7 +420,8 @@ manifest = {
         "pkgSubmissionId": "$PKG_SUBMISSION",
         "stapled": $( [ "$NOTARIZE" = 1 ] && echo True || echo False ),
     },
-    "dmg": {"file": "$DMG_NAME", "sha256": "$SHA256", "volumeName": "CoreVideo Pro"},
+    "dmg": ({"file": "$DMG_NAME", "sha256": "$SHA256", "volumeName": "CoreVideo Pro"}
+            if "$MAKE_DMG" == "1" else None),
     "pkg": {"file": "$PKG_NAME", "sha256": "$PKG_SHA256",
             "identifier": "us.iamfatness.corevideopro.pkg",
             "signingIdentity": "$PKG_SIGN_ID",
@@ -441,8 +457,7 @@ if ! mv "$PUB" "$OUT"; then
     exit 1
 fi
 rm -rf "$OLD"
-DMG="$OUT/$DMG_NAME"
 cat "$OUT/manifest.json"
 [ "$NOTARIZE" = "1" ] || echo "NOTE: --skip-notarize build; NOT distributable"
-echo "release: $DMG"
+[ "$MAKE_DMG" = "1" ] && echo "release: $OUT/$DMG_NAME" || echo "NOTE: --skip-dmg build; no DMG"
 echo "release: $OUT/$PKG_NAME"

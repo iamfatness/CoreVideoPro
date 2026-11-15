@@ -935,28 +935,16 @@ struct ActionChip: View {
 struct SceneRail: View {
     @EnvironmentObject var model: AppModel
 
-    var programName: String {
-        model.scenes.first { $0.id == model.programSceneId }?.name ?? "—"
-    }
+    // A solo cue shows the SOURCE, not a scene name — the rail has no row for
+    // the reserved solo scenes (on either bus, now that one can be Taken).
+    var programName: String { model.busLabel(for: model.programSceneId) }
 
-    var previewName: String {
-        // A solo cue shows the SOURCE, not a scene name — the rail has no row
-        // for the reserved solo scenes.
-        if model.previewSceneId == AppModel.soloSceneA
-            || model.previewSceneId == AppModel.soloSceneB {
-            if let slotId = model.soloSlotId,
-               let slot = model.slots.first(where: { $0.id == slotId }) {
-                return slot.name.isEmpty ? "Input \(slotId)" : slot.name
-            }
-            return "Solo"
-        }
-        return model.scenes.first { $0.id == model.previewSceneId }?.name ?? "—"
-    }
+    var previewName: String { model.busLabel(for: model.previewSceneId) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Scenes").font(.grotesk(13, .semibold))
-            Text("\(model.scenes.count) scenes · 1920x1080 · 60 fps")
+            Text("\(model.railScenes.count) scenes · 1920x1080 · 60 fps")
                 .font(.grotesk(10)).foregroundStyle(Studio.secondary)
             HStack(spacing: 6) {
                 SceneChip(label: "PGM \(programName)", color: Studio.amber)
@@ -999,8 +987,9 @@ struct SuperSourceBackgroundPicker: View {
     @EnvironmentObject var model: AppModel
 
     var scene: SceneDef? {
-        model.scenes.first(where: { $0.id == model.previewSceneId })
-            ?? model.scenes.first(where: { $0.id == model.programSceneId })
+        // Solo scenes have no background to pick (they are not operator scenes).
+        model.railScenes.first(where: { $0.id == model.previewSceneId })
+            ?? model.railScenes.first(where: { $0.id == model.programSceneId })
     }
 
     var selected: MediaAsset? {
@@ -1335,6 +1324,7 @@ struct ZoomPane: View {
                 ? "Connected — raw media live"
                 : "Connected — capture is off"
         }
+        if !model.zoomJoinStatus.isEmpty { return model.zoomJoinStatus }
         return model.meetingState == "error" ? "See Health for the engine warning"
                                              : "Not connected"
     }

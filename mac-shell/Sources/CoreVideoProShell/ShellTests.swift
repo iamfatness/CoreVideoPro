@@ -1174,7 +1174,8 @@ enum ShellTests {
                "the OBS plugin's Keychain item must never be touched")
     }
 
-    /// The broker pins the app return URI; changing the scheme 400s every sign-in.
+    /// The corevideo:// FALLBACK (older brokers, manual links) keeps its exact
+    /// allowlisted spelling; the normal path is the loopback listener.
     private static func testOAuthReturnUriMatchesTheBrokerAllowlist() {
         expectEqual(ZoomOAuth.appReturnUri, "corevideo://oauth/callback",
                     "the broker allowlists exactly this return uri")
@@ -2575,6 +2576,138 @@ enum ShellTests {
         expectEqual(runTake(model).result, .success, "Take still runs")
     }
 
+    // ── multiview cue -> Take (owner report 2026-11-15: "choosing a scene in the
+    // multiviewer doesn't allow you to take that from preview to program") ───
+    // Windows StudioViewModel.PreviewMultiviewTile: the solo scene is a REAL scene
+    // entry (EnsureMultiviewSoloScene), the id cued is the one NOT on Program, and
+    // each solo scene owns its own route, so a cue never changes what is on air.
+
+    @MainActor
+    static func soloModel(_ core: FakeTakeCore) -> AppModel {
+        let model = takeModel(core)    // Program s2, Preview s1
+        for (index, pid) in ["11", "22", "33"].enumerated() {
+            model.slots[index].kind = "zoom"
+            model.slots[index].sourceId = pid
+            model.slots[index].name = "Guest \(pid)"
+        }
+        return model
+    }
+
+    @MainActor
+    static func soloParticipant(_ model: AppModel, _ sceneId: String) -> String {
+        model.buildRoutes(for: sceneId).first?["participantId"] as? String ?? "<none>"
+    }
+
+    @MainActor
+    private static func testMultiviewCueCanBeTaken() {
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        expectEqual(model.previewSceneId, AppModel.soloSceneA, "a cue arms a solo scene on Preview")
+        expect(model.canTake, "a multiview cue can be Taken")
+        expectEqual(runTake(model).result, .success, "the Take succeeds")
+        expectEqual(model.programSceneId, AppModel.soloSceneA, "Program is the solo scene")
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "11", "Program shows the cued source")
+        expectEqual(model.previewSceneId, "s2", "the previous Program is on Preview")
+    }
+
+    @MainActor
+    private static func testMultiviewCueNeverChangesProgram() {
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        _ = runTake(model)              // Program = solo A showing 11
+        model.previewMultiviewSlot(2)
+        expectEqual(model.previewSceneId, AppModel.soloSceneB,
+                    "the cue lands on the solo id NOT on Program")
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "11",
+                    "the on-air solo route is untouched by a cue")
+        expectEqual(soloParticipant(model, AppModel.soloSceneB), "22", "Preview shows the new cue")
+        expect(model.canTake, "the second cue can be Taken")
+        expectEqual(runTake(model).result, .success, "second Take succeeds")
+        expectEqual(model.programSceneId, AppModel.soloSceneB, "Program is solo B")
+        expectEqual(soloParticipant(model, AppModel.soloSceneB), "22", "Program shows 22")
+        model.previewMultiviewSlot(3)
+        expectEqual(model.previewSceneId, AppModel.soloSceneA, "back to solo A, off air")
+        expectEqual(soloParticipant(model, AppModel.soloSceneB), "22", "on-air route still 22")
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "33", "Preview shows 33")
+    }
+
+    @MainActor
+    private static func testMultiviewRecueResyncsTheSameSoloScene() {
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        let syncs = model.sceneSyncRequestCount
+        model.previewMultiviewSlot(2)
+        expectEqual(model.previewSceneId, AppModel.soloSceneA,
+                    "Program is not solo, so the same solo id is reused (Windows)")
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "22", "its route follows the new cue")
+        expect(model.sceneSyncRequestCount > syncs, "the re-cue still syncs the core")
+        expect(model.canTake, "the re-cue can be Taken")
+    }
+
+    @MainActor
+    private static func testTakeRollbackRefusedWhenASoloSceneWasRecuedMidTake() {
+        // Windows StudioViewModel.Transport.cs: the rollback snapshots BOTH scenes'
+        // routes and refuses if either changed while the Take was pending.
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        _ = runTake(model)              // Program = solo A (11), Preview = s2
+        core.hold = true
+        core.failure = "gone"
+        let box = runTake(model, wait: false)
+        spin(until: { core.bodies.count >= 2 }, limit: 2)
+        expectEqual(model.programSceneId, "s2", "Take of s2 is pending")
+        model.previewMultiviewSlot(2)   // Program is s2 locally -> re-cues solo A
+        expectEqual(model.previewSceneId, AppModel.soloSceneA, "the mid-Take cue reuses solo A")
+        core.hold = false
+        spin(until: { box.result != nil }, limit: 3)
+        expectEqual(box.result, .failed("Take was not confirmed; newer local edits preserved. "
+                                        + "Verify live output. gone"),
+                    "a re-pointed solo scene refuses the rollback")
+        expectEqual(model.programSceneId, "s2",
+                    "solo A (now showing a source never Taken) is not put back on Program")
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "22", "the newer cue is kept")
+    }
+
+    @MainActor
+    private static func testSoloSceneCapturesItsSourceWhenCued() {
+        // Windows BuildSoloRoute copies the participant / capture device id into
+        // the route at cue time; later slot edits never reach it.
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        _ = runTake(model)              // Program = solo A showing 11
+        model.slots[0].kind = "unassigned"
+        model.slots[0].sourceId = ""
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "11",
+                    "unassigning the slot does not black Program")
+        model.slots[0].kind = "zoom"
+        model.slots[0].sourceId = "44"
+        model.slots[0].name = "Guest 44"
+        expectEqual(soloParticipant(model, AppModel.soloSceneA), "11",
+                    "reassigning the slot does not change Program")
+        expectEqual(model.busLabel(for: AppModel.soloSceneA), "Guest 11", "PGM still names the Taken source")
+    }
+
+    @MainActor
+    private static func testSoloScenesStayOutOfTheRailAndPrefs() {
+        let core = FakeTakeCore()
+        let model = soloModel(core)
+        model.previewMultiviewSlot(1)
+        _ = runTake(model)
+        model.previewMultiviewSlot(2)
+        let solos: Set<String> = [AppModel.soloSceneA, AppModel.soloSceneB]
+        expect(model.railScenes.allSatisfy { !solos.contains($0.id) }, "rail hides solo scenes")
+        expectEqual(model.railScenes.map(\.id), ["s1", "s2", "s3"], "rail is the operator's scenes")
+        expectEqual(model.currentPrefs().scenes.map(\.id), ["s1", "s2", "s3"],
+                    "solo scenes are never persisted")
+        expectEqual(model.busLabel(for: AppModel.soloSceneA), "Guest 11", "PGM names the source")
+        expectEqual(model.busLabel(for: AppModel.soloSceneB), "Guest 22", "PVW names the source")
+    }
+
     // ── Fade to Black (audit §2) + keyboard Take/FTB (audit §5) ──────────────
     // Windows: StudioViewModel.ProgramBlackout.cs (SetProgramBlackoutAsync,
     // ApplyProgramBlackoutSnapshot); Views/StudioWorkspace.TransportHotkeys.cs.
@@ -3258,6 +3391,14 @@ enum ShellTests {
             ("oauth/expiry-slack", testExpiryLeavesSlackBeforeTheRealDeadline),
             ("oauth/keychain-identity", testKeychainServiceIsNeverTheObsPluginItem),
             ("oauth/return-uri", testOAuthReturnUriMatchesTheBrokerAllowlist),
+            ("oauth/loopback-request-line", testOAuthLoopbackParsesTheRequestLine),
+            ("oauth/loopback-page", testOAuthLoopbackPageSaysWhatHappened),
+            ("oauth/loopback-lifecycle", testOAuthLoopbackLifecycleIsOneShot),
+            ("oauth/loopback-broker-url", testOAuthBrokerUrlCarriesTheLoopbackReturnUri),
+            ("oauth/loopback-end-to-end", testOAuthLoopbackListenerEndToEnd),
+            ("zoom/join-status-late-truth", testZoomJoinStatusPrefersZoomsReasonOverATimeout),
+            ("zoom/join-status-rejoin", testZoomJoinStatusIgnoresTheOldFailureDuringARejoin),
+            ("oauth/state-before-error", testOAuthCallbackChecksStateBeforeError),
             ("encoder/no-unlicensed-codecs", testShellOffersOnlyEncodableCodecs),
             ("telemetry/dropped-frames", testDroppedFrameReadout),
             ("chromakey/enabled-only", testChromaKeyNodeOnlySentWhenEnabled),
@@ -3332,6 +3473,12 @@ enum ShellTests {
             ("take/rollback-refused-newer-edits", testTakeRollbackRefusedWhenNewerEditsLanded),
             ("take/in-flight-refused", testSecondTakeWhileInFlightIsRefused),
             ("take/refusals-offline", testTakeRefusalsAndOffline),
+            ("take/multiview-cue-can-be-taken", testMultiviewCueCanBeTaken),
+            ("take/multiview-cue-never-changes-program", testMultiviewCueNeverChangesProgram),
+            ("take/multiview-recue-resyncs", testMultiviewRecueResyncsTheSameSoloScene),
+            ("take/solo-scenes-out-of-rail-and-prefs", testSoloScenesStayOutOfTheRailAndPrefs),
+            ("take/rollback-refused-on-mid-take-solo-recue", testTakeRollbackRefusedWhenASoloSceneWasRecuedMidTake),
+            ("take/solo-scene-captures-source-at-cue", testSoloSceneCapturesItsSourceWhenCued),
             ("take/not-blocked-by-quit", testTakeIsNotBlockedByTheQuitGuard),
             ("ftb/wire-and-echo", testFtbSendsTheWireCommandAndAppliesTheEcho),
             ("ftb/admission-refusals", testFtbAdmissionRefusals),
