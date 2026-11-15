@@ -27,6 +27,10 @@ extension ShellTests {
             ("tier0/lower-third-keys-a-program-source", testManualLowerThirdKeysAProgramSourceTheCoreGateAdmits),
             ("tier0/lower-third-status-from-core", testLowerThirdStatusComesFromTheCoresOverlayState),
             ("tier0/lower-third-resolver-is-windows", testLowerThirdResolverIsTheWindowsRule),
+            ("tier0/monitor-device-chosen-persisted-sent", testMonitorDeviceIsChosenPersistedAndSent),
+            ("tier0/monitor-device-falls-back-loudly", testMonitorDeviceFallsBackLoudlyAndReturns),
+            ("tier0/monitor-device-every-generation", testMonitorDeviceRidesEveryCoreGeneration),
+            ("tier0/monitor-projection-carries-device", testMonitorProjectionCarriesTheDevice),
         ]
     }
 
@@ -521,6 +525,148 @@ extension ShellTests {
         expectEqual(pick(frame([cam])), "capture:cam", "a connected camera is a subject")
         expectEqual(pick(frame([cam]), devices: []), nil, "an unknown capture device is not")
         expectEqual(pick(frame([a], scene: "other")), nil, "a frame from another scene is not trusted")
+    }
+
+    // ── 0.12 monitor output device ───────────────────────────────────────────
+
+    /// A fake core that speaks the revisioned monitor contract: every reply
+    /// carries the applied monitor state, and an edit is applied as sent.
+    final class MonitorFakeCore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _commands: [JSONObject] = []
+        private var revision = 0
+        private var applied: JSONObject = ["monitorEnabled": false, "monitorVolume": 0.7,
+                                           "monitorDeviceId": "",
+                                           "monitorDeviceName": "System default output"]
+        private var lastResult: JSONObject?
+        var commands: [JSONObject] { lock.lock(); defer { lock.unlock() }; return _commands }
+        func handle(_ body: JSONObject) async throws -> JSONObject { apply(body) }
+        private func apply(_ body: JSONObject) -> JSONObject {
+            lock.lock(); defer { lock.unlock() }
+            for command in body["commands"] as? [JSONObject] ?? [] {
+                _commands.append(command)
+                guard command["type"] as? String == "set-audio-monitor-control" else { continue }
+                revision += 1
+                applied = ["monitorEnabled": command["enabled"] ?? false,
+                           "monitorVolume": command["volume"] ?? 0.7,
+                           "monitorDeviceId": command["deviceId"] ?? "",
+                           "monitorDeviceName": command["deviceName"] ?? ""]
+                lastResult = ["operationId": command["operationId"] ?? "", "status": "applied"]
+            }
+            var mix = applied
+            var control: JSONObject = ["authorityEpoch": "core-1", "revision": revision]
+            if let lastResult { control["lastResult"] = lastResult }
+            mix["monitorControl"] = control
+            return ["snapshot": ["audioMixSession": mix]]
+        }
+        func monitorEdits() -> [JSONObject] {
+            commands.filter { $0["type"] as? String == "set-audio-monitor-control" }
+        }
+    }
+
+    static let desk = MonitorOutputDevice(id: "BuiltInSpeakerDevice", name: "MacBook Pro Speakers")
+    static let phones = MonitorOutputDevice(id: "AppleUSBAudioEngine:Focusrite:1", name: "Scarlett 2i2")
+
+    /// Monitoring followed the macOS default output: headphones on an
+    /// interface meant moving every app's audio.
+    @MainActor
+    static func testMonitorDeviceIsChosenPersistedAndSent() {
+        let before = AppModel()
+        before.applyMonitorOutputDevices([desk, phones])
+        before.setMonitorDevice(phones.id)
+        guard let after = relaunched(before) else { expect(false, "relaunch"); return }
+        expectEqual(after.monitorDeviceChoice, phones.id, "the device UID survives a relaunch")
+        expectEqual(after.monitorDeviceChoiceName, "Scarlett 2i2", "and its name")
+
+        let core = MonitorFakeCore()
+        after.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        after.applyMonitorOutputDevices([desk, phones])
+        after.setMonitor(enabled: true, volume: 0.5)
+        spin(until: { !core.monitorEdits().isEmpty }, limit: 3)
+        let edit = core.monitorEdits().last
+        expectEqual(edit?["deviceId"] as? String, phones.id, "the core is told the chosen device UID")
+        expectEqual(edit?["deviceName"] as? String, "Scarlett 2i2", "with its name")
+        expectEqual(after.monitorTargetStatus, "Monitor target - Scarlett 2i2", "Windows status text")
+        after.setMonitor(enabled: false, volume: 0.5)
+        expectEqual(after.monitorTargetStatus, "Monitor muted", "Windows muted text")
+    }
+
+    /// An unplugged interface must not leave the operator deaf and unaware:
+    /// fall back to the default output, say so, and restore on re-plug.
+    @MainActor
+    static func testMonitorDeviceFallsBackLoudlyAndReturns() {
+        let core = MonitorFakeCore()
+        let model = AppModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        var prefs = ShellPrefs()
+        prefs.monitorEnabled = true
+        prefs.monitorDeviceId = phones.id
+        prefs.monitorDeviceName = phones.name
+        model.applyRestoredPrefs(prefs)
+        model.applyMonitorOutputDevices([desk])   // the interface is unplugged
+        model.setMonitor(enabled: true, volume: 0.7)
+        spin(until: { !core.monitorEdits().isEmpty }, limit: 3)
+        expectEqual(core.monitorEdits().last?["deviceId"] as? String, "",
+                    "an unplugged device falls back to the system default output")
+        expect(model.monitorDeviceWarning.contains("Scarlett 2i2 is not connected"),
+               "Settings names the missing device")
+        expect(model.warnings.contains { $0.hasPrefix("audio: Monitor device Scarlett 2i2") },
+               "the warning strip says so")
+        expectEqual(model.monitorDeviceChoice, phones.id, "the choice is kept for the re-plug")
+        expectEqual(model.currentPrefs().monitorDeviceId, phones.id, "and still saved")
+
+        // Re-plug: the device list changes and the monitor moves back on its own.
+        let sent = core.monitorEdits().count
+        model.applyMonitorOutputDevices([desk, phones])
+        spin(until: { core.monitorEdits().count > sent }, limit: 3)
+        expectEqual(core.monitorEdits().last?["deviceId"] as? String, phones.id,
+                    "plugging it back in re-sends the chosen device")
+        expectEqual(model.monitorDeviceWarning, "", "and clears the warning")
+    }
+
+    /// A respawned core opens the system default output: the device must be
+    /// re-sent on every generation, not once.
+    @MainActor
+    static func testMonitorDeviceRidesEveryCoreGeneration() {
+        guard let body = functionBody(named: "private func onConnected()", in: "AppModel.swift") else {
+            expect(false, "AppModel.swift onConnected() not found next to the binary")
+            return
+        }
+        // A statement of its own (the hot-plug watcher's closure also names it).
+        let refresh = body.range(of: "\n        refreshMonitorOutputDevices()\n")
+        let send = body.range(of: "setMonitor(enabled: monitorEnabled, volume: monitorVolume)")
+        expect(refresh != nil && send != nil && refresh!.lowerBound < send!.lowerBound,
+               "onConnected re-lists the devices, then re-sends the monitor")
+        guard let setMonitor = functionBody(named: "func setMonitor(enabled: Bool, volume: Double)",
+                                            in: "AppModel.swift") else {
+            expect(false, "setMonitor not found"); return
+        }
+        expect(setMonitor.contains("monitorDeviceTarget()"),
+               "every monitor send carries the resolved device")
+        expect(!setMonitor.contains("\"deviceId\": \"\""), "no hard-coded system-default device id")
+        guard let projection = sourceFile("MonitorControlProjection.swift") else {
+            expect(false, "MonitorControlProjection.swift not found"); return
+        }
+        expect(!projection.contains("\"deviceId\": \"\""), "the projection sends the draft's device")
+    }
+
+    @MainActor
+    static func testMonitorProjectionCarriesTheDevice() {
+        var projection = MonitorControlProjection()
+        func mix(_ revision: Int, device: String) -> JSONObject {
+            ["monitorEnabled": true, "monitorVolume": 0.5, "monitorDeviceId": device,
+             "monitorControl": ["authorityEpoch": "core-1", "revision": revision] as JSONObject]
+        }
+        projection.observe(mix(0, device: ""))
+        projection.edit(.init(enabled: true, volume: 0.5, deviceId: phones.id, deviceName: phones.name))
+        let command = projection.nextCommand()
+        expectEqual(command?["deviceId"] as? String, phones.id, "a device-only edit is sent")
+        expectEqual(command?["deviceName"] as? String, phones.name, "with the device name")
+        var settled = MonitorControlProjection()
+        settled.observe(mix(0, device: phones.id))
+        settled.edit(.init(enabled: true, volume: 0.5, deviceId: phones.id, deviceName: "other words"))
+        settled.observe(mix(0, device: phones.id))
+        expect(settled.draft == nil, "a matching device echo settles the draft (name is display only)")
     }
 
     // ── source-reading helpers ───────────────────────────────────────────────

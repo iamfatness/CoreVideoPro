@@ -373,6 +373,14 @@ final class AppModel: ObservableObject {
     @Published var monitorVolume = 0.7
     @Published var monitorControlNotice = ""
     private var monitorControl = MonitorControlProjection()
+    // Monitor output device (Tier 0.12, MonitorOutputDevice.swift). The
+    // choice is a CoreAudio UID ("" = system default output), persisted; the
+    // list is nil until CoreAudio has been enumerated.
+    @Published var monitorDeviceChoice = ""
+    @Published var monitorDeviceChoiceName = ""
+    @Published var monitorOutputDevices: [MonitorOutputDevice]?
+    @Published var monitorDeviceWarning = ""
+    private var monitorDevicesWatched = false
     private var monitorControlSending = false
     @Published var audioRouteControlNotice = ""
     private var audioRouteControl = AudioRouteControlProjection()
@@ -497,6 +505,8 @@ final class AppModel: ObservableObject {
         prefs.displayName = displayName
         prefs.monitorEnabled = monitorEnabled
         prefs.monitorVolume = monitorVolume
+        prefs.monitorDeviceId = monitorDeviceChoice.isEmpty ? nil : monitorDeviceChoice
+        prefs.monitorDeviceName = monitorDeviceChoice.isEmpty ? nil : monitorDeviceChoiceName
         prefs.isoRecordingEnabled = isoRecordingEnabled
         prefs.isoSelectedSourceIds = isoSelectedSourceIds.sorted()
         prefs.autoTakeEnabled = autoTakeEnabled
@@ -591,6 +601,8 @@ final class AppModel: ObservableObject {
         displayName = prefs.displayName
         monitorEnabled = prefs.monitorEnabled
         monitorVolume = prefs.monitorVolume
+        monitorDeviceChoice = prefs.monitorDeviceId ?? ""
+        monitorDeviceChoiceName = prefs.monitorDeviceName ?? ""
         isoRecordingEnabled = prefs.isoRecordingEnabled
         isoSelectedSourceIds = Set(prefs.isoSelectedSourceIds)
         autoTakeEnabled = false // Ignore legacy saved auto-take intent in the first release.
@@ -822,6 +834,14 @@ final class AppModel: ObservableObject {
         audioRouteControl.resetForProcess()
         rosterProjection.resetForProcess()
         rosterRecoveryNotice = rosterProjection.notice
+        // A fresh core opens the system default output until told otherwise:
+        // re-list the devices and re-send the operator's monitor device on
+        // EVERY core generation (gotchas: one-shot commands are lost on respawn).
+        refreshMonitorOutputDevices()
+        if !monitorDevicesWatched {
+            monitorDevicesWatched = true
+            MonitorOutputDevices.watch { [weak self] in self?.refreshMonitorOutputDevices() }
+        }
         setMonitor(enabled: monitorEnabled, volume: monitorVolume)
         reassertProductionSettings()
         // A fresh core generation has no capture devices connected.
@@ -3349,10 +3369,12 @@ final class AppModel: ObservableObject {
     }
 
     func setMonitor(enabled: Bool, volume: Double) {
-        guard let bridge else { return }
+        guard bridge != nil || quitRequestForTesting != nil else { return }
         monitorEnabled = enabled
         monitorVolume = volume
-        monitorControl.edit(.init(enabled: enabled, volume: volume))
+        let device = monitorDeviceTarget()
+        monitorControl.edit(.init(enabled: enabled, volume: volume,
+                                  deviceId: device.deviceId, deviceName: device.deviceName))
         monitorControlNotice = monitorControl.notice
         guard !monitorControlSending else { return }
         monitorControlSending = true
@@ -3361,17 +3383,17 @@ final class AppModel: ObservableObject {
             // A core older than this contract still accepts the legacy command.
             // Once an epoch is observed, every subsequent edit is revisioned.
             if monitorControl.authorityEpoch.isEmpty {
-                if let response = try? await bridge.request([
+                if let response = try? await monitorRequest([
                     "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [],
                 ]), let snapshot = response["snapshot"] as? JSONObject {
                     applySnapshot(snapshot)
                 }
             }
             if monitorControl.authorityEpoch.isEmpty && monitorControl.legacyCoreConfirmed {
-                _ = try? await bridge.request([
+                _ = try? await monitorRequest([
                     "type": "media-core-sync", "elapsedMs": elapsedMs(),
                     "commands": [["type": "sync-audio-monitor", "enabled": enabled,
-                                  "deviceId": "", "deviceName": "System default output",
+                                  "deviceId": device.deviceId, "deviceName": device.deviceName,
                                   "volume": volume]],
                 ])
                 return
@@ -3383,7 +3405,7 @@ final class AppModel: ObservableObject {
             }
             while let command = monitorControl.nextCommand() {
                 do {
-                    let response = try await bridge.request([
+                    let response = try await monitorRequest([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(),
                         "commands": [command],
                     ])
@@ -3391,7 +3413,7 @@ final class AppModel: ObservableObject {
                 } catch {
                     // The core may have applied the edit before its reply was
                     // lost. Read a barrier before considering another command.
-                    if let response = try? await bridge.request([
+                    if let response = try? await monitorRequest([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(),
                         "commands": [],
                     ]), let snapshot = response["snapshot"] as? JSONObject {
@@ -3406,6 +3428,13 @@ final class AppModel: ObservableObject {
                 if monitorControl.notice.contains("conflicted") { break }
             }
         }
+    }
+
+    /// The monitor path through the same harness seam as Record/Stream.
+    private func monitorRequest(_ body: JSONObject) async throws -> JSONObject {
+        if let seam = quitRequestForTesting { return try await seam(body, 6) }
+        guard let bridge else { throw BridgeError.notRunning }
+        return try await bridge.request(body)
     }
 
     func connectCaptureDevice(_ device: CaptureDeviceRow) {

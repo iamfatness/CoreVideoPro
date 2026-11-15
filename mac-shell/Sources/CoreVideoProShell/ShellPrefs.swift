@@ -154,6 +154,10 @@ struct ShellPrefs: Codable, Equatable {
     var showInputSlots: [PersistedSlot]?
     // Recording folder (Tier 0.11). nil/"" = the default ~/Movies/CoreVideoPro.
     var recordingFolder: String?
+    // Monitor output device (Tier 0.12): CoreAudio UID + its name (kept so a
+    // disconnected device can still be named). nil = system default output.
+    var monitorDeviceId: String?
+    var monitorDeviceName: String?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -214,6 +218,8 @@ struct ShellPrefs: Codable, Equatable {
         showInputSlots = ((try? c.decodeIfPresent([PersistedSlot].self,
                                                   forKey: .showInputSlots)) ?? nil)
         recordingFolder = ((try? c.decodeIfPresent(String.self, forKey: .recordingFolder)) ?? nil)
+        monitorDeviceId = ((try? c.decodeIfPresent(String.self, forKey: .monitorDeviceId)) ?? nil)
+        monitorDeviceName = ((try? c.decodeIfPresent(String.self, forKey: .monitorDeviceName)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -254,6 +260,8 @@ struct ShellPrefs: Codable, Equatable {
         p.showInputSlots = [PersistedSlot(slotId: 1, kind: "capture", sourceId: "cam",
                                           name: "Cam", inShow: true)]
         p.recordingFolder = "/Volumes/Show/Recordings"
+        p.monitorDeviceId = "AppleUSBAudioEngine:Interface:1"
+        p.monitorDeviceName = "Headphones Interface"
         p.vstChannelSelections = ["ch1": "vst:Test"]
         p.canvasWidth = 3840
         p.canvasHeight = 2160

@@ -6,6 +6,15 @@ struct MonitorControlProjection {
     struct Draft: Equatable {
         var enabled: Bool
         var volume: Double
+        /// CoreAudio device UID; "" = the system default output (Tier 0.12).
+        var deviceId = ""
+        var deviceName = MonitorDevicePolicy.systemDefaultName
+
+        /// The name is display text the core echoes back in its own words;
+        /// only the device id is the operator's choice.
+        static func == (lhs: Draft, rhs: Draft) -> Bool {
+            lhs.enabled == rhs.enabled && lhs.volume == rhs.volume && lhs.deviceId == rhs.deviceId
+        }
     }
 
     private(set) var authorityEpoch = ""
@@ -54,7 +63,9 @@ struct MonitorControlProjection {
         authorityEpoch = epoch
         revision = nextRevision
         applied = Draft(enabled: mix["monitorEnabled"] as? Bool ?? applied.enabled,
-                        volume: (mix["monitorVolume"] as? NSNumber)?.doubleValue ?? applied.volume)
+                        volume: (mix["monitorVolume"] as? NSNumber)?.doubleValue ?? applied.volume,
+                        deviceId: mix["monitorDeviceId"] as? String ?? applied.deviceId,
+                        deviceName: mix["monitorDeviceName"] as? String ?? applied.deviceName)
         if pendingOperationId == nil, draft == applied {
             draft = nil
             notice = ""
@@ -85,8 +96,8 @@ struct MonitorControlProjection {
         return ["type": "set-audio-monitor-control", "operationId": operation,
                 "authorityEpoch": draftExpectedEpoch.isEmpty ? authorityEpoch : draftExpectedEpoch,
                 "expectedRevision": draftExpectedEpoch.isEmpty ? revision : draftExpectedRevision,
-                "enabled": draft.enabled, "deviceId": "",
-                "deviceName": "System default output", "volume": draft.volume]
+                "enabled": draft.enabled, "deviceId": draft.deviceId,
+                "deviceName": draft.deviceName, "volume": draft.volume]
     }
 
     mutating func markUnconfirmed() {

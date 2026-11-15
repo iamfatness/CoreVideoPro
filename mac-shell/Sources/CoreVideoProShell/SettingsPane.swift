@@ -181,8 +181,11 @@ struct SettingsPane: View {
                     .font(.grotesk(12))
             }
 
-            card("Audio monitor") {
-                Toggle("Monitor through the system default output", isOn: Binding(
+            card("Monitor output") {
+                labeled("Output device") { MonitorDevicePicker() }
+                Text(model.monitorTargetStatus)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                Toggle("Monitor", isOn: Binding(
                     get: { model.monitorEnabled },
                     set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) }))
                     .font(.grotesk(12))

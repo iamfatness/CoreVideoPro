@@ -57,7 +57,8 @@ struct AudioPane: View {
                 VStack(alignment: .leading, spacing: 12) {
                     MasteringRack()
                     Text("Monitor output").font(.grotesk(13, .semibold))
-                    Toggle("Monitor (system default output)", isOn: Binding(
+                    MonitorDevicePicker()
+                    Toggle("Monitor", isOn: Binding(
                         get: { model.monitorEnabled },
                         set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) }))
                     HStack {
