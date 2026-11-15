@@ -74,6 +74,9 @@ struct ShellApp: App {
         if let dir = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_FOOTER_SNAPSHOT"] {
             MainActor.assumeIsolated { FooterSnapshotHarness.runAndExit(dir: dir) }
         }
+        if let dir = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT"] {
+            MainActor.assumeIsolated { TabSnapshotHarness.runAndExit(dir: dir) }
+        }
         // A bare (non-bundled) executable defaults to an activation policy
         // whose windows cannot become KEY — text fields silently refuse
         // input (the engine-bundle lesson). Force Regular + activate.
@@ -1210,29 +1213,11 @@ struct ParticipantCard: View {
 struct TabPage: View {
     @EnvironmentObject var model: AppModel
 
+    // Width per tab comes from TabPageLayout (a flat 720 pt cap clipped the
+    // Sources rows and the Routing grid).
     var body: some View {
         ScrollView {
-            HStack {
-                Spacer(minLength: 0)
-                Group {
-                    switch model.selectedTab {
-                    case .studio: EmptyView()
-                    case .zoom: ZoomPane()
-                    case .sources: SourcesPane()
-                    case .scenes: ScenesPane()
-                    case .routing: RoutingPane()
-                    case .overlays: OverlaysPane()
-                    case .audio: AudioPane()
-                    case .media: MediaPane()
-                    case .automation: AutomationPane()
-                    case .settings: SettingsPane()
-                    case .diagnose: DiagnosePane()
-                    }
-                }
-                .frame(maxWidth: 720)
-                Spacer(minLength: 0)
-            }
-            .padding(12)
+            TabPageContent(tab: model.selectedTab)
         }
     }
 }
@@ -1558,7 +1543,7 @@ struct SourcesPane: View {
                     .stroke(Studio.border, lineWidth: 1))
             }
         }
-        .frame(maxWidth: 900)
+        .frame(maxWidth: TabPageLayout.maxWidth(for: .sources))
     }
 }
 

@@ -2,7 +2,9 @@
 // table). Kept in their own file so the parallel audio / multiview branches
 // that also extend ShellTests.swift do not collide line-for-line.
 
+import AppKit
 import Foundation
+import SwiftUI
 
 extension ShellTests {
 
@@ -18,6 +20,7 @@ extension ShellTests {
             ("tier0/slot-settings-follow-the-source", testPerSourceSettingsFollowTheSourceNotTheSlot),
             ("tier0/iso-survives-first-assignment", testRestoredIsoSelectionSurvivesTheFirstAssignment),
             ("tier0/iso-matrix-one-truth", testIsoMatrixAndSourcesToggleAreOneTruth),
+            ("tier0/sources-rows-fit-the-page", testSourcesRowsFitThePageAtTheMinimumWindow),
         ]
     }
 
@@ -249,6 +252,41 @@ extension ShellTests {
         expectEqual(model.isoSelectedSourceIds, ["capture:cam1"], "column-exclusive: the occupant leaves")
         expectEqual(model.slots.first { $0.id == 2 }?.iso, false, "and its Sources checkbox follows")
         expectEqual(model.slots.first { $0.id == 1 }?.iso, true, "the matrix pick shows in Sources")
+    }
+
+    // ── 0.10 tab width cap ───────────────────────────────────────────────────
+
+    /// TabPage capped every tab at 720 pt; an assigned Sources row is built
+    /// from fixed-width controls of ~1000 pt, so it was compressed or clipped.
+    @MainActor
+    static func testSourcesRowsFitThePageAtTheMinimumWindow() {
+        let model = AppModel()
+        TabSnapshotHarness.seed(model)   // zoom + capture-with-mic rows (the widest)
+        var widest: CGFloat = 0
+        for slot in model.slots where slot.kind != "unassigned" {
+            let host = NSHostingView(rootView: SlotRow(slot: slot).environmentObject(model)
+                .fixedSize())
+            host.layoutSubtreeIfNeeded()
+            widest = max(widest, host.fittingSize.width)
+        }
+        expect(widest > 600, "slot row measured (\(widest) pt)")
+        // The Sources card adds 14 pt padding each side inside the page.
+        let available = TabPageLayout.pageWidth(for: .sources, window: 1360) - 28
+        expect(widest <= available,
+               "an assigned Sources row (\(widest) pt) fits the page at the 1360 pt minimum window (\(available) pt)")
+        expect(TabPageLayout.pageWidth(for: .routing, window: 1360) >= 760,
+               "the Routing grid (~724 pt) fits without clipping its last column")
+        for tab in StudioTab.allCases where tab != .studio {
+            expect(TabPageLayout.pageWidth(for: tab, window: 1360) >= 720,
+                   "\(tab.rawValue) keeps at least the old 720 pt measure")
+        }
+        guard let shell = sourceFile("ShellApp.swift") else {
+            expect(false, "ShellApp.swift not found next to the binary"); return
+        }
+        expect(!shell.contains(".frame(maxWidth: 720)\n                Spacer(minLength: 0)"),
+               "TabPage no longer applies a flat 720 pt cap")
+        expect(shell.contains("TabPageContent(tab: model.selectedTab)"),
+               "TabPage draws the shared TabPageContent (what the snapshot harness renders)")
     }
 
     // ── source-reading helpers ───────────────────────────────────────────────
