@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <sstream>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -349,9 +350,10 @@ TEST(AvfEncoderRecording, IsoPerSourceDedupSkipsResubmittedFrames) {
 // PCM from a returning source resumes the SAME file and the clock bridges the
 // gap with silence at that point.
 namespace {
-IsoSourceAudio stemTick(const std::string& id, bool real, bool departed) {
+IsoSourceAudio stemTick(const std::string& id, bool real, bool departed, int64_t timeline) {
   IsoSourceAudio stem;
   stem.sourceId = id;
+  stem.timelineTimestamp100ns = timeline;
   stem.departed = departed;
   stem.channels = 1;
   if (real) {
@@ -375,17 +377,28 @@ RecordingSessionRequest twoZoomIsoRequest(const std::string& folder) {
   return request;
 }
 
+// Synthetic timeline: the sink stamps media from timelineTimestamp100ns (same
+// steady-clock/100ns domain as its own now100ns()), so durations depend on the
+// tick index, never on how fast the host (or a VM software encoder) runs.
+int64_t steadyNow100ns() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+}
+constexpr int64_t kTick100ns = 200000;  // 20 ms
+
 // One 20 ms tick of a live two-guest show: Carol always live; Alice live or not.
-void departureTick(IEncoderSink& encoder, int64_t& frameId, bool aliceLive, bool aliceDeparted) {
+void departureTick(IEncoderSink& encoder, int64_t& frameId, int64_t base, int tickIndex,
+                   bool aliceLive, bool aliceDeparted) {
   ++frameId;
+  const int64_t ts = base + static_cast<int64_t>(tickIndex) * kTick100ns;
   std::vector<IsoSourceVideoFrame> video;
-  video.push_back({"zoom:102", "Carol", isoI420Frame("zoom:102", frameId, 100)});
+  video.push_back({"zoom:102", "Carol", isoI420Frame("zoom:102", frameId, 100), ts});
   // A departed guest delivers no new pictures; the worker resubmits the last
   // frame (same id), which the per-source dedup swallows.
-  video.push_back({"zoom:101", "Alice", isoI420Frame("zoom:101", aliceLive ? frameId : 1, 90)});
+  video.push_back({"zoom:101", "Alice", isoI420Frame("zoom:101", aliceLive ? frameId : 1, 90), ts});
   encoder.submitIsoVideo(video);
-  encoder.submitIsoAudio({stemTick("zoom:101", aliceLive, aliceDeparted),
-                          stemTick("zoom:102", true, false)});
+  encoder.submitIsoAudio({stemTick("zoom:101", aliceLive, aliceDeparted, ts),
+                          stemTick("zoom:102", true, false, ts)});
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 
@@ -402,16 +415,10 @@ TEST(AvfEncoderRecording, DepartedIsoFinalizesAtItsRealDurationWhileSiblingKeeps
   encoder->configureRecording(twoZoomIsoRequest(dir.string()));
   (void)encoder->start({"recording"}, {"zoom:101", "zoom:102"});
   int64_t frameId = 1;
-  // ISO video PTS follow the wall clock (no capture timestamp is submitted) and a
-  // tick takes 20 ms plus encode time, which is longer on a runner without a
-  // hardware encoder. Measure each phase and assert relative to what really elapsed.
-  const auto t0 = std::chrono::steady_clock::now();
-  for (int i = 0; i < 25; ++i) departureTick(*encoder, frameId, true, false);       // together
-  const auto t1 = std::chrono::steady_clock::now();
-  for (int i = 0; i < 125; ++i) departureTick(*encoder, frameId, false, true);      // Alice gone
-  const auto t2 = std::chrono::steady_clock::now();
-  const double togetherWall = std::chrono::duration<double>(t1 - t0).count();
-  const double departedWall = std::chrono::duration<double>(t2 - t1).count();
+  const int64_t base = steadyNow100ns();
+  int tick = 0;
+  for (int i = 0; i < 25; ++i) departureTick(*encoder, frameId, base, tick++, true, false);   // together: 0.5 s
+  for (int i = 0; i < 125; ++i) departureTick(*encoder, frameId, base, tick++, false, true);  // Alice gone: to 3.0 s
   encoder->stopRecording();
 
   const auto session = encoder->session();
@@ -420,16 +427,21 @@ TEST(AvfEncoderRecording, DepartedIsoFinalizesAtItsRealDurationWhileSiblingKeeps
   EXPECT_TRUE(alice.warning.empty()) << alice.warning;
   const auto aliceSecs = corevideo::testing::mp4DurationSeconds(alice.path);
   const auto carolSecs = corevideo::testing::mp4DurationSeconds(carol.path);
-  EXPECT_GT(aliceSecs, 0.2);
-  EXPECT_LE(aliceSecs, togetherWall + 0.5)
-      << "departed ISO kept growing with silence until Stop (together=" << togetherWall
-      << "s departed=" << departedWall << "s)";
-  EXPECT_GE(carolSecs, togetherWall + 0.8 * departedWall) << "the present guest must keep recording";
+  std::ostringstream m;
+  m << "aliceSecs=" << aliceSecs << " carolSecs=" << carolSecs
+    << " alice{video=" << alice.videoFrameCount << " audio=" << alice.audioSampleCount
+    << " droppedVideo=" << alice.droppedVideoFrames << " droppedAudio=" << alice.droppedAudioPackets
+    << "} carol{video=" << carol.videoFrameCount << " audio=" << carol.audioSampleCount
+    << " droppedVideo=" << carol.droppedVideoFrames << " droppedAudio=" << carol.droppedAudioPackets << "}";
+  std::fprintf(stderr, "[departed-iso] %s\n", m.str().c_str());
+  EXPECT_GE(aliceSecs, 0.3) << m.str();
+  EXPECT_LE(aliceSecs, 0.9) << "departed ISO kept growing with silence until Stop: " << m.str();
+  EXPECT_GE(carolSecs, 2.6) << "the present guest must keep recording: " << m.str();
   // The discriminating property: Alice stopped growing while Carol kept going.
-  EXPECT_LT(aliceSecs, carolSecs - 0.5 * departedWall);
+  EXPECT_LT(aliceSecs, carolSecs - 1.5) << m.str();
   // Audio counts are PCM submitted (25 live ticks vs 150), not wall time.
-  EXPECT_LT(alice.audioSampleCount, 48000 * 1.4);
-  EXPECT_GT(carol.audioSampleCount, 48000 * 2.4);
+  EXPECT_LT(alice.audioSampleCount, 48000 * 1.4) << m.str();
+  EXPECT_GT(carol.audioSampleCount, 48000 * 2.4) << m.str();
   const auto decoded = corevideo::testing::decodeMp4VideoToBgra(alice.path);
   EXPECT_TRUE(decoded.error.empty()) << decoded.error;  // finalized and playable
   EXPECT_GT(decoded.frames.size(), 0u);
@@ -442,12 +454,14 @@ TEST(AvfEncoderRecording, DepartedIsoThatReturnsResumesTheSameFileAndBridgesTheG
   encoder->configureRecording(twoZoomIsoRequest(dir.string()));
   (void)encoder->start({"recording"}, {"zoom:101", "zoom:102"});
   int64_t frameId = 1;
-  for (int i = 0; i < 25; ++i) departureTick(*encoder, frameId, true, false);
+  const int64_t base = steadyNow100ns();
+  int tick = 0;
+  for (int i = 0; i < 25; ++i) departureTick(*encoder, frameId, base, tick++, true, false);
   const auto atDeparture = isoStatus(encoder->session(), "zoom:101").audioSampleCount;
-  for (int i = 0; i < 50; ++i) departureTick(*encoder, frameId, false, true);       // ~1 s gone
+  for (int i = 0; i < 50; ++i) departureTick(*encoder, frameId, base, tick++, false, true);       // ~1 s gone
   EXPECT_EQ(isoStatus(encoder->session(), "zoom:101").audioSampleCount, atDeparture)
       << "no silence while departed";
-  for (int i = 0; i < 25; ++i) departureTick(*encoder, frameId, true, false);       // back
+  for (int i = 0; i < 25; ++i) departureTick(*encoder, frameId, base, tick++, true, false);  // back
   encoder->stopRecording();
 
   const auto session = encoder->session();
