@@ -530,14 +530,14 @@ TEST(ZoomEngineRuntimeState, RecoverableMediaErrorKeepsMeetingConnected) {
 // The decision lives in the SDK-free end-other-meeting.h so it is testable here.
 #include "end-other-meeting.h"
 
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
 namespace {
 std::string readMacEngineSource() {
-  std::string here = __FILE__;
-  const auto slash = here.find_last_of("/\\");
-  std::ifstream in(here.substr(0, slash) + "/../zoom-engine/engine/main-macos.mm");
+  std::ifstream in(std::filesystem::path(COREVIDEO_REPO_ROOT) / "native" / "zoom-engine" / "engine" /
+                   "main-macos.mm");
   std::stringstream text;
   text << in.rdbuf();
   return text.str();
