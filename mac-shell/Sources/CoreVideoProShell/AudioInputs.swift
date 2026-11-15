@@ -96,6 +96,7 @@ extension AppModel {
         slots[index].audioDeviceId = device?.id ?? ""
         slots[index].audioDeviceName = device?.name ?? ""
         syncCaptureAudio()
+        refreshStrips()  // a paired mic is a source: it needs its strip (FADER LAW)
     }
 
     /// Re-assert pairings after a reconnect: the core rebuilds its map from

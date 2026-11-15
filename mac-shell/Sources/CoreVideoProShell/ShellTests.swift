@@ -997,6 +997,85 @@ enum ShellTests {
         expect(model.meetingAudioSubscribed, "the console knows the meeting mix is subscribed")
     }
 
+    // ── audio console: the FADER LAW + #481 on Mac ──────────────────────────
+
+    /// A guest who starts sending audio AFTER the console's first channel sync is
+    /// not in the core's echo (it echoes only synced channels) — the strip must
+    /// come from the shell's own source set, or the FADER LAW drops the guest.
+    private static func testStripsComeFromTheSourceSetNotOnlyTheEcho() {
+        let expected = AudioConsolePolicy.expectedSourceIds(
+            meetingAudio: true, zoomAudioIds: ["11", "22"], captureAudioIds: ["capture:cam"])
+        expectEqual(expected, ["zoom-mix", "11", "22", "capture:cam", "media"],
+                    "zoom-mix, the Zoom audio sources, paired mics, and the media strip")
+        // The core echoes only what was synced before guest 22 arrived.
+        let echo: [JSONObject] = [
+            ["participantId": "zoom-mix", "outputLevel": 40, "status": "live"],
+            ["participantId": "11", "outputLevel": 30, "status": "live"],
+        ]
+        let strips = AudioConsolePolicy.mergeStrips(echo: echo, prior: [], expected: expected)
+        expectEqual(strips.map(\.id), expected, "every expected source has a strip, echoed or not")
+        expectEqual(strips.first { $0.id == "22" }?.status, "waiting-for-pcm",
+                    "a source with no PCM yet gets a waiting strip (Windows)")
+        expectEqual(strips.first { $0.id == "zoom-mix" }?.outputLevel, 40, "levels come from the echo")
+        expect(strips.contains { $0.id == "zoom-mix" }, "the Zoom program mix always has a fader")
+        expect(strips.contains { $0.id == "media" }, "the media strip exists before any clip plays")
+        expectEqual(AudioConsolePolicy.expectedSourceIds(
+            meetingAudio: false, zoomAudioIds: [], captureAudioIds: []), ["media"],
+            "no meeting: no zoom-mix strip")
+    }
+
+    private static func testStripSetHidesNonSourcesAndRawClipIds() {
+        let echo: [JSONObject] = [
+            ["participantId": "99"],               // a Zoom guest who is not a source
+            ["participantId": "media:clip-1"],     // a clip: governed by "media"
+            ["participantId": "background:bg-1"],  // PCM the shell does not model
+        ]
+        let ids = AudioConsolePolicy.mergeStrips(
+            echo: echo, prior: [], expected: ["11", "media"]).map(\.id)
+        expect(!ids.contains("99"), "a non-source Zoom channel is not on the mixer (MixerChannelSetPolicy)")
+        expect(!ids.contains("media:clip-1"), "a clip has no strip of its own — the media alias governs it")
+        expect(ids.contains("background:bg-1"), "unmodelled PCM keeps a strip, so it is never strip-less")
+    }
+
+    /// #481: the A1's mute is only set by the A1.
+    private static func testA1MuteIsNeverAdoptedFromTheEcho() {
+        // Before any channel sync the echo's `muted` is the voice-activity flag:
+        // every quiet guest reads muted. A new strip must start UNMUTED.
+        let first = AudioConsolePolicy.mergeStrips(
+            echo: [["participantId": "11", "muted": true, "manualGainDb": -6.0, "pan": 0.5]],
+            prior: [], expected: ["11"])
+        expectEqual(first.first?.muted, false, "a new channel starts unmuted (#481)")
+        expectEqual(first.first?.manualGainDb, 0, "a new channel starts at unity")
+        // The A1 mutes and trims; then the core restarts and echoes "unmuted".
+        var held = first.isEmpty ? [AudioStrip(id: "11", outputLevel: 0, manualGainDb: 0,
+                                               muted: false, solo: false, pan: 0, status: "")] : first
+        held[0].muted = true
+        held[0].manualGainDb = 4
+        let afterRestart = AudioConsolePolicy.mergeStrips(
+            echo: [["participantId": "11", "muted": false, "outputLevel": 0]],
+            prior: held, expected: ["11"])
+        expectEqual(afterRestart.first?.muted, true, "a core echo never un-mutes the A1's channel")
+        expectEqual(afterRestart.first?.manualGainDb, 4, "a core echo never resets the A1's fader")
+    }
+
+    @MainActor
+    private static func testConsoleSyncCarriesEveryStripAndTheA1State() {
+        let model = AppModel()
+        model.zoomAudioSourceIds = ["11", "22"]
+        model.meetingAudioSubscribed = true
+        model.refreshStrips()
+        expectEqual(model.scheduledStripIds, ["zoom-mix", "11", "22", "media"],
+                    "a changed strip SET schedules a full channel sync (late guests get a fader)")
+        model.editStrip("22") { $0.muted = true }
+        let channels = model.audioMixCommand()["channels"] as? [JSONObject] ?? []
+        expectEqual(channels.compactMap { $0["participantId"] as? String },
+                    ["zoom-mix", "11", "22", "media"],
+                    "sync-participant-audio-mix carries a strip for every source (FADER LAW)")
+        expectEqual(channels.first { $0["participantId"] as? String == "22" }?["muted"] as? Bool, true,
+                    "the A1's mute rides the wire")
+        expectEqual(model.audioSourceLabel("zoom-mix"), "Zoom program mix", "Windows strip label")
+    }
+
     /// Cross-checks the audio wire strings against the CORE's source, the way the
     /// payload-wrapper contract test does: a rename in C++ fails here, not live.
     @MainActor
@@ -2972,6 +3051,10 @@ enum ShellTests {
             ("zoom-audio/source-set", testAudioSourceSetKeepsCameraOffAndRefusesNonSources),
             ("zoom-audio/kinds-vs-core", testAudioSubscriptionKindsMatchTheCoreSource),
             ("zoom-audio/push-spine-call-site", testPushSpineSubscribesWallAudioFromTheModel),
+            ("audio-console/strips-from-source-set", testStripsComeFromTheSourceSetNotOnlyTheEcho),
+            ("audio-console/hides-non-sources", testStripSetHidesNonSourcesAndRawClipIds),
+            ("audio-console/a1-mute-481", testA1MuteIsNeverAdoptedFromTheEcho),
+            ("audio-console/sync-carries-every-strip", testConsoleSyncCarriesEveryStripAndTheA1State),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),

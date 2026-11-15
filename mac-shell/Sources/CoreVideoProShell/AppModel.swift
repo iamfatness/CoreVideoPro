@@ -1538,6 +1538,7 @@ final class AppModel: ObservableObject {
             ]
         }
         let subscriptions = resolveSpineSubscriptions()
+        refreshStrips()  // the console follows the audio source set just decided
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
@@ -2989,29 +2990,60 @@ final class AppModel: ObservableObject {
     private var stripEditTimes: [String: Date] = [:]
     private var mixSyncTask: Task<Void, Never>?
 
+    private var lastMixEcho: [JSONObject] = []
+    /// The strip ids last sent in a sync-participant-audio-mix (nil = never sent
+    /// to this core generation).
+    private var lastSyncedStripIds: [String]?
+    /// The strip set a channel sync is scheduled for (nil = none pending).
+    private(set) var scheduledStripIds: [String]?
+
     private func applyMixParticipants(_ participants: [JSONObject]) {
-        var next: [AudioStrip] = []
-        for entry in participants {
-            guard let id = entry["participantId"] as? String, !id.isEmpty else { continue }
-            let editing = stripEditTimes[id].map { Date().timeIntervalSince($0) < 2 } ?? false
-            let existing = strips.first { $0.id == id }
-            if editing, var held = existing {
-                held.outputLevel = entry["outputLevel"] as? Int ?? held.outputLevel
-                held.status = entry["status"] as? String ?? held.status
-                next.append(held)
-                continue
+        lastMixEcho = participants
+        refreshStrips()
+    }
+
+    /// The console's expected sources (AudioConsolePolicy.expectedSourceIds) from
+    /// the shell's own model: the subscribed Zoom audio set, paired capture mics,
+    /// the media strip.
+    var expectedAudioSourceIds: [String] {
+        AudioConsolePolicy.expectedSourceIds(
+            meetingAudio: meetingAudioSubscribed, zoomAudioIds: zoomAudioSourceIds,
+            captureAudioIds: slots
+                .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
+                .map { "capture:" + $0.sourceId })
+    }
+
+    /// Operator-facing name for an audio source id (Windows labels: "Zoom program
+    /// mix", "Media playback", the guest's roster name, the slot name).
+    func audioSourceLabel(_ id: String) -> String {
+        switch id {
+        case AudioConsolePolicy.meetingMixId: return "Zoom program mix"
+        case AudioConsolePolicy.mediaId: return "Media playback"
+        case "local-machine-audio": return "Local machine audio"
+        default:
+            let bare = id.hasPrefix("capture:") ? String(id.dropFirst("capture:".count)) : id
+            if let slot = slots.first(where: { $0.sourceId == bare && !$0.name.isEmpty }) {
+                return slot.name
             }
-            next.append(AudioStrip(
-                id: id,
-                outputLevel: entry["outputLevel"] as? Int ?? 0,
-                manualGainDb: (entry["manualGainDb"] as? NSNumber)?.doubleValue
-                    ?? existing?.manualGainDb ?? 0,
-                muted: entry["muted"] as? Bool ?? false,
-                solo: entry["solo"] as? Bool ?? false,
-                pan: (entry["pan"] as? NSNumber)?.doubleValue ?? 0,
-                status: entry["status"] as? String ?? ""))
+            return roster.first { $0.id == id }?.name ?? id
         }
-        strips = next
+    }
+
+    /// Rebuilds the strips from the shell's source set + the last echo, and — the
+    /// FADER LAW — syncs the full channel list whenever the strip SET changes, so
+    /// the core never holds a routed source without a strip (a late guest, a newly
+    /// paired mic) and never keeps a strip for a source that is gone.
+    /// Internal: the harness drives it.
+    func refreshStrips() {
+        strips = AudioConsolePolicy.mergeStrips(
+            echo: lastMixEcho, prior: strips, expected: expectedAudioSourceIds)
+        // Schedule once per new set: snapshots arrive faster than the 150 ms
+        // debounce, and re-scheduling on every one would cancel the sync forever.
+        let ids = strips.map(\.id)
+        if ids != lastSyncedStripIds && ids != scheduledStripIds {
+            scheduledStripIds = ids
+            scheduleMixSync()
+        }
     }
 
     func editInserts(_ id: String, _ apply: (inout ChannelInserts) -> Void) {
@@ -3042,8 +3074,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func syncAudioMix() async {
-        guard let bridge, !strips.isEmpty else { return }
+    /// The full-state sync-participant-audio-mix for the current console. Internal:
+    /// the harness checks it carries the A1's state for every strip.
+    func audioMixCommand() -> JSONObject {
         let channels: [JSONObject] = strips.map { strip in
             let inserts = channelInserts[strip.id] ?? ChannelInserts()
             return [
@@ -3057,15 +3090,21 @@ final class AppModel: ObservableObject {
                 "insertSettings": inserts.settingsJson,
             ]
         }
+        return ["type": "sync-participant-audio-mix", "limiterEnabled": true,
+                "mastering": mastering.json, "channels": channels]
+    }
+
+    private func syncAudioMix() async {
+        scheduledStripIds = nil
+        guard let bridge, !strips.isEmpty else { return }
+        lastSyncedStripIds = strips.map(\.id)
         do {
             _ = try await bridge.request([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                "commands": [
-                    ["type": "sync-participant-audio-mix", "limiterEnabled": true,
-                     "mastering": mastering.json, "channels": channels]
-                ],
+                "commands": [audioMixCommand()],
             ])
         } catch {
+            lastSyncedStripIds = nil  // not delivered: the next refresh retries
             pushWarning("audio mix sync failed: \(error.localizedDescription)")
         }
     }

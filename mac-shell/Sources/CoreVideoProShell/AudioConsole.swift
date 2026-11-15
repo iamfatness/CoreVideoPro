@@ -134,12 +134,7 @@ struct AudioPane: View {
         }
     }
 
-    func stripLabel(_ strip: AudioStrip) -> String {
-        strip.id == "zoom-mix" ? "Zoom mix"
-            : strip.id == "local-machine-audio" ? "Local machine audio"
-            : model.slots.first { $0.sourceId == strip.id.replacingOccurrences(
-                of: "capture:", with: "") }?.name ?? strip.id
-    }
+    func stripLabel(_ strip: AudioStrip) -> String { model.audioSourceLabel(strip.id) }
 }
 
 // GATE / COMP / EQ cells with drawn response curves (composition per the
@@ -451,10 +446,7 @@ struct AudioRoutingSurface: View {
     @EnvironmentObject var model: AppModel
 
     var sources: [(id: String, label: String)] {
-        model.strips.map { strip in
-            (strip.id, strip.id == "zoom-mix" ? "Zoom mix"
-                : strip.id == "local-machine-audio" ? "Local machine audio" : strip.id)
-        }
+        model.strips.map { strip in (strip.id, model.audioSourceLabel(strip.id)) }
     }
 
     var body: some View {
