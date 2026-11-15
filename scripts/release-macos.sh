@@ -30,6 +30,12 @@
 #   COREVIDEO_PKG_SIGN_IDENTITY  default "Developer ID Installer: John Wallace (42394L3353)"
 #                             (the .pkg needs this, NOT the Application certificate)
 #   COREVIDEO_NOTARY_PROFILE  notarytool keychain profile, default "CoreVideo Pro"
+#   COREVIDEO_APP_PROFILE     Developer ID provisioning profile for the app
+#   COREVIDEO_CAMERA_PROFILE  ... for the camera extension (defaults under
+#                             ~/Library/Developer/CoreVideoPro/profiles/). Both
+#                             are verified BEFORE the build; the release FAILS if
+#                             the signing certificate expires within 14 days and
+#                             warns within 60.
 #                             (one-time: xcrun notarytool store-credentials "CoreVideo Pro"
 #                             --team-id 42394L3353; "CoreVideo Plugin" is the OBS plugin's)
 #   ZOOM_SDK_DIR              Zoom macOS SDK dir holding ZoomSDK.framework
@@ -104,6 +110,22 @@ grep -qF "\"$PKG_SIGN_ID\"" <<<"$PKG_IDENTITIES" \
 for tool in pkgbuild productbuild pkgutil spctl; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
+# Provisioning profiles + certificate lifetime, before a 20-minute build (a
+# mismatched profile does not fail codesign; it fails activation silently).
+# verify_profile checks the profile's app id, team, expiry, the signing
+# certificate's expiry and that certificate's membership in the profile.
+. scripts/macos-sign-lib.sh
+APP_PROFILE="${COREVIDEO_APP_PROFILE:-$HOME/Library/Developer/CoreVideoPro/profiles/CoreVideo_Pro_macOS_Developer_ID.provisionprofile}"
+CAMERA_PROFILE="${COREVIDEO_CAMERA_PROFILE:-$HOME/Library/Developer/CoreVideoPro/profiles/CoreVideo_Pro_Camera_Extension_Developer_ID.provisionprofile}"
+for pair in "COREVIDEO_APP_PROFILE|$APP_PROFILE|42394L3353.us.iamfatness.corevideopro.shell" \
+            "COREVIDEO_CAMERA_PROFILE|$CAMERA_PROFILE|42394L3353.us.iamfatness.corevideopro.shell.camera"; do
+    IFS='|' read -r pvar ppath pid <<<"$pair"
+    [ -f "$ppath" ] || die "$pvar: provisioning profile not found at $ppath"
+    verify_profile "$ppath" "$pid" 14 \
+        || die "$pvar: $ppath failed verification (see above; the release fails with under 14 days of profile or signing-certificate life)"
+    verify_profile "$ppath" "$pid" 60 >/dev/null 2>&1 \
+        || echo "WARNING: $pvar: profile or signing certificate expires within 60 days; renew before the next release" >&2
+done
 [ -d "$ZOOM_SDK/ZoomSDK.framework" ] || die "no ZoomSDK.framework under ZOOM_SDK_DIR=$ZOOM_SDK"
 if [ "$NOTARIZE" = "1" ]; then
     # Cheap auth probe: fails fast on a missing profile or bad credentials.
@@ -158,7 +180,8 @@ cmake -S native -B "$CORE_BUILD" -G Ninja \
     -DCOREVIDEO_WITH_AVF_ENCODER=ON \
     -DCOREVIDEO_WITH_COREAUDIO=ON \
     -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON \
-    -DCOREVIDEO_WITH_RTMP_OUTPUT=ON
+    -DCOREVIDEO_WITH_RTMP_OUTPUT=ON \
+    -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON
 cmake --build "$CORE_BUILD" --target corevideo-native corevideo-plugin-host
 
 # The release gate for the core: the FULL native suite on this exact build,
@@ -204,6 +227,7 @@ SHELL_BIN="$SHELL_SCRATCH/release/CoreVideoProShell"
 log "assemble + sign $APP"
 COREVIDEO_SIGN_IDENTITY="$SIGN_ID" \
 COREVIDEO_SHELL_BIN="$SHELL_BIN" \
+COREVIDEO_CAMERA_EXT_BIN="$SHELL_SCRATCH/release/CoreVideoProCamera" \
 COREVIDEO_CORE_BUILD_DIR="$CORE_BUILD" \
 COREVIDEO_ENGINE_APP="$ENGINE_BUILD/corevideo-zoom-engine.app" \
 COREVIDEO_REQUIRE_HELPERS=1 \
@@ -241,6 +265,22 @@ done < <(find "$APP" -type f)
 # an audit that looked at nothing must not pass.
 [ "$MACHO_COUNT" -gt 0 ] || die "audited 0 Mach-O files under $APP; nothing was checked"
 echo "audited $MACHO_COUNT Mach-O files: Developer ID + runtime + timestamp; arm64 except $X86_VENDOR Intel-only vendor SDK file(s)"
+
+# The camera extension's structure, signature, profiles and entitlements.
+log "check the camera extension"
+scripts/check-macos-camera-extension.sh --release "$APP" || die "camera extension check failed"
+EXT_DIR="$APP/Contents/Library/SystemExtensions/us.iamfatness.corevideopro.shell.camera.systemextension"
+EXT_BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_DIR/Contents/Info.plist")"
+CAM_PROFILE_PLIST="$WORK/camera-profile.plist"
+security cms -D -i "$CAMERA_PROFILE" >"$CAM_PROFILE_PLIST" 2>/dev/null || die "cannot decode $CAMERA_PROFILE"
+CAM_PROFILE_EXPIRES="$(plutil -extract ExpirationDate raw -o - "$CAM_PROFILE_PLIST")"
+( cd "$WORK" && codesign -d --extract-certificates=leaf "$EXT_DIR" >/dev/null 2>&1 ) \
+    && openssl x509 -inform DER -in "$WORK/leaf0" -noout -enddate >"$WORK/cert-end.txt" 2>/dev/null \
+    || die "cannot read the camera extension's signing certificate"
+CERT_END="$(sed 's/^notAfter=//' "$WORK/cert-end.txt")"
+CERT_EXPIRES="$(date -j -u -f '%b %e %T %Y %Z' "$CERT_END" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" \
+    || die "cannot parse the signing certificate expiry '$CERT_END'"
+echo "camera extension: build $EXT_BUNDLE_VERSION, profile expires $CAM_PROFILE_EXPIRES, certificate expires $CERT_EXPIRES"
 
 # notarytool submit --wait, JSON out; echoes the submission id. Rejected or
 # invalid → fetch the log into $WORK (copied to dist/ on success) and fail.
@@ -388,6 +428,9 @@ manifest = {
             "submissionId": "$PKG_SUBMISSION",
             "notarized": $( [ "$NOTARIZE" = 1 ] && echo True || echo False ),
             "stapled": $( [ "$NOTARIZE" = 1 ] && echo True || echo False )},
+    "cameraExtension": {"bundleVersion": "$EXT_BUNDLE_VERSION",
+                        "profileExpires": "$CAM_PROFILE_EXPIRES",
+                        "certificateExpires": "$CERT_EXPIRES"},
     "bundledHelpers": "$HELPERS".split(","),
     "zoomSdk": "$(basename "$(dirname "$ZOOM_SDK")")",
     "runtimeRequirements": [

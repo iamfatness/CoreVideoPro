@@ -205,7 +205,18 @@ struct SettingsPane: View {
             card("System") {
                 row("Media core", statusText)
                 row("Renderer", rendererText)
-                row("Virtual camera", StudioFooterReadout.virtualCameraUnavailable)
+                row("Virtual camera", model.virtualCameraLabel)
+                labeled("") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Button("Remove virtual camera") { model.removeVirtualCamera() }
+                            .buttonStyle(GhostButtonStyle())
+                        if let status = model.virtualCameraRemovalStatus {
+                            Text(status).font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
+                        }
+                        Text("macOS may ask for your password. The camera disappears from other apps.")
+                            .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                    }
+                }
                 labeled("Logs") {
                     HStack(spacing: 6) {
                         Button("Shell log") { reveal("CoreVideoPro-shell.log") }

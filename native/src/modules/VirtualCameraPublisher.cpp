@@ -18,6 +18,11 @@
 #include <thread>
 #include <vector>
 
+#if defined(COREVIDEO_WITH_MAC_VIRTUALCAM) && COREVIDEO_WITH_MAC_VIRTUALCAM
+#include "modules/CmioVirtualCameraSink.h"
+#include "modules/SinkVirtualCameraPublisher.h"
+#endif
+
 #if defined(COREVIDEO_WITH_VIRTUALCAM) && COREVIDEO_WITH_VIRTUALCAM
 #include <windows.h>
 #include <mfapi.h>
@@ -422,6 +427,10 @@ class NoopVirtualCameraPublisher final : public IVirtualCameraPublisher {
 std::unique_ptr<IVirtualCameraPublisher> createVirtualCameraPublisher() {
 #if defined(COREVIDEO_WITH_VIRTUALCAM) && COREVIDEO_WITH_VIRTUALCAM
   return std::make_unique<AsyncVirtualCameraPublisher>(std::make_unique<WindowsVirtualCameraPublisher>());
+#elif defined(COREVIDEO_WITH_MAC_VIRTUALCAM) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  // macOS (roadmap M9.2): the CoreVideo Pro Camera extension's sink stream.
+  return std::make_unique<AsyncVirtualCameraPublisher>(
+      std::make_unique<SinkVirtualCameraPublisher>(createCmioVirtualCameraSink(), machHostClockNs));
 #else
   return std::make_unique<NoopVirtualCameraPublisher>();
 #endif

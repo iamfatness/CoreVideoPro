@@ -135,12 +135,7 @@ struct AudioPane: View {
         }
     }
 
-    func stripLabel(_ strip: AudioStrip) -> String {
-        strip.id == "zoom-mix" ? "Zoom mix"
-            : strip.id == "local-machine-audio" ? "Local machine audio"
-            : model.slots.first { $0.sourceId == strip.id.replacingOccurrences(
-                of: "capture:", with: "") }?.name ?? strip.id
-    }
+    func stripLabel(_ strip: AudioStrip) -> String { model.audioSourceLabel(strip.id) }
 }
 
 // GATE / COMP / EQ cells with drawn response curves (composition per the
@@ -352,7 +347,8 @@ struct ConsoleStrip: View {
                     .frame(width: 150)
                     .rotationEffect(.degrees(-90))
                     .frame(width: 26, height: 150)
-                SegmentedMeter(level: strip.muted ? 0 : strip.outputLevel)
+                let reading = AudioConsolePolicy.meterReading(strip)
+                SegmentedMeter(level: reading.level, dimmed: reading.dimmed)
                     .frame(width: 12, height: 150)
             }
             Text(label).font(.grotesk(10, .medium))
@@ -423,6 +419,9 @@ struct MasterLufsRail: View {
 
 struct SegmentedMeter: View {
     let level: Int  // 0..100
+    /// Dimmed = a muted strip's PRE-MUTE input (#481): visible, but plainly not
+    /// reaching any bus.
+    var dimmed = false
 
     var body: some View {
         Canvas { context, size in
@@ -435,8 +434,9 @@ struct SegmentedMeter: View {
                     x: 0, y: CGFloat(index) * (height + gap),
                     width: size.width, height: height)
                 let lit = Double(level) >= threshold
-                let color: Color = threshold > 90 ? Studio.red
+                let hot: Color = threshold > 90 ? Studio.red
                     : threshold > 70 ? Studio.amber : Studio.accent
+                let color = dimmed ? hot.opacity(0.35) : hot
                 context.fill(Path(rect),
                              with: .color(lit ? color : Studio.surfaceRaised))
             }
@@ -452,10 +452,7 @@ struct AudioRoutingSurface: View {
     @EnvironmentObject var model: AppModel
 
     var sources: [(id: String, label: String)] {
-        model.strips.map { strip in
-            (strip.id, strip.id == "zoom-mix" ? "Zoom mix"
-                : strip.id == "local-machine-audio" ? "Local machine audio" : strip.id)
-        }
+        model.strips.map { strip in (strip.id, model.audioSourceLabel(strip.id)) }
     }
 
     var body: some View {

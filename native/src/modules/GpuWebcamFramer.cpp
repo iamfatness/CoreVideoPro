@@ -1,3 +1,7 @@
+// Windows D3D11 framer and the portable stub. The macOS Metal framer lives in
+// GpuWebcamFramerMetal.mm (Apple + COREVIDEO_WITH_MAC_VIRTUALCAM), where this TU
+// compiles to nothing.
+#if !(defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM)
 #include "modules/GpuWebcamFramer.h"
 #include <cstring>
 #include <stdexcept>
@@ -154,3 +158,4 @@ std::shared_ptr<const std::vector<uint8_t>> GpuWebcamFramer::apply(
 #endif
 }
 }
+#endif  // !(__APPLE__ && COREVIDEO_WITH_MAC_VIRTUALCAM)

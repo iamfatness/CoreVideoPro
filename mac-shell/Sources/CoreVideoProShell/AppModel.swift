@@ -4,6 +4,7 @@
 // Mirrors (in miniature) the WinUI TransportCoordinator/ShowInputsCoordinator
 // responsibilities; their characterization tests are the porting spec.
 
+import CameraExtensionKit
 import Foundation
 import SwiftUI
 
@@ -134,6 +135,9 @@ struct AudioStrip: Identifiable, Equatable {
     var solo: Bool
     var pan: Double
     var status: String
+    /// PRE-MUTE input level, 0..100 (#481): measured before mute/fader, so a muted
+    /// guest who is talking still shows on a dimmed meter instead of silence.
+    var inputLevel = 0
 }
 
 // Show-input slot (inputs 1–10): the operator's stable mapping from "what's
@@ -325,6 +329,12 @@ final class AppModel: ObservableObject {
     @Published var meetingState = "idle"
     @Published var rawMediaActive = false
     @Published var roster: [RosterParticipant] = []
+    /// The Zoom audio source set last placed on the spine (participant-audio ids,
+    /// in budget order) and whether meeting-audio was subscribed with it. The audio
+    /// console builds its strips from these — the FADER LAW needs a strip for
+    /// every source the core is sent, not only for the ones it has echoed.
+    @Published var zoomAudioSourceIds: [String] = []
+    @Published var meetingAudioSubscribed = false
     @Published var assignedIds: Set<String> = []
     @Published var recordingStatus = "idle"
     @Published var recordingDesired = false {
@@ -405,11 +415,13 @@ final class AppModel: ObservableObject {
         SceneDef(id: "two-up", name: "Side by side", layout: "two-up"),
         SceneDef(id: "pip", name: "Picture in picture", layout: "pip"),
     ]
-    @Published var programSceneId = ""
-    @Published var previewSceneId = ""
+    @Published var programSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != programSceneId) } }
+    @Published var previewSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != previewSceneId) } }
     @Published var mediaAssets: [MediaAsset] = []
     @Published var selectedAssetId = ""
-    @Published var logoBug: MediaAsset?  // rides every scene as a top-right route
+    @Published var logoBug: MediaAsset? {  // rides every scene as a top-right route
+        didSet { mediaAudioSceneChanged(oldValue?.id != logoBug?.id) }
+    }
     @Published var lowerThirdName = ""
     @Published var lowerThirdTitle = ""
     @Published var lowerThirdPosition = "lower-left"
@@ -500,6 +512,29 @@ final class AppModel: ObservableObject {
     private var joinInFlight = false
 
     private var lastSavedPrefs = ShellPrefs()
+    /// True once restorePrefs() ran; persistPrefsNow() refuses before that.
+    private var prefsRestored = false
+
+    // ── virtual camera (roadmap M9.2; VirtualCamera.swift) ──────────────────
+    /// Installs/queries the camera system extension. Held strongly here:
+    /// OSSystemExtensionRequest.delegate is weak, and the activator owns the
+    /// in-flight requests. Tests swap in FakeCameraExtensionActivator.
+    var cameraExtension: CameraExtensionActivating = SystemCameraExtensionActivator()
+    @Published private(set) var cameraExtensionState: CameraExtensionState = .unknown
+    /// Operator intent (persisted). Change it only through the setters below.
+    @Published var virtualCamera = PersistedVirtualCamera()
+    /// The core's last `virtualCamera` node (nil = never observed).
+    @Published var virtualCameraCore: VirtualCameraReadModel?
+    /// nil = never asked; true after the first enable (persisted).
+    var cameraExtensionOptedIn: Bool?
+    /// A properties query that ends with didFinish and no foundProperties never
+    /// calls back; the shell must not wait on it forever.
+    var cameraExtensionQueryTimeout: TimeInterval = 5
+    private var cameraExtensionQueryToken: UUID?
+    /// TEST-ONLY command capture. Set only by ShellTests: no env var, control
+    /// command or wire field reaches it. When set, commands this seam covers are
+    /// handed to it instead of the bridge.
+    var coreCommandCaptureForTesting: ((JSONObject) -> Void)?
 
     func currentPrefs() -> ShellPrefs {
         var prefs = ShellPrefs()
@@ -544,6 +579,8 @@ final class AppModel: ObservableObject {
                           name: $0.name, inShow: $0.inShow)
         }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
+        prefs.cameraExtensionOptedIn = cameraExtensionOptedIn
+        prefs.virtualCamera = virtualCamera == PersistedVirtualCamera() ? nil : virtualCamera
         storeProductionSettings(into: &prefs)
         prefs.recordingFolder = recordingFolderChoice.isEmpty ? nil : recordingFolderChoice
         prefs.scenes = railScenes.map { scene in
@@ -608,6 +645,7 @@ final class AppModel: ObservableObject {
         monitorDeviceChoiceName = prefs.monitorDeviceName ?? ""
         isoRecordingEnabled = prefs.isoRecordingEnabled
         isoSelectedSourceIds = Set(prefs.isoSelectedSourceIds)
+        pruneStaleZoomIsoIntent()   // last meeting's unslotted guests
         autoTakeEnabled = false // Ignore legacy saved auto-take intent in the first release.
         autoConfidenceThreshold = prefs.autoConfidenceThreshold
         autoHoldSeconds = prefs.autoHoldSeconds
@@ -637,9 +675,12 @@ final class AppModel: ObservableObject {
                          backgroundAssetId: saved.backgroundAssetId)
             }
         }
+        cameraExtensionOptedIn = prefs.cameraExtensionOptedIn
+        virtualCamera = prefs.virtualCamera ?? PersistedVirtualCamera()
         restoreProductionSettings(prefs)
         recordingFolderChoice = prefs.recordingFolder ?? ""
         lastSavedPrefs = prefs
+        prefsRestored = true
     }
 
     /// True once start() has run its setup. start() is reached from the main
@@ -668,6 +709,11 @@ final class AppModel: ObservableObject {
         // Local control API (Companion / Stream Deck): 127.0.0.1:8011 by default.
         // Never in the TESTS/SELFCHECK harness; a bind failure is a warning.
         controlApi.start(model: self)
+        // Camera extension (roadmap M9.2): activate after an earlier opt-in,
+        // else only query. Proof shots stage their own state instead.
+        if !Self.vcamProofRequested(ProcessInfo.processInfo.environment) {
+            startCameraExtensionAtLaunch()
+        }
         // Self-snapshot harness: render our own window to PNG (no TCC, no
         // focus games — AX/screen-recording automation proved unreliable) and
         // exit. Pairs with COREVIDEO_SHELL_TAB for per-tab proof shots.
@@ -702,10 +748,29 @@ final class AppModel: ObservableObject {
                     QuitPromptPanel.show(model: self)
                 }
             }
+            // Proof-shot only: COREVIDEO_SHELL_VCAM=off|live|mixed|needsApproval photographs
+            // the virtual camera flyout in that state. It is staged on a SEPARATE,
+            // never-started model, so nothing is sent, persisted or activated.
+            var vcamProofView: NSView?
+            if Self.vcamProofRequested(ProcessInfo.processInfo.environment),
+               let vcamProof = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_VCAM"] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                    let proofModel = AppModel()
+                    proofModel.stageVirtualCameraProof(vcamProof)
+                    let host = NSHostingView(rootView: VirtualCameraFlyout().environmentObject(proofModel))
+                    host.frame = NSRect(origin: .zero, size: host.fittingSize)
+                    let window = NSWindow(contentRect: host.frame, styleMask: [.borderless],
+                                          backing: .buffered, defer: false)
+                    window.contentView = host
+                    window.orderFrontRegardless()
+                    vcamProofView = host
+                    Self.vcamProofRetain = (proofModel, window)
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
-                let target: NSView? = quitPanelProof
+                let target: NSView? = vcamProofView ?? (quitPanelProof
                     ? QuitPromptPanel.proofView
-                    : NSApplication.shared.windows.first?.contentView
+                    : NSApplication.shared.windows.first?.contentView)
                 if let view = target,
                    let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                     view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -773,28 +838,7 @@ final class AppModel: ObservableObject {
         let bridge = MediaCoreBridge(corePath: corePath, environmentExtras: env)
         self.bridge = bridge
         bridge.onStatus = { [weak self] status in
-            Task { @MainActor in
-                self?.status = status
-                if case .connected(let renderer) = status {
-                    ShellLog.write("core connected renderer=\(renderer)")
-                    self?.onConnected()
-                }
-                if case .exited(let code) = status {
-                    self?.monitorControl.resetForProcess()
-                    self?.monitorControlNotice = "Monitor edit reconciling with restarted core"
-                    self?.audioRouteControl.resetForProcess()
-                    self?.audioRouteControlNotice = "Audio route reconciling with restarted core"
-                    self?.rosterProjection.resetForProcess()
-                    self?.rosterRecoveryNotice = "Zoom roster reconciling with restarted core"
-                    self?.recordingCommands.interrupted()
-                    self?.recordingDesired = false
-                    self?.streamingDesired = false
-                    self?.recordingStatus = "interrupted"
-                    self?.streamStatus = "interrupted"
-                    self?.streamDetail = "Media core exited; output continuity was interrupted."
-                    self?.pushWarning("media core exited (code \(code)) — relaunching")
-                }
-            }
+            Task { @MainActor in self?.handleBridgeStatus(status) }
         }
         bridge.onEvent = { [weak self] event in
             guard let self else { return }
@@ -808,6 +852,37 @@ final class AppModel: ObservableObject {
             CoreLog.write(line)
         }
         bridge.start()
+    }
+
+    /// Every bridge status change, including each new core generation
+    /// (`.connected` after a launch or a respawn).
+    func handleBridgeStatus(_ status: BridgeStatus) {
+        self.status = status
+        if case .connected(let renderer) = status {
+            ShellLog.write("core connected renderer=\(renderer)")
+            self.onConnected()
+        }
+        if case .exited(let code) = status {
+            self.monitorControl.resetForProcess()
+            self.monitorControlNotice = "Monitor edit reconciling with restarted core"
+            self.audioRouteControl.resetForProcess()
+            self.audioRouteControlNotice = "Audio route reconciling with restarted core"
+            self.rosterProjection.resetForProcess()
+            self.rosterRecoveryNotice = "Zoom roster reconciling with restarted core"
+            self.recordingCommands.interrupted()
+            self.recordingDesired = false
+            self.streamingDesired = false
+            self.recordingStatus = "interrupted"
+            self.streamStatus = "interrupted"
+            self.streamDetail = "Media core exited; output continuity was interrupted."
+            self.pushWarning("media core exited (code \(code)) — relaunching")
+        }
+    }
+
+    /// Test-only: stops the poll timers onConnected() schedules.
+    func stopTimersForTesting() {
+        syncTimer?.invalidate(); syncTimer = nil
+        zoomTimer?.invalidate(); zoomTimer = nil
     }
 
     // The Studio center is ONE multiview canvas (reference 01-studio): the
@@ -833,14 +908,224 @@ final class AppModel: ObservableObject {
         Task { _ = try? await self.outputRequest(body) }
     }
 
-    private func onConnected() {
+    // ── virtual camera: intent, wire, activation ─────────────────────────────
+
+    var virtualCameraLabel: String {
+        VirtualCameraPresentation.label(intent: virtualCamera.enabled, ext: cameraExtensionState,
+                                        core: virtualCameraCore)
+    }
+
+    var virtualCameraFramerLabel: String {
+        VirtualCameraPresentation.framerLabel(framerEnabled: virtualCamera.framerEnabled,
+                                              intent: virtualCamera.enabled, core: virtualCameraCore)
+    }
+
+    /// The footer toggle and (later) the control API. Enabling while the
+    /// extension is not active asks the OS to install/approve it; the first
+    /// enable records the opt-in so a relaunch re-activates silently.
+    func setVirtualCamera(enabled: Bool) {
+        var next = virtualCamera
+        next.enabled = enabled
+        if enabled {
+            if cameraExtensionOptedIn != true { cameraExtensionOptedIn = true }
+            if cameraExtensionState != .active && cameraExtensionState != .activating {
+                activateCameraExtension()
+            }
+        }
+        applyVirtualCamera(next)
+    }
+
+    /// Settings "Remove virtual camera". Turns the intent off (one
+    /// sync-virtual-camera {on:false}) and asks the OS to uninstall. The opt-in
+    /// is cleared only once the uninstall succeeded (a cancelled password or a
+    /// failure leaves the extension installed, so it must stay opted in) and a
+    /// failure is reported in `virtualCameraRemovalStatus` because the flyout
+    /// label reads "off" whenever the intent is off.
+    func removeVirtualCamera() {
+        cameraExtensionQueryToken = nil
+        virtualCameraRemovalStatus = nil
+        var next = virtualCamera
+        next.enabled = false
+        applyVirtualCamera(next)
+        cameraExtension.deactivate { [weak self] state in
+            Task { @MainActor in
+                guard let self else { return }
+                self.setCameraExtensionState(state)
+                switch state {
+                case .notInstalled, .needsReboot:
+                    self.cameraExtensionOptedIn = false
+                    self.persistPrefsNow()
+                    self.virtualCameraRemovalStatus = state == .needsReboot
+                        ? "Restart your Mac to finish removing the virtual camera." : nil
+                default:
+                    ShellLog.write("vcam-ext: removal did not complete (\(state)); opt-in kept")
+                    self.virtualCameraRemovalStatus = "Couldn't remove the virtual camera. It is still installed."
+                }
+            }
+        }
+    }
+
+    @Published var virtualCameraRemovalStatus: String?
+
+    func setVirtualCameraMirror(_ on: Bool) {
+        var next = virtualCamera
+        next.mirror = on
+        applyVirtualCamera(next)
+    }
+
+    func setVirtualCameraFramer(_ on: Bool) {
+        var next = virtualCamera
+        next.framerEnabled = on
+        applyVirtualCamera(next)
+    }
+
+    /// Committed on field submit or focus loss, never per keystroke. The
+    /// operator's text is kept as typed (trimmed); the wire sanitizes it and a
+    /// blank name sends the default.
+    func setVirtualCameraDeviceName(_ name: String) {
+        // An unchanged name (as the core would receive it) sends nothing.
+        guard DeviceNamePolicy.sanitized(name) != DeviceNamePolicy.sanitized(virtualCamera.deviceName) else { return }
+        var next = virtualCamera
+        next.deviceName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyVirtualCamera(next)
+    }
+
+    /// The ONE place a virtual camera field change lands: store, send, persist.
+    private func applyVirtualCamera(_ next: PersistedVirtualCamera) {
+        let changed = next != virtualCamera
+        virtualCamera = next
+        sendVirtualCameraSync()
+        if changed { persistPrefsNow() }
+    }
+
+    /// One-shot command, so it is also re-sent on every core generation
+    /// (onConnected): a respawned core forgets it and answers with its default.
+    private func sendVirtualCameraSync() {
+        let body = CoreCommands.mediaCoreSync(elapsedMs: Double(elapsedMs()),
+                                              commands: [CoreCommands.syncVirtualCamera(virtualCamera)])
+        if let capture = coreCommandCaptureForTesting { capture(body); return }
+        guard let bridge else { return }
+        Task {
+            if let response = try? await bridge.request(body),
+               let snapshot = response["snapshot"] as? JSONObject {
+                applySnapshot(snapshot)
+            }
+        }
+    }
+
+    /// Saves now instead of waiting for the 5 s autosave, but never before the
+    /// operator's file has been restored (that would write defaults over it).
+    private func persistPrefsNow() {
+        guard prefsRestored else { return }
+        let prefs = currentPrefs()
+        guard prefs != lastSavedPrefs else { return }
+        prefs.save()
+        lastSavedPrefs = prefs
+    }
+
+    /// Launch: after an opt-in, activate (a silent update/replace — or the
+    /// approval prompt again if it was never granted); otherwise only ask.
+    func startCameraExtensionAtLaunch() {
+        if cameraExtensionOptedIn == true {
+            activateCameraExtension()
+        } else {
+            queryCameraExtension()
+        }
+    }
+
+    private func activateCameraExtension() {
+        cameraExtensionQueryToken = nil  // an activation outranks any pending query
+        cameraExtension.activate { [weak self] state in
+            Task { @MainActor in self?.setCameraExtensionState(state) }
+        }
+    }
+
+    private func queryCameraExtension() {
+        let token = UUID()
+        cameraExtensionQueryToken = token
+        cameraExtension.query { [weak self] state in
+            Task { @MainActor in
+                guard let self, self.cameraExtensionQueryToken == token else { return }
+                self.cameraExtensionQueryToken = nil
+                self.setCameraExtensionState(state)
+            }
+        }
+        let timeout = cameraExtensionQueryTimeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.cameraExtensionQueryToken == token else { return }
+                self.cameraExtensionQueryToken = nil
+                ShellLog.write("vcam-ext: properties query gave no answer in \(timeout) s; treating as notInstalled")
+                self.setCameraExtensionState(.notInstalled)
+            }
+        }
+    }
+
+    private func setCameraExtensionState(_ state: CameraExtensionState) {
+        guard state != cameraExtensionState else { return }
+        ShellLog.write("vcam-ext: shell state \(cameraExtensionState) -> \(state)")
+        cameraExtensionState = state
+    }
+
+    /// A virtual camera proof shot needs BOTH variables: COREVIDEO_SHELL_VCAM
+    /// alone is inert (it neither stages a flyout nor skips the launch check).
+    nonisolated static func vcamProofRequested(_ env: [String: String]) -> Bool {
+        env["COREVIDEO_SHELL_VCAM"] != nil && env["COREVIDEO_SHELL_SNAPSHOT"] != nil
+    }
+
+    /// Proof-shot only (COREVIDEO_SHELL_VCAM): keeps the staged model and its window alive.
+    static var vcamProofRetain: (AppModel, NSWindow)?
+
+    /// Proof-shot only: stages a flyout state on a never-started model by
+    /// assigning fields directly (no send, no persist, no activation).
+    func stageVirtualCameraProof(_ name: String) {
+        switch name {
+        case "live":
+            virtualCamera = PersistedVirtualCamera(enabled: true, mirror: true, framerEnabled: true,
+                                                   deviceName: "")
+            cameraExtensionState = .active
+            var core = VirtualCameraReadModel()
+            core.enabled = true; core.status = "live"; core.width = 1920; core.height = 1080
+            core.framerState = "active"; core.framesPublished = 600
+            virtualCameraCore = core
+        case "mixed":  // framer ON next to mirror OFF in one frame
+            virtualCamera = PersistedVirtualCamera(enabled: true, mirror: false, framerEnabled: true,
+                                                   deviceName: "Booth Cam")
+            cameraExtensionState = .active
+            var core = VirtualCameraReadModel()
+            core.enabled = true; core.status = "live"; core.width = 1920; core.height = 1080
+            core.framerState = "active"
+            virtualCameraCore = core
+        case "needsApproval":
+            virtualCamera = PersistedVirtualCamera(enabled: true)
+            cameraExtensionState = .needsApproval
+            virtualCameraCore = nil
+        default:
+            virtualCamera = PersistedVirtualCamera()
+            cameraExtensionState = .notInstalled
+            virtualCameraCore = nil
+        }
+    }
+
+    func openCameraExtensionSettings() {
+        let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        NSWorkspace.shared.open(CameraExtensionPolicy.settingsURL(osMajor: major))
+    }
+
+    /// Every core generation (initial handshake AND respawn). Internal: the
+    /// harness drives it to prove the console is re-asserted.
+    func onConnected() {
         monitorControl.resetForProcess()
         audioRouteControl.resetForProcess()
         rosterProjection.resetForProcess()
         rosterRecoveryNotice = rosterProjection.notice
+        // FIRST, before anything that can make a source audible (monitor, capture
+        // mics, scenes with media): see reassertAudioConsole.
+        reassertAudioConsole()
         // A fresh core opens the system default output until told otherwise:
         // re-list the devices and re-send the operator's monitor device on
         // EVERY core generation (gotchas: one-shot commands are lost on respawn).
+        // After reassertAudioConsole: the refresh can call setMonitor itself.
         refreshMonitorOutputDevices()
         if !monitorDevicesWatched {
             monitorDevicesWatched = true
@@ -854,8 +1139,9 @@ final class AppModel: ObservableObject {
         // Re-assert a restored grade: the core starts neutral every launch, so
         // a persisted grade that is never pushed silently does nothing.
         if !gradeIsNeutral { applyColorGrade() }
+        // One-shot: a respawned core forgets the virtual camera (CLAUDE.md).
+        sendVirtualCameraSync()
         audioInputs = AudioInputs.available()
-        reassertCaptureAudio()
         // A scene always sits on PROGRAM (the Windows shell starts on its
         // first scene) — the PGM tile composites from the first frame.
         if programSceneId.isEmpty {
@@ -957,6 +1243,9 @@ final class AppModel: ObservableObject {
             observeAudioObservation(snapshot)
         }
         if !snapshot.isEmpty { applyProgramBlackout(snapshot) }
+        if !snapshot.isEmpty {
+            virtualCameraCore = VirtualCameraReadModel.parse(snapshot)
+        }
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         clockText = formatter.string(from: Date())
@@ -1089,11 +1378,19 @@ final class AppModel: ObservableObject {
         }
         let acceptRoster = rosterProjection.observe(snapshot)
         rosterRecoveryNotice = rosterProjection.notice
-        if acceptRoster { meetingState = snapshot["meetingState"] as? String ?? meetingState }
+        if acceptRoster {
+            let previous = meetingState
+            meetingState = snapshot["meetingState"] as? String ?? meetingState
+            if meetingState == "idle", previous != "idle" { pruneStaleZoomIsoIntent() }
+        }
+        if acceptRoster, Self.meetingHasEnded(snapshot["meetingState"] as? String ?? "") {
+            endMeetingAudioSession()
+        }
         if acceptRoster, let participants = snapshot["participants"] as? [JSONObject] {
             // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
             // the WinUI shell consumes): userId/displayName/videoOn/muted/talking.
             let cameraOnBefore = Set(roster.filter(\.hasVideo).map(\.id))
+            let presentBefore = Set(roster.map(\.id))
             roster = RosterParticipant.parse(participants, assignedIds: assignedIds)
             // Auto-assign video participants into empty slots (the Windows
             // AutomationAutoAssignInputsEnabled default) — join → tiles with
@@ -1119,7 +1416,12 @@ final class AppModel: ObservableObject {
             // camera-on, so without this the participant never re-subscribes (the
             // Windows 2026-08-09 frozen-tile defect, mirrored).
             let cameraOnAfter = Set(roster.filter(\.hasVideo).map(\.id))
-            if cameraOnAfter != cameraOnBefore && !assignedAny {
+            // ...and so must any change of WHO is in the room: the audio source set
+            // keeps camera-off sources and drops departed ones, and meeting-audio
+            // exists only while the meeting has participants. A camera-off guest
+            // returning to their slot must get their audio back.
+            let presentAfter = Set(roster.map(\.id))
+            if (cameraOnAfter != cameraOnBefore || presentAfter != presentBefore) && !assignedAny {
                 syncSpine()
             }
         }
@@ -1197,7 +1499,7 @@ final class AppModel: ObservableObject {
         } else {
             isoSelectedSourceIds.insert(key)
         }
-        isoRecordingEnabled = !isoSelectedSourceIds.isEmpty
+        isoRecordingEnabled = !visibleIsoSelection.isEmpty
         recomputeFromSlots()
     }
 
@@ -1593,7 +1895,11 @@ final class AppModel: ObservableObject {
     // docs/mac-port-phase4-swiftui-shell.md). Subscriptions request raw video
     // for every assigned participant; the compositor's fallback grid composes
     // whatever frames arrive.
+    /// Count of spine re-push requests (harness evidence for the triggers).
+    private(set) var spineSyncRequests = 0
+
     private func syncSpine() {
+        spineSyncRequests += 1
         spineSyncTask?.cancel()
         spineSyncTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 120_000_000)
@@ -1604,6 +1910,33 @@ final class AppModel: ObservableObject {
 
     private func pushSpine() async {
         guard let bridge else { return }
+        let requests = spinePushRequests()
+        for request in requests {
+            do {
+                _ = try await bridge.request(request)
+            } catch {
+                if request["type"] as? String == "media-core-sync" {
+                    // Not delivered: forget the memo so the debounced paths retry.
+                    lastSyncedStripIds = nil
+                    lastRoutingBaseSent = nil
+                    pushWarning("audio console sync failed: \(error.localizedDescription)")
+                } else {
+                    pushWarning("assign failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// The ordered requests one spine push sends. When the audio console changed
+    /// with this source set, the channel list and/or base routing go FIRST, in
+    /// their own media-core-sync, AHEAD of the zoom-media-spine-sync that
+    /// subscribes the audio (round-2 review): a returning A1-muted guest's mute
+    /// (I2's memory) — and the routing that keeps the core off its raw unmuted
+    /// fallback sum — must be in the core before that guest's PCM can be mixed.
+    /// The core's mailbox is FIFO and pushSpine awaits each request in order; the
+    /// 150 ms mix debounce used to let the subscription win by that much.
+    /// Internal: the harness checks the order.
+    func spinePushRequests() -> [JSONObject] {
         let participants: [JSONObject] = roster.map { participant in
             [
                 "sdkUserId": participant.id,
@@ -1614,22 +1947,22 @@ final class AppModel: ObservableObject {
                 "talking": participant.talking,
             ]
         }
-        // Budget-ordered, camera-on-filtered, capped (E1/E2/E5 — see
-        // ZoomSourceBudget.swift). Replaces the old `assignedIds` Set, which was
-        // nondeterministic, uncapped and subscribed camera-off participants.
-        let programRouted = programSceneId.isEmpty
-            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: programSceneId, isProgram: true))
-        let previewRouted = previewSceneId.isEmpty
-            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: previewSceneId))
-        let multiviewAssigned = slots
-            .filter { $0.kind == "zoom" && $0.inShow && !$0.offline }
-            .map(\.sourceId)
-        let isoArmed = isoRecordingEnabled
-            ? slots.filter { $0.kind == "zoom" && $0.iso }.map(\.sourceId) : []
-        let cameraOn = Set(roster.filter(\.hasVideo).map(\.id))
-        let subscriptions = Self.spineSubscriptionPayloads(ZoomSourceBudget.videoEntries(
-            programRouted: programRouted, previewRouted: previewRouted,
-            multiviewAssigned: multiviewAssigned, isoArmed: isoArmed, cameraOn: cameraOn))
+        let subscriptions = resolveSpineSubscriptions()
+        refreshStrips()  // the console follows the audio source set just decided
+        var audio: [JSONObject] = []
+        let stripIds = Set(strips.map(\.id))
+        if !strips.isEmpty, stripIds != lastSyncedStripIds {
+            mixSyncTask?.cancel()
+            scheduledStripIds = nil
+            audio.append(audioMixCommand())
+            lastSyncedStripIds = stripIds
+        }
+        if let routing = routingBaseCommand(), let sends = routing["sends"] as? [JSONObject],
+           !(lastRoutingBaseSent.map { NSArray(array: $0).isEqual(to: sends) } ?? false) {
+            routingBaseTask?.cancel()
+            audio.append(routing)
+            lastRoutingBaseSent = sends
+        }
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
@@ -1670,32 +2003,97 @@ final class AppModel: ObservableObject {
             "warnings": [],
             "summary": "mac shell spine sync",
         ]
-        do {
-            _ = try await bridge.request([
-                "type": "zoom-media-spine-sync", "spinePayload": payload,
-                "elapsedMs": elapsedMs(),
-            ])
-        } catch {
-            pushWarning("assign failed: \(error.localizedDescription)")
+        var requests: [JSONObject] = []
+        if !audio.isEmpty {
+            requests.append(["type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": audio])
         }
+        requests.append(["type": "zoom-media-spine-sync", "spinePayload": payload,
+                         "elapsedMs": elapsedMs()])
+        return requests
     }
 
-    // The exact objects placed in the spine `subscriptions` array. kind
-    // "participant-video" (E3/E4/E6, ZoomSubscriptionResolutionPolicy.h) is the
-    // tiered kind: the core grants 1080P to the first 8 camera-on entries in
-    // this budget order, and its engine-side identity
-    // ("participant-video-<pid>-camera") excludes purpose, so the real
-    // `entry.purpose` rides the wire without churning the subscription on a
-    // bus move.
-    static func spineSubscriptionPayloads(_ entries: [ZoomSourceBudget.Entry]) -> [JSONObject] {
-        entries.enumerated().map { index, entry in
-            [
+    /// The spine `subscriptions` array for the current show, and — as the one
+    /// place the audio source set is decided — records it for the audio console
+    /// (`zoomAudioSourceIds` / `meetingAudioSubscribed`). Internal so the harness
+    /// drives the real call site, not a hand-copied list.
+    func resolveSpineSubscriptions() -> [JSONObject] {
+        // Budget-ordered, camera-on-filtered, capped (E1/E2/E5 — see
+        // ZoomSourceBudget.swift). Replaces the old `assignedIds` Set, which was
+        // nondeterministic, uncapped and subscribed camera-off participants.
+        let programRouted = programSceneId.isEmpty
+            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: programSceneId, isProgram: true))
+        let previewRouted = previewSceneId.isEmpty
+            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: previewSceneId))
+        let multiviewAssigned = slots
+            .filter { $0.kind == "zoom" && $0.inShow && !$0.offline }
+            .map(\.sourceId)
+        let isoArmed = isoRecordingEnabled
+            ? slots.filter { $0.kind == "zoom" && $0.iso }.map(\.sourceId) : []
+        let cameraOn = Set(roster.filter(\.hasVideo).map(\.id))
+        let audioIds = ZoomSourceBudget.audioParticipantIds(
+            programRouted: programRouted, previewRouted: previewRouted,
+            multiviewAssigned: multiviewAssigned, isoArmed: isoArmed,
+            present: Set(roster.map(\.id)))
+        zoomAudioSourceIds = audioIds
+        meetingAudioSubscribed = !roster.isEmpty
+        return Self.spineSubscriptionPayloads(
+            ZoomSourceBudget.videoEntries(
+                programRouted: programRouted, previewRouted: previewRouted,
+                multiviewAssigned: multiviewAssigned, isoArmed: isoArmed, cameraOn: cameraOn),
+            audioParticipantIds: audioIds,
+            meetingHasParticipants: !roster.isEmpty)
+    }
+
+    // The exact objects placed in the spine `subscriptions` array — the Windows
+    // ZoomMediaSpinePayloadBuilder.BuildSubscriptions shape, field for field:
+    //
+    //  - `meeting-audio` for the synthetic MeetingMixParticipantId ("0"), purpose
+    //    "program", priority 0, whenever the meeting has participants. The Zoom
+    //    program mix is an audio source in its own right and is deliberately NOT
+    //    narrowed to the source set. Without it there is no "zoom-mix" PCM at all.
+    //  - `participant-video` per budget entry, priority 10+i. The tiered kind
+    //    (E3/E4/E6, ZoomSubscriptionResolutionPolicy.h): the core grants 1080P to
+    //    the first 8 camera-on entries in this order, and its engine-side identity
+    //    ("participant-video-<pid>-camera") excludes purpose, so the real
+    //    `entry.purpose` rides the wire without churning on a bus move.
+    //  - `participant-audio` per audio source (camera-off sources included),
+    //    purpose "mix", priority 40+i. The engine identity for audio DOES include
+    //    purpose ("participant-audio-<pid>-mix", ZoomEngineRuntime.cpp), so "mix" is
+    //    a fixed constant — never a bus purpose that could churn the subscription.
+    //
+    // Until this shipped the Mac subscribed VIDEO ONLY: a live 9-guest meeting had
+    // raw media active and audioMixSession.participants == 0 — no channels, nothing
+    // to monitor.
+    static func spineSubscriptionPayloads(
+        _ entries: [ZoomSourceBudget.Entry], audioParticipantIds: [String],
+        meetingHasParticipants: Bool
+    ) -> [JSONObject] {
+        var payloads: [JSONObject] = []
+        if meetingHasParticipants {
+            payloads.append([
+                "participantId": ZoomSourceBudget.meetingMixParticipantId,
+                "kind": "meeting-audio",
+                "purpose": "program",
+                "priority": 0,
+            ])
+        }
+        for (index, entry) in entries.enumerated() {
+            payloads.append([
                 "participantId": entry.participantId,
                 "kind": "participant-video",
                 "purpose": entry.purpose,
-                "priority": index,
-            ]
+                "priority": 10 + index,
+            ])
         }
+        for (index, id) in audioParticipantIds.enumerated() {
+            payloads.append([
+                "participantId": id,
+                "kind": "participant-audio",
+                "purpose": "mix",
+                "priority": 40 + index,
+            ])
+        }
+        return payloads
     }
 
     // Per-source dropout policy commands (core contract #535 slice 4a,
@@ -1794,8 +2192,9 @@ final class AppModel: ObservableObject {
         if Self.isSoloScene(sceneId) {
             // Each solo scene owns its source: re-cueing one never touches the
             // other, so the one on Program never changes without a Take.
-            guard let slotId = soloSlotByScene[sceneId],
-                  let slot = slots.first(where: { $0.id == slotId }),
+            // The source captured at cue time (Windows BuildSoloRoute), never the
+            // slot's current assignment: a slot edit must not change Program.
+            guard let slot = soloCueByScene[sceneId],
                   slot.kind != "unassigned" else { return [] }
             var route = SceneRoute(
                 routeId: sceneId + "-solo", mode: "fixed",
@@ -2122,14 +2521,17 @@ final class AppModel: ObservableObject {
     //    possible) and the on-air solo scene is never re-pointed.
     //  - The solo scene is a REAL entry in `scenes` (EnsureMultiviewSoloScene),
     //    because Take and canTake only move scenes that exist.
-    //  - Each solo scene owns its route (`soloSlotByScene`), so a cue changes
-    //    Preview only: "program changes exclusively on Take".
+    //  - Each solo scene owns its route (`soloCueByScene`), so a cue changes
+    //    Preview only: "program changes exclusively on Take". The entry is a
+    //    SNAPSHOT of the slot taken at cue time — Windows BuildSoloRoute copies
+    //    the participant / capture device id into the route — so unassigning or
+    //    reassigning that slot later never re-points (or blacks) Program.
     // Solo scenes are reserved: never in the rail, never persisted, never in
     // the control API's scene.list.
     static let soloSceneA = "mv-solo-a"
     static let soloSceneB = "mv-solo-b"
     static let soloSceneName = "Manual one-up"
-    @Published var soloSlotByScene: [String: Int] = [:]
+    @Published var soloCueByScene: [String: ShowInputSlot] = [:]
 
     static func isSoloScene(_ sceneId: String) -> Bool {
         sceneId == soloSceneA || sceneId == soloSceneB
@@ -2149,8 +2551,8 @@ final class AppModel: ObservableObject {
     /// (Windows ResolveOnAirSceneLabel), any other scene its name.
     func busLabel(for sceneId: String) -> String {
         if Self.isSoloScene(sceneId) {
-            if let slotId = soloSlotByScene[sceneId], let slot = slots.first(where: { $0.id == slotId }) {
-                return slot.name.isEmpty ? "Input \(slotId)" : slot.name
+            if let slot = soloCueByScene[sceneId] {
+                return slot.name.isEmpty ? "Input \(slot.id)" : slot.name
             }
             return "Solo"
         }
@@ -2169,7 +2571,7 @@ final class AppModel: ObservableObject {
               slot.kind != "unassigned" else { return }
         let sceneId = programSceneId == Self.soloSceneA ? Self.soloSceneB : Self.soloSceneA
         ensureSoloScene(sceneId)
-        soloSlotByScene[sceneId] = slotId
+        soloCueByScene[sceneId] = slot
         previewSceneId = sceneId
         // Always sync, even when the id did not change (a re-cue into the same
         // solo scene changes only its route — Windows SyncPreviewSceneChangeAsync).
@@ -2255,6 +2657,11 @@ final class AppModel: ObservableObject {
             takeStatus = same
             return .failed(same)
         }
+        // Windows snapshots BOTH scenes' routes and refuses the rollback if either
+        // changed while the Take was pending. Only solo scenes can be re-pointed
+        // without an id change (a mid-Take multiview cue reuses the id not on the
+        // new Program), so their captured cues are the routes to compare.
+        let cuesAtTake = (soloCueByScene[taken], soloCueByScene[previousProgram])
         previewSceneId = previousProgram
         programSceneId = taken
         sceneSyncTask?.cancel()           // the Take batch carries the full current state
@@ -2283,6 +2690,8 @@ final class AppModel: ObservableObject {
             return .success
         } catch {
             let untouched = programSceneId == taken && previewSceneId == previousProgram
+                && soloCueByScene[taken] == cuesAtTake.0
+                && soloCueByScene[previousProgram] == cuesAtTake.1
             let failure: String
             if untouched {
                 programSceneId = previousProgram
@@ -2647,7 +3056,24 @@ final class AppModel: ObservableObject {
         // The selection is the authority; the didSet re-projects the slot flags
         // and normalises the columns (the same path every other writer takes).
         isoSelectedSourceIds = selection
-        isoRecordingEnabled = !isoSelectedSourceIds.isEmpty
+        isoRecordingEnabled = !visibleIsoSelection.isEmpty
+    }
+
+    /// The selected sources the operator can SEE (an assigned slot, so a
+    /// Sources checkbox and a Routing row). The master switch follows this,
+    /// not stale intent for sources that are no longer in a slot.
+    var visibleIsoSelection: Set<String> {
+        isoSelectedSourceIds.intersection(slots.compactMap(\.sourceKey))
+    }
+
+    /// Zoom participant ids are per meeting: once the meeting is over (or on a
+    /// relaunch), `zoom:` intent for a guest who is in no slot can never
+    /// resolve again, and only piles up. Capture ids are stable and stay.
+    /// Windows never prunes, but its matrix does not draw the selection.
+    func pruneStaleZoomIsoIntent() {
+        let assigned = Set(slots.compactMap(\.sourceKey))
+        let stale = isoSelectedSourceIds.filter { $0.hasPrefix("zoom:") && !assigned.contains($0) }
+        if !stale.isEmpty { isoSelectedSourceIds.subtract(stale) }
     }
 
     /// Re-derive the projections of `isoSelectedSourceIds`: each slot's ISO
@@ -2661,9 +3087,12 @@ final class AppModel: ObservableObject {
             let selected = slots[index].sourceKey.map(isoSelectedSourceIds.contains) ?? false
             if slots[index].iso != selected { slots[index].iso = selected }
         }
-        var columns = isoColumnAssignments.filter { isoSelectedSourceIds.contains($0.value) }
+        // Columns only for sources with a Routing row (an assigned slot): stale
+        // intent must not take ISO cells that draw empty and starve a new pick.
+        let visible = visibleIsoSelection
+        var columns = isoColumnAssignments.filter { visible.contains($0.value) }
         let placed = Set(columns.values)
-        for source in isoSelectedSourceIds.sorted() where !placed.contains(source) {
+        for source in visible.sorted() where !placed.contains(source) {
             guard let free = (1...8).first(where: { columns[$0] == nil }) else { break }
             columns[free] = source
         }
@@ -2697,18 +3126,20 @@ final class AppModel: ObservableObject {
 
     private func isoResolve(_ selection: inout RecordingIsoSelection,
                             recording: Bool?) -> [String] {
-        let present = Set(roster.map { "zoom:" + $0.id })
+        // Windows ComputeEligiblePresentIsoSourceIds (ShowInputsCoordinator.cs
+        // :334-365): only ASSIGNED, present sources are eligible, and a video-off
+        // Zoom guest never takes one of the 8 ISO encoder slots. Unassign keeps
+        // the source's ISO intent but removes it from what records.
+        let present = Set(roster.filter(\.hasVideo).map { "zoom:" + $0.id })
             .union(captureDevices.filter { $0.connectionState == "connected" }
                 .map { "capture:" + $0.id })
-        let assigned = Set(slots.filter { $0.kind != "unassigned" }.map {
-            ($0.kind == "zoom" ? "zoom:" : "capture:") + $0.sourceId
-        })
+        let assigned = Set(slots.compactMap(\.sourceKey))
         // While a take is recording, passive roster loss never shrinks the set
         // (#1188); only an operator ISO edit does.
         return selection.resolve(
             recordingRequested: recording ?? isRecordingActive,
             enabled: isoRecordingEnabled, selected: isoSelectedSourceIds,
-            eligible: present.sorted(), assigned: assigned)
+            eligible: present.intersection(assigned).sorted(), assigned: assigned)
     }
 
     func toggleIsoSource(_ sourceId: String) {
@@ -2749,10 +3180,7 @@ final class AppModel: ObservableObject {
                 .map { String($0.dropFirst(5)) },
         ]
         if streaming {
-            command["streamOutputProfile"] = [
-                "width": 1920, "height": 1080, "fps": 30,
-                "targetBitrateMbps": streamBitrateMbps, "videoCodec": "h264",
-            ]
+            command["streamOutputProfile"] = streamOutputProfile()
             command["destinationSettings"] = streamDestinationSettings()
         }
         return command
@@ -2828,12 +3256,12 @@ final class AppModel: ObservableObject {
         if bus.hasPrefix("iso-") {
             for (otherSource, _) in audioSends where audioSends[otherSource]?[bus] != nil {
                 audioSends[otherSource]?[bus] = nil
-                audioRouteControl.edit(source: otherSource, bus: bus, enabled: false, gainDb: 0)
+                editRoute(source: otherSource, bus: bus, enabled: false, gainDb: 0)
             }
         }
         busesForSource[bus] = 0
         audioSends[source] = busesForSource
-        audioRouteControl.edit(source: source, bus: bus, enabled: true, gainDb: 0)
+        editRoute(source: source, bus: bus, enabled: true, gainDb: 0)
         audioRouteControlNotice = audioRouteControl.notice
         selectedSend = (source, bus)
         syncAudioRouting()
@@ -2841,7 +3269,7 @@ final class AppModel: ObservableObject {
 
     func removeSend(source: String, bus: String) {
         audioSends[source]?[bus] = nil
-        audioRouteControl.edit(source: source, bus: bus, enabled: false, gainDb: 0)
+        editRoute(source: source, bus: bus, enabled: false, gainDb: 0)
         audioRouteControlNotice = audioRouteControl.notice
         if selectedSend?.source == source, selectedSend?.bus == bus { selectedSend = nil }
         syncAudioRouting()
@@ -2850,10 +3278,88 @@ final class AppModel: ObservableObject {
     func setSendGain(source: String, bus: String, gainDb: Double) {
         guard audioSends[source]?[bus] != nil else { return }
         audioSends[source]?[bus] = max(-60, min(10, gainDb))
-        audioRouteControl.edit(source: source, bus: bus, enabled: true,
+        editRoute(source: source, bus: bus, enabled: true,
                                gainDb: max(-60, min(10, gainDb)))
         audioRouteControlNotice = audioRouteControl.notice
         syncAudioRouting()
+    }
+
+    /// The operator's own crosspoint edits, kept as INTENT so they ride the base
+    /// matrix (AudioConsolePolicy.baseRoutingSends) and survive a core restart.
+    private(set) var operatorRouteEdits: [AudioRouteKey: AudioRouteControlProjection.Draft] = [:]
+    private(set) var lastRoutingBaseSent: [JSONObject]?
+
+    private func editRoute(source: String, bus: String, enabled: Bool, gainDb: Double) {
+        audioRouteControl.edit(source: source, bus: bus, enabled: enabled, gainDb: gainDb)
+        operatorRouteEdits[AudioRouteKey(source: source, bus: bus)] =
+            AudioRouteControlProjection.Draft(enabled: enabled, gainDb: gainDb)
+        pushRoutingBase()
+    }
+
+    /// The base sync-audio-routing-matrix for the current show, or nil when it
+    /// would be empty (never send an empty matrix: the core holds-last for 25
+    /// syncs and an empty one reads as "unroute everything"). Internal: the
+    /// harness checks it.
+    func routingBaseCommand() -> JSONObject? {
+        let sends = AudioConsolePolicy.baseRoutingSends(
+            zoomAudioIds: zoomAudioSourceIds,
+            captureAudioIds: slots
+                .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
+                .map { "capture:" + $0.sourceId },
+            mediaRouted: sceneHasMediaRoute(programSceneId, isProgram: true),
+            operatorEdits: operatorRouteEdits)
+        guard !sends.isEmpty else { return nil }
+        return ["type": "sync-audio-routing-matrix", "sends": sends,
+                "busSends": [] as [JSONObject], "monitorBusId": ""]
+    }
+
+    private var routingBaseTask: Task<Void, Never>?
+    /// Harness seam: receives the base-routing request instead of the bridge.
+    var routingBaseSendObserver: ((JSONObject) -> Void)?
+
+    /// The media-core-sync envelope for a base routing push. Opted in to the core
+    /// mailbox's coalescing (CommandMailbox::replaceable: replaceableFullState +
+    /// a non-empty coalescingKey, sync-audio-routing-matrix only), so a queued
+    /// older matrix is REPLACED by a newer one instead of both occupying the
+    /// 128-entry mailbox. A replaced request is answered `superseded: true`.
+    func routingBaseEnvelope(_ command: JSONObject) -> JSONObject {
+        ["type": "media-core-sync", "elapsedMs": elapsedMs(),
+         "replaceableFullState": true, "coalescingKey": "audio-routing-base",
+         "commands": [command]]
+    }
+
+    /// Sends the base matrix when it changed (or after a core restart reset the
+    /// memo). DEBOUNCED latest-wins (review I3): the send-gain slider calls this on
+    /// every tick, and an uncoalesced full matrix per tick could fill the core's
+    /// 128-entry command mailbox mid-drag and get unrelated commands refused.
+    /// One pending push; the matrix is computed when it fires.
+    func pushRoutingBase() {
+        routingBaseTask?.cancel()
+        routingBaseTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.sendRoutingBaseNow()
+        }
+    }
+
+    private func sendRoutingBaseNow() async {
+        guard let command = routingBaseCommand() else { return }
+        let sends = command["sends"] as? [JSONObject] ?? []
+        if let last = lastRoutingBaseSent, NSArray(array: last).isEqual(to: sends) { return }
+        let envelope = routingBaseEnvelope(command)
+        if let observer = routingBaseSendObserver {
+            lastRoutingBaseSent = sends
+            observer(envelope)
+            return
+        }
+        guard let bridge else { return }
+        lastRoutingBaseSent = sends
+        do {
+            _ = try await bridge.request(envelope)
+        } catch {
+            lastRoutingBaseSent = nil  // not delivered: the next push retries
+            pushWarning("audio routing sync failed: \(error.localizedDescription)")
+        }
     }
 
     private var routingSyncTask: Task<Void, Never>?
@@ -3074,29 +3580,185 @@ final class AppModel: ObservableObject {
     private var stripEditTimes: [String: Date] = [:]
     private var mixSyncTask: Task<Void, Never>?
 
+    private var lastMixEcho: [JSONObject] = []
+    /// The strip ids last sent in a sync-participant-audio-mix (nil = never sent
+    /// to this core generation).
+    private(set) var lastSyncedStripIds: Set<String>?
+    /// The strip set a channel sync is scheduled for (nil = none pending).
+    private(set) var scheduledStripIds: Set<String>?
+
     private func applyMixParticipants(_ participants: [JSONObject]) {
-        var next: [AudioStrip] = []
-        for entry in participants {
-            guard let id = entry["participantId"] as? String, !id.isEmpty else { continue }
-            let editing = stripEditTimes[id].map { Date().timeIntervalSince($0) < 2 } ?? false
-            let existing = strips.first { $0.id == id }
-            if editing, var held = existing {
-                held.outputLevel = entry["outputLevel"] as? Int ?? held.outputLevel
-                held.status = entry["status"] as? String ?? held.status
-                next.append(held)
-                continue
-            }
-            next.append(AudioStrip(
-                id: id,
-                outputLevel: entry["outputLevel"] as? Int ?? 0,
-                manualGainDb: (entry["manualGainDb"] as? NSNumber)?.doubleValue
-                    ?? existing?.manualGainDb ?? 0,
-                muted: entry["muted"] as? Bool ?? false,
-                solo: entry["solo"] as? Bool ?? false,
-                pan: (entry["pan"] as? NSNumber)?.doubleValue ?? 0,
-                status: entry["status"] as? String ?? ""))
+        lastMixEcho = participants
+        refreshStrips()
+    }
+
+    /// The console's expected sources (AudioConsolePolicy.expectedSourceIds) from
+    /// the shell's own model: the subscribed Zoom audio set, paired capture mics,
+    /// the media strip.
+    var expectedAudioSourceIds: [String] {
+        AudioConsolePolicy.expectedSourceIds(
+            meetingAudio: meetingAudioSubscribed,
+            zoomAudioIds: AudioConsolePolicy.rosterOrdered(
+                zoomAudioSourceIds, roster: roster.map(\.id)),
+            captureAudioIds: slots
+                .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
+                .map { "capture:" + $0.sourceId },
+            mediaStrip: sceneHasMediaRoute(programSceneId, isProgram: true)
+                || sceneHasMediaRoute(previewSceneId, isProgram: false))
+    }
+
+    /// Whether a bus's scene carries a FIXED media route — read off the real route
+    /// wire (buildRoutes), the same thing the core is sent.
+    func sceneHasMediaRoute(_ sceneId: String, isProgram: Bool) -> Bool {
+        guard !sceneId.isEmpty, scenes.contains(where: { $0.id == sceneId }) else { return false }
+        return buildRoutes(for: sceneId, isProgram: isProgram).contains {
+            ($0["mode"] as? String) == "fixed" && !(($0["mediaAssetId"] as? String) ?? "").isEmpty
         }
-        strips = next
+    }
+
+    /// A bus scene or the logo bug changed: the media strip and its default sends
+    /// follow (review M3).
+    private func mediaAudioSceneChanged(_ changed: Bool) {
+        guard changed else { return }
+        refreshStrips()
+        pushRoutingBase()
+    }
+
+    /// Operator-facing name for an audio source id (Windows labels: "Zoom program
+    /// mix", "Media playback", the guest's roster name, the slot name).
+    func audioSourceLabel(_ id: String) -> String {
+        switch id {
+        case AudioConsolePolicy.meetingMixId: return "Zoom program mix"
+        case AudioConsolePolicy.mediaId: return "Media playback"
+        case "local-machine-audio": return "Local machine audio"
+        default:
+            let bare = id.hasPrefix("capture:") ? String(id.dropFirst("capture:".count)) : id
+            if let slot = slots.first(where: { $0.sourceId == bare && !$0.name.isEmpty }) {
+                return slot.name
+            }
+            return roster.first { $0.id == id }?.name ?? id
+        }
+    }
+
+    /// Harness seam: records the console as delivered to the current core, as a
+    /// successful sync would (the harness has no bridge).
+    func markAudioConsoleDeliveredForTesting() {
+        lastSyncedStripIds = Set(strips.map(\.id))
+        scheduledStripIds = nil
+        lastRoutingBaseSent = routingBaseCommand()?["sends"] as? [JSONObject]
+    }
+
+    /// A ONE-SHOT COMMAND MUST BE RE-APPLIED ON EVERY CORE GENERATION (CLAUDE.md).
+    /// The core starts with no channels, no mastering and no routing; the Mac kept
+    /// showing the A1's mutes, faders, inserts and routes while the respawned core
+    /// played everything at unity — and its echoed "unmuted" then overwrote the
+    /// A1's mutes. Forget what this core was sent and send the whole console again:
+    /// every strip with its mute/gain/pan/solo/inserts + mastering, and the base
+    /// routing matrix with the operator's crosspoint edits.
+    ///
+    /// ONE request, mix FIRST (review M6): the respawned core has no channels, and
+    /// with no channels the FADER LAW does not apply — every routed source plays at
+    /// unity. Sending the routing now and the mix 150 ms later (the debounce) made
+    /// A1-muted sources audible for that window. The mix, the base routing and the
+    /// capture-mic pairings (the only thing that can bring PCM into a fresh core
+    /// at this point — its Zoom engine is new and not yet in a meeting, and scenes
+    /// with media are synced after this) go together, in that order; the core
+    /// applies a request's commands in order and its mailbox is FIFO.
+    func reassertAudioConsole() {
+        mixSyncTask?.cancel()
+        routingBaseTask?.cancel()
+        lastSyncedStripIds = nil
+        scheduledStripIds = nil
+        lastRoutingBaseSent = nil
+        strips = AudioConsolePolicy.mergeStrips(
+            echo: [], prior: strips, remembered: rememberedStripSettings,
+            expected: expectedAudioSourceIds)
+        var commands: [JSONObject] = [audioMixCommand()]
+        let routing = routingBaseCommand()
+        if let routing { commands.append(routing) }
+        commands.append(captureAudioSourcesCommand())
+        lastSyncedStripIds = Set(strips.map(\.id))
+        lastRoutingBaseSent = routing?["sends"] as? [JSONObject]
+        if let observer = audioReassertObserver { observer(commands); return }
+        guard let bridge else { return }
+        Task { [weak self] in
+            do {
+                _ = try await bridge.request([
+                    "type": "media-core-sync", "elapsedMs": self?.elapsedMs() ?? 0,
+                    "commands": commands,
+                ])
+            } catch {
+                self?.lastSyncedStripIds = nil
+                self?.lastRoutingBaseSent = nil
+                self?.refreshStrips()
+                self?.pushRoutingBase()
+            }
+        }
+    }
+
+    /// Harness seam: receives the restart re-assert batch instead of the bridge.
+    var audioReassertObserver: (([JSONObject]) -> Void)?
+
+    /// The A1's per-id strip settings for the current meeting (review I2). Cleared
+    /// for Zoom ids when the meeting ends: Zoom reuses user ids across meetings,
+    /// and a reused id must never inherit another person's mute or fader.
+    private(set) var rememberedStripSettings: [String: AudioStrip] = [:]
+
+    /// The meeting is KNOWN to be over. ONLY terminal states clear per-guest audio
+    /// memory (round-2 review): ZoomEngineRuntimeState reports idle (initial, and
+    /// after the engine's "left" — which the macOS engine sends for both SDK
+    /// Disconnecting and Ended, i.e. Leave and meeting-ended), joining, in-meeting
+    /// (published as "in_meeting") and error (auth/join failure, meeting_failed, or
+    /// engine_disconnected — the engine lost; a mid-meeting error never demotes
+    /// the state). The SDK adapter's names add ended / leaving / status-N.
+    /// "joining", "leaving", "status-N" (waiting room, breakout moves, reconnects)
+    /// and anything unknown are NOT terminal: wiping the A1's mutes there would
+    /// put guests back live at unity mid-meeting — the I2 failure.
+    static let terminalMeetingStates: Set<String> = ["idle", "ended", "error", "left", "failed"]
+
+    static func meetingHasEnded(_ state: String) -> Bool {
+        terminalMeetingStates.contains(state)
+    }
+
+    /// The meeting ended (a KNOWN not-in-meeting state; an unknown state never
+    /// clears — the Windows ResetMixerMeetingSession rule). Forgets every Zoom
+    /// participant's remembered strip settings and route edits, and drops the
+    /// meeting's sources from the console now rather than at the next spine push.
+    /// Non-Zoom sources (zoom-mix, capture mics, media) keep their settings.
+    func endMeetingAudioSession() {
+        let isZoom = AudioConsolePolicy.isZoomParticipantChannel
+        let hasState = !zoomAudioSourceIds.isEmpty || meetingAudioSubscribed
+            || rememberedStripSettings.keys.contains(where: isZoom)
+            || operatorRouteEdits.keys.contains { isZoom($0.source) }
+            || strips.contains { isZoom($0.id) }
+        guard hasState else { return }
+        rememberedStripSettings = rememberedStripSettings.filter { !isZoom($0.key) }
+        operatorRouteEdits = operatorRouteEdits.filter { !isZoom($0.key.source) }
+        zoomAudioSourceIds = []
+        meetingAudioSubscribed = false
+        strips.removeAll { isZoom($0.id) }
+        refreshStrips()
+        pushRoutingBase()
+    }
+
+    /// Rebuilds the strips from the shell's source set + the last echo, and — the
+    /// FADER LAW — syncs the full channel list whenever the strip SET changes, so
+    /// the core never holds a routed source without a strip (a late guest, a newly
+    /// paired mic) and never keeps a strip for a source that is gone.
+    /// Internal: the harness drives it.
+    func refreshStrips() {
+        strips = AudioConsolePolicy.mergeStrips(
+            echo: lastMixEcho, prior: strips, remembered: rememberedStripSettings,
+            expected: expectedAudioSourceIds)
+        for strip in strips { rememberedStripSettings[strip.id] = strip }
+        // Schedule once per new SET (order is presentation, never a reason to
+        // sync): snapshots arrive faster than the 150 ms debounce, and
+        // re-scheduling on every one would cancel the sync forever.
+        let ids = Set(strips.map(\.id))
+        if ids != lastSyncedStripIds && ids != scheduledStripIds {
+            scheduledStripIds = ids
+            scheduleMixSync()
+        }
     }
 
     func editInserts(_ id: String, _ apply: (inout ChannelInserts) -> Void) {
@@ -3110,6 +3772,7 @@ final class AppModel: ObservableObject {
     func editStrip(_ id: String, _ apply: (inout AudioStrip) -> Void) {
         guard let index = strips.firstIndex(where: { $0.id == id }) else { return }
         apply(&strips[index])
+        rememberedStripSettings[id] = strips[index]
         stripEditTimes[id] = Date()
         scheduleMixSync()
     }
@@ -3127,8 +3790,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func syncAudioMix() async {
-        guard let bridge, !strips.isEmpty else { return }
+    /// The full-state sync-participant-audio-mix for the current console. Internal:
+    /// the harness checks it carries the A1's state for every strip.
+    func audioMixCommand() -> JSONObject {
         let channels: [JSONObject] = strips.map { strip in
             let inserts = channelInserts[strip.id] ?? ChannelInserts()
             return [
@@ -3142,15 +3806,21 @@ final class AppModel: ObservableObject {
                 "insertSettings": inserts.settingsJson,
             ]
         }
+        return ["type": "sync-participant-audio-mix", "limiterEnabled": true,
+                "mastering": mastering.json, "channels": channels]
+    }
+
+    private func syncAudioMix() async {
+        scheduledStripIds = nil
+        guard let bridge, !strips.isEmpty else { return }
+        lastSyncedStripIds = Set(strips.map(\.id))
         do {
             _ = try await bridge.request([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                "commands": [
-                    ["type": "sync-participant-audio-mix", "limiterEnabled": true,
-                     "mastering": mastering.json, "channels": channels]
-                ],
+                "commands": [audioMixCommand()],
             ])
         } catch {
+            lastSyncedStripIds = nil  // not delivered: the next refresh retries
             pushWarning("audio mix sync failed: \(error.localizedDescription)")
         }
     }
@@ -3296,6 +3966,8 @@ final class AppModel: ObservableObject {
 
     /// Test seam: feed a snapshot through the real read path.
     func applySnapshotForTesting(_ snapshot: JSONObject) { applySnapshot(snapshot) }
+    /// Test seam: feed a zoom-snapshot through the real read path.
+    func applyZoomForTesting(_ snapshot: JSONObject) { applyZoom(snapshot) }
 
     private func replyToQuit(_ shouldTerminate: Bool) {
         if let seam = quitReplyForTesting { seam(shouldTerminate); return }

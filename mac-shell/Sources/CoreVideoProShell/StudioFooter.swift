@@ -20,6 +20,7 @@
 // parity) but looks unavailable and its flyout says so in plain words.
 
 import AppKit
+import CameraExtensionKit
 import SwiftUI
 
 // ── pure readouts (tested in ShellTests) ─────────────────────────────────────
@@ -89,19 +90,11 @@ enum StudioFooterReadout {
     }
 
     // Outputs the Mac does not have yet. Verified 2026-11-15:
-    //  - Virtual camera: roadmap M9.2, no CoreMediaIO extension in the tree.
     //  - NDI output: the macOS release core is configured without
     //    COREVIDEO_WITH_NDI_OUTPUT (scripts/release-macos.sh) and the shell has
     //    no NDI destination — the NDI sender path is Windows-only.
-    static let virtualCameraUnavailable =
-        "Virtual camera isn't available on Mac yet \u{2014} it's coming in a later update."
     static let ndiUnavailable =
         "NDI output isn't available on Mac yet \u{2014} it's coming in a later update."
-
-    static var recordingFolder: String {
-        (NSSearchPathForDirectoriesInDomains(.moviesDirectory, .userDomainMask, true).first
-         ?? NSTemporaryDirectory()) + "/CoreVideoPro"
-    }
 }
 
 // ── shapes + small pieces ────────────────────────────────────────────────────
@@ -450,21 +443,17 @@ struct FooterOutputsGroup: View {
                 } flyout: { streamFlyout }
 
                 SplitOutputButton(
-                    name: "Virtual camera, not available on Mac yet",
+                    name: "Virtual camera",
                     optionsName: "Virtual camera options",
-                    help: StudioFooterReadout.virtualCameraUnavailable,
-                    available: false,
+                    help: model.virtualCameraLabel,
+                    active: model.virtualCamera.enabled,
                     flyoutShown: $vcamShown,
-                    action: nil
+                    action: { model.setVirtualCamera(enabled: !model.virtualCamera.enabled) }
                 ) {
                     Image(systemName: "web.camera")
                         .font(.system(size: 17, weight: .medium))  // design-lint: allow
-                        .foregroundStyle(Studio.textPrimary)
-                } flyout: {
-                    FooterFlyout(title: "Virtual camera", width: 280) {
-                        FooterMutedText(StudioFooterReadout.virtualCameraUnavailable)
-                    }
-                }
+                        .foregroundStyle(model.virtualCamera.enabled ? Studio.onAccent : Studio.textPrimary)
+                } flyout: { VirtualCameraFlyout() }
 
                 SplitOutputButton(
                     name: "NDI output, not available on Mac yet",
@@ -518,11 +507,16 @@ struct FooterOutputsGroup: View {
                         .foregroundStyle(Studio.amber)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(StudioFooterReadout.recordingFolder)
+                Text(model.recordFlyoutFolder)
                     .font(.plexMono(10)).foregroundStyle(Studio.secondary)
                     .textSelection(.enabled)
                     .accessibilityLabel("Recording folder")
-                    .help(StudioFooterReadout.recordingFolder)
+                    .help(model.recordFlyoutFolder)
+                if !model.recordingFolderWarning.isEmpty {
+                    Text(model.recordingFolderWarning).font(.grotesk(11))
+                        .foregroundStyle(Studio.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 6).fill(Studio.field))
@@ -559,7 +553,9 @@ struct FooterOutputsGroup: View {
                     .font(.grotesk(11)).foregroundStyle(Studio.textDim)
             }
             HStack {
-                Text(ProductionSettingsPolicy.streamRecipeLabel(bitrateMbps: model.streamBitrateMbps))
+                Text(ProductionSettingsPolicy.streamRecipeLabel(
+                    bitrateMbps: model.streamBitrateMbps,
+                    height: model.coreOutputProfile?.height ?? model.canvasHeight))
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
@@ -576,6 +572,78 @@ struct FooterOutputsGroup: View {
                 .disabled(!streaming && (model.streamKey.isEmpty || model.streamUrl.isEmpty))
             }
         }
+    }
+}
+
+// ── virtual camera flyout (Windows StudioWorkspace.xaml, V5) ──────────────
+
+/// The virtual camera option flyout. Copy matches Windows verbatim; the status
+/// line and the System Settings affordance are the Mac activation layer.
+struct VirtualCameraFlyout: View {
+    @EnvironmentObject var model: AppModel
+    @State private var nameDraft = ""
+    @FocusState private var nameFocused: Bool
+
+    var body: some View {
+        FooterFlyout(title: "Virtual camera", width: 300) {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("OH Framer (webcam only)", isOn: Binding(
+                    get: { model.virtualCamera.framerEnabled },
+                    set: { model.setVirtualCameraFramer($0) }))
+                    .toggleStyle(StudioToggleStyle())
+                    .font(.grotesk(13, .semibold)).foregroundStyle(Studio.textPrimary)
+                caption("Framing guides over live video. Program, Preview, recordings and streams stay clean.")
+                Text(model.virtualCameraFramerLabel)
+                    .font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Mirror (self-view)", isOn: Binding(
+                    get: { model.virtualCamera.mirror },
+                    set: { model.setVirtualCameraMirror($0) }))
+                    .toggleStyle(StudioToggleStyle())
+                    .font(.grotesk(13, .semibold)).foregroundStyle(Studio.textPrimary)
+                caption("Flips the camera horizontally, like most webcam self-views.")
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Camera name").font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                // Committed on Return or focus loss, never per keystroke.
+                TextField(CameraConstants.defaultDeviceName, text: $nameDraft)
+                    .textFieldStyle(StudioFieldStyle())
+                    .focused($nameFocused)
+                    .onSubmit { commitName() }
+                    .onChange(of: nameFocused) { focused in if !focused { commitName() } }
+                    .accessibilityLabel("Camera name")
+                caption("The name apps show in their camera list. Takes effect next time you enable the camera.")
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(model.virtualCameraLabel)
+                    .font(.grotesk(12, .semibold)).foregroundStyle(Studio.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Virtual camera status")
+                    .accessibilityValue(model.virtualCameraLabel)
+                if VirtualCameraPresentation.showsSettingsButton(model.cameraExtensionState) {
+                    caption(CameraExtensionPolicy.settingsInstruction(
+                        osMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion))
+                    Button("Open System Settings") { model.openCameraExtensionSettings() }
+                        .buttonStyle(AccentButtonStyle())
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Studio.field))
+        }
+        .onAppear { nameDraft = model.virtualCamera.deviceName }
+        .onDisappear { commitName() }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text).font(.grotesk(11)).foregroundStyle(Studio.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func commitName() {
+        model.setVirtualCameraDeviceName(nameDraft)  // the model drops an unchanged name
     }
 }
 
@@ -723,7 +791,7 @@ struct FooterTelemetry: View {
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
             FooterStat(title: "Program",
-                       value: "\(model.canvasHeight)p\(model.canvasFps)",
+                       value: model.coreCanvasLabel,
                        health: model.programSceneId.isEmpty ? "Idle" : "Live",
                        healthColor: model.programSceneId.isEmpty ? Studio.secondary : Studio.accent,
                        width: 110)

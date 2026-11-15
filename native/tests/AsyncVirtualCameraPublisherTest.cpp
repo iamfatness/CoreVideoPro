@@ -1,12 +1,16 @@
 #include "modules/AsyncVirtualCameraPublisher.h"
+#include "modules/GpuWebcamFramer.h"
+#include "FramerRenders.h"
 #include <gtest/gtest.h>
 #include <atomic>
+#include <cstdio>
 #include <chrono>
 #include <future>
 using namespace corevideo::modules;
 using namespace std::chrono_literals;
 namespace {
-#if !COREVIDEO_WITH_VIRTUALCAM
+// The Mac virtual-camera build (COREVIDEO_WITH_MAC_VIRTUALCAM) has a real factory too.
+#if !COREVIDEO_WITH_VIRTUALCAM && !COREVIDEO_WITH_MAC_VIRTUALCAM
 TEST(AsyncVirtualCameraPublisher, DisabledCameraFactoryReportsFramerIntentAsUnavailable) {
   auto camera=createVirtualCameraPublisher();
   EXPECT_FALSE(camera->status().framerEnabled);
@@ -149,7 +153,7 @@ TEST(AsyncVirtualCameraPublisher, FramerForkPreservesSourceAttributionAndOffIden
     decorated=backend->last;
     EXPECT_EQ(backend->deliveredAt,9001);
   }
-#if defined(_WIN32) && COREVIDEO_WITH_D3D11
+#if defined(COREVIDEO_FRAMER_RENDERS)
   EXPECT_NE(decorated.get(),clean.get());
   EXPECT_EQ(decorated->at(950*1920+960),58);
 #else
@@ -166,7 +170,7 @@ TEST(AsyncVirtualCameraPublisher, FramerForkPreservesSourceAttributionAndOffIden
   EXPECT_FALSE(camera.status().framerEnabled);
   EXPECT_EQ(camera.status().framerState,"off");
   // A retained decorated image must remain immutable after another publication.
-#if defined(_WIN32) && COREVIDEO_WITH_D3D11
+#if defined(COREVIDEO_FRAMER_RENDERS)
   constexpr int expectedTint=58;
 #else
   constexpr int expectedTint=100;
@@ -252,5 +256,113 @@ TEST(AsyncVirtualCameraPublisher, PublishesBackendStartFailure) {
   EXPECT_EQ(camera.status().warning,"OS rejected camera");
   EXPECT_FALSE(camera.status().enabled);
 }
+
+// Mac (roadmap M9.2): the extension can restart mid-stream. The backend reports it
+// as a publication-time CAMERA_ failure; the owned worker must retry on its 1 s
+// cadence with no toggle from the caller.
+struct LosingCamera : IVirtualCameraPublisher {
+  explicit LosingCamera(std::string lossWarning) : warning(std::move(lossWarning)) {}
+  std::string warning;
+  std::atomic<int> starts{0};
+  mutable std::mutex m;
+  VirtualCameraStatus current;
+  bool start(int,int,int) override {
+    ++starts; std::lock_guard<std::mutex> lock(m);
+    current.enabled=true; current.state="live"; current.warning.clear(); return true;
+  }
+  void stop() override { std::lock_guard<std::mutex> lock(m); current.enabled=false; current.state="off"; }
+  void publish(const ProgramFrame&) override {}
+  void publishNv12IdentifiedOnWorker(std::shared_ptr<const std::vector<uint8_t>>, int, int, int64_t, int64_t) override {
+    std::lock_guard<std::mutex> lock(m);
+    if (!current.enabled) return;
+    current.enabled=false; current.state="failed"; current.warning=warning;
+  }
+  VirtualCameraStatus status() const override { std::lock_guard<std::mutex> lock(m); return current; }
+};
+bool awaitState(AsyncVirtualCameraPublisher& camera, const std::string& state, std::chrono::milliseconds limit) {
+  const auto deadline=std::chrono::steady_clock::now()+limit;
+  while (camera.status().state!=state && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(1ms);
+  return camera.status().state==state;
+}
+TEST(AsyncVirtualCameraPublisher, PublicationLossSchedulesTheRegistrationRetry) {
+  auto inner=std::make_unique<LosingCamera>("CAMERA_EXTENSION_LOST: CoreVideo Pro Camera restarted; reconnecting.");
+  auto* backend=inner.get();
+  AsyncVirtualCameraPublisher camera(std::move(inner));
+  camera.start(1920,1080,60);
+  ASSERT_TRUE(awaitState(camera,"live",2s));
+  ASSERT_EQ(backend->starts.load(),1);
+  camera.publishNv12Identified(std::make_shared<const std::vector<uint8_t>>(1920*1080*3/2,16),1920,1080,1,0);
+  ASSERT_TRUE(awaitState(camera,"failed",2s));
+  // No stop()/start() from the caller: the worker reconnects on its own.
+  const auto deadline=std::chrono::steady_clock::now()+2500ms;
+  while (backend->starts.load()<2 && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(1ms);
+  EXPECT_GE(backend->starts.load(),2);
+  EXPECT_TRUE(awaitState(camera,"live",1s));
+}
+TEST(AsyncVirtualCameraPublisher, NonCameraPublicationFailureDoesNotRetry) {
+  auto inner=std::make_unique<LosingCamera>("Virtual camera operation failed.");
+  auto* backend=inner.get();
+  AsyncVirtualCameraPublisher camera(std::move(inner));
+  camera.start(1920,1080,60);
+  ASSERT_TRUE(awaitState(camera,"live",2s));
+  camera.publishNv12Identified(std::make_shared<const std::vector<uint8_t>>(1920*1080*3/2,16),1920,1080,1,0);
+  ASSERT_TRUE(awaitState(camera,"failed",2s));
+  std::this_thread::sleep_for(2500ms);
+  EXPECT_EQ(backend->starts.load(),1);
+  EXPECT_EQ(camera.status().state,"failed");
+}
+// Needs a framer that actually renders on this platform (FramerRenders.h: the
+// Windows D3D11 framer or the Metal framer behind COREVIDEO_WITH_MAC_VIRTUALCAM).
+#if defined(COREVIDEO_FRAMER_RENDERS)
+struct UpstreamMirrorCamera : CaptureCamera {
+  bool mirrorAppliedUpstream() const override { return true; }
+};
+std::shared_ptr<const std::vector<uint8_t>> framedThroughCamera(std::unique_ptr<CaptureCamera> inner,
+    const std::shared_ptr<const std::vector<uint8_t>>& clean) {
+  auto* backend=inner.get();
+  AsyncVirtualCameraPublisher camera(std::move(inner));
+  camera.setFramerEnabled(true); camera.setMirror(true); camera.start(1920,1080,60);
+  int64_t sequence=500;
+  const auto deadline=std::chrono::steady_clock::now()+3s;
+  do {
+    camera.publishNv12Identified(clean,1920,1080,++sequence,0);
+    if (!backend->await(sequence)) break;
+  } while (camera.status().framerState!="active" && std::chrono::steady_clock::now()<deadline);
+  camera.publishNv12Identified(clean,1920,1080,++sequence,0);
+  if (!backend->await(sequence)) return {};
+  std::lock_guard<std::mutex> lock(backend->captureMutex);
+  return backend->last;
+}
+TEST(AsyncVirtualCameraPublisher, UpstreamMirrorIsNotAppliedTwiceToTheFramer) {
+  std::vector<uint8_t> pixels(1920*1080*3/2,128);
+  std::fill(pixels.begin(),pixels.begin()+1920*1080,16);
+  auto clean=std::make_shared<const std::vector<uint8_t>>(std::move(pixels));
+  GpuWebcamFramer reference;
+#if defined(__APPLE__)
+  if (!reference.prepare(1920,1080) && reference.warning().find("no Metal device")!=std::string::npos) {
+    std::fprintf(stderr,"[metal-test] unavailable: %s\n",reference.warning().c_str()); return;
+  }
+#endif
+  ASSERT_TRUE(reference.prepare(1920,1080)) << reference.warning();
+  // The publisher always draws the camera LUFS panel (WebcamLoudnessState::read()
+  // reports show=true); with no meter update it is the not-ready panel.
+  const auto meter=WebcamLoudnessState{}.read();
+  const auto unmirrored=reference.apply(clean,1920,1080,false,meter);
+  const auto mirrored=reference.apply(clean,1920,1080,true,meter);
+  ASSERT_TRUE(unmirrored && mirrored);
+  ASSERT_EQ(unmirrored->at(400*1920+420),74);
+  ASSERT_EQ(mirrored->at(400*1920+1499),74);
+  // Mac backend: the Metal tap already mirrored, so the framer must not flip again.
+  const auto upstream=framedThroughCamera(std::make_unique<UpstreamMirrorCamera>(),clean);
+  ASSERT_TRUE(upstream);
+  EXPECT_TRUE(*upstream==*unmirrored);
+  EXPECT_EQ(upstream->at(400*1920+420),74);
+  // Windows-default backend under the same inputs: the framer applies the mirror.
+  const auto windows=framedThroughCamera(std::make_unique<CaptureCamera>(),clean);
+  ASSERT_TRUE(windows);
+  EXPECT_TRUE(*windows==*mirrored);
+  EXPECT_EQ(windows->at(400*1920+1499),74);
+}
+#endif
 }
 

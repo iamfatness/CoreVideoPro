@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for CoreVideo Pro.app in Developer ID builds that embed the
+  camera extension (roadmap M9.2): everything in macos-shell.entitlements,
+  plus what OSSystemExtensionRequest needs.
+
+  system-extension.install, application-identifier and team-identifier are
+  RESTRICTED and valid only with the embedded Developer ID provisioning
+  profile (COREVIDEO_APP_PROFILE). Ad-hoc builds keep macos-shell.entitlements.
+  Keep the first two keys in step with macos-shell.entitlements.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    <key>com.apple.developer.system-extension.install</key>
+    <true/>
+    <key>com.apple.application-identifier</key>
+    <string>42394L3353.us.iamfatness.corevideopro.shell</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>42394L3353</string>
+</dict>
+</plist>

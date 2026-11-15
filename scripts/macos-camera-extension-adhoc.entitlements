@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Ad-hoc and CI signing of the camera extension. The same sandbox and app
+  group as macos-camera-extension.entitlements, and NOTHING restricted: there
+  is no provisioning profile in an ad-hoc build, and a restricted entitlement
+  without one gets the binary killed by AMFI at launch.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>42394L3353.us.iamfatness.corevideopro.shell.camera</string>
+    </array>
+</dict>
+</plist>

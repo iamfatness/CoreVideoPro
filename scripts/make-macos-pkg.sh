@@ -75,6 +75,14 @@ pkgbuild --root "$W/root" --component-plist "$W/component.plist" \
     --identifier "$IDENTIFIER" --version "$VERSION" \
     --install-location /Applications "$W/component.pkg" >/dev/null
 
+# The camera extension binary must be in the payload: a pkg without it installs
+# an app whose virtual camera can never activate, and nothing else would notice.
+EXT_PAYLOAD="CoreVideo Pro.app/Contents/Library/SystemExtensions/us.iamfatness.corevideopro.shell.camera.systemextension/Contents/MacOS/CoreVideoProCamera"
+PAYLOAD_LIST="$(pkgutil --payload-files "$W/component.pkg")" \
+    || die "pkgutil --payload-files failed on $W/component.pkg"
+grep -qxF "./$EXT_PAYLOAD" <<<"$PAYLOAD_LIST" \
+    || die "pkg payload lacks $EXT_PAYLOAD"
+
 cat > "$W/distribution.xml" <<DX
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">

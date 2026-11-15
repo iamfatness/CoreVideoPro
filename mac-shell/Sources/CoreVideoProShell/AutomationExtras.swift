@@ -193,8 +193,7 @@ extension AppModel {
         }
 
         if Self.isSoloScene(programSceneId) {
-            if let slotId = soloSlotByScene[programSceneId],
-               let slot = slots.first(where: { $0.id == slotId }), slot.kind != "unassigned" {
+            if let slot = soloCueByScene[programSceneId], slot.kind != "unassigned" {
                 candidates.append(label(slot))
             }
         } else if let scene = scenes.first(where: { $0.id == programSceneId }) {

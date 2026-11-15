@@ -16,13 +16,18 @@ extension ShellTests {
             ("tier0/production-settings-every-generation",
              testProductionSettingsAreReassertedOnEveryCoreGeneration),
             ("tier0/production-labels-and-bitrate", testProductionLabelsAndStreamBitrateAreReal),
+            ("tier0/stream-start-keeps-the-canvas", testStreamStartSendsTheCanvasAndLabelsReadTheCore),
             ("tier0/slots-survive-relaunch", testSlotAssignmentsSurviveARelaunch),
             ("tier0/slot-settings-follow-the-source", testPerSourceSettingsFollowTheSourceNotTheSlot),
             ("tier0/iso-survives-first-assignment", testRestoredIsoSelectionSurvivesTheFirstAssignment),
             ("tier0/iso-matrix-one-truth", testIsoMatrixAndSourcesToggleAreOneTruth),
+            ("tier0/iso-records-only-assigned-video-sources", testIsoRecordsOnlyAssignedVideoBearingSources),
+            ("tier0/iso-stale-intent-pruned-and-invisible", testStaleIsoIntentIsPrunedAndNeverTakesAColumn),
             ("tier0/sources-rows-fit-the-page", testSourcesRowsFitThePageAtTheMinimumWindow),
             ("tier0/recording-folder-chosen-and-persisted", testRecordingFolderIsChosenPersistedAndUsed),
             ("tier0/recording-folder-falls-back-loudly", testRecordingFolderFallsBackLoudly),
+            ("tier0/record-flyout-shows-the-effective-folder", testRecordFlyoutShowsTheEffectiveFolder),
+            ("tier0/recording-folder-real-write-probe", testRecordingFolderIsProbedWithARealWrite),
             ("tier0/zoom-status-reads-sdk-readiness", testZoomStatusReadsTheCoresSdkReadiness),
             ("tier0/lower-third-keys-a-program-source", testManualLowerThirdKeysAProgramSourceTheCoreGateAdmits),
             ("tier0/lower-third-status-from-core", testLowerThirdStatusComesFromTheCoresOverlayState),
@@ -115,7 +120,9 @@ extension ShellTests {
 
         // onConnected runs on EVERY generation (initial handshake and respawn);
         // it must call the re-assert, not the old multiview-only one-shot.
-        guard let body = functionBody(named: "private func onConnected()", in: "AppModel.swift") else {
+        // No access modifier in the needle: mac-zoom-audio made onConnected()
+        // internal so the harness can drive a core generation.
+        guard let body = functionBody(named: "func onConnected()", in: "AppModel.swift") else {
             expect(false, "AppModel.swift onConnected() not found next to the binary")
             return
         }
@@ -147,6 +154,37 @@ extension ShellTests {
             return
         }
         expect(!shell.contains("MonoChip(\"1080p60\")"), "no hard-coded 1080p60 multiview chip")
+    }
+
+    /// Review I3: the stream profile writes the same core fields as the
+    /// canvas, so its hard-coded 1080p30 re-sized Program for every output
+    /// when Stream was pressed, while the chip showed the Settings value.
+    @MainActor
+    static func testStreamStartSendsTheCanvasAndLabelsReadTheCore() {
+        let model = AppModel()
+        model.canvasWidth = 3840
+        model.canvasHeight = 2160
+        model.canvasFps = 60
+        let start = model.startProgramOutput(recording: false, streaming: true)
+        let profile = start["streamOutputProfile"] as? JSONObject
+        expectEqual(profile?["width"] as? Int, 3840, "stream start sends the canvas width, not 1920")
+        expectEqual(profile?["height"] as? Int, 2160, "and the canvas height, not 1080")
+        expectEqual(profile?["fps"] as? Int, 60, "and the canvas fps, not 30")
+        expectEqual(profile?["codec"] as? String, "h264", "under the key the core reads (codec)")
+        let rtmp = (start["destinationSettings"] as? [JSONObject])?.first
+        expectEqual(rtmp?["fps"] as? Int, 30, "the stream itself stays at the destination's 30 fps")
+
+        // Labels show what the core renders, never the shell's setting.
+        expectEqual(model.coreCanvasLabel, "\u{2014}", "no core yet: no claim")
+        model.applySnapshotForTesting(["outputProfile": [
+            "width": 1920, "height": 1080, "fps": 30, "resolution": "1920x1080"] as JSONObject])
+        expectEqual(model.coreCanvasLabel, "1080p30",
+                    "the chip reads the core's outputProfile even when Settings says 2160p60")
+        guard let shell = sourceFile("ShellApp.swift"), let footer = sourceFile("StudioFooter.swift") else {
+            expect(false, "sources not found next to the binary"); return
+        }
+        expect(shell.contains("MonoChip(model.coreCanvasLabel)"), "the multiview chip reads the core")
+        expect(footer.contains("value: model.coreCanvasLabel,"), "the footer Program stat reads the core")
     }
 
     // ── 0.8 slot assignments + ISO selection persist ────────────────────────
@@ -227,17 +265,89 @@ extension ShellTests {
         var prefs = ShellPrefs()
         prefs.isoRecordingEnabled = true
         prefs.isoSelectedSourceIds = ["capture:cam1", "zoom:7"]
+        prefs.showInputSlots = [PersistedSlot(slotId: 2, kind: "zoom", sourceId: "7",
+                                              name: "Guest", inShow: true)]
         let model = AppModel()
         model.applyRestoredPrefs(prefs)
-        model.assignSlot(2, kind: "zoom", sourceId: "7", name: "Guest")
+        model.assignSlot(3, kind: "capture", sourceId: "cam1", name: "Cam")
         expectEqual(model.isoSelectedSourceIds, ["capture:cam1", "zoom:7"],
                     "the first assignment keeps the restored ISO selection")
         expect(model.isoRecordingEnabled, "and the ISO master switch")
-        expectEqual(model.slots.first { $0.id == 2 }?.iso, true,
+        expectEqual(model.slots.first { $0.id == 3 }?.iso, true,
                     "the assigned slot shows its source's saved ISO state")
+        expectEqual(model.slots.first { $0.id == 2 }?.iso, true, "the restored slot keeps its ISO")
         model.unassignSlot(2)
         expect(model.isoSelectedSourceIds.contains("zoom:7"),
                "unassign keeps the source's ISO intent (Windows ShowInputsCoordinator)")
+    }
+
+    /// Fix round 1, I1: intent survives unassign, but what RECORDS is only
+    /// assigned, present, video-bearing sources (Windows
+    /// ComputeEligiblePresentIsoSourceIds, ShowInputsCoordinator.cs:334-365).
+    @MainActor
+    static func testIsoRecordsOnlyAssignedVideoBearingSources() {
+        let model = AppModel()
+        model.roster = [RosterParticipant(id: "7", name: "Guest", hasVideo: true,
+                                          muted: false, talking: false, assigned: false)]
+        model.captureDevices = [CaptureDeviceRow(id: "cam1", name: "Cam", kind: "video", vendor: "",
+                                                 connectionState: "connected", signalPresent: true,
+                                                 warning: "")]
+        model.assignSlot(2, kind: "zoom", sourceId: "7", name: "Guest")
+        model.toggleSlotIso(2)
+        expectEqual(model.peekIsoSourceIds(recording: true), ["zoom:7"], "an assigned guest records")
+        expectEqual(model.resolvedIsoSourceIds(recording: true), ["zoom:7"], "the take arms it")
+        model.unassignSlot(2)
+        expect(model.isoSelectedSourceIds.contains("zoom:7"), "unassign keeps the ISO intent")
+        expectEqual(model.peekIsoSourceIds(recording: true), [],
+                    "an unassigned guest still in the meeting does NOT record")
+        expectEqual(model.resolvedIsoSourceIds(recording: true), [],
+                    "and the live take drops its writer")
+        model.assignSlot(2, kind: "zoom", sourceId: "7", name: "Guest")
+        expectEqual(model.peekIsoSourceIds(recording: true), ["zoom:7"], "re-assigning brings it back")
+        model.roster = [RosterParticipant(id: "7", name: "Guest", hasVideo: false,
+                                          muted: false, talking: false, assigned: true)]
+        expectEqual(model.peekIsoSourceIds(recording: false), [],
+                    "a video-off guest does not take an ISO encoder slot")
+        model.isoSelectedSourceIds.insert("capture:cam1")   // selected, connected, NOT assigned
+        expectEqual(model.peekIsoSourceIds(recording: false), [],
+                    "an unassigned connected camera does not record")
+    }
+
+    /// Fix round 1, I2: Zoom ids change every meeting. Stale `zoom:` intent
+    /// must not take matrix columns, starve a new pick, or hold the ISO
+    /// master switch on.
+    @MainActor
+    static func testStaleIsoIntentIsPrunedAndNeverTakesAColumn() {
+        // Eight stale guests still in the selection (as if left in memory),
+        // plus one live, assigned guest the operator now ticks.
+        let model = AppModel()
+        model.isoSelectedSourceIds = Set((1...8).map { "zoom:old\($0)" })
+        model.assignSlot(1, kind: "zoom", sourceId: "new", name: "New guest")
+        model.toggleSlotIso(1)
+        expect(model.isoColumn(of: "zoom:new") != nil, "a new tick gets a column despite 8 stale ids")
+        expect(model.isoColumnAssignments.values.allSatisfy { $0 == "zoom:new" },
+               "stale ids take no ISO cells")
+        expect(model.isoRecordingEnabled, "ticking a visible ISO arms the master switch")
+        model.toggleSlotIso(1)
+        expect(!model.isoRecordingEnabled,
+               "unticking the last VISIBLE ISO disarms it, whatever stale intent remains")
+
+        // Meeting over: unslotted zoom intent is dropped; capture and slotted stay.
+        model.isoSelectedSourceIds.formUnion(["capture:cam1", "zoom:new"])
+        model.meetingState = "in_meeting"
+        model.applyZoomForTesting(["meetingState": "idle", "participants": [JSONObject]()])
+        expectEqual(model.isoSelectedSourceIds, ["capture:cam1", "zoom:new"],
+                    "leaving the meeting prunes the stale guests, keeps cameras and slotted guests")
+
+        // Relaunch: last meeting's unslotted guests are not restored.
+        var prefs = ShellPrefs()
+        prefs.isoSelectedSourceIds = ["zoom:gone", "zoom:7", "capture:cam1"]
+        prefs.showInputSlots = [PersistedSlot(slotId: 2, kind: "zoom", sourceId: "7",
+                                              name: "Guest", inShow: true)]
+        let relaunched = AppModel()
+        relaunched.applyRestoredPrefs(prefs)
+        expectEqual(relaunched.isoSelectedSourceIds, ["capture:cam1", "zoom:7"],
+                    "a relaunch drops unslotted zoom intent")
     }
 
     /// The matrix kept its own column map, never rebuilt from the selection,
@@ -359,6 +469,48 @@ extension ShellTests {
                "the warning strip says so too")
         expect(!FileManager.default.fileExists(atPath: missing), "nothing is created under /Volumes")
         expectEqual(model.recordingFolderChoice, missing, "the choice is kept for when the drive returns")
+    }
+
+    /// Review I4: the footer Record flyout still printed ~/Movies/CoreVideoPro
+    /// after the operator chose another folder, and after a fallback.
+    @MainActor
+    static func testRecordFlyoutShowsTheEffectiveFolder() {
+        let chosen = scratchDir("flyout")
+        let model = AppModel()
+        model.setRecordingFolder(chosen)
+        expectEqual(model.recordFlyoutFolder, chosen, "idle: the folder the next Record uses")
+        model.recordingStatus = "recording"
+        model.applySnapshotForTesting(["recording": ["status": "recording",
+                                                     "targetFolder": "/fallback/folder"] as JSONObject])
+        expectEqual(model.recordFlyoutFolder, "/fallback/folder",
+                    "recording: the core's own target folder (a fallback included)")
+        guard let footer = sourceFile("StudioFooter.swift") else {
+            expect(false, "StudioFooter.swift not found next to the binary"); return
+        }
+        expect(footer.contains("Text(model.recordFlyoutFolder)"), "the flyout shows the effective folder")
+        expect(!footer.contains("StudioFooterReadout.recordingFolder"), "the fixed ~/Movies readout is gone")
+    }
+
+    /// Review minor: access(2) can report writable before macOS grants a
+    /// removable volume, so the folder is probed with a real file write.
+    @MainActor
+    static func testRecordingFolderIsProbedWithARealWrite() {
+        let folder = scratchDir("probe")
+        expectEqual(RecordingFolderPolicy.problem(with: folder), nil, "a writable folder passes the probe")
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? ["?"]
+        expectEqual(leftovers, [], "the probe leaves no file behind")
+
+        let real = RecordingFolderPolicy.writeProbe
+        defer { RecordingFolderPolicy.writeProbe = real }
+        RecordingFolderPolicy.writeProbe = { _ in "macOS did not allow a test file to be written (denied)" }
+        let model = AppModel()
+        expect(!model.setRecordingFolder(scratchDir("tcc")),
+               "a folder macOS refuses at the probe is refused when chosen")
+        expect(model.recordingFolderWarning.contains("did not allow a test file"), "and says why")
+        model.recordingFolderChoice = folder
+        let used = model.recordingTargetFolder()
+        expect(used != folder, "at Record, a refused probe falls back to the default")
+        expect(model.recordingFolderWarning.contains("did not allow a test file"), "loudly")
     }
 
     // ── 0.15 Zoom tab status reflects SDK readiness ─────────────────────────
@@ -634,7 +786,7 @@ extension ShellTests {
     /// re-sent on every generation, not once.
     @MainActor
     static func testMonitorDeviceRidesEveryCoreGeneration() {
-        guard let body = functionBody(named: "private func onConnected()", in: "AppModel.swift") else {
+        guard let body = functionBody(named: "func onConnected()", in: "AppModel.swift") else {
             expect(false, "AppModel.swift onConnected() not found next to the binary")
             return
         }

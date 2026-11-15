@@ -139,6 +139,10 @@ struct ShellPrefs: Codable, Equatable {
     // preferences file fail to decode, and load() silently falls back to
     // defaults, wiping the operator's saved show. Optional gets decodeIfPresent.
     var vstChannelSelections: [String: String]?
+    // Operator opted in to the virtual camera extension (roadmap M9.2). OPTIONAL: nil = never asked.
+    var cameraExtensionOptedIn: Bool?
+    // Virtual camera intent (roadmap M9.2, VirtualCamera.swift). OPTIONAL: nil = never set.
+    var virtualCamera: PersistedVirtualCamera?
     // Production settings (the Windows ProductionSettingsWindow values that
     // production-output-preferences.json keeps: canvas size/fps, stream bitrate,
     // recording format/prefix, multiview layout + tile count). OPTIONAL: nil
@@ -209,6 +213,10 @@ struct ShellPrefs: Codable, Equatable {
                                               forKey: .chromaKeys)) ?? nil)
         slotDropoutPolicies = ((try? c.decodeIfPresent([PersistedSlotPolicy].self,
                                                        forKey: .slotDropoutPolicies)) ?? nil)
+        cameraExtensionOptedIn = ((try? c.decodeIfPresent(Bool.self,
+                                                          forKey: .cameraExtensionOptedIn)) ?? nil)
+        virtualCamera = ((try? c.decodeIfPresent(PersistedVirtualCamera.self,
+                                                 forKey: .virtualCamera)) ?? nil)
         canvasWidth = ((try? c.decodeIfPresent(Int.self, forKey: .canvasWidth)) ?? nil)
         canvasHeight = ((try? c.decodeIfPresent(Int.self, forKey: .canvasHeight)) ?? nil)
         canvasFps = ((try? c.decodeIfPresent(Int.self, forKey: .canvasFps)) ?? nil)
@@ -266,6 +274,9 @@ struct ShellPrefs: Codable, Equatable {
         p.monitorDeviceId = "AppleUSBAudioEngine:Interface:1"
         p.monitorDeviceName = "Headphones Interface"
         p.vstChannelSelections = ["ch1": "vst:Test"]
+        p.cameraExtensionOptedIn = true
+        p.virtualCamera = PersistedVirtualCamera(enabled: true, mirror: true,
+                                                 framerEnabled: true, deviceName: "Round Trip Cam")
         p.canvasWidth = 3840
         p.canvasHeight = 2160
         p.canvasFps = 30

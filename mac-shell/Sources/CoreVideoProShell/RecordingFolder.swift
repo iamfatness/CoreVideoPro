@@ -50,7 +50,30 @@ enum RecordingFolderPolicy {
                 return "it does not exist and could not be created"
             }
         }
-        return fileManager.isWritableFile(atPath: standard) ? nil : "it is not writable"
+        guard fileManager.isWritableFile(atPath: standard) else { return "it is not writable" }
+        // access(2) can say "writable" before macOS has granted access to a
+        // removable or network volume (TCC). A real create + delete makes any
+        // consent prompt or refusal happen HERE — when the folder is chosen,
+        // and again at Record — not inside the core's writer mid-start. The
+        // core is the shell's child (Foundation Process, no responsibility
+        // disclaim), so TCC attributes its file access to the app and a grant
+        // made here covers it.
+        return writeProbe(standard)
+    }
+
+    /// Creates and deletes a tiny file; nil on success, else why it failed.
+    /// Replaceable by the harness (it cannot provoke a TCC refusal).
+    static var writeProbe: (String) -> String? = { folder in
+        let url = URL(fileURLWithPath: folder)
+            .appendingPathComponent(".corevideo-write-test-\(UUID().uuidString)")
+        do {
+            try Data("ok".utf8).write(to: url, options: .withoutOverwriting)
+            try FileManager.default.removeItem(at: url)
+            return nil
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            return "macOS did not allow a test file to be written (\(error.localizedDescription))"
+        }
     }
 
     /// The folder a recording should use right now. `chosen` empty = default.
@@ -79,6 +102,18 @@ extension AppModel {
     /// What Settings shows: the operator's folder, or the default.
     var recordingFolderDisplay: String {
         recordingFolderChoice.isEmpty ? RecordingFolderPolicy.defaultFolder() : recordingFolderChoice
+    }
+
+    /// The Record flyout's folder: the core's own target folder while a
+    /// recording is live (where the files are actually going, fallback
+    /// included), else where the next Record will go.
+    var recordFlyoutFolder: String {
+        if recordingStatus == "recording" || recordingStatus == "warning",
+           let core = (lastSnapshot["recording"] as? JSONObject)?["targetFolder"] as? String,
+           !core.isEmpty {
+            return core
+        }
+        return recordingFolderDisplay
     }
 
     /// The folder this Record uses. A folder that cannot take recordings falls

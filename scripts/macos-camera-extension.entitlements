@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the CoreMediaIO camera extension, Developer ID builds only
+  (roadmap M9.2). No double hyphens in this comment: XML forbids them.
+
+  app-sandbox: camera extensions must be sandboxed or the system refuses them.
+  application-groups: the mach service name in Info.plist (CMIOExtension,
+  CMIOExtensionMachServiceName) must start with one of these values.
+  application-identifier and team-identifier are RESTRICTED: they are valid
+  only with the embedded Developer ID provisioning profile that authorizes
+  them. AMFI kills a binary signed with them and no profile, so ad-hoc and CI
+  builds use macos-camera-extension-adhoc.entitlements instead.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>42394L3353.us.iamfatness.corevideopro.shell.camera</string>
+    </array>
+    <key>com.apple.application-identifier</key>
+    <string>42394L3353.us.iamfatness.corevideopro.shell.camera</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>42394L3353</string>
+</dict>
+</plist>

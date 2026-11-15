@@ -1,5 +1,6 @@
 #include "modules/GpuWebcamFramer.h"
 #include "modules/VirtualCameraFrame.h"
+#include "FramerRenders.h"
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cstdio>
@@ -16,6 +17,15 @@ struct ComScope {
 #endif
 };
 constexpr int width=1920, height=1080;
+// Metal tests self-skip on a machine with no Metal device (CI realities); the
+// vendored gtest predates GTEST_SKIP, so log and return green. No-op elsewhere.
+#if defined(__APPLE__) && defined(COREVIDEO_FRAMER_RENDERS)
+#define SKIP_WITHOUT_METAL(framer) \
+  if (!(framer).prepare(width,height) && (framer).warning().find("no Metal device")!=std::string::npos) { \
+    std::fprintf(stderr,"[metal-test] unavailable: %s\n",(framer).warning().c_str()); return; }
+#else
+#define SKIP_WITHOUT_METAL(framer)
+#endif
 std::shared_ptr<const std::vector<uint8_t>> cleanFrame() {
   auto bytes=std::make_shared<std::vector<uint8_t>>(width*height*3/2,170);
   std::fill(bytes->begin(),bytes->begin()+width*height,100);
@@ -23,10 +33,10 @@ std::shared_ptr<const std::vector<uint8_t>> cleanFrame() {
 }
 TEST(GpuWebcamFramer, PreservesAlphaAndCleanInputOrReportsUnavailable) {
   ComScope com;
-  GpuWebcamFramer framer;
+  GpuWebcamFramer framer; SKIP_WITHOUT_METAL(framer)
   const auto clean=cleanFrame();
   auto result=framer.apply(clean,width,height,false);
-#if defined(_WIN32) && COREVIDEO_WITH_D3D11
+#if defined(COREVIDEO_FRAMER_RENDERS)
   ASSERT_TRUE(result != nullptr);
   EXPECT_TRUE(framer.warning().empty());
   EXPECT_EQ(result->at(400*width+960),100); // completely clear center
@@ -43,7 +53,7 @@ TEST(GpuWebcamFramer, PreservesAlphaAndCleanInputOrReportsUnavailable) {
 }
 TEST(GpuWebcamFramer, GuidesRemainReadableAfterBackendMirror) {
   ComScope com;
-  GpuWebcamFramer framer;
+  GpuWebcamFramer framer; SKIP_WITHOUT_METAL(framer)
   auto variable=std::make_shared<std::vector<uint8_t>>(width*height*3/2);
   for(size_t i=0;i<variable->size();++i) (*variable)[i]=static_cast<uint8_t>(16+(i%width)*219/width);
   const std::shared_ptr<const std::vector<uint8_t>> clean=variable;
@@ -51,7 +61,7 @@ TEST(GpuWebcamFramer, GuidesRemainReadableAfterBackendMirror) {
   mirrorNv12InPlace(reversed.data(),width,height);
   auto normal=framer.apply(std::make_shared<const std::vector<uint8_t>>(reversed),width,height,false);
   auto mirrored=framer.apply(clean,width,height,true);
-#if defined(_WIN32) && COREVIDEO_WITH_D3D11
+#if defined(COREVIDEO_FRAMER_RENDERS)
   ASSERT_TRUE(normal != nullptr); ASSERT_TRUE(mirrored != nullptr);
   auto final=*mirrored;
   mirrorNv12InPlace(final.data(),width,height);
@@ -81,13 +91,13 @@ TEST(WebcamLoudnessOverlay, RequiresFullWindowAndFreshFiniteMeasurement) {
   state.update(-120,true,now); EXPECT_TRUE(state.read(now).ready); // measured silence
 }
 TEST(GpuWebcamFramer, LiveLoudnessChangesOnlyCameraPanelAndMirrorsReadably) {
-  ComScope com; GpuWebcamFramer framer;
+  ComScope com; GpuWebcamFramer framer; SKIP_WITHOUT_METAL(framer)
   const auto clean=cleanFrame();
   const auto baseline=framer.apply(clean,width,height,false);
   const auto live=framer.apply(clean,width,height,false,{true,true,-18.4});
   const auto quiet=framer.apply(clean,width,height,false,{true,true,-30});
   const auto stale=framer.apply(clean,width,height,false,{true,false,-18.4});
-#if defined(_WIN32) && COREVIDEO_WITH_D3D11
+#if defined(COREVIDEO_FRAMER_RENDERS)
   ASSERT_TRUE(baseline!=nullptr); ASSERT_TRUE(live!=nullptr);
   ASSERT_TRUE(quiet!=nullptr); ASSERT_TRUE(stale!=nullptr);
   EXPECT_EQ((*live)[981*width+44],235); // first minus glyph
@@ -104,10 +114,29 @@ TEST(GpuWebcamFramer, LiveLoudnessChangesOnlyCameraPanelAndMirrorsReadably) {
   EXPECT_TRUE(live==nullptr);
 #endif
 }
+TEST(GpuWebcamFramer, MacMirroredPathMatchesWindowsComposition) {
+#if defined(COREVIDEO_FRAMER_RENDERS)
+  // Windows order: W = mirrorNv12InPlace(apply(clean, mirror=true)).
+  // Mac order: the GPU tap mirrors the whole frame first, then
+  // M = apply(mirrored clean, mirror=false). mirrorNv12InPlace is the test oracle only.
+  ComScope com; GpuWebcamFramer framer; SKIP_WITHOUT_METAL(framer)
+  auto variable=std::make_shared<std::vector<uint8_t>>(width*height*3/2);
+  for(size_t i=0;i<variable->size();++i) (*variable)[i]=static_cast<uint8_t>(16+((i*7)%width)*219/width);
+  const std::shared_ptr<const std::vector<uint8_t>> clean=variable;
+  const WebcamLoudnessOverlay meter{true,true,-18.4};
+  const auto windowsRaw=framer.apply(clean,width,height,true,meter);
+  ASSERT_TRUE(windowsRaw!=nullptr) << framer.warning();
+  auto windows=*windowsRaw; mirrorNv12InPlace(windows.data(),width,height);
+  auto upstream=*clean; mirrorNv12InPlace(upstream.data(),width,height);
+  const auto mac=framer.apply(std::make_shared<const std::vector<uint8_t>>(std::move(upstream)),width,height,false,meter);
+  ASSERT_TRUE(mac!=nullptr) << framer.warning();
+  EXPECT_TRUE(*mac==windows);
+#endif
+}
 TEST(GpuWebcamFramer, Warm1080pProcessingReportsCost) {
-#if defined(_WIN32) && COREVIDEO_WITH_D3D11
+#if defined(COREVIDEO_FRAMER_RENDERS)
   ComScope com;
-  GpuWebcamFramer framer;
+  GpuWebcamFramer framer; SKIP_WITHOUT_METAL(framer)
   const auto clean=cleanFrame();
   ASSERT_TRUE(framer.apply(clean,width,height,false) != nullptr);
   double worst=0,total=0;

@@ -224,6 +224,75 @@ fragment float4 compositorI420(VSOut in [[stage_in]],
 }
 )MSL";
 
+// macOS virtual camera GPU NV12 tap (roadmap M9.2; docs/virtual-camera-macos-spec.md
+// §4 law 4). ONE compute pass after the program pass does resize + mirror +
+// BGRA->NV12 so the CPU only ever copies finished NV12. One thread per 2x2 luma
+// block of the fixed 1920x1080 destination. The arithmetic is INT with
+// truncating division — identical in MSL and C++ — so the output matches
+// convertBgraToNv12 (VirtualCameraFrame.h) bit for bit on a 1080p canvas.
+// Kept in its own library so a failure here can never take the program
+// pipeline down with it.
+inline constexpr char kVcamNv12KernelSource[] = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct VcamNv12Params {
+  uint srcWidth;
+  uint srcHeight;
+  uint mirror;
+  uint exact;   // canvas is exactly 1920x1080: texel reads, no filtering
+};
+
+constant uint kVcamDstW = 1920;
+constant uint kVcamDstH = 1080;
+
+static int3 vcamSourceRgb(texture2d<float, access::sample> src, uint x, uint y,
+                          constant VcamNv12Params& p) {
+  const uint sx = p.mirror != 0 ? (kVcamDstW - 1u - x) : x;
+  float4 c;
+  if (p.exact != 0) {
+    c = src.read(uint2(sx, y));
+  } else {
+    constexpr sampler bilinear(coord::normalized, filter::linear, address::clamp_to_edge);
+    c = src.sample(bilinear, float2((float(sx) + 0.5) / float(kVcamDstW),
+                                    (float(y) + 0.5) / float(kVcamDstH)));
+  }
+  return int3(int(round(c.r * 255.0)), int(round(c.g * 255.0)), int(round(c.b * 255.0)));
+}
+
+kernel void vcamBgraToNv12(texture2d<float, access::sample> src [[texture(0)]],
+                           device uchar* out [[buffer(0)]],
+                           constant VcamNv12Params& p [[buffer(1)]],
+                           uint2 gid [[thread_position_in_grid]]) {
+  if (gid.x >= kVcamDstW / 2 || gid.y >= kVcamDstH / 2) {
+    return;
+  }
+  int sr = 0;
+  int sg = 0;
+  int sb = 0;
+  for (uint dy = 0; dy < 2; ++dy) {
+    for (uint dx = 0; dx < 2; ++dx) {
+      const uint x = gid.x * 2 + dx;
+      const uint y = gid.y * 2 + dy;
+      const int3 c = vcamSourceRgb(src, x, y, p);
+      const int luma = (66 * c.x + 129 * c.y + 25 * c.z + 128) / 256 + 16;
+      out[y * kVcamDstW + x] = uchar(clamp(luma, 0, 255));
+      sr += c.x;
+      sg += c.y;
+      sb += c.z;
+    }
+  }
+  const int r = sr / 4;
+  const int g = sg / 4;
+  const int b = sb / 4;
+  const int u = (-38 * r - 74 * g + 112 * b + 128) / 256 + 128;
+  const int v = (112 * r - 94 * g - 18 * b + 128) / 256 + 128;
+  const uint uv = kVcamDstW * kVcamDstH + gid.y * kVcamDstW + gid.x * 2;
+  out[uv] = uchar(clamp(u, 0, 255));
+  out[uv + 1] = uchar(clamp(v, 0, 255));
+}
+)MSL";
+
 }  // namespace corevideo::modules
 
 #endif  // !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_METAL

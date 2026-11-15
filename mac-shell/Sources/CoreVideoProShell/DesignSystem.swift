@@ -120,12 +120,52 @@ struct AccentButtonStyle: ButtonStyle {
     }
 }
 
+// Toggle: draws its OWN track (the stock .switch renders a near-black track in
+// a non-key window and on Studio.panel on and off look identical). Accent when
+// on, an opaque, clearly visible neutral when off; the knob is always light.
+// The whole row is the hit area; VoiceOver reads the label with an on/off value.
+struct StudioToggleStyle: ToggleStyle {
+    static let trackWidth: CGFloat = 30
+    static let trackHeight: CGFloat = 17
+
+    /// Pure, so the harness can pin that off is visible against the panel.
+    static func trackColor(isOn: Bool) -> Color { isOn ? Studio.accent : Studio.textDim }
+    static func knobColor(isOn: Bool) -> Color { isOn ? Studio.onAccent : Studio.textPrimary }
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            HStack(spacing: 10) {
+                configuration.label
+                Spacer(minLength: 0)
+                ZStack(alignment: configuration.isOn ? .trailing : .leading) {
+                    Capsule().fill(Self.trackColor(isOn: configuration.isOn))
+                    Circle().fill(Self.knobColor(isOn: configuration.isOn))
+                        .padding(2)
+                }
+                .frame(width: Self.trackWidth, height: Self.trackHeight)
+                .animation(.easeOut(duration: 0.12), value: configuration.isOn)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(configuration.isOn ? "on" : "off")
+        .accessibilityAddTraits(configuration.isOn ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
 // Text field: #0E1112 fill, 1px border, 8px radius (replaces .roundedBorder).
+// The text colour is explicit and the field's own colour scheme is pinned dark:
+// the fill is always dark, but a popover or sheet need not inherit the window's
+// dark scheme, and the ambient (light) default made both the typed text and the
+// system placeholder dark-on-dark there.
 struct StudioFieldStyle: TextFieldStyle {
     func _body(configuration: TextField<Self._Label>) -> some View {
         configuration
             .textFieldStyle(.plain)
             .font(.grotesk(12))
+            .foregroundStyle(Studio.textPrimary)
+            .environment(\.colorScheme, .dark)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))

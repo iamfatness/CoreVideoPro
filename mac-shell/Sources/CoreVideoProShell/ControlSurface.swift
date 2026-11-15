@@ -106,6 +106,21 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
                              // toggleStreaming flips intent only: with intent off it would START.
                              canInvert: { target in target || !model.streamingObservedLive || model.streamingDesired },
                              model.toggleStreaming)
+        case "transport.virtualcam.toggle":
+            // Windows: always Success. The model setters persist and send the one sync.
+            model.setVirtualCamera(enabled: !model.virtualCamera.enabled)
+            return .success
+        case "transport.virtualcam.set":
+            // Idempotent: a repeat neither toggles nor re-sends.
+            if model.virtualCamera.enabled != bool(0) { model.setVirtualCamera(enabled: bool(0)) }
+            return .success
+        case "transport.virtualcam.mirror.set":
+            if model.virtualCamera.mirror != bool(0) { model.setVirtualCameraMirror(bool(0)) }
+            return .success
+        case "transport.virtualcam.name.set":
+            // Blank (or omitted) restores the default name.
+            model.setVirtualCameraDeviceName(string(0))
+            return .success
         case "scene.select":
             // Windows SceneSelectArgs.Refuse: blank or unknown -> refuse, change nothing.
             let sceneId = string(0)

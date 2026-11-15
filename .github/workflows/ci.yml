@@ -128,7 +128,8 @@ jobs:
         run: |
           for f in scripts/release-macos.sh scripts/macos-sign-lib.sh \
                    scripts/make-macos-shell-bundle.sh scripts/make-macos-engine-bundle.sh \
-                   scripts/run-mac-shell.sh; do
+                   scripts/run-mac-shell.sh scripts/check-macos-camera-extension.sh \
+                   scripts/macos-vcam-e2e.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
@@ -148,6 +149,16 @@ jobs:
         run: COREVIDEO_SHELL_TESTS=1 mac-shell/.build/release/CoreVideoProShell
       - name: Redaction + prefs self-check
         run: COREVIDEO_SHELL_SELFCHECK=1 mac-shell/.build/release/CoreVideoProShell
+      # Camera extension (roadmap M9.2). The runner cannot activate a system
+      # extension, so CI proves the STRUCTURE: the ad-hoc bundle embeds it with
+      # the right keys and no restricted entitlement without a profile, and
+      # the check fails at the expected letter on three broken copies.
+      - name: Assemble the ad-hoc app bundle (camera extension embedded)
+        run: COREVIDEO_REQUIRE_HELPERS=0 scripts/make-macos-shell-bundle.sh
+      - name: Camera extension check
+        run: scripts/check-macos-camera-extension.sh "mac-shell/.build/CoreVideo Pro.app"
+      - name: Camera extension check negatives
+        run: scripts/check-macos-camera-extension.sh --negatives "mac-shell/.build/CoreVideo Pro.app"
 
   # Root unit run (services + Companion module tests) and the node:test
   # suites under scripts/.
@@ -271,8 +282,9 @@ jobs:
           -DCOREVIDEO_WITH_COREAUDIO=ON
           -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON
           -DCOREVIDEO_WITH_RTMP_OUTPUT=ON
+          -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON
       # Mirrors scripts/release-macos.sh's core configure (Metal + AVF + CoreAudio +
-      # SCK capture + RTMP), minus the Zoom engine and signing, which need secrets.
+      # SCK capture + RTMP + the CoreMediaIO virtual camera), minus the Zoom engine and signing, which need secrets.
       # RTMP is in the set because its macOS compile break sat unnoticed when CI
       # never built it. RTMP output launches an external `ffmpeg` process at stream
       # time (not linked), so no ffmpeg is needed to compile or run these tests.
