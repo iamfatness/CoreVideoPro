@@ -15,9 +15,21 @@ enum ZoomJoinStatus {
     /// Same as the Windows shell (MediaCorePaths.cs): the core waits up to this
     /// for SDK auth, then up to this again for the join verdict.
     static let coreJoinWaitMs = "45000"
-    /// The bridge must outlast both core waits (auth + join) plus slack, or the
-    /// shell gives up on a join the core is still honestly waiting on.
-    static let joinRequestTimeout: TimeInterval = 100
+    /// The core's helper-connect budget (ZoomEngineRuntime::Config::connectTimeoutMs).
+    static let coreConnectTimeoutMs = 30_000
+
+    /// The bridge must outlast the core's WORST honest join, or the shell says
+    /// "join failed: timed out" while the core is still waiting. Every rejoin
+    /// after a failure/timeout restarts the helper, so the worst case is
+    /// connect (30 s) + auth wait (45 s) + join wait (45 s) = 120 s, plus 30 s
+    /// for the old helper's terminate and pipe/scheduling slack = 150 s. Read
+    /// from the same environment the core gets, so an override moves both.
+    static func joinRequestTimeout(environment: [String: String]) -> TimeInterval {
+        let wait = environment["COREVIDEO_ZOOM_JOIN_WAIT_MS"].flatMap(Int.init) ?? Int(coreJoinWaitMs)!
+        let connect = environment["COREVIDEO_ZOOM_ENGINE_CONNECT_TIMEOUT_MS"].flatMap(Int.init)
+            ?? coreConnectTimeoutMs
+        return TimeInterval(max(0, connect) + 2 * max(0, wait)) / 1000 + 30
+    }
 
     static let signInMayBeRequired =
         "Joining as a guest. Zoom may require you to sign in for this meeting — "
@@ -51,5 +63,45 @@ enum ZoomJoinStatus {
         case "in_meeting", "in-meeting": return ""
         default: return current
         }
+    }
+}
+
+/// The pane's join line over time. Fix round 1 (review I1): while a join is
+/// in flight the POLLED snapshot still describes the previous attempt — the
+/// core keeps meetingState "error" with the last warnings until the new
+/// zoom-join reaches it (ensureJoinCredentials can spend a token refresh
+/// first) — so the 504 -> sign in -> join again flow showed "Zoom requires
+/// you to sign in…" for the whole new join. Only the join's own response
+/// decides while it is in flight; after it, polls take over again (which is
+/// how the core's late verdict still replaces a timeout).
+struct ZoomJoinStatusTracker: Equatable {
+    private(set) var line = ""
+    private(set) var joinInFlight = false
+
+    mutating func beginJoin(signedIn: Bool) {
+        joinInFlight = true
+        line = ZoomJoinStatus.atJoin(signedIn: signedIn)
+    }
+
+    /// No ZAK came back: this join is a guest join after all.
+    mutating func joiningAsGuest() {
+        if joinInFlight { line = ZoomJoinStatus.signInMayBeRequired }
+    }
+
+    /// A polled zoom-snapshot.
+    mutating func observe(_ snapshot: JSONObject) {
+        guard !joinInFlight else { return }
+        line = ZoomJoinStatus.reconcile(current: line, snapshot: snapshot)
+    }
+
+    /// The zoom-join reply (nil when the request itself failed).
+    mutating func joinAnswered(_ snapshot: JSONObject?) {
+        joinInFlight = false
+        if let snapshot { line = ZoomJoinStatus.reconcile(current: line, snapshot: snapshot) }
+    }
+
+    /// Sign-in completed: the guest hint no longer applies.
+    mutating func signedIn() {
+        if line == ZoomJoinStatus.signInMayBeRequired { line = "" }
     }
 }

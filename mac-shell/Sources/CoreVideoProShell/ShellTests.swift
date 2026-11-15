@@ -2753,6 +2753,8 @@ enum ShellTests {
             ("oauth/loopback-broker-url", testOAuthBrokerUrlCarriesTheLoopbackReturnUri),
             ("oauth/loopback-end-to-end", testOAuthLoopbackListenerEndToEnd),
             ("zoom/join-status-late-truth", testZoomJoinStatusPrefersZoomsReasonOverATimeout),
+            ("zoom/join-status-rejoin", testZoomJoinStatusIgnoresTheOldFailureDuringARejoin),
+            ("oauth/state-before-error", testOAuthCallbackChecksStateBeforeError),
             ("encoder/no-unlicensed-codecs", testShellOffersOnlyEncodableCodecs),
             ("telemetry/dropped-frames", testDroppedFrameReadout),
             ("chromakey/enabled-only", testChromaKeyNodeOnlySentWhenEnabled),

@@ -1011,7 +1011,7 @@ final class AppModel: ObservableObject {
             return
         }
         if !snapshot.isEmpty { lastZoomSnapshot = snapshot }
-        zoomJoinStatus = ZoomJoinStatus.reconcile(current: zoomJoinStatus, snapshot: snapshot)
+        zoomJoin.observe(snapshot)
         rawMediaActive = snapshot["rawMediaActive"] as? Bool ?? rawMediaActive
         if let error = snapshot["lastError"] as? String, !error.isEmpty {
             pushWarning("zoom: \(error)")
@@ -1365,7 +1365,8 @@ final class AppModel: ObservableObject {
     @Published var zoomOAuthStatus = ""
     /// The Zoom pane's join line: the sign-in hint, Zoom's own failure reason,
     /// or "" (ZoomJoinStatus decides; late truth replaces a timeout).
-    @Published var zoomJoinStatus = ""
+    @Published private(set) var zoomJoin = ZoomJoinStatusTracker()
+    var zoomJoinStatus: String { zoomJoin.line }
     @Published var webinar = false
     @Published var recentMeetings: [String] = []
 
@@ -1402,9 +1403,7 @@ final class AppModel: ObservableObject {
         zoomSignedIn = await ZoomOAuth.shared.signedIn
         if error.isEmpty {
             ShellLog.write("zoom sign-in complete")
-            if zoomJoinStatus == ZoomJoinStatus.signInMayBeRequired {
-                zoomJoinStatus = ""
-            }
+            zoomJoin.signedIn()
         } else {
             pushWarning("zoom sign-in: \(error)")
         }
@@ -1441,7 +1440,7 @@ final class AppModel: ObservableObject {
         joinInFlight = true
         // Never blocks the join (some meetings allow guests) — just says why it
         // may fail before Zoom does.
-        zoomJoinStatus = ZoomJoinStatus.atJoin(signedIn: zoomSignedIn)
+        zoomJoin.beginJoin(signedIn: zoomSignedIn)
         recentMeetings.removeAll { $0 == joinMeetingId }
         recentMeetings.insert(joinMeetingId, at: 0)
         recentMeetings = Array(recentMeetings.prefix(5))
@@ -1463,18 +1462,22 @@ final class AppModel: ObservableObject {
                    let zak = credentials.userZak {
                     payload["userZak"] = zak
                 } else {
-                    zoomJoinStatus = ZoomJoinStatus.atJoin(signedIn: false)
+                    zoomJoin.joiningAsGuest()
                 }
                 let response = try await bridge.request(
                     ["type": "zoom-join", "payload": payload],
-                    timeout: ZoomJoinStatus.joinRequestTimeout)
-                if let snapshot = response["snapshot"] as? JSONObject {
+                    timeout: ZoomJoinStatus.joinRequestTimeout(
+                        environment: ProcessInfo.processInfo.environment))
+                let snapshot = response["snapshot"] as? JSONObject
+                zoomJoin.joinAnswered(snapshot)
+                if let snapshot {
                     applyZoom(snapshot)
                     for warning in snapshot["warnings"] as? [String] ?? [] {
                         pushWarning("zoom: \(warning)")
                     }
                 }
             } catch {
+                zoomJoin.joinAnswered(nil)
                 pushWarning("join failed: \(error.localizedDescription)")
             }
         }

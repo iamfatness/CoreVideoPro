@@ -53,10 +53,16 @@ extension ShellTests {
         let callback = OAuthLoopbackHttp.parseRequestLine("GET /oauth/callback?state=s HTTP/1.1")
         let favicon = OAuthLoopbackHttp.parseRequestLine("GET /favicon.ico HTTP/1.1")
         var life = OAuthLoopbackLifecycle()
-        expect(!life.begin(), "first sign-in has nothing to stop")
+        expect(!life.begin(expectedState: "s"), "first sign-in has nothing to stop")
         let first = life.generation
         expectEqual(life.request(favicon, generation: first), .notFound, "favicon is 404")
         expectEqual(life.phase, .listening, "favicon does not consume the one-shot")
+        // Fix round 1 (M1): a forged ?error= without this sign-in's state.
+        let forged = OAuthLoopbackHttp.parseRequestLine("GET /oauth/callback?error=access_denied HTTP/1.1")
+        let otherState = OAuthLoopbackHttp.parseRequestLine("GET /oauth/callback?state=evil&error=x HTTP/1.1")
+        expectEqual(life.request(forged, generation: first), .wrongState, "a callback with no state is refused")
+        expectEqual(life.request(otherState, generation: first), .wrongState, "another state is refused")
+        expectEqual(life.phase, .listening, "and neither consumes the one-shot")
         expectEqual(life.request(callback, generation: first), .callback, "the callback is taken")
         expectEqual(life.request(callback, generation: first), .closed, "a second callback is refused")
         expect(!life.timedOut(generation: first), "a handled sign-in does not time out")
@@ -64,9 +70,9 @@ extension ShellTests {
         expectEqual(life.phase, .stopped, "the listener stops after the callback")
 
         var again = OAuthLoopbackLifecycle()
-        _ = again.begin()
+        _ = again.begin(expectedState: "s")
         let stale = again.generation
-        expect(again.begin(), "a new sign-in stops the listening one")
+        expect(again.begin(expectedState: "s"), "a new sign-in stops the listening one")
         expectEqual(again.request(callback, generation: stale), .closed, "the old listener's request is refused")
         expect(!again.timedOut(generation: stale), "the old listener's timer is ignored")
         expect(again.timedOut(generation: again.generation), "the current one times out")
@@ -96,9 +102,9 @@ extension ShellTests {
             var timedOut = false
         }
         let seen = Seen()
-        let listener = OAuthLoopbackListener()
+        let listener = OAuthLoopbackListener(requestTimeout: 0.5)
         let bound = Box<Result<UInt16, Error>>()
-        listener.start(onCallback: { url in
+        listener.start(expectedState: "S1", onCallback: { url in
             seen.lock.withLock { seen.urls.append(url) }
             return ""
         }, onTimeout: {}, completion: { bound.value = $0 })
@@ -117,6 +123,22 @@ extension ShellTests {
         let favicon = http("GET", base + "/favicon.ico")
         expectEqual(favicon.status, 404, "favicon is 404 over the wire")
         expect(listener.isListening, "favicon does not consume the one-shot")
+        // Fix round 1 (M1): a forged error with no / another state is refused
+        // and the sign-in is still waiting for the real callback.
+        let forged = http("GET", base + "/oauth/callback?error=access_denied")
+        expectEqual(forged.status, 400, "a forged ?error= without state is refused")
+        expectEqual(http("GET", base + "/oauth/callback?state=WRONG&error=x").status, 400,
+                    "a callback for another state is refused")
+        expect(listener.isListening, "forged callbacks do not consume the one-shot")
+        expectEqual(seen.lock.withLock { seen.urls.count }, 0, "and never reach handleCallback")
+        // Fix round 1 (M4): a connection that never finishes its head is closed.
+        let idle = RawClient(port: port)
+        idle.run(Data("GET /oauth/call".utf8))
+        spin(until: { idle.box.value != nil }, limit: 3)
+        idle.connection.cancel()
+        expect(idle.box.value != nil, "an idle half-request is closed by the read deadline")
+        spin(until: { listener.openConnectionCount == 0 }, limit: 2)
+        expectEqual(listener.openConnectionCount, 0, "and forgotten")
         let callback = http("GET", base + "/oauth/callback?state=S1&broker_token=SECRET")
         expectEqual(callback.status, 200, "the callback is answered")
         expect(callback.body.contains("signed in to Zoom"), "with the signed-in page")
@@ -127,14 +149,35 @@ extension ShellTests {
         expectEqual(query.first { $0.name == "broker_token" }?.value, "SECRET", "and the broker token")
         spin(until: { !listener.isListening }, limit: 2)
         expect(!listener.isListening, "the listener stops after the callback")
-        let second = http("GET", base + "/oauth/callback?state=S2&broker_token=T2")
+        let second = http("GET", base + "/oauth/callback?state=S1&broker_token=T2")
         expect(second.status != 200, "a second callback is not served (status \(second.status))")
         expectEqual(seen.lock.withLock { seen.urls.count }, 1, "the handler never runs twice")
+
+        // A stray connection open when the callback lands is closed with it —
+        // well before its (long, here) read deadline.
+        let strayHost = OAuthLoopbackListener(requestTimeout: 30)
+        let strayBound = Box<Result<UInt16, Error>>()
+        strayHost.start(expectedState: "S3", onCallback: { _ in "" }, onTimeout: {},
+                        completion: { strayBound.value = $0 })
+        spin(until: { strayBound.value != nil }, limit: 3)
+        if case .success(let strayPort)? = strayBound.value {
+            let stray = RawClient(port: strayPort)
+            stray.run(Data("GET /".utf8))
+            spin(until: { strayHost.openConnectionCount == 1 }, limit: 2)
+            expectEqual(http("GET", "http://127.0.0.1:\(strayPort)/oauth/callback?state=S3&broker_token=T").status,
+                        200, "the callback is served beside a stray connection")
+            spin(until: { stray.box.value != nil }, limit: 2)
+            stray.connection.cancel()
+            expect(stray.box.value != nil, "a stray connection is closed when the callback is taken")
+        } else {
+            expect(false, "stray-test listener binds")
+        }
+        strayHost.stop()
 
         // Timeout: no callback within the window stops the listener and says so.
         let slow = OAuthLoopbackListener()
         let slowBound = Box<Result<UInt16, Error>>()
-        slow.start(timeout: 0.2, onCallback: { _ in "" },
+        slow.start(expectedState: "S", timeout: 0.2, onCallback: { _ in "" },
                    onTimeout: { seen.lock.withLock { seen.timedOut = true } },
                    completion: { slowBound.value = $0 })
         spin(until: { seen.lock.withLock { seen.timedOut } }, limit: 3)
@@ -174,6 +217,63 @@ extension ShellTests {
                     "meeting_failed: MEETING_FAIL_X", "an unmapped reason is shown raw")
         expect(Z.isTimeout("Timed out waiting for Zoom SDK authentication."), "the auth timeout is a timeout too")
         expectEqual(Z.coreJoinWaitMs, "45000", "the Mac core waits as long as the Windows core")
-        expect(Z.joinRequestTimeout > 90, "the bridge outlasts the auth wait plus the join wait")
+        // Fix round 1 (M2): connect 30 + auth 45 + join 45 = 120 s worst case.
+        expectEqual(Z.joinRequestTimeout(environment: [:]), 150,
+                    "the bridge outlasts connect + auth wait + join wait, with slack")
+        expect(Z.joinRequestTimeout(environment: [:]) > 120, "strictly above the core's worst case")
+        expectEqual(Z.joinRequestTimeout(environment: ["COREVIDEO_ZOOM_JOIN_WAIT_MS": "60000",
+                                                       "COREVIDEO_ZOOM_ENGINE_CONNECT_TIMEOUT_MS": "10000"]),
+                    160, "an environment override moves the bridge with the core")
+    }
+
+    /// Fix round 1 (review I1): 504 -> sign in -> join again. While the new
+    /// join is in flight the core still reports the OLD failure; the pane must
+    /// keep the new join's line until the new join answers.
+    static func testZoomJoinStatusIgnoresTheOldFailureDuringARejoin() {
+        let timeout = "Timed out waiting for Zoom meeting join result."
+        let reason = "Zoom requires you to sign in to join this meeting. Use Sign in with Zoom, then join again."
+        let truth: JSONObject = ["meetingState": "error", "warnings": [reason]]
+        var tracker = ZoomJoinStatusTracker()
+        tracker.observe(truth)
+        expectEqual(tracker.line, reason, "the first join's failure is shown")
+        tracker.beginJoin(signedIn: true)
+        expectEqual(tracker.line, "", "a signed-in rejoin starts with no line")
+        tracker.observe(truth)
+        expectEqual(tracker.line, "", "the core's OLD error snapshot does not replace the new join's line")
+        tracker.observe(["meetingState": "idle"])
+        tracker.observe(["meetingState": "joining"])
+        expectEqual(tracker.line, "", "nor does an idle/joining poll resurrect it")
+        tracker.joinAnswered(["meetingState": "in_meeting"])
+        expectEqual(tracker.line, "", "the join's own answer decides")
+
+        var guest = ZoomJoinStatusTracker()
+        guest.beginJoin(signedIn: false)
+        guest.observe(truth)
+        expectEqual(guest.line, ZoomJoinStatus.signInMayBeRequired, "a guest rejoin keeps its hint")
+        guest.joinAnswered(["meetingState": "error", "warnings": [timeout]])
+        expectEqual(guest.line, timeout, "the join's reply shows its timeout")
+        guest.observe(truth)
+        expectEqual(guest.line, reason, "after the reply, the late verdict replaces the timeout")
+        guest.beginJoin(signedIn: false)
+        guest.joinAnswered(nil)
+        expectEqual(guest.line, ZoomJoinStatus.signInMayBeRequired, "a failed request keeps the line")
+        guest.signedIn()
+        expectEqual(guest.line, "", "signing in clears the guest hint")
+    }
+
+    /// Fix round 1 (review M1), the scheme path: an `error` without this
+    /// sign-in's state is a mismatch, not Zoom's answer.
+    static func testOAuthCallbackChecksStateBeforeError() {
+        final class Out: @unchecked Sendable { var value = "" }
+        let out = Out()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            out.value = await ZoomOAuth.shared.handleCallback(
+                URL(string: "corevideo://oauth/callback?error=access_denied")!)
+            done.signal()
+        }
+        done.wait()
+        expectEqual(out.value, "sign-in state mismatch — start again",
+                    "a forged error with no pending state is a state mismatch, not a failed sign-in")
     }
 }

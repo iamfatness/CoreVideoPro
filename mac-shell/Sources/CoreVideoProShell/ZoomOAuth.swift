@@ -65,6 +65,7 @@ actor ZoomOAuth {
         let listener = OAuthLoopbackListener()
         let bound: UInt16? = await withCheckedContinuation { continuation in
             listener.start(
+                expectedState: state,
                 onCallback: { url in
                     let status = await ZoomOAuth.shared.handleCallback(url)
                     onLoopbackResult(status)
@@ -118,14 +119,18 @@ actor ZoomOAuth {
         let query = { (name: String) in
             components.queryItems?.first { $0.name == name }?.value
         }
-        if let error = query("error"), !error.isEmpty {
-            pendingState = nil
-            return "Zoom sign-in failed: \(error)"
-        }
-        guard let state = query("state"), state == pendingState else {
+        // State FIRST (fix round 1, review M1): an `error` from a request that
+        // does not carry this sign-in's state is not Zoom's answer — acting on
+        // it let any local sender end a pending sign-in. The broker always
+        // sets `state` next to `error` (site-worker.js handleOauthCallback), so
+        // the corevideo:// fallback is unaffected.
+        guard let pendingState, let state = query("state"), state == pendingState else {
             return "sign-in state mismatch — start again"
         }
-        pendingState = nil
+        self.pendingState = nil
+        if let error = query("error"), !error.isEmpty {
+            return "Zoom sign-in failed: \(error)"
+        }
         guard let brokerToken = query("broker_token"), !brokerToken.isEmpty else {
             return "callback carried no broker token"
         }
