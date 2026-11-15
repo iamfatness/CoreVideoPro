@@ -15,6 +15,18 @@
 -->
 <plist version="1.0">
 <dict>
+    <!--
+      Read only, so the producer check (SecCodeCopyGuestWithAttributes, then
+      the code requirement) can read the producer from disk: the
+      cmioextension sandbox reads neither /Applications nor any home folder.
+      Exactly the installed app and the signed vcam probe location; must match
+      ProducerAttestation.producerReadPaths. Not a restricted entitlement.
+    -->
+    <key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+    <array>
+        <string>/Applications/CoreVideo Pro.app/</string>
+        <string>/Users/Shared/CoreVideoPro/vcam-probe/</string>
+    </array>
     <key>com.apple.security.app-sandbox</key>
     <true/>
     <key>com.apple.security.application-groups</key>

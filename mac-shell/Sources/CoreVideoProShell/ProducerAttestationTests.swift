@@ -1,7 +1,9 @@
 // ProducerAttestation (CameraExtensionKit): the camera extension's producer
-// admission. Live 2026-11-15: the extension's sandbox refused the file read
+// admission. Live 2026-11-15 the extension's sandbox refused the file read
 // SecCodeCopyGuestWithAttributes needs (OSStatus 100001/100013) for every
-// producer, so nothing was ever authorized. Registered in ShellTests.runAndExit.
+// producer. The fix is a read-only sandbox exception for the producer paths,
+// never a weaker check: these cases pin that nothing but a met requirement
+// authorizes. Registered in ShellTests.runAndExit.
 
 import CameraExtensionKit
 import Foundation
@@ -9,55 +11,42 @@ import Foundation
 extension ShellTests {
     static func testProducerAttestation() {
         typealias P = ProducerAttestation
-        // Flags measured on this Mac (csops CS_OPS_STATUS) for the installed core
-        // and the Developer ID vcam-probe.
-        let core: UInt32 = 0x2201_1301, probe: UInt32 = 0x2201_1311
-        expectEqual(P.kernelVerdict(statusFlags: core, teamID: "42394L3353",
-                                    identifier: "us.iamfatness.corevideopro.core"),
-                    .authorized("kernel attestation us.iamfatness.corevideopro.core"), "installed core admitted")
-        expectEqual(P.kernelVerdict(statusFlags: probe, teamID: "42394L3353",
-                                    identifier: "us.iamfatness.corevideopro.vcam-probe"),
-                    .authorized("kernel attestation us.iamfatness.corevideopro.vcam-probe"), "probe admitted")
-        expectEqual(P.kernelVerdict(statusFlags: core, teamID: "AAAAAAAAAA",
-                                    identifier: "us.iamfatness.corevideopro.core"),
-                    .denied("team AAAAAAAAAA"), "another team is refused")
-        expectEqual(P.kernelVerdict(statusFlags: core, teamID: nil, identifier: "us.iamfatness.corevideopro.core"),
-                    .denied("team none"), "no team (unsigned) is refused")
-        expectEqual(P.kernelVerdict(statusFlags: core, teamID: "42394L3353", identifier: "com.example.feeder"),
-                    .denied("identifier com.example.feeder"), "another identifier is refused")
-        expectEqual(P.kernelVerdict(statusFlags: core | P.csAdhoc, teamID: "42394L3353",
-                                    identifier: "us.iamfatness.corevideopro.core"),
-                    .denied("ad hoc signature"), "ad hoc is refused")
-        expectEqual(P.kernelVerdict(statusFlags: core & ~P.csValid, teamID: "42394L3353",
-                                    identifier: "us.iamfatness.corevideopro.core"),
-                    .denied("code signature not valid"), "invalidated code is refused")
-        expectEqual(P.kernelVerdict(statusFlags: core & ~P.csRuntime, teamID: "42394L3353",
-                                    identifier: "us.iamfatness.corevideopro.core"),
-                    .denied("not hardened runtime"), "non-hardened code is refused")
-        expectEqual(P.kernelVerdict(statusFlags: nil, teamID: "42394L3353",
-                                    identifier: "us.iamfatness.corevideopro.core"),
-                    .denied("code-signing status unreadable"), "unreadable status is refused")
+        expectEqual(P.decide(copyStatus: 0, requirementStatus: 0), .authorized, "a met requirement authorizes")
+        expectEqual(P.decide(copyStatus: 0, requirementStatus: -67050),
+                    .denied("requirement not met (OSStatus -67050)"), "an unmet requirement is refused")
+        expectEqual(P.decide(copyStatus: 0, requirementStatus: nil), .denied("no guest code"), "no code is refused")
+        expectEqual(P.decide(copyStatus: -67065, requirementStatus: nil),
+                    .denied("no guest code (OSStatus -67065)"), "any copy failure is refused")
+        for status: Int32 in [100_001, 100_013] {
+            let verdict = P.decide(copyStatus: status, requirementStatus: nil)
+            expect(verdict != .authorized, "a sandbox read refusal (\(status)) is refused, never rescued")
+            if case .denied(let why) = verdict {
+                expect(why.contains("/Users/Shared/CoreVideoPro/vcam-probe/"), "the refusal says where to run from")
+            }
+        }
 
-        let admit = P.Verdict.authorized("kernel")
-        var kernelAsked = false
-        expectEqual(P.decide(copyStatus: 0, requirementStatus: 0) { kernelAsked = true; return admit },
-                    .authorized("requirement met"), "a readable producer meeting the requirement")
-        expectEqual(P.decide(copyStatus: 0, requirementStatus: -67050) { kernelAsked = true; return admit },
-                    .denied("requirement not met (OSStatus -67050)"),
-                    "a readable producer failing the requirement is NOT rescued by the kernel check")
-        expect(!kernelAsked, "the kernel check runs only when the requirement check cannot")
-        expectEqual(P.decide(copyStatus: 100_001, requirementStatus: nil) { admit }, admit,
-                    "sandbox EPERM (live, /Applications core) falls back to the kernel")
-        expectEqual(P.decide(copyStatus: 100_013, requirementStatus: nil) { admit }, admit,
-                    "EACCES (live, producer under a 0700 folder) falls back to the kernel")
-        expectEqual(P.decide(copyStatus: -67065, requirementStatus: nil) { admit },
-                    .denied("no guest code (OSStatus -67065)"), "any other failure fails closed")
-
-        // The two admission rules must name the same team and producers.
+        // The requirement is Developer ID, our team, our two identifiers.
         let requirement = CameraConstants.producerRequirement
-        expect(requirement.contains("\"\(P.teamID)\""), "requirement and attestation share the team")
-        for id in P.identifiers {
-            expect(requirement.contains("identifier \"\(id)\""), "requirement names \(id)")
+        expect(requirement.hasPrefix("anchor apple generic and "), "Apple-anchored")
+        expect(requirement.contains("certificate 1[field.1.2.840.113635.100.6.2.6] exists"), "Developer ID CA")
+        expect(requirement.contains("certificate leaf[field.1.2.840.113635.100.6.1.13] exists"),
+               "Developer ID Application leaf")
+        expect(requirement.contains(#"certificate leaf[subject.OU] = "42394L3353""#), "our team")
+        expect(requirement.contains(#"identifier "us.iamfatness.corevideopro.core""#), "the core")
+        expect(requirement.contains(#"identifier "us.iamfatness.corevideopro.vcam-probe""#), "the probe")
+        var compiled: SecRequirement?
+        expectEqual(SecRequirementCreateWithString(requirement as CFString, [], &compiled), errSecSuccess,
+                    "the requirement compiles")
+
+        // The sandbox exception in the shipped entitlements is exactly the read paths.
+        for name in ["macos-camera-extension.entitlements", "macos-camera-extension-adhoc.entitlements"] {
+            let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+                .appendingPathComponent("../../../scripts/\(name)").standardizedFileURL
+            guard let data = try? Data(contentsOf: url),
+                  let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+            else { expect(false, "cannot read scripts/\(name) from the source tree"); continue }
+            let paths = plist["com.apple.security.temporary-exception.files.absolute-path.read-only"] as? [String]
+            expectEqual(paths ?? [], P.producerReadPaths, "\(name) grants exactly the producer read paths")
         }
     }
 }

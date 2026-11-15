@@ -74,7 +74,11 @@ done
 OUT="$ROOT/dist/vcam-e2e/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 LOG_START="$(date '+%Y-%m-%d %H:%M:%S')"
-FEED="$OUT/corevideo-vcam-feed"
+# The extension's producer check reads the producer from disk, and its sandbox
+# may read only the app and this folder (a read-only entitlement exception;
+# ProducerAttestation.producerReadPaths). A feeder anywhere else is refused.
+FEED_DIR="/Users/Shared/CoreVideoPro/vcam-probe"
+FEED="$FEED_DIR/corevideo-vcam-feed"
 FEED_PID=""
 
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; }
@@ -176,7 +180,9 @@ grep -q 'COREVIDEO_WITH_MAC_VIRTUALCAM:BOOL=ON' "$NATIVE_BUILD/CMakeCache.txt" 2
     || fail 3 "$NATIVE_BUILD is not configured with -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON"
 cmake --build "$NATIVE_BUILD" --target corevideo-vcam-feed >"$OUT/build-feed.log" 2>&1 \
     || fail 3 "building corevideo-vcam-feed failed (see $OUT/build-feed.log)"
-cp "$NATIVE_BUILD/corevideo-vcam-feed" "$FEED"
+mkdir -p "$FEED_DIR" && chmod 755 /Users/Shared/CoreVideoPro "$FEED_DIR" \
+    || fail 3 "cannot create $FEED_DIR"
+cp "$NATIVE_BUILD/corevideo-vcam-feed" "$FEED" && chmod 755 "$FEED"
 # get-task-allow lets step 7's `leaks` inspect the hardened process. This copy is
 # a local test tool, never notarized or shipped.
 cat >"$OUT/feed.entitlements" <<'PLIST'

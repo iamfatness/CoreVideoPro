@@ -90,8 +90,15 @@ the extension) so consumers that ask for 720p get it without a second producer s
    activation-state transition goes to `ShellLog`.
 6. **(Mac) Only our core may feed the sink.** `authorizedToStartStream(for:)` on the sink
    checks the client's code signature against
-   `anchor apple generic and certificate leaf[subject.OU] = "42394L3353" and (identifier "us.iamfatness.corevideopro.core" or identifier "us.iamfatness.corevideopro.vcam-probe")`.
-   It fails closed. Any consumer may read the source stream.
+   `anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "42394L3353" and (identifier "us.iamfatness.corevideopro.core" or identifier "us.iamfatness.corevideopro.vcam-probe")`
+   (Developer ID CA intermediate, Developer ID Application leaf; tightened 2026-11-15).
+   It fails closed, with no fallback. The check reads the producer from disk, and
+   the `cmioextension` sandbox reads neither `/Applications` nor home folders, so the
+   extension carries a read-only `temporary-exception.files.absolute-path` for exactly
+   `/Applications/CoreVideo Pro.app/` and `/Users/Shared/CoreVideoPro/vcam-probe/`
+   (where the e2e script puts the signed probe). Without it every producer was
+   refused (OSStatus 100001). `CMIOExtensionClient` exposes no audit token, so the
+   pid is the only handle. Any consumer may read the source stream.
 
 ## 5. Health as data
 

@@ -11,8 +11,11 @@ public enum CameraConstants {
     public static let sinkStreamName = "CoreVideo Pro Camera Sink"
     public static let machServiceName = "42394L3353.us.iamfatness.corevideopro.shell.camera"
     public static let extensionBundleID = "us.iamfatness.corevideopro.shell.camera"
-    /// Spec §4 law 6, verbatim.
-    public static let producerRequirement = #"anchor apple generic and certificate leaf[subject.OU] = "42394L3353" and (identifier "us.iamfatness.corevideopro.core" or identifier "us.iamfatness.corevideopro.vcam-probe")"#
+    /// Spec §4 law 6, tightened to Developer ID (2026-11-15 security review): an
+    /// Apple-anchored chain whose intermediate is the Developer ID CA
+    /// (1.2.840.113635.100.6.2.6) and whose leaf is a Developer ID Application
+    /// certificate (1.2.840.113635.100.6.1.13) for our team, plus the identifier.
+    public static let producerRequirement = #"anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "42394L3353" and (identifier "us.iamfatness.corevideopro.core" or identifier "us.iamfatness.corevideopro.vcam-probe")"#
 
     /// How long the last program frame is held after the producer stops delivering.
     public static let holdNanoseconds: UInt64 = 500_000_000
