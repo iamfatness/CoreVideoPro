@@ -120,6 +120,19 @@ struct ShellPrefs: Codable, Equatable {
     // preferences file fail to decode, and load() silently falls back to
     // defaults, wiping the operator's saved show. Optional gets decodeIfPresent.
     var vstChannelSelections: [String: String]?
+    // Production settings (the Windows ProductionSettingsWindow values that
+    // production-output-preferences.json keeps: canvas size/fps, stream bitrate,
+    // recording format/prefix, multiview layout + tile count). OPTIONAL: nil
+    // means "never saved", and the model keeps its built-in default. A 4K or
+    // 30 fps show used to come back as 1080p60 on every launch.
+    var canvasWidth: Int?
+    var canvasHeight: Int?
+    var canvasFps: Int?
+    var streamBitrateMbps: Double?
+    var recordFormat: String?
+    var recordPrefix: String?
+    var multiviewLayoutMode: String?
+    var multiviewTileCount: Int?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -168,6 +181,15 @@ struct ShellPrefs: Codable, Equatable {
                                               forKey: .chromaKeys)) ?? nil)
         slotDropoutPolicies = ((try? c.decodeIfPresent([PersistedSlotPolicy].self,
                                                        forKey: .slotDropoutPolicies)) ?? nil)
+        canvasWidth = ((try? c.decodeIfPresent(Int.self, forKey: .canvasWidth)) ?? nil)
+        canvasHeight = ((try? c.decodeIfPresent(Int.self, forKey: .canvasHeight)) ?? nil)
+        canvasFps = ((try? c.decodeIfPresent(Int.self, forKey: .canvasFps)) ?? nil)
+        streamBitrateMbps = ((try? c.decodeIfPresent(Double.self, forKey: .streamBitrateMbps)) ?? nil)
+        recordFormat = ((try? c.decodeIfPresent(String.self, forKey: .recordFormat)) ?? nil)
+        recordPrefix = ((try? c.decodeIfPresent(String.self, forKey: .recordPrefix)) ?? nil)
+        multiviewLayoutMode = ((try? c.decodeIfPresent(String.self,
+                                                       forKey: .multiviewLayoutMode)) ?? nil)
+        multiviewTileCount = ((try? c.decodeIfPresent(Int.self, forKey: .multiviewTileCount)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -204,6 +226,14 @@ struct ShellPrefs: Codable, Equatable {
         p.chromaKeys = [PersistedChromaKey(slotId: 1)]
         p.slotDropoutPolicies = [PersistedSlotPolicy(slotId: 2, dropoutPolicy: "black")]
         p.vstChannelSelections = ["ch1": "vst:Test"]
+        p.canvasWidth = 3840
+        p.canvasHeight = 2160
+        p.canvasFps = 30
+        p.streamBitrateMbps = 12.5
+        p.recordFormat = "mov"
+        p.recordPrefix = "gala"
+        p.multiviewLayoutMode = "grid"
+        p.multiviewTileCount = 6
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
             return "decode failed"

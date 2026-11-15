@@ -2940,7 +2940,7 @@ enum ShellTests {
             ("lifecycle/start-is-idempotent", testStartRunsItsSetupExactlyOncePerProcess),
             ("control/ws-origin-rule", testControlWebSocketOriginRule),
             ("control/ws-slow-client-dropped", testControlSlowWebSocketClientIsDropped),
-        ]
+        ] + tier0Cases
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
             body()

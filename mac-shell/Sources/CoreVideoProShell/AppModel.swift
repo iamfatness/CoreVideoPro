@@ -511,6 +511,7 @@ final class AppModel: ObservableObject {
             .filter { $0.kind == "zoom" && !$0.dropoutPolicy.isEmpty }
             .map { PersistedSlotPolicy(slotId: $0.id, dropoutPolicy: $0.dropoutPolicy) }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
+        storeProductionSettings(into: &prefs)
         prefs.scenes = railScenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
                            backgroundAssetId: scene.backgroundAssetId,
@@ -526,7 +527,13 @@ final class AppModel: ObservableObject {
     }
 
     private func restorePrefs() {
-        let prefs = ShellPrefs.load()
+        applyRestoredPrefs(ShellPrefs.load())
+        streamKey = StreamKeychain.load()
+    }
+
+    /// Everything a relaunch restores from the prefs file, minus the file read
+    /// and the Keychain (so the harness can drive the real restore path).
+    func applyRestoredPrefs(_ prefs: ShellPrefs) {
         overlays = prefs.overlays ?? OverlaysState()
         for key in prefs.chromaKeys ?? [] {
             if let index = slots.firstIndex(where: { $0.id == key.slotId }) {
@@ -589,7 +596,7 @@ final class AppModel: ObservableObject {
                          backgroundAssetId: saved.backgroundAssetId)
             }
         }
-        streamKey = StreamKeychain.load()
+        restoreProductionSettings(prefs)
         lastSavedPrefs = prefs
     }
 
@@ -768,13 +775,20 @@ final class AppModel: ObservableObject {
 
     func configureMultiviewer(mode: String) {
         multiviewLayoutMode = mode
-        guard let bridge else { return }
-        Task {
-            _ = try? await bridge.request([
-                "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                "commands": [["type": "configure-multiviewer", "layoutMode": mode]],
-            ])
-        }
+        applyMultiviewConfig()
+    }
+
+    /// Every core generation (first handshake AND a supervisor respawn) starts
+    /// at its built-in 1920x1080@60 / grid defaults. Re-send the operator's
+    /// production settings, or a respawned core silently renders the wrong
+    /// canvas while Settings still shows the right one (gotchas.md: a one-shot
+    /// command must be re-applied on every core generation).
+    func reassertProductionSettings() {
+        let body: JSONObject = [
+            "type": "media-core-sync", "elapsedMs": elapsedMs(),
+            "commands": productionSettingsCommands(),
+        ]
+        Task { _ = try? await self.outputRequest(body) }
     }
 
     private func onConnected() {
@@ -783,7 +797,7 @@ final class AppModel: ObservableObject {
         rosterProjection.resetForProcess()
         rosterRecoveryNotice = rosterProjection.notice
         setMonitor(enabled: monitorEnabled, volume: monitorVolume)
-        applyMultiviewConfig()
+        reassertProductionSettings()
         // Re-assert a restored grade: the core starts neutral every launch, so
         // a persisted grade that is never pushed silently does nothing.
         if !gradeIsNeutral { applyColorGrade() }
@@ -1290,15 +1304,11 @@ final class AppModel: ObservableObject {
 
     func applyOutputProfile() {
         guard let bridge else { return }
+        let command = outputProfileCommand()
         Task {
             _ = try? await bridge.request([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                "commands": [[
-                    "type": "set-output-profile",
-                    "width": canvasWidth, "height": canvasHeight, "fps": canvasFps,
-                    "targetBitrateMbps": streamBitrateMbps, "codec": streamCodec,
-                    "resolution": "\(canvasWidth)x\(canvasHeight)",
-                ]],
+                "commands": [command],
             ])
         }
         syncScenes()
@@ -1306,14 +1316,11 @@ final class AppModel: ObservableObject {
 
     func applyMultiviewConfig() {
         guard let bridge else { return }
+        let command = multiviewConfigCommand()
         Task {
             _ = try? await bridge.request([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                "commands": [[
-                    "type": "configure-multiviewer",
-                    "layoutMode": multiviewLayoutMode,
-                    "tileCount": multiviewTileCount,
-                ]],
+                "commands": [command],
             ])
         }
     }
@@ -2593,7 +2600,9 @@ final class AppModel: ObservableObject {
         [[
             "id": "rtmp", "label": "Stream", "protocol": "rtmp",
             "url": streamUrl, "streamKey": streamKey,
-            "fps": 30, "targetBitrateMbps": 6.0, "audioBitrateKbps": 160,
+            // An explicit destination bitrate WINS over streamOutputProfile in
+            // the core (#606), so this must be the operator's value too.
+            "fps": 30, "targetBitrateMbps": streamBitrateMbps, "audioBitrateKbps": 160,
             "videoCodec": "h264", "encoderMode": "auto",
             "keyframeIntervalSeconds": 2.0, "rateControl": "cbr",
             "h264Profile": "high", "bFrames": 2, "allowEnhancedRtmp": false,
@@ -2616,7 +2625,7 @@ final class AppModel: ObservableObject {
         if streaming {
             command["streamOutputProfile"] = [
                 "width": 1920, "height": 1080, "fps": 30,
-                "targetBitrateMbps": 6.0, "videoCodec": "h264",
+                "targetBitrateMbps": streamBitrateMbps, "videoCodec": "h264",
             ]
             command["destinationSettings"] = streamDestinationSettings()
         }

@@ -560,7 +560,7 @@ struct FooterOutputsGroup: View {
                     .font(.grotesk(11)).foregroundStyle(Studio.textDim)
             }
             HStack {
-                Text("1080p30 H.264 (VideoToolbox via ffmpeg) \u{00B7} 6 Mbps CBR \u{00B7} AAC 160 kbps")
+                Text(ProductionSettingsPolicy.streamRecipeLabel(bitrateMbps: model.streamBitrateMbps))
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()

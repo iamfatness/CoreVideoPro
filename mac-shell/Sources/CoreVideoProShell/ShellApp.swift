@@ -755,7 +755,7 @@ struct MultiviewerCanvas: View {
         VStack(spacing: 6) {
             HStack(spacing: 8) {
                 Text("MULTIVIEWER").font(.grotesk(12, .semibold))
-                MonoChip("1080p60")
+                MonoChip(model.canvasLabel)
                 Text("\(model.liveInputCount) live inputs")
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 Spacer()
