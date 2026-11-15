@@ -1280,8 +1280,9 @@ enum ShellTests {
         var sent: [JSONObject] = []
         model.routingBaseSendObserver = { sent.append($0) }
         model.selectOrRouteSend(source: "11", bus: "iso-1")
-        for tick in 0..<40 {
+        for tick in 0..<40 {   // a real drag: ticks ~20 ms apart, the run loop turning
             model.setSendGain(source: "11", bus: "iso-1", gainDb: -Double(tick) / 4)
+            spin(0.02)
         }
         spin(until: { !sent.isEmpty }, limit: 2)
         spin(0.3)
@@ -1314,6 +1315,27 @@ enum ShellTests {
                "precondition: the logo bug is a fixed media route on Program")
         expectEqual(mediaSends().count, 5, "a media route on Program: media gets the default sends")
         expect(model.strips.contains { $0.id == "media" }, "...and the media strip appears")
+    }
+
+    /// The roster-membership trigger: a camera-OFF guest joining or leaving
+    /// changes the audio source set (and meeting-audio), so it must re-push the
+    /// spine even though no camera changed.
+    @MainActor
+    private static func testRosterMembershipChangeRepushesTheSpine() {
+        let model = AppModel()
+        func roster(_ ids: [String]) -> JSONObject {
+            ["meetingState": "in-meeting",
+             "participants": ids.map { ["userId": $0, "displayName": "g\($0)", "videoOn": false] }]
+        }
+        model.applyZoomForTesting(roster(["11"]))
+        let afterJoin = model.spineSyncRequests
+        expect(afterJoin >= 1, "the first camera-off guest re-pushes the spine")
+        model.applyZoomForTesting(roster(["11"]))
+        expectEqual(model.spineSyncRequests, afterJoin, "an unchanged roster pushes nothing")
+        model.applyZoomForTesting(roster(["11", "22"]))
+        expectEqual(model.spineSyncRequests, afterJoin + 1, "a camera-off guest joining re-pushes")
+        model.applyZoomForTesting(roster(["11"]))
+        expectEqual(model.spineSyncRequests, afterJoin + 2, "a camera-off guest leaving re-pushes")
     }
 
     /// Cross-checks the audio wire strings against the CORE's source, the way the
@@ -3305,6 +3327,7 @@ enum ShellTests {
             ("audio-console/meeting-end-forgets", testMeetingEndForgetsPerGuestAudioState),
             ("audio-routing/slider-coalesced", testSendGainDragCoalescesTheRoutingPush),
             ("audio-routing/media-follows-program", testMediaRoutingFollowsTheProgramMediaRoute),
+            ("zoom-audio/roster-change-repushes-spine", testRosterMembershipChangeRepushesTheSpine),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),

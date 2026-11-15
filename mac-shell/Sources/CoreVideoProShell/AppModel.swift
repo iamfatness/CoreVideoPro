@@ -1528,7 +1528,11 @@ final class AppModel: ObservableObject {
     // docs/mac-port-phase4-swiftui-shell.md). Subscriptions request raw video
     // for every assigned participant; the compositor's fallback grid composes
     // whatever frames arrive.
+    /// Count of spine re-push requests (harness evidence for the triggers).
+    private(set) var spineSyncRequests = 0
+
     private func syncSpine() {
+        spineSyncRequests += 1
         spineSyncTask?.cancel()
         spineSyncTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 120_000_000)
