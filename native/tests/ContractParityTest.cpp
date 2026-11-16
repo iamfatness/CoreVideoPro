@@ -54,8 +54,19 @@ std::set<std::string> matches(const std::string& source, const std::string& patt
 
 // Concatenates every file with the given extension under a repo directory,
 // skipping build output and, optionally, one file name.
+// The Swift shell's in-binary test harness lives beside the product code:
+// ShellTests.swift plus per-feature ShellTests<Feature>.swift and *Tests.swift
+// files. Their fake core replies ("type": "capture-devices", ...) are not
+// requests the shell sends, so the parity scan must skip every one of them,
+// not just ShellTests.swift.
+bool isSwiftShellTestFile(const std::string& name) {
+  const std::string suffix = "Tests.swift";
+  return name.rfind("ShellTests", 0) == 0 ||
+         (name.size() >= suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0);
+}
+
 std::string readRepoTree(const std::string& relativeDirectory, const std::string& extension,
-                         const std::string& skipFileName = {}) {
+                         bool skipSwiftShellTests = false) {
   const std::filesystem::path root = std::filesystem::path(COREVIDEO_REPO_ROOT) / relativeDirectory;
   std::string result;
   std::error_code error;
@@ -66,7 +77,8 @@ std::string readRepoTree(const std::string& relativeDirectory, const std::string
       it.disable_recursion_pending();
       continue;
     }
-    if (!it->is_regular_file() || it->path().extension() != extension || name == skipFileName) {
+    if (!it->is_regular_file() || it->path().extension() != extension ||
+        (skipSwiftShellTests && isSwiftShellTestFile(name))) {
       continue;
     }
     std::ifstream input(it->path());
@@ -274,6 +286,16 @@ TEST(ContractParity, RequestManifestMatchesTheRpcDispatcher) {
   EXPECT_EQ(handled, manifest);
 }
 
+TEST(ContractParity, TheSwiftScanSkipsEveryShellTestFileAndNoProductFile) {
+  for (const char* name : {"ShellTests.swift", "ShellTestsSources.swift", "ShellTestsMedia.swift",
+                           "ControlApiTests.swift", "ZoomSignInTests.swift"}) {
+    EXPECT_TRUE(isSwiftShellTestFile(name)) << name;
+  }
+  for (const char* name : {"AppModel.swift", "SourceRowFacts.swift", "ShellTestHarness.swift", "Tests.swift.bak"}) {
+    EXPECT_FALSE(isSwiftShellTestFile(name)) << name;
+  }
+}
+
 TEST(ContractParity, EveryRequestTheShellsSendIsHandledByTheCore) {
   const auto requests = toSet(corevideo::core::kCoreRequestTypes);
   const auto commands = toSet(corevideo::core::kNativeMediaCoreCommandTypes);
@@ -291,13 +313,19 @@ TEST(ContractParity, EveryRequestTheShellsSendIsHandledByTheCore) {
   }
 
   // Swift: "type": "<name>" appears on requests and on the commands inside a
-  // media-core-sync batch, so either manifest satisfies it.
+  // media-core-sync batch, so either manifest satisfies it. It also appears on
+  // core EVENTS the shell builds to simulate the core (the tab-snapshot seed
+  // feeds a "zoom-source-format" through handleEventForTesting), so a core event
+  // type is accepted too. Events have their own parity test below; the cost is
+  // that a request mistakenly named after one of the few event types would not
+  // be caught here.
+  const auto events = toSet(corevideo::core::kCoreEventTypes);
   const auto swiftTypes = matches(
-      readRepoTree("mac-shell/Sources/CoreVideoProShell", ".swift", "ShellTests.swift"),
+      readRepoTree("mac-shell/Sources/CoreVideoProShell", ".swift", /*skipSwiftShellTests=*/true),
       "\"type\":\\s*\"([a-z0-9-]+)\"");
   ASSERT_FALSE(swiftTypes.empty());
   for (const auto& name : swiftTypes) {
-    EXPECT_TRUE(requests.contains(name) || commands.contains(name))
+    EXPECT_TRUE(requests.contains(name) || commands.contains(name) || events.contains(name))
         << "Swift shell sends a type the core does not handle: " << name;
   }
 }
