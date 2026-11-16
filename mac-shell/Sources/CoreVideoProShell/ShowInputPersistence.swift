@@ -61,7 +61,9 @@ extension AppModel {
     func restoreSlotAssignments(_ saved: [PersistedSlot]) {
         var seen: Set<String> = []
         for record in saved.sorted(by: { $0.slotId < $1.slotId }) {
-            guard record.kind == "zoom" || record.kind == "capture",
+            // Capture only (plan D2): a Zoom record in an older file is skipped —
+            // Zoom reuses user ids across meetings.
+            guard record.kind == "capture",
                   !record.sourceId.isEmpty,
                   let index = slots.firstIndex(where: { $0.id == record.slotId }),
                   slots[index].kind == "unassigned" else { continue }
@@ -73,7 +75,7 @@ extension AppModel {
             slot.inShow = record.inShow
             slot.offline = true
             guard let key = slot.sourceKey, seen.insert(key).inserted else { continue }
-            slots[index] = slot
+            ShowInputWriteScope.run("restore") { slots[index] = slot }
             if record.kind == "capture" { captureReconnectPending.insert(record.sourceId) }
         }
         assignedIds = Set(slots.filter { $0.kind == "zoom" && $0.inShow }.map(\.sourceId))

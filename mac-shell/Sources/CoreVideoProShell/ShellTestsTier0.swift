@@ -210,6 +210,10 @@ extension ShellTests {
         before.assignSlot(3, kind: "capture", sourceId: "cam1", name: "Wide cam")
         before.assignSlot(1, kind: "zoom", sourceId: "42", name: "Guest")
         before.toggleSlotInShow(1)   // parked, not in show
+        before.assignSlot(4, kind: "capture", sourceId: "cam2", name: "Tight cam")
+        before.toggleSlotInShow(4)   // parked, not in show
+        expectEqual(before.currentPrefs().showInputSlots?.map(\.kind), ["capture", "capture"],
+                    "only capture slots are written (plan D2)")
         guard let after = relaunched(before) else { expect(false, "relaunch"); return }
         let cam = after.slots.first { $0.id == 3 }
         expectEqual(cam?.kind, "capture", "capture assignment restored")
@@ -218,8 +222,8 @@ extension ShellTests {
         expectEqual(cam?.inShow, true, "in-show restored")
         expectEqual(cam?.offline, true, "a restored source reads offline until it is seen")
         let guest = after.slots.first { $0.id == 1 }
-        expectEqual(guest?.sourceId, "42", "zoom assignment restored")
-        expectEqual(guest?.inShow, false, "a parked slot stays parked")
+        expectEqual(guest?.kind, "unassigned", "a Zoom slot is not restored (Zoom reuses ids; owner decision 2)")
+        expectEqual(after.slots[3].inShow, false, "a parked slot stays parked")
         expect(after.captureReconnectPending.contains("cam1"),
                "a restored capture slot reconnects its device when the core lists it")
         let empty = AppModel()
@@ -250,7 +254,8 @@ extension ShellTests {
     @MainActor
     static func testAManualSlotNameIsNotSaved() {
         let model = AppModel()
-        model.assignSlot(1, kind: "zoom", sourceId: "a", name: "Alice")
+        // Slot 1 is a capture source: since plan D2 a Zoom slot is not saved at all.
+        model.assignSlot(1, kind: "capture", sourceId: "cam0", name: "Alice")
         model.assignSlot(2, kind: "capture", sourceId: "cam1", name: "Desk cam")
         model.slots[0].name = "Host"
         let saved = model.currentPrefs().showInputSlots ?? []
@@ -306,14 +311,14 @@ extension ShellTests {
         expectEqual(other?.keyEnabled, false, "never to whatever now sits in the old slot")
         expectEqual(cam?.audioDeviceId, "mic", "the mic pairing follows the camera")
         expectEqual(other?.audioDeviceId, "", "the old slot does not inherit the mic")
-        expectEqual(model.slots.first { $0.id == 2 }?.dropoutPolicy, "black",
-                    "the dropout policy follows the guest")
+        expect(model.slots.allSatisfy { $0.dropoutPolicy.isEmpty },
+               "a Zoom policy has no slot to follow after a relaunch")
 
         // Saving writes the source identity, so the next restore can do this.
         let saved = model.currentPrefs()
         expectEqual(saved.chromaKeys?.first?.sourceKey, "capture:cam1", "keys save their source")
         expectEqual(saved.capturePairings?.first?.sourceKey, "capture:cam1", "pairings save their source")
-        expectEqual(saved.slotDropoutPolicies?.first?.sourceKey, "zoom:42", "policies save their source")
+        expect((saved.slotDropoutPolicies ?? []).isEmpty, "no Zoom slot, no Zoom policy saved")
     }
 
     /// recomputeFromSlots rebuilt the selection from slot flags; a freshly
@@ -322,20 +327,21 @@ extension ShellTests {
     static func testRestoredIsoSelectionSurvivesTheFirstAssignment() {
         var prefs = ShellPrefs()
         prefs.isoRecordingEnabled = true
-        prefs.isoSelectedSourceIds = ["capture:cam1", "zoom:7"]
-        prefs.showInputSlots = [PersistedSlot(slotId: 2, kind: "zoom", sourceId: "7",
-                                              name: "Guest", inShow: true)]
+        prefs.isoSelectedSourceIds = ["capture:cam1", "capture:cam2", "zoom:7"]
+        prefs.showInputSlots = [PersistedSlot(slotId: 2, kind: "capture", sourceId: "cam2",
+                                              name: "Cam 2", inShow: true)]
         let model = AppModel()
         model.applyRestoredPrefs(prefs)
         model.assignSlot(3, kind: "capture", sourceId: "cam1", name: "Cam")
-        expectEqual(model.isoSelectedSourceIds, ["capture:cam1", "zoom:7"],
-                    "the first assignment keeps the restored ISO selection")
+        expectEqual(model.isoSelectedSourceIds, ["capture:cam1", "capture:cam2"],
+                    "the restored ISO selection survives the first assignment; "
+                        + "last meeting's unslotted zoom:7 is pruned")
         expect(model.isoRecordingEnabled, "and the ISO master switch")
         expectEqual(model.slots.first { $0.id == 3 }?.iso, true,
                     "the assigned slot shows its source's saved ISO state")
         expectEqual(model.slots.first { $0.id == 2 }?.iso, true, "the restored slot keeps its ISO")
         model.unassignSlot(2)
-        expect(model.isoSelectedSourceIds.contains("zoom:7"),
+        expect(model.isoSelectedSourceIds.contains("capture:cam2"),
                "unassign keeps the source's ISO intent (Windows ShowInputsCoordinator)")
     }
 
@@ -404,8 +410,8 @@ extension ShellTests {
                                               name: "Guest", inShow: true)]
         let relaunched = AppModel()
         relaunched.applyRestoredPrefs(prefs)
-        expectEqual(relaunched.isoSelectedSourceIds, ["capture:cam1", "zoom:7"],
-                    "a relaunch drops unslotted zoom intent")
+        expectEqual(relaunched.isoSelectedSourceIds, ["capture:cam1"],
+                    "a relaunch restores no Zoom slot, so all zoom: intent is pruned")
     }
 
     /// The matrix kept its own column map, never rebuilt from the selection,
@@ -418,21 +424,22 @@ extension ShellTests {
         prefs.isoSelectedSourceIds = ["capture:cam1"]
         prefs.showInputSlots = [
             PersistedSlot(slotId: 1, kind: "capture", sourceId: "cam1", name: "Cam", inShow: true),
-            PersistedSlot(slotId: 2, kind: "zoom", sourceId: "7", name: "Guest", inShow: true),
+            // A capture source: since plan D2 a saved Zoom slot is not restored.
+            PersistedSlot(slotId: 2, kind: "capture", sourceId: "cam7", name: "Cam 7", inShow: true),
         ]
         let model = AppModel()
         model.applyRestoredPrefs(prefs)
         expectEqual(model.isoColumn(of: "capture:cam1"), 1, "the matrix shows the restored ISO")
         model.toggleSlotIso(2)      // Sources tab
-        expect(model.isoColumn(of: "zoom:7") != nil, "a Sources-tab ISO toggle appears in the matrix")
-        model.toggleIsoCell(column: 5, sourceId: "zoom:7")   // move to ISO 5
-        expectEqual(model.isoColumn(of: "zoom:7"), 5, "the matrix move keeps its column")
-        expectEqual(model.isoSelectedSourceIds, ["capture:cam1", "zoom:7"],
+        expect(model.isoColumn(of: "capture:cam7") != nil, "a Sources-tab ISO toggle appears in the matrix")
+        model.toggleIsoCell(column: 5, sourceId: "capture:cam7")   // move to ISO 5
+        expectEqual(model.isoColumn(of: "capture:cam7"), 5, "the matrix move keeps its column")
+        expectEqual(model.isoSelectedSourceIds, ["capture:cam1", "capture:cam7"],
                     "a matrix click edits the selection, it does not replace it")
         model.toggleSlotIso(1)      // Sources tab: cam1 off
         expectEqual(model.isoColumn(of: "capture:cam1"), nil, "unchecking in Sources clears its matrix cell")
         expectEqual(model.slots.first { $0.id == 1 }?.iso, false, "and its Sources checkbox")
-        model.toggleIsoCell(column: 5, sourceId: "capture:cam1")  // takes zoom:7's column
+        model.toggleIsoCell(column: 5, sourceId: "capture:cam1")  // takes cam7's column
         expectEqual(model.isoSelectedSourceIds, ["capture:cam1"], "column-exclusive: the occupant leaves")
         expectEqual(model.slots.first { $0.id == 2 }?.iso, false, "and its Sources checkbox follows")
         expectEqual(model.slots.first { $0.id == 1 }?.iso, true, "the matrix pick shows in Sources")
@@ -444,20 +451,8 @@ extension ShellTests {
     /// from fixed-width controls of ~1000 pt, so it was compressed or clipped.
     @MainActor
     static func testSourcesRowsFitThePageAtTheMinimumWindow() {
-        let model = AppModel()
-        TabSnapshotHarness.seed(model)   // zoom + capture-with-mic rows (the widest)
-        var widest: CGFloat = 0
-        for slot in model.slots where slot.kind != "unassigned" {
-            let host = NSHostingView(rootView: SlotRow(slot: slot).environmentObject(model)
-                .fixedSize())
-            host.layoutSubtreeIfNeeded()
-            widest = max(widest, host.fittingSize.width)
-        }
-        expect(widest > 600, "slot row measured (\(widest) pt)")
-        // The Sources card adds 14 pt padding each side inside the page.
-        let available = TabPageLayout.pageWidth(for: .sources, window: 1360) - 28
-        expect(widest <= available,
-               "an assigned Sources row (\(widest) pt) fits the page at the 1360 pt minimum window (\(available) pt)")
+        // The row measurement moved to sources-table/fits-the-page (SlotRow is gone,
+        // sources plan Task 7); the page-width and TabPage checks stay here.
         expect(TabPageLayout.pageWidth(for: .routing, window: 1360) >= 760,
                "the Routing grid (~724 pt) fits without clipping its last column")
         for tab in StudioTab.allCases where tab != .studio {

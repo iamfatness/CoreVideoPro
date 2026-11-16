@@ -43,7 +43,7 @@ struct TabPageContent: View {
                 switch tab {
                 case .studio: EmptyView()
                 case .zoom: ZoomPane()
-                case .sources: SourcesPane()
+                case .sources: SourcesTable()
                 case .scenes: ScenesPane()
                 case .routing: RoutingPane()
                 case .overlays: OverlaysPane()
@@ -67,14 +67,67 @@ struct TabPageContent: View {
 /// (comma-separated rawValues) narrows the set; default is every tab.
 @MainActor
 enum TabSnapshotHarness {
+    /// The mixed roster from spec §6, deterministic (no clock reads):
+    /// slot 1 Zoom 101 live + talking 1920×1080@30 with its ISO armed; slot 2 Zoom 102
+    /// stalled (bus age 2400 ms); slot 3 camera with a mic, live 1280×720, on Program;
+    /// slot 4 a screen; slot 5 a camera that is gone (offline).
     static func seed(_ model: AppModel) {
+        model.sourceFactsClockForTesting = { 0 }
+        model.captureDevices = [
+            CaptureDeviceRow(id: "cam-1", name: "Wide camera (Blackmagic)", kind: "video", vendor: "blackmagic",
+                             connectionState: "connected", signalPresent: true, warning: ""),
+            CaptureDeviceRow(id: "screen:0", name: "Display 1", kind: "video", vendor: "ScreenCaptureKit",
+                             connectionState: "detected", signalPresent: false, warning: ""),
+        ]
+        ShowInputWriteScope.run("snapshot-seed") { seedSlots(model) }
+        seedMedia(model)
+        model.applyZoomForTesting([
+            "meetingState": "in_meeting", "rosterEpoch": "1:1:seed", "rosterRevision": NSNumber(value: 1),
+            "participants": [
+                ["userId": "101", "displayName": "Jordan Wallace", "videoOn": true, "talking": true,
+                 "sourceGeneration": NSNumber(value: 1)],
+                ["userId": "102", "displayName": "Guest with a long display name", "videoOn": true,
+                 "sourceGeneration": NSNumber(value: 1)],
+            ] as [JSONObject]])
+        for pid in ["101", "102"] {
+            model.handleEventForTesting(["type": "zoom-source-format", "format": [
+                "participantId": pid, "rosterEpoch": "1:1:seed", "sourceGeneration": NSNumber(value: 1),
+                "width": 1920, "height": 1080, "fps": 30, "frameId": 1, "frameAtMs": 100.0] as JSONObject])
+        }
+        model.applySnapshotForTesting(["sources": [
+            ["sourceId": "101", "kind": "zoom", "width": 1920, "height": 1080, "framesIngested": 300,
+             "sinceLastNewFrameMs": 12.0],
+            ["sourceId": "102", "kind": "zoom", "width": 1920, "height": 1080, "framesIngested": 90,
+             "sinceLastNewFrameMs": 2400.0],
+            ["sourceId": "capture:cam-1", "kind": "capture", "width": 1280, "height": 720,
+             "framesIngested": 600, "sinceLastNewFrameMs": 10.0],
+        ] as [JSONObject]])
+        // Program and the ISO writer straight into the facts, so the seed does not
+        // drive the recording or program read models of the other tabs.
+        model.sourceFacts.mutate {
+            $0.applyTally(program: ["capture:cam-1"], preview: [])
+            $0.applyWriters(["zoom:101": "armed"])
+        }
+        // The inspector open on slot 3 (beside the table at 1920, below it at 1360).
+        // COREVIDEO_SHELL_TAB_SNAPSHOT_INSPECTOR=0 renders the table with it closed.
+        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT_INSPECTOR"] != "0" {
+            model.sourcesWorkspace.inspect(3)
+        }
+    }
+
+    private static func seedSlots(_ model: AppModel) {
         model.assignSlot(1, kind: "zoom", sourceId: "101", name: "Jordan Wallace")
         model.assignSlot(2, kind: "zoom", sourceId: "102", name: "Guest with a long display name")
         model.assignSlot(3, kind: "capture", sourceId: "cam-1", name: "Wide camera (Blackmagic)")
         model.slots[2].audioDeviceId = "mic"; model.slots[2].audioDeviceName = "USB Audio Interface"
+        model.assignSlot(4, kind: "capture", sourceId: "screen:0", name: "Display 1")
+        model.assignSlot(5, kind: "capture", sourceId: "cam-gone", name: "Old desk camera")
         model.toggleSlotIso(1)
-        // The Media tab: one asset per kind, the clip selected. Synthetic rows, not
-        // files: a snapshot run must never read or write the operator's bin.
+    }
+
+    /// The Media tab: synthetic assets (never the operator's bin) and the
+    /// COREVIDEO_SHELL_MEDIA_SNAPSHOT states.
+    private static func seedMedia(_ model: AppModel) {
         func asset(_ id: String, _ file: String, _ kind: String, _ ms: Int?, _ w: Int = 0, _ h: Int = 0) -> MediaAsset {
             MediaAsset(id: id, name: (file as NSString).deletingPathExtension, kind: kind,
                        relativePath: kind + "/" + file, filePath: "/snapshot/" + kind + "/" + file,
@@ -108,12 +161,6 @@ enum TabSnapshotHarness {
             }
         default: break
         }
-        model.roster = [
-            RosterParticipant(id: "101", name: "Jordan Wallace", hasVideo: true,
-                              muted: false, talking: true, assigned: true),
-            RosterParticipant(id: "102", name: "Guest with a long display name", hasVideo: true,
-                              muted: false, talking: false, assigned: true),
-        ]
     }
 
     /// NSHostingView in an offscreen, never-ordered-front window so AppKit-

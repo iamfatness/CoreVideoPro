@@ -966,8 +966,10 @@ enum FooterSnapshotHarness {
         model.masterLevelLeft = 72
         model.masterLevelRight = 66
         model.takeStatus = "Take transition set to Fade"
-        model.slots[0].kind = "zoom"; model.slots[0].sourceId = "1"; model.slots[0].inShow = true
-        model.slots[1].kind = "capture"; model.slots[1].sourceId = "c"; model.slots[1].inShow = true
+        ShowInputWriteScope.run("snapshot-seed") {
+            model.slots[0].kind = "zoom"; model.slots[0].sourceId = "1"; model.slots[0].inShow = true
+            model.slots[1].kind = "capture"; model.slots[1].sourceId = "c"; model.slots[1].inShow = true
+        }
         model.roster = (1...4).map {
             RosterParticipant(id: "\($0)", name: "Guest \($0)", hasVideo: true,
                               muted: false, talking: false, assigned: $0 == 1)
