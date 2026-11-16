@@ -32,12 +32,16 @@ extension ShellTests {
             ("vcam-update/mid-session-loss-rechecks", testMidSessionLossRechecksAndReportsARestart),
             ("vcam-update/replacement-offered-in-use-is-cancelled",
              testReplacementOfferedWhileInUseEndsUpdateReady),
-            ("vcam-update/completed-unregistered-old-uninstalling-needs-reboot",
+            ("vcam-update/completed-unregistered-ours-not-enabled-needs-reboot",
              testCompletedButUnregisteredWithOldUninstallingNeedsReboot),
-            ("vcam-update/owner-mac-stuck-state-at-launch-needs-reboot", testOwnerMacStuckStateAtLaunchNeedsReboot),
+            ("vcam-update/staged-swap-at-launch-needs-reboot", testOwnerMacStuckStateAtLaunchNeedsReboot),
             ("vcam-update/will-complete-after-reboot", testWillCompleteAfterRebootIsNeedsReboot),
             ("vcam-update/needs-reboot-policy", testNeedsRebootPolicy),
-            ("vcam-update/owner-mac-today-restart-not-another-swap", testOwnerMacTodayGoesStraightToNeedsReboot),
+            ("vcam-update/older-enabled-copy-is-updated-not-restarted", testOwnerMacTodayGoesStraightToNeedsReboot),
+            ("vcam-update/enabled-old-uninstalling-device-visible-is-active",
+             testEnabledWithOldCopyUninstallingAndDeviceVisibleIsActive),
+            ("vcam-update/device-is-read-from-a-new-process", testTheDeviceIsReadFromANewProcess),
+            ("vcam-update/launch-action-policy", testLaunchActionPolicy),
             ("vcam-update/preflight-outranks-update", testPreflightOutranksAnUpdate),
             ("vcam-update/diagnostics-in-support-bundle", testVirtualCameraDiagnosticsReachTheSupportBundle),
         ]
@@ -363,8 +367,16 @@ extension ShellTests {
         let lingering = CameraDeviceStatus(registered: true, runningSomewhere: false, version: nil)
         let (model, fake) = activatedModel(installed: stuck, device: lingering)
         expectEqual(fake.calls, ["activate", "installs"], "the old device is not taken for the new one")
-        expectEqual(model.cameraExtensionState, .needsReboot, "and the stuck swap is reported")
+        // 2026-11-16: with OUR version enabled, an older copy still listed as
+        // uninstalling is not a restart (it stayed listed after the owner's
+        // restart while the new copy worked).
+        expectEqual(model.cameraExtensionState, .active, "ours is enabled: no restart is claimed")
         model.stopTimersForTesting()
+
+        let staged = [ours(enabled: false), CameraExtensionInstall(version: "2883", enabled: false, uninstalling: true)]
+        let (stagedModel, _) = activatedModel(installed: staged, device: lingering)
+        expectEqual(stagedModel.cameraExtensionState, .needsReboot, "ours NOT enabled: the staged swap is reported")
+        stagedModel.stopTimersForTesting()
 
         let (fresh, freshFake) = activatedModel(installed: stuck, device: ourDevice())
         expectEqual(freshFake.calls, ["activate"], "the new version's device is success")
@@ -393,7 +405,8 @@ extension ShellTests {
         model.startCameraExtensionAtLaunch()
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         expectEqual(model.cameraExtensionState, .active, "precondition: active with our device")
-        // The extension dies; macOS now lists an older copy uninstalling.
+        // The extension dies; macOS still lists OUR version enabled next to an
+        // older copy uninstalling. Not a restart.
         probe.status = CameraDeviceStatus()
         fake.installed = [ours(), CameraExtensionInstall(version: "2883", enabled: false, uninstalling: true)]
         var lost = VirtualCameraReadModel()
@@ -402,7 +415,16 @@ extension ShellTests {
         RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         model.virtualCameraCore = lost   // the next snapshot, still lost
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        expectEqual(model.cameraExtensionState, .needsReboot, "a lost camera with a restart pending says so")
+        expect(fake.calls.filter { $0 == "installs" }.count >= 2, "the loss re-asks what is installed")
+        expectEqual(model.cameraExtensionState, .active, "ours enabled: a lost camera is not a restart")
+        // macOS reports OUR version itself as not enabled: that is a restart.
+        fake.installed = [ours(enabled: false), CameraExtensionInstall(version: "2883", enabled: false, uninstalling: true)]
+        model.virtualCameraCore = nil     // the loss ends...
+        model.virtualCameraCore = lost    // ...and starts again
+        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        model.virtualCameraCore = lost
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(model.cameraExtensionState, .needsReboot, "a lost camera with OUR version not enabled says restart")
         model.stopTimersForTesting()
     }
 
@@ -458,10 +480,10 @@ extension ShellTests {
 
     @MainActor
     static func testCompletedButUnregisteredWithOldUninstallingNeedsReboot() {
-        let stuck = [ours(), CameraExtensionInstall(version: "2883", enabled: false, uninstalling: true)]
+        let stuck = [ours(enabled: false), CameraExtensionInstall(version: "2883", enabled: false, uninstalling: true)]
         let (model, fake) = activatedModel(installed: stuck, device: CameraDeviceStatus())
         expectEqual(fake.calls, ["activate", "installs"], "no device after completion: ask what is installed")
-        expectEqual(model.cameraExtensionState, .needsReboot, "an older copy uninstalling: only a restart finishes it")
+        expectEqual(model.cameraExtensionState, .needsReboot, "OUR version not enabled: only a restart finishes it")
         expectEqual(model.virtualCameraLabel, "Restart your Mac to finish updating the virtual camera.",
                     "the label says so")
         model.stopTimersForTesting()
@@ -475,15 +497,24 @@ extension ShellTests {
         let (clean, _) = activatedModel(installed: [ours()], device: CameraDeviceStatus())
         expectEqual(clean.cameraExtensionState, .active, "unregistered but nothing pending: no restart claim")
         clean.stopTimersForTesting()
+
+        // OUR version enabled, an older copy uninstalling, no device: the old
+        // copy alone is not evidence of a pending restart (2026-11-16).
+        let enabledOldLeaving = [ours(), CameraExtensionInstall(version: "2883", enabled: false, uninstalling: true)]
+        let (notARestart, _) = activatedModel(installed: enabledOldLeaving, device: CameraDeviceStatus())
+        expectEqual(notARestart.cameraExtensionState, .active, "ours enabled: never 'Restart your Mac'")
+        expect(notARestart.cameraExtensionLastResult.hasPrefix("enabled, but no device visible to a new process"),
+               "and the diagnosis is recorded: \(notARestart.cameraExtensionLastResult)")
+        notARestart.stopTimersForTesting()
     }
 
-    /// The owner-Mac state after a stuck swap to OUR version: ours
-    /// [activated enabled], the old one uninstalling, no device.
+    /// A swap staged for a restart, seen at launch: OUR version installed but
+    /// not enabled, the old one uninstalling, no device.
     @MainActor
     static func testOwnerMacStuckStateAtLaunchNeedsReboot() {
         let model = AppModel()
         let fake = FakeCameraExtensionActivator(
-            installed: [ours(), CameraExtensionInstall(version: "2881", enabled: false, uninstalling: true)])
+            installed: [ours(enabled: false), CameraExtensionInstall(version: "2881", enabled: false, uninstalling: true)])
         model.cameraExtension = fake
         model.cameraDeviceProbe = FakeCameraDeviceProbe(CameraDeviceStatus())
         model.coreCommandCaptureForTesting = { _ in }
@@ -498,9 +529,13 @@ extension ShellTests {
         model.stopTimersForTesting()
     }
 
-    /// Review I2a: the owner's Mac as it is NOW (2883 enabled, 2881 waiting
-    /// to uninstall, no device). Not another swap, not "Update camera":
-    /// "Restart your Mac", nothing submitted, whatever the intent.
+    /// An OLDER version enabled (2883), another waiting to uninstall (2881),
+    /// no device: the 2026-11-15 owner Mac. Review I2a answered "Restart your
+    /// Mac, submit nothing". A restart did not fix it (2883 was crash-looping
+    /// in its sandbox) and the older copy stays listed across restarts, so
+    /// that answer would have blocked the one thing that did fix it: our
+    /// version replacing 2883. Our version is not installed, so this is an
+    /// update like any other.
     @MainActor
     static func testOwnerMacTodayGoesStraightToNeedsReboot() {
         let today = [CameraExtensionInstall(version: "2883", enabled: true),
@@ -508,10 +543,124 @@ extension ShellTests {
         for intentOn in [false, true] {
             let (model, fake, _, _) = launchedModel(installed: today, device: CameraDeviceStatus(),
                                                     intentOn: intentOn)
-            expectEqual(fake.calls, ["installs"], "intent \(intentOn): nothing is submitted")
-            expectEqual(model.cameraExtensionState, .needsReboot, "intent \(intentOn): a restart is what finishes it")
+            expectEqual(fake.calls, ["installs", "activate"], "intent \(intentOn): the update is submitted")
+            expect(model.cameraExtensionState != .needsReboot, "intent \(intentOn): no restart is claimed")
             model.stopTimersForTesting()
         }
+    }
+
+    /// THE 2026-11-16 CASE (plan, Task 4). The owner's Mac after the update:
+    /// 3003 [activated enabled], 3002 [terminated waiting to uninstall on
+    /// reboot], and the device visible to every NEW process. The shell's own
+    /// CoreMediaIO view had no device (its provider list predates 3003), and it
+    /// said "Restart your Mac". Read from a new process, this is simply active.
+    @MainActor
+    static func testEnabledWithOldCopyUninstallingAndDeviceVisibleIsActive() {
+        let installs = [ours(), CameraExtensionInstall(version: "3002", enabled: false, uninstalling: true)]
+        // At launch (the app auto-reopened at login).
+        for intentOn in [false, true] {
+            let (model, fake, _, _) = launchedModel(installed: installs, device: ourDevice(), intentOn: intentOn)
+            expectEqual(fake.calls, ["installs"], "launch, intent \(intentOn): nothing is submitted")
+            expectEqual(model.cameraExtensionState, .active, "launch, intent \(intentOn): active, not needsReboot")
+            expect(model.virtualCameraLabel != VirtualCameraPresentation.needsRebootLabel,
+                   "launch, intent \(intentOn): never 'Restart your Mac'")
+            model.stopTimersForTesting()
+        }
+        // Right after the activation that installed it.
+        let (activated, activatedFake) = activatedModel(installed: installs, device: ourDevice())
+        expectEqual(activatedFake.calls, ["activate"], "after activation: the device is there, no question asked")
+        expectEqual(activated.cameraExtensionState, .active, "after activation: active, not needsReboot")
+        activated.stopTimersForTesting()
+
+        let v = CameraExtensionPolicy.bundledVersion
+        expectEqual(CameraExtensionPolicy.launchAction(installs: installs, bundledVersion: v, deviceRegistered: true),
+                    .alreadyActive, "policy: enabled + device")
+        expectEqual(CameraExtensionPolicy.launchAction(installs: installs, bundledVersion: v, deviceRegistered: false),
+                    .alreadyActive, "policy: enabled is enabled, whatever one probe saw")
+        expect(!CameraExtensionPolicy.needsReboot(unregisteredWith: installs, bundledVersion: v),
+               "policy: an older copy uninstalling is not a restart")
+    }
+
+    /// The device is judged from a NEW process, never from the shell's own
+    /// CoreMediaIO view (which predates any extension it installs).
+    @MainActor
+    static func testTheDeviceIsReadFromANewProcess() {
+        expect(AppModel().cameraDeviceProbe is FreshProcessCameraDeviceProbe,
+               "the default probe asks a new process")
+        if let source = CoreCommands.locateCoreSource("mac-shell/Sources/CoreVideoProShell/AppModel.swift")
+            .map({ ($0 as NSString).deletingLastPathComponent }) {
+            let offenders = ((try? FileManager.default.contentsOfDirectory(atPath: source)) ?? [])
+                .filter { $0.hasSuffix(".swift") && !$0.hasPrefix("ShellTests") }
+                .filter { name in
+                    let text = (try? String(contentsOfFile: source + "/" + name, encoding: .utf8)) ?? ""
+                    return text.contains("import CoreMediaIO") || text.contains("CMIOObjectGetPropertyData")
+                }
+            expectEqual(offenders, [], "no shell source reads the CoreMediaIO HAL in-process")
+        } else {
+            print("SKIPPED: no shell sources alongside this binary (packaged app)")
+        }
+
+        // The probe's one line of JSON.
+        let P = CameraDeviceProbeReport.self
+        expectEqual(P.parse(#"{"registered":true,"runningSomewhere":false,"deviceUid":"us.iamfatness.corevideopro.camera.device","modelUid":"CoreVideo Pro Camera/3003","readMs":17.9}"#),
+                    CameraDeviceStatus(registered: true, runningSomewhere: false, version: "3003"), "registered, idle")
+        expectEqual(P.parse(#"{"registered":true,"runningSomewhere":true,"modelUid":"CoreVideo Pro Camera"}"#),
+                    CameraDeviceStatus(registered: true, runningSomewhere: true, version: nil),
+                    "a pre-3001 copy's device names no version")
+        expectEqual(P.parse(#"{"registered":false,"runningSomewhere":false,"deviceUid":"","modelUid":""}"#),
+                    CameraDeviceStatus(), "not registered")
+        expectEqual(P.parse(#"{"registered":true}"#)?.runningSomewhere, true,
+                    "a missing running flag counts as running, never as free")
+        expectEqual(P.parse("[virtualcam] noise\n{\"registered\":false}\n"), CameraDeviceStatus(),
+                    "other lines before the answer are ignored")
+        expect(P.parse("") == nil && P.parse("not json") == nil && P.parse(#"{"other":1}"#) == nil,
+               "anything else is not an answer")
+
+        // The runner, against executables every Mac has.
+        let answer = #"{"registered":true,"runningSomewhere":false,"modelUid":"CoreVideo Pro Camera/\#(CameraExtensionPolicy.bundledVersion)"}"#
+        let echo = FreshProcessCameraDeviceProbe(executable: { "/bin/echo" }, arguments: [answer])
+        expectEqual(echo.read(), ourDevice(), "a probe's answer becomes the device status")
+        let none = FreshProcessCameraDeviceProbe(executable: { nil }).read()
+        expect(none.probeFailure != nil && !none.registered && none.runningSomewhere,
+               "no core to ask: unreadable (not registered, and never 'free')")
+        let silent = FreshProcessCameraDeviceProbe(executable: { "/usr/bin/true" }, arguments: []).read()
+        expectEqual(silent.probeFailure, "the probe's answer was not understood", "an empty answer is a failed read")
+        let missing = FreshProcessCameraDeviceProbe(executable: { "/nonexistent/corevideo-native" }).read()
+        expect(missing.probeFailure?.hasPrefix("could not start") == true, "a missing executable says so")
+        let started = Date()
+        let hung = FreshProcessCameraDeviceProbe(executable: { "/bin/sleep" }, arguments: ["30"], timeout: 0.3).read()
+        expect(hung.probeFailure?.hasPrefix("no answer in") == true, "a probe that hangs is abandoned")
+        expect(Date().timeIntervalSince(started) < 2, "within its timeout, not the probe's 30 s")
+
+        // An unreadable device never reads as a fact.
+        let model = AppModel()
+        model.cameraDeviceProbe = FreshProcessCameraDeviceProbe(executable: { nil })
+        expect(model.cameraInUse(), "unreadable counts as in use: nothing is replaced on a guess")
+        let diag = model.virtualCameraDiagnostics()
+        expect(diag.json["deviceRegistered"] is NSNull, "unreadable is null in the support bundle, never false")
+        expect(diag.rows.contains { $0.label.hasPrefix("device registered") && $0.value.hasPrefix("not read:") },
+               "and the Health row says it was not read")
+        model.stopTimersForTesting()
+    }
+
+    static func testLaunchActionPolicy() {
+        let v = CameraExtensionPolicy.bundledVersion
+        func act(_ installs: [CameraExtensionInstall]?, device: Bool) -> CameraExtensionLaunchAction {
+            CameraExtensionPolicy.launchAction(installs: installs, bundledVersion: v, deviceRegistered: device)
+        }
+        let oldLeaving = CameraExtensionInstall(version: "2881", enabled: false, uninstalling: true)
+        expectEqual(act(nil, device: false), .activate, "no answer: activate")
+        expectEqual(act([], device: false), .activate, "first install: activate")
+        expectEqual(act([ours()], device: false), .alreadyActive, "ours enabled: nothing to submit")
+        expectEqual(act([ours(enabled: false), oldLeaving], device: false), .needsReboot,
+                    "ours installed but not enabled, old copy leaving, no device: a staged swap")
+        expectEqual(act([ours(enabled: false), oldLeaving], device: true), .activate,
+                    "a device exists: not a staged swap")
+        expectEqual(act([CameraExtensionInstall(version: v, awaitingApproval: true), oldLeaving], device: false),
+                    .activate, "awaiting approval is not a restart")
+        expectEqual(act([olderInstall, oldLeaving], device: false), .update,
+                    "ours not installed: an older copy leaving never blocks the update")
+        expectEqual(act([oldLeaving], device: false), .activate, "only a leaving copy: install ours")
     }
 
     /// Review I2b: from the DMG (or a dev build) with an older copy installed,
@@ -567,7 +716,10 @@ extension ShellTests {
         let f = { CameraExtensionPolicy.needsReboot(unregisteredWith: $0, bundledVersion: v) }
         expect(!f(nil), "no answer never claims a restart")
         expect(!f([ours()]), "ours enabled, nothing uninstalling: no")
-        expect(f([ours(), CameraExtensionInstall(version: "2883", uninstalling: true)]), "older uninstalling: yes")
+        expect(!f([ours(), CameraExtensionInstall(version: "2883", uninstalling: true)]),
+               "ours enabled with an older copy uninstalling: no (2026-11-16)")
+        expect(f([ours(enabled: false), CameraExtensionInstall(version: "2883", uninstalling: true)]),
+               "ours not enabled with an older copy uninstalling: yes")
         expect(f([ours(enabled: false)]), "ours not enabled: yes")
         expect(f([]), "ours missing after a completed activation: yes")
         expect(!f([CameraExtensionInstall(version: v, awaitingApproval: true)]), "awaiting approval is not a restart")

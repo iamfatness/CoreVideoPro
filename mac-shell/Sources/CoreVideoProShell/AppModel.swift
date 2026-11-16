@@ -540,9 +540,10 @@ final class AppModel: ObservableObject {
     var cameraExtensionQueryTimeout: TimeInterval = 5
     private var cameraExtensionQueryToken: UUID?
     private var cameraExtensionInstallsToken: UUID?
-    /// CoreMediaIO view of our camera device (registered? in use?). Tests swap
-    /// in FakeCameraDeviceProbe.
-    var cameraDeviceProbe: CameraDeviceProbing = SystemCameraDeviceProbe()
+    /// A NEW process's CoreMediaIO view of our camera device (registered? in
+    /// use?), never this process's own: see FreshProcessCameraDeviceProbe.
+    /// Tests swap in FakeCameraDeviceProbe.
+    var cameraDeviceProbe: CameraDeviceProbing = FreshProcessCameraDeviceProbe()
     /// While `.updateReady`, how often the shell re-checks whether the camera
     /// is free and installs the update on its own.
     var cameraUpdateRetryInterval: TimeInterval = 5
@@ -1127,7 +1128,7 @@ final class AppModel: ObservableObject {
                 }
                 switch action {
                 case .needsReboot:
-                    ShellLog.write("vcam-ext: an older copy is uninstalling and no device is registered; restart pending, nothing submitted")
+                    ShellLog.write("vcam-ext: version \(CameraExtensionPolicy.bundledVersion) is installed but not enabled, an older copy is uninstalling and no device is registered; restart pending, nothing submitted")
                     self.recordCameraExtensionResult("restart pending at launch (nothing submitted)")
                     self.setCameraExtensionState(.needsReboot)
                 case .alreadyActive:
@@ -1200,7 +1201,7 @@ final class AppModel: ObservableObject {
         queryCameraExtensionInstalls { _ in }
     }
 
-    /// One HAL read, remembered for the Health tab and the support bundle.
+    /// One read from a new process, remembered for the Health tab and the support bundle.
     @discardableResult
     func readCameraDevice() -> CameraDeviceStatus {
         let status = cameraDeviceProbe.read()
@@ -1235,12 +1236,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Activation said done; prove it. Our device must appear in the HAL within
-    /// `cameraRegistrationTimeout`. If it never does, ask macOS what is
-    /// installed: an older copy still uninstalling (or ours not enabled) means
-    /// only a restart finishes it, and the operator is told so instead of
-    /// staring at "Connecting..." forever (owner Mac, 2026-11-15: activating ->
-    /// active, no device, no needsReboot).
+    /// Activation said done; prove it. Our device must be visible to a NEW
+    /// process within `cameraRegistrationTimeout` (never to this one: its
+    /// CoreMediaIO view predates the extension it just installed). If it never
+    /// is, ask macOS what is installed: only OUR version reported as not
+    /// enabled means a restart finishes it.
     private func verifyCameraRegistration() {
         let token = UUID()
         cameraRegistrationToken = token
@@ -1270,7 +1270,8 @@ final class AppModel: ObservableObject {
                                                  bundledVersion: CameraExtensionPolicy.bundledVersion) {
                 self.setCameraExtensionState(.needsReboot)
             } else {
-                ShellLog.write("vcam-ext: device still not registered, but nothing is pending a restart")
+                ShellLog.write("vcam-ext: version \(CameraExtensionPolicy.bundledVersion) is enabled but a new process sees no device; not a restart (is the extension running?)")
+                self.recordCameraExtensionResult("enabled, but no device visible to a new process")
             }
         }
     }

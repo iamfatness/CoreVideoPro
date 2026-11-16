@@ -191,8 +191,10 @@ struct VirtualCameraDiagnostics {
          ("extension state", "\(state)"),
          ("bundled version", bundledVersion),
          ("installed", installedText),
-         ("device registered", Self.yesNo(device?.registered)),
-         ("running somewhere (any app)", Self.yesNo(device?.runningSomewhere)),
+         ("device registered (seen by a new process)",
+          device?.probeFailure.map { "not read: \($0)" } ?? Self.yesNo(device?.registered)),
+         ("running somewhere (any app)",
+          device?.probeFailure != nil ? "not read" : Self.yesNo(device?.runningSomewhere)),
          ("in use", Self.yesNo(inUse)),
          ("last activation", lastResult.isEmpty ? "none this session" : lastResult),
          ("output paused for update", pausedForUpdate ? "yes" : "no")]
@@ -210,8 +212,10 @@ struct VirtualCameraDiagnostics {
                             "awaitingApproval": $0.awaitingApproval,
                             "uninstalling": $0.uninstalling] as JSONObject } as Any
             } ?? NSNull(),
-            "deviceRegistered": device.map { $0.registered as Any } ?? NSNull(),
-            "deviceRunningSomewhere": device.map { $0.runningSomewhere as Any } ?? NSNull(),
+            // Read from a NEW process; null (never false) when that read failed.
+            "deviceRegistered": device.flatMap { $0.probeFailure == nil ? $0.registered as Any : nil } ?? NSNull(),
+            "deviceRunningSomewhere": device.flatMap { $0.probeFailure == nil ? $0.runningSomewhere as Any : nil } ?? NSNull(),
+            "deviceProbeFailure": device?.probeFailure.map { $0 as Any } ?? NSNull(),
             "inUse": inUse.map { $0 as Any } ?? NSNull(),
             "lastActivationResult": lastResult,
             "pausedForUpdate": pausedForUpdate,

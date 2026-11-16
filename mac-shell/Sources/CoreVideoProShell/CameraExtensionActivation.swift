@@ -6,7 +6,6 @@
 // window server and cannot activate system extensions).
 
 import CameraExtensionKit
-import CoreMediaIO
 import Foundation
 import SystemExtensions
 
@@ -41,13 +40,14 @@ enum CameraExtensionLaunchAction: Equatable {
     /// Another version is installed and enabled: activating REPLACES it, which
     /// must wait until the camera is not in use (CameraExtensionPolicy.inUse).
     case update
-    /// An older copy is still uninstalling and no device is registered: a
-    /// swap is already pending a restart. Submit NOTHING (another request
-    /// would stack a second copy on it) and say "Restart your Mac".
+    /// Our version is installed but macOS has not enabled it, an older copy
+    /// is still uninstalling and no device exists: a swap is staged for a
+    /// restart. Submit NOTHING (another request would stack a second copy on
+    /// it) and say "Restart your Mac".
     case needsReboot
 }
 
-/// What the shell can learn about OUR camera device from the CoreMediaIO HAL.
+/// What a new process can learn about OUR camera device from the CoreMediaIO HAL.
 struct CameraDeviceStatus: Equatable {
     /// The device is in the HAL device list (the installed extension is running
     /// and published it).
@@ -59,11 +59,19 @@ struct CameraDeviceStatus: Equatable {
     /// before 3001 (or an unreadable model). Registration counts only when
     /// it is the bundled version.
     var version: String?
+    /// Why the device could not be read (the probe did not run or did not
+    /// answer); nil when it was read. A failed read is `unreadable`: never
+    /// "registered", and "running" so nothing is replaced on a guess.
+    var probeFailure: String?
 
     func isOurs(_ bundledVersion: String) -> Bool { registered && version == bundledVersion }
+
+    static func unreadable(_ why: String) -> CameraDeviceStatus {
+        CameraDeviceStatus(registered: false, runningSomewhere: true, version: nil, probeFailure: why)
+    }
 }
 
-/// The HAL probe behind a protocol: CI has no camera device to look at.
+/// The device probe behind a protocol: CI has no camera device to look at.
 protocol CameraDeviceProbing: AnyObject {
     func read() -> CameraDeviceStatus
 }
@@ -107,68 +115,140 @@ final class FakeCameraDeviceProbe: CameraDeviceProbing {
     }
 }
 
-/// Reads the CoreMediaIO HAL directly (the same calls the core's
-/// CmioVirtualCameraSink makes). The HAL device list only updates in a process
-/// whose main run loop is serviced; the shell's main thread runs one.
-final class SystemCameraDeviceProbe: CameraDeviceProbing {
-    static func isOurDeviceUID(_ uid: String) -> Bool {
-        uid == CameraConstants.legacyDeviceID
-            || uid.caseInsensitiveCompare(CameraConstants.deviceUUID.uuidString) == .orderedSame
+/// What a NEWBORN process sees of our camera device.
+///
+/// The shell must never judge the device from its own CoreMediaIO view. A
+/// process learns the camera-extension providers that exist at its FIRST
+/// CoreMediaIO touch and is not told about one that registers later (measured
+/// on macOS 26.3, 2026-11-16: the shell reported "no device 10 s after
+/// activation" and then "Restart your Mac" for a camera Photo Booth, Zoom and
+/// every other new process could see). A first install and every extension
+/// update register a provider after the shell started, so the in-process view
+/// is wrong in exactly the cases this check exists for.
+///
+/// So each read runs the core executable in its probe mode
+/// (`corevideo-native --vcam-device-probe`, about 20 ms), which prints one line
+/// of JSON and exits. The same binary is the sink helper, so the shell and the
+/// producer look at the Mac the same way.
+enum CameraDeviceProbeReport {
+    static let argument = "--vcam-device-probe"
+
+    /// nil when the output is not the probe's JSON line.
+    static func parse(_ output: String) -> CameraDeviceStatus? {
+        guard let line = output.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("{") }),
+              let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? JSONObject,
+              let registered = object["registered"] as? Bool else { return nil }
+        guard registered else { return CameraDeviceStatus() }
+        // An unreadable "running" flag counts as running: claiming "free"
+        // wrongly replaces an extension under a live stream.
+        let running = object["runningSomewhere"] as? Bool ?? true
+        let model = object["modelUid"] as? String ?? ""
+        return CameraDeviceStatus(registered: true, runningSomewhere: running,
+                                  version: CameraConstants.extensionVersion(fromDeviceModel: model))
+    }
+}
+
+final class FreshProcessCameraDeviceProbe: CameraDeviceProbing {
+    private let executable: () -> String?
+    private let arguments: [String]
+    private let timeout: TimeInterval
+    private var lastFailure: String?
+
+    /// The core the shell launches (or would launch). The test harness sets
+    /// this to "no core": a test must never run whatever core binary happens
+    /// to sit in a developer's build folder.
+    static var defaultExecutable: () -> String? = { ShellPaths.resolve().corePath }
+
+    init(executable: @escaping () -> String? = { FreshProcessCameraDeviceProbe.defaultExecutable() },
+         arguments: [String] = [CameraDeviceProbeReport.argument], timeout: TimeInterval = 2) {
+        self.executable = executable
+        self.arguments = arguments
+        self.timeout = timeout
     }
 
     func read() -> CameraDeviceStatus {
-        guard let device = Self.ourDevice() else { return CameraDeviceStatus() }
-        var address = Self.global(CMIOObjectPropertySelector(kCMIODevicePropertyDeviceIsRunningSomewhere))
-        var running: UInt32 = 0
-        var used: UInt32 = 0
-        let err = CMIOObjectGetPropertyData(device, &address, 0, nil,
-                                            UInt32(MemoryLayout<UInt32>.size), &used, &running)
-        // An unreadable flag counts as running: claiming "free" wrongly is the
-        // failure that strands an update, claiming "busy" only waits.
-        return CameraDeviceStatus(registered: true, runningSomewhere: err != noErr || running != 0,
-                                  version: Self.string(device, kCMIODevicePropertyModelUID)
-                                      .flatMap(CameraConstants.extensionVersion(fromDeviceModel:)))
-    }
-
-    private static func string(_ object: CMIOObjectID, _ selector: Int) -> String? {
-        var address = global(CMIOObjectPropertySelector(selector))
-        var value: Unmanaged<CFString>?
-        var used: UInt32 = 0
-        let err = withUnsafeMutablePointer(to: &value) { ptr in
-            CMIOObjectGetPropertyData(object, &address, 0, nil,
-                                      UInt32(MemoryLayout<Unmanaged<CFString>?>.size), &used, ptr)
+        let result: Result<String, ProbeError>
+        if let path = executable() {
+            result = Self.run(path, arguments, timeout: timeout)
+        } else {
+            result = .failure(ProbeError("no core executable to ask"))
         }
-        guard err == noErr, let string = value?.takeRetainedValue() else { return nil }
-        return string as String
-    }
-
-    private static func global(_ selector: CMIOObjectPropertySelector) -> CMIOObjectPropertyAddress {
-        CMIOObjectPropertyAddress(mSelector: selector,
-                                  mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
-                                  mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain))
-    }
-
-    private static func ourDevice() -> CMIOObjectID? {
-        var address = global(CMIOObjectPropertySelector(kCMIOHardwarePropertyDevices))
-        let system = CMIOObjectID(kCMIOObjectSystemObject)
-        var size: UInt32 = 0
-        guard CMIOObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return nil }
-        var ids = [CMIOObjectID](repeating: 0, count: Int(size) / MemoryLayout<CMIOObjectID>.size)
-        var used: UInt32 = 0
-        guard CMIOObjectGetPropertyData(system, &address, 0, nil, size, &used, &ids) == noErr else { return nil }
-        ids = Array(ids.prefix(Int(used) / MemoryLayout<CMIOObjectID>.size))
-        for id in ids {
-            var uidAddress = global(CMIOObjectPropertySelector(kCMIODevicePropertyDeviceUID))
-            var uid: Unmanaged<CFString>?
-            var uidUsed: UInt32 = 0
-            let err = withUnsafeMutablePointer(to: &uid) { ptr in
-                CMIOObjectGetPropertyData(id, &uidAddress, 0, nil,
-                                          UInt32(MemoryLayout<Unmanaged<CFString>?>.size), &uidUsed, ptr)
+        switch result {
+        case .success(let output):
+            if let status = CameraDeviceProbeReport.parse(output) {
+                lastFailure = nil
+                return status
             }
-            guard err == noErr, let value = uid?.takeRetainedValue() else { continue }
-            if isOurDeviceUID(value as String) { return id }
+            return failed("the probe's answer was not understood")
+        case .failure(let error):
+            return failed(error.message)
         }
-        return nil
+    }
+
+    /// Logged when it changes, not on every poll.
+    private func failed(_ why: String) -> CameraDeviceStatus {
+        if lastFailure != why {
+            lastFailure = why
+            ShellLog.write("vcam-ext: could not read the camera device from a new process: \(why)")
+        }
+        return .unreadable(why)
+    }
+
+    struct ProbeError: Error {
+        let message: String
+        init(_ message: String) { self.message = message }
+    }
+
+    /// Runs `path` and returns its stdout. posix_spawn and waitpid, never
+    /// Process.waitUntilExit: that spins the caller's run loop, and callers
+    /// are on the main actor in the middle of a decision.
+    static func run(_ path: String, _ arguments: [String], timeout: TimeInterval) -> Result<String, ProbeError> {
+        var fds: [Int32] = [0, 0]
+        guard pipe(&fds) == 0 else { return .failure(ProbeError("pipe failed (errno \(errno))")) }
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_adddup2(&actions, fds[1], 1)
+        posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0)
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        // Only stdin/stdout/stderr reach the probe.
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
+        var argv: [UnsafeMutablePointer<CChar>?] = ([path] + arguments).map { strdup($0) }
+        argv.append(nil)
+        defer { for pointer in argv { free(pointer) } }
+        var pid: pid_t = 0
+        let spawned = posix_spawn(&pid, path, &actions, &attributes, argv, environ)
+        close(fds[1])
+        guard spawned == 0 else {
+            close(fds[0])
+            return .failure(ProbeError("could not start \((path as NSString).lastPathComponent) (errno \(spawned))"))
+        }
+        defer { close(fds[0]) }
+        var output = Data()
+        let deadline = Date().addingTimeInterval(timeout)
+        var timedOut = false
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { timedOut = true; break }
+            var poller = pollfd(fd: fds[0], events: Int16(POLLIN), revents: 0)
+            let ready = poll(&poller, 1, Int32(remaining * 1000) + 1)
+            if ready < 0 && errno == EINTR { continue }
+            if ready <= 0 { timedOut = ready == 0; break }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            let got = Darwin.read(fds[0], &buffer, buffer.count)
+            if got < 0 && errno == EINTR { continue }
+            if got <= 0 { break }  // end of file: the probe is done
+            output.append(contentsOf: buffer[0..<got])
+            if output.count > 65536 { break }
+        }
+        if timedOut { kill(pid, SIGKILL) }
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+        if timedOut { return .failure(ProbeError("no answer in \(timeout) s")) }
+        return .success(String(decoding: output, as: UTF8.self))
     }
 }
 
@@ -211,17 +291,24 @@ enum CameraExtensionPolicy {
     /// installed extension is exactly the step that can disturb a running one.
     /// nil (macOS never answered) falls back to activating, the pre-2026-11-15
     /// behaviour; the request's own replacement answer still keeps equal versions.
+    ///
+    /// `.needsReboot` is claimed only when macOS itself reports OUR version
+    /// installed but not enabled while an older copy is uninstalling and no
+    /// device exists (a staged swap). An older copy "waiting to uninstall on
+    /// reboot" proves nothing by itself: on the owner's Mac (2026-11-16) 3002
+    /// stayed listed that way AFTER the restart while 3003 ran and served
+    /// Photo Booth, and the "no device" half of the old rule was read from the
+    /// shell's own stale CoreMediaIO view (see FreshProcessCameraDeviceProbe).
     static func launchAction(installs: [CameraExtensionInstall]?, bundledVersion: String,
                              deviceRegistered: Bool) -> CameraExtensionLaunchAction {
         guard let installs else { return .activate }
-        // Highest priority (review I2a, the owner's Mac on 2026-11-15: 2883
-        // enabled, 2881 waiting to uninstall, no device).
-        if !deviceRegistered,
-           installs.contains(where: { $0.uninstalling && $0.version != bundledVersion }) {
-            return .needsReboot
-        }
         if installs.contains(where: { $0.version == bundledVersion && $0.enabled && !$0.uninstalling }) {
             return .alreadyActive
+        }
+        let ours = installs.filter { $0.version == bundledVersion }
+        if !deviceRegistered, !ours.isEmpty, !ours.contains(where: { $0.awaitingApproval }),
+           installs.contains(where: { $0.uninstalling && $0.version != bundledVersion }) {
+            return .needsReboot
         }
         if installs.contains(where: { $0.version != bundledVersion && $0.enabled && !$0.uninstalling }) {
             return .update
@@ -230,14 +317,12 @@ enum CameraExtensionPolicy {
     }
 
     /// A completed activation (or an already-active launch) whose device never
-    /// registered: is a restart what finishes it? Yes when macOS lists an older
-    /// copy still uninstalling (the owner-Mac case: the old copy "terminated
-    /// waiting to uninstall on reboot" blocks the new one from starting), or our
-    /// version is not enabled (and not merely awaiting approval). nil (no
-    /// answer) never claims a restart.
+    /// appeared, even to a new process: is a restart what finishes it? Only
+    /// when macOS reports OUR version itself as not enabled (and not merely
+    /// awaiting approval). An older copy still uninstalling is not evidence
+    /// (see launchAction). nil (no answer) never claims a restart.
     static func needsReboot(unregisteredWith installs: [CameraExtensionInstall]?, bundledVersion: String) -> Bool {
         guard let installs else { return false }
-        if installs.contains(where: { $0.uninstalling && $0.version != bundledVersion }) { return true }
         let ours = installs.filter { $0.version == bundledVersion }
         if ours.contains(where: { $0.awaitingApproval }) { return false }
         return !ours.contains(where: { $0.enabled && !$0.uninstalling })

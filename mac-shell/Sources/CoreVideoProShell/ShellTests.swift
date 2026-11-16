@@ -3892,6 +3892,9 @@ enum ShellTests {
         ShellHarness.requireIsolatedPrefsOrExit()
         failures = []
         checks = 0
+        // No test runs a real core binary as a camera probe (cases that test
+        // the probe name their own executable).
+        FreshProcessCameraDeviceProbe.defaultExecutable = { nil }
 
         let cases: [(String, () -> Void)] = [
             ("monitor/revisioned-projection", testMonitorControlProjection),
