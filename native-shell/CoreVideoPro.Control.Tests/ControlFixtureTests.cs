@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CoreVideoPro.Control;
 using CoreVideoPro.Control.Http;
+using CoreVideoPro.Control.Osc;
 using Xunit;
 
 namespace CoreVideoPro.Control.Tests;
@@ -124,6 +125,66 @@ public sealed class ControlFixtureTests
             }
             Assert.True(root.TryGetPropertyValue(key, out var got), $"{name}: {key} is present");
             Assert.True(JsonNode.DeepEquals(want, got), $"{name}: {key} = {got?.ToJsonString() ?? "null"}");
+        }
+    }
+
+    // ── OSC codec (osc.encode / osc.decode) ──
+
+    public static IEnumerable<object[]> OscEncodeCases() =>
+        Fixtures()["osc"]!["encode"]!.AsArray().Select(t => new object[] { t!["name"]!.GetValue<string>() });
+
+    public static IEnumerable<object[]> OscDecodeCases() =>
+        Fixtures()["osc"]!["decode"]!.AsArray().Select(t => new object[] { t!["name"]!.GetValue<string>() });
+
+    private static JsonObject OscCase(string block, string name) =>
+        Fixtures()["osc"]![block]!.AsArray().Single(t => t!["name"]!.GetValue<string>() == name)!.AsObject();
+
+    private static object? OscArg(JsonNode arg) =>
+        arg["i"] is JsonNode i ? i.GetValue<int>()
+        : arg["f"] is JsonNode f ? (object)(float)f.GetValue<double>()
+        : arg["s"] is JsonNode s ? s.GetValue<string>()
+        : arg["bool"] is JsonNode b ? b.GetValue<bool>()
+        : arg["blob"] is JsonNode blob ? Convert.FromHexString(blob.GetValue<string>())
+        : null;
+
+    [Fact]
+    public void EveryOscCodecCaseIsRun()
+    {
+        Assert.Equal(7, OscEncodeCases().Count());
+        Assert.Equal(12, OscDecodeCases().Count());
+    }
+
+    [Theory]
+    [MemberData(nameof(OscEncodeCases))]
+    public void OscEncodeCase(string name)
+    {
+        var test = OscCase("encode", name);
+        var message = test["message"]!;
+        var args = message["args"]!.AsArray().Select(a => OscArg(a!)).ToArray();
+        var bytes = OscCodec.EncodeMessage(new OscMessage(message["address"]!.GetValue<string>(), args));
+        Assert.Equal(test["hex"]!.GetValue<string>(), Convert.ToHexString(bytes).ToLowerInvariant());
+    }
+
+    [Theory]
+    [MemberData(nameof(OscDecodeCases))]
+    public void OscDecodeCase(string name)
+    {
+        var test = OscCase("decode", name);
+        var decoded = OscCodec.Decode(Convert.FromHexString(test["hex"]!.GetValue<string>()));
+        var want = test["messages"]!.AsArray();
+        Assert.Equal(want.Count, decoded.Count);
+        for (var m = 0; m < want.Count; m++)
+        {
+            Assert.Equal(want[m]!["address"]!.GetValue<string>(), decoded[m].Address);
+            var wantArgs = want[m]!["args"]!.AsArray();
+            Assert.Equal(wantArgs.Count, decoded[m].Args.Count);
+            for (var a = 0; a < wantArgs.Count; a++)
+            {
+                var expected = OscArg(wantArgs[a]!);
+                var got = decoded[m].Args[a];
+                if (expected is byte[] bytes) Assert.Equal(bytes, Assert.IsType<byte[]>(got));
+                else Assert.Equal(expected, got);
+            }
         }
     }
 }

@@ -12,6 +12,21 @@ import Combine
 import Foundation
 import Network
 
+extension Data {
+    /// Test helper: bytes from a hex string ("" -> empty).
+    init(hex: String) {
+        var bytes: [UInt8] = []
+        var index = hex.startIndex
+        while let next = hex.index(index, offsetBy: 2, limitedBy: hex.endIndex), index < hex.endIndex {
+            bytes.append(UInt8(hex[index..<next], radix: 16) ?? 0)
+            index = next
+        }
+        self.init(bytes)
+    }
+
+    var hexString: String { map { String(format: "%02x", $0) }.joined() }
+}
+
 extension ShellTests {
     // ── fakes ────────────────────────────────────────────────────────────────
 
@@ -241,9 +256,33 @@ extension ShellTests {
             let got = ControlSnapshotRedactor.redact(pair["input"] ?? [:])
             expect(same(got, pair["expected"]), "redact(document) equals the fixture"); ran += 1
         }
-        // 36 mac http (RC1 31 + T8 int cases 5) + 6 snapshot + 21 names + 11 texts + 1 document = 75
-        // (each slice that appends cases updates this).
-        expectEqual(ran, 75, "every fixture case ran")
+        let osc = fixtures["osc"] as? [String: Any] ?? [:]
+        func arg(_ j: [String: Any]) -> ControlOscArg {
+            if let v = j["i"] as? Int { return .int(Int32(v)) }
+            if let v = j["f"] as? Double { return .float(Float(v)) }
+            if let v = j["s"] as? String { return .string(v) }
+            if let v = j["bool"] as? Bool { return .bool(v) }
+            if let v = j["blob"] as? String { return .blob(Data(hex: v)) }
+            return .null
+        }
+        func msg(_ j: [String: Any]) -> ControlOscMessage {
+            ControlOscMessage(address: j["address"] as? String ?? "", args: (j["args"] as? [[String: Any]] ?? []).map(arg))
+        }
+        for c in osc["encode"] as? [[String: Any]] ?? [] {
+            expectEqual(ControlOscCodec.encode(msg(c["message"] as? [String: Any] ?? [:])).hexString, c["hex"] as? String, "osc encode \(c["name"] ?? "")"); ran += 1
+        }
+        for c in osc["decode"] as? [[String: Any]] ?? [] {
+            let want = (c["messages"] as? [[String: Any]] ?? []).map(msg)
+            expectEqual(ControlOscCodec.decode(Data(hex: c["hex"] as? String ?? "")), want, "osc decode \(c["name"] ?? "")"); ran += 1
+        }
+        expect(ControlOscCodec.decode(Data(count: ControlOscCodec.maxDatagram + 1)).isEmpty, "an oversize datagram is dropped")
+        // OSC `f` arrives as Float (D14); coercion follows Windows' float cases.
+        expectEqual(ControlCatalog.coerce(Float(0.1), to: .string) as? String, "0.1", "string from Float 0.1 is \"0.1\" (not the widened double)")
+        expectEqual(ControlCatalog.coerce(Float(2.5), to: .int) as? Int, 2, "int from Float rounds to even")
+        expectEqual(ControlCatalog.coerce(Float(0), to: .bool) as? Bool, false, "bool from Float 0 is false")
+        // 36 mac http (RC1 31 + T8 int cases 5) + 6 snapshot + 21 names + 11 texts + 1 document
+        // + 7 osc encode + 12 osc decode = 94 (each slice that appends cases updates this).
+        expectEqual(ran, 94, "every fixture case ran")
     }
 
     // ── contract: /invoke statuses and errors (Windows router output) ────────

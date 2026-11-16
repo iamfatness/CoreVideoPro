@@ -142,6 +142,10 @@ enum ControlCatalog {
             case let flag as Bool: return flag ? "True" : "False"
             case let integer as Int64: return String(integer)
             case let number as Double: return invariantString(number)
+            // OSC `f` (D14): .NET float.ToString is shortest round-trip, integral floats without ".0".
+            case let number as Float:
+                if number == number.rounded(), abs(number) < 1e7 { return String(Int64(number)) }
+                return String(number)
             default: return nil
             }
         case .int:
@@ -152,6 +156,10 @@ enum ControlCatalog {
                 let rounded = number.rounded(.toNearestOrEven)   // Math.Round default
                 guard rounded.isFinite, abs(rounded) <= Double(Int32.max) else { return nil }
                 return Int(rounded)
+            case let number as Float:
+                let rounded = number.rounded(.toNearestOrEven)   // MathF.Round default
+                guard rounded.isFinite, abs(rounded) <= Float(Int32.max) else { return nil }
+                return Int(rounded)
             case let text as String:
                 return Int32(text.trimmingCharacters(in: .whitespaces)).map { Int($0) }
             default: return nil
@@ -161,6 +169,7 @@ enum ControlCatalog {
             case is Bool: return nil
             case let integer as Int64: return Double(integer)
             case let number as Double: return number
+            case let number as Float: return Double(number)
             case let text as String: return Double(text.trimmingCharacters(in: .whitespaces))
             default: return nil
             }
@@ -169,6 +178,7 @@ enum ControlCatalog {
             case let flag as Bool: return flag
             case let integer as Int64: return integer != 0
             case let number as Double: return abs(number) > Double.leastNonzeroMagnitude
+            case let number as Float: return abs(number) > Float.leastNonzeroMagnitude
             case let text as String:
                 // bool.TryParse is case-insensitive and trims; then "1"/"0".
                 switch text.trimmingCharacters(in: .whitespaces).lowercased() {

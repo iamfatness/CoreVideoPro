@@ -997,5 +997,228 @@
         }
       }
     ]
+  },
+  "osc": {
+    "encode": [
+      {
+        "name": "address-only",
+        "message": {
+          "address": "/cvp/transport/take",
+          "args": []
+        },
+        "hex": "2f6376702f7472616e73706f72742f74616b65002c000000"
+      },
+      {
+        "name": "string",
+        "message": {
+          "address": "/cvp/scene/select",
+          "args": [
+            {
+              "s": "interview"
+            }
+          ]
+        },
+        "hex": "2f6376702f7363656e652f73656c6563740000002c730000696e74657276696577000000"
+      },
+      {
+        "name": "true",
+        "message": {
+          "address": "/cvp/transport/ftb/set",
+          "args": [
+            {
+              "bool": true
+            }
+          ]
+        },
+        "hex": "2f6376702f7472616e73706f72742f6674622f73657400002c540000"
+      },
+      {
+        "name": "int",
+        "message": {
+          "address": "/cvp/state/multiviewTileCount",
+          "args": [
+            {
+              "i": 6
+            }
+          ]
+        },
+        "hex": "2f6376702f73746174652f6d756c74697669657754696c65436f756e740000002c69000000000006"
+      },
+      {
+        "name": "float",
+        "message": {
+          "address": "/cvp/state/audioMonitorVolume",
+          "args": [
+            {
+              "f": 0.5
+            }
+          ]
+        },
+        "hex": "2f6376702f73746174652f617564696f4d6f6e69746f72566f6c756d650000002c6600003f000000"
+      },
+      {
+        "name": "int-and-string",
+        "message": {
+          "address": "/cvp/input/assign",
+          "args": [
+            {
+              "i": 3
+            },
+            {
+              "s": "zoom:p-1"
+            }
+          ]
+        },
+        "hex": "2f6376702f696e7075742f61737369676e0000002c697300000000037a6f6f6d3a702d3100000000"
+      },
+      {
+        "name": "blob",
+        "message": {
+          "address": "/cvp/x",
+          "args": [
+            {
+              "blob": "010203"
+            }
+          ]
+        },
+        "hex": "2f6376702f7800002c6200000000000301020300"
+      }
+    ],
+    "decode": [
+      {
+        "name": "bundle-flattens",
+        "hex": "2362756e646c65000000000000000000000000182f6376702f7472616e73706f72742f74616b65002c000000000000242f6376702f7363656e652f73656c6563740000002c730000696e74657276696577000000",
+        "messages": [
+          {
+            "address": "/cvp/transport/take",
+            "args": []
+          },
+          {
+            "address": "/cvp/scene/select",
+            "args": [
+              {
+                "s": "interview"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "nested-bundle",
+        "hex": "2362756e646c65000000000000000000000000182f6376702f7472616e73706f72742f74616b65002c000000000000382362756e646c65000000000000000000000000242f6376702f7363656e652f73656c6563740000002c730000696e74657276696577000000",
+        "messages": [
+          {
+            "address": "/cvp/transport/take",
+            "args": []
+          },
+          {
+            "address": "/cvp/scene/select",
+            "args": [
+              {
+                "s": "interview"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "unknown-tag-stops",
+        "hex": "2f6376702f6100002c69780000000007",
+        "messages": [
+          {
+            "address": "/cvp/a",
+            "args": [
+              {
+                "i": 7
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "truncated-int-empties-packet",
+        "hex": "2f6376702f6100002c6900000007",
+        "messages": []
+      },
+      {
+        "name": "no-tag-string",
+        "hex": "2f6376702f7472616e73706f72742f74616b6500",
+        "messages": [
+          {
+            "address": "/cvp/transport/take",
+            "args": []
+          }
+        ]
+      },
+      {
+        "name": "tag-without-comma",
+        "hex": "2f6376702f7472616e73706f72742f74616b650069780000",
+        "messages": [
+          {
+            "address": "/cvp/transport/take",
+            "args": []
+          }
+        ]
+      },
+      {
+        "name": "bundle-overrun-keeps-earlier",
+        "hex": "2362756e646c65000000000000000000000000182f6376702f7472616e73706f72742f74616b65002c000000000003e700000000",
+        "messages": [
+          {
+            "address": "/cvp/transport/take",
+            "args": []
+          }
+        ]
+      },
+      {
+        "name": "bundle-truncated-element-empties-packet",
+        "hex": "2362756e646c65000000000000000000000000182f6376702f7472616e73706f72742f74616b65002c0000000000000e2f6376702f6100002c6900000007",
+        "messages": []
+      },
+      {
+        "name": "nil-impulse-and-S",
+        "hex": "2f6376702f6100002c4e49530000000068690000",
+        "messages": [
+          {
+            "address": "/cvp/a",
+            "args": [
+              {
+                "nil": true
+              },
+              {
+                "nil": true
+              },
+              {
+                "s": "hi"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "no-leading-slash",
+        "hex": "6376702f610000002c000000",
+        "messages": []
+      },
+      {
+        "name": "empty",
+        "hex": "",
+        "messages": []
+      },
+      {
+        "name": "blob",
+        "hex": "2f6376702f7800002c6200000000000301020300",
+        "messages": [
+          {
+            "address": "/cvp/x",
+            "args": [
+              {
+                "blob": "010203"
+              }
+            ]
+          }
+        ]
+      }
+    ]
   }
 }
