@@ -4071,7 +4071,14 @@ enum ShellTests {
             ("quit/dead-core", testQuitWithADeadCoreFinishesImmediately),
             ("quit/core-hang-deadline", testQuitDeadlineIsHonouredWhenTheCoreHangs),
             ("quit/timeout-resend", testQuitFinishTimesOutLoudlyAndResendsAStopThatDidNotLand),
-            ("control/manifest-golden", testControlManifestMatchesWindowsGolden),
+            ("control/closure", testControlClosure),
+            ("control/dispatch-drive", testControlEverySupportedIdIsDispatched),
+            ("control/unavailable-422", testControlUnavailableActionsAnswer422),
+            ("control/manifest-shared-file", testControlManifestIsTheSharedFileFiltered),
+            ("control/fixtures", testControlSharedFixtures),
+            ("control/hardening-timeouts", testControlHardeningTimeouts),
+            ("control/hardening-connection-cap", testControlHardeningConnectionCap),
+            ("control/hardening-no-preflight", testControlHardeningNoPreflight),
             ("control/invoke-rejections", testControlInvokeRejectsLikeWindows),
             ("control/invoke-bind-and-replies", testControlInvokeBindsAndShapesReplies),
             ("control/snapshot-envelope", testControlSnapshotEnvelopeIsWindows),
@@ -4094,7 +4101,7 @@ enum ShellTests {
             ("camera-kit/device-name", testDeviceNamePolicy),
             ("camera-kit/slate-classifier", testSlateClassifier),
             ("camera-kit/producer-attestation", testProducerAttestation),
-        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases
+        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
             body()

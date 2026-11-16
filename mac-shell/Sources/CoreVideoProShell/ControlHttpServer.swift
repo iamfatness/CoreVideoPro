@@ -43,6 +43,10 @@ struct ControlServerOptions: Equatable {
     /// "127.0.0.1" by default; "+" (Windows' wildcard) = every interface.
     var host = "127.0.0.1"
     var authToken: String?
+    /// Whole-request budget: a request that has not reached the router by then is
+    /// answered 408. Never read from the environment (the environment knobs stay
+    /// the three Windows names); tests shorten it.
+    var requestTimeout: TimeInterval = 10
 
     /// Windows `Validate`: "localhost" or a loopback IP literal. Anything else —
     /// including a hostname that happens to resolve to loopback — is a network
@@ -330,7 +334,6 @@ enum ControlWebSocket {
 // ─────────────────────────────────────────────────────────────────────────────
 
 final class ControlHttpServer: @unchecked Sendable {
-    static let requestTimeout: TimeInterval = 10
     static let maxConnections = 64
 
     let options: ControlServerOptions
@@ -422,6 +425,9 @@ final class ControlHttpServer: @unchecked Sendable {
         }
     }
 
+    /// Number of admitted connections of any kind (tests, diagnostics).
+    var openConnectionCount: Int { queue.sync { connections.count } }
+
     /// Number of open /ws clients (tests, diagnostics).
     var webSocketClientCount: Int {
         queue.sync { connections.values.filter { $0.isWebSocket && !$0.isFinished }.count }
@@ -481,7 +487,7 @@ final class ControlHttpServer: @unchecked Sendable {
                 self.respond(408, ControlJSON.error("Request timed out."))
             }
             timeout = timer
-            queue.asyncAfter(deadline: .now() + ControlHttpServer.requestTimeout, execute: timer)
+            queue.asyncAfter(deadline: .now() + (server?.options.requestTimeout ?? 10), execute: timer)
             nw.start(queue: queue)
             receive()
         }

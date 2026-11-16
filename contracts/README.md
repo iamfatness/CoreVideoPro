@@ -233,3 +233,36 @@ claim GPU completion, OS-camera sample delivery, stream decoding or physical
 presentation. Acknowledged requests and prepared resources remain separate from
 that observation. The native instance owner also enforces bounded IDs, request
 replay protection, the current core epoch and optimistic revision checks.
+
+## Control API contract (Windows authors, macOS answers)
+
+Three files make the macOS shell answer to the Windows control registry
+(`native-shell/CoreVideoPro.Control/ControlActionRegistry.cs`). Plan:
+`docs/superpowers/plans/2026-11-16-mac-remote-control-phase1.md`.
+
+- **`control.manifest.json`** is the exact output of `ControlManifest.Build().ToJson()`
+  (LF newlines, one trailing newline, UTF-8 without BOM). Nobody edits it by hand.
+  `ControlManifestExportTests` in `CoreVideoPro.Control.Tests` fails when it is stale or
+  missing; rewrite it with
+  `COREVIDEO_WRITE_CONTROL_CONTRACT=1 dotnet test native-shell/CoreVideoPro.Control.Tests/CoreVideoPro.Control.Tests.csproj`.
+- **`control.platforms.json`** is hand-authored: one `actions` row per registry action and one
+  `feedbackFields` row per `ControlManifest.StateFields` entry. `mac` is `supported` (no other
+  keys), `blocked` (with `blockedOn`, a key of `workstreams`; the operator's sentence is that
+  workstream's label) or `notApplicable` (with a non-blank `reason`).
+  `ControlPlatformRowsTests` fails when a registry action or state field has no row, so adding a
+  Windows action forces a macOS decision in the same change.
+- **`control.fixtures.json`** holds router-level cases both hosts must answer identically.
+
+Invariants of `control.platforms.json` (checked by the tests and by `contract:check`):
+
+- Exactly one row per registry action, in registry order, and one row per state field, in
+  `StateFields` order. No id appears twice (the tests parse arrays, so duplicates are visible).
+- At the RC1 baseline: 110 action rows (13 supported, 2 notApplicable, 95 blocked: RC2 12,
+  RC3 11, STU 10, AUD 2, MED 3, TIL 8, GFX 43, OUT 3, BRW 3) and 29 feedback rows
+  (10 supported, 2 notApplicable). Rows only ever move toward `supported`.
+- `masteringTarget` in the macOS `/state` is the Windows index (0 = -14, 1 = -16, 2 = -23 LUFS)
+  when the continuous macOS target equals one of those, and `-1` otherwise (a macOS-only value).
+
+`npm run contract:generate` validates the pair and writes
+`mac-shell/Sources/CoreVideoProShell/ControlManifest.generated.swift`; `contract:check` rejects a
+stale one. The CI job `control-contract` runs the export, row and fixture tests on ubuntu.

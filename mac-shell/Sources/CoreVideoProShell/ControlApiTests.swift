@@ -1,7 +1,7 @@
 // ControlApiTests.swift — the local control API's cases for the in-binary
 // harness (COREVIDEO_SHELL_TESTS=1; registered in ShellTests.runAndExit).
 //
-// Golden data comes from the WINDOWS build, not from this port: the manifest
+// Golden data comes from the WINDOWS build, not from this port: the manifest (contracts/control.manifest.json)
 // JSON and every router status/error string below were produced by running
 // native-shell/CoreVideoPro.Control (HttpControlRouter / ControlManifest) under
 // dotnet on this Mac. The snapshot and redaction cases are ports of
@@ -11,6 +11,21 @@
 import Combine
 import Foundation
 import Network
+
+extension Data {
+    /// Test helper: bytes from a hex string ("" -> empty).
+    init(hex: String) {
+        var bytes: [UInt8] = []
+        var index = hex.startIndex
+        while let next = hex.index(index, offsetBy: 2, limitedBy: hex.endIndex), index < hex.endIndex {
+            bytes.append(UInt8(hex[index..<next], radix: 16) ?? 0)
+            index = next
+        }
+        self.init(bytes)
+    }
+
+    var hexString: String { map { String(format: "%02x", $0) }.joined() }
+}
 
 extension ShellTests {
     // ── fakes ────────────────────────────────────────────────────────────────
@@ -55,36 +70,255 @@ extension ShellTests {
         (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] ?? [:]
     }
 
-    // Windows `ControlManifest.Build().ToJson()` filtered to the Mac subset,
-    // produced by the Windows code (dotnet, this Mac, 2026-11-14). FeedbackFields
-    // is compared separately: the Mac lists only the fields its /state publishes.
-    static let windowsManifestGolden = #"""
-    {"Version":1,"Root":"/cvp","Actions":[{"Id":"transport.ftb.toggle","Title":"Fade to Black","Description":"Fade Program video to black or back in over 300 ms. Audio and output sessions continue.","OscAddress":"/cvp/transport/ftb/toggle","Params":[]},{"Id":"transport.ftb.set","Title":"Set Fade to Black","Description":"Set Program blackout; repeated identical requests do not reverse the fade.","OscAddress":"/cvp/transport/ftb/set","Params":[{"Name":"enabled","Type":"bool","Required":true}]},{"Id":"transport.take","Title":"Take","Description":"Cut/transition Preview to Program.","OscAddress":"/cvp/transport/take","Params":[]},{"Id":"transport.record.toggle","Title":"Record toggle","Description":"Toggle recording.","OscAddress":"/cvp/transport/record/toggle","Params":[]},{"Id":"transport.record.set","Title":"Record set","Description":"Start or stop recording explicitly.","OscAddress":"/cvp/transport/record/set","Params":[{"Name":"on","Type":"bool","Required":true}]},{"Id":"transport.stream.toggle","Title":"Stream toggle","Description":"Toggle streaming.","OscAddress":"/cvp/transport/stream/toggle","Params":[]},{"Id":"transport.stream.set","Title":"Stream set","Description":"Start or stop streaming explicitly.","OscAddress":"/cvp/transport/stream/set","Params":[{"Name":"on","Type":"bool","Required":true}]},{"Id":"transport.virtualcam.toggle","Title":"Virtual camera toggle","Description":"Toggle the virtual camera output.","OscAddress":"/cvp/transport/virtualcam/toggle","Params":[]},{"Id":"transport.virtualcam.set","Title":"Virtual camera set","Description":"Turn the virtual camera on or off explicitly.","OscAddress":"/cvp/transport/virtualcam/set","Params":[{"Name":"on","Type":"bool","Required":true}]},{"Id":"transport.virtualcam.mirror.set","Title":"Virtual camera mirror","Description":"Mirror the virtual camera output horizontally.","OscAddress":"/cvp/transport/virtualcam/mirror/set","Params":[{"Name":"on","Type":"bool","Required":true}]},{"Id":"transport.virtualcam.name.set","Title":"Virtual camera name","Description":"Set the virtual camera's display name (blank keeps the default).","OscAddress":"/cvp/transport/virtualcam/name/set","Params":[{"Name":"name","Type":"string","Required":false}]},{"Id":"scene.select","Title":"Select scene","Description":"Cue a scene to Preview by id. Unknown scene fails and changes nothing; reply includes previewSceneId when applied.","OscAddress":"/cvp/scene/select","Params":[{"Name":"sceneId","Type":"string","Required":true}]},{"Id":"scene.list","Title":"List scenes","Description":"Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id.","OscAddress":"/cvp/scene/list","Params":[]}],"FeedbackFields":["recording","streaming","ndi","engineOn","canTake","lowerThirdOnAir","zoomStatus","engineStatus","commandStatus","activeSceneId","previewSceneId","previewTilesNamesOn","viewMode","multiviewLayoutMode","multiviewTileCount","automationOn","autoTake","autoAssignInputs","autoLowerThirds","autoCaptions","audioMonitorOn","audioMonitorVolume","masterLimiterOn","input/{slot}/inShow","input/{slot}/kind","input/{slot}/source","input/{slot}/name","ohg/health/engine","ohg/shadow/lastCommand"]}
-    """#
+    // ── contract: the shared manifest (contracts/control.*.json) ──────────────
 
-    // ── contract: manifest ───────────────────────────────────────────────────
+    /// The repo checkout, from this source file (mac-shell/Sources/CoreVideoProShell/…).
+    static func repoFile(_ relative: String) -> Data? {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        return try? Data(contentsOf: root.appendingPathComponent(relative))
+    }
+
+    static func repoJSON(_ relative: String) -> [String: Any]? {
+        repoFile(relative).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+    }
+
+    /// Supported ids from the platform file ON DISK, independent of the generated Swift.
+    static func fileSupportedIds() -> Set<String>? {
+        guard let rows = repoJSON("contracts/control.platforms.json")?["actions"] as? [[String: Any]] else { return nil }
+        return Set(rows.filter { $0["mac"] as? String == "supported" }.compactMap { $0["id"] as? String })
+    }
 
     @MainActor
-    static func testControlManifestMatchesWindowsGolden() {
-        let router = ControlRouter(surface: FakeSurface())
-        let response = route(router, "GET", "/manifest")
-        expectEqual(response.status, 200, "GET /manifest is 200")
-        var mac = json(response.body)
-        var windows = json(windowsManifestGolden)
-        let macFields = mac.removeValue(forKey: "FeedbackFields") as? [String] ?? []
-        let windowsFields = windows.removeValue(forKey: "FeedbackFields") as? [String] ?? []
-        expect(!mac.isEmpty && NSDictionary(dictionary: mac).isEqual(to: windows),
-               "manifest (Version/Root/Actions, PascalCase, Windows order and text) equals the Windows golden")
-        expect(!macFields.isEmpty, "feedback fields are listed")
-        expectEqual(macFields.filter { windowsFields.contains($0) }, macFields,
-                    "every Mac feedback field is a Windows feedback field")
-        expectEqual(windowsFields.filter { macFields.contains($0) }, macFields,
-                    "feedback fields keep Windows' relative order")
+    static func testControlClosure() {
+        guard let fileSupported = fileSupportedIds() else {
+            expect(false, "contracts/control.platforms.json is readable from the checkout"); return
+        }
+        // Each slice updates this number: RC1 13, after RC2 25, after RC3 36.
+        expectEqual(fileSupported.count, 36, "supported rows in the platform file")
+        expectEqual(AppModelControlSurface.supportedActionIds, fileSupported,
+                    "the dispatcher's ids equal the platform file's supported rows (Windows SupportedActionIds twin)")
+        expectEqual(Set(ControlCatalog.actions.map(\.id)), fileSupported,
+                    "the generated catalog's supported set equals the platform file (regenerate if not)")
+        let fileIds = (repoJSON("contracts/control.manifest.json")?["Actions"] as? [[String: Any]] ?? [])
+            .compactMap { $0["Id"] as? String }
+        expectEqual(ControlCatalog.all.map(\.action.id), fileIds, "all 110 entries, Windows order")
+    }
+
+    /// Authoring rule 10: drive every supported id through the REAL dispatcher.
+    @MainActor
+    static func testControlEverySupportedIdIsDispatched() {
+        let model = AppModel()   // no core: actions refuse, but none may fall through
+        let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        guard let ids = fileSupportedIds() else { expect(false, "platform file"); return }
+        for id in ids.sorted() {
+            guard let action = ControlCatalog.action(id) else { expect(false, "\(id) is in the catalog"); continue }
+            let args: [Any?] = action.params.map {
+                switch $0.type { case .bool: return true; case .string: return "s1"; case .int: return 1; case .double: return 0.5 }
+            }
+            let result = invoke(surface, id, args)
+            expect(result != nil, "\(id) answered within 3 s")
+            expect(result?.error != AppModelControlSurface.undispatched(id), "\(id) has a dispatch case")
+        }
+        // The fallthrough text is exactly what this test looks for (a confirmatory pin).
+        expectEqual(invoke(surface, "zz.not.a.case")?.error, "Unknown action 'zz.not.a.case'.", "default branch text")
+    }
+
+    @MainActor
+    static func testControlUnavailableActionsAnswer422() {
+        guard let platforms = repoJSON("contracts/control.platforms.json"),
+              let rows = platforms["actions"] as? [[String: Any]],
+              let labels = platforms["workstreams"] as? [String: String] else { expect(false, "platform file"); return }
+        let surface = FakeSurface()
+        let router = ControlRouter(surface: surface)
+        var checked = 0
+        for row in rows where row["mac"] as? String != "supported" {
+            let id = row["id"] as? String ?? ""
+            let expected = row["mac"] as? String == "blocked"
+                ? "'\(id)' is not available on macOS yet (\(labels[row["blockedOn"] as? String ?? ""] ?? "?"))."
+                : "'\(id)' is not available on macOS (\(row["reason"] as? String ?? "?"))."
+            let response = route(router, "POST", "/invoke", #"{"action":"\#(id)","args":[]}"#)
+            expectEqual(response.status, 422, "\(id) is 422")
+            expectEqual(json(response.body)["error"] as? String, expected, "\(id) says why, in the operator's words")
+            checked += 1
+        }
+        expectEqual(checked, 74, "110 - 36 unavailable ids checked (each slice updates this)")
+        expectEqual(surface.invocations.count, 0, "an unavailable action never reaches the surface")
+        let bogus = route(router, "POST", "/invoke", #"{"action":"bogus.id"}"#)
+        expectEqual(bogus.status, 400, "an id in neither file keeps Windows' 400")
+        expectEqual(json(bogus.body)["error"] as? String, "Unknown action 'bogus.id'.", "Windows text")
+        let showEngine = route(router, "POST", "/invoke", #"{"action":"showEngine.restart"}"#)
+        expectEqual(json(showEngine.body)["error"] as? String,
+                    "'showEngine.restart' is not available on macOS (the OHG show engine is not part of macOS 1.0).",
+                    "a hand-checked N/A sentence (fixture-derived operand)")
+    }
+
+    @MainActor
+    static func testControlManifestIsTheSharedFileFiltered() {
+        guard let file = repoJSON("contracts/control.manifest.json"), let ids = fileSupportedIds(),
+              let feedbackRows = repoJSON("contracts/control.platforms.json")?["feedbackFields"] as? [[String: Any]] else {
+            expect(false, "shared files"); return
+        }
+        let supportedFields = feedbackRows.filter { $0["mac"] as? String == "supported" }.compactMap { $0["field"] as? String }
+        var expected = file
+        expected["Actions"] = (file["Actions"] as? [[String: Any]] ?? []).filter { ids.contains($0["Id"] as? String ?? "") }
+        expected["FeedbackFields"] = (file["FeedbackFields"] as? [String] ?? []).filter { supportedFields.contains($0) }
+        let response = route(ControlRouter(surface: FakeSurface()), "GET", "/manifest")
+        expectEqual(response.status, 200, "GET /manifest")
+        expect(NSDictionary(dictionary: json(response.body)).isEqual(to: expected),
+               "GET /manifest is the shared file with only the Mac-supported actions and feedback fields")
+        expectEqual(supportedFields.count, 21, "RC3: twenty-one feedback fields (each slice updates this)")
         for retired in ["automation.magic", "automation.toggle", "automation.autoTake.set"] {
             expect(!response.body.contains(retired), "retired \(retired) is not advertised")
         }
-        expectEqual(route(router, "GET", "/manifest/").status, 200, "trailing slash normalizes (Windows NormalizePath)")
-        expectEqual(route(router, "GET", "/manifest?x=1").status, 200, "query is ignored for routing")
+    }
+
+    struct FixtureError: LocalizedError { let errorDescription: String? }
+
+    /// contracts/control.fixtures.json through ControlRouter and ControlSnapshotRedactor. Windows runs
+    /// the same file (CT ControlFixtureTests, MCT ControlRedactionFixtureTests); editing an
+    /// expectation turns both red. A missing file is a failure, never a skip.
+    @MainActor
+    static func testControlSharedFixtures() {
+        guard let fixtures = repoJSON("contracts/control.fixtures.json"),
+              let http = fixtures["http"] as? [[String: Any]],
+              let snapshots = fixtures["snapshot"] as? [[String: Any]],
+              let redaction = fixtures["redaction"] as? [String: Any] else {
+            expect(false, "contracts/control.fixtures.json is readable from the checkout"); return
+        }
+        func same(_ a: Any?, _ b: Any?) -> Bool {
+            if a == nil || a is NSNull { return b == nil || b is NSNull }
+            return NSArray(array: [a!]).isEqual(to: [b ?? NSNull()])
+        }
+        var ran = 0
+        for test in http where (test["hosts"] as? [String])?.contains("mac") ?? true {
+            let name = test["name"] as? String ?? "?"
+            let request = test["request"] as? [String: Any] ?? [:]
+            let reply = test["surfaceReply"] as? [String: Any] ?? ["ok": true]
+            let surface = FakeSurface()
+            surface.handler = { _, _ in
+                ControlInvokeResult(ok: reply["ok"] as? Bool ?? false, error: reply["error"] as? String,
+                                    previewSceneId: reply["previewSceneId"] as? String, data: reply["data"] as? String)
+            }
+            let response = route(ControlRouter(surface: surface), request["method"] as? String ?? "",
+                                 request["path"] as? String ?? "", request["body"] as? String)
+            let expected = test["expect"] as? [String: Any] ?? [:]
+            expectEqual(response.status, expected["status"] as? Int, "\(name): status")
+            var body = json(response.body)
+            if let prefix = expected["errorPrefix"] as? String {
+                expect((body["error"] as? String ?? "").hasPrefix(prefix), "\(name): error starts with \(prefix)")
+                body["error"] = nil
+            }
+            if let want = expected["body"] as? [String: Any] {
+                expect(NSDictionary(dictionary: body).isEqual(to: want), "\(name): body \(response.body)")
+            }
+            if let want = expected["invocations"] as? [[String: Any]] {
+                let got = surface.invocations.map { ["action": $0.0, "args": $0.1.map { $0 ?? NSNull() }] as [String: Any] }
+                expect(NSArray(array: got).isEqual(to: want), "\(name): invocations \(got)")
+            }
+            ran += 1
+        }
+        for test in snapshots {
+            let name = test["name"] as? String ?? "?"
+            let observation = test["observation"] as? [String: Any] ?? [:]
+            let surface = FakeSurface()
+            switch observation["kind"] as? String {
+            case "available":
+                let age = observation["ageMs"] as? Double
+                surface.observation = ControlSnapshotObservation(
+                    state: observation["state"] as? [String: Any],
+                    receivedAt: age.map { Date().addingTimeInterval(-$0 / 1000) })
+            case "unavailable": surface.observation = .unavailable(observation["reason"] as? String ?? "")
+            case "notObserved": surface.observesCore = false
+            default: surface.observationError = FixtureError(errorDescription: observation["message"] as? String)
+            }
+            let root = json(route(ControlRouter(surface: surface), "GET", "/snapshot").body)
+            for (key, want) in test["expect"] as? [String: Any] ?? [:] where key != "ageMsNear" {
+                // Presence first: an absent key must not pass as an expected null.
+                expect(root.keys.contains(key), "\(name): \(key) is present")
+                expect(same(root[key], want), "\(name): \(key) = \(String(describing: root[key]))")
+            }
+            if let near = (test["expect"] as? [String: Any])?["ageMsNear"] as? Double {
+                expect(abs(((root["ageMs"] as? NSNumber)?.doubleValue ?? -1e9) - near) <= 400, "\(name): ageMs near \(near)")
+            }
+            ran += 1
+        }
+        for pair in redaction["names"] as? [[String: Any]] ?? [] {
+            let name = pair["name"] as? String ?? ""
+            expectEqual(ControlSnapshotRedactor.isSecretName(name), pair["secret"] as? Bool, "isSecretName(\(name))"); ran += 1
+        }
+        for pair in redaction["texts"] as? [[String: Any]] ?? [] {
+            let input = pair["input"] as? String ?? ""
+            expectEqual(ControlSnapshotRedactor.redactText(input), pair["expected"] as? String, "redactText(\(input))"); ran += 1
+        }
+        for pair in redaction["documents"] as? [[String: Any]] ?? [] {
+            let got = ControlSnapshotRedactor.redact(pair["input"] ?? [:])
+            expect(same(got, pair["expected"]), "redact(document) equals the fixture"); ran += 1
+        }
+        let osc = fixtures["osc"] as? [String: Any] ?? [:]
+        func arg(_ j: [String: Any]) -> ControlOscArg {
+            if let v = j["i"] as? Int { return .int(Int32(v)) }
+            if let v = j["f"] as? Double { return .float(Float(v)) }
+            if let v = j["s"] as? String { return .string(v) }
+            if let v = j["bool"] as? Bool { return .bool(v) }
+            if let v = j["blob"] as? String { return .blob(Data(hex: v)) }
+            return .null
+        }
+        func msg(_ j: [String: Any]) -> ControlOscMessage {
+            ControlOscMessage(address: j["address"] as? String ?? "", args: (j["args"] as? [[String: Any]] ?? []).map(arg))
+        }
+        for c in osc["encode"] as? [[String: Any]] ?? [] {
+            expectEqual(ControlOscCodec.encode(msg(c["message"] as? [String: Any] ?? [:])).hexString, c["hex"] as? String, "osc encode \(c["name"] ?? "")"); ran += 1
+        }
+        for c in osc["decode"] as? [[String: Any]] ?? [] {
+            let want = (c["messages"] as? [[String: Any]] ?? []).map(msg)
+            expectEqual(ControlOscCodec.decode(Data(hex: c["hex"] as? String ?? "")), want, "osc decode \(c["name"] ?? "")"); ran += 1
+        }
+        expect(ControlOscCodec.decode(Data(count: ControlOscCodec.maxDatagram + 1)).isEmpty, "an oversize datagram is dropped")
+        for c in osc["addresses"] as? [[String: Any]] ?? [] {
+            let address = c["address"] as? String ?? ""
+            expectEqual(ControlOscAddressMap.actionId(for: address), c["actionId"] as? String, "osc address \(address)"); ran += 1
+        }
+        for c in osc["routes"] as? [[String: Any]] ?? [] where (c["hosts"] as? [String])?.contains("mac") ?? true {
+            let name = c["name"] as? String ?? "?"
+            let surface = FakeSurface()
+            let box = Box<ControlInvokeResult?>()
+            let router = ControlOscRouter(surface: surface)
+            let message = msg(c["message"] as? [String: Any] ?? [:])
+            Task.detached { box.value = .some(await router.route(message)) }
+            spin(until: { box.value != nil }, limit: 3)
+            let got = box.value ?? nil
+            if let want = c["result"] as? [String: Any] {
+                expectEqual(got, ControlInvokeResult(ok: want["ok"] as? Bool ?? false, error: want["error"] as? String), "osc route \(name)")
+            } else {
+                expect(got == nil, "osc route \(name) is ignored (got \(String(describing: got)))")
+            }
+            let invocations = surface.invocations.map { ["action": $0.0, "args": $0.1.map { $0 ?? NSNull() }] as [String: Any] }
+            expect(NSArray(array: invocations).isEqual(to: c["invocations"] as? [Any] ?? []), "osc route \(name): invocations \(invocations)")
+            ran += 1
+        }
+        if let feedback = osc["feedback"] as? [String: Any] {
+            // Expected = Windows' lines filtered to the platform file's supported rows, read from DISK.
+            let rows = repoJSON("contracts/control.platforms.json")?["feedbackFields"] as? [[String: Any]] ?? []
+            let supported = Set(rows.filter { $0["mac"] as? String == "supported" }.compactMap { $0["field"] as? String })
+            let want = (feedback["windowsMessages"] as? [[Any]] ?? []).compactMap { entry -> ControlOscMessage? in
+                guard let field = entry.first as? String, let a = entry.last as? [String: Any] else { return nil }
+                let row = field.replacingOccurrences(of: #"^input/\d+/"#, with: "input/{slot}/", options: .regularExpression)
+                return supported.contains(row) ? ControlOscMessage(address: ControlOscAddressMap.stateAddress(field), args: [arg(a)]) : nil
+            }
+            expectEqual(ControlOscFeedback.encode(feedback["state"] as? [String: Any] ?? [:]), want, "osc feedback lines (Windows order, supported rows)")
+            expectEqual(want.count, 25, "after RC3: 17 scalar lines + 8 input lines")
+            ran += 1
+        }
+        // OSC `f` arrives as Float (D14); coercion follows Windows' float cases.
+        expectEqual(ControlCatalog.coerce(Float(0.1), to: .string) as? String, "0.1", "string from Float 0.1 is \"0.1\" (not the widened double)")
+        expectEqual(ControlCatalog.coerce(Float(2.5), to: .int) as? Int, 2, "int from Float rounds to even")
+        expectEqual(ControlCatalog.coerce(Float(0), to: .bool) as? Bool, false, "bool from Float 0 is false")
+        // 36 mac http (RC1 31 + T8 int cases 5) + 6 snapshot + 21 names + 11 texts + 1 document
+        // + 7 osc encode + 12 osc decode + 7 addresses + 7 mac routes + 1 feedback = 109
+        // (each slice that appends cases updates this).
+        expectEqual(ran, 109, "every fixture case ran")
     }
 
     // ── contract: /invoke statuses and errors (Windows router output) ────────
@@ -93,21 +327,13 @@ extension ShellTests {
     static func testControlInvokeRejectsLikeWindows() {
         let surface = FakeSurface()
         let router = ControlRouter(surface: surface)
+        // The bind/route cases both hosts share are in contracts/control.fixtures.json
+        // (control/fixtures). These rows are the ones that file does not carry: the
+        // other two retired ids and an absent body.
         let cases: [(String?, Int, String)] = [
-            (#"{"action":"automation.magic","args":[true]}"#, 400, "Unknown action 'automation.magic'."),
             (#"{"action":"automation.toggle","args":[true]}"#, 400, "Unknown action 'automation.toggle'."),
             (#"{"action":"automation.autoTake.set","args":[true]}"#, 400, "Unknown action 'automation.autoTake.set'."),
-            (#"{"action":"bogus"}"#, 400, "Unknown action 'bogus'."),
-            // A Windows action outside the Mac 1.0 subset: refused the same way.
-            (#"{"action":"zoom.join","args":["123"]}"#, 400, "Unknown action 'zoom.join'."),
-            ("", 400, "Request body is required."),
-            ("   ", 400, "Request body is required."),
             (nil, 400, "Request body is required."),
-            (#"{"args":[1]}"#, 400, "Missing 'action'."),
-            (#"{"action":7}"#, 400, "Missing 'action'."),
-            (#"{"action":"scene.select"}"#, 400, "Action 'scene.select' requires parameter 'sceneId' at position 0."),
-            (#"{"action":"transport.ftb.set","args":["maybe"]}"#, 400, "Action 'transport.ftb.set' parameter 'enabled' must be Bool."),
-            (#"{"action":"transport.ftb.set","args":[null]}"#, 400, "Action 'transport.ftb.set' requires parameter 'enabled' at position 0."),
         ]
         for (body, status, error) in cases {
             let response = route(router, "POST", "/invoke", body)
@@ -300,34 +526,8 @@ extension ShellTests {
         expectEqual((overlay["keyPosition"] as? NSNumber)?.intValue, 3, "keyPosition survives")
         expectEqual(snapshot["sceneId"] as? String, "scene:solo", "unrelated root survives")
 
-        // CoreSnapshotObserverTests.SecretNamedValuesAreDropped... theory, plus the exact-name set.
-        let names: [(String, Bool)] = [
-            ("keyPhase", false), ("keyer", false), ("keyPosition", false), ("keyLength", false),
-            ("layerId", false), ("streamKey", true), ("passphrase", true), ("srtPassphrase", true),
-            ("accessToken", true), ("sdkJwt", true), ("userZak", true), ("clientSecret", true),
-            ("pwd", true), ("Authorization", true), ("auth", true), ("sig", true), ("signature", true),
-            ("credential", true), ("password", true), ("STREAMKEY", true), ("author", false),
-        ]
-        for (name, secret) in names {
-            expectEqual(ControlSnapshotRedactor.isSecretName(name), secret, "isSecretName(\(name))")
-        }
-        // SupportBundleLogRedactorTests.RedactsWhatItAlwaysRedacted, case for case.
-        let texts: [(String, String)] = [
-            ("access_token=abc", "access_token=[redacted]"),
-            ("pwd=hunter2&a=b", "pwd=[redacted]&a=b"),
-            ("srtPassphrase=xyz end", "srtPassphrase=[redacted] end"),
-            ("USERZAK=zzz", "USERZAK=[redacted]"),
-            ("key=value", "key=[redacted]"),
-            ("x_key_y=1", "x_key_y=1"),
-            (#"{"streamKey":"abc"}"#, #"{"streamKey":"[redacted]"}"#),
-            ("rtmp://live.example/app/SECRET", "rtmp://live.example/[redacted]"),
-            ("tok eyJhbGciOiJI.eyJzdWIiOiIx.abcd end", "tok [redacted] end"),
-            ("eyJaaaaaaaa.bbbbbbbb.cccc-", "[redacted]-"),
-            ("Authorization: Bearer abc.def", "Authorization: Bearer [redacted]"),
-        ]
-        for (input, expected) in texts {
-            expectEqual(ControlSnapshotRedactor.redactText(input), expected, "redactText(\(input))")
-        }
+        // The name and text cases (CoreSnapshotObserverTests / SupportBundleLogRedactorTests)
+        // live in contracts/control.fixtures.json and run in control/fixtures on both hosts.
         // #998: long ordinary strings must redact in bounded time.
         let longCases = [String(repeating: "a", count: 200_000),
                          String(repeating: "key", count: 66_666),
@@ -525,7 +725,9 @@ extension ShellTests {
         expectEqual(state["recording"] as? Bool, false, "state recording")
         expectEqual(state["automationOn"] as? Bool, false, "scene automation is retired: false")
         for field in ControlCatalog.feedbackFields {
-            expect(state[field] != nil, "advertised feedback field \(field) is published")
+            // input/{slot}/* are the rows of `inputs` (Windows ControlState.Inputs).
+            let key = field.hasPrefix("input/") ? "inputs" : field
+            expect(state[key] != nil, "advertised feedback field \(field) is published")
         }
     }
 
@@ -675,6 +877,68 @@ extension ShellTests {
         server.start { box.value = $0 }
         spin(until: { box.value != nil }, limit: 3)
         return (server, box.value)
+    }
+
+    // ── hardening: the Mac's stricter-than-Windows rules stay pinned (T5) ──
+
+    @MainActor
+    static func testControlHardeningTimeouts() {
+        let surface = FakeSurface()
+        var options = ControlServerOptions(port: 0, host: "127.0.0.1", authToken: nil)
+        options.requestTimeout = 0.4
+        let (server, started) = startServer(ControlRouter(surface: surface), options)
+        defer { server.stop() }
+        guard case .success(let port)? = started else { expect(false, "server starts"); return }
+        // A client that sends half a head and stalls is answered 408 by the request timer.
+        let stalled = RawClient(port: port)
+        stalled.run(Data("GET /state HTTP/1.1\r\nHost: 127.0.0.1\r\n".utf8))
+        spin(until: { stalled.box.value != nil }, limit: 3)
+        stalled.connection.cancel()
+        expect((stalled.box.value ?? "").hasPrefix("HTTP/1.1 408"), "a stalled request is 408: \((stalled.box.value ?? "").prefix(20))")
+        // The timer stops once the request reaches the router: an invoke that runs 3x the timeout is answered 200.
+        surface.handler = { _, _ in Thread.sleep(forTimeInterval: 1.2); return .success }
+        let slow = raw(port, Data("POST /invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"action\":\"transport.take\"}".utf8))
+        expect(slow.hasPrefix("HTTP/1.1 200"), "a long invoke is not cut off by the request timer: \(slow.prefix(20))")
+        expectEqual(ControlServerOptions.fromEnvironment([:]).requestTimeout, 10, "the default is 10 s")
+    }
+
+    @MainActor
+    static func testControlHardeningConnectionCap() {
+        var options = ControlServerOptions(port: 0, host: "127.0.0.1", authToken: nil)
+        options.requestTimeout = 5   // idle clients must outlive the test
+        let (server, started) = startServer(ControlRouter(surface: FakeSurface()), options)
+        defer { server.stop() }
+        guard case .success(let port)? = started else { expect(false, "server starts"); return }
+        let queue = DispatchQueue(label: "control-test-cap")
+        var idle: [NWConnection] = []
+        for _ in 0..<64 {
+            let c = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+            c.start(queue: queue)
+            idle.append(c)
+        }
+        spin(until: { server.openConnectionCount == 64 }, limit: 3)
+        expectEqual(server.openConnectionCount, 64, "64 idle connections are held")
+        let refused = raw(port, Data("GET /state HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8))
+        expect(!refused.hasPrefix("HTTP/1.1"), "the 65th connection is closed without an answer: \(refused.prefix(30))")
+        expectEqual(server.openConnectionCount, 64, "the refused connection was never admitted")
+        idle.forEach { $0.cancel() }
+        spin(until: { server.openConnectionCount == 0 }, limit: 3)
+        expectEqual(http("GET", "http://127.0.0.1:\(port)/state").status, 200, "serving again once clients leave")
+    }
+
+    @MainActor
+    static func testControlHardeningNoPreflight() {
+        let (server, started) = startServer(ControlRouter(surface: FakeSurface()),
+                                            ControlServerOptions(port: 0, host: "127.0.0.1", authToken: nil))
+        defer { server.stop() }
+        guard case .success(let port)? = started else { expect(false, "server starts"); return }
+        let preflight = raw(port, Data("OPTIONS /invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n\r\n".utf8))
+        expect(preflight.hasPrefix("HTTP/1.1 404"), "a CORS preflight is not a route")
+        expect(!preflight.lowercased().contains("access-control-"), "no Access-Control-* header on any answer")
+        for path in ["/manifest", "/state", "/snapshot", "/nope"] {
+            let response = raw(port, Data("GET \(path) HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\n\r\n".utf8))
+            expect(!response.lowercased().contains("access-control-"), "\(path): no CORS header even with an Origin")
+        }
     }
 
     @MainActor
