@@ -27,6 +27,7 @@ extension ShellTests {
             ("control/push-key", testControlPushKeyIgnoresMeters),
             ("control/input-actions", testControlInputActions),
             ("control/transition-and-engine", testControlTransitionAndEngine),
+            ("control/join-leave-capture-online", testControlJoinLeaveAndCaptureOnline),
         ]
     }
 
@@ -236,5 +237,80 @@ extension ShellTests {
         expectEqual(invoke(o, "transport.engine.set", [true]),
                     .fail("Cannot start capture engine right now (the control is unavailable in the current state)."), "no core: start refused")
         expect(!offline.captureEnabled, "nothing changed")
+    }
+
+    @MainActor
+    static func testControlJoinLeaveAndCaptureOnline() {
+        let core = FakeTakeCore()
+        let model = AppModel()
+        model.controlSettleSeconds = 0.4
+        var answers: [JSONObject] = [["meetingState": "in_meeting", "warnings": [] as [String]]]
+        model.quitRequestForTesting = { body, _ in
+            _ = try await core.handle(body)
+            return await MainActor.run { ["snapshot": answers.isEmpty ? [:] : answers.removeFirst()] }
+        }
+        let s = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        func joins() -> [JSONObject] { core.bodies.filter { $0["type"] as? String == "zoom-join" }.compactMap { $0["payload"] as? JSONObject } }
+
+        expectEqual(invoke(s, "zoom.join", ["   "]), .fail("Zoom join is unavailable in the current state."), "blank target refused")
+        expectEqual(joins().count, 0, "nothing sent")
+        expectEqual(invoke(s, "zoom.join", ["https://us02web.zoom.us/j/97682593786?pwd=abc", "Remote Desk", true]), .success, "join succeeds")
+        expectEqual(joins().first?["meetingId"] as? String, "97682593786", "URL parsed like the UI")
+        expectEqual(joins().first?["passcode"] as? String, "abc", "passcode from pwd")
+        expectEqual(joins().first?["displayName"] as? String, "Remote Desk", "display name applied")
+        expectEqual(joins().first?["webinar"] as? Bool, true, "webinar is the UI's field (D8)")
+        expectEqual(model.meetingState, "in_meeting", "model in meeting")
+
+        answers = [["meetingState": "error", "warnings": [accountBusySentence]]]
+        expectEqual(invoke(s, "zoom.join", ["97682593786"]), .fail(accountBusySentence), "a failed join answers with Zoom's reason")
+        answers = [["meetingState": "joining"]]
+        expectEqual(invoke(s, "zoom.join", ["97682593786"]),
+                    .fail("Zoom join is still in progress (joining); read zoomStatus for the outcome."), "an unsettled join says so")
+        // The settle wait is observable: the meeting lands 150 ms AFTER the reply (a later
+        // snapshot), inside the window, so the join answers success, not "still in progress".
+        answers = [["meetingState": "joining"]]
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            model.applyZoomForTesting(["meetingState": "in_meeting"])
+        }
+        expectEqual(invoke(s, "zoom.join", ["97682593786"]), .success, "a join that settles inside the window succeeds")
+
+        let noCore = AppModel()
+        expectEqual(invoke(AppModelControlSurface(model: noCore, box: noCore.controlSnapshotBox), "zoom.join", ["123"]),
+                    .fail("Zoom join is unavailable in the current state."), "no core")
+
+        model.applyZoomForTesting(["meetingState": "in_meeting"])
+        answers = [["meetingState": "idle"]]
+        expectEqual(invoke(s, "zoom.leave"), .success, "leave succeeds")
+        expect(core.bodies.contains { $0["type"] as? String == "zoom-leave" }, "leave went through the seam")
+        let leavesBefore = core.bodies.filter { $0["type"] as? String == "zoom-leave" }.count
+        expectEqual(invoke(s, "zoom.leave"), .fail("Zoom leave is unavailable in the current state."), "not in a meeting")
+        expectEqual(core.bodies.filter { $0["type"] as? String == "zoom-leave" }.count, leavesBefore, "nothing sent when idle")
+
+        // Capture online/offline through the capture seam.
+        model.captureDevices = [CaptureDeviceRow(id: "cam1", name: "Desk Cam", kind: "video", vendor: "Apple",
+                                                 connectionState: "detected", signalPresent: false, warning: "")]
+        var deviceState = "detected"
+        model.captureRequestForTesting = { body in
+            switch body["type"] as? String {
+            case "connect-capture-device": deviceState = "connected"
+            case "disconnect-capture-device": deviceState = "detected"
+            default: break
+            }
+            return ["snapshot": ["captureDevices": [["id": "cam1", "name": "Desk Cam", "kind": "video", "vendor": "Apple",
+                                                     "connectionState": deviceState, "signalPresent": true, "warning": ""]]]]
+        }
+        expectEqual(invoke(s, "source.capture.online.set", ["zoom:p-1", true]), .fail("Choose a capture source ID."), "not a capture id")
+        expectEqual(invoke(s, "source.capture.online.set", ["capture:nope", true]), .fail("The capture device is unavailable."), "unknown device")
+        expectEqual(invoke(s, "source.capture.online.set", ["capture:cam1", true]), .success, "connect")
+        expectEqual(model.captureDevices.first?.connectionState, "connected", "the barrier's snapshot was applied")
+        expectEqual(invoke(s, "source.capture.online.set", ["capture:cam1", true]), .success, "already connected: no toggle")
+        expectEqual(model.captureDevices.first?.connectionState, "connected", "a matching request never disconnects")
+        expectEqual(invoke(s, "source.capture.online.set", ["capture:cam1", false]), .success, "offline")
+        expectEqual(model.captureDevices.first?.connectionState, "detected", "offline")
+        model.captureRequestForTesting = { _ in ["snapshot": ["captureDevices": [["id": "cam1", "name": "Desk Cam", "kind": "video", "vendor": "Apple",
+                                                                                   "connectionState": "failed", "signalPresent": false, "warning": ""]]]] }
+        expectEqual(invoke(s, "source.capture.online.set", ["capture:cam1", true]),
+                    .fail("Capture device 'cam1' is failed, not connected."), "a connect the core did not honour is reported")
     }
 }

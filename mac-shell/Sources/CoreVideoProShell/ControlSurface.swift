@@ -136,6 +136,12 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         case "scene.list":
             return .withData(sceneListJSON(model))
         // ── Session (ControlSurface+Session.swift) ──
+        case "zoom.join":
+            return await model.joinZoomForControl(target: string(0), displayName: optionalString(1), webinar: bool(2))
+        case "zoom.leave":
+            return await model.leaveZoomForControl()
+        case "source.capture.online.set":
+            return await setCaptureOnline(model, sourceId: string(0), online: bool(1))
         case "transport.transition.set":
             return setTransition(model, mode: string(0))
         case "transport.engine.toggle":
@@ -174,6 +180,7 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         // RC2
         "input.assign", "input.unassign", "input.name", "input.inShow.set", "source.dropout.set",
         "transport.transition.set", "transport.engine.toggle", "transport.engine.set",
+        "zoom.join", "zoom.leave", "source.capture.online.set",
     ]
 
     /// The `default:` branch's text (Windows' unknown-action wording).

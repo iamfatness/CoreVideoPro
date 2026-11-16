@@ -503,6 +503,12 @@ final class AppModel: ObservableObject {
     /// the "core is gone" answer when that path is replaced, and the timings.
     var quitRequestForTesting: ((JSONObject, TimeInterval) async throws -> JSONObject)?
     var quitCoreGoneForTesting = false
+    /// Remote control (ControlSurface+Session.swift): how long an awaitable
+    /// control call waits for meetingState / a device state to settle after the
+    /// core answers. Tests shorten it.
+    var controlSettleSeconds: TimeInterval = 5
+    /// Test seam for the capture connect/disconnect path (production: nil = bridge).
+    var captureRequestForTesting: ((JSONObject) async throws -> JSONObject)?
     /// Test seams for where the quit prompt is presented (production: nil).
     var quitPresentForTesting: ((QuitPromptPlacement) -> Void)?
     var mainWindowAvailableForTesting: Bool?
@@ -2273,12 +2279,27 @@ final class AppModel: ObservableObject {
     /// SECOND, explicit gesture that ends their own Zoom client's session, so
     /// it is never the ordinary Join and never remembered for the next one.
     func joinZoom(endOtherMeeting: Bool = false) {
-        guard bridge != nil || quitRequestForTesting != nil else { return }
+        guard let payload = prepareJoin(endOtherMeeting: endOtherMeeting) else { return }
+        Task { await sendJoin(payload) }
+    }
+
+    /// The awaitable join (remote control): the same two halves joinZoom runs.
+    /// Returns false when the join was refused before anything was sent.
+    @discardableResult
+    func performJoin(endOtherMeeting: Bool = false) async -> Bool {
+        guard let payload = prepareJoin(endOtherMeeting: endOtherMeeting) else { return false }
+        await sendJoin(payload)
+        return true
+    }
+
+    /// The synchronous half of a join: guards, status, recents, the payload.
+    private func prepareJoin(endOtherMeeting: Bool) -> JSONObject? {
+        guard bridge != nil || quitRequestForTesting != nil else { return nil }
         let target = Self.parseZoomTarget(joinMeetingId, fallbackPasscode: joinPasscode)
         let meetingId = target.meetingId
         let parsedPasscode = target.passcode
         joinPasscode = parsedPasscode
-        guard !meetingId.isEmpty, !joinInFlight else { return }
+        guard !meetingId.isEmpty, !joinInFlight else { return nil }
         joinInFlight = true
         // Never blocks the join (some meetings allow guests) — just says why it
         // may fail before Zoom does.
@@ -2297,35 +2318,39 @@ final class AppModel: ObservableObject {
         // Absent, not false, on an ordinary join (the core reads it per join).
         if endOtherMeeting { payload["endOtherMeeting"] = true }
         ShellLog.write("joining meeting \(meetingId)\(endOtherMeeting ? " (end my other Zoom session)" : "")")
-        Task {
-            defer { joinInFlight = false }
-            do {
-                // Credentials BEFORE the request timer (the Windows shape):
-                // a fresh ZAK per join, never cached, never logged.
-                // The harness never reads the operator's Keychain or calls Zoom.
-                if quitRequestForTesting == nil,
-                   let credentials = await ZoomOAuth.shared.ensureJoinCredentials(),
-                   let zak = credentials.userZak {
-                    payload["userZak"] = zak
-                } else {
-                    zoomJoin.joiningAsGuest()
-                }
-                let response = try await quitRequest(
-                    ["type": "zoom-join", "payload": payload],
-                    timeout: ZoomJoinStatus.joinRequestTimeout(
-                        environment: ProcessInfo.processInfo.environment))
-                let snapshot = response["snapshot"] as? JSONObject
-                zoomJoin.joinAnswered(snapshot)
-                if let snapshot {
-                    applyZoom(snapshot)
-                    for warning in snapshot["warnings"] as? [String] ?? [] {
-                        pushWarning("zoom: \(warning)")
-                    }
-                }
-            } catch {
-                zoomJoin.joinAnswered(nil)
-                pushWarning("join failed: \(error.localizedDescription)")
+        return payload
+    }
+
+    /// The request half of a join (credentials, zoom-join, the reply applied).
+    private func sendJoin(_ payload: JSONObject) async {
+        var payload = payload
+        defer { joinInFlight = false }
+        do {
+            // Credentials BEFORE the request timer (the Windows shape):
+            // a fresh ZAK per join, never cached, never logged.
+            // The harness never reads the operator's Keychain or calls Zoom.
+            if quitRequestForTesting == nil,
+               let credentials = await ZoomOAuth.shared.ensureJoinCredentials(),
+               let zak = credentials.userZak {
+                payload["userZak"] = zak
+            } else {
+                zoomJoin.joiningAsGuest()
             }
+            let response = try await quitRequest(
+                ["type": "zoom-join", "payload": payload],
+                timeout: ZoomJoinStatus.joinRequestTimeout(
+                    environment: ProcessInfo.processInfo.environment))
+            let snapshot = response["snapshot"] as? JSONObject
+            zoomJoin.joinAnswered(snapshot)
+            if let snapshot {
+                applyZoom(snapshot)
+                for warning in snapshot["warnings"] as? [String] ?? [] {
+                    pushWarning("zoom: \(warning)")
+                }
+            }
+        } catch {
+            zoomJoin.joinAnswered(nil)
+            pushWarning("join failed: \(error.localizedDescription)")
         }
     }
 
@@ -2333,6 +2358,71 @@ final class AppModel: ObservableObject {
         guard let bridge else { return }
         assignedIds.removeAll()
         Task { _ = try? await bridge.request(["type": "zoom-leave"], timeout: 15) }
+    }
+
+    // ── remote control: awaitable twins of the fire-and-forget UI calls ──────
+    // (ControlSurface+Session.swift; Windows answers zoom.join/leave from
+    // IsInMeeting/JoinStatus, StudioControlSurface.cs:228-251.)
+
+    /// Polls `done` on the main actor for up to controlSettleSeconds.
+    private func settle(_ done: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(controlSettleSeconds)
+        while !done() {
+            if Date() >= deadline { return false }
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return true
+    }
+
+    func joinZoomForControl(target: String, displayName name: String?, webinar asWebinar: Bool) async -> ControlInvokeResult {
+        let unavailable = ControlInvokeResult.fail("Zoom join is unavailable in the current state.")
+        joinMeetingId = target
+        if let name, !name.trimmingCharacters(in: .whitespaces).isEmpty { displayName = name }
+        webinar = asWebinar   // the UI toggle's field (D8)
+        guard bridge != nil || quitRequestForTesting != nil,
+              !Self.parseZoomTarget(target, fallbackPasscode: joinPasscode).meetingId.isEmpty,
+              !joinInFlight else { return unavailable }
+        guard await performJoin() else { return unavailable }
+        _ = await settle { meetingState == "in_meeting" || Self.meetingHasEnded(meetingState) }
+        if meetingState == "in_meeting" { return .success }
+        if Self.meetingHasEnded(meetingState) {
+            return .fail(zoomJoinStatus.isEmpty ? "Zoom join did not complete." : zoomJoinStatus)
+        }
+        return .fail("Zoom join is still in progress (\(meetingState)); read zoomStatus for the outcome.")
+    }
+
+    func leaveZoomForControl() async -> ControlInvokeResult {
+        guard bridge != nil || quitRequestForTesting != nil, !Self.meetingHasEnded(meetingState) else {
+            return .fail("Zoom leave is unavailable in the current state.")
+        }
+        assignedIds.removeAll()
+        if let snapshot = (try? await quitRequest(["type": "zoom-leave"], timeout: 15))?["snapshot"] as? JSONObject,
+           !snapshot.isEmpty {
+            applyZoom(snapshot)
+        }
+        if await settle({ Self.meetingHasEnded(meetingState) }) { return .success }
+        return .fail("Zoom leave did not complete (\(meetingState)).")
+    }
+
+    func setCaptureDeviceOnline(_ deviceId: String, online: Bool) async -> ControlInvokeResult {
+        guard let device = captureDevices.first(where: { $0.id == deviceId }) else {
+            return .fail("The capture device is unavailable.")
+        }
+        // The UI entry point is a toggle: a matching state must not flip it.
+        if (device.connectionState == "connected") == online { return .success }
+        do {
+            _ = try await captureRequest(online
+                ? CoreCommands.connectCaptureDevice(deviceId: device.id, outputSourceId: device.id)
+                : CoreCommands.disconnectCaptureDevice(deviceId: device.id))
+            let reply = try await captureRequest(["type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [JSONObject]()])
+            if let snapshot = reply["snapshot"] as? JSONObject { applySnapshot(snapshot) }
+            syncSpine()   // multiview sources include connected capture devices (the UI path's follow-up)
+        } catch {
+            return .fail("Capture device '\(deviceId)' could not be \(online ? "connected" : "taken offline"): \(error.localizedDescription)")
+        }
+        let state = captureDevices.first { $0.id == deviceId }?.connectionState ?? "missing"
+        if (state == "connected") == online { return .success }
+        return .fail("Capture device '\(deviceId)' is \(state), not \(online ? "connected" : "offline").")
     }
 
     func toggleAssigned(_ participant: RosterParticipant) {
@@ -4613,16 +4703,23 @@ final class AppModel: ObservableObject {
         return try await bridge.request(body)
     }
 
+    /// The capture connect/disconnect path through its harness seam.
+    private func captureRequest(_ body: JSONObject) async throws -> JSONObject {
+        if let seam = captureRequestForTesting { return try await seam(body) }
+        guard let bridge else { throw BridgeError.notRunning }
+        return try await bridge.request(body)
+    }
+
     func connectCaptureDevice(_ device: CaptureDeviceRow) {
-        guard let bridge else { return }
+        guard bridge != nil || captureRequestForTesting != nil else { return }
         Task {
             do {
                 // Both commands take a `payload` wrapper (JsonRpcServer).
                 if device.connectionState == "connected" {
-                    _ = try await bridge.request(
+                    _ = try await captureRequest(
                         CoreCommands.disconnectCaptureDevice(deviceId: device.id))
                 } else {
-                    _ = try await bridge.request(
+                    _ = try await captureRequest(
                         CoreCommands.connectCaptureDevice(deviceId: device.id,
                                                           outputSourceId: device.id))
                 }

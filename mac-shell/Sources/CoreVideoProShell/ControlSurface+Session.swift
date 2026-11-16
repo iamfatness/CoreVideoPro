@@ -39,4 +39,13 @@ extension AppModelControlSurface {
         model.setCapture(enabled: on)
         return .success
     }
+
+    /// Windows StudioControlSurface.cs:374-386 (texts verbatim).
+    @MainActor
+    static func setCaptureOnline(_ model: AppModel, sourceId: String, online: Bool) async -> ControlInvokeResult {
+        guard case .capture(let deviceId)? = ControlSourceId.parse(sourceId) else {
+            return .fail("Choose a capture source ID.")
+        }
+        return await model.setCaptureDeviceOnline(deviceId, online: online)
+    }
 }

@@ -22,10 +22,10 @@ enum ControlManifestGenerated {
                 ControlParam(name: "displayName", type: .string, required: false, description: "Optional participant display name"),
                 ControlParam(name: "webinar", type: .bool, required: false, description: "Join as a webinar attendee"),
             ]),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "zoom.leave", title: "Leave Zoom", description: "Leave the current embedded Zoom meeting.", params: []),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "transport.ftb.toggle", title: "Fade to Black", description: "Fade Program video to black or back in over 300 ms. Audio and output sessions continue.", params: []),
             availability: .supported),
@@ -225,7 +225,7 @@ enum ControlManifestGenerated {
                 ControlParam(name: "sourceId", type: .string, required: true, description: "capture:<deviceId>"),
                 ControlParam(name: "online", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "input.unassign", title: "Unassign show input", description: "Clear only this input through the same operator command; the source remains available for reassignment.", params: [
                 ControlParam(name: "slot", type: .int, required: true, description: nil),
