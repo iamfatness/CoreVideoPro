@@ -19,7 +19,10 @@ public enum CameraConstants {
     /// scripts/camera-extension-version.sh fails the release and CI when the
     /// extension's sources changed but this did not: bump it, then run
     /// `scripts/camera-extension-version.sh update`.
-    public static let extensionVersion = 1
+    /// Starts at 3000, above every app build number earlier builds stamped on
+    /// the extension (the owner's Mac had 2881 and 2883), so the one-time
+    /// transition to this scheme is an upgrade, never a downgrade.
+    public static let extensionVersion = 3000
     /// Spec §4 law 6, tightened to Developer ID (2026-11-15 security review): an
     /// Apple-anchored chain whose intermediate is the Developer ID CA
     /// (1.2.840.113635.100.6.2.6) and whose leaf is a Developer ID Application

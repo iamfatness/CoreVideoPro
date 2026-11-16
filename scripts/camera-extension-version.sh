@@ -23,6 +23,8 @@
 #   mac-shell/Sources/CameraExtensionKit/*.swift   (the whole target is linked in)
 #   scripts/macos-camera-extension.entitlements
 # Record: scripts/camera-extension-version.record (checked in).
+# The version started at 3000 (above the ~2883 build numbers the extension
+# used to carry), so the transition replaced old installs as an upgrade.
 # Run by: scripts/release-macos.sh (preflight) and CI (mac-shell-design-lint).
 set -uo pipefail
 
@@ -110,6 +112,10 @@ do_update() {
     {
         echo "# Written by scripts/camera-extension-version.sh update. Do not edit by hand."
         echo "# The camera extension's version and a sha256 of the sources it is built from."
+        echo "# extensionVersion started at 3000 (2026-11-15), above every app build number"
+        echo "# earlier builds used as the extension's CFBundleVersion (the owner's Mac had"
+        echo "# 2881 and 2883), so the move to an independent version is an upgrade, never a"
+        echo "# downgrade. Only ever increase it."
         echo "extensionVersion=$v"
         echo "sourceHash=$h"
     } >"$ROOT/$RECORD"
