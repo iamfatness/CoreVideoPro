@@ -31,6 +31,7 @@ extension ShellTests {
             ("vcam-update/owner-mac-stuck-state-at-launch-needs-reboot", testOwnerMacStuckStateAtLaunchNeedsReboot),
             ("vcam-update/will-complete-after-reboot", testWillCompleteAfterRebootIsNeedsReboot),
             ("vcam-update/needs-reboot-policy", testNeedsRebootPolicy),
+            ("vcam-update/diagnostics-in-support-bundle", testVirtualCameraDiagnosticsReachTheSupportBundle),
         ]
     }
 
@@ -340,5 +341,36 @@ extension ShellTests {
         expect(f([ours(enabled: false)]), "ours not enabled: yes")
         expect(f([]), "ours missing after a completed activation: yes")
         expect(!f([CameraExtensionInstall(version: v, awaitingApproval: true)]), "awaiting approval is not a restart")
+    }
+
+    // ── item 4: diagnose ─────────────────────────────────────────────────────
+
+    /// The support bundle's shell-state.json carries everything support needs:
+    /// bundled version, installed versions and states, device registered,
+    /// in use, the last activation result.
+    @MainActor
+    static func testVirtualCameraDiagnosticsReachTheSupportBundle() {
+        let installed = [ours(), CameraExtensionInstall(version: "2881", enabled: false, uninstalling: true)]
+        let (model, _, _) = launchedModel(installed: installed,
+                                          device: CameraDeviceStatus(registered: false, runningSomewhere: true))
+        let input = model.supportBundleInput()
+        guard let state = try? JSONSerialization.jsonObject(with: input.shellStateJson) as? JSONObject,
+              let vcam = state["virtualCamera"] as? JSONObject else {
+            expect(false, "shell-state.json has a virtualCamera node"); return
+        }
+        expectEqual(vcam["bundledExtensionVersion"] as? String, CameraExtensionPolicy.bundledVersion,
+                    "the bundled extension version")
+        let rows = vcam["installed"] as? [JSONObject] ?? []
+        expectEqual(rows.compactMap { $0["version"] as? String }, [CameraExtensionPolicy.bundledVersion, "2881"],
+                    "every installed version")
+        expectEqual(rows.last?["uninstalling"] as? Bool, true, "with its state")
+        expectEqual(vcam["deviceRegistered"] as? Bool, false, "device registered yes/no")
+        expectEqual(vcam["inUse"] as? Bool, true, "the in-use flag")
+        expect((vcam["lastActivationResult"] as? String ?? "").hasPrefix("already active at launch"),
+               "the last activation result")
+        let diag = model.virtualCameraDiagnostics()
+        expect(diag.rows.contains { $0.label == "installed" && $0.value.contains("2881 [disabled, uninstalling") },
+               "the Health tab row names the uninstalling copy")
+        model.stopTimersForTesting()
     }
 }

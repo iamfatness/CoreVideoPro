@@ -550,6 +550,8 @@ final class AppModel: ObservableObject {
     private var cameraRegistrationToken: UUID?
     /// The last HAL reading of our device (diagnostics; nil = never read).
     @Published private(set) var cameraDeviceStatus: CameraDeviceStatus?
+    /// The last activation outcome, with the time (diagnostics).
+    @Published private(set) var cameraExtensionLastResult = ""
     /// True only while an operator's Update camera has paused our own output
     /// (the wire says off; the persisted intent is untouched).
     @Published private(set) var virtualCameraPausedForUpdate = false
@@ -1070,12 +1072,14 @@ final class AppModel: ObservableObject {
                                                           bundledVersion: CameraExtensionPolicy.bundledVersion) {
                 case .alreadyActive:
                     ShellLog.write("vcam-ext: version \(CameraExtensionPolicy.bundledVersion) already active; nothing submitted")
+                    self.recordCameraExtensionResult("already active at launch (nothing submitted)")
                     self.setCameraExtensionState(.active)
                 case .activate:
                     self.activateCameraExtension()
                 case .update:
                     if self.cameraInUse() {
                         ShellLog.write("vcam-ext: update to \(CameraExtensionPolicy.bundledVersion) deferred; the camera is in use")
+                        self.recordCameraExtensionResult("update deferred at launch (camera in use)")
                         self.setCameraExtensionState(.updateReady)
                     } else {
                         self.activateCameraExtension()
@@ -1091,6 +1095,33 @@ final class AppModel: ObservableObject {
     func cameraInUse() -> Bool {
         CameraExtensionPolicy.inUse(device: readCameraDevice(), intentOn: virtualCamera.enabled,
                                     pausedForUpdate: virtualCameraPausedForUpdate)
+    }
+
+    private func recordCameraExtensionResult(_ what: String) {
+        cameraExtensionLastResult = what + " (" + ISO8601DateFormatter().string(from: Date()) + ")"
+    }
+
+    /// Health tab / support bundle snapshot. The bundle reads the HAL afresh
+    /// (cheap); a view body passes `readDevice: false` and shows the last
+    /// reading (publishing from inside a view update is not allowed).
+    func virtualCameraDiagnostics(readDevice: Bool = true) -> VirtualCameraDiagnostics {
+        let device = readDevice ? readCameraDevice() : cameraDeviceStatus
+        return VirtualCameraDiagnostics(
+            label: virtualCameraLabel, state: cameraExtensionState, optedIn: cameraExtensionOptedIn,
+            bundledVersion: CameraExtensionPolicy.bundledVersion, installs: cameraExtensionInstalls,
+            device: device,
+            inUse: device.map { CameraExtensionPolicy.inUse(device: $0, intentOn: virtualCamera.enabled,
+                                                            pausedForUpdate: virtualCameraPausedForUpdate) },
+            lastResult: cameraExtensionLastResult, pausedForUpdate: virtualCameraPausedForUpdate)
+    }
+
+    /// The Health tab asks macOS for the installed copies when it appears,
+    /// unless another installed-copies question is already in flight (that one
+    /// owns the token and its answer lands in `cameraExtensionInstalls` too).
+    func refreshCameraExtensionDiagnostics() {
+        readCameraDevice()
+        guard cameraExtensionInstallsToken == nil else { return }
+        queryCameraExtensionInstalls { _ in }
     }
 
     /// One HAL read, remembered for the Health tab and the support bundle.
@@ -1232,6 +1263,7 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.setCameraExtensionState(state)
+                if state != .activating { self.recordCameraExtensionResult("activation: \(state)") }
                 // A finished (or deferred) request releases an Update camera pause.
                 if state != .activating && state != .needsApproval { self.resumeVirtualCameraAfterUpdate() }
             }
@@ -4462,6 +4494,7 @@ final class AppModel: ObservableObject {
                 "onAir": overlaysOnAir, "lowerThirdPhase": lowerThirdPhase,
                 "logoBug": logoBug?.name ?? "",
             ],
+            "virtualCamera": virtualCameraDiagnostics().json,
             "autoProduction": [
                 "enabled": autoDirectEnabled, "ruleId": autoRuleId,
                 "recommendedSceneId": autoSceneId, "confidence": autoConfidence,

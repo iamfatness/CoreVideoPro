@@ -137,6 +137,66 @@ enum VirtualCameraPresentation {
     }
 }
 
+/// What support needs to answer "why is there no camera?", for the Health tab
+/// and the support bundle (owner requirement 2026-11-15). Every field states
+/// "not observed" (nil) rather than guessing.
+struct VirtualCameraDiagnostics {
+    var label: String
+    var state: CameraExtensionState
+    var optedIn: Bool?
+    var bundledVersion: String
+    var installs: [CameraExtensionInstall]?
+    var device: CameraDeviceStatus?
+    var inUse: Bool?
+    var lastResult: String
+    var pausedForUpdate: Bool
+
+    static func describe(_ i: CameraExtensionInstall) -> String {
+        var flags: [String] = []
+        flags.append(i.enabled ? "enabled" : "disabled")
+        if i.awaitingApproval { flags.append("awaiting approval") }
+        if i.uninstalling { flags.append("uninstalling (restart pending)") }
+        return "\(i.version) [\(flags.joined(separator: ", "))]"
+    }
+
+    var installedText: String {
+        guard let installs else { return "not reported" }
+        return installs.isEmpty ? "none" : installs.map(Self.describe).joined(separator: "; ")
+    }
+
+    private static func yesNo(_ v: Bool?) -> String { v.map { $0 ? "yes" : "no" } ?? "not read" }
+
+    var rows: [(label: String, value: String)] {
+        [("status", label),
+         ("extension state", "\(state)"),
+         ("bundled version", bundledVersion),
+         ("installed", installedText),
+         ("device registered", Self.yesNo(device?.registered)),
+         ("in use", Self.yesNo(inUse)),
+         ("last activation", lastResult.isEmpty ? "none this session" : lastResult),
+         ("output paused for update", pausedForUpdate ? "yes" : "no")]
+    }
+
+    var json: JSONObject {
+        [
+            "status": label,
+            "extensionState": "\(state)",
+            "optedIn": optedIn.map { $0 as Any } ?? NSNull(),
+            "bundledExtensionVersion": bundledVersion,
+            "installed": installs.map { list in
+                list.map { ["version": $0.version, "enabled": $0.enabled,
+                            "awaitingApproval": $0.awaitingApproval,
+                            "uninstalling": $0.uninstalling] as JSONObject } as Any
+            } ?? NSNull(),
+            "deviceRegistered": device.map { $0.registered as Any } ?? NSNull(),
+            "deviceRunningSomewhere": device.map { $0.runningSomewhere as Any } ?? NSNull(),
+            "inUse": inUse.map { $0 as Any } ?? NSNull(),
+            "lastActivationResult": lastResult,
+            "pausedForUpdate": pausedForUpdate,
+        ]
+    }
+}
+
 extension CoreCommands {
     /// Root-level command (rides inside a media-core-sync `commands` array).
     /// `on` is ALWAYS sent: the core treats a missing `on` as TRUE. The core

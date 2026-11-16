@@ -157,8 +157,21 @@ not run them against a build without those tasks.
    during the gap and Program again within 5 s of the core resuming; never a frozen frame.
 5. Quit the app mid-call. Expected: slate within 1 s. Relaunch: Program again with no toggle
    (the intent persisted).
-6. Update: install build N+1 over N while Zoom is closed. Expected: the first launch replaces
-   the extension silently (`systemextensionsctl list` shows N+1) and the camera works.
+6. Update: install build N+1 over N while Zoom is closed. Expected: if the extension changed
+   (higher `extensionVersion`), the first launch replaces it silently
+   (`systemextensionsctl list` shows the new version) and the camera works; if it did not
+   change, nothing is submitted and `systemextensionsctl list` is unchanged.
+6a. Update while Zoom uses the camera: install a build with a higher `extensionVersion` while
+   Zoom has CoreVideo Pro Camera selected in a call. Expected: nothing is replaced, the flyout,
+   Settings > System and Health show "An update to CoreVideo Pro Camera is ready. Quit apps
+   that are using the camera (Zoom, Teams, Photo Booth...), then click Update camera.", and
+   Zoom keeps working. Quit Zoom, click Update camera. Expected: the extension swaps with no
+   restart, `systemextensionsctl list` shows only the new version `[activated enabled]`, and
+   Photo Booth shows Program.
+6b. Forced deferred case: reproduce a stuck swap (an old copy `[terminated waiting to
+   uninstall on reboot]` and no device, e.g. replace while Photo Booth streams from a build
+   without this fix). Expected: within 10 s of launch the status is "Restart your Mac to finish
+   updating the virtual camera." in all three places; after a restart the camera works.
 7. (after Task 8/10) Set Camera name to "Studio A", toggle the camera off and on. Expected:
    Photo Booth lists "Studio A". Also check the 720p behaviour Task 10 defines.
 8. Turn on OH Framer and Mirror. Expected: both visible in Zoom's self-view; the Program

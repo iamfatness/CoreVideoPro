@@ -899,12 +899,30 @@ struct DiagnosePane: View {
             DiagSection(title: "Streaming") { DiagRows(items: streamingItems) }
             DiagSection(title: "Zoom / engine") { DiagRows(items: zoomItems) }
             DiagSection(title: "Capture devices") { DiagRows(items: captureItems) }
+            DiagSection(title: "Virtual camera") { DiagRows(items: virtualCameraItems) }
+                .onAppear { model.refreshCameraExtensionDiagnostics() }
             DiagSection(title: "Audio") { DiagRows(items: audioItems) }
             perfSection
             logsSection
             warningsSection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // ── virtual camera (no-support-ticket updates, 2026-11-15) ───────────────
+
+    private var virtualCameraItems: [DiagItem] {
+        let diag = model.virtualCameraDiagnostics(readDevice: false)
+        return diag.rows.map { row in
+            let tone: DiagTone
+            switch (row.label, diag.state) {
+            case ("status", .needsReboot), ("status", .updateReady): tone = .warn
+            case ("status", .failed), ("status", .unavailable): tone = .bad
+            case ("device registered", _): tone = diag.device?.registered == true ? .good : .neutral
+            default: tone = .neutral
+            }
+            return DiagItem(label: row.label, value: row.value, tone: tone, wrap: true)
+        }
     }
 
     // ── core ─────────────────────────────────────────────────────────────────
