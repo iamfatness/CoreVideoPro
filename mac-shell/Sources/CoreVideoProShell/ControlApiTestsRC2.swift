@@ -30,6 +30,7 @@ extension ShellTests {
             ("control/join-leave-capture-online", testControlJoinLeaveAndCaptureOnline),
             ("control/rtmp-configure", testControlRtmpConfigure),
             ("control/production-actions", testControlProductionActions),
+            ("control/monitor-revisioned", testControlMonitorRevisioned),
         ]
     }
 
@@ -424,5 +425,65 @@ extension ShellTests {
         let noCore = AppModel()
         expectEqual(invoke(AppModelControlSurface(model: noCore, box: noCore.controlSnapshotBox), "audio.vst.scan"),
                     .fail("VST3 scan is unavailable: no media core."), "no core: no false success")
+    }
+
+    /// Plays the core's monitor-control contract (node name audioMixSession, which
+    /// AppModel.applySnapshot reads, rule 5).
+    final class FakeMonitorCore: @unchecked Sendable {
+        var epoch = "core-1", revision: Int64 = 3, enabled = false, volume = 0.7, results: [JSONObject] = []
+        var forceStatus: String?   // "conflict" / "rejected" / nil (apply)
+        var answer = true
+        func handle(_ body: JSONObject) -> JSONObject {
+            for c in (body["commands"] as? [JSONObject]) ?? [] where c["type"] as? String == "set-audio-monitor-control" {
+                let op = c["operationId"] as? String ?? ""
+                let ok = c["authorityEpoch"] as? String == epoch && (c["expectedRevision"] as? NSNumber)?.int64Value == revision
+                let status = forceStatus ?? (ok ? "applied" : "conflict")
+                if status == "applied" { enabled = c["enabled"] as? Bool ?? enabled; volume = (c["volume"] as? NSNumber)?.doubleValue ?? volume; revision += 1 }
+                results.append(["operationId": op, "status": status])
+            }
+            guard answer else { return ["snapshot": [:] as JSONObject] }
+            return ["snapshot": ["audioMixSession": ["monitorEnabled": enabled, "monitorVolume": volume,
+                                                     "monitorControl": ["authorityEpoch": epoch, "revision": revision, "recentResults": results]]]]
+        }
+    }
+
+    @MainActor
+    static func testControlMonitorRevisioned() {
+        let fake = FakeMonitorCore()
+        let model = AppModel()
+        model.controlSettleSeconds = 0.4
+        model.quitRequestForTesting = { body, _ in await MainActor.run { fake.handle(body) } }
+        model.status = .connected(renderer: "test")
+        let s = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        // A second client that read epoch core-1 at revision 3 applies.
+        expectEqual(invoke(s, "audio.monitor.set", [true, "core-1", 3, "client-a"]), .success, "applied at the expected revision")
+        expectEqual(fake.results.last?["operationId"] as? String, "client-a", "the caller's operation id reached the core")
+        var state = AppModelControlSurface.state(model).dictionary
+        expectEqual(state["audioMonitorOn"] as? Bool, true, "applied state"); expectEqual(state["audioMonitorRevision"] as? Int64, 4, "revision moved to 4")
+        expectEqual(state["audioMonitorAuthorityEpoch"] as? String, "core-1", "epoch")
+        // A stale revision conflicts (port of CT ControlActionRegistryTests:106 intent).
+        expectEqual(invoke(s, "audio.monitor.volume", [0.3, "core-1", 3, "client-b"]),
+                    .fail("Monitor control conflict at revision 4; read state and retry with the current epoch and revision."), "conflict")
+        state = AppModelControlSurface.state(model).dictionary
+        expectEqual(state["audioMonitorVolume"] as? Double, 0.7, "a conflict changes nothing")
+        // A conflicting SET leaves the applied on-state alone too (state reads the core, not local intent).
+        expectEqual(invoke(s, "audio.monitor.set", [false, "core-1", 3, "client-c"]),
+                    .fail("Monitor control conflict at revision 4; read state and retry with the current epoch and revision."), "conflicting set")
+        expectEqual(AppModelControlSurface.state(model).dictionary["audioMonitorOn"] as? Bool, true, "a conflicting set changes nothing")
+        // Legacy shape: no epoch/revision -> the current values are used (Windows binds them as null).
+        expectEqual(invoke(s, "audio.monitor.volume", [1.7]), .success, "legacy volume applies")
+        expectEqual(model.monitorControl.applied.volume, 1.0, "volume clamps to 1.0 (Windows Math.Clamp)")
+        expectEqual(invoke(s, "audio.monitor.volume", [0.4, "core-1", -1]), .fail("expectedRevision must be a nonnegative safe integer."), "negative revision")
+        expectEqual(invoke(s, "audio.monitor.volume", [0.4, "core-1", 2.5]), .fail("expectedRevision must be a nonnegative safe integer."), "fractional revision")
+        fake.forceStatus = "rejected"
+        expectEqual(invoke(s, "audio.monitor.set", [false]), .fail("Monitor control rejected; application is unconfirmed."), "rejected")
+        fake.forceStatus = nil; fake.answer = false
+        expectEqual(invoke(s, "audio.monitor.set", [false]), .fail("Monitor control unconfirmed; application is unconfirmed."), "no result inside the settle window")
+        // The UI's local intent moves at once; /state still reports what the core applied.
+        model.setMonitor(enabled: false, volume: 0.5)
+        spin(until: { false }, limit: 0.2)
+        expect(!model.monitorEnabled, "the local intent moved")
+        expectEqual(AppModelControlSurface.state(model).dictionary["audioMonitorOn"] as? Bool, true,
+                    "audioMonitorOn is the core-applied value, not local intent")
     }
 }

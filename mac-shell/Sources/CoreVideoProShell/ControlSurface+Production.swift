@@ -81,4 +81,42 @@ extension AppModelControlSurface {
         model.scanVstPlugins()
         return .success
     }
+
+    // ── revisioned remote edits (Tasks 14-15) ──
+
+    static let revisionError = "expectedRevision must be a nonnegative safe integer."
+
+    /// Windows: a finite, non-negative, integral number <= 2^53-1; absent = nil.
+    static func safeRevision(_ value: Any?) -> Result<Int64?, ControlBindError> {
+        guard let value else { return .success(nil) }
+        // The router binds a Double; a direct (surface-level) caller may pass an integer.
+        let number: Double? = (value as? Double) ?? (value as? Int).map(Double.init) ?? (value as? Int64).map(Double.init)
+        guard let number, number.isFinite, number >= 0, number.rounded() == number,
+              number <= 9_007_199_254_740_991 else { return .failure(ControlBindError(message: revisionError)) }
+        return .success(Int64(number))
+    }
+
+    static func blankIsNil(_ value: Any?) -> String? {
+        guard let text = value as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return text
+    }
+
+    /// audio.monitor.set (enabled) / audio.monitor.volume (volume), args 1-3 = epoch, revision, operation id.
+    @MainActor
+    static func setMonitor(_ model: AppModel, enabled: Bool?, volume: Double?, _ args: [ControlArg]) async -> ControlInvokeResult {
+        func arg(_ index: Int) -> Any? { index < args.count ? args[index].value : nil }
+        let revision: Int64?
+        switch safeRevision(arg(2)) {
+        case .failure(let error): return .fail(error.message)
+        case .success(let value): revision = value
+        }
+        switch await model.requestMonitorControl(enabled: enabled, volume: volume, expectedEpoch: blankIsNil(arg(1)),
+                                                 expectedRevision: revision, operationId: blankIsNil(arg(3))) {
+        case .applied: return .success
+        case .conflict(let current):
+            return .fail("Monitor control conflict at revision \(current); read state and retry with the current epoch and revision.")
+        case .rejected: return .fail("Monitor control rejected; application is unconfirmed.")
+        case .unconfirmed: return .fail("Monitor control unconfirmed; application is unconfirmed.")
+        }
+    }
 }

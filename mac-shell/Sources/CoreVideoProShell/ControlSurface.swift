@@ -167,6 +167,10 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return setMasteringTarget(model, index: int(0))
         case "audio.vst.scan":
             return scanVst(model)
+        case "audio.monitor.set":
+            return await setMonitor(model, enabled: bool(0), volume: nil, args)
+        case "audio.monitor.volume":
+            return await setMonitor(model, enabled: nil, volume: args.first?.double ?? 0, args)
         // ── Show Inputs (ControlSurface+Inputs.swift) ──
         case "input.assign":
             return assignInput(model, slot: int(0), sourceId: string(1))
@@ -204,6 +208,7 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "automation.captions.set",
         "multiview.layout.set", "multiview.tileCount.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
+        "audio.monitor.set", "audio.monitor.volume",
     ]
 
     /// The `default:` branch's text (Windows' unknown-action wording).
@@ -305,6 +310,12 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             "masteringTarget": masteringTargetIndex(model.mastering.targetLufs),
             // No caption source exists on the Mac: the true value is false.
             "autoCaptions": false,
+            // The core-APPLIED monitor session (Windows StudioControlSurface.cs:1010-1014).
+            "audioMonitorOn": model.monitorControl.applied.enabled,
+            "audioMonitorVolume": model.monitorControl.applied.volume,
+            "audioMonitorAuthorityEpoch": model.monitorControl.authorityEpoch,
+            "audioMonitorRevision": model.monitorControl.revision,
+            "audioMonitorLastResult": model.monitorControl.lastResultStatus,
         ])
     }
 }
@@ -317,6 +328,8 @@ struct ControlArg: @unchecked Sendable {
     var string: String { value as? String ?? "" }
     var int: Int { value as? Int ?? 0 }
     var optionalString: String? { value as? String }
+    /// The binder delivers a Double; a direct caller's integer is accepted too.
+    var double: Double { (value as? Double) ?? (value as? Int).map(Double.init) ?? 0 }
 }
 
 struct SendableDictionary: @unchecked Sendable {

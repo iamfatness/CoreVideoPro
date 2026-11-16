@@ -388,7 +388,7 @@ final class AppModel: ObservableObject {
     @Published var monitorEnabled = false
     @Published var monitorVolume = 0.7
     @Published var monitorControlNotice = ""
-    private var monitorControl = MonitorControlProjection()
+    private(set) var monitorControl = MonitorControlProjection()
     // Monitor output device (Tier 0.12, MonitorOutputDevice.swift). The
     // choice is a CoreAudio UID ("" = system default output), persisted; the
     // list is nil until CoreAudio has been enumerated.
@@ -4665,56 +4665,108 @@ final class AppModel: ObservableObject {
         monitorControlNotice = monitorControl.notice
         guard !monitorControlSending else { return }
         monitorControlSending = true
+        let legacy = MonitorControlProjection.Draft(enabled: enabled, volume: volume,
+                                                    deviceId: device.deviceId, deviceName: device.deviceName)
         Task {
             defer { monitorControlSending = false }
-            // A core older than this contract still accepts the legacy command.
-            // Once an epoch is observed, every subsequent edit is revisioned.
-            if monitorControl.authorityEpoch.isEmpty {
+            await runMonitorSendLoop(legacy: legacy)
+        }
+    }
+
+    /// The monitor send path shared by the UI (setMonitor) and remote control
+    /// (requestMonitorControl). `legacy` is what a pre-contract core is sent.
+    private func runMonitorSendLoop(legacy: MonitorControlProjection.Draft) async {
+        // A core older than this contract still accepts the legacy command.
+        // Once an epoch is observed, every subsequent edit is revisioned.
+        if monitorControl.authorityEpoch.isEmpty {
+            if let response = try? await monitorRequest([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [],
+            ]), let snapshot = response["snapshot"] as? JSONObject {
+                applySnapshot(snapshot)
+            }
+        }
+        if monitorControl.authorityEpoch.isEmpty && monitorControl.legacyCoreConfirmed {
+            _ = try? await monitorRequest([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                "commands": [["type": "sync-audio-monitor", "enabled": legacy.enabled,
+                              "deviceId": legacy.deviceId, "deviceName": legacy.deviceName,
+                              "volume": legacy.volume]],
+            ])
+            return
+        }
+        if monitorControl.authorityEpoch.isEmpty {
+            monitorControl.markUnconfirmed()
+            monitorControlNotice = "Monitor edit reconciling; core contract is unconfirmed"
+            return
+        }
+        while let command = monitorControl.nextCommand() {
+            do {
+                let response = try await monitorRequest([
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                    "commands": [command],
+                ])
+                if let snapshot = response["snapshot"] as? JSONObject { applySnapshot(snapshot) }
+            } catch {
+                // The core may have applied the edit before its reply was
+                // lost. Read a barrier before considering another command.
                 if let response = try? await monitorRequest([
-                    "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [],
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                    "commands": [],
                 ]), let snapshot = response["snapshot"] as? JSONObject {
                     applySnapshot(snapshot)
                 }
             }
-            if monitorControl.authorityEpoch.isEmpty && monitorControl.legacyCoreConfirmed {
-                _ = try? await monitorRequest([
-                    "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                    "commands": [["type": "sync-audio-monitor", "enabled": enabled,
-                                  "deviceId": device.deviceId, "deviceName": device.deviceName,
-                                  "volume": volume]],
-                ])
-                return
-            }
-            if monitorControl.authorityEpoch.isEmpty {
+            if monitorControl.pendingOperationId != nil {
                 monitorControl.markUnconfirmed()
-                monitorControlNotice = "Monitor edit reconciling; core contract is unconfirmed"
-                return
+                monitorControlNotice = monitorControl.notice
+                break
             }
-            while let command = monitorControl.nextCommand() {
-                do {
-                    let response = try await monitorRequest([
-                        "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                        "commands": [command],
-                    ])
-                    if let snapshot = response["snapshot"] as? JSONObject { applySnapshot(snapshot) }
-                } catch {
-                    // The core may have applied the edit before its reply was
-                    // lost. Read a barrier before considering another command.
-                    if let response = try? await monitorRequest([
-                        "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                        "commands": [],
-                    ]), let snapshot = response["snapshot"] as? JSONObject {
-                        applySnapshot(snapshot)
-                    }
-                }
-                if monitorControl.pendingOperationId != nil {
-                    monitorControl.markUnconfirmed()
-                    monitorControlNotice = monitorControl.notice
-                    break
-                }
-                if monitorControl.notice.contains("conflicted") { break }
-            }
+            if monitorControl.notice.contains("conflicted") { break }
+            // A rejected edit keeps its draft; without this the loop re-sent it
+            // forever (found by the remote-control port, 2026-11-16).
+            if monitorControl.notice.contains("rejected") { break }
         }
+    }
+
+    /// audio.monitor.set / audio.monitor.volume (Windows ApplyAudioMonitorControlAsync):
+    /// a revisioned edit pinned to the caller's epoch, revision and operation id,
+    /// answered from the core's own result for that operation.
+    func requestMonitorControl(enabled: Bool?, volume: Double?, expectedEpoch: String?,
+                               expectedRevision: Int64?, operationId: String?) async -> MonitorControlOutcome {
+        guard bridge != nil || quitRequestForTesting != nil else { return .unconfirmed }
+        var next = monitorControl.applied
+        if let enabled { next.enabled = enabled }
+        if let volume { next.volume = min(max(volume, 0), 1) }   // Windows Math.Clamp
+        if next.enabled && next.volume <= 0 { next.volume = 0.7 }
+        let device = monitorDeviceTarget()
+        next.deviceId = device.deviceId
+        next.deviceName = device.deviceName
+        // Nothing to change: answer from the core's current authority rather than
+        // waiting for a result no command will produce (Windows would send and
+        // the core would answer the same way).
+        if next == monitorControl.applied, monitorControl.pendingOperationId == nil,
+           !monitorControl.authorityEpoch.isEmpty {
+            let stale = (expectedEpoch.map { $0 != monitorControl.authorityEpoch } ?? false)
+                || (expectedRevision.map { $0 != monitorControl.revision } ?? false)
+            return stale ? .conflict(revision: monitorControl.revision) : .applied
+        }
+        let operation = operationId ?? UUID().uuidString
+        monitorControl.remoteEdit(next, expectedEpoch: expectedEpoch, expectedRevision: expectedRevision,
+                                  operationId: operation)
+        monitorControlNotice = monitorControl.notice
+        if !monitorControlSending {
+            monitorControlSending = true
+            await runMonitorSendLoop(legacy: next)
+            monitorControlSending = false
+        }
+        _ = await settle { monitorControl.outcome(of: operation) != nil }
+        let outcome = monitorControl.outcome(of: operation) ?? .unconfirmed
+        if outcome == .applied {
+            monitorEnabled = monitorControl.applied.enabled
+            monitorVolume = monitorControl.applied.volume
+            persistPrefsNow()
+        }
+        return outcome
     }
 
     /// The monitor path through the same harness seam as Record/Stream.

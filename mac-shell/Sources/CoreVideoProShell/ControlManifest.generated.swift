@@ -480,7 +480,7 @@ enum ControlManifestGenerated {
                 ControlParam(name: "expectedRevision", type: .double, required: false, description: nil),
                 ControlParam(name: "operationId", type: .string, required: false, description: nil),
             ]),
-            availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "settings.programBuffer.set", title: "Program buffer depth", description: "Save 2 or 3 frames for the next app launch. Does not change the running buffer. Read saved/session/restart state from /state.", params: [
                 ControlParam(name: "frames", type: .double, required: true, description: "Exactly 2 or 3; fractional values are rejected."),
@@ -493,7 +493,7 @@ enum ControlManifestGenerated {
                 ControlParam(name: "expectedRevision", type: .double, required: false, description: nil),
                 ControlParam(name: "operationId", type: .string, required: false, description: nil),
             ]),
-            availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "audio.route.set", title: "Audio crosspoint", description: "Set one source-to-bus route at an expected core revision. Read audioRouteAuthorityEpoch and audioRouteRevision from /state.", params: [
                 ControlParam(name: "sourceId", type: .string, required: true, description: nil),
@@ -610,8 +610,8 @@ enum ControlManifestGenerated {
         ("autoAssignInputs", .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
         ("autoLowerThirds", .blocked(workstream: "GFX", label: "Graphics engine")),
         ("autoCaptions", .supported),
-        ("audioMonitorOn", .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
-        ("audioMonitorVolume", .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+        ("audioMonitorOn", .supported),
+        ("audioMonitorVolume", .supported),
         ("masterLimiterOn", .blocked(workstream: "AUD", label: "Audio parity")),
         ("input/{slot}/inShow", .supported),
         ("input/{slot}/kind", .supported),
