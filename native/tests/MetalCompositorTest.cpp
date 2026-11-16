@@ -277,6 +277,71 @@ TEST(MetalCompositor, AdvancedPrimariesCurvesCubeAndBypassAffectNativePixels) {
   for(int channel=0;channel<3;++channel) EXPECT_NEAR(pixel[channel],gray,4);
 }
 
+// Grading plan 2026-11-16, Task 3 (G1 pixel proof). Expected values are worked by hand from
+// applyGrade (MetalCompositorShaders.h) with the 0.1 axis scale and look offsets from
+// ColorGradeParams.h; see the plan's table. The neutral look moves a patch by at most 2.55
+// levels, so it is asserted at tolerance 1; every other row at 2.
+TEST(MetalCompositor, BasicGradeAxesAndNamedLooksMoveAKnownPatch) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  struct Case { const char* name; uint8_t r, g, b; const char* lut; float e, c, s, t; int er, eg, eb, tol; };
+  const Case cases[] = {
+      {"identity",        192, 96, 64,  "none",            0, 0, 0, 0,  192, 96, 64,  2},
+      {"exposure+2",      192, 96, 64,  "none",            2, 0, 0, 0,  243, 147, 115, 2},
+      {"contrast+5",      192, 96, 64,  "none",            0, 5, 0, 0,  224, 80, 32,  2},
+      {"saturation+5",    192, 96, 64,  "none",            0, 0, 5, 0,  227, 83, 35,  2},
+      {"temperature+20",  192, 96, 64,  "none",            0, 0, 0, 20, 218, 96, 38,  2},
+      {"warm-film",       192, 96, 64,  "warm-film",       0, 0, 0, 0,  201, 93, 56,  2},
+      {"punch",           192, 96, 64,  "punch",           0, 0, 0, 0,  212, 88, 46,  2},
+      {"cool-broadcast",  200, 60, 230, "cool-broadcast",  0, 0, 0, 0,  201, 57, 236, 2},
+      {"neutral",         250, 128, 6,  "neutral",         0, 0, 0, 0,  252, 128, 4,  1},
+  };
+  int64_t nextFrameId = 0;
+  for (const auto& c : cases) {
+    CompositorRenderPlan plan;
+    plan.renderPlanId = std::string("basic-") + c.name;
+    plan.layers.push_back(solidLayer("cam", 0, 0, 1, 1));
+    plan.layers[0].hasColorGrade = true;
+    plan.layers[0].colorGrade = CompositorColorGrade{c.e, c.c, c.s, c.t, c.lut};
+    // A new frameId per case: the adapter re-uploads a source texture only when the frame id
+    // moves (MetalCompositorAdapter.mm acquireSourceTex), and a patch change must reach the GPU.
+    auto source = bgraFrame("cam", 320, 180, c.b, c.g, c.r);
+    source.frameId = ++nextFrameId;
+    const auto rendered = compositor->render(plan, {source});
+    ASSERT_TRUE(rendered.gpuComposed) << c.name;
+    const auto px = previewAt(rendered.preview, .5f, .5f);   // B, G, R, A
+    EXPECT_NEAR(px[2], c.er, c.tol) << c.name << " R";
+    EXPECT_NEAR(px[1], c.eg, c.tol) << c.name << " G";
+    EXPECT_NEAR(px[0], c.eb, c.tol) << c.name << " B";
+  }
+}
+
+TEST(MetalCompositor, APerLayerGradeReplacesTheProgramLookOnItsLayerOnly) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  CompositorRenderPlan plan;
+  plan.renderPlanId = "per-layer";
+  plan.layers.push_back(solidLayer("left", 0, 0, .5f, 1));
+  plan.layers.push_back(solidLayer("right", .5f, 0, .5f, 1));
+  const auto left = bgraFrame("left", 160, 180, 64, 96, 192);
+  const auto right = bgraFrame("right", 160, 180, 64, 96, 192);
+
+  // 1. A graded layer beside an ungraded one, no Program look.
+  plan.layers[0].hasColorGrade = true;
+  plan.layers[0].colorGrade = CompositorColorGrade{2, 0, 0, 0, "none"};
+  auto out = compositor->render(plan, {left, right});
+  auto l = previewAt(out.preview, .25f, .5f), r = previewAt(out.preview, .75f, .5f);
+  EXPECT_NEAR(l[2], 243, 2); EXPECT_NEAR(l[1], 147, 2); EXPECT_NEAR(l[0], 115, 2);
+  EXPECT_NEAR(r[2], 192, 2); EXPECT_NEAR(r[1], 96, 2);  EXPECT_NEAR(r[0], 64, 2);
+
+  // 2. Program look on, left layer carries a NEUTRAL per-layer grade: left ignores the look
+  //    (the D1/D6 copy depends on this), right takes it.
+  plan.colorGrade = CompositorColorGrade{2, 0, 0, 0, "none"};
+  plan.layers[0].colorGrade = CompositorColorGrade{};
+  out = compositor->render(plan, {left, right});
+  l = previewAt(out.preview, .25f, .5f); r = previewAt(out.preview, .75f, .5f);
+  EXPECT_NEAR(l[2], 192, 2); EXPECT_NEAR(l[1], 96, 2);  EXPECT_NEAR(l[0], 64, 2);
+  EXPECT_NEAR(r[2], 243, 2); EXPECT_NEAR(r[1], 147, 2); EXPECT_NEAR(r[0], 115, 2);
+}
+
 TEST(MetalCompositor, I420FullRangeBt709ConvertMatchesReference) {
   MAKE_COMPOSITOR_OR_SKIP(compositor);
   CompositorRenderPlan plan;

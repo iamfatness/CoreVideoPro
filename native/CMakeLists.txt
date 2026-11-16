@@ -992,6 +992,7 @@ if(BUILD_TESTING)
     tests/EngineIpcShmNameTest.cpp
     tests/EngineCommandTest.cpp
     tests/MetalCompositorTest.cpp
+    tests/MetalSourceGradePixelTest.cpp
     tests/AvfEncoderRecordingTest.cpp
     tests/CoreAudioAdapterTest.cpp
     tests/MacCaptureSupportTest.cpp
