@@ -19,6 +19,9 @@ extension ShellTests {
             ("tier0/stream-start-keeps-the-canvas", testStreamStartSendsTheCanvasAndLabelsReadTheCore),
             ("tier0/slots-survive-relaunch", testSlotAssignmentsSurviveARelaunch),
             ("tier0/slot-settings-follow-the-source", testPerSourceSettingsFollowTheSourceNotTheSlot),
+            ("tier0/slot-name-resets-on-a-new-source", testASlotNameResetsWhenTheSlotGetsADifferentSource),
+            ("tier0/slot-manual-name-is-session-only", testAManualSlotNameIsNotSaved),
+            ("tier0/slot-name-follows-the-live-source", testAnUnrenamedSlotFollowsItsLiveSourceName),
             ("tier0/iso-survives-first-assignment", testRestoredIsoSelectionSurvivesTheFirstAssignment),
             ("tier0/iso-matrix-one-truth", testIsoMatrixAndSourcesToggleAreOneTruth),
             ("tier0/iso-records-only-assigned-video-sources", testIsoRecordsOnlyAssignedVideoBearingSources),
@@ -223,6 +226,59 @@ extension ShellTests {
         empty.applyRestoredPrefs(ShellPrefs())
         expect(empty.slots.allSatisfy { $0.kind == "unassigned" },
                "an older prefs file (no slots key) starts with empty slots, as before")
+    }
+
+    /// #1213 (owner ruling 2026-11-16): a hand-typed slot name belongs to that
+    /// slot+source pairing. Live defect: a slot renamed for a guest kept the
+    /// guest's name after a webcam was assigned to it.
+    @MainActor
+    static func testASlotNameResetsWhenTheSlotGetsADifferentSource() {
+        let model = AppModel()
+        model.assignSlot(1, kind: "zoom", sourceId: "a", name: "Alice")
+        model.slots[0].name = "Host"                       // the operator's rename
+        model.assignSlot(1, kind: "zoom", sourceId: "a", name: "Alice")
+        expectEqual(model.slots[0].name, "Host", "re-assigning the SAME source keeps the rename")
+        model.assignSlot(1, kind: "capture", sourceId: "cam1", name: "Desk cam")
+        expectEqual(model.slots[0].name, "Desk cam", "a different source shows its own name")
+        model.slots[0].name = "Wide"
+        model.assignSlot(1, kind: "capture", sourceId: "cam2", name: "Side cam")
+        expectEqual(model.slots[0].name, "Side cam", "same kind, different device: still a new source")
+    }
+
+    /// #1213: a manual name lasts one session. What is saved is the source's
+    /// own name, so a relaunch shows that.
+    @MainActor
+    static func testAManualSlotNameIsNotSaved() {
+        let model = AppModel()
+        model.assignSlot(1, kind: "zoom", sourceId: "a", name: "Alice")
+        model.assignSlot(2, kind: "capture", sourceId: "cam1", name: "Desk cam")
+        model.slots[0].name = "Host"
+        let saved = model.currentPrefs().showInputSlots ?? []
+        expectEqual(saved.first { $0.slotId == 1 }?.name, "Alice", "the rename is not written to disk")
+        expectEqual(saved.first { $0.slotId == 2 }?.name, "Desk cam", "an untouched name saves as before")
+        let relaunched = AppModel()
+        var prefs = ShellPrefs(); prefs.showInputSlots = saved
+        relaunched.applyRestoredPrefs(prefs)
+        expectEqual(relaunched.slots[0].name, "Alice", "the next launch shows the source's own name")
+    }
+
+    /// #1213: the live source's name wins unless the operator renamed the slot
+    /// this session. This is also what clears a manual name saved by an older
+    /// build: it is restored as if it were the source's name, then replaced
+    /// the moment the source shows up.
+    static func testAnUnrenamedSlotFollowsItsLiveSourceName() {
+        var r = SlotNamePolicy.withLiveName(name: "Old guest", sourceName: "Old guest", liveName: "FaceTime HD Camera")
+        expectEqual(r.name, "FaceTime HD Camera", "a legacy saved name gives way to the source's own name")
+        expectEqual(r.sourceName, "FaceTime HD Camera", "and the source name is learned")
+        r = SlotNamePolicy.withLiveName(name: "Host", sourceName: "Alice", liveName: "Alice B")
+        expectEqual(r.name, "Host", "a rename made this session is kept")
+        expectEqual(r.sourceName, "Alice B", "while the source's name is still tracked for saving")
+        r = SlotNamePolicy.withLiveName(name: "Alice", sourceName: "Alice", liveName: "")
+        expectEqual(r.name, "Alice", "an absent source changes nothing")
+        var slot = ShowInputSlot(id: 1)
+        slot.kind = "zoom"; slot.sourceId = "a"; slot.name = "Host"
+        expectEqual(SlotNamePolicy.persisted(slot), "Host",
+                    "a slot with no known source name saves what it shows (pre-#1213 state)")
     }
 
     /// Key / mic / dropout were keyed by SLOT NUMBER, so they reattached to

@@ -1357,6 +1357,33 @@ enum ShellTests {
         expectEqual(pids, ["p9"], "only routes carrying a participantId contribute budget pids")
     }
 
+    /// Live defect 2026-11-16: an in-show webcam drew on Program and Preview but
+    /// its multiview tile stayed empty. The shell sent the scene-route MODE
+    /// ("capture-input") as the multiview KIND; the core only takes "capture"
+    /// (resolveMultiviewFeed), so the tile got no participantId and the
+    /// compositor never looked up the frame.
+    @MainActor
+    private static func testMultiviewSourceWireShape() {
+        var webcam = ShowInputSlot(id: 1)
+        webcam.kind = "capture"; webcam.sourceId = "cam-1"; webcam.name = "Desk cam"; webcam.inShow = true
+        var guest = ShowInputSlot(id: 2)
+        guest.kind = "zoom"; guest.sourceId = "p7"; guest.name = "Guest"; guest.inShow = true
+        var benched = ShowInputSlot(id: 3)
+        benched.kind = "capture"; benched.sourceId = "cam-2"
+        var gone = ShowInputSlot(id: 4)
+        gone.kind = "capture"; gone.sourceId = "cam-3"; gone.inShow = true; gone.offline = true
+        let payloads = AppModel.multiviewSourcePayloads([webcam, guest, benched, gone, ShowInputSlot(id: 5)])
+        expectEqual(payloads.count, 2, "only in-show slots that still have a source get a tile")
+        expectEqual(payloads[0]["kind"] as? String, "capture",
+                    "the core's multiview kind for a capture device (MultiviewFeed.h), not the route mode")
+        expectEqual(payloads[0]["captureDeviceId"] as? String, "cam-1", "the bare device id")
+        expectEqual(payloads[0]["sourceId"] as? String, "capture:cam-1", "the frame key")
+        expectEqual(payloads[0]["label"] as? String, "Desk cam", "the operator's name")
+        expectEqual(payloads[1]["kind"] as? String, "participant-video", "a Zoom guest")
+        expectEqual(payloads[1]["participantId"] as? String, "p7", "the raw participant id")
+        expectEqual(payloads[1]["sourceId"] as? String, "zoom:p7", "the frame key")
+    }
+
     @MainActor
     private static func testSpineSubscriptionWireShape() {
         let entries = [ZoomSourceBudget.Entry(participantId: "p1", purpose: "program"),
@@ -3944,6 +3971,7 @@ enum ShellTests {
             ("budget/iso-dedupe-determinism", testBudgetIsoTierAndDeterminism),
             ("budget/route-shape", testRoutedZoomPidsReadTheRealRouteShape),
             ("budget/wire-shape", testSpineSubscriptionWireShape),
+            ("multiview/source-wire-shape", testMultiviewSourceWireShape),
             ("zoom-audio/spine-subscribes-audio", testSpineSubscribesTheMeetingMixAndSourceAudio),
             ("zoom-audio/source-set", testAudioSourceSetKeepsCameraOffAndRefusesNonSources),
             ("zoom-audio/kinds-vs-core", testAudioSubscriptionKindsMatchTheCoreSource),

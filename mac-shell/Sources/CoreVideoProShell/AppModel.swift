@@ -149,6 +149,10 @@ struct ShowInputSlot: Identifiable, Equatable {
     var kind = "unassigned"     // unassigned | zoom | capture
     var sourceId = ""           // participant id or capture device id
     var name = ""               // editable display name
+    // The source's OWN name (participant / device). A hand-typed `name` lasts
+    // one session and one source: this is what is saved, and what the slot
+    // shows again after a relaunch or a reassignment (#1213, SlotNamePolicy).
+    var sourceName = ""
     var inShow = false
     var iso = false
     var offline = false         // source vanished from the roster/devices
@@ -625,7 +629,7 @@ final class AppModel: ObservableObject {
                                        sourceKey: $0.sourceKey) }
         prefs.showInputSlots = slots.filter { $0.sourceKey != nil }.map {
             PersistedSlot(slotId: $0.id, kind: $0.kind, sourceId: $0.sourceId,
-                          name: $0.name, inShow: $0.inShow)
+                          name: SlotNamePolicy.persisted($0), inShow: $0.inShow)
         }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.cameraExtensionOptedIn = cameraExtensionOptedIn
@@ -1762,6 +1766,7 @@ final class AppModel: ObservableObject {
                 slots[empty].kind = "zoom"
                 slots[empty].sourceId = participant.id
                 slots[empty].name = participant.name
+                slots[empty].sourceName = participant.name
                 slots[empty].inShow = true
                 assignedAny = true
             }
@@ -1816,9 +1821,12 @@ final class AppModel: ObservableObject {
 
     func assignSlot(_ slotId: Int, kind: String, sourceId: String, name: String) {
         guard let index = slots.firstIndex(where: { $0.id == slotId }) else { return }
+        let named = SlotNamePolicy.afterAssign(slots[index], kind: kind, sourceId: sourceId,
+                                               sourceName: name)
         slots[index].kind = kind
         slots[index].sourceId = sourceId
-        if slots[index].name.isEmpty { slots[index].name = name }
+        slots[index].name = named.name
+        slots[index].sourceName = named.sourceName
         slots[index].inShow = true
         slots[index].offline = false
         manuallyUnassigned.remove(sourceId)
@@ -1866,15 +1874,26 @@ final class AppModel: ObservableObject {
         for index in slots.indices {
             switch slots[index].kind {
             case "zoom":
-                slots[index].offline = !roster.contains { $0.id == slots[index].sourceId }
+                let live = roster.first { $0.id == slots[index].sourceId }
+                slots[index].offline = live == nil
+                adoptLiveSourceName(index, live?.name)
             case "capture":
                 slots[index].offline = !captureDevices.contains {
                     $0.id == slots[index].sourceId && $0.connectionState == "connected"
                 }
+                adoptLiveSourceName(index, captureDevices.first { $0.id == slots[index].sourceId }?.name)
             default:
                 break
             }
         }
+    }
+
+    private func adoptLiveSourceName(_ index: Int, _ liveName: String?) {
+        let named = SlotNamePolicy.withLiveName(name: slots[index].name,
+                                                sourceName: slots[index].sourceName,
+                                                liveName: liveName ?? "")
+        if slots[index].name != named.name { slots[index].name = named.name }
+        if slots[index].sourceName != named.sourceName { slots[index].sourceName = named.sourceName }
     }
 
     private func firstEmptySlotIndex() -> Int? {
@@ -2324,23 +2343,7 @@ final class AppModel: ObservableObject {
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
-        let multiviewSources: [JSONObject] = slots
-            .filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }
-            .map { slot in
-                slot.kind == "zoom"
-                    ? [
-                        "sourceId": "zoom:" + slot.sourceId,
-                        "kind": "participant-video",
-                        "participantId": slot.sourceId,
-                        "label": slot.name,
-                    ]
-                    : [
-                        "sourceId": "capture:" + slot.sourceId,
-                        "kind": "capture-input",
-                        "captureDeviceId": slot.sourceId,
-                        "label": slot.name,
-                    ]
-            }
+        let multiviewSources = Self.multiviewSourcePayloads(slots)
         let payload: JSONObject = [
             // startCapture is what arms raw media (engine start_media →
             // start_raw_media): without it every video subscription stays
@@ -2400,6 +2403,30 @@ final class AppModel: ObservableObject {
                 multiviewAssigned: multiviewAssigned, isoArmed: isoArmed, cameraOn: cameraOn),
             audioParticipantIds: audioIds,
             meetingHasParticipants: !roster.isEmpty)
+    }
+
+    // The multiview roster on the wire: one tile per in-show slot that still has
+    // a source. `kind` is the MULTIVIEW vocabulary the core's resolveMultiviewFeed
+    // reads (native/src/core/MultiviewFeed.h): "capture" | "media" | anything else
+    // = a Zoom participant. It is NOT the scene-route `mode` ("capture-input").
+    static func multiviewSourcePayloads(_ slots: [ShowInputSlot]) -> [JSONObject] {
+        slots
+            .filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }
+            .map { slot in
+                slot.kind == "zoom"
+                    ? [
+                        "sourceId": "zoom:" + slot.sourceId,
+                        "kind": "participant-video",
+                        "participantId": slot.sourceId,
+                        "label": slot.name,
+                    ]
+                    : [
+                        "sourceId": "capture:" + slot.sourceId,
+                        "kind": "capture",
+                        "captureDeviceId": slot.sourceId,
+                        "label": slot.name,
+                    ]
+            }
     }
 
     // The exact objects placed in the spine `subscriptions` array — the Windows
