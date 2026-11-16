@@ -34,6 +34,14 @@ extension ShellTests {
             ("grade/store-relaunch-capture-vs-zoom", testRelaunchReappliesCaptureButZoomOnlyAsDraft),
             ("grade/model-onconnected-reasserts", testOnConnectedAndSnapshotsReassertThroughTheModel),
             ("grade/model-meeting-end", testMeetingEndThroughTheModelForgetsZoomGrades),
+            // Task 6: the editor, its entry point (Sources inspector, Picture tab), Program Look.
+            ("grade/editor-open-rules", testGradeEditorOpenRulesAreWindows),
+            ("grade/editor-targets-frame-key", testGradeTargetsTheFrameKeyOfTheSlotsSource),
+            ("grade/editor-live-vs-draft", testEditorLiveEditsApplyAndDraftEditsDoNot),
+            ("grade/editor-apply-and-done", testApplyAndDoneClosesOnlyOnAcceptanceAndDiscardSendsNothing),
+            ("grade/editor-saved-zoom-draft", testASavedZoomGradeOpensAsADraft),
+            ("grade/editor-reset-is-clear", testResetReturnsTheSourceToTheProgramLook),
+            ("grade/inspector-line", testTheInspectorLineSaysWhatTheSourceFollows),
         ]
     }
 
@@ -547,5 +555,134 @@ extension ShellTests {
         expect(model.sourceGrades.isGraded("101"), "an UNKNOWN meeting state never clears (CLAUDE.md #478 rule)")
         model.applyZoomForTesting(["meetingState": "idle"])
         expect(!model.sourceGrades.isGraded("101"), "meeting end forgets the guest's session grade")
+    }
+
+    // ── Task 6 ───────────────────────────────────────────────────────────────
+
+    @MainActor static func testGradeEditorOpenRulesAreWindows() {
+        let model = gradeModel()
+        if case .refused(let text) = model.openGradeEditor(sourceId: nil) {
+            expectEqual(text, "Select a source before editing its color grade", "Grading.cs:68")
+        } else { expect(false, "a nil source must refuse") }
+        for id in ["capture:a", "capture:b", "capture:c"] {
+            if case .refused = model.openGradeEditor(sourceId: id) { expect(false, "\(id) should open") }
+        }
+        if case .opened(let again) = model.openGradeEditor(sourceId: "capture:b") {
+            expect(again === model.gradeEditors["capture:b"], "re-opening returns the existing editor")
+        } else { expect(false, "re-opening an open source must succeed") }
+        if case .refused(let text) = model.openGradeEditor(sourceId: "capture:d") {
+            expectEqual(text, "Close one of the three grade editors before opening another", "Grading.cs:74")
+        } else { expect(false, "a fourth editor must refuse") }
+        model.closeGradeEditor(sourceId: "capture:a")
+        if case .refused = model.openGradeEditor(sourceId: "capture:d") { expect(false, "closing one frees a place") }
+    }
+
+    @MainActor static func testGradeTargetsTheFrameKeyOfTheSlotsSource() {
+        let model = gradeModel()
+        model.assignSlot(1, kind: "zoom", sourceId: "16778240", name: "Guest")
+        model.assignSlot(2, kind: "capture", sourceId: "cam-1", name: "Cam")
+        expectEqual(model.gradeSourceId(forSlot: 1), "16778240", "raw pid: the key Zoom frames carry (fact 4)")
+        expectEqual(model.gradeSourceId(forSlot: 2), "capture:cam-1", "capture frame key")
+        expectEqual(model.gradeSourceId(forSlot: 3), nil, "an unassigned slot has no grade target")
+        expect(AppModel.gradeEditorAvailable, "the Sources inspector's Grade section is live (G1 entry point)")
+    }
+
+    @MainActor static func testEditorLiveEditsApplyAndDraftEditsDoNot() {
+        let core = FakeGradeCore(); core.setEpoch("capture:cam", 0)
+        let model = gradeModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "opens"); return }
+        expect(editor.liveEditing, "Apply edits live is on by default")
+        expectEqual(editor.status, "Basic controls retain their established scale.", "Windows initial status")
+        expectEqual(editor.headerTitle, "Color grade - Cam", "Windows header")
+        editor.exposure = 4; editor.edited()
+        spin(until: { core.requests("set-source-grade").count == 1 }, limit: 2)
+        expectEqual(FakeGradeCore.int((core.requests("set-source-grade").first?["grade"] as? JSONObject)?["exposure"]), 4,
+                    "a live edit goes to air")
+        editor.liveEditing = false
+        editor.exposure = 9; editor.edited()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        expectEqual(core.requests("set-source-grade").count, 1,
+                    "a draft edit never reaches set-source-grade (ColorGradeEditorViewModelTests.cs:68)")
+        Task { await editor.applyLive() }
+        spin(until: { core.requests("set-source-grade").count == 2 }, limit: 2)
+        expectEqual(FakeGradeCore.int((core.requests("set-source-grade").last?["grade"] as? JSONObject)?["exposure"]), 9,
+                    "Apply Live sends the draft")
+        spin(until: { editor.status.hasPrefix("Live grade acknowledged") }, limit: 2)
+        expectEqual(editor.status, "Live grade acknowledged · revision 2", "Apply.cs:52")
+    }
+
+    @MainActor static func testApplyAndDoneClosesOnlyOnAcceptanceAndDiscardSendsNothing() {
+        let core = FakeGradeCore(); core.setEpoch("capture:cam", 0)
+        let model = gradeModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "opens"); return }
+        editor.liveEditing = false
+        editor.exposure = 6
+        core.refuseNext("grade-capacity")
+        var done: Bool?
+        Task { done = await editor.applyAndDone() }
+        spin(until: { done != nil }, limit: 2)
+        expectEqual(done, false, "a refused apply does not close")
+        expect(model.gradeEditors["capture:cam"] != nil, "the editor stays open")
+        expectEqual(editor.status, "Grade was not applied: grade-capacity. Previous live grade retained.", "Apply.cs:50")
+        done = nil
+        Task { done = await editor.applyAndDone() }
+        spin(until: { done != nil }, limit: 2)
+        expectEqual(done, true, "an acknowledged apply closes")
+        expect(model.gradeEditors["capture:cam"] == nil, "closed")
+        guard case .opened(let reopened) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "reopens"); return }
+        expectEqual(reopened.exposure, 6, "the acknowledged session grade seeds the next editor")
+        reopened.liveEditing = false
+        reopened.exposure = 30
+        let sent = core.requests("set-source-grade").count
+        model.closeGradeEditor(sourceId: "capture:cam")      // "Close / discard draft"
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        expectEqual(core.requests("set-source-grade").count, sent, "discard sends nothing")
+    }
+
+    @MainActor static func testASavedZoomGradeOpensAsADraft() {
+        let file = tempGradeFile()
+        var saved = SourceGradeFile(); _ = saved.remember(SourceColorGrade(exposure: 8), key: "zoom-person:P-a")
+        try! saved.save(to: file)
+        let model = gradeModel(file: file)
+        model.applyZoomForTesting(["meetingState": "in-meeting",
+                                   "participants": [["userId": "101", "displayName": "G", "videoOn": true,
+                                                     "persistentId": "P-a", "sourceGeneration": 1]]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "101") else { expect(false, "opens"); return }
+        expect(!editor.liveEditing, "a saved Zoom grade is a draft (D2)")
+        expectEqual(editor.exposure, 8, "seeded from the saved grade")
+        expectEqual(editor.status, "Saved grade loaded as a draft. Apply Live confirms this source binding.", "Grading.cs:89")
+    }
+
+    /// D6 overridden: the editor's Reset (live) sends a clear, and the source has no grade of its own.
+    @MainActor static func testResetReturnsTheSourceToTheProgramLook() {
+        let core = FakeGradeCore(); core.setEpoch("capture:cam", 0)
+        let model = gradeModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "opens"); return }
+        editor.lut = "punch"; editor.edited()
+        spin(until: { model.sourceGrades.isGraded("capture:cam") }, limit: 2)
+        editor.reset()
+        spin(until: { core.requests("set-source-grade").count == 2 }, limit: 2)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        expectEqual(core.requests("set-source-grade").last?["clear"] as? Bool, true, "Reset is sent as clear:true")
+        expect(!model.sourceGrades.isGraded("capture:cam"), "the source follows the Program Look again")
+        expectEqual(GradeEditorModel.resetNotice, "Reset returns this source to the Program Look.", "the D6 copy is gone")
+    }
+
+    static func testTheInspectorLineSaysWhatTheSourceFollows() {
+        expectEqual(GradeInspectorSection.line(nil), "No grade of its own: follows the Program Look.", "ungraded")
+        let graded = SourceGradeSummary(line: "Look punch · exposure 0 · contrast 0 · saturation 0", indicator: nil,
+                                        active: true, identityChanged: false)
+        expectEqual(GradeInspectorSection.line(graded), "Look punch · exposure 0 · contrast 0 · saturation 0", "graded and live")
+        let waiting = SourceGradeSummary(line: "Look punch · exposure 0 · contrast 0 · saturation 0", indicator: nil,
+                                         active: false, identityChanged: false)
+        expect(GradeInspectorSection.line(waiting).hasSuffix("waiting for this source's video"), "inactive says so")
+        let moved = SourceGradeSummary(line: "x", indicator: nil, active: false, identityChanged: true)
+        expectEqual(GradeInspectorSection.line(moved), "Source identity changed. Reopen its grade editor.", "binding broke")
     }
 }

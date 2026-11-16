@@ -539,6 +539,10 @@ final class AppModel: ObservableObject {
     /// Harness-only: the saved-grade file the NEXT AppModel() uses (nil → SourceGradeFile.path),
     /// so one harness case's debounced save can never land in another case.
     static var gradeFilePathForTesting: String?
+    /// Open per-source grade editors, at most three, keyed by grade source id (Task 6).
+    @Published var gradeEditors: [String: GradeEditorModel] = [:]
+    /// The last refusal from opening a grade editor, shown under the inspector's Grade section.
+    @Published var gradeNotice = ""
     private let gradeFilePath = AppModel.gradeFilePathForTesting ?? SourceGradeFile.path
     private(set) lazy var sourceGrades: SourceGradeStore = {
         let store = SourceGradeStore(send: { [weak self] body in

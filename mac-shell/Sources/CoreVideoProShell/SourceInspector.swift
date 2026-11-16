@@ -41,8 +41,9 @@ enum SourceAssignmentHint {
 }
 
 extension AppModel {
-    /// G1/G4 turn it on; hides "Grade" actions until then.
-    static var gradeEditorAvailable: Bool { false }
+    /// G1/G4 turn it on; hides "Grade" actions until then. On since the grading Phase 1 (G1):
+    /// the Grade section below lives in this inspector's Picture tab.
+    static var gradeEditorAvailable: Bool { true }
 
     /// nil when unassigned.
     func sourceGradeContext(slotId: Int) -> SourceGradeContext? {
@@ -83,16 +84,13 @@ extension AppModel {
     }
 }
 
-/// Reserved for the grading plan (G4).
+/// The per-source grade entry point (grading plan Phase 1; GradeEditorWindow.swift).
 struct SourceInspectorGradeSlot: View {
+    @EnvironmentObject var model: AppModel
     let context: SourceGradeContext?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Grade").font(.grotesk(13, .semibold))
-            Text("Per-source colour grade arrives with the grading update.")
-                .font(.grotesk(11)).foregroundStyle(Studio.secondary)
-        }
+        GradeInspectorSection(store: model.sourceGrades, context: context)
     }
 }
 
