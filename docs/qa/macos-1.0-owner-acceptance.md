@@ -1,12 +1,12 @@
 # CoreVideo Pro for macOS 1.0: owner acceptance
 
 Everything automation on this branch could not prove. Run it on the owner's Mac with
-the **notarized, signed .pkg build** (the only Mac installer since 2026-11-15; where a step below says DMG, use the .pkg) unless a step says otherwise. Record pass or fail
+the **notarized, signed .pkg build** (the only Mac installer since 2026-11-15) unless a step says otherwise. Record pass or fail
 and the date next to each item. A single fail blocks the release.
 
 Prerequisites: a camera, a microphone, a second Mac or phone to play the Zoom
 attendee, an RTMP test destination, FFmpeg installed (`brew install ffmpeg`), and the
-app installed to `/Applications` from the DMG (the bundle is `"/Applications/CoreVideo Pro.app"`,
+app installed to `/Applications` from the .pkg (the bundle is `"/Applications/CoreVideo Pro.app"`,
 with a space; quote the path in every command).
 The release itself is notarized with CoreVideo Pro's own notarytool profile, `CoreVideo Pro`
 (one-time: `xcrun notarytool store-credentials "CoreVideo Pro" --team-id 42394L3353`; the
@@ -28,16 +28,15 @@ included, before anything is packaged, and stops the release on any failure (or 
 ## 1. Install and Gatekeeper
 
 1. On a Mac that has never run this build (or after deleting the app and its quarantine
-   state), download the DMG, open it, drag the app to Applications, and launch it.
+   state), download the `.pkg`, double-click it, finish the installer, and launch the app.
 2. Pass: no Gatekeeper warning or "unidentified developer" dialog; `spctl -a -vv
    "/Applications/CoreVideo Pro.app"` reports `source=Notarized Developer ID`;
-   `xcrun stapler validate` on the DMG succeeds.
-3. Repeat from a clean state with the `.pkg` instead: double-click
-   `CoreVideoPro-<version>-arm64.pkg`. Pass: no Gatekeeper warning; the installer
-   completes; `CoreVideo Pro.app` is in `/Applications` and launches;
-   `spctl -a -vv -t install` on the .pkg reports `source=Notarized Developer ID`,
-   `pkgutil --check-signature` shows the Developer ID Installer chain, and
-   `xcrun stapler validate` on the .pkg succeeds.
+   `xcrun stapler validate` on the `.pkg` succeeds; and
+   `cmp "/Library/Application Support/CoreVideo Pro/corevideo-native" "/Applications/CoreVideo Pro.app/Contents/Resources/corevideo-native"`
+   prints nothing (the core copy the virtual camera verifies matches the app).
+3. The installer itself: `spctl -a -vv -t install` on the `.pkg` reports
+   `source=Notarized Developer ID`, and `pkgutil --check-signature` shows the Developer ID
+   Installer chain.
 
 ## 2. Permission prompts appear once and persist
 
@@ -120,7 +119,7 @@ Start a recording first, then repeat with a stream running instead.
 
 Per CLAUDE.md "Frame-delivery acceptance": 60 fps is per-frame delivery, never an average.
 
-1. On the owner's Mac, with the release core build (the one inside the DMG app, not a
+1. On the owner's Mac, with the release core build (the one inside the installed app, not a
    debug or dev-tree core), Program buffer at its default: `python scripts/mac-show-drill.py
    --seconds 40 --load 8`.
 2. Pass: zero Program-buffer underruns, zero missed scheduled output deadlines and zero
@@ -151,8 +150,9 @@ not run them against a build without those tasks.
    **OBS** (Video Capture Device).
 2. Approval denied, then granted later. Expected: the flyout moves from the approval text to
    live with no relaunch.
-3. Launch the app from the DMG without installing. Expected: "Move CoreVideo Pro to the
-   Applications folder to use the virtual camera." and nothing is installed.
+3. Copy the app out of `/Applications` (for example to the Desktop) and launch the copy.
+   Expected: "Move CoreVideo Pro to the Applications folder to use the virtual camera." and
+   nothing is installed.
 4. Sleep 2 minutes in the middle of a Zoom call, then wake. Expected: Zoom shows the slate
    during the gap and Program again within 5 s of the core resuming; never a frozen frame.
 5. Quit the app mid-call. Expected: slate within 1 s. Relaunch: Program again with no toggle
