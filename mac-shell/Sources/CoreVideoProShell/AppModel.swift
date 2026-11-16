@@ -399,7 +399,7 @@ final class AppModel: ObservableObject {
     private var monitorDevicesWatched = false
     private var monitorControlSending = false
     @Published var audioRouteControlNotice = ""
-    private var audioRouteControl = AudioRouteControlProjection()
+    private(set) var audioRouteControl = AudioRouteControlProjection()
     @Published var rosterRecoveryNotice = ""
     private var rosterProjection = ZoomRosterProjection()
     @Published var warnings: [String] = []
@@ -4024,6 +4024,59 @@ final class AppModel: ObservableObject {
                 (entry["gainDb"] as? NSNumber)?.doubleValue ?? 0
         }
         audioSends = audioRouteControl.overlayDrafts(on: next)
+    }
+
+    /// audio.route.set (Windows ApplyAudioRouteControlAsync): the cell edit the
+    /// grid makes (audioSends, operator intent, the ISO-exclusive rule), sent as a
+    /// revisioned command pinned to the caller's epoch, revision and operation id,
+    /// and answered from the core's result for that operation.
+    func requestAudioRouteControl(source: String, bus: String, enabled: Bool, gainDb: Double,
+                                  expectedEpoch: String, expectedRevision: Int64,
+                                  operationId: String) async -> AudioRouteControlOutcome {
+        guard bridge != nil || quitRequestForTesting != nil else { return .unconfirmed }
+        if audioRouteControl.authorityEpoch.isEmpty,
+           let snapshot = (try? await monitorRequest(["type": "media-core-sync", "elapsedMs": elapsedMs(),
+                                                      "commands": [JSONObject]()]))?["snapshot"] as? JSONObject {
+            applySnapshot(snapshot)
+        }
+        guard !audioRouteControl.authorityEpoch.isEmpty else { return .unconfirmed }
+        let control = audioRouteControl
+        if expectedEpoch != control.authorityEpoch { return .conflict(revision: control.revision) }
+        let key = AudioRouteKey(source: source, bus: bus)
+        let target = AudioRouteControlProjection.Draft(enabled: enabled, gainDb: gainDb)
+        // Nothing to change: answer from the core's authority instead of waiting
+        // for a result no command will produce.
+        if control.pendingOperationId == nil, control.drafts[key] == nil,
+           control.applied[key] == target || (!enabled && control.applied[key] == nil) {
+            return expectedRevision == control.revision ? .applied : .conflict(revision: control.revision)
+        }
+        // The grid's own edits (selectOrRouteSend / setSendGain / removeSend).
+        if enabled, bus.hasPrefix("iso-") {
+            for (other, buses) in audioSends where other != source && buses[bus] != nil {
+                audioSends[other]?[bus] = nil
+                editRoute(source: other, bus: bus, enabled: false, gainDb: 0)
+            }
+        }
+        if enabled { audioSends[source, default: [:]][bus] = gainDb } else { audioSends[source]?[bus] = nil }
+        operatorRouteEdits[key] = target
+        pushRoutingBase()
+        audioRouteControl.remoteEdit(source: source, bus: bus, enabled: enabled, gainDb: gainDb,
+                                     expectedEpoch: expectedEpoch, expectedRevision: expectedRevision,
+                                     operationId: operationId)
+        audioRouteControlNotice = audioRouteControl.notice
+        while let command = audioRouteControl.nextCommand() {
+            let reply = (try? await monitorRequest(["type": "media-core-sync", "elapsedMs": elapsedMs(),
+                                                    "commands": [command]])) ?? [:]
+            if let snapshot = reply["snapshot"] as? JSONObject { applySnapshot(snapshot) }
+            if audioRouteControl.pendingOperationId != nil {
+                audioRouteControl.markUnconfirmed()
+                audioRouteControlNotice = audioRouteControl.notice
+                break
+            }
+            if audioRouteControl.outcome(of: operationId) != nil { break }
+        }
+        _ = await settle { audioRouteControl.outcome(of: operationId) != nil }
+        return audioRouteControl.outcome(of: operationId) ?? .unconfirmed
     }
 
     func editMastering(_ apply: (inout MasteringParams) -> Void) {

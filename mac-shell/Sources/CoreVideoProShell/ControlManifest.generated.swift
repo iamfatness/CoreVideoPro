@@ -504,7 +504,7 @@ enum ControlManifestGenerated {
                 ControlParam(name: "expectedRevision", type: .double, required: true, description: nil),
                 ControlParam(name: "operationId", type: .string, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "audio.masterLimiter.set", title: "Master limiter", description: "Enable/disable the master limiter.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),

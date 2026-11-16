@@ -27,6 +27,13 @@ struct AudioRouteControlProjection {
     private var expected: [AudioRouteKey: (epoch: String, revision: Int64)] = [:]
     private var blocked: Set<AudioRouteKey> = []
     private var retiredEpochs: Set<String> = []
+    /// Remote clients' operation ids per cell (remoteEdit), sent by that cell's next command.
+    private var pinned: [AudioRouteKey: String] = [:]
+    /// Result status per operation id the core answered (bounded), for outcome(of:).
+    private var outcomes: [String: String] = [:]
+    private var outcomeOrder: [String] = []
+    /// The last result status observed for any operation ("" until one is).
+    private(set) var lastResultStatus = ""
 
     mutating func resetForProcess() {
         if !authorityEpoch.isEmpty { retiredEpochs.insert(authorityEpoch) }
@@ -40,11 +47,41 @@ struct AudioRouteControlProjection {
 
     mutating func edit(source: String, bus: String, enabled: Bool, gainDb: Double) {
         let key = AudioRouteKey(source: source, bus: bus)
+        pinned[key] = nil   // a UI edit never carries a remote client's id
         let draft = Draft(enabled: enabled, gainDb: gainDb)
         drafts[key] = draft
         expected[key] = (authorityEpoch, revision)
         blocked.remove(key)
         notice = "Audio route edit pending core application"
+    }
+
+    /// A remote audio.route.set: like `edit`, but pinned to the caller's epoch,
+    /// revision and operation id so the core's answer is matched to the request.
+    mutating func remoteEdit(source: String, bus: String, enabled: Bool, gainDb: Double,
+                             expectedEpoch: String, expectedRevision: Int64, operationId: String) {
+        let key = AudioRouteKey(source: source, bus: bus)
+        drafts[key] = Draft(enabled: enabled, gainDb: gainDb)
+        expected[key] = (expectedEpoch, expectedRevision)
+        pinned[key] = operationId
+        blocked.remove(key)
+        notice = "Audio route edit pending core application"
+    }
+
+    /// nil while the core has not answered `operationId`.
+    func outcome(of operationId: String) -> AudioRouteControlOutcome? {
+        switch outcomes[operationId] {
+        case nil: return nil
+        case "applied": return .applied
+        case "conflict": return .conflict(revision: revision)
+        default: return .rejected
+        }
+    }
+
+    private mutating func record(_ operation: String, _ status: String) {
+        if outcomes[operation] == nil { outcomeOrder.append(operation) }
+        outcomes[operation] = status
+        lastResultStatus = status
+        if outcomeOrder.count > 32 { outcomes[outcomeOrder.removeFirst()] = nil }
     }
 
     @discardableResult mutating func observe(_ matrix: JSONObject) -> Bool {
@@ -82,6 +119,7 @@ struct AudioRouteControlProjection {
         guard let status = result?["status"] as? String else { return true }
         pendingOperationId = nil
         pendingKey = nil
+        record(operation, status)
         if status == "applied" {
             if drafts[key] == applied[key] ||
                (drafts[key]?.enabled == false && applied[key] == nil) {
@@ -113,7 +151,7 @@ struct AudioRouteControlProjection {
                 expected[key] = nil
                 continue
             }
-            let operation = UUID().uuidString
+            let operation = pinned.removeValue(forKey: key) ?? UUID().uuidString
             pendingOperationId = operation
             pendingKey = key
             return ["type": "set-audio-route-control", "operationId": operation,
@@ -137,3 +175,6 @@ struct AudioRouteControlProjection {
         if pendingOperationId != nil { notice = "Audio route edit reconciling with core" }
     }
 }
+
+/// What a remote audio.route.set came to (Windows ApplyAudioRouteControlAsync kinds).
+enum AudioRouteControlOutcome: Equatable { case applied, conflict(revision: Int64), rejected, unconfirmed }

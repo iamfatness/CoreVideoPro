@@ -167,6 +167,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return setMasteringTarget(model, index: int(0))
         case "audio.vst.scan":
             return scanVst(model)
+        case "audio.route.set":
+            return await setAudioRoute(model, args)
         case "audio.monitor.set":
             return await setMonitor(model, enabled: bool(0), volume: nil, args)
         case "audio.monitor.volume":
@@ -208,7 +210,7 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "automation.captions.set",
         "multiview.layout.set", "multiview.tileCount.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
-        "audio.monitor.set", "audio.monitor.volume",
+        "audio.monitor.set", "audio.monitor.volume", "audio.route.set",
     ]
 
     /// The `default:` branch's text (Windows' unknown-action wording).
@@ -316,6 +318,12 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             "audioMonitorAuthorityEpoch": model.monitorControl.authorityEpoch,
             "audioMonitorRevision": model.monitorControl.revision,
             "audioMonitorLastResult": model.monitorControl.lastResultStatus,
+            "audioRouteAuthorityEpoch": model.audioRouteControl.authorityEpoch,
+            "audioRouteRevision": model.audioRouteControl.revision,
+            "audioRouteLastResult": model.audioRouteControl.lastResultStatus,
+            "audioRoutes": audioRoutes(model),
+            "audioSources": audioSources(model),
+            "audioSourceCount": model.strips.count,
         ])
     }
 }

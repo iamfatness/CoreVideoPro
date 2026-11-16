@@ -31,6 +31,7 @@ extension ShellTests {
             ("control/rtmp-configure", testControlRtmpConfigure),
             ("control/production-actions", testControlProductionActions),
             ("control/monitor-revisioned", testControlMonitorRevisioned),
+            ("control/audio-route", testControlAudioRoute),
         ]
     }
 
@@ -132,6 +133,9 @@ extension ShellTests {
         expect(ControlStatePushKey.key(recording) != ControlStatePushKey.key(base), "a non-meter field is a push")
         // End to end through the host's sink: 20 meter-only model changes push nothing.
         let model = sceneEditModel()
+        // The strip exists before the host attaches: a source APPEARING is a real
+        // change (since T15 audioSources lists strips); only its level is churn.
+        model.audioStripLevelForTesting(id: "zoom:1", level: 0)
         let host = ControlApiHost()
         var pushed = 0
         host.broadcastSinkForTesting = { _ in pushed += 1 }
@@ -271,12 +275,16 @@ extension ShellTests {
                     .fail("Zoom join is still in progress (joining); read zoomStatus for the outcome."), "an unsettled join says so")
         // The settle wait is observable: the meeting lands 150 ms AFTER the reply (a later
         // snapshot), inside the window, so the join answers success, not "still in progress".
+        // A wide window here so machine load cannot make the late snapshot miss it; the
+        // window's length is not what this pins (no wait at all reads "joining").
+        model.controlSettleSeconds = 2.5
         answers = [["meetingState": "joining"]]
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 150_000_000)
             model.applyZoomForTesting(["meetingState": "in_meeting"])
         }
         expectEqual(invoke(s, "zoom.join", ["97682593786"]), .success, "a join that settles inside the window succeeds")
+        model.controlSettleSeconds = 0.4
 
         let noCore = AppModel()
         expectEqual(invoke(AppModelControlSurface(model: noCore, box: noCore.controlSnapshotBox), "zoom.join", ["123"]),
@@ -485,5 +493,79 @@ extension ShellTests {
         expect(!model.monitorEnabled, "the local intent moved")
         expectEqual(AppModelControlSurface.state(model).dictionary["audioMonitorOn"] as? Bool, true,
                     "audioMonitorOn is the core-applied value, not local intent")
+    }
+
+    /// Plays the core's route-control contract (node audioRoutingMatrix, which
+    /// AppModel.applySnapshot reads, rule 5).
+    final class FakeRouteCore: @unchecked Sendable {
+        var epoch = "core-1", revision: Int64 = 2, sends: [JSONObject] = [], results: [JSONObject] = []
+        func handle(_ body: JSONObject) -> JSONObject {
+            for c in (body["commands"] as? [JSONObject]) ?? [] where c["type"] as? String == "set-audio-route-control" {
+                let ok = c["authorityEpoch"] as? String == epoch && (c["expectedRevision"] as? NSNumber)?.int64Value == revision
+                if ok {
+                    sends.removeAll { $0["sourceId"] as? String == c["sourceId"] as? String && $0["busId"] as? String == c["busId"] as? String }
+                    if c["enabled"] as? Bool == true { sends.append(["sourceId": c["sourceId"]!, "busId": c["busId"]!, "gainDb": c["gainDb"]!]) }
+                    revision += 1
+                }
+                results.append(["operationId": c["operationId"] as? String ?? "", "status": ok ? "applied" : "conflict"])
+            }
+            return ["snapshot": ["audioRoutingMatrix": ["sends": sends, "control": ["authorityEpoch": epoch, "revision": revision, "recentResults": results]]]]
+        }
+    }
+
+    @MainActor
+    static func testControlAudioRoute() {
+        let fake = FakeRouteCore()
+        let model = AppModel()
+        model.controlSettleSeconds = 0.4
+        model.quitRequestForTesting = { body, _ in await MainActor.run { fake.handle(body) } }
+        model.status = .connected(renderer: "test")
+        model.applySnapshotForTesting(fake.handle([:])["snapshot"] as? JSONObject ?? [:])   // learn epoch core-1 / revision 2
+        let s = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        expectEqual(invoke(s, "audio.route.set", ["zoom:42", "mon", true, -6, "core-1", 2, "client-b"]), .success, "applied")
+        var state = AppModelControlSurface.state(model).dictionary
+        let routes = state["audioRoutes"] as? [[String: Any]] ?? []
+        expect(NSArray(array: routes).isEqual(to: [["sourceId": "zoom:42", "busId": "mon", "gainDb": -6.0]]), "audioRoutes is the core's applied set")
+        expectEqual(state["audioRouteRevision"] as? Int64, 3, "revision 3")
+        expectEqual(model.audioSends["zoom:42"]?["mon"], -6, "the UI grid shows the remote edit")
+        expectEqual(invoke(s, "audio.route.set", ["zoom:42", "mon", true, -3, "core-1", 2, "client-c"]),
+                    .fail("Audio route conflict at revision 3; read state and retry."), "stale revision conflicts")
+        for (args, text) in [
+            (["", "mon", true, 0, "core-1", 3, "op"], "sourceId, busId, authorityEpoch and operationId are required."),
+            (["zoom:42", "mon", true, 0, "core-1", 3, " "], "sourceId, busId, authorityEpoch and operationId are required."),
+            (["zoom:42", "mon", true, 11, "core-1", 3, "op"], "gainDb must be between -60 and +10."),
+            (["zoom:42", "mon", true, -61, "core-1", 3, "op"], "gainDb must be between -60 and +10."),
+            (["zoom:42", "mon", true, 0, "core-1", 3.5, "op"], "expectedRevision must be a nonnegative safe integer."),
+            (["zoom:42", "booth", true, 0, "core-1", 3, "op"], "busId must be one of master, pgm-l, pgm-r, stream, mon, iso-1."),
+        ] as [([Any?], String)] {
+            expectEqual(invoke(s, "audio.route.set", args), .fail(text), text)
+        }
+        expectEqual(invoke(s, "audio.route.set", ["zoom:42", "mon", false, 0, "core-1", 3, "client-d"]), .success, "un-route")
+        state = AppModelControlSurface.state(model).dictionary
+        expectEqual((state["audioRoutes"] as? [Any])?.count, 0, "removed")
+        // audioSources: names from slots, no peak/rms keys, sorted.
+        model.slots[0].kind = "zoom"; model.slots[0].sourceId = "42"; model.slots[0].name = "Host"
+        model.audioStripLevelForTesting(id: "zoom:42", level: 55)
+        model.audioStripLevelForTesting(id: "capture:mic", level: 10)
+        let sources = AppModelControlSurface.state(model).dictionary["audioSources"] as? [[String: Any]] ?? []
+        expectEqual(sources.compactMap { $0["sourceId"] as? String }, ["capture:mic", "zoom:42"], "sorted by id")
+        expectEqual(sources.last?["name"] as? String, "Host", "slot name"); expectEqual(sources.first?["name"] as? String, "capture:mic", "else the id")
+        expect(sources.allSatisfy { $0["peakDbfs"] == nil && $0["rmsDbfs"] == nil }, "no fabricated peak/RMS on the Mac")
+        // End-to-end push key (deferred from T7): level churn pushes nothing.
+        let host = ControlApiHost()
+        var pushed = 0
+        host.broadcastSinkForTesting = { _ in pushed += 1 }
+        host.attachForTesting(model: model)
+        spin(until: { pushed >= 1 }, limit: 1)
+        let first = pushed
+        for i in 0..<20 { model.audioStripLevelForTesting(id: "zoom:42", level: i * 5); spin(until: { false }, limit: 0.02) }
+        spin(until: { false }, limit: 0.3)
+        expectEqual(pushed, first, "meter churn on audioSources never pushes")
+        host.stop()
+        // Before the core answers, the grid still shows the remote edit as a draft.
+        model.quitRequestForTesting = { _, _ in [:] }
+        expectEqual(invoke(s, "audio.route.set", ["zoom:42", "master", true, -2, "core-1", 4, "client-e"]),
+                    .fail("Audio route unconfirmed; application is unconfirmed."), "no answer is unconfirmed")
+        expectEqual(model.audioSends["zoom:42"]?["master"], -2, "the grid shows the unconfirmed remote edit")
     }
 }

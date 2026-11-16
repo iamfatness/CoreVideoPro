@@ -119,4 +119,51 @@ extension AppModelControlSurface {
         case .unconfirmed: return .fail("Monitor control unconfirmed; application is unconfirmed.")
         }
     }
+
+    /// audio.route.set (Windows StudioControlSurface.cs:1345-1369).
+    @MainActor
+    static func setAudioRoute(_ model: AppModel, _ args: [ControlArg]) async -> ControlInvokeResult {
+        func arg(_ index: Int) -> Any? { index < args.count ? args[index].value : nil }
+        func text(_ index: Int) -> String { (arg(index) as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+        let source = text(0), bus = text(1), epoch = text(4), operation = text(6)
+        guard !source.isEmpty, !bus.isEmpty, !epoch.isEmpty, !operation.isEmpty else {
+            return .fail("sourceId, busId, authorityEpoch and operationId are required.")
+        }
+        let gain = (arg(3) as? Double) ?? (arg(3) as? Int).map(Double.init) ?? .nan
+        guard gain.isFinite, (-60...10).contains(gain) else { return .fail("gainDb must be between -60 and +10.") }
+        guard case .success(let revision?) = safeRevision(arg(5)) else { return .fail(revisionError) }
+        // A Mac text: the Mac's full-state matrix would drop an unknown bus silently.
+        guard AppModel.routingBuses.contains(bus) else {
+            return .fail("busId must be one of \(AppModel.routingBuses.joined(separator: ", ")).")
+        }
+        switch await model.requestAudioRouteControl(source: source, bus: bus, enabled: arg(2) as? Bool ?? false,
+                                                    gainDb: gain, expectedEpoch: epoch, expectedRevision: revision,
+                                                    operationId: operation) {
+        case .applied: return .success
+        case .conflict(let current): return .fail("Audio route conflict at revision \(current); read state and retry.")
+        case .rejected: return .fail("Audio route rejected; application is unconfirmed.")
+        case .unconfirmed: return .fail("Audio route unconfirmed; application is unconfirmed.")
+        }
+    }
+
+    /// Windows ControlAudioRouteState: the core-applied sends, sorted (sourceId, busId).
+    @MainActor
+    static func audioRoutes(_ model: AppModel) -> [[String: Any]] {
+        model.audioRouteControl.applied.filter { $0.value.enabled }.keys.sorted().map { key in
+            ["sourceId": key.source, "busId": key.bus, "gainDb": model.audioRouteControl.applied[key]?.gainDb ?? 0]
+        }
+    }
+
+    /// One row per strip, sorted by id. No peakDbfs/rmsDbfs: the Mac strip has no
+    /// true-peak or loudness per source, and inventing one is the meter lie (CLAUDE.md).
+    @MainActor
+    static func audioSources(_ model: AppModel) -> [[String: Any]] {
+        model.strips.sorted { $0.id < $1.id }.map { strip in
+            let slotName = model.slots.first {
+                ControlSourceId.canonical(kind: $0.kind, sourceId: $0.sourceId) == strip.id && !$0.name.isEmpty
+            }?.name
+            return ["sourceId": strip.id, "name": slotName ?? strip.id, "level": strip.outputLevel,
+                    "muted": strip.muted, "status": strip.status]
+        }
+    }
 }

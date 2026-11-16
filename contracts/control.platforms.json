@@ -104,7 +104,7 @@
     {"id": "audio.monitor.set", "mac": "supported"},
     {"id": "settings.programBuffer.set", "mac": "blocked", "blockedOn": "STU"},
     {"id": "audio.monitor.volume", "mac": "supported"},
-    {"id": "audio.route.set", "mac": "blocked", "blockedOn": "RC3"},
+    {"id": "audio.route.set", "mac": "supported"},
     {"id": "audio.masterLimiter.set", "mac": "blocked", "blockedOn": "AUD"},
     {"id": "audio.mastering.set", "mac": "supported"},
     {"id": "audio.mastering.target", "mac": "supported"},
