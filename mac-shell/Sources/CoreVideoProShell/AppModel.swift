@@ -433,6 +433,7 @@ final class AppModel: ObservableObject {
     /// The live set, the only bin-wide play-state scalar (rows read it).
     @Published private(set) var mediaLiveSignature = ""
     private var lastSelectedTransportState: String?
+    private var lastMediaRefusalSeen: String?
     private let mediaTransportGestures = MediaTransportGestureLedger()
     /// Test seam for the one-shot transport gesture; nil = the real core request.
     var mediaTransportSendForTesting: ((JSONObject) async throws -> JSONObject)?
@@ -4061,6 +4062,12 @@ final class AppModel: ObservableObject {
         guard !Self.isSoloScene(previewSceneId), scenes.contains(where: { $0.id == previewSceneId }) else {
             return "Cue in Preview needs an operator scene in Preview."            // Mac
         }
+        let fileExtension = (asset.filePath as NSString).pathExtension.lowercased()
+        if MediaBin.audioExtensions.contains(fileExtension) {
+            // Mac: the decoder has no picture for an audio-only file, so the layer
+            // would sit on Program with no frame (audio-only assets on air are N3).
+            return "\(asset.name) is audio only; audio-only assets cannot be cued on Mac yet."
+        }
         if asset.supportsPlayback {
             guard mediaClipPlaybackAvailable else { return "Clip playback is unavailable in this build" }   // Mac
             if (asset.filePath as NSString).pathExtension.lowercased() == "webm" { return MediaRoutePlayback.webmRefusal }
@@ -4137,9 +4144,13 @@ final class AppModel: ObservableObject {
         // (MediaTransportPolicy.h: "... is a loop ..." / "... is not on Program ...").
         if let selected, let warnings = (snapshot["programFrame"] as? JSONObject)?["warnings"] as? [String] {
             let prefixes = ["media:\(selected.id) is a loop", "media:\(selected.id) is not on Program"]
-            if let refusal = warnings.first(where: { warning in prefixes.contains { warning.hasPrefix($0) } }),
-               refusal != mediaStatus {
-                mediaStatus = refusal
+            // Shown ONCE, when it appears: the core keeps the reason in its warnings
+            // until the next scene load, and re-showing it on every snapshot would
+            // pin the status line and bury everything the operator does next.
+            let refusal = warnings.first(where: { warning in prefixes.contains { warning.hasPrefix($0) } })
+            if refusal != lastMediaRefusalSeen {
+                lastMediaRefusalSeen = refusal
+                if let refusal { mediaStatus = refusal }
             }
         }
     }

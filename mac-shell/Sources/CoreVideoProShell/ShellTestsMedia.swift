@@ -48,6 +48,8 @@ extension ShellTests {
             ("media-take/rollback-operator-pick-left-program", testTakeRollbackGivesAnOperatorPickThatLeftProgramOffProgramWording),
             ("media-take/success-promotes-clip-never-still", testASuccessfulTakePromotesTheClipThatWentLiveButNeverAStill),
             ("media-take/rollback-reads-on-air-row-not-saved-flag", testTakeRollbackReadsTheOnAirRowNotTheSavedFlag),
+            ("media-review/cue-refuses-audio-only", testCueRefusesAnAudioOnlyAsset),
+            ("media-review/refused-gesture-status-shown-once", testARefusedGestureIsShownOnceNotPinned),
         ]
     }
 
@@ -874,6 +876,44 @@ extension ShellTests {
         expect(!model.selectedMediaPlaying, "the flag is the core's row (paused), not the saved 'playing'")
         expectEqual(model.mediaStatus, "X paused on Program", "status from the on-air row")
         expectEqual(model.mediaPlaybackButtonLabel, "Resume Program", "an honest toggle")
+    }
+
+    // ── Final-review fixes ──────────────────────────────────────────────────
+
+    /// An audio bed "supports playback", so Cue used to add it as a full-canvas layer. The Mac
+    /// decoder has no picture for it (audio-only assets on air are slice N3): the layer would sit
+    /// on Program with no frame and a warning on every poll.
+    @MainActor
+    private static func testCueRefusesAnAudioOnlyAsset() {
+        let model = cueModel()
+        model.mediaAssets.append(MediaAsset(id: "bed", name: "Bed", kind: "audio-bed", relativePath: "audio-bed/bed.wav",
+                                            filePath: "/b/audio-bed/bed.wav", naturalWidth: 0, naturalHeight: 0))
+        model.applySnapshotForTesting(["profile": ["capabilityStates": ["media-clip-playback": ["state": "available"]]]])
+        model.selectedAssetId = "bed"
+        expectEqual(model.cueSelectedInPreview(),
+                    "Bed is audio only; audio-only assets cannot be cued on Mac yet.", "refused, in words")
+        expectEqual(model.scenes[0].layers.count, 1, "nothing added to Preview")
+        expect(!model.canCueSelectedMedia, "the Cue button is disabled")
+    }
+
+    /// The core keeps a refused gesture's reason in programFrame.warnings until the next scene load,
+    /// so every snapshot carried it and every snapshot rewrote the status line with it.
+    @MainActor
+    private static func testARefusedGestureIsShownOnceNotPinned() {
+        let model = cueModel()
+        model.selectedAssetId = "clip"
+        let refusal = "media:clip is not on Program; pause/play applies to the Program clip only."
+        let snapshot: JSONObject = ["programFrame": ["warnings": [refusal]]]
+        model.applySnapshotForTesting(snapshot)
+        expectEqual(model.mediaStatus, refusal, "the refusal is shown when it first appears")
+        model.selectMediaAsset("clip")
+        expectEqual(model.mediaStatus, "Sting ready to cue or audition", "a later status replaces it")
+        model.applySnapshotForTesting(snapshot)
+        model.applySnapshotForTesting(snapshot)
+        expectEqual(model.mediaStatus, "Sting ready to cue or audition", "the same standing warning is not re-shown")
+        model.applySnapshotForTesting(["programFrame": ["warnings": [String]()]])
+        model.applySnapshotForTesting(snapshot)
+        expectEqual(model.mediaStatus, refusal, "a refusal that went away and came back is new again")
     }
 }
 

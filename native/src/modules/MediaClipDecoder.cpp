@@ -62,6 +62,7 @@ struct MediaClipDecoder::Impl {
     std::unique_ptr<IClipVideoReader> reader;
     std::unique_ptr<IClipVideoReader> nextReader;  // a loop's pre-opened successor
     bool preopenTried = false;
+    bool readerWasPreopened = false;  // the current reader was adopted at a loop seam, untried
     int samplesFromReader = 0;
     // An open that failed is NOT retried per poll: an open is an operator-scale
     // event and is logged once. A new identity (or a new decoder) tries again.
@@ -163,9 +164,9 @@ struct MediaClipDecoder::Impl {
   // decoded. Never blocks: a reader that is still opening or behind says
   // Pending and this returns false with nothing changed.
   bool takeNewSample(const MediaDecodeRequest& request, const std::string& sourceId, int64_t timestampMs, bool cue) {
-    // At most one reader switch per call: the loop seam, then the first sample
-    // of the successor.
-    for (int hop = 0; hop < 2; ++hop) {
+    // At most: the loop seam, one replacement of a pre-opened successor that
+    // turned out to have failed, then the first sample of the successor.
+    for (int hop = 0; hop < 3; ++hop) {
       if (state.openFailed) { warnOpenFailure(request, cue); return false; }
       if (!state.reader) {
         std::string error;
@@ -180,6 +181,15 @@ struct MediaClipDecoder::Impl {
       if (state.duration100ns <= 0) state.duration100ns = state.reader->duration100ns();
       if (status == ClipReadStatus::Pending) return false;  // a stall is never an end
       if (status == ClipReadStatus::Failed) {
+        if (state.samplesFromReader == 0 && state.readerWasPreopened) {
+          // The successor was opened ~300 ms before the seam and failed in the
+          // meantime (a reader reports a failed open on its first take). One
+          // transient failure must not freeze a looping background: open once
+          // more, now, and let THAT attempt be the one that is reported.
+          state.reader.reset();
+          state.readerWasPreopened = false;
+          continue;
+        }
         if (state.samplesFromReader == 0) {
           // The reader never produced anything: this is the open failing
           // (asynchronously), not a decode error part-way through the file.
@@ -204,6 +214,7 @@ struct MediaClipDecoder::Impl {
         // successor (pre-opened when the duration was known) takes over.
         state.loopOffset += state.decodedPts + state.decodedDuration;
         state.reader = std::move(state.nextReader);
+        state.readerWasPreopened = state.reader != nullptr;
         state.samplesFromReader = 0;
         state.preopenTried = false;
         if (!state.reader) {
@@ -229,10 +240,11 @@ struct MediaClipDecoder::Impl {
       state.decodedPts = sample.pts100ns;
       state.decodedDuration = sample.duration100ns;
       state.samplesFromReader += 1;
+      state.readerWasPreopened = false;
       if (request.loop && !state.nextReader && !state.preopenTried && state.duration100ns > 0 &&
           sample.pts100ns + sample.duration100ns >= state.duration100ns - kLoopPreopenLead100ns) {
         // Pre-open (new; not in MF). A failure here is not reported: the seam
-        // opens again and reports that attempt.
+        // opens again (see readerWasPreopened) and reports that attempt.
         state.preopenTried = true;
         std::string ignored;
         state.nextReader = open(ignored);

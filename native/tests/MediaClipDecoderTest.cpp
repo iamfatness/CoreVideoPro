@@ -20,6 +20,7 @@ struct Script {
   bool failOpen = false;        // openVideo returns nullptr + error
   int failAfter = -1;           // take() returns Failed after this many samples
   bool stallAfterLast = false;  // Pending forever instead of EndOfStream
+  int failingReader = 0;        // the Nth reader opened (1-based) fails on its first take; 0 = none
   int64_t duration100ns = 10 * kFrame;
 };
 // Audio script (Task 6). Fixture invariants (rule 1): 48 kHz interleaved stereo;
@@ -75,10 +76,12 @@ class FakeReader final : public IClipVideoReader {
  public:
   explicit FakeReader(std::shared_ptr<Shared> s, std::function<void()> wake) : s_(std::move(s)) {
     s_->lastWake = std::move(wake);
+    ordinal_ = s_->opened;  // openVideo counted this reader before constructing it
   }
   ~FakeReader() override { s_->destroyed += 1; }
   ClipReadStatus take(ClipVideoSample& out, std::string& error) override {
     if (pending_ < s_->script.pendingBeforeFirst) { ++pending_; return ClipReadStatus::Pending; }
+    if (s_->script.failingReader != 0 && ordinal_ == s_->script.failingReader) { error = "transient open failure"; return ClipReadStatus::Failed; }
     if (s_->script.failAfter >= 0 && next_ >= s_->script.failAfter) { error = "decode error"; return ClipReadStatus::Failed; }
     if (next_ >= s_->script.samples)
       return s_->script.stallAfterLast ? ClipReadStatus::Pending : ClipReadStatus::EndOfStream;
@@ -91,7 +94,7 @@ class FakeReader final : public IClipVideoReader {
   int64_t duration100ns() const override { return s_->script.duration100ns; }
  private:
   std::shared_ptr<Shared> s_;
-  int pending_ = 0, next_ = 0;
+  int pending_ = 0, next_ = 0, ordinal_ = 0;
 };
 class FakeReaders final : public IClipReaderFactory {
  public:
@@ -476,4 +479,53 @@ TEST(MediaClipDecoder, AudioWindowsAreExactly960StereoFramesAt48k) {
     }
   }
   EXPECT_EQ(windows, 20) << "fixture fact: 20 polls 20 ms apart against a synchronous reader";
+}
+
+// Final-review fix. The AVFoundation factory always returns a reader and reports a failed open on
+// its first take, so a loop's PRE-OPENED successor can be adopted at the seam already failed. That
+// used to become a sticky open failure: one transient error froze a looping background until the
+// scene changed. The seam now opens once more before it gives up.
+TEST(MediaClipDecoder, ALoopSurvivesAPreopenedReaderThatFailedToOpen) {
+  Script script; script.samples = 3; script.duration100ns = 3 * kFrame;
+  script.failingReader = 2;  // fixture: reader 1 plays, reader 2 is the pre-open, reader 3 is the retry
+  Rig rig(script);
+  rig.d->syncMediaClock(clip(true, /*loop=*/true), 1'000);
+  for (int i = 0; i < 3; ++i) (void)rig.next(clip(true, true));
+  EXPECT_EQ(rig.s->opened, 2) << "the successor was pre-opened";
+  const auto s = rig.next(clip(true, true));
+  EXPECT_EQ(s.frame.frameId, 4) << "the loop went on";
+  EXPECT_EQ(colour(s.frame), 0x01) << "from the top of the file";
+  EXPECT_EQ(s.due100ns, 10'000'000 + 3 * kFrame);
+  // Fixture fact: reader 3 replaced the failed pre-open, and its first sample pre-opened reader 4
+  // (this 1 s script is shorter than the pre-open lead, as in ALoopPreopensItsNextReader...).
+  EXPECT_EQ(rig.s->opened, 4) << "exactly one fresh open replaced the failed pre-open";
+  EXPECT_TRUE(rig.d->warnings().empty()) << "a recovered seam is not reported as a failure";
+}
+
+TEST(MediaClipDecoder, ALoopWhoseReopenAlsoFailsSaysSoAndStops) {
+  // Readers 2 (the pre-open) AND 3 (the retry) fail: bounded, loud, and no open per poll afterwards.
+  struct TwoFailures final : IClipReaderFactory {
+    std::shared_ptr<Shared> s; int opens = 0;
+    std::unique_ptr<IClipVideoReader> openVideo(const std::string&, std::function<void()> wake, std::string&) override {
+      ++opens; s->opened += 1;
+      s->script.failingReader = opens >= 2 ? opens : 0;
+      return std::make_unique<FakeReader>(s, std::move(wake));
+    }
+    bool decodeStill(const std::string&, VideoFrame&, std::string&) override { return false; }
+  };
+  auto shared = std::make_shared<Shared>();
+  shared->script.samples = 3; shared->script.duration100ns = 3 * kFrame;
+  auto factory = std::make_shared<TwoFailures>(); factory->s = shared;
+  MediaClipDecoder decoder(factory, [] { return int64_t{1'000}; });
+  const auto request = clip(true, true);
+  decoder.syncMediaClock(request, 1'000);
+  int frames = 0;
+  for (int i = 0; i < 40; ++i) frames += static_cast<int>(decoder.prefetchMediaVideo(request, 1'000).size());
+  EXPECT_EQ(frames, 3) << "the first pass played";
+  EXPECT_EQ(factory->opens, 3) << "the pre-open and ONE retry, never an open per poll";
+  ASSERT_FALSE(decoder.warnings().empty());
+  EXPECT_EQ(decoder.warnings()[0], "Media background clip could not restart its loop: transient open failure");
+  const auto held = decoder.pollMediaFrames(clip(false, true), 1'000);
+  ASSERT_EQ(held.size(), 1u);
+  EXPECT_EQ(held.front().frameId, 3) << "the last frame stays on air";
 }
