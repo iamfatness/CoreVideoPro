@@ -230,3 +230,67 @@ TEST(SourceGradeWire, SnapshotNodeIsUnconditionalAndTracksActivity) {
   ASSERT_NE(row, nullptr) << "an accepted grade stays listed while its source is absent";
   EXPECT_FALSE(row->get("livePresent")->asBool()); EXPECT_EQ(row->getNumber("liveEpoch"), 0);
 }
+
+// ---------------------------------------------------------------------------
+// D6 override (grading plan "Defaults taken"): an additive `clear: true` on set-source-grade
+// forgets the source's own grade so its layer returns to the Program look. The same identity
+// and revision fences apply, and the revision keeps counting (a tombstone), so an old editor's
+// expectedRevision is still refused after a clear.
+TEST(SourceGradeIdentity, ClearForgetsTheGradeButKeepsTheRevisionFence) {
+  core::SourceGradeState state;
+  const auto live = frame("capture:cam", 0);
+  state.observe({live});
+  ASSERT_TRUE(state.apply(applyRequest("capture:cam", 0, 0), exposure(5)).get("accepted")->asBool());
+  auto clear = [](const std::string& id, double epoch, double expected) {
+    return rpc::Json::Object{{"sourceId", id}, {"sourceEpoch", epoch}, {"expectedRevision", expected}, {"clear", true}};
+  };
+  EXPECT_EQ(state.apply(clear("capture:cam", 3, 1), {}).getString("reason"), "source-identity-changed")
+      << "a clear is fenced by identity like any apply";
+  EXPECT_EQ(state.apply(clear("capture:cam", 0, 0), {}).getString("reason"), "grade-revision-conflict")
+      << "and by revision";
+  const auto cleared = state.apply(clear("capture:cam", 0, 1), {});
+  ASSERT_TRUE(cleared.get("accepted")->asBool());
+  EXPECT_EQ(cleared.getNumber("revision"), 2) << "a clear is a new revision";
+  EXPECT_TRUE(state.statuses().empty()) << "a cleared source has no grade to report";
+  EXPECT_EQ(state.query("capture:cam").revision, 2);
+
+  modules::CompositorRenderPlanLayer layer; layer.participantId = "capture:cam";
+  modules::CompositorRenderPlan plan; plan.layers.push_back(layer);
+  state.applyTo(plan, {live});
+  EXPECT_FALSE(plan.layers[0].hasColorGrade) << "the layer takes the Program look again";
+  EXPECT_TRUE(plan.sourceGrades.empty());
+
+  EXPECT_EQ(state.apply(applyRequest("capture:cam", 0, 1), exposure(6)).getString("reason"), "grade-revision-conflict")
+      << "an editor that missed the clear is refused";
+  ASSERT_TRUE(state.apply(applyRequest("capture:cam", 0, 2), exposure(6)).get("accepted")->asBool());
+  plan.layers[0] = layer;
+  state.applyTo(plan, {live});
+  EXPECT_TRUE(plan.layers[0].hasColorGrade);
+  EXPECT_EQ(plan.layers[0].colorGrade.exposure, 6.f);
+
+  state.observe({frame("16778240", 4)});
+  const auto fresh = state.apply(clear("16778240", 4, 0), {});
+  ASSERT_TRUE(fresh.get("accepted")->asBool()) << "clearing a never-graded source is accepted";
+  EXPECT_EQ(state.statuses().size(), 1u) << "and lists nothing for it (capture:cam is still listed)";
+}
+
+TEST(SourceGradeWire, AClearRequestReturnsTheLayerToTheProgramLook) {
+  Rig rig;
+  auto a = std::make_shared<gradetest::EpochSource>("capture:cam-a", 192, 96, 64, 7);
+  rig.core->addSourceForTest(a);
+  rig.routeSideBySide();
+  rig.core->renderDisplayTick();
+  ASSERT_TRUE(rig.set("capture:cam-a", 7, 0, 2).get("accepted")->asBool());
+  rig.core->renderDisplayTick();
+  ASSERT_NE(rig.layer("capture:cam-a"), nullptr);
+  ASSERT_TRUE(rig.layer("capture:cam-a")->hasColorGrade);
+
+  const auto cleared = rig.server->handle(rpc::Json::Object{{"id", "c"}, {"type", "set-source-grade"},
+      {"sourceId", "capture:cam-a"}, {"sourceEpoch", 7}, {"expectedRevision", 1}, {"clear", true},
+      {"grade", rpc::Json::Object{{"lut", "none"}}}});
+  ASSERT_TRUE(cleared.get("accepted")->asBool()) << cleared.stringify();
+  rig.core->renderDisplayTick();
+  EXPECT_FALSE(rig.layer("capture:cam-a")->hasColorGrade);
+  EXPECT_TRUE(rig.core->sessionState().get("sourceGrades")->asArray().empty());
+  EXPECT_EQ(rig.query("capture:cam-a").getNumber("revision"), 2);
+}

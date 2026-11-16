@@ -44,15 +44,18 @@ class SourceGradeState {
     const auto current=grades_.find(id); const int64_t revision=current==grades_.end()?0:current->second.revision;
     if(expected!=revision) return rpc::Json::Object{{"accepted",false},{"reason","grade-revision-conflict"},{"revision",double(revision)}};
     if(current==grades_.end() && grades_.size()>=256) return rpc::Json::Object{{"accepted",false},{"reason","grade-capacity"}};
-    grades_[id]={uint64_t(epoch),revision+1,std::move(grade)};
+    // Additive `clear: true` (grading plan D6 override): forget the source's own grade so its
+    // layer takes the Program look again. Kept as a tombstone so the revision keeps counting.
+    const auto* clearFlag=command.get("clear"); const bool clear=clearFlag && clearFlag->isBool() && clearFlag->asBool();
+    grades_[id]={uint64_t(epoch),revision+1,clear?modules::CompositorColorGrade{}:std::move(grade),clear};
     return rpc::Json::Object{{"accepted",true},{"revision",double(revision+1)},{"sourceEpoch",epoch}};
   }
   void applyTo(modules::CompositorRenderPlan& plan,const std::vector<modules::VideoFrame>& frames) const {
-    for(const auto& frame:frames) {const auto entry=grades_.find(frame.participantId); if(entry!=grades_.end())
+    for(const auto& frame:frames) {const auto entry=grades_.find(frame.participantId); if(entry!=grades_.end() && !entry->second.cleared)
       plan.sourceGrades[frame.participantId]=entry->second.epoch==frame.sourceEpoch ? entry->second.grade : modules::CompositorColorGrade{};}
     for(auto& layer:plan.layers) {
       const auto& id=layer.participantId.empty()?layer.sourceId:layer.participantId;
-      const auto entry=grades_.find(id); if(entry==grades_.end()) continue;
+      const auto entry=grades_.find(id); if(entry==grades_.end() || entry->second.cleared) continue;
       const auto frame=std::find_if(frames.begin(),frames.end(),[&](const auto& f){return f.participantId==id;});
       layer.hasColorGrade=true;
       layer.colorGrade=frame!=frames.end() && frame->sourceEpoch==entry->second.epoch ? entry->second.grade : modules::CompositorColorGrade{};
@@ -80,12 +83,13 @@ class SourceGradeState {
     bool livePresent = false;   // the last observe() saw a frame for sourceId
     bool active = false;        // livePresent && liveEpoch == appliedEpoch: what applyTo paints
   };
-  // One entry per ACCEPTED grade (never for an observed but ungraded source), in
+  // One entry per ACCEPTED grade (never for an observed but ungraded or a cleared source), in
   // sourceId order (the std::map's order). At most 256 entries (grade-capacity).
   [[nodiscard]] std::vector<Status> statuses() const {
     std::vector<Status> out;
     out.reserve(grades_.size());
     for (const auto& [id, applied] : grades_) {
+      if (applied.cleared) continue;
       Status s;
       s.sourceId = id;
       s.revision = applied.revision;
@@ -103,7 +107,7 @@ class SourceGradeState {
     return captureAnnotations(std::move(events)).assemble();
   }
  private:
-  struct Applied {uint64_t epoch;int64_t revision;modules::CompositorColorGrade grade;};
+  struct Applied {uint64_t epoch;int64_t revision;modules::CompositorColorGrade grade;bool cleared=false;};
   std::map<std::string,uint64_t> epochs_;
   std::map<std::string,Applied> grades_;
 };
