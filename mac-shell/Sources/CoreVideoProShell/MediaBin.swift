@@ -4,6 +4,7 @@
 // audio→audio-bed, slate by folder/name), and asset ids are byte-compatible:
 // "media-" + sha256(relativePath with "/" separators).hex[..12].
 
+import AVFoundation
 import CryptoKit
 import Foundation
 import ImageIO
@@ -215,6 +216,41 @@ enum MediaBin {
             let ext = (asset.filePath as NSString).pathExtension.lowercased()
             return avFoundationVideoExtensions.contains(ext)
         }
+    }
+
+    /// Test hook: told whether a probe started on the main thread. Never set in production.
+    nonisolated(unsafe) static var probeThreadObserverForTesting: ((Bool) -> Void)?
+
+    private static func startedOnMainThread() -> Bool { Thread.isMainThread }
+
+    /// Durations in milliseconds by asset id, for every playable asset AVFoundation
+    /// can read. Stills and files it cannot open are simply absent. Runs OFF the
+    /// main actor: a bin on a slow volume must never stall the window.
+    /// (Windows' scan leaves DurationMs null; the Mac fills it, plan default D9.)
+    static func probeDurations(_ assets: [MediaAsset]) async -> [String: Int] {
+        probeThreadObserverForTesting?(startedOnMainThread())
+        var durations: [String: Int] = [:]
+        for asset in assets where asset.supportsPlayback {
+            let media = AVURLAsset(url: URL(fileURLWithPath: asset.filePath))
+            guard let duration = try? await media.load(.duration), duration.isNumeric else { continue }
+            let seconds = CMTimeGetSeconds(duration)
+            if seconds > 0 { durations[asset.id] = Int((seconds * 1000).rounded()) }
+        }
+        return durations
+    }
+
+    /// "<n> assets · <k> clips · <s> stills · <a> audio". A clip is anything that
+    /// plays (Windows SupportsPlayback), so an audio bed counts as a clip AND as audio.
+    static func summary(_ assets: [MediaAsset]) -> String {
+        guard !assets.isEmpty else { return "Bin is empty — import stills, stingers or audio beds." }
+        func count(_ n: Int, _ singular: String) -> String { "\(n) \(singular)\(n == 1 ? "" : "s")" }
+        let clips = assets.filter(\.supportsPlayback).count
+        let stills = assets.count - clips
+        let audio = assets.filter {
+            audioExtensions.contains(($0.filePath as NSString).pathExtension.lowercased())
+        }.count
+        return [count(assets.count, "asset"), count(clips, "clip"), count(stills, "still"), "\(audio) audio"]
+            .joined(separator: " · ")
     }
 
     // OverlayLayerService.ComputeOverlayRect: 15% canvas width, aspect-locked

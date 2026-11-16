@@ -73,6 +73,21 @@ enum TabSnapshotHarness {
         model.assignSlot(3, kind: "capture", sourceId: "cam-1", name: "Wide camera (Blackmagic)")
         model.slots[2].audioDeviceId = "mic"; model.slots[2].audioDeviceName = "USB Audio Interface"
         model.toggleSlotIso(1)
+        // The Media tab: one asset per kind, the clip selected. Synthetic rows, not
+        // files: a snapshot run must never read or write the operator's bin.
+        func asset(_ id: String, _ file: String, _ kind: String, _ ms: Int?, _ w: Int = 0, _ h: Int = 0) -> MediaAsset {
+            MediaAsset(id: id, name: (file as NSString).deletingPathExtension, kind: kind,
+                       relativePath: kind + "/" + file, filePath: "/snapshot/" + kind + "/" + file,
+                       naturalWidth: w, naturalHeight: h, durationMs: ms)
+        }
+        model.mediaAssets = [
+            asset("snap-sting", "Show open.mp4", "stinger", 12_400),
+            asset("snap-logo", "Station logo.png", "lower-third", nil, 1920, 1080),
+            asset("snap-bed", "Walk-on bed.wav", "audio-bed", 93_000),
+            asset("snap-slate", "slate-break.png", "slate", nil, 1920, 1080),
+        ]
+        model.selectedAssetId = "snap-sting"
+        model.mediaStatus = "Show open ready to cue or audition"
         model.roster = [
             RosterParticipant(id: "101", name: "Jordan Wallace", hasVideo: true,
                               muted: false, talking: true, assigned: true),

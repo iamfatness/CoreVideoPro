@@ -1868,8 +1868,12 @@ struct SlotRow: View {
 struct MediaPane: View {
     @EnvironmentObject var model: AppModel
 
+    var selected: MediaAsset? {
+        model.mediaAssets.first { $0.id == model.selectedAssetId }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Media").font(.grotesk(14, .semibold))
                 Spacer()
@@ -1883,39 +1887,125 @@ struct MediaPane: View {
                     // A cancelled panel is an import of nothing ("Media import canceled").
                     model.importMedia(urls: panel.runModal() == .OK ? panel.urls : [])
                 }
+                .accessibilityLabel("Import media files")
                 Button("Refresh") { model.refreshMediaBin() }
+                    .accessibilityLabel("Refresh the media bin")
             }
-            Text(MediaBin.root)
-                .font(.plexMono(8))
-                .foregroundStyle(Studio.secondary.opacity(0.6))
-                .lineLimit(1).truncationMode(.head)
-            if model.mediaAssets.isEmpty {
-                Text("Bin is empty — import stills, stingers or audio beds.")
+            MediaSelectedCard(asset: selected)
+            if !model.mediaStatus.isEmpty {
+                Text(model.mediaStatus)
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Media status: \(model.mediaStatus)")
             }
-            ForEach(model.mediaAssets) { asset in
-                HStack {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(asset.name).font(.grotesk(12)).lineLimit(1)
-                        Text("\(asset.kind)"
-                             + (asset.naturalWidth > 0
-                                ? " · \(asset.naturalWidth)×\(asset.naturalHeight)"
-                                : ""))
-                            .font(.plexMono(9))
-                            .foregroundStyle(Studio.secondary)
-                    }
-                    Spacer()
-                    if asset.isStillImage {
-                        Button(model.logoBug?.id == asset.id ? "Unbug" : "Bug") {
-                            model.toggleLogoBug(asset)
-                        }
-                        .font(.grotesk(11))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(MediaBin.summary(model.mediaAssets))
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                Text(MediaBin.root)
+                    .font(.plexMono(8))
+                    .foregroundStyle(Studio.secondary.opacity(0.6))
+                    .lineLimit(1).truncationMode(.head)
+            }
+            ForEach(MediaBin.groups(model.mediaAssets), id: \.kind) { group in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(group.label.uppercased())
+                        .font(.plexMono(9, .semibold)).foregroundStyle(Studio.textDim)
+                        .padding(.top, 4)
+                    ForEach(group.assets) { asset in
+                        MediaBinRow(asset: asset)
                     }
                 }
-                .padding(.vertical, 2)
             }
         }
         .modifier(StudioPanel())
+    }
+}
+
+/// "<Kind> · <duration> · <W>x<H>", omitting what is unknown.
+func mediaAssetDetail(_ asset: MediaAsset) -> String {
+    var parts = [MediaBin.kindLabel(asset.kind)]
+    if !asset.durationLabel.isEmpty { parts.append(asset.durationLabel) }
+    if asset.naturalWidth > 0 { parts.append("\(asset.naturalWidth)×\(asset.naturalHeight)") }
+    return parts.joined(separator: " · ")
+}
+
+/// The selected asset: what it is, and a local look at it. A clip sits paused
+/// on its first frame; a still is drawn; audio has no picture.
+struct MediaSelectedCard: View {
+    let asset: MediaAsset?
+
+    private var isAudio: Bool {
+        guard let asset else { return false }
+        return MediaBin.audioExtensions.contains((asset.filePath as NSString).pathExtension.lowercased())
+    }
+
+    private var playsLocally: Bool {
+        guard let asset else { return false }
+        return MediaBin.avFoundationVideoExtensions.contains((asset.filePath as NSString).pathExtension.lowercased())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let asset {
+                Text(asset.name).font(.grotesk(13, .semibold)).foregroundStyle(Studio.textPrimary).lineLimit(1)
+                Text(mediaAssetDetail(asset)).font(.plexMono(9)).foregroundStyle(Studio.secondary)
+                if asset.isStillImage {
+                    if let image = NSImage(contentsOfFile: asset.filePath) {
+                        Image(nsImage: image).resizable().scaledToFit()
+                            .frame(maxWidth: 320, maxHeight: 180, alignment: .leading)
+                            .accessibilityLabel("Preview of \(asset.name)")
+                    }
+                } else if playsLocally {
+                    MediaPreviewPlayer(url: URL(fileURLWithPath: asset.filePath))
+                        .frame(width: 320, height: 180)
+                        .background(Studio.field)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                } else if !isAudio {
+                    Text("No local preview: this build cannot play \((asset.filePath as NSString).pathExtension) files.")
+                        .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                }
+            } else {
+                Text("No media asset selected").font(.grotesk(12)).foregroundStyle(Studio.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Studio.field))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.border, lineWidth: 1))
+    }
+}
+
+struct MediaBinRow: View {
+    @EnvironmentObject var model: AppModel
+    let asset: MediaAsset
+
+    var body: some View {
+        let isSelected = model.selectedAssetId == asset.id
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(asset.name).font(.grotesk(12)).lineLimit(1)
+                Text(mediaAssetDetail(asset))
+                    .font(.plexMono(9))
+                    .foregroundStyle(Studio.secondary)
+            }
+            Spacer()
+            if asset.isStillImage {
+                Button(model.logoBug?.id == asset.id ? "Unbug" : "Bug") {
+                    model.toggleLogoBug(asset)
+                }
+                .font(.grotesk(11))
+                .accessibilityLabel(model.logoBug?.id == asset.id
+                                    ? "Remove \(asset.name) as the logo bug" : "Use \(asset.name) as the logo bug")
+            }
+            Button(isSelected ? "Selected" : "Select") { model.selectMediaAsset(asset.id) }
+                .font(.grotesk(11))
+                .disabled(isSelected)
+                .accessibilityLabel(isSelected ? "\(asset.name) is selected" : "Select \(asset.name)")
+            Button("Remove") { model.removeMediaAsset(asset.id) }
+                .font(.grotesk(11))
+                .accessibilityLabel("Remove \(asset.name) from the media bin")
+        }
+        .padding(.vertical, 2)
     }
 }
 

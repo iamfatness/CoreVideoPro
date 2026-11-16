@@ -421,6 +421,7 @@ final class AppModel: ObservableObject {
     @Published var selectedAssetId = ""
     /// The Media tab's one status line (Windows CommandStatus for media).
     @Published var mediaStatus = ""
+    private var mediaDurationProbeGeneration = 0
     @Published var logoBug: MediaAsset? {  // rides every scene as a top-right route
         didSet { mediaAudioSceneChanged(oldValue?.id != logoBug?.id) }
     }
@@ -3818,8 +3819,36 @@ final class AppModel: ObservableObject {
 
     // ── media bin + logo bug ─────────────────────────────────────────────────
 
+    /// Publishes the list at once, then fills durations from an off-main probe:
+    /// one write per refresh, never per frame.
     func refreshMediaBin() {
-        mediaAssets = MediaBin.loadAssets()
+        let known = Dictionary(mediaAssets.compactMap { asset in asset.durationMs.map { (asset.filePath, $0) } },
+                               uniquingKeysWith: { first, _ in first })
+        mediaAssets = MediaBin.loadAssets().map { asset in
+            var asset = asset
+            asset.durationMs = known[asset.filePath]
+            return asset
+        }
+        mediaDurationProbeGeneration += 1
+        let generation = mediaDurationProbeGeneration
+        let unprobed = mediaAssets.filter { $0.supportsPlayback && $0.durationMs == nil }
+        guard !unprobed.isEmpty else { return }
+        Task.detached { [weak self] in
+            let durations = await MediaBin.probeDurations(unprobed)
+            await self?.applyProbedDurations(durations, generation: generation)
+        }
+    }
+
+    private func applyProbedDurations(_ durations: [String: Int], generation: Int) {
+        // A newer refresh owns the list now; its own probe will fill it.
+        guard generation == mediaDurationProbeGeneration, !durations.isEmpty else { return }
+        let updated = mediaAssets.map { asset -> MediaAsset in
+            guard asset.durationMs == nil, let ms = durations[asset.id] else { return asset }
+            var asset = asset
+            asset.durationMs = ms
+            return asset
+        }
+        if updated != mediaAssets { mediaAssets = updated }
     }
 
     /// Import status is Windows' wording, verbatim (StudioViewModel.ImportMediaAsync).

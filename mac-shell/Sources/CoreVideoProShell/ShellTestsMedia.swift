@@ -2,6 +2,7 @@
 // its own file, like ShellTestsTier0.swift and ShellTestsVcamUpdate.swift, so
 // parallel branches extending ShellTests.swift do not collide line-for-line.
 
+import AVFoundation
 import Foundation
 
 extension ShellTests {
@@ -17,6 +18,8 @@ extension ShellTests {
             ("media-bin/root-isolated-under-harness", testMediaRootIsIsolatedUnderTheHarness),
             ("media-bin/remove-refused-in-use-else-trash", testMediaRemoveIsRefusedWhileInUseAndTrashesOtherwise),
             ("media-bin/import-status-windows-wording", testMediaImportStatusIsWindowsWording),
+            ("media-tab/summary-counts-by-kind", testMediaSummaryCountsByKind),
+            ("media-tab/durations-probe-real-files", testMediaDurationsProbeRealFiles),
         ]
     }
 
@@ -151,4 +154,114 @@ extension ShellTests {
         try? FileManager.default.removeItem(atPath: src)
         try? FileManager.default.removeItem(atPath: MediaBin.root)
     }
+
+    // ── Task 9: the Media tab, durations and the local preview (S3) ─────────
+
+    private static func testMediaSummaryCountsByKind() {
+        func a(_ f: String) -> MediaAsset {
+            MediaAsset(id: f, name: f, kind: "x", relativePath: f, filePath: "/b/" + f,
+                       naturalWidth: 0, naturalHeight: 0)
+        }
+        expectEqual(MediaBin.summary([a("a.mp4"), a("b.mov"), a("c.png"), a("d.wav")]),
+                    "4 assets · 3 clips · 1 still · 1 audio",
+                    "audio counts as a clip for playback AND as audio")
+        expectEqual(MediaBin.summary([]), "Bin is empty — import stills, stingers or audio beds.", "empty")
+    }
+
+    /// 1-channel 44.1 kHz silent AAC, `seconds` long, written with AVAssetWriter.
+    static func writeSilentM4a(path: String, seconds: Double) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        try? FileManager.default.removeItem(at: url)
+        guard let writer = try? AVAssetWriter(outputURL: url, fileType: .m4a) else { return false }
+        let rate = 44_100.0
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 64_000])
+        guard writer.canAdd(input) else { return false }
+        writer.add(input)
+        guard writer.startWriting() else { return false }
+        writer.startSession(atSourceTime: .zero)
+        var format = AudioStreamBasicDescription(
+            mSampleRate: rate, mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: 4,
+            mFramesPerPacket: 1, mBytesPerFrame: 4, mChannelsPerFrame: 1, mBitsPerChannel: 32, mReserved: 0)
+        var description: CMAudioFormatDescription?
+        guard CMAudioFormatDescriptionCreate(allocator: nil, asbd: &format, layoutSize: 0, layout: nil,
+                                             magicCookieSize: 0, magicCookie: nil, extensions: nil,
+                                             formatDescriptionOut: &description) == noErr,
+              let description else { return false }
+        let total = Int(seconds * rate)
+        var written = 0
+        let deadline = Date().addingTimeInterval(20)
+        while written < total, Date() < deadline {
+            guard input.isReadyForMoreMediaData else { Thread.sleep(forTimeInterval: 0.001); continue }
+            let count = min(4_410, total - written)
+            var block: CMBlockBuffer?
+            guard CMBlockBufferCreateWithMemoryBlock(
+                    allocator: nil, memoryBlock: nil, blockLength: count * 4, blockAllocator: nil,
+                    customBlockSource: nil, offsetToData: 0, dataLength: count * 4,
+                    flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block) == kCMBlockBufferNoErr,
+                  let block, CMBlockBufferFillDataBytes(with: 0, blockBuffer: block, offsetIntoDestination: 0,
+                                                        dataLength: count * 4) == kCMBlockBufferNoErr
+            else { return false }
+            var sample: CMSampleBuffer?
+            guard CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+                    allocator: nil, dataBuffer: block, formatDescription: description, sampleCount: count,
+                    presentationTimeStamp: CMTime(value: CMTimeValue(written), timescale: CMTimeScale(rate)),
+                    packetDescriptions: nil, sampleBufferOut: &sample) == noErr,
+                  let sample, input.append(sample) else { return false }
+            written += count
+        }
+        input.markAsFinished()
+        writer.endSession(atSourceTime: CMTime(value: CMTimeValue(total), timescale: CMTimeScale(rate)))
+        let done = DispatchSemaphore(value: 0)
+        writer.finishWriting { done.signal() }
+        _ = done.wait(timeout: .now() + 20)
+        return written == total && writer.status == .completed
+    }
+
+    @MainActor
+    private static func testMediaDurationsProbeRealFiles() {
+        guard MediaBin.root != MediaBin.realRoot, MediaBin.root.hasPrefix(NSTemporaryDirectory()) else {
+            expect(false, "REFUSED to run: the media bin is not isolated under the harness")
+            return
+        }
+        // Fixture: a 1.0 s silent AAC .m4a and a PNG, both real files in the harness bin.
+        let fm = FileManager.default
+        let audioDir = MediaBin.root + "/audio-bed", stillDir = MediaBin.root + "/lower-third"
+        try? fm.createDirectory(atPath: audioDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: stillDir, withIntermediateDirectories: true)
+        expect(writeSilentM4a(path: audioDir + "/second.m4a", seconds: 1.0), "fixture: the .m4a was written")
+        fm.createFile(atPath: stillDir + "/card.png", contents: Data([0x89, 0x50, 0x4E, 0x47]))
+        let assets = MediaBin.loadAssets()
+        let clip = assets.first { $0.name == "second" }
+        let still = assets.first { $0.name == "card" }
+        expect(clip != nil && still != nil, "fixture: both assets are in the bin")
+        var probedOnMain: [Bool] = []
+        MediaBin.probeThreadObserverForTesting = { probedOnMain.append($0) }
+        defer { MediaBin.probeThreadObserverForTesting = nil }
+        let box = ProbeBox()
+        Task.detached { box.set(await MediaBin.probeDurations(assets)) }
+        spin(until: { box.value != nil }, limit: 10)
+        let durations = box.value ?? [:]
+        let measured = durations[clip?.id ?? ""] ?? -1
+        expect(abs(measured - 1000) <= 25, "the .m4a probes to 1000 ms +/- 25 (AAC priming), got \(measured)")
+        expect(durations[still?.id ?? ""] == nil, "a still has no duration entry")
+        expectEqual(durations.count, 1, "exactly the one playable asset was probed")
+        expectEqual(probedOnMain, [false], "the probe ran once, off the main thread")
+        // The model writes the probe back: one publish, on the main actor.
+        let model = AppModel()
+        model.refreshMediaBin()
+        spin(until: { model.mediaAssets.first { $0.name == "second" }?.durationMs != nil }, limit: 10)
+        expectEqual(model.mediaAssets.first { $0.name == "second" }?.durationLabel ?? "", "1s",
+                    "refreshMediaBin fills durationMs from the probe")
+        try? fm.removeItem(atPath: MediaBin.root)
+    }
+}
+
+private final class ProbeBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String: Int]?
+    var value: [String: Int]? { lock.lock(); defer { lock.unlock() }; return stored }
+    func set(_ value: [String: Int]) { lock.lock(); stored = value; lock.unlock() }
 }
