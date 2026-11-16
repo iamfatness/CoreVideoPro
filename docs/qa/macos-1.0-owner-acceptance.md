@@ -163,11 +163,13 @@ not run them against a build without those tasks.
    change, nothing is submitted and `systemextensionsctl list` is unchanged.
 6a. Update while Zoom uses the camera: install a build with a higher `extensionVersion` while
    Zoom has CoreVideo Pro Camera selected in a call. Expected: nothing is replaced, the flyout,
-   Settings > System and Health show "An update to CoreVideo Pro Camera is ready. Quit apps
-   that are using the camera (Zoom, Teams, Photo Booth...), then click Update camera.", and
-   Zoom keeps working. Quit Zoom, click Update camera. Expected: the extension swaps with no
-   restart, `systemextensionsctl list` shows only the new version `[activated enabled]`, and
-   Photo Booth shows Program.
+   Settings > System and Health keep the camera status and add "An update to CoreVideo Pro
+   Camera is ready. Quit apps that are using the camera (Zoom, Teams, Photo Booth…), then click
+   Update camera.", and Zoom keeps working. Quit Zoom, click Update camera. Expected:
+   "Updating camera…", the extension swaps with no restart, `systemextensionsctl list` shows
+   only the new version `[activated enabled]`, and Photo Booth shows Program.
+6c. Update with the virtual camera on and no other app using it. Expected: the first launch
+   swaps the extension before the output starts; no Update camera step.
 6b. Forced deferred case: reproduce a stuck swap (an old copy `[terminated waiting to
    uninstall on reboot]` and no device, e.g. replace while Photo Booth streams from a build
    without this fix). Expected: within 10 s of launch the status is "Restart your Mac to finish

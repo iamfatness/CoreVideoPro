@@ -456,28 +456,46 @@ and the new one with no device until a restart (seen on the owner's Mac, build 2
 `2883 [activated enabled]`, `2881 [terminated waiting to uninstall on reboot]`, no device).
 So:
 
-- **Avoid needless swaps.** The version moves only when the extension changes.
-  `scripts/camera-extension-version.sh` records a sha256 of the extension's sources
-  (`mac-shell/Sources/CoreVideoProCamera`, `mac-shell/Sources/CameraExtensionKit`,
-  `scripts/macos-camera-extension.entitlements`) next to the version in
-  `scripts/camera-extension-version.record`; `release-macos.sh` and CI fail when the sources
-  changed and the version did not. To ship an extension change: bump `extensionVersion`, run
-  `scripts/camera-extension-version.sh update`, commit the record. The version started at
-  **3000**, above every build number (up to about 2883) the extension used to carry, so the
-  one-time transition is an upgrade, never a downgrade. Only ever increase it.
+- **Avoid needless swaps, and never ship a changed extension under an old version** (a Mac
+  that has that version installed would never get it). The version moves only when the
+  extension changes. `scripts/camera-extension-version.sh` records, next to the version in
+  `scripts/camera-extension-version.record`, a sha256 of everything the extension bundle is
+  built from (every file under `mac-shell/Sources/CoreVideoProCamera` and
+  `mac-shell/Sources/CameraExtensionKit`, `scripts/macos-camera-extension.entitlements`, and the
+  `camera-extension-hashed` blocks in `make-macos-shell-bundle.sh` (the extension Info.plist)
+  and `Package.swift` (the extension target and its linker settings)) plus the camera
+  provisioning profile's UUID. `release-macos.sh` checks the profile it signs with and the one
+  embedded in the built extension; CI checks the rest. Any change without a bump fails.
+  **Renewing the camera provisioning profile needs an `extensionVersion` bump.** To ship an
+  extension change: bump `extensionVersion`, run
+  `scripts/camera-extension-version.sh update --profile <camera profile>`, commit the record.
+  The version started at **3000**, above every build number (up to about 2883) the extension
+  used to carry, so the one-time transition is an upgrade, never a downgrade. Only ever
+  increase it. (3001: the device model carries the version; 3002: the gate's wider inputs.)
 - **Never swap in use.** Before replacing, the shell reads our device from the CoreMediaIO
-  HAL (`kCMIODevicePropertyDeviceIsRunningSomewhere`) and checks its own intent. In use: no
-  request, status "An update to CoreVideo Pro Camera is ready...", and an **Update camera**
-  button (flyout and Settings > System). The update installs by itself once the camera is free
-  (re-checked every 5 s, and at once when the virtual camera is turned off). Update camera
-  pauses our own output for the swap (the saved setting is unchanged), waits up to 5 s for the
-  device to stop, replaces, and resumes. The replacement delegate re-checks at the moment macOS
-  offers the swap.
-- **Say when only a restart helps.** After a completed (or already-active) activation the
-  shell waits up to 10 s for our device to register. If it never does and macOS reports an
-  older copy uninstalling, or our version not enabled, the status becomes "Restart your Mac to
-  finish updating the virtual camera." (also when macOS itself answers "will complete after
-  reboot"). It stays until a relaunch finds the device.
+  HAL (`kCMIODevicePropertyDeviceIsRunningSomewhere`). Our own core's sink stream also makes the
+  device run, so an opted-in launch with the output on holds the first `on` until the launch
+  decision (and any swap it starts) is done: with no other app on the camera the update simply
+  happens at launch, then the output starts. When another app has the camera: no request, a
+  second line under the status ("An update to CoreVideo Pro Camera is ready. Quit apps that are
+  using the camera (Zoom, Teams, Photo Booth…), then click Update camera.", or, when only our
+  own output holds it, "…Click Update camera — your camera output pauses for a few seconds."),
+  and an **Update camera** button (flyout and Settings > System). The update installs by itself
+  once the camera is free (re-checked every 5 s, and at once when the virtual camera is turned
+  off). Update camera shows "Updating camera…", pauses our own output for the swap (the saved
+  setting is unchanged), waits up to 5 s for the device to stop, replaces, and resumes only
+  after the replacement finished. The replacement delegate re-checks at the moment macOS
+  offers the swap. Running from the DMG or a dev build, "Move CoreVideo Pro to the Applications
+  folder…" comes first.
+- **Say when only a restart helps.** A launch that finds an older copy still uninstalling and
+  no device goes straight to "Restart your Mac to finish updating the virtual camera." and
+  submits nothing. After a completed (or already-active) activation the shell waits up to 10 s
+  for OUR version's device: the device model UID carries the extension version
+  (`CoreVideo Pro Camera/<version>`), because the old copy's device has the same UID and lingers
+  while it exits. If it never appears and macOS reports an older copy uninstalling, or our
+  version not enabled, the status becomes the restart message (also when macOS itself answers
+  "will complete after reboot"). Mid-session, the core reporting the camera lost for over 10 s
+  re-runs the check. It stays until a relaunch finds the device.
 
 ### Remove
 
@@ -490,7 +508,9 @@ the opt-in; the next enable asks for approval again.
 | Status text | Meaning and fix |
 |---|---|
 | Virtual camera off | The toggle is off. |
-| An update to CoreVideo Pro Camera is ready. Quit apps that are using the camera (Zoom, Teams, Photo Booth...), then click Update camera. | A new extension version is bundled and an app (or our own output) is using the camera, so nothing was replaced; the old copy still works. Quit the apps and click Update camera, or just wait: it installs by itself when the camera is free. If it stays, Health > Virtual camera "in use" says whether macOS still sees the camera running. |
+| An update to CoreVideo Pro Camera is ready. Quit apps that are using the camera (Zoom, Teams, Photo Booth…), then click Update camera. (second line) | A new extension version is bundled and another app is using the camera, so nothing was replaced; the old copy still works. Quit the apps and click Update camera, or just wait: it installs by itself when the camera is free. If it stays, Health > Virtual camera "running somewhere (any app)" says whether macOS still sees the camera running. |
+| An update to CoreVideo Pro Camera is ready. Click Update camera — your camera output pauses for a few seconds. (second line) | Only our own output holds the camera. Click Update camera. |
+| Updating camera… | Update camera is running: our output is paused until the swap finishes. |
 | Installing the virtual camera... | The OS request is in flight. Wait. |
 | Allow CoreVideo Pro Camera in System Settings to finish setup. | Approval pending. Use "Open System Settings", approve, no relaunch needed. |
 | Move CoreVideo Pro to the Applications folder to use the virtual camera. | The app runs from the DMG or another folder. Install to `/Applications`. |
