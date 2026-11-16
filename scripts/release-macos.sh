@@ -135,7 +135,10 @@ fi
 # The camera extension's own version must move with its sources: an
 # unbumped change would ship a different extension under the installed
 # version (never replaced), a needless bump forces every user through a swap.
-scripts/camera-extension-version.sh check || die "camera extension version gate failed (see above)"
+# --profile: a renewed camera provisioning profile is a new extension bundle
+# too, so it needs a bump like any source change.
+scripts/camera-extension-version.sh check --profile "$CAMERA_PROFILE" \
+    || die "camera extension version gate failed (see above)"
 DIRTY=false
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     DIRTY=true
@@ -277,6 +280,11 @@ EXT_DIR="$APP/Contents/Library/SystemExtensions/us.iamfatness.corevideopro.shell
 EXT_BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_DIR/Contents/Info.plist")"
 [ "$EXT_BUNDLE_VERSION" = "$(scripts/camera-extension-version.sh version)" ] \
     || die "camera extension CFBundleVersion $EXT_BUNDLE_VERSION is not CameraConstants.extensionVersion"
+# The profile actually sealed into the extension, not just the one we meant to use.
+scripts/camera-extension-version.sh check --profile "$EXT_DIR/Contents/embedded.provisionprofile" \
+    || die "the camera extension's embedded profile does not match scripts/camera-extension-version.record"
+EXT_SOURCE_HASH="$(sed -n 's/^sourceHash=//p' scripts/camera-extension-version.record)"
+EXT_PROFILE_UUID="$(sed -n 's/^cameraProfileUUID=//p' scripts/camera-extension-version.record)"
 CAM_PROFILE_PLIST="$WORK/camera-profile.plist"
 security cms -D -i "$CAMERA_PROFILE" >"$CAM_PROFILE_PLIST" 2>/dev/null || die "cannot decode $CAMERA_PROFILE"
 CAM_PROFILE_EXPIRES="$(plutil -extract ExpirationDate raw -o - "$CAM_PROFILE_PLIST")"
@@ -435,6 +443,8 @@ manifest = {
             "notarized": $( [ "$NOTARIZE" = 1 ] && echo True || echo False ),
             "stapled": $( [ "$NOTARIZE" = 1 ] && echo True || echo False )},
     "cameraExtension": {"bundleVersion": "$EXT_BUNDLE_VERSION",
+                        "sourceHash": "$EXT_SOURCE_HASH",
+                        "profileUUID": "$EXT_PROFILE_UUID",
                         "profileExpires": "$CAM_PROFILE_EXPIRES",
                         "certificateExpires": "$CERT_EXPIRES"},
     "bundledHelpers": "$HELPERS".split(","),

@@ -17,6 +17,8 @@ let package = Package(
         // The CoreMediaIO camera extension (roadmap M9.2). Assembled into
         // Contents/Library/SystemExtensions/…camera.systemextension by
         // scripts/make-macos-shell-bundle.sh; never run directly.
+        // >>> camera-extension-hashed: scripts/camera-extension-version.sh hashes
+        // this target's lines; changing them needs an extensionVersion bump.
         .executableTarget(
             name: "CoreVideoProCamera",
             dependencies: ["CameraExtensionKit"],
@@ -30,6 +32,7 @@ let package = Package(
                 .linkedFramework("VideoToolbox")
             ]
         ),
+        // <<< camera-extension-hashed
         // Capture probe for the virtual camera's local e2e check
         // (scripts/macos-vcam-e2e.sh, roadmap M9.2 Task 7). A developer tool:
         // never bundled into the app.

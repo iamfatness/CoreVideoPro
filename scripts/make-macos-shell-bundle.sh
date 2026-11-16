@@ -160,6 +160,8 @@ fi
 EXT="$APP/Contents/Library/SystemExtensions/$EXT_ID.systemextension"
 mkdir -p "$EXT/Contents/MacOS"
 cp "$CAMERA_BIN" "$EXT/Contents/MacOS/CoreVideoProCamera"
+# >>> camera-extension-hashed: scripts/camera-extension-version.sh hashes the
+# lines between these markers; changing them needs an extensionVersion bump.
 cat > "$EXT/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -180,6 +182,7 @@ cat > "$EXT/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# <<< camera-extension-hashed
 if [ "$SIGN_ID" = "-" ]; then
     # Extension first: signing the app seals it, and a nested signature made
     # afterwards would break that seal.
