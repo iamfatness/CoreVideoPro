@@ -84,4 +84,31 @@ enum MediaRoutePlayback {
     static func isLoopingKind(_ kind: String?) -> Bool {
         (kind ?? "").lowercased() == "background"
     }
+
+    /// Assets on fixed media routes, route order, de-duplicated (Windows ProgramMediaAssetIds).
+    static func programMediaAssetIds(_ routes: [JSONObject]) -> [String] {
+        var ids: [String] = []
+        for route in routes where route["mode"] as? String == "fixed" {
+            guard let id = route["mediaAssetId"] as? String, !id.isEmpty, !ids.contains(id) else { continue }
+            ids.append(id)
+        }
+        return ids
+    }
+
+    /// Windows IsMediaAssetRoutedOnProgram. Works for any bus: pass that bus's routes.
+    static func isRoutedOnProgram(_ assetId: String, programRoutes: [JSONObject]) -> Bool {
+        !assetId.isEmpty && programMediaAssetIds(programRoutes).contains(assetId)
+    }
+
+    /// StudioViewModel.FormatSelectedMediaAssetSummary, verbatim. Program wins over Preview.
+    static func selectedSummary(name: String?, isOnProgram: Bool, isCuedInPreview: Bool, playing: Bool) -> String {
+        guard let name, !name.trimmingCharacters(in: .whitespaces).isEmpty else { return "No media asset selected" }
+        if isOnProgram { return playing ? "Playing \(name) on Program" : "\(name) paused on Program" }
+        return isCuedInPreview ? "\(name) cued in Preview" : "\(name) ready to cue"
+    }
+
+    /// What Cue says for a file the Mac core refuses (plan default D1), the
+    /// decoder's own sentence.
+    static let webmRefusal =
+        "AVFoundation cannot open .webm files; WebM playback on Mac needs FFmpeg, which this build does not use yet."
 }

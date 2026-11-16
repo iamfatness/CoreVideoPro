@@ -1892,11 +1892,28 @@ struct MediaPane: View {
                     .accessibilityLabel("Refresh the media bin")
             }
             MediaSelectedCard(asset: selected)
+            HStack(spacing: 8) {
+                Text(model.selectedMediaSummary)
+                    .font(.grotesk(12, .semibold)).foregroundStyle(Studio.textPrimary)
+                    .accessibilityLabel("Selected media: \(model.selectedMediaSummary)")
+                Spacer()
+                Button("Cue in Preview") { model.cueSelectedInPreview() }
+                    .buttonStyle(GhostButtonStyle())
+                    .disabled(!model.canCueSelectedMedia)
+                    .help(model.cueRefusalReason ?? "Add the selected asset to the Preview scene as a full-canvas layer")
+                    .accessibilityLabel("Cue the selected asset in Preview")
+            }
             if !model.mediaStatus.isEmpty {
                 Text(model.mediaStatus)
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel("Media status: \(model.mediaStatus)")
+            }
+            if let warning = model.mediaPlayback?.warnings.first {
+                Text(warning)
+                    .font(.grotesk(11)).foregroundStyle(Studio.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Media warning: \(warning)")
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(MediaBin.summary(model.mediaAssets))

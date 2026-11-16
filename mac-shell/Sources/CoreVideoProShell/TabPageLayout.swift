@@ -88,6 +88,26 @@ enum TabSnapshotHarness {
         ]
         model.selectedAssetId = "snap-sting"
         model.mediaStatus = "Show open ready to cue or audition"
+        // COREVIDEO_SHELL_MEDIA_SNAPSHOT=empty|cued|program: the Media tab's other states.
+        switch ProcessInfo.processInfo.environment["COREVIDEO_SHELL_MEDIA_SNAPSHOT"] {
+        case "empty":
+            model.mediaAssets = []; model.selectedAssetId = ""; model.mediaStatus = ""
+        case "cued", "program":
+            model.applySnapshotForTesting(
+                ["profile": ["capabilityStates": ["media-clip-playback": ["state": "available"]]]])
+            if model.scenes.count >= 2 {
+                model.programSceneId = model.scenes[0].id
+                model.previewSceneId = model.scenes[1].id
+                model.cueSelectedInPreview()
+                if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_MEDIA_SNAPSHOT"] == "program" {
+                    swap(&model.programSceneId, &model.previewSceneId)
+                    model.applySnapshotForTesting(["mediaSources": [[
+                        "sourceId": "media:snap-sting", "mediaAssetId": "snap-sting", "state": "live",
+                        "onProgram": true, "onPreview": false, "positionMs": 3200.0, "durationMs": 12400.0]]])
+                }
+            }
+        default: break
+        }
         model.roster = [
             RosterParticipant(id: "101", name: "Jordan Wallace", hasVideo: true,
                               muted: false, talking: true, assigned: true),

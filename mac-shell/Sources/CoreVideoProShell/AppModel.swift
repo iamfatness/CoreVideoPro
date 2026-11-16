@@ -3893,6 +3893,70 @@ final class AppModel: ObservableObject {
         syncScenes()   // the selection rides the batch as set-media-playback
     }
 
+    // ── Cue in Preview (Windows AddSelectedMediaAssetToPreview) ─────────────
+
+    private var selectedMediaAsset: MediaAsset? {
+        selectedAssetId.isEmpty ? nil : mediaAssets.first { $0.id == selectedAssetId }
+    }
+
+    /// Why Cue would refuse right now, or nil when it would add the layer.
+    /// Status strings are Windows' unless marked Mac.
+    var cueRefusalReason: String? {
+        guard let asset = selectedMediaAsset else { return "Select a media asset before adding it to Preview" }
+        // The solo check comes BEFORE the scene lookup: a solo scene is not in `scenes`.
+        guard !Self.isSoloScene(previewSceneId), scenes.contains(where: { $0.id == previewSceneId }) else {
+            return "Cue in Preview needs an operator scene in Preview."            // Mac
+        }
+        if asset.supportsPlayback {
+            guard mediaClipPlaybackAvailable else { return "Clip playback is unavailable in this build" }   // Mac
+            if (asset.filePath as NSString).pathExtension.lowercased() == "webm" { return MediaRoutePlayback.webmRefusal }
+        }
+        if MediaRoutePlayback.isRoutedOnProgram(asset.id, programRoutes: buildRoutes(for: previewSceneId)) {
+            return "\(asset.name) is already cued in Preview"
+        }
+        return nil
+    }
+
+    var canCueSelectedMedia: Bool { cueRefusalReason == nil }
+
+    /// Adds the selection to the Preview scene as a full-canvas media layer on top
+    /// (Windows BuildAddedSourceRoute: full canvas, FitMode "fill", appended).
+    /// Returns the status it set.
+    @discardableResult
+    func cueSelectedInPreview() -> String {
+        if let refusal = cueRefusalReason {
+            mediaStatus = refusal
+            return refusal
+        }
+        guard let asset = selectedMediaAsset,
+              let index = scenes.firstIndex(where: { $0.id == previewSceneId }) else { return mediaStatus }
+        let sceneId = previewSceneId
+        ensureLayers(for: sceneId)
+        var free = 0
+        while scenes[index].layers.contains(where: { $0.id == "\(sceneId)-layer-\(free)" }) { free += 1 }
+        scenes[index].layers.append(SceneLayer(
+            id: "\(sceneId)-layer-\(free)", slotId: nil, x: 0, y: 0, width: 1, height: 1,
+            fitMode: "fill", opacity: 1, mediaAssetId: asset.id))
+        syncScenes()
+        mediaStatus = asset.isStillImage
+            ? "\(asset.name) cued in Preview; Take to show it on Program"
+            : "\(asset.name) cued in Preview; Take to start playback on Program"
+        return mediaStatus
+    }
+
+    /// The card's one-line summary of the selection (Windows SelectedMediaAssetSummary).
+    var selectedMediaSummary: String {
+        guard let asset = selectedMediaAsset else {
+            return MediaRoutePlayback.selectedSummary(name: nil, isOnProgram: false, isCuedInPreview: false, playing: false)
+        }
+        return MediaRoutePlayback.selectedSummary(
+            name: asset.name,
+            isOnProgram: MediaRoutePlayback.isRoutedOnProgram(
+                asset.id, programRoutes: buildRoutes(for: programSceneId, isProgram: true)),
+            isCuedInPreview: MediaRoutePlayback.isRoutedOnProgram(asset.id, programRoutes: buildRoutes(for: previewSceneId)),
+            playing: false)   // S2 (Task 12) binds the on-air flag
+    }
+
     /// Every assignment is change-gated: snapshots arrive several times a second
     /// and an unconditional @Published write would invalidate the Media tab at
     /// snapshot rate.

@@ -26,6 +26,10 @@ extension ShellTests {
             ("media-wire/clip-capability-from-profile", testClipCapabilityComesFromTheProfile),
             ("media-wire/route-wire-drops-retired-fields", testMediaRouteWireDropsRetiredFieldsAndSendsLoop),
             ("media-wire/logo-bug-route-drops-retired-fields", testLogoBugRouteWireDropsRetiredFields),
+            ("media-cue/adds-full-canvas-layer-refuses-duplicate", testCueInPreviewAddsAFullCanvasMediaLayerAndRefusesADuplicate),
+            ("media-cue/refuses-clip-without-capability", testCueRefusesAClipWhenTheBuildCannotPlayClipsButCuesStills),
+            ("media-cue/refuses-solo-preview", testCueRefusesASoloPreview),
+            ("media-cue/selected-summary-windows-wording", testSelectedSummaryIsWindowsWording),
         ]
     }
 
@@ -366,6 +370,73 @@ extension ShellTests {
             expect(bug?["mediaAssetPlaying"] == nil, "\(sceneId): bug route sends no mediaAssetPlaying")
             expectEqual(bug?["mediaAssetLoop"] as? Bool, false, "\(sceneId): bug route sends mediaAssetLoop false")
         }
+    }
+
+    // ── Task 11: Cue in Preview, the selected-asset card, playout status (S1) ─
+
+    @MainActor
+    static func cueModel() -> AppModel {
+        let model = sceneEditModel()                        // Preview s1 "Intro" (1 slot layer), Program s2
+        model.mediaAssets = [
+            MediaAsset(id: "clip", name: "Sting", kind: "stinger", relativePath: "stinger/s.mp4",
+                       filePath: "/b/stinger/s.mp4", naturalWidth: 0, naturalHeight: 0),
+            MediaAsset(id: "logo", name: "Logo", kind: "lower-third", relativePath: "lower-third/l.png",
+                       filePath: "/b/lower-third/l.png", naturalWidth: 0, naturalHeight: 0),
+            MediaAsset(id: "bg-asset", name: "BG", kind: "lower-third", relativePath: "lower-third/bg.png",
+                       filePath: "/b/lower-third/bg.png", naturalWidth: 0, naturalHeight: 0)]
+        return model
+    }
+
+    @MainActor
+    private static func testCueInPreviewAddsAFullCanvasMediaLayerAndRefusesADuplicate() {
+        let model = cueModel()
+        model.applySnapshotForTesting(["profile": ["capabilityStates": ["media-clip-playback": ["state": "available"]]]])
+        expectEqual(model.cueSelectedInPreview(), "Select a media asset before adding it to Preview", "no selection")
+        model.selectedAssetId = "clip"
+        expectEqual(model.cueSelectedInPreview(),
+                    "Sting cued in Preview; Take to start playback on Program", "clip wording")
+        let layer = model.scenes[0].layers.last!
+        expectEqual(layer.mediaAssetId, "clip", "media layer"); expectEqual(layer.id, "s1-layer-1", "first free index")
+        expectEqual([layer.x, layer.y, layer.width, layer.height], [0, 0, 1, 1], "full canvas")
+        expectEqual(layer.fitMode, "fill", "Windows default fit")
+        expectEqual(model.scenes[0].layers.count, 2, "appended on top of the existing layer")
+        expectEqual(model.cueSelectedInPreview(), "Sting is already cued in Preview", "duplicate refused")
+        expectEqual(model.scenes[0].layers.count, 2, "no second layer")
+        model.selectedAssetId = "logo"
+        expectEqual(model.cueSelectedInPreview(), "Logo cued in Preview; Take to show it on Program", "still wording")
+    }
+
+    @MainActor
+    private static func testCueRefusesAClipWhenTheBuildCannotPlayClipsButCuesStills() {
+        let model = cueModel()                              // no capability snapshot -> unavailable
+        model.selectedAssetId = "clip"
+        expectEqual(model.cueSelectedInPreview(), "Clip playback is unavailable in this build", "clip refused")
+        expectEqual(model.scenes[0].layers.count, 1, "nothing added")
+        model.selectedAssetId = "logo"
+        expect(model.cueSelectedInPreview().hasPrefix("Logo cued in Preview"), "stills still cue")
+    }
+
+    @MainActor
+    private static func testCueRefusesASoloPreview() {
+        let model = cueModel()
+        model.applySnapshotForTesting(["profile": ["capabilityStates": ["media-clip-playback": ["state": "available"]]]])
+        model.selectedAssetId = "logo"
+        model.previewSceneId = "mv-solo-a"                  // a solo scene id (AppModel.isSoloScene)
+        expectEqual(model.cueSelectedInPreview(), "Cue in Preview needs an operator scene in Preview.", "solo refused")
+    }
+
+    private static func testSelectedSummaryIsWindowsWording() {
+        typealias P = MediaRoutePlayback
+        expectEqual(P.selectedSummary(name: nil, isOnProgram: false, isCuedInPreview: false, playing: false),
+                    "No media asset selected", "none")
+        expectEqual(P.selectedSummary(name: "Sting", isOnProgram: true, isCuedInPreview: false, playing: true),
+                    "Playing Sting on Program", "live")
+        expectEqual(P.selectedSummary(name: "Sting", isOnProgram: true, isCuedInPreview: true, playing: false),
+                    "Sting paused on Program", "Program wins over Preview")
+        expectEqual(P.selectedSummary(name: "Sting", isOnProgram: false, isCuedInPreview: true, playing: false),
+                    "Sting cued in Preview", "cued")
+        expectEqual(P.selectedSummary(name: "Sting", isOnProgram: false, isCuedInPreview: false, playing: false),
+                    "Sting ready to cue", "idle")
     }
 }
 
