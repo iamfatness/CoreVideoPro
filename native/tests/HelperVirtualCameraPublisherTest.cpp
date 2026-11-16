@@ -195,9 +195,15 @@ std::shared_ptr<const std::vector<uint8_t>> frame(int w = 1920, int h = 1080, ui
 
 }  // namespace
 
-// THE DEFECT, pinned as it was measured. The sink in the long-running process
-// keeps its first view, so the provider's arrival changes nothing, forever.
-TEST(VcamProviderArrival, ASinkInsideTheLongRunningProcessNeverSeesAProviderThatArrivesLater) {
+// A check of THIS FILE'S FIXTURE, not of macOS and not of product code: it
+// passes by construction, because InProcessSink is a fake whose ProcessView
+// never refreshes. The platform behaviour it stands in for (a process never
+// sees a camera-extension provider that registers after its first CoreMediaIO
+// touch) was MEASURED on macOS 26.3 on 2026-11-16 and no unit test proves it;
+// see the plan's evidence and its owner gate. What this keeps honest is the
+// premise the next test depends on: with the fake's rule, retrying inside one
+// process can never succeed, so a connect there can only come from a new one.
+TEST(VcamProviderArrival, FixturePremiseAProcessViewInTheseFakesIsFixedAtFirstTouch) {
   World world;
   SinkVirtualCameraPublisher inProcess(std::make_unique<InProcessSink>(world), [] { return int64_t{0}; },
                                        /*logConnectFailures=*/false);
@@ -210,8 +216,8 @@ TEST(VcamProviderArrival, ASinkInsideTheLongRunningProcessNeverSeesAProviderThat
   EXPECT_EQ(inProcess.status().warning, kNotFound);
 }
 
-// THE FIX. Same world, same rule for every process's view; the only change is
-// that each attempt is a new process.
+// THE FIX, under that modelled rule: same world, same rule for every process's
+// view; the only change is that each attempt is a new process.
 TEST(VcamProviderArrival, AHelperStartedAfterTheProviderArrivesConnectsWithNoToggleAndNoCoreRestart) {
   Rig rig;
   EXPECT_FALSE(rig.camera->start(1920, 1080, 60));

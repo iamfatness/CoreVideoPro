@@ -2,14 +2,25 @@
 // mac-vcam-provider-arrival-fix, Task 3 design B): the real helper loop over a
 // real shared region and wake pipe with a fake sink, and the real POSIX
 // launcher against ordinary system executables. Built only with
-// COREVIDEO_WITH_MAC_VIRTUALCAM. Nothing here touches CoreMediaIO.
+// COREVIDEO_WITH_MAC_VIRTUALCAM. Nothing in THIS process touches CoreMediaIO;
+// the wiring tests at the end run the built core in its two process modes, and
+// the device-probe mode reads the camera's HAL properties in that child (the
+// read the shell makes; it starts no stream).
 #include "modules/HelperVirtualCameraPublisher.h"
 #include "modules/SinkVirtualCameraPublisher.h"
 #include "modules/VcamSinkHelper.h"
 #include "modules/VirtualCameraFrame.h"
+#include "modules/VirtualCameraPublisher.h"
 
 #include <gtest/gtest.h>
 
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -22,6 +33,8 @@
 #include <vector>
 
 using namespace corevideo::modules;
+
+extern char** environ;
 
 namespace {
 
@@ -230,4 +243,130 @@ TEST(VcamSinkHelperProcess, ThisProcessCanNameItsOwnExecutableAndItsParents) {
   EXPECT_EQ(executablePathOfProcess(::getpid()), currentExecutablePath());
   EXPECT_FALSE(vcamHelperParentAllowed(currentExecutablePath(), executablePathOfProcess(::getppid())))
       << "the test runner is not this executable";
+}
+
+// ---------------------------------------------------------------------------
+// Wiring (review finding 4, 2026-11-16). Everything above tests the parts; a
+// build that put the in-process sink back in the factory, dropped the process-
+// mode dispatch from main, or dropped the helper's parent check passed all of
+// it. These three fail on those regressions.
+
+// The product's factory, as every MediaCore gets it. This binary never called
+// enableVirtualCameraSinkHelper(), so the helper publisher has no executable
+// to start and says so; any other backend (the in-process CoreMediaIO sink
+// included) starts no helper and reports none.
+TEST(VcamWiring, TheFactoryBuildsTheHelperPublisherNotAnInProcessSink) {
+  auto camera = createVirtualCameraPublisher();
+  ASSERT_NE(camera, nullptr);
+  camera->start(1920, 1080, 60);  // applied on the publisher's own worker
+  VirtualCameraStatus status;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  do {
+    status = camera->status();
+    if (status.sinkAttempts > 0) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  } while (std::chrono::steady_clock::now() < deadline);
+  camera->stop();
+  EXPECT_GE(status.sinkAttempts, 1u) << "no sink helper was attempted: state '" << status.state << "', warning '"
+                                     << status.warning << "'";
+  EXPECT_EQ(status.sinkHelperLastExit, "not started");
+  EXPECT_NE(status.warning.find("own path is unknown"), std::string::npos) << status.warning;
+  EXPECT_EQ(status.deviceVisibleToSystem, -1) << "nothing in this process looked at the camera";
+}
+
+namespace {
+
+struct CoreRun {
+  bool started = false;
+  bool timedOut = false;
+  int exitCode = -1;  // -signal when a signal ended it
+  std::string out, err, error;
+};
+
+// Runs the built core (COREVIDEO_NATIVE_CORE_PATH) with one argument, as a
+// child of THIS process, with stdin at /dev/null and nothing inherited above
+// stderr (so no descriptor can pass for the helper's shared region).
+CoreRun runBuiltCore(const char* argument, std::chrono::milliseconds limit) {
+  CoreRun run;
+  const std::string core = COREVIDEO_NATIVE_CORE_PATH;
+  int outPipe[2] = {-1, -1}, errPipe[2] = {-1, -1};
+  if (::pipe(outPipe) != 0 || ::pipe(errPipe) != 0) { run.error = "pipe failed"; return run; }
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+  posix_spawn_file_actions_adddup2(&actions, outPipe[1], 1);
+  posix_spawn_file_actions_adddup2(&actions, errPipe[1], 2);
+  posix_spawnattr_t attributes;
+  posix_spawnattr_init(&attributes);
+  posix_spawnattr_setflags(&attributes, POSIX_SPAWN_CLOEXEC_DEFAULT);
+  std::string program = core, arg = argument;
+  char* argv[] = {program.data(), arg.data(), nullptr};
+  pid_t pid = 0;
+  const int spawned = ::posix_spawn(&pid, core.c_str(), &actions, &attributes, argv, environ);
+  posix_spawn_file_actions_destroy(&actions);
+  posix_spawnattr_destroy(&attributes);
+  ::close(outPipe[1]);
+  ::close(errPipe[1]);
+  if (spawned != 0) {
+    ::close(outPipe[0]);
+    ::close(errPipe[0]);
+    run.error = "posix_spawn " + core + ": " + std::strerror(spawned);
+    return run;
+  }
+  run.started = true;
+  const auto deadline = std::chrono::steady_clock::now() + limit;
+  struct pollfd fds[2] = {{outPipe[0], POLLIN, 0}, {errPipe[0], POLLIN, 0}};
+  std::string* sinks[2] = {&run.out, &run.err};
+  int open = 2;
+  while (open > 0) {
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+    if (left.count() <= 0) { run.timedOut = true; break; }
+    const int ready = ::poll(fds, 2, static_cast<int>(left.count()));
+    if (ready < 0 && errno == EINTR) continue;
+    if (ready <= 0) { run.timedOut = ready == 0; break; }
+    for (int i = 0; i < 2; ++i) {
+      if (fds[i].fd < 0 || (fds[i].revents & (POLLIN | POLLHUP | POLLERR)) == 0) continue;
+      char buffer[4096];
+      const ssize_t got = ::read(fds[i].fd, buffer, sizeof(buffer));
+      if (got > 0) { sinks[i]->append(buffer, static_cast<std::size_t>(got)); continue; }
+      if (got < 0 && errno == EINTR) continue;
+      fds[i].fd = -1;  // end of file
+      --open;
+    }
+  }
+  if (run.timedOut) ::kill(pid, SIGKILL);
+  int status = 0;
+  while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+  ::close(outPipe[0]);
+  ::close(errPipe[0]);
+  run.exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status);
+  return run;
+}
+
+}  // namespace
+
+// main's process-mode dispatch and runSinkHelper's real parent check, in the
+// built core: started by anything but the core itself, the helper refuses
+// BEFORE it looks at a descriptor or the camera, and says so. A main without
+// the dispatch runs an ordinary core here (no refusal line); a helper without
+// the check fails on its missing region instead (same exit code, no refusal).
+TEST(VcamWiring, TheBuiltCoreRefusesToBeASinkHelperForAnyParentButItself) {
+  const auto run = runBuiltCore(kVcamSinkHelperArgument, std::chrono::seconds(20));
+  ASSERT_TRUE(run.started) << run.error;
+  EXPECT_FALSE(run.timedOut) << "the core did not leave: it did not take the helper mode";
+  EXPECT_EQ(run.exitCode, kVcamHelperExitBadInvocation) << run.err;
+  EXPECT_NE(run.err.find("sink helper refused"), std::string::npos) << "stderr: " << run.err;
+  EXPECT_TRUE(run.out.empty()) << "a helper never writes the core's RPC channel: " << run.out;
+}
+
+// The other process mode the shell depends on: one line of JSON and out.
+TEST(VcamWiring, TheBuiltCoreAnswersTheDeviceProbeAndExits) {
+  const auto run = runBuiltCore(kVcamDeviceProbeArgument, std::chrono::seconds(20));
+  ASSERT_TRUE(run.started) << run.error;
+  EXPECT_FALSE(run.timedOut) << "the core did not leave: it did not take the probe mode";
+  EXPECT_EQ(run.exitCode, 0) << run.err;
+  EXPECT_EQ(run.out.rfind("{\"registered\":", 0), 0u) << "stdout: " << run.out;
+  EXPECT_NE(run.out.find("\"runningSomewhere\":"), std::string::npos) << run.out;
+  EXPECT_NE(run.out.find("\"modelUid\":"), std::string::npos) << run.out;
+  EXPECT_EQ(std::count(run.out.begin(), run.out.end(), '\n'), 1) << "exactly one line: " << run.out;
 }

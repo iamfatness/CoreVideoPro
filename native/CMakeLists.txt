@@ -1106,6 +1106,10 @@ if(BUILD_TESTING)
   # The sink helper's process half exists only in the macOS virtual-camera build.
   if(APPLE AND COREVIDEO_WITH_MAC_VIRTUALCAM)
     target_sources(corevideo-native-tests PRIVATE tests/VcamSinkHelperTest.cpp)
+    # The wiring tests run the built core in its two process modes.
+    target_compile_definitions(corevideo-native-tests PRIVATE
+      COREVIDEO_NATIVE_CORE_PATH="$<TARGET_FILE:corevideo-native>")
+    add_dependencies(corevideo-native-tests corevideo-native)
   endif()
   if(GTest_FOUND)
     target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_USE_SYSTEM_GTEST=1)
