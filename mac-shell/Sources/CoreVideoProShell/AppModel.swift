@@ -2323,23 +2323,7 @@ final class AppModel: ObservableObject {
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
-        let multiviewSources: [JSONObject] = slots
-            .filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }
-            .map { slot in
-                slot.kind == "zoom"
-                    ? [
-                        "sourceId": "zoom:" + slot.sourceId,
-                        "kind": "participant-video",
-                        "participantId": slot.sourceId,
-                        "label": slot.name,
-                    ]
-                    : [
-                        "sourceId": "capture:" + slot.sourceId,
-                        "kind": "capture-input",
-                        "captureDeviceId": slot.sourceId,
-                        "label": slot.name,
-                    ]
-            }
+        let multiviewSources = Self.multiviewSourcePayloads(slots)
         let payload: JSONObject = [
             // startCapture is what arms raw media (engine start_media →
             // start_raw_media): without it every video subscription stays
@@ -2399,6 +2383,30 @@ final class AppModel: ObservableObject {
                 multiviewAssigned: multiviewAssigned, isoArmed: isoArmed, cameraOn: cameraOn),
             audioParticipantIds: audioIds,
             meetingHasParticipants: !roster.isEmpty)
+    }
+
+    // The multiview roster on the wire: one tile per in-show slot that still has
+    // a source. `kind` is the MULTIVIEW vocabulary the core's resolveMultiviewFeed
+    // reads (native/src/core/MultiviewFeed.h): "capture" | "media" | anything else
+    // = a Zoom participant. It is NOT the scene-route `mode` ("capture-input").
+    static func multiviewSourcePayloads(_ slots: [ShowInputSlot]) -> [JSONObject] {
+        slots
+            .filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }
+            .map { slot in
+                slot.kind == "zoom"
+                    ? [
+                        "sourceId": "zoom:" + slot.sourceId,
+                        "kind": "participant-video",
+                        "participantId": slot.sourceId,
+                        "label": slot.name,
+                    ]
+                    : [
+                        "sourceId": "capture:" + slot.sourceId,
+                        "kind": "capture",
+                        "captureDeviceId": slot.sourceId,
+                        "label": slot.name,
+                    ]
+            }
     }
 
     // The exact objects placed in the spine `subscriptions` array — the Windows
