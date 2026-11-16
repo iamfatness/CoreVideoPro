@@ -42,6 +42,12 @@ extension ShellTests {
             ("grade/editor-saved-zoom-draft", testASavedZoomGradeOpensAsADraft),
             ("grade/editor-reset-is-clear", testResetReturnsTheSourceToTheProgramLook),
             ("grade/inspector-line", testTheInspectorLineSaysWhatTheSourceFollows),
+            // Task 9: the advanced document, register-before-apply, presets.
+            ("grade/advanced-portable-verdicts", testAdvancedDocumentsHaveThePortableVerdicts),
+            ("grade/advanced-swift-encoding", testTheSwiftEncodingIsWhatTheCoreAccepts),
+            ("grade/presets-cross-platform", testPresetsMoveBetweenPlatforms),
+            ("grade/advanced-register-every-apply", testEveryApplyRegistersItsDocumentAndARespawnReuploads),
+            ("grade/advanced-explicit-nulls", testExplicitNullsAreRefused),
         ]
     }
 
@@ -221,8 +227,14 @@ extension ShellTests {
                     if body["clear"] as? Bool == true { _graded.remove(id) } else { _graded.insert(id) }
                     return ["ok": true, "accepted": true, "revision": NSNumber(value: current + 1), "sourceEpoch": NSNumber(value: epoch)]
                 }
+            case "register-grade-document":
+                let ref = body["documentRef"] as? String ?? ""
+                if locked({ _documents.contains(ref) }) { return ["ok": true, "present": true] }
+                guard let text = body["documentJson"] as? String else { return ["ok": true, "present": false] }
+                guard GradeDocumentRef.sha256Hex(text) == ref else { throw BridgeError.remote("Invalid grade document content.") }
+                locked { _ = _documents.insert(ref) }
+                return ["ok": true, "present": true]
             default:
-                // register-grade-document returns with Task 9 (GradeDocumentRef).
                 return ["ok": true]
             }
         }
@@ -684,5 +696,111 @@ extension ShellTests {
         expect(GradeInspectorSection.line(waiting).hasSuffix("waiting for this source's video"), "inactive says so")
         let moved = SourceGradeSummary(line: "x", indicator: nil, active: false, identityChanged: true)
         expectEqual(GradeInspectorSection.line(moved), "Source identity changed. Reopen its grade editor.", "binding broke")
+    }
+    // ── Task 9 ───────────────────────────────────────────────────────────────
+
+    static func loadGradeFixtures() -> [String: Any]? {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard let data = try? Data(contentsOf: root.appendingPathComponent("contracts/grade.fixtures.json")) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    static func testAdvancedDocumentsHaveThePortableVerdicts() {
+        guard let fixtures = loadGradeFixtures(), let documents = fixtures["documents"] as? [[String: Any]] else {
+            expect(false, "contracts/grade.fixtures.json must be readable from the harness"); return
+        }
+        var checked = 0, skipped = 0
+        for entry in documents {
+            let name = entry["name"] as? String ?? "?"
+            if entry["needsCubeParser"] as? Bool == true { skipped += 1; continue }   // D8, until G3
+            let data = try! JSONSerialization.data(withJSONObject: entry["json"]!, options: [.fragmentsAllowed])
+            let valid: Bool
+            do { try JSONDecoder().decode(AdvancedGradeDocument.self, from: data).validate(); valid = true } catch { valid = false }
+            expectEqual(valid, (entry["portable"] as? String) == "valid", "portable verdict: \(name)")
+            checked += 1
+        }
+        expectEqual(checked, 24, "every non-cube-parser fixture was checked")
+        expectEqual(skipped, 1, "exactly the cube-parser fixtures are deferred to G3")
+    }
+
+    static func testTheSwiftEncodingIsWhatTheCoreAccepts() {
+        guard let fixtures = loadGradeFixtures(), let encoded = fixtures["macEncoded"] as? [[String: Any]],
+              let text = encoded.first?["text"] as? String else { expect(false, "macEncoded fixture"); return }
+        var op = GradeOperation(); op.id = "black"; op.gain = 0
+        let document = AdvancedGradeDocument(operations: [op])
+        let mine = try! document.canonicalJSON()
+        let a = try! JSONSerialization.jsonObject(with: Data(mine.utf8)) as! NSDictionary
+        let b = try! JSONSerialization.jsonObject(with: Data(text.utf8)) as! NSDictionary
+        expect(a.isEqual(b), "Swift's encoding equals the fixture the native test feeds readAdvancedGrade")
+        for key in ["version", "colorSpace", "bypass", "intensity", "operations"] {
+            expect(a[key] != nil, "the core requires \(key) (AdvancedGrade.h:33-42)")
+        }
+        let curves = ((a["operations"] as? [NSDictionary])?.first?["curves"] as? [[Any]])
+        expectEqual(curves?.count, 4, "four curve channels are always written (AdvancedGrade.h:51-52)")
+    }
+
+    static func testPresetsMoveBetweenPlatforms() {
+        guard let fixtures = loadGradeFixtures(), let presets = fixtures["presets"] as? [[String: Any]] else {
+            expect(false, "presets fixture"); return
+        }
+        for entry in presets {
+            let name = entry["name"] as? String ?? "?"
+            let expectValues = entry["expect"] as? [String: Any] ?? [:]
+            guard case .grade(let grade)? = try? GradePreset.decode(entry["text"] as? String ?? "") else {
+                expect(false, "\(name) must paste on the Mac"); continue
+            }
+            expectEqual(grade.lut, expectValues["lut"] as? String, "\(name) lut")
+            expectEqual(grade.exposure, expectValues["exposure"] as? Int, "\(name) exposure")
+            expectEqual(grade.saturation, expectValues["saturation"] as? Int ?? 0, "\(name) saturation")
+            expectEqual(grade.advanced?.operations.count ?? 0, expectValues["operations"] as? Int, "\(name) operations")
+            if entry["origin"] as? String == "mac" {
+                let mine = try! GradePreset.encode(grade)
+                let a = try! JSONSerialization.jsonObject(with: Data(mine.utf8)) as! NSDictionary
+                let b = try! JSONSerialization.jsonObject(with: Data((entry["text"] as! String).utf8)) as! NSDictionary
+                expect(a.isEqual(b), "the Mac preset fixture is exactly what the Mac writes")
+            }
+        }
+        let tooBig = String(repeating: " ", count: GradePreset.maxBytes + 1)
+        do { _ = try GradePreset.decode(tooBig); expect(false, "over the cap must refuse") }
+        catch let e as GradeValidationError { expectEqual(e.message, "Grade document is too large.", "VM.Advanced.cs:160") }
+        catch { expect(false, "unexpected error type") }
+        do { _ = try GradePreset.decode("{\"presetVersion\":2,\"grade\":{\"lut\":\"none\"}}"); expect(false, "version 2 must refuse") }
+        catch let e as GradeValidationError { expectEqual(e.message, "Unsupported grade preset.", "VM.Advanced.cs:163") }
+        catch { expect(false, "unexpected error type") }
+    }
+
+    @MainActor static func testEveryApplyRegistersItsDocumentAndARespawnReuploads() {
+        let core = FakeGradeCore(); core.setEpoch("capture:cam", 0)
+        let cam = GradeSourceIdentity.capture(deviceId: "cam")
+        let store = gradeStore(core, IdentityBox(["capture:cam": cam]))
+        var op = GradeOperation(); op.id = "p1"; op.saturation = 0
+        let grade = SourceColorGrade(lut: "none", advanced: AdvancedGradeDocument(operations: [op]))
+        expectEqual(awaitApply(store, grade, "capture:cam", binding: cam.binding), .applied(revision: 1), "applied")
+        let registers = core.requests("register-grade-document")
+        expectEqual(registers.count, 2, "query, then upload")
+        expect(registers.first?["documentJson"] == nil, "the first request only asks")
+        let text = registers.dropFirst().first?["documentJson"] as? String ?? ""
+        expectEqual(registers.dropFirst().first?["documentRef"] as? String, GradeDocumentRef.sha256Hex(text), "ref = SHA-256 of the exact text sent")
+        let ref = ((core.requests("set-source-grade").last?["grade"] as? JSONObject)?["advanced"] as? JSONObject)?["documentRef"] as? String
+        expectEqual(ref, GradeDocumentRef.sha256Hex(text), "the set carries the registered reference")
+        expect(core.requests("set-source-grade").last?["clear"] == nil, "a grade with a document is never a clear")
+        expectEqual(store.summary(for: "capture:cam")?.indicator, "Advanced adjustments active", "the inspector indicator")
+        _ = awaitApply(store, grade, "capture:cam", binding: cam.binding)
+        expectEqual(core.requests("register-grade-document").count, 3, "a cached document is asked about, not re-uploaded")
+        core.respawn(); store.coreGenerationChanged(); core.setEpoch("capture:cam", 0)
+        store.observe(sourceGrades: [], sources: [cam], now: Date(timeIntervalSince1970: 8_000))
+        spin(until: { core.requests("set-source-grade").count >= 3 }, limit: 2)
+        expectEqual(core.requests("register-grade-document").count, 5, "the respawned core gets the document again")
+        expectEqual(core.requests("set-source-grade").last?["sourceId"] as? String, "capture:cam", "and the grade")
+        expect(core.documents.contains(GradeDocumentRef.sha256Hex(text)), "registered on the new core")
+    }
+
+    static func testExplicitNullsAreRefused() {
+        for text in ["{\"version\":2,\"operations\":null}", "{\"version\":2,\"operations\":[null]}"] {
+            let decoded = try? JSONDecoder().decode(AdvancedGradeDocument.self, from: Data(text.utf8))
+            expect(decoded == nil || (try? decoded!.validate()) == nil,
+                   "\(text) is refused (AdvancedGradeEditorTests.cs UnsupportedAndMalformedDocuments…)")
+        }
     }
 }

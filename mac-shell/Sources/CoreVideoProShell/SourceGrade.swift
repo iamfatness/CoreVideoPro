@@ -15,18 +15,21 @@ struct SourceColorGrade: Codable, Equatable {
     var contrast = 0
     var saturation = 0
     var temperature = 0
+    /// The advanced document (G2); travels to the core by reference (register-grade-document).
+    var advanced: AdvancedGradeDocument? = nil
 
     static let looks = ["none", "neutral", "warm-film", "cool-broadcast", "punch"]
     static let editorRange = -50...50      // ColorGradeEditorWindow.xaml slider range
     static let wireRange = -100...100      // MediaCore::applySourceGrade refuses |axis| > 100
 
     init(lut: String = "none", exposure: Int = 0, contrast: Int = 0, saturation: Int = 0,
-         temperature: Int = 0) {
+         temperature: Int = 0, advanced: AdvancedGradeDocument? = nil) {
         self.lut = lut
         self.exposure = exposure
         self.contrast = contrast
         self.saturation = saturation
         self.temperature = temperature
+        self.advanced = advanced
     }
 
     /// Tolerant like System.Text.Json: a missing key keeps the C# default. A present key of
@@ -38,6 +41,7 @@ struct SourceColorGrade: Codable, Equatable {
         contrast = try c.decodeIfPresent(Int.self, forKey: .contrast) ?? 0
         saturation = try c.decodeIfPresent(Int.self, forKey: .saturation) ?? 0
         temperature = try c.decodeIfPresent(Int.self, forKey: .temperature) ?? 0
+        advanced = try c.decodeIfPresent(AdvancedGradeDocument.self, forKey: .advanced)
     }
 
     func validated(range: ClosedRange<Int>) throws -> SourceColorGrade {
@@ -53,9 +57,10 @@ struct SourceColorGrade: Codable, Equatable {
         return "Look \(lut) · exposure \(f(exposure)) · contrast \(f(contrast)) · saturation \(f(saturation))"
     }
 
-    /// Look "none" and every axis 0. The "neutral" LOOK adds contrast, so it is not neutral.
+    /// Look "none", every axis 0 and no document. The "neutral" LOOK adds contrast, so it is
+    /// not neutral.
     var isNeutral: Bool {
-        lut == "none" && exposure == 0 && contrast == 0 && saturation == 0 && temperature == 0
+        lut == "none" && exposure == 0 && contrast == 0 && saturation == 0 && temperature == 0 && advanced == nil
     }
 
     /// The `grade` object of `set-source-grade` (root fields read by MediaCore::applySourceGrade).

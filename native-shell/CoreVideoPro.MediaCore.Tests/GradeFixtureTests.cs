@@ -40,7 +40,7 @@ public sealed class GradeFixtureTests
             Assert.True(valid == expected, $"{name}: expected {(expected ? "valid" : "invalid")}");
             ++checkedCount;
         }
-        Assert.Equal(24, checkedCount);
+        Assert.Equal(25, checkedCount);
     }
 
     [Fact]

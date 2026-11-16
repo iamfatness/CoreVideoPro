@@ -24,7 +24,7 @@ enum GradeApplyOutcome: Equatable {
 /// What the Sources inspector reads (spec §5.8).
 struct SourceGradeSummary: Equatable {
     let line: String           // SourceColorGrade.summary
-    let indicator: String?     // the Windows AdvancedIndicator once G2 lands; nil in G1
+    let indicator: String?     // the Windows AdvancedIndicator; nil without a document
     let active: Bool           // false while sourceGrades reports active:false
     let identityChanged: Bool  // the live person no longer matches the grade's binding
 }
@@ -160,6 +160,35 @@ final class SourceGradeStore: ObservableObject {
         catch let error as GradeValidationError { return .refused("Grade was not applied: \(error.message)") }
         catch { return .refused("Grade was not applied: \(error.localizedDescription)") }
         let clear = wire.isNeutral
+        // G2: every apply that carries a document registers it first (the core's cache is weak
+        // plus 16 recent, and a respawned core has none), by the SHA-256 of the exact text sent.
+        var documentRef: String?
+        if let document = wire.advanced {
+            do {
+                try document.validate()
+                let text = try document.canonicalJSON()
+                guard text.utf8.count <= AdvancedGradeDocument.maxTransportBytes else {
+                    return .refused("Grade was not applied: Grade document exceeds its 2 MB transport budget.")
+                }
+                let ref = GradeDocumentRef.sha256Hex(text)
+                let asked = try await send(CoreCommands.registerGradeDocument(ref: ref, json: nil))
+                guard generation == started else { return .stale(Self.staleText) }
+                if asked["present"] as? Bool != true {
+                    let uploaded = try await send(CoreCommands.registerGradeDocument(ref: ref, json: text))
+                    guard generation == started else { return .stale(Self.staleText) }
+                    guard uploaded["present"] as? Bool == true else {
+                        return .refused("Grade was not applied: Invalid grade document content.")
+                    }
+                }
+                documentRef = ref
+            } catch let error as GradeValidationError {
+                return .refused("Grade was not applied: \(error.message)")
+            } catch {
+                guard generation == started else { return .stale(Self.staleText) }
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                return .refused("Grade was not applied: \(message)")
+            }
+        }
         var retried = false
         while true {
             do {
@@ -173,7 +202,7 @@ final class SourceGradeStore: ObservableObject {
                 let held = known[sourceId] ?? Known()
                 let body = CoreCommands.setSourceGrade(
                     sourceId: sourceId, sourceEpoch: held.epoch ?? 0, expectedRevision: held.revision,
-                    grade: wire.wireGrade(documentRef: nil), clear: clear)
+                    grade: wire.wireGrade(documentRef: documentRef), clear: clear)
                 let response = try await send(body)
                 guard generation == started else { return .stale(Self.staleText) }
                 if response["accepted"] as? Bool == true {
@@ -385,7 +414,8 @@ final class SourceGradeStore: ObservableObject {
 
     func summary(for sourceId: String) -> SourceGradeSummary? {
         guard let session = sessions[sourceId] else { return nil }
-        return SourceGradeSummary(line: session.grade.summary, indicator: nil, active: session.active,
+        return SourceGradeSummary(line: session.grade.summary, indicator: session.grade.advanced?.indicator,
+                                  active: session.active,
                                   identityChanged: session.identityChanged)
     }
 

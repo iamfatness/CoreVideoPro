@@ -92,7 +92,7 @@ TEST(AdvancedGrade, SharedFixturesHaveTheDeclaredVerdictInTheCore) {
     EXPECT_EQ(valid, expect->asString() == "valid") << name;
     ++checked;
   }
-  EXPECT_EQ(checked, 24) << "fixture count: update this when adding fixtures";
+  EXPECT_EQ(checked, 25) << "fixture count: update this when adding fixtures";
   for (const auto& entry : fixtures->get("macEncoded")->asArray()) {
     const auto node = rpc::Json::parse(entry.getString("text"));
     ASSERT_TRUE(node) << entry.getString("name");

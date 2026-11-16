@@ -1,5 +1,5 @@
 {
-  "_doc": "Shared verdicts for advanced grade documents (spec §7). portable = C# AdvancedGradeDocument and Swift after decode-with-defaults; coreRaw = native readAdvancedGrade on the raw JSON (defaults to portable). needsCubeParser fixtures are skipped by Swift until G3 (D8). The three portable-valid/coreRaw-invalid rows are the known divergence: C# and Swift fill defaults on decode and always encode every field, so the core only ever receives complete documents. macEncoded holds the exact JSON text the Swift encoder writes. presets hold .cvgrade texts each platform writes.",
+  "_doc": "Shared verdicts for advanced grade documents (spec §7). portable = C# AdvancedGradeDocument and Swift after decode-with-defaults; coreRaw = native readAdvancedGrade on the raw JSON (defaults to portable). needsCubeParser fixtures are skipped by Swift until G3 (D8). The three portable-valid/coreRaw-invalid rows are the known divergence: C# and Swift fill defaults on decode and always encode every field, so the core only ever receives complete documents. macEncoded holds the exact JSON text the Swift encoder writes. presets hold .cvgrade texts each platform writes. curve-float-collapse: two inputs that are distinct as doubles but equal as Float; every platform compares curve x as Float, so it is invalid everywhere.",
   "documents": [
     {
       "name": "minimal",
@@ -1335,6 +1335,86 @@
                 {
                   "x": 1.0,
                   "y": 1.0
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "curve-float-collapse",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "c1",
+            "kind": "curves",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.1000000001,
+                  "y": 0.2
+                },
+                {
+                  "x": 0.1000000002,
+                  "y": 0.3
+                },
+                {
+                  "x": 1,
+                  "y": 1
                 }
               ],
               [
