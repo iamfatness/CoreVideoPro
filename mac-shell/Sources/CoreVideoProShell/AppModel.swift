@@ -4645,6 +4645,9 @@ enum ShellPaths {
         var corePath: String?
         var engineBinaryPath: String?
         var pluginHostPath: String?  // corevideo-plugin-host (VST3 scan on macOS)
+        /// True when corePath is the pkg-installed copy the camera extension can
+        /// verify (CoreLocation); false means the camera refuses this core's frames.
+        var coreCameraEligible = false
     }
 
     static func resolve() -> Paths {
@@ -4654,7 +4657,10 @@ enum ShellPaths {
             bundleResources + "/corevideo-native",
             repoRoot() + "/native/build-metal/corevideo-native",
         ]
-        paths.corePath = candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        let core = CoreLocation.resolve(
+            bundledCore: candidates.first { FileManager.default.isExecutableFile(atPath: $0) })
+        paths.corePath = core.path
+        paths.coreCameraEligible = core.cameraEligible
         let engineCandidates = [
             bundleResources + "/corevideo-zoom-engine.app/Contents/MacOS/corevideo-zoom-engine",
             repoRoot()

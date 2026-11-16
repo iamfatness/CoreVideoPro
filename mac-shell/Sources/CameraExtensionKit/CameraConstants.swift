@@ -22,7 +22,7 @@ public enum CameraConstants {
     /// Starts at 3000, above every app build number earlier builds stamped on
     /// the extension (the owner's Mac had 2881 and 2883), so the one-time
     /// transition to this scheme is an upgrade, never a downgrade.
-    public static let extensionVersion = 3002
+    public static let extensionVersion = 3003
 
     /// The device's model UID (kCMIODevicePropertyModelUID) carries the
     /// extension version, so the shell can tell the NEW extension's device

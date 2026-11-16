@@ -1,12 +1,12 @@
 #!/bin/bash
-# Build, sign, notarize and staple a CoreVideo Pro macOS release DMG.
+# Build, sign, notarize and staple a CoreVideo Pro macOS release .pkg.
 #
-#   scripts/release-macos.sh [--skip-notarize] [--skip-dmg]
+#   scripts/release-macos.sh [--skip-notarize]
 #
 # Output: dist/macos/<version>/
-#   CoreVideoPro-<version>-arm64.dmg         signed, notarized, stapled
-#   CoreVideoPro-<version>-arm64.dmg.sha256  `shasum -a 256` line
-#   CoreVideoPro-<version>-arm64.pkg         guided installer (/Applications),
+#   CoreVideoPro-<version>-arm64.pkg         guided installer (/Applications,
+#                                            plus the core copy the virtual
+#                                            camera verifies, in /Library),
 #                                            signed Developer ID Installer,
 #                                            notarized, stapled
 #   CoreVideoPro-<version>-arm64.pkg.sha256
@@ -22,8 +22,10 @@
 # release build dir so dev trees are never touched; assemble + Developer ID
 # sign the .app (make-macos-shell-bundle.sh) inside the temp work dir, so the
 # dev bundle at mac-shell/.build/CoreVideo Pro.app is never touched; notarize the app (zip) and
-# staple; build a DMG (app + /Applications alias, volume "CoreVideo Pro"),
-# sign, notarize and staple it; verify; write dist/.
+# staple; build the .pkg (scripts/make-macos-pkg.sh), notarize and staple it;
+# verify; write dist/. The .pkg is the ONLY macOS installer (owner, 2026-11-15):
+# the virtual camera needs the core copy only the pkg installs, so a DMG
+# drag-install would ship a camera that refuses every frame.
 #
 # Environment:
 #   COREVIDEO_SIGN_IDENTITY   default "Developer ID Application: John Wallace (42394L3353)"
@@ -45,13 +47,13 @@
 #
 # --skip-notarize builds and signs everything but submits nothing to Apple
 # (rehearsal). Its output can never be mistaken for, or overwrite, a release:
-#   dist/macos/<version>-UNNOTARIZED/CoreVideoPro-<version>-arm64-UNNOTARIZED.dmg
+#   dist/macos/<version>-UNNOTARIZED/CoreVideoPro-<version>-arm64-UNNOTARIZED.pkg
 #
 # Everything is built in a temp dir and moved into dist/ only after every
-# verification passed, so a failed run never leaves a plausible DMG behind
+# verification passed, so a failed run never leaves a plausible .pkg behind
 # (and never removes the previous good output).
 #
-# Runtime note: RTMP output launches an external `ffmpeg`, which this DMG does
+# Runtime note: RTMP output launches an external `ffmpeg`, which this release does
 # not bundle (GPL/licensing ruling pending). The release core is built with
 # COREVIDEO_WITH_RTMP_OUTPUT=ON only; SRT output and SRT/RTMP ingest are not in
 # the macOS 1.0 build (their options default OFF and the Mac shell has no SRT UI).
@@ -65,17 +67,11 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
 NOTARIZE=1
-MAKE_DMG=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-notarize) NOTARIZE=0; shift ;;
-        # --skip-dmg: build only the .pkg. Needed when macOS App Management
-        # blocks the host terminal from writing an .app copy into hdiutil's
-        # temporary volume ("Could not access /Volumes/CoreVideo Pro/...app
-        # - Operation not permitted"), which starts once a signed CoreVideo
-        # Pro is installed on the build Mac. The fix is granting the terminal
-        # App Management; this flag ships the pkg in the meantime.
-        --skip-dmg) MAKE_DMG=0; shift ;;
+        # --skip-dmg: accepted and ignored; there is no DMG any more.
+        --skip-dmg) shift ;;
         -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
         *) echo "error: unknown argument '$1'" >&2; exit 2 ;;
     esac
@@ -156,11 +152,9 @@ ENGINE_BUILD="native/build-release-engine"
 SHELL_SCRATCH="mac-shell/.build-release"
 if [ "$NOTARIZE" = "1" ]; then
     OUT="dist/macos/$VERSION"
-    DMG_NAME="CoreVideoPro-$VERSION-arm64.dmg"
     PKG_NAME="CoreVideoPro-$VERSION-arm64.pkg"
 else
     OUT="dist/macos/$VERSION-UNNOTARIZED"
-    DMG_NAME="CoreVideoPro-$VERSION-arm64-UNNOTARIZED.dmg"
     PKG_NAME="CoreVideoPro-$VERSION-arm64-UNNOTARIZED.pkg"
 fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cvp-release.XXXXXX")"
@@ -317,8 +311,6 @@ notarize() {  # notarize <file> <label>
 }
 
 APP_SUBMISSION="skipped"
-DMG_SUBMISSION="skipped"
-SHA256=""
 if [ "$NOTARIZE" = "1" ]; then
     log "notarize app"
     # ditto --keepParent, never plain zip: keeps framework symlinks intact.
@@ -328,33 +320,9 @@ if [ "$NOTARIZE" = "1" ]; then
     xcrun stapler validate "$APP"
 fi
 
-# ── DMG ─────────────────────────────────────────────────────────────────────
 # Assembled in $WORK; published to $OUT only after verification.
 PUB="$WORK/out"
 mkdir -p "$PUB"
-if [ "$MAKE_DMG" = "1" ]; then
-log "build DMG"
-STAGE="$WORK/dmg"
-mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/CoreVideo Pro.app"
-ln -s /Applications "$STAGE/Applications"
-DMG="$PUB/$DMG_NAME"
-hdiutil create -volname "CoreVideo Pro" -srcfolder "$STAGE" -fs HFS+ \
-    -format UDZO -imagekey zlib-level=9 -ov "$DMG" >/dev/null
-# A DMG takes a plain signature: no hardened runtime (not code), but a
-# secure timestamp so it outlives the certificate.
-codesign --force --sign "$SIGN_ID" --timestamp \
-    --identifier us.iamfatness.corevideopro.dmg "$DMG"
-codesign --verify --strict "$DMG"
-
-if [ "$NOTARIZE" = "1" ]; then
-    log "notarize DMG"
-    DMG_SUBMISSION="$(notarize "$DMG" dmg)"
-    xcrun stapler staple "$DMG"
-    xcrun stapler validate "$DMG"
-    cp "$WORK"/notary-*.json "$PUB/" 2>/dev/null || true
-fi
-fi
 
 # ── PKG (guided installer; built from the stapled app) ──────────────────────
 log "build + sign .pkg"
@@ -366,7 +334,7 @@ if [ "$NOTARIZE" = "1" ]; then
     PKG_SUBMISSION="$(notarize "$PKG" pkg)"
     xcrun stapler staple "$PKG"
     xcrun stapler validate "$PKG"
-    cp "$WORK"/notary-pkg.json "$PUB/" 2>/dev/null || true
+    cp "$WORK"/notary-*.json "$PUB/" 2>/dev/null || true
 fi
 
 # ── Verify (the questions a user's Mac asks) ────────────────────────────────
@@ -377,21 +345,6 @@ if [ "$NOTARIZE" = "1" ]; then
     echo "$assess"
     grep -q "source=Notarized Developer ID" <<<"$assess" \
         || die "app is not assessed as Notarized Developer ID"
-  if [ "$MAKE_DMG" = "1" ]; then
-    assess="$(spctl --assess --type open --context context:primary-signature -vv "$DMG" 2>&1 || true)"
-    echo "$assess"
-    grep -q "source=Notarized Developer ID" <<<"$assess" \
-        || die "DMG is not assessed as Notarized Developer ID"
-    # The copy a user actually drags out: mount and assess the app inside.
-    MOUNT="$WORK/mnt"; mkdir -p "$MOUNT"
-    hdiutil attach "$DMG" -readonly -nobrowse -noautoopen -mountpoint "$MOUNT" -quiet
-    [ -L "$MOUNT/Applications" ] || die "DMG lacks the Applications alias"
-    xcrun stapler validate "$MOUNT/CoreVideo Pro.app"
-    assess="$(spctl --assess --type execute -vv "$MOUNT/CoreVideo Pro.app" 2>&1 || true)"
-    grep -q "source=Notarized Developer ID" <<<"$assess" || die "app inside DMG not notarized"
-    hdiutil detach "$MOUNT" -quiet; MOUNT=""
-    echo "app inside the mounted DMG: stapled + Notarized Developer ID"
-  fi
 fi
 
 # Capture first: `cmd | grep -q` under pipefail can fail on SIGPIPE.
@@ -407,10 +360,6 @@ fi
 
 # ── Artifacts ───────────────────────────────────────────────────────────────
 log "write $OUT"
-if [ "$MAKE_DMG" = "1" ]; then
-    ( cd "$PUB" && shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256" )
-    SHA256="$(cut -d' ' -f1 "$PUB/$DMG_NAME.sha256")"
-fi
 ( cd "$PUB" && shasum -a 256 "$PKG_NAME" > "$PKG_NAME.sha256" )
 PKG_SHA256="$(cut -d' ' -f1 "$PUB/$PKG_NAME.sha256")"
 HELPERS="$(cd "$APP/Contents/Resources" && ls -d corevideo-* | paste -sd, -)"
@@ -430,12 +379,9 @@ manifest = {
     "notarization": {
         "keychainProfile": "$PROFILE",
         "appSubmissionId": "$APP_SUBMISSION",
-        "dmgSubmissionId": "$DMG_SUBMISSION",
         "pkgSubmissionId": "$PKG_SUBMISSION",
         "stapled": $( [ "$NOTARIZE" = 1 ] && echo True || echo False ),
     },
-    "dmg": ({"file": "$DMG_NAME", "sha256": "$SHA256", "volumeName": "CoreVideo Pro"}
-            if "$MAKE_DMG" == "1" else None),
     "pkg": {"file": "$PKG_NAME", "sha256": "$PKG_SHA256",
             "identifier": "us.iamfatness.corevideopro.pkg",
             "signingIdentity": "$PKG_SIGN_ID",
@@ -475,5 +421,4 @@ fi
 rm -rf "$OLD"
 cat "$OUT/manifest.json"
 [ "$NOTARIZE" = "1" ] || echo "NOTE: --skip-notarize build; NOT distributable"
-[ "$MAKE_DMG" = "1" ] && echo "release: $OUT/$DMG_NAME" || echo "NOTE: --skip-dmg build; no DMG"
 echo "release: $OUT/$PKG_NAME"

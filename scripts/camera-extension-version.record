@@ -5,6 +5,6 @@
 # earlier builds used as the extension's CFBundleVersion (the owner's Mac had
 # 2881 and 2883), so the move to an independent version is an upgrade, never a
 # downgrade. Only ever increase it. Renewing the camera profile needs a bump.
-extensionVersion=3002
-sourceHash=ef4e3585e10424e1e44f53d0b27c68be2d70418c159b42a8d4d6abefbf6826b5
+extensionVersion=3003
+sourceHash=7cfee2c2cda3a688cd777cb79d0cbdc157c53902d123687b706afc2b640b9e27
 cameraProfileUUID=91026fd2-5024-4cbe-affb-0fb475641f6b

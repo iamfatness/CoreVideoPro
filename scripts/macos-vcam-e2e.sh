@@ -14,7 +14,9 @@
 #
 # Steps:
 #   1. /Applications/CoreVideo Pro.app exists; systemextensionsctl lists the
-#      camera extension "activated enabled" at the app's CFBundleVersion.
+#      camera extension "activated enabled" at the embedded extension's
+#      CFBundleVersion; its process is RUNNING with no fresh crash report; the
+#      pkg-installed /Library core matches the app's core.
 #   2. No producer: probe 3 s at 30 fps -> fps >= 28, slateFrames == frames.
 #   3. Build corevideo-vcam-feed, sign it (Developer ID, hardened runtime,
 #      identifier us.iamfatness.corevideopro.vcam-probe), check it satisfies
@@ -75,9 +77,10 @@ OUT="$ROOT/dist/vcam-e2e/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 LOG_START="$(date '+%Y-%m-%d %H:%M:%S')"
 # The extension's producer check reads the producer from disk, and its sandbox
-# may read only the app and this folder (a read-only entitlement exception;
-# ProducerAttestation.producerReadPaths). A feeder anywhere else is refused.
-FEED_DIR="/Users/Shared/CoreVideoPro/vcam-probe"
+# reads /Library but not /Applications or any home folder
+# (ProducerAttestation.probeDirectory). The folder is root-owned, so staging the
+# signed feeder there needs sudo. A feeder anywhere else is refused.
+FEED_DIR="/Library/Application Support/CoreVideo Pro/vcam-probe"
 FEED="$FEED_DIR/corevideo-vcam-feed"
 FEED_PID=""
 
@@ -92,8 +95,8 @@ collect_logs() {
 cleanup() {
     if [ -n "$FEED_PID" ] && kill -0 "$FEED_PID" 2>/dev/null; then kill "$FEED_PID" 2>/dev/null; fi
     # The probe is an admitted producer signed with get-task-allow; never leave
-    # it behind in the world-writable /Users/Shared.
-    rm -f "$FEED"
+    # it installed.
+    [ -e "$FEED" ] && sudo rm -f "$FEED"
     collect_logs
     echo "artifacts: $OUT"
 }
@@ -156,15 +159,31 @@ fi
 
 # ── 1. installed and activated ──────────────────────────────────────────────
 [ -d "$APP" ] || fail 1 "$APP is not installed"
-APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist" 2>/dev/null)"
-[ -n "$APP_VERSION" ] || fail 1 "cannot read CFBundleVersion of $APP"
+# The extension carries its OWN version (CameraConstants.extensionVersion), not
+# the app's build number: read it from the bundle the app embeds.
+EXT_PLIST="$APP/Contents/Library/SystemExtensions/$EXT_ID.systemextension/Contents/Info.plist"
+EXT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_PLIST" 2>/dev/null)"
+[ -n "$EXT_VERSION" ] || fail 1 "cannot read CFBundleVersion of the embedded extension ($EXT_PLIST)"
 systemextensionsctl list >"$OUT/systemextensions.txt" 2>&1
 EXT_LINE="$(grep -F "$EXT_ID" "$OUT/systemextensions.txt" | grep -F '[activated enabled]' | head -1)"
 [ -n "$EXT_LINE" ] || fail 1 "systemextensionsctl does not list $EXT_ID as [activated enabled] (see $OUT/systemextensions.txt)"
 # systemextensionsctl prints "(<one version>/<other version>)"; either half may be CFBundleVersion.
-echo "$EXT_LINE" | grep -Eq "[(/]${APP_VERSION//./\\.}[/)]" \
-    || fail 1 "active extension version does not match the app's CFBundleVersion $APP_VERSION: $EXT_LINE"
-pass 1 "extension activated enabled at CFBundleVersion $APP_VERSION"
+echo "$EXT_LINE" | grep -Eq "[(/]${EXT_VERSION//./\\.}[/)]" \
+    || fail 1 "active extension version does not match the embedded extension's $EXT_VERSION: $EXT_LINE"
+# "[activated enabled]" is only sysextd's registration. On 2026-11-15 an
+# extension whose sandbox profile could not compile sat there for hours while
+# launchd relaunched and lost it every 10 s. Require a live process, and no
+# crash report from the last two minutes.
+sleep 2
+pgrep -x "$EXT_EXECUTABLE" >/dev/null \
+    || fail 1 "no $EXT_EXECUTABLE process is running (crash reports: /Library/Logs/DiagnosticReports/$EXT_EXECUTABLE-*.ips)"
+RECENT_CRASH="$(find /Library/Logs/DiagnosticReports -maxdepth 1 -name "$EXT_EXECUTABLE-*.ips" -mmin -2 2>/dev/null | head -1)"
+[ -z "$RECENT_CRASH" ] || fail 1 "the extension crashed in the last 2 minutes: $RECENT_CRASH"
+# The producer the extension can verify: the pkg-installed core, same bytes as the app's.
+INSTALLED_CORE="/Library/Application Support/CoreVideo Pro/corevideo-native"
+cmp -s "$INSTALLED_CORE" "$APP/Contents/Resources/corevideo-native" \
+    || fail 1 "$INSTALLED_CORE is missing or differs from the app's core (reinstall from the .pkg)"
+pass 1 "extension $EXT_VERSION activated, running, not crashing; installed core matches the app"
 
 # ── 2. no producer: slate at the declared rate ──────────────────────────────
 if [ ! -x "$PROBE" ]; then
@@ -183,9 +202,8 @@ grep -q 'COREVIDEO_WITH_MAC_VIRTUALCAM:BOOL=ON' "$NATIVE_BUILD/CMakeCache.txt" 2
     || fail 3 "$NATIVE_BUILD is not configured with -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON"
 cmake --build "$NATIVE_BUILD" --target corevideo-vcam-feed >"$OUT/build-feed.log" 2>&1 \
     || fail 3 "building corevideo-vcam-feed failed (see $OUT/build-feed.log)"
-mkdir -p "$FEED_DIR" && chmod 755 /Users/Shared/CoreVideoPro "$FEED_DIR" \
-    || fail 3 "cannot create $FEED_DIR"
-cp "$NATIVE_BUILD/corevideo-vcam-feed" "$FEED" && chmod 755 "$FEED"
+SIGNED_FEED="$OUT/corevideo-vcam-feed"
+cp "$NATIVE_BUILD/corevideo-vcam-feed" "$SIGNED_FEED" && chmod 755 "$SIGNED_FEED"
 # get-task-allow lets step 7's `leaks` inspect the hardened process. This copy is
 # a local test tool, never notarized or shipped.
 cat >"$OUT/feed.entitlements" <<'PLIST'
@@ -196,13 +214,17 @@ cat >"$OUT/feed.entitlements" <<'PLIST'
 </dict></plist>
 PLIST
 codesign --force --options runtime --timestamp=none --sign "$IDENTITY" \
-    --identifier "$FEED_IDENTIFIER" --entitlements "$OUT/feed.entitlements" "$FEED" \
+    --identifier "$FEED_IDENTIFIER" --entitlements "$OUT/feed.entitlements" "$SIGNED_FEED" \
     >"$OUT/sign-feed.log" 2>&1 || fail 3 "signing the feeder failed (see $OUT/sign-feed.log)"
 # The extension's own admission rule (spec §4 law 6), read from the source of truth.
 REQUIREMENT="$(sed -n 's/.*producerRequirement = #"\(.*\)"#.*/\1/p' mac-shell/Sources/CameraExtensionKit/CameraConstants.swift)"
 [ -n "$REQUIREMENT" ] || fail 3 "cannot read CameraConstants.producerRequirement"
-codesign --verify -R="$REQUIREMENT" "$FEED" >>"$OUT/sign-feed.log" 2>&1 \
+codesign --verify -R="$REQUIREMENT" "$SIGNED_FEED" >>"$OUT/sign-feed.log" 2>&1 \
     || fail 3 "the signed feeder does not satisfy the producer requirement: $REQUIREMENT"
+echo "installing the signed feeder into $FEED_DIR (sudo)"
+sudo install -d -o root -g wheel -m 755 "$FEED_DIR" \
+    && sudo install -o root -g wheel -m 755 "$SIGNED_FEED" "$FEED" \
+    || fail 3 "cannot install the feeder into $FEED_DIR"
 start_feed step3 6
 sleep 1
 probe step3 3 --fps 30 || fail 3 "probe failed while feeding (see $OUT/step3.err)"

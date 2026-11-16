@@ -501,6 +501,7 @@ enum SupportBundle {
                         fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory),
                         countStyle: .memory))
         lines.append("core binary: \(paths.corePath ?? "not found")")
+        lines.append("core feeds virtual camera: \(paths.coreCameraEligible ? "yes (installed copy)" : "no (not the pkg-installed copy)")")
         lines.append("engine binary: \(paths.engineBinaryPath ?? "not found")")
         lines.append("log tail limit: \(input.tailByteLimit) bytes per log")
         lines.append("")
@@ -962,6 +963,10 @@ struct DiagnosePane: View {
                         .map { $0 + " advertised" }),
             DiagItem(label: "core binary", value: paths.corePath ?? "NOT FOUND",
                      tone: paths.corePath == nil ? .bad : .neutral, wrap: true),
+            DiagItem(label: "virtual camera producer",
+                     value: paths.coreCameraEligible ? "installed copy (camera can verify it)"
+                        : "app copy: camera refuses it, reinstall from the .pkg",
+                     tone: paths.coreCameraEligible ? .neutral : .bad, wrap: true),
             DiagItem(label: "engine binary", value: paths.engineBinaryPath ?? "NOT FOUND",
                      tone: paths.engineBinaryPath == nil ? .bad : .neutral, wrap: true),
         ]

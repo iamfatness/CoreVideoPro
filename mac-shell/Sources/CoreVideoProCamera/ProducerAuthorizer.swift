@@ -7,7 +7,7 @@ import Security
 /// closed: any error on the way is a denial. Both outcomes are logged. The
 /// decision is ProducerAttestation's (CameraExtensionKit, tested in ShellTests).
 /// The requirement check reads the producer from disk, which the sandbox allows
-/// only for ProducerAttestation.producerReadPaths (entitlement exception).
+/// under ProducerAttestation.producerDirectory (/Library, no entitlement exception).
 enum ProducerAuthorizer {
     private static let log = Logger(subsystem: cameraLogSubsystem, category: "auth")
 

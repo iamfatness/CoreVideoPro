@@ -12,23 +12,15 @@
   only with the embedded Developer ID provisioning profile that authorizes
   them. AMFI kills a binary signed with them and no profile, so ad-hoc and CI
   builds use macos-camera-extension-adhoc.entitlements instead.
+
+  NO file temporary-exception, ever: macOS 26.3's cmioextension.sb cannot
+  compile absolute-path.read-only (it emits an allow with no operation), and
+  the extension then dies before main. Producers run from /Library/Application
+  Support/CoreVideo Pro/, which the profile already reads
+  (ProducerAttestation.producerDirectory). ShellTests pins this.
 -->
 <plist version="1.0">
 <dict>
-    <!--
-      Read only, so the producer check (SecCodeCopyGuestWithAttributes, then
-      the code requirement) can read the producer from disk: the
-      cmioextension sandbox reads neither /Applications nor any home folder.
-      All of /Applications (the app's own install preflight accepts any bundle
-      there: a Finder copy "CoreVideo Pro 2.app", a subfolder) and the signed
-      vcam probe location; must match ProducerAttestation.producerReadPaths.
-      Read only: the code requirement stays the only gate. Not restricted.
-    -->
-    <key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
-    <array>
-        <string>/Applications/</string>
-        <string>/Users/Shared/CoreVideoPro/vcam-probe/</string>
-    </array>
     <key>com.apple.security.app-sandbox</key>
     <true/>
     <key>com.apple.security.application-groups</key>

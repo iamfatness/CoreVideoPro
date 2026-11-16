@@ -93,12 +93,20 @@ the extension) so consumers that ask for 720p get it without a second producer s
    `anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "42394L3353" and (identifier "us.iamfatness.corevideopro.core" or identifier "us.iamfatness.corevideopro.vcam-probe")`
    (Developer ID CA intermediate, Developer ID Application leaf; tightened 2026-11-15).
    It fails closed, with no fallback. The check reads the producer from disk, and
-   the `cmioextension` sandbox reads neither `/Applications` nor home folders, so the
-   extension carries a read-only `temporary-exception.files.absolute-path` for
-   `/Applications/` (any install the shell's preflight accepts, renamed copies and
-   subfolders included) and `/Users/Shared/CoreVideoPro/vcam-probe/` (where the e2e
-   script puts the signed probe). Read access reveals nothing; the requirement stays
-   the only gate. A refused producer surfaces in the core as `CAMERA_PRODUCER_REFUSED:`. Without it every producer was
+   the `cmioextension` sandbox reads `/Library` but neither `/Applications` nor home
+   folders. So producers RUN FROM `/Library/Application Support/CoreVideo Pro/`: the
+   .pkg (the only macOS installer) installs a byte-identical copy of the core there,
+   root-owned, and the shell launches that copy only while it matches the app's own
+   (`CoreLocation`; otherwise it runs the app's copy and Diagnostics says the camera
+   refuses it). The e2e script installs the signed probe in its `vcam-probe/`
+   subfolder with sudo. **The extension carries NO file temporary-exception:** macOS
+   26.3's `cmioextension.sb` expands `temporary-exception.files.absolute-path.read-only`
+   to a bare `(allow filter)`, which does not compile, and the extension then dies in
+   `_libsecinit_appsandbox` before main ("failed to compile sandbox profile"), relaunched
+   every 10 s while `systemextensionsctl` still reads `[activated enabled]`. Installers
+   3 and 4 (2026-11-15) shipped that exception and never registered a camera; ShellTests
+   now fails on any `temporary-exception.files.*` key in the extension entitlements. The
+   requirement stays the only gate. A refused producer surfaces in the core as `CAMERA_PRODUCER_REFUSED:`. Without it every producer was
    refused (OSStatus 100001). `CMIOExtensionClient` exposes no audit token, so the
    pid is the only handle. Any consumer may read the source stream.
 
