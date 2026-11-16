@@ -1,6 +1,6 @@
 # macOS virtual camera: core never sees an extension that registers after its first CMIO touch
 
-Date: 2026-11-16. Branch base: `mac-tier0b` @ 366bb534. Status: root cause found, fix not started.
+Date: 2026-11-16. Branch base: `mac-tier0b` @ 366bb534. Status: Tasks 1-6 done locally (see Outcome at the end); owner gate open.
 Owner priority: virtual camera is the top priority for the Mac app.
 
 ## Symptom
@@ -163,3 +163,75 @@ while the app has been running since before activation. Report evidence, not
 - `mac-shell/Sources/CoreVideoProCamera/{SinkStream,ProducerAuthorizer}.swift`
 - `mac-shell/Sources/VcamProbe/main.swift`, `scripts/macos-vcam-e2e.sh`, `scripts/release-macos.sh`
 - Ledger: `.claude/worktrees/mac-virtual-camera/.superpowers/sdd/2026-11-15-mac-virtual-camera/progress.md`
+
+## Outcome (2026-11-16, branch `mac-vcam-provider-arrival`)
+
+Status: Tasks 2–6 done locally; nothing installed, nothing pushed. Owner gate open.
+
+- **Task 1 (owner):** confirmed. Quit and relaunch, no reboot: camera shows Program,
+  `virtualCamera.status = live`, 4828 of 4900 published. The root cause holds and the
+  producer path works from the `/Library` core.
+- **Task 2:** `VcamProbe watch` is the harness (this process's own HAL view every second
+  from its first touch). **No provider-arrival repro was obtained.** Both candidates need a
+  system-extension activation, which this session may not do, and nothing else makes a
+  provider register (launchd's system domain needs root). So design A was not attempted.
+- **Task 3:** design B. The sink runs in `corevideo-native --vcam-sink-helper`, one new
+  process per connect attempt (`HelperVirtualCameraPublisher`, `VcamSinkHelper`,
+  `VcamHelperRespawnPolicy`, `VcamHelperTransport`). The extension is unchanged (3003).
+  Measured on the owner's Mac (M3 Max, macOS 26.3, the owner's app live throughout),
+  18,000 frames at 60 Hz per arrangement, `corevideo-vcam-helper-bench`:
+
+  | | sink in-process (before) | helper process (after) |
+  |---|---|---|
+  | published / offered | 18,000 / 18,000 | 18,000 / 18,000 |
+  | dropped, sequence gaps | 0, 0 | 0, 0 |
+  | core-side call, mean / p99 / max | 0.289 / 0.631 / 8.6 ms | 0.190 / 0.517 / 9.5 ms |
+  | hand-off to helper pickup, mean / max | n/a | 0.202 / 10.6 ms |
+  | helper copy + enqueue, mean / max | n/a | 0.238 / 11.6 ms |
+
+  The bench's sink does the real pixel-buffer work but does not enqueue to the camera (only
+  a signed core in `/Library` may). Against the live extension the dev core's helper found
+  the device and the sink stream and was refused at `CMIODeviceStartStream` (-4), as an
+  unsigned producer must be; the owner's own stream held 540 frames in 9.00 s meanwhile.
+  Idle Program in the dev core over 30 s: 0 render deadline misses and 0 skipped slots with
+  the camera off (1800 output ticks) and with a helper being started on every retry (1801).
+- **Task 4:** the shell reads the device with `corevideo-native --vcam-device-probe` in a
+  new process (about 20 ms) and no longer reads the HAL itself. `needsReboot` only when
+  macOS reports our version itself as not enabled.
+- **Task 5:** `virtualCamera.sink` in the snapshot, and one core log line when the core's
+  own view is blind to a camera a new process sees.
+- **Not verified here (owner gate):** an authorized helper streaming to the real camera;
+  a real provider arrival; Program delivery with the camera live under a show workload;
+  Windows compile of the shared edits (CI on the PR).
+- **Found on the way:** the installer does not change the extension version, so installing
+  it does not by itself reproduce a provider arrival. The core's CAPTURE list has the same
+  blind spot for other vendors' camera extensions installed while the app runs (not fixed).
+- **Task 6:** native ctest 5/5 on `build-metal` (Metal, virtual camera ON), 5/5 on
+  `build-stub`, and 5/5 (realtime label included) on the release build; shell harness 4003
+  checks, 0 failed; selfcheck PASS. `scripts/macos-vcam-e2e.sh` was not run: step 2 needs
+  no producer on the camera, steps 3-5 and 7 need sudo, step 6 quits the app. Installer 6:
+  `dist/macos/1.0.0/CoreVideoPro-1.0.0-arm64.pkg`, build 2907 at 5f8aceef, notarized and
+  stapled, extension still 3003. Installer 5's output is kept at
+  `dist/macos/1.0.0-installer5-build2899/`.
+
+### Owner gate, as it now stands
+
+1. Install installer 6 (the extension is not replaced: 3003 = 3003), open the app, turn
+   the camera on. Expect Program in Photo Booth, `virtualCamera.status = live`,
+   `virtualCamera.sink.helperPid` set, and
+   `ps` showing `/Library/Application Support/CoreVideo Pro/corevideo-native --vcam-sink-helper`
+   as a child of the core. `scripts/macos-vcam-e2e.sh --app` checks the same (it quits the app).
+2. The provider-arrival proof needs a provider to arrive while the app runs. With the app
+   running and `VcamProbe watch` running in a terminal: Settings, Remove virtual camera,
+   then turn the camera on again and approve it. The pass condition is the camera live
+   with no relaunch. Record three things, whatever they read: `watch`'s `ours=` column
+   across the removal and the return, `virtualCamera.sink.deviceVisibleInProcess`, and
+   whether the core logged "visible to a new process but not to this process's
+   CoreMediaIO view". `ours=no` / `false` / the log line after the camera is back means
+   the blind spot occurred and the helper covered it. `ours=yes` / `true` means this kind
+   of arrival does reach a running process, and the update case is still untested: then
+   build a throwaway 3004 and update with the app running. Risk: macOS may want a restart
+   to finish the removal (3002 is still listed as waiting to uninstall); the restart with
+   the app reopening at login is then the update-at-launch case.
+3. Program delivery with the camera live under a real show (the per-frame gate), with
+   `sink.transportDrops`, `sink.queueFullDrops` and `sink.sequenceGaps` read at the end.
