@@ -134,10 +134,27 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         case "scene.list":
             return .withData(sceneListJSON(model))
         default:
-            // Unreachable through the router (the catalog binds only the subset).
-            return .fail("Unknown action '\(actionId)'.")
+            // Unreachable through the router (the catalog binds only supported ids);
+            // control/dispatch-drive looks for exactly this text.
+            return .fail(undispatched(actionId))
         }
     }
+
+    /// The ids this dispatcher handles: the twin of Windows `SupportedActionIds`.
+    /// Hand-written ON PURPOSE, not derived from the catalog — it is the
+    /// dispatcher's own claim, and control/closure compares it with the
+    /// platform file's supported rows.
+    static let supportedActionIds: Set<String> = [
+        "transport.ftb.toggle", "transport.ftb.set", "transport.take",
+        "transport.record.toggle", "transport.record.set",
+        "transport.stream.toggle", "transport.stream.set",
+        "transport.virtualcam.toggle", "transport.virtualcam.set",
+        "transport.virtualcam.mirror.set", "transport.virtualcam.name.set",
+        "scene.select", "scene.list",
+    ]
+
+    /// The `default:` branch's text (Windows' unknown-action wording).
+    static func undispatched(_ id: String) -> String { "Unknown action '\(id)'." }
 
     @MainActor
     private static func blackout(_ result: AppModel.BlackoutResult) -> ControlInvokeResult {
