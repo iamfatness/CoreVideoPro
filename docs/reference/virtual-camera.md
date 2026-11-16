@@ -437,7 +437,7 @@ under Camera name). It needs a Developer ID build installed in `/Applications`.
 
 ### Install and approve
 
-1. Install from the notarized `.pkg` (or drag the app from the DMG into `/Applications`).
+1. Install from the notarized `.pkg` (the only Mac installer; it also installs the core copy the camera verifies, in `/Library/Application Support/CoreVideo Pro/`).
 2. Turn on **Virtual camera** in the footer flyout. macOS shows an approval prompt.
 3. Approve under System Settings: macOS 15+ General, Login Items & Extensions, Camera
    Extensions; macOS 13/14 Privacy & Security, then Allow next to the CoreVideo Pro message.
@@ -486,7 +486,7 @@ So:
   off). Update camera shows "Updating camera…", pauses our own output for the swap (the saved
   setting is unchanged), waits up to 5 s for the device to stop, replaces, and resumes only
   after the replacement finished. The replacement delegate re-checks at the moment macOS
-  offers the swap. Running from the DMG or a dev build, "Move CoreVideo Pro to the Applications
+  offers the swap. Running from another folder or a dev build, "Move CoreVideo Pro to the Applications
   folder…" comes first.
 - **Say when only a restart helps.** A launch that finds an older copy still uninstalling and
   no device goes straight to "Restart your Mac to finish updating the virtual camera." and
@@ -514,7 +514,7 @@ the opt-in; the next enable asks for approval again.
 | Updating camera… | Update camera is running: our output is paused until the swap finishes. |
 | Installing the virtual camera... | The OS request is in flight. Wait. |
 | Allow CoreVideo Pro Camera in System Settings to finish setup. | Approval pending. Use "Open System Settings", approve, no relaunch needed. |
-| Move CoreVideo Pro to the Applications folder to use the virtual camera. | The app runs from the DMG or another folder. Install to `/Applications`. |
+| Move CoreVideo Pro to the Applications folder to use the virtual camera. | The app runs from another folder. Install from the `.pkg`. |
 | Restart your Mac to finish updating the virtual camera. | macOS answered "will complete after reboot", or the update completed but no device appeared within 10 s and macOS lists an older copy uninstalling (or ours not enabled). Restart; nothing else fixes it. Health > Virtual camera lists the installed versions and states. |
 | This build can't install the virtual camera (development build without a provisioning profile). | An unsigned dev bundle; use a release build. |
 | This copy of CoreVideo Pro isn't signed to install the camera. / macOS policy blocked the camera extension. | The signing or provisioning profile does not authorize the extension, or MDM blocks it. |

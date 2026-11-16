@@ -136,6 +136,12 @@ pkgutil --expand-full "$OUT" "$W/expanded"
 PAYLOAD_APP="$(find "$W/expanded" -name 'CoreVideo Pro.app' -maxdepth 4 -type d | head -1)"
 [ -n "$PAYLOAD_APP" ] || die "expanded pkg has no CoreVideo Pro.app"
 codesign --verify --deep --strict "$PAYLOAD_APP" || die "payload app signature broken by packaging"
+# The shell runs the installed core only when it and its folder are root-owned
+# and writable by nobody else (CoreLocation.rootOwnedAndLocked): pin that here.
+CORE_BOM="$(lsbom -p fMUG "$W/expanded/core.pkg/Bom")" || die "lsbom failed on the core component"
+[ "$(awk '{print $1" "$2" "$3" "$4}' <<<"$CORE_BOM" | sort | tr '\n' ';')" \
+    = ". drwxr-xr-x root wheel;./corevideo-native -rwxr-xr-x root wheel;" ] \
+    || die "core component is not root:wheel 755: $CORE_BOM"
 PAYLOAD_CORE="$(find "$W/expanded/core.pkg" -name corevideo-native -type f | head -1)"
 [ -n "$PAYLOAD_CORE" ] || die "expanded pkg has no core component payload"
 cmp -s "$PAYLOAD_CORE" "$PAYLOAD_APP/Contents/Resources/corevideo-native" \

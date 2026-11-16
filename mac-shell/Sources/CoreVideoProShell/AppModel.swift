@@ -852,7 +852,7 @@ final class AppModel: ObservableObject {
                 }
             }
         }
-        let paths = ShellPaths.resolve()
+        let paths = ShellPaths.resolveForLaunch()
         guard let corePath = paths.corePath else {
             status = .failed("corevideo-native not found — run scripts/run-mac-shell.sh")
             return
@@ -1116,7 +1116,7 @@ final class AppModel: ObservableObject {
                 let action = CameraExtensionPolicy.launchAction(
                     installs: installs, bundledVersion: CameraExtensionPolicy.bundledVersion,
                     deviceRegistered: self.readCameraDevice().registered)
-                // A working installed copy is fine even from the DMG; anything
+                // A working installed copy is fine from anywhere; anything
                 // that would SUBMIT first passes the preflight (review I2b), so
                 // "Move to Applications" is never hidden behind "Update camera".
                 if action == .update || action == .activate, let blocked = self.cameraExtension.preflightState() {
@@ -4650,8 +4650,12 @@ enum ShellPaths {
         var coreCameraEligible = false
     }
 
-    static func resolve() -> Paths {
-        var paths = Paths()
+    private static let launchLock = NSLock()
+    private static var launchedCore: CoreLocation.Choice?
+
+    /// For the core LAUNCH only: decides which core copy runs (reads both
+    /// binaries once, CoreLocation) and remembers the decision.
+    static func resolveForLaunch() -> Paths {
         let bundleResources = Bundle.main.resourcePath ?? ""
         let candidates = [
             bundleResources + "/corevideo-native",
@@ -4659,6 +4663,21 @@ enum ShellPaths {
         ]
         let core = CoreLocation.resolve(
             bundledCore: candidates.first { FileManager.default.isExecutableFile(atPath: $0) })
+        launchLock.lock(); launchedCore = core; launchLock.unlock()
+        return resolve()
+    }
+
+    /// Everything else (Diagnostics redraws, support bundles): reports the core
+    /// the last launch chose, so it names the binary actually running and never
+    /// re-reads it. Before any launch it decides fresh without remembering.
+    static func resolve() -> Paths {
+        var paths = Paths()
+        let bundleResources = Bundle.main.resourcePath ?? ""
+        launchLock.lock(); let remembered = launchedCore; launchLock.unlock()
+        let core = remembered ?? CoreLocation.resolve(bundledCore: [
+            bundleResources + "/corevideo-native",
+            repoRoot() + "/native/build-metal/corevideo-native",
+        ].first { FileManager.default.isExecutableFile(atPath: $0) })
         paths.corePath = core.path
         paths.coreCameraEligible = core.cameraEligible
         let engineCandidates = [

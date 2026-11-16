@@ -103,6 +103,10 @@ extension ShellTests {
         expect(C.filesIdentical(a.path, b.path), "identical bytes compare equal")
         expect(!C.filesIdentical(a.path, c.path), "different bytes compare unequal")
         expect(!C.filesIdentical(a.path, tmp.appendingPathComponent("missing").path), "a missing file is never identical")
+        expect(!C.rootOwnedAndLocked(a.path), "a file this user owns is not a trusted installed core")
+        expect(!C.rootOwnedAndLocked(tmp.appendingPathComponent("missing").path), "a missing path is not trusted")
+        expect(C.rootOwnedAndLocked("/usr/bin/true"), "a root-owned system binary is trusted")
+        expect(!C.rootOwnedAndLocked("/tmp"), "a symlink is not trusted, whatever it points at")
         try? FileManager.default.removeItem(at: tmp)
     }
 }

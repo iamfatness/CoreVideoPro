@@ -1,7 +1,7 @@
 # CoreVideo Pro for macOS 1.0: owner acceptance
 
 Everything automation on this branch could not prove. Run it on the owner's Mac with
-the **notarized, signed DMG build** unless a step says otherwise. Record pass or fail
+the **notarized, signed .pkg build** (the only Mac installer since 2026-11-15; where a step below says DMG, use the .pkg) unless a step says otherwise. Record pass or fail
 and the date next to each item. A single fail blocks the release.
 
 Prerequisites: a camera, a microphone, a second Mac or phone to play the Zoom

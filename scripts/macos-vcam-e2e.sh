@@ -83,6 +83,7 @@ LOG_START="$(date '+%Y-%m-%d %H:%M:%S')"
 FEED_DIR="/Library/Application Support/CoreVideo Pro/vcam-probe"
 FEED="$FEED_DIR/corevideo-vcam-feed"
 FEED_PID=""
+KEEPALIVE_PID=""
 
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; }
 
@@ -95,8 +96,17 @@ collect_logs() {
 cleanup() {
     if [ -n "$FEED_PID" ] && kill -0 "$FEED_PID" 2>/dev/null; then kill "$FEED_PID" 2>/dev/null; fi
     # The probe is an admitted producer signed with get-task-allow; never leave
-    # it installed.
-    [ -e "$FEED" ] && sudo rm -f "$FEED"
+    # it installed. sudo -n: an EXIT trap must not sit at a password prompt (the
+    # keepalive started in step 3 keeps the credential fresh through the long
+    # leak check). Plain rm covers a feeder this user owns.
+    if [ -e "$FEED" ]; then
+        sudo -n rm -f "$FEED" 2>/dev/null || rm -f "$FEED" 2>/dev/null
+        if [ -e "$FEED" ]; then
+            echo "E2E WARNING: could not remove the signed probe. REMOVE IT NOW:" >&2
+            echo "    sudo rm -f \"$FEED\"" >&2
+        fi
+    fi
+    if [ -n "${KEEPALIVE_PID:-}" ]; then kill "$KEEPALIVE_PID" 2>/dev/null; fi
     collect_logs
     echo "artifacts: $OUT"
 }
@@ -225,6 +235,10 @@ echo "installing the signed feeder into $FEED_DIR (sudo)"
 sudo install -d -o root -g wheel -m 755 "$FEED_DIR" \
     && sudo install -o root -g wheel -m 755 "$SIGNED_FEED" "$FEED" \
     || fail 3 "cannot install the feeder into $FEED_DIR"
+# Keep the sudo credential alive until cleanup(): step 7's leak check alone
+# outlasts sudo's default 5 minute timeout, and cleanup must remove the feeder.
+( while kill -0 $$ 2>/dev/null; do sudo -n -v 2>/dev/null || exit 0; sleep 50; done ) &
+KEEPALIVE_PID=$!
 start_feed step3 6
 sleep 1
 probe step3 3 --fps 30 || fail 3 "probe failed while feeding (see $OUT/step3.err)"
