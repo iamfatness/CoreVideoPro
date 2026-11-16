@@ -57,6 +57,11 @@ extension ShellTests {
             ("sources-table/fits-the-page", testSourcesTableFitsThePageAtBothWindowWidths),
             ("sources-table/take-offline", testTakeOfflineUnassignsEverySlotHoldingTheDeviceWithoutReserving),
             ("sources-table/refresh-capture-devices", testRefreshAsksTheCoreAndAppliesTheList),
+            // Task 9: capture dropout, roles, source-policy commands.
+            ("sources-policy/commands-zoom-and-capture-with-names", testSourcePolicyCommandsCoverZoomAndCaptureWithNames),
+            ("sources-policy/capture-status-lines", testCaptureDropoutStatusUsesTheWindowsWording),
+            ("sources-policy/capture-policy-persists", testACapturePolicyPersistsAndFollowsItsSource),
+            ("sources-role/one-holder-per-role", testOneHolderPerRoleAndMeetingScoped),
         ]
     }
 
@@ -858,6 +863,83 @@ extension ShellTests {
         spin(until: { !model.captureDevices.isEmpty }, limit: 2)
         expectEqual(asked, ["list-capture-devices"], "Refresh sends the core's list command")
         expectEqual(model.captureDevices.map(\.id), ["screen:0"], "and shows what the core answered")
+    }
+
+    // ── Task 9: capture dropout, roles, source-policy commands ──────────────
+
+    @MainActor
+    static func testSourcePolicyCommandsCoverZoomAndCaptureWithNames() {
+        var zoomB = ShowInputSlot(id: 1); zoomB.kind = "zoom"; zoomB.sourceId = "20"; zoomB.dropoutPolicy = "black"; zoomB.name = "B"
+        var zoomA = ShowInputSlot(id: 2); zoomA.kind = "zoom"; zoomA.sourceId = "11"; zoomA.dropoutPolicy = "hold"; zoomA.name = "A"
+        var cam = ShowInputSlot(id: 3); cam.kind = "capture"; cam.sourceId = "cam"; cam.dropoutPolicy = "black"; cam.name = "Cam"
+        var unset = ShowInputSlot(id: 4); unset.kind = "zoom"; unset.sourceId = "30"; unset.name = "C"
+        let dup = zoomA
+        let commands = AppModel.sourcePolicyCommands(slots: [zoomB, zoomA, cam, unset, dup]) { "name:" + $0.name }
+        expectEqual(commands.compactMap { $0["sourceId"] as? String }, ["capture:cam", "zoom:11", "zoom:20", "zoom:30"],
+                    "every assigned zoom/capture source once, ordinal by wire id")
+        expectEqual(commands[0]["dropoutPolicy"] as? String, "black", "capture takes a dropout policy now (MediaCore.cpp:1907)")
+        expectEqual(commands[1]["dropoutPolicy"] as? String, "hold", "an explicit hold is sent")
+        expect(commands[3]["dropoutPolicy"] == nil, "no operator choice: no policy (the core default applies)")
+        expectEqual(commands.compactMap { $0["displayName"] as? String }, ["name:Cam", "name:A", "name:B", "name:C"],
+                    "the resolved name rides every command (the failed-source slate name)")
+        expect(commands.allSatisfy { $0["type"] as? String == "set-source-policy" }, "the core's command name")
+        // The production call site uses the session-only slot name (#1213; plan Task 8
+        // superseded), so the resolved name EQUALS slot.name. The closure above never does,
+        // which let an "omit displayName when it equals slot.name" mutation stay green.
+        let production = AppModel.appendSourcePolicies(to: [], slots: [cam, zoomA])
+        expectEqual(production.compactMap { $0["displayName"] as? String }, ["Cam", "A"],
+                    "the production default sends the slot's own name on every command")
+    }
+
+    static func testCaptureDropoutStatusUsesTheWindowsWording() {
+        func row(_ liveness: String?, _ onAir: String?, policy: String = "hold", reason: String? = nil,
+                 failIn: Double? = nil, age: Double? = nil, applies: Bool? = true) -> BusSourceRow {
+            BusSourceRow(sourceId: "capture:cam", kind: "capture", width: 0, height: 0, framesIngested: 0,
+                         sinceLastNewFrameMs: nil, liveness: liveness, onAir: onAir, lossReason: reason,
+                         failInMs: failIn, lastSampleAgeMs: age, dropoutPolicy: policy, dropoutPolicyApplies: applies)
+        }
+        expectEqual(CaptureDropoutStatus.line(row("lost", "failed")), "Lost (signal loss) — slate on Program", "lost, failed")
+        expectEqual(CaptureDropoutStatus.line(row("lost", "producing", reason: "device-unplugged", failIn: 3200)),
+                    "Lost (device unplugged) — holding, slate in 3.2 s", "lost, holding")
+        expectEqual(CaptureDropoutStatus.line(row("lost", "producing", policy: "black", failIn: nil)),
+                    "Lost (signal loss) — Program black, slate in unknown", "lost, black, unknown time")
+        expectEqual(CaptureDropoutStatus.line(row("stalled", "producing", age: 1800)),
+                    "No new frames for 1.8 s — holding last frame", "stalled")
+        expectEqual(CaptureDropoutStatus.line(row("live", "producing")), "Live", "live")
+        expectEqual(CaptureDropoutStatus.line(row("live", "producing", applies: false)), "", "policy does not apply: no line")
+        expect(!CaptureDropoutStatus.applies(row("live", "producing", applies: false)), "and the control is disabled")
+    }
+
+    @MainActor
+    static func testACapturePolicyPersistsAndFollowsItsSource() {
+        let model = AppModel()
+        model.assignSlot(5, kind: "capture", sourceId: "cam1", name: "Cam")
+        model.setDropoutPolicy(slotId: 5, policy: "black")
+        expectEqual(model.slots[4].dropoutPolicy, "black", "a capture slot takes a policy")
+        var saved = model.currentPrefs()
+        saved.showInputSlots = [PersistedSlot(slotId: 2, kind: "capture", sourceId: "cam1", name: "Cam", inShow: true)]
+        let after = AppModel(); after.applyRestoredPrefs(saved)
+        expectEqual(after.slots[1].dropoutPolicy, "black", "it follows the camera to its new slot")
+        expectEqual(after.slots[4].dropoutPolicy, "", "not the old slot number")
+    }
+
+    /// Port of StudioViewModel.SetParticipantProductionRole (:5020-5058).
+    static func testOneHolderPerRoleAndMeetingScoped() {
+        let present = [RosterParticipant(id: "a", name: "Ana", hasVideo: true, muted: false, talking: false, assigned: true),
+                       RosterParticipant(id: "b", name: "Ben", hasVideo: true, muted: false, talking: false, assigned: true)]
+        var roles = ProductionRoles()
+        expectEqual(roles.set("a", role: "host", present: present), "Ana is now Host", "assign")
+        expectEqual(roles.set("b", role: "host", present: present), "Ben is now Host", "reassign")
+        expectEqual(roles.byParticipant, ["b": "host"], "one holder per role: Ana loses Host")
+        expect(roles.set("b", role: "host", present: present) == nil, "unchanged is a no-op")
+        expect(roles.set("zed", role: "reader", present: present) == nil && roles.byParticipant["zed"] == nil,
+               "an absent participant cannot take a role")
+        expectEqual(roles.set("b", role: nil, present: present), "Ben role cleared", "clear")
+        _ = roles.set("a", role: "reader", present: present); roles.clear()
+        expect(roles.byParticipant.isEmpty, "roles end with the meeting")
+        expectEqual(ProductionRoles.roles.map(\.value),
+                    ["host", "co-host", "reader", "panelist", "guest-1", "guest-2", "guest-3", "guest-4"],
+                    "the Windows role list")
     }
 }
 

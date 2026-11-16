@@ -1930,29 +1930,9 @@ enum ShellTests {
 
     // ── dropout policy (per-source, #535 slice 4a reaching Mac) ─────────────
 
-    @MainActor
-    private static func testSourcePolicyCommandsAreZoomOnlyAndOrdered() {
-        // Core contract (MediaCore::setSourcePolicy, #535 slice 4a): only
-        // "zoom:<pid>" may carry dropoutPolicy — a non-zoom id pushes a sticky
-        // scene warning EVERY sync; values are exactly "hold"/"black"; an explicit
-        // hold must be SENT (PRESENT-OR-KEEP: omission keeps the stored black).
-        var zoomB = ShowInputSlot(id: 1); zoomB.kind = "zoom"; zoomB.sourceId = "20"
-        zoomB.dropoutPolicy = "black"
-        var zoomA = ShowInputSlot(id: 2); zoomA.kind = "zoom"; zoomA.sourceId = "11"
-        zoomA.dropoutPolicy = "hold"
-        var capture = ShowInputSlot(id: 3); capture.kind = "capture"; capture.sourceId = "cam"
-        capture.dropoutPolicy = "black"   // unreachable via UI; the filter is the guard
-        var unset = ShowInputSlot(id: 4); unset.kind = "zoom"; unset.sourceId = "30"
-        _ = unset   // dropoutPolicy stays "" — must emit nothing
-        let commands = AppModel.sourcePolicyCommands(slots: [zoomB, zoomA, capture, unset])
-        expectEqual(commands.count, 2, "capture and policy-less slots emit nothing")
-        expectEqual(commands[0]["sourceId"] as? String, "zoom:11", "ordinal order by sourceId")
-        expectEqual(commands[0]["dropoutPolicy"] as? String, "hold",
-                    "an explicit hold is sent — it must overwrite an earlier black")
-        expectEqual(commands[1]["sourceId"] as? String, "zoom:20", "ordinal order by sourceId")
-        expectEqual(commands[1]["dropoutPolicy"] as? String, "black", "black rides verbatim")
-        expectEqual(commands[0]["type"] as? String, "set-source-policy", "the core's command name")
-    }
+    // testSourcePolicyCommandsAreZoomOnlyAndOrdered moved to ShellTestsSources.swift as
+    // sources-policy/commands-zoom-and-capture-with-names (sources plan Task 9: the core
+    // now takes a dropout policy on capture:<id>, and every command carries displayName).
 
     @MainActor
     private static func testSourcePoliciesFollowTheSceneGraphInTheBatch() {
@@ -2921,8 +2901,11 @@ enum ShellTests {
         model.confirmQuit()
         spin(until: { !replies().isEmpty }, limit: 6)
         expectEqual(replies(), [true], "the quit completes")
-        expectEqual(core.commands, ["start-program-output", "set-recording-targets", "start-recording-session",
-                                    "stop-recording-session", "stop-encoder-session"],
+        // set-source-policy rides every scene sync for each assigned source since sources
+        // plan Task 9 (it carries the slate displayName); it is not part of the quit flow.
+        expectEqual(core.commands.filter { $0 != "set-source-policy" },
+                    ["start-program-output", "set-recording-targets", "start-recording-session",
+                     "stop-recording-session", "stop-encoder-session"],
                     "exactly: the take's start trio, the operator's stop, the quit's stream stop")
         let starts = core.sent.filter { ($0["type"] as? String) == "start-program-output" }
         expectEqual(starts.count, 1, "only the take's own start-program-output was sent")
@@ -3995,7 +3978,6 @@ enum ShellTests {
             ("zoom-audio/roster-change-repushes-spine", testRosterMembershipChangeRepushesTheSpine),
             ("audio-console/only-terminal-states-forget", testOnlyTerminalMeetingStatesForgetGuestAudio),
             ("audio-console/returning-mute-ahead-of-spine", testReturningMutedGuestsMuteGoesAheadOfTheSpine),
-            ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
             ("iso/take-survives-roster-loss", testIsoTakeSurvivesRosterLossAcrossStreamToggle),
             ("iso/take-operator-deselect", testIsoTakeOperatorDeselectIsAuthoritative),

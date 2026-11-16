@@ -173,9 +173,9 @@ struct ShowInputSlot: Identifiable, Equatable {
     // `set-source-policy`). "" = unset — the core's own default ("hold")
     // applies. "hold"/"black" are operator-chosen and ALWAYS sent (an explicit
     // "hold" must overwrite an earlier stored "black" — PRESENT-OR-KEEP, E9).
-    // Zoom-only: the core refuses (loudly, every sync) a dropoutPolicy on any
-    // id that isn't "zoom:<pid>", so this is gated to zoom slots everywhere it
-    // is read.
+    // Zoom AND capture: the core takes a policy on "zoom:<pid>" and
+    // "capture:<id>" (MediaCore::setSourcePolicy) and refuses any other id.
+    // Only capture policies are saved (Zoom slots are meeting-scoped, plan D2).
     var dropoutPolicy = ""
 }
 
@@ -641,7 +641,7 @@ final class AppModel: ObservableObject {
                                sourceKey: $0.sourceKey)
         }
         prefs.slotDropoutPolicies = slots
-            .filter { $0.kind == "zoom" && !$0.dropoutPolicy.isEmpty }
+            .filter { $0.kind == "capture" && !$0.dropoutPolicy.isEmpty }
             .map { PersistedSlotPolicy(slotId: $0.id, dropoutPolicy: $0.dropoutPolicy,
                                        sourceKey: $0.sourceKey) }
         // Capture slots only (plan D2): Zoom reuses user ids across meetings, so a
@@ -711,7 +711,7 @@ final class AppModel: ObservableObject {
         }
         for policy in prefs.slotDropoutPolicies ?? [] {
             if let index = restoredSlotIndex(sourceKey: policy.sourceKey, legacySlotId: policy.slotId),
-               slots[index].kind == "zoom" {
+               slots[index].kind == "capture" {
                 slots[index].dropoutPolicy = policy.dropoutPolicy
             }
         }
@@ -1857,6 +1857,7 @@ final class AppModel: ObservableObject {
             if !participants.isEmpty || revision > 0 {
                 let state = snapshot["meetingState"] as? String ?? meetingState
                 let lawRoster = Self.isInMeeting(state) ? roster : []
+                if lawRoster.isEmpty { productionRoles.clear() }
                 lawChanged = ShowInputWriteScope.run("roster-sync") {
                     runAssignmentLaw { law, slots in law.syncFromMeeting(&slots, roster: lawRoster) }
                 }
@@ -1896,6 +1897,17 @@ final class AppModel: ObservableObject {
     /// The Sources table's UI state (selection, filter, columns). Never writes slots;
     /// the column choices are saved under ShellPrefs.sourcesWorkspace.
     @Published var sourcesWorkspace = SourcesWorkspaceState()
+    /// D4: the Role control is built and stored but hidden until role-targeted routes exist.
+    static let roleControlAvailable = false
+    /// Meeting-scoped production roles (one holder per role); cleared on an empty roster.
+    private(set) var productionRoles = ProductionRoles()
+
+    func setParticipantRole(_ participantId: String, role: String?) {
+        if let line = productionRoles.set(participantId, role: role, present: roster) {
+            sourcesStatus = line
+            syncSpine()
+        }
+    }
 
     static func isInMeeting(_ state: String) -> Bool {
         state == "in_meeting" || state == "in-meeting"
@@ -2497,7 +2509,7 @@ final class AppModel: ObservableObject {
             [
                 "sdkUserId": participant.id,
                 "displayName": participant.name,
-                "role": "guest",
+                "role": productionRoles.byParticipant[participant.id] ?? "guest",
                 "videoOn": participant.hasVideo,
                 "muted": participant.muted,
                 "talking": participant.talking,
@@ -2672,31 +2684,35 @@ final class AppModel: ObservableObject {
     // displayName is deliberately not sent here — Windows sends it for slate
     // names, but Mac's slate-name path is unverified; a parity follow-up, not
     // shipped blind.
-    static func sourcePolicyCommands(slots: [ShowInputSlot]) -> [JSONObject] {
-        var seenSourceIds = Set<String>()
-        var entries: [(sourceId: String, policy: String)] = []
+    /// One `set-source-policy` per assigned zoom/capture source, de-duplicated by wire id
+    /// (keep first) and sorted by the wire id. Each carries `displayName` (the failed-source
+    /// slate name); `dropoutPolicy` only when the operator chose hold/black — an explicit
+    /// hold IS sent (PRESENT-OR-KEEP, MediaCore.cpp:1898-1905).
+    static func sourcePolicyCommands(slots: [ShowInputSlot],
+                                     displayName: (ShowInputSlot) -> String) -> [JSONObject] {
+        var seen = Set<String>()
+        var commands: [(wire: String, command: JSONObject)] = []
         for slot in slots {
-            guard slot.kind == "zoom", !slot.sourceId.isEmpty,
-                  slot.dropoutPolicy == "hold" || slot.dropoutPolicy == "black"
-            else { continue }
-            guard !seenSourceIds.contains(slot.sourceId) else { continue }
-            seenSourceIds.insert(slot.sourceId)
-            entries.append((slot.sourceId, slot.dropoutPolicy))
+            guard let wire = slot.sourceKey, seen.insert(wire).inserted else { continue }
+            var command: JSONObject = ["type": "set-source-policy", "sourceId": wire,
+                                       "displayName": displayName(slot)]
+            if slot.dropoutPolicy == "hold" || slot.dropoutPolicy == "black" {
+                command["dropoutPolicy"] = slot.dropoutPolicy
+            }
+            commands.append((wire, command))
         }
-        entries.sort { $0.sourceId < $1.sourceId }
-        return entries.map {
-            ["type": "set-source-policy", "sourceId": "zoom:" + $0.sourceId,
-             "dropoutPolicy": $0.policy]
-        }
+        return commands.sorted { $0.wire < $1.wire }.map(\.command)
     }
 
     /// Appends the source-policy commands AFTER whatever is already in the
     /// batch. The core clears `sceneValidationWarnings_` on `load-scene-graph`,
     /// so a policy placed before it would have any refusal warning silently
     /// wiped — policies must always come last.
-    static func appendSourcePolicies(to commands: [JSONObject],
-                                     slots: [ShowInputSlot]) -> [JSONObject] {
-        commands + sourcePolicyCommands(slots: slots)
+    /// The name rides the session-only slot name (#1213, SlotNamePolicy): there is no
+    /// per-source name store (plan Task 8 superseded).
+    static func appendSourcePolicies(to commands: [JSONObject], slots: [ShowInputSlot],
+                                     displayName: (ShowInputSlot) -> String = { $0.name }) -> [JSONObject] {
+        commands + sourcePolicyCommands(slots: slots, displayName: displayName)
     }
 
     /// Operator sets a slot's dropout policy. Validated against the core's
@@ -2704,7 +2720,8 @@ final class AppModel: ObservableObject {
     /// risking a sticky scene-validation warning.
     func setDropoutPolicy(slotId: Int, policy: String) {
         guard policy == "hold" || policy == "black",
-              let index = slots.firstIndex(where: { $0.id == slotId })
+              let index = slots.firstIndex(where: { $0.id == slotId }),
+              slots[index].kind == "zoom" || slots[index].kind == "capture"
         else { return }
         slots[index].dropoutPolicy = policy
         syncScenes()
