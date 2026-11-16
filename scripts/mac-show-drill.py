@@ -457,6 +457,9 @@ def main():
     parser.add_argument("--media", action="store_true",
                         help="put a 1080p60 clip and a looping 1080p30 video background on Program "
                              "and gate their decode/presentation rates")
+    parser.add_argument("--source-grades", action="store_true",
+                        help="after configure, apply a per-source grade (warm-film, exposure +2) to every "
+                             "wall participant (query-source-grade, then set-source-grade) and gate as usual")
     parser.add_argument("--ffmpeg", default=None,
                         help="ffmpeg bin dir or exe for --media fixtures "
                              "(default: COREVIDEO_FFMPEG_BIN_DIR, then PATH)")
@@ -550,6 +553,30 @@ def main():
                                  "mediaAssetKind": "stinger", "mediaAssetPath": media_background}
     step("configure", configure, 500)
 
+    if args.source_grades:
+        # Per-source grading (grading plan 2026-11-16, Task 7): the same requests the Mac
+        # store sends. Program carries 101, so at least one routed source is graded on air.
+        time.sleep(1.0)  # let a render tick observe every wall source
+        participants = [str(101 + i) for i in range(args.load)] if args.load else []
+        accepted = 0
+        for pid in participants:
+            query = core.request({"type": "query-source-grade", "sourceId": pid}, step="grade-query") or {}
+            if not query.get("present"):
+                print(f"GRADE {pid}: no frame this tick (present=false); not applied")
+                continue
+            applied = core.request({"type": "set-source-grade", "sourceId": pid,
+                                    "sourceEpoch": query.get("sourceEpoch", 0),
+                                    "expectedRevision": query.get("revision", 0),
+                                    "grade": {"lut": "warm-film", "exposure": 2}}, step="grade-set") or {}
+            if applied.get("accepted"):
+                accepted += 1
+            else:
+                print(f"GRADE {pid}: refused ({applied.get('reason') or applied.get('error')})")
+        print(f"GRADE {accepted}/{len(participants)} per-source grades accepted "
+              f"(warm-film, exposure +2; Program route = 101)")
+        if participants and accepted == 0:
+            failures.append("--source-grades: no per-source grade was accepted, so the run proved nothing")
+
     # 2. Operator traffic at the cadence the shell produces, for the whole run:
     #    2Hz snapshot syncs plus scene re-cues, while the render loop is live.
     start = time.time()
@@ -601,6 +628,10 @@ def main():
 
     # ── assertions ───────────────────────────────────────────────────────────
     snapshot = (stop or {}).get("snapshot", {})
+    if args.source_grades:
+        rows = snapshot.get("sourceGrades") or []
+        print(f"GRADE end of run: {sum(1 for r in rows if r.get('active'))}/{len(rows)} "
+              f"sourceGrades rows active")
 
     # STAGE EVIDENCE for the recorded-rate gate. The muxed rate on its own cannot
     # tell "the compositor never produced 60" from "the compositor produced 60 and
