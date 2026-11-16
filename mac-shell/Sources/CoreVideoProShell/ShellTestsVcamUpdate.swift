@@ -27,6 +27,8 @@ extension ShellTests {
             ("vcam-update/update-button-race-never-resumes-mid-swap", testUpdateCameraNeverResumesOurOutputMidSwap),
             ("vcam-update/launch-holds-our-output-until-the-swap", testLaunchHoldsOurOutputUntilTheSwap),
             ("vcam-update/notice-is-a-second-line", testUpdateNoticeIsASecondLineWithTheRightCopy),
+            ("vcam-update/old-device-is-not-the-new-one", testTheOldCopysDeviceIsNotTheNewOne),
+            ("vcam-update/mid-session-loss-rechecks", testMidSessionLossRechecksAndReportsARestart),
             ("vcam-update/replacement-offered-in-use-is-cancelled",
              testReplacementOfferedWhileInUseEndsUpdateReady),
             ("vcam-update/completed-unregistered-old-uninstalling-needs-reboot",
@@ -57,6 +59,11 @@ extension ShellTests {
         override var isEnabled: Bool { stubEnabled }
         override var isUninstalling: Bool { stubUninstalling }
         override var isAwaitingUserApproval: Bool { false }
+    }
+
+    /// Our bundled version's device (its model UID names the version).
+    static func ourDevice(running: Bool = false) -> CameraDeviceStatus {
+        CameraDeviceStatus(registered: true, runningSomewhere: running, version: CameraExtensionPolicy.bundledVersion)
     }
 
     static func ours(enabled: Bool = true, uninstalling: Bool = false) -> CameraExtensionInstall {
@@ -154,7 +161,7 @@ extension ShellTests {
     @MainActor
     static func testInUseUpdateIsDeferredAndNothingSubmitted() {
         let (model, fake, _, _) = launchedModel(installed: [olderInstall],
-                                                device: CameraDeviceStatus(registered: true, runningSomewhere: true))
+                                                device: ourDevice(running: true))
         expectEqual(fake.calls, ["installs"], "another app streaming: no request is submitted")
         expectEqual(model.cameraExtensionState, .updateReady, "the update waits as .updateReady")
         expectEqual(model.virtualCameraLabel, "Virtual camera off", "the status line stays the status")
@@ -169,7 +176,7 @@ extension ShellTests {
     @MainActor
     static func testFreeCameraUpdateReplaces() {
         let (model, fake, _, _) = launchedModel(installed: [olderInstall],
-                                                device: CameraDeviceStatus(registered: true, runningSomewhere: false))
+                                                device: ourDevice(running: false))
         expectEqual(fake.calls, ["installs", "activate"], "a free camera is updated at launch")
         expectEqual(model.cameraExtensionState, .active, "and the activation result lands")
         model.stopTimersForTesting()
@@ -179,7 +186,7 @@ extension ShellTests {
     static func testUpdateReadyRetriesWhenTheCameraFrees() {
         let model = AppModel()
         let fake = FakeCameraExtensionActivator(script: [.activating, .active], installed: [olderInstall])
-        let probe = FakeCameraDeviceProbe(CameraDeviceStatus(registered: true, runningSomewhere: true))
+        let probe = FakeCameraDeviceProbe(ourDevice(running: true))
         model.cameraExtension = fake
         model.cameraDeviceProbe = probe
         wire(model, probe, WireLog())
@@ -202,7 +209,7 @@ extension ShellTests {
     static func testUpdateCameraButtonPausesOurOutputThenReplaces() {
         // Another app held the camera at launch, then quit; our output is on.
         let (model, fake, probe, log) = launchedModel(
-            installed: [olderInstall], device: CameraDeviceStatus(registered: true, runningSomewhere: true),
+            installed: [olderInstall], device: ourDevice(running: true),
             intentOn: true)
         model.cameraUpdateRetryInterval = 60
         model.cameraUpdatePollInterval = 0.03
@@ -221,7 +228,7 @@ extension ShellTests {
 
         // Another app still streaming: no request, stay ready, resume our output.
         let (busy, busyFake, _, busyLog) = launchedModel(
-            installed: [olderInstall], device: CameraDeviceStatus(registered: true, runningSomewhere: true),
+            installed: [olderInstall], device: ourDevice(running: true),
             intentOn: true)
         busy.cameraUpdateReleaseWait = 0.2
         busy.cameraUpdatePollInterval = 0.05
@@ -241,7 +248,7 @@ extension ShellTests {
     @MainActor
     static func testUpdateCameraNeverResumesOurOutputMidSwap() {
         let (model, fake, probe, log) = launchedModel(
-            installed: [olderInstall], device: CameraDeviceStatus(registered: true, runningSomewhere: true),
+            installed: [olderInstall], device: ourDevice(running: true),
             intentOn: true)
         probe.status.runningSomewhere = false   // the other app quit; our output still streams
         fake.completionDelay = 0.3              // sysextd takes a while
@@ -271,7 +278,7 @@ extension ShellTests {
     @MainActor
     static func testLaunchHoldsOurOutputUntilTheSwap() {
         let (model, fake, _, log) = launchedModel(
-            installed: [olderInstall], device: CameraDeviceStatus(registered: true, runningSomewhere: false),
+            installed: [olderInstall], device: ourDevice(running: false),
             intentOn: true, script: [.activating, .active])
         expectEqual(fake.calls, ["installs", "activate"], "our output on, nobody else: swapped at launch")
         expectEqual(log.ons.first, false, "the core's first sync is held off")
@@ -283,7 +290,7 @@ extension ShellTests {
 
         // Nothing to swap: the hold releases at once.
         let (same, sameFake, _, sameLog) = launchedModel(
-            installed: [ours()], device: CameraDeviceStatus(registered: true), intentOn: true)
+            installed: [ours()], device: ourDevice(), intentOn: true)
         expectEqual(sameFake.calls, ["installs"], "our version active: nothing submitted")
         expectEqual(sameLog.ons.last, true, "and our output starts right away")
         same.stopTimersForTesting()
@@ -304,6 +311,57 @@ extension ShellTests {
         expect(P.updateNotice(ext: .active, othersHolding: true, updating: false) == nil, "no notice otherwise")
         expect(P.updateNotice(ext: .updateReady, othersHolding: false, updating: true) == nil,
                "none while Updating camera runs")
+    }
+
+    /// Review I4: after a replacement the OLD copy's device (same UID, no
+    /// version in its model) can still be in the HAL. That is not success.
+    @MainActor
+    static func testTheOldCopysDeviceIsNotTheNewOne() {
+        let stuck = [ours(), CameraExtensionInstall(version: "2883", enabled: false, uninstalling: true)]
+        let lingering = CameraDeviceStatus(registered: true, runningSomewhere: false, version: nil)
+        let (model, fake) = activatedModel(installed: stuck, device: lingering)
+        expectEqual(fake.calls, ["activate", "installs"], "the old device is not taken for the new one")
+        expectEqual(model.cameraExtensionState, .needsReboot, "and the stuck swap is reported")
+        model.stopTimersForTesting()
+
+        let (fresh, freshFake) = activatedModel(installed: stuck, device: ourDevice())
+        expectEqual(freshFake.calls, ["activate"], "the new version's device is success")
+        expectEqual(fresh.cameraExtensionState, .active, "and stays active")
+        fresh.stopTimersForTesting()
+
+        expectEqual(CameraConstants.extensionVersion(fromDeviceModel: CameraConstants.deviceModel),
+                    CameraExtensionPolicy.bundledVersion, "the device model carries the extension version")
+        expect(CameraConstants.extensionVersion(fromDeviceModel: "CoreVideo Pro Camera") == nil,
+               "a pre-3001 model names no version")
+    }
+
+    /// Review I4: the camera vanishing mid-session (the core reports it lost
+    /// for longer than the re-check delay) re-runs the check.
+    @MainActor
+    static func testMidSessionLossRechecksAndReportsARestart() {
+        let model = AppModel()
+        let fake = FakeCameraExtensionActivator(installed: [ours()])
+        let probe = FakeCameraDeviceProbe(ourDevice())
+        model.cameraExtension = fake
+        model.cameraDeviceProbe = probe
+        wire(model, probe, WireLog())
+        model.cameraExtensionOptedIn = true
+        model.cameraLostRecheckAfter = 0.1
+        model.virtualCamera = PersistedVirtualCamera(enabled: true)
+        model.startCameraExtensionAtLaunch()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(model.cameraExtensionState, .active, "precondition: active with our device")
+        // The extension dies; macOS now lists an older copy uninstalling.
+        probe.status = CameraDeviceStatus()
+        fake.installed = [ours(), CameraExtensionInstall(version: "2883", enabled: false, uninstalling: true)]
+        var lost = VirtualCameraReadModel()
+        lost.status = "failed"; lost.warning = "CAMERA_EXTENSION_LOST: sink vanished"
+        model.virtualCameraCore = lost
+        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        model.virtualCameraCore = lost   // the next snapshot, still lost
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(model.cameraExtensionState, .needsReboot, "a lost camera with a restart pending says so")
+        model.stopTimersForTesting()
     }
 
     /// Belt and braces at the moment macOS offers the replacement: a different
@@ -367,7 +425,7 @@ extension ShellTests {
         model.stopTimersForTesting()
 
         let (registered, regFake) = activatedModel(installed: stuck,
-                                                   device: CameraDeviceStatus(registered: true))
+                                                   device: ourDevice())
         expectEqual(regFake.calls, ["activate"], "a registered device needs no question")
         expectEqual(registered.cameraExtensionState, .active, "and stays active")
         registered.stopTimersForTesting()
@@ -422,7 +480,7 @@ extension ShellTests {
         let model = AppModel()
         let fake = FakeCameraExtensionActivator(installed: [olderInstall])
         fake.preflight = .notInApplications
-        let probe = FakeCameraDeviceProbe(CameraDeviceStatus(registered: true, runningSomewhere: true))
+        let probe = FakeCameraDeviceProbe(ourDevice(running: true))
         model.cameraExtension = fake
         model.cameraDeviceProbe = probe
         wire(model, probe, WireLog())
@@ -438,7 +496,7 @@ extension ShellTests {
         let fake2 = FakeCameraExtensionActivator(installed: [ours()])
         fake2.preflight = .notInApplications
         fine.cameraExtension = fake2
-        fine.cameraDeviceProbe = FakeCameraDeviceProbe(CameraDeviceStatus(registered: true))
+        fine.cameraDeviceProbe = FakeCameraDeviceProbe(ourDevice())
         fine.coreCommandCaptureForTesting = { _ in }
         fine.cameraExtensionOptedIn = true
         fine.startCameraExtensionAtLaunch()
@@ -482,7 +540,7 @@ extension ShellTests {
     static func testVirtualCameraDiagnosticsReachTheSupportBundle() {
         let installed = [ours(), CameraExtensionInstall(version: "2881", enabled: false, uninstalling: true)]
         let (model, _, _, _) = launchedModel(installed: installed,
-                                          device: CameraDeviceStatus(registered: true, runningSomewhere: true))
+                                          device: ourDevice(running: true))
         let input = model.supportBundleInput()
         guard let state = try? JSONSerialization.jsonObject(with: input.shellStateJson) as? JSONObject,
               let vcam = state["virtualCamera"] as? JSONObject else {

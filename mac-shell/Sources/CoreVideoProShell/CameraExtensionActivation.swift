@@ -55,6 +55,12 @@ struct CameraDeviceStatus: Equatable {
     /// kCMIODevicePropertyDeviceIsRunningSomewhere: some process has a stream
     /// of the device running (Zoom, Photo Booth, our own core feeding the sink).
     var runningSomewhere = false
+    /// The extension version in the device's model UID; nil for a copy from
+    /// before 3001 (or an unreadable model). Registration counts only when
+    /// it is the bundled version.
+    var version: String?
+
+    func isOurs(_ bundledVersion: String) -> Bool { registered && version == bundledVersion }
 }
 
 /// The HAL probe behind a protocol: CI has no camera device to look at.
@@ -119,7 +125,21 @@ final class SystemCameraDeviceProbe: CameraDeviceProbing {
                                             UInt32(MemoryLayout<UInt32>.size), &used, &running)
         // An unreadable flag counts as running: claiming "free" wrongly is the
         // failure that strands an update, claiming "busy" only waits.
-        return CameraDeviceStatus(registered: true, runningSomewhere: err != noErr || running != 0)
+        return CameraDeviceStatus(registered: true, runningSomewhere: err != noErr || running != 0,
+                                  version: Self.string(device, kCMIODevicePropertyModelUID)
+                                      .flatMap(CameraConstants.extensionVersion(fromDeviceModel:)))
+    }
+
+    private static func string(_ object: CMIOObjectID, _ selector: Int) -> String? {
+        var address = global(CMIOObjectPropertySelector(selector))
+        var value: Unmanaged<CFString>?
+        var used: UInt32 = 0
+        let err = withUnsafeMutablePointer(to: &value) { ptr in
+            CMIOObjectGetPropertyData(object, &address, 0, nil,
+                                      UInt32(MemoryLayout<Unmanaged<CFString>?>.size), &used, ptr)
+        }
+        guard err == noErr, let string = value?.takeRetainedValue() else { return nil }
+        return string as String
     }
 
     private static func global(_ selector: CMIOObjectPropertySelector) -> CMIOObjectPropertyAddress {

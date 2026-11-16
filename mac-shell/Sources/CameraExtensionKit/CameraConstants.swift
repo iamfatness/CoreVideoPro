@@ -22,7 +22,22 @@ public enum CameraConstants {
     /// Starts at 3000, above every app build number earlier builds stamped on
     /// the extension (the owner's Mac had 2881 and 2883), so the one-time
     /// transition to this scheme is an upgrade, never a downgrade.
-    public static let extensionVersion = 3000
+    public static let extensionVersion = 3001
+
+    /// The device's model UID (kCMIODevicePropertyModelUID) carries the
+    /// extension version, so the shell can tell the NEW extension's device
+    /// from the old one's after a replacement: both publish the same device
+    /// UID, and the old device lingers in the HAL while its process exits.
+    /// Copies installed before 3001 publish a bare "CoreVideo Pro Camera".
+    public static let deviceModelPrefix = "CoreVideo Pro Camera/"
+    public static var deviceModel: String { deviceModelPrefix + String(extensionVersion) }
+
+    /// The extension version a device model UID names, or nil (an older copy).
+    public static func extensionVersion(fromDeviceModel model: String) -> String? {
+        guard model.hasPrefix(deviceModelPrefix) else { return nil }
+        let v = String(model.dropFirst(deviceModelPrefix.count))
+        return v.isEmpty ? nil : v
+    }
     /// Spec §4 law 6, tightened to Developer ID (2026-11-15 security review): an
     /// Apple-anchored chain whose intermediate is the Developer ID CA
     /// (1.2.840.113635.100.6.2.6) and whose leaf is a Developer ID Application

@@ -81,7 +81,9 @@ enum CameraFormatFactory {
 
 /// The one virtual device. Streams are added source first, then sink.
 final class CameraDevice: NSObject, CMIOExtensionDeviceSource, @unchecked Sendable {
-    static let deviceModel = "CoreVideo Pro Camera"
+    /// Carries the extension version (CameraConstants.deviceModel): the shell
+    /// matches on it to know the device it sees is THIS copy's.
+    static let deviceModel = CameraConstants.deviceModel
 
     private(set) var device: CMIOExtensionDevice!
     let store = ProgramFrameStore()

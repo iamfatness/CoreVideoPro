@@ -524,7 +524,15 @@ final class AppModel: ObservableObject {
     /// Operator intent (persisted). Change it only through the setters below.
     @Published var virtualCamera = PersistedVirtualCamera()
     /// The core's last `virtualCamera` node (nil = never observed).
-    @Published var virtualCameraCore: VirtualCameraReadModel?
+    @Published var virtualCameraCore: VirtualCameraReadModel? {
+        didSet { observeVirtualCameraLoss() }
+    }
+    /// Mid-session: the core reporting the device lost/not found for longer
+    /// than this while the extension reads .active re-runs the registration
+    /// check (the old copy may have exited after we called the swap done).
+    var cameraLostRecheckAfter: TimeInterval = 10
+    private var virtualCameraLostSince: Date?
+    private var virtualCameraLostRechecked = false
     /// nil = never asked; true after the first enable (persisted).
     var cameraExtensionOptedIn: Bool?
     /// A properties query that ends with didFinish and no foundProperties never
@@ -1198,6 +1206,31 @@ final class AppModel: ObservableObject {
         return status
     }
 
+    private func observeVirtualCameraLoss() {
+        let lost = virtualCameraCore.map { core in
+            core.status == "failed"
+                && VirtualCameraPresentation.connectingPrefixes.contains { core.warning.hasPrefix($0) }
+        } ?? false
+        guard lost, virtualCamera.enabled, cameraExtensionState == .active else {
+            virtualCameraLostSince = nil
+            virtualCameraLostRechecked = false
+            return
+        }
+        let since = virtualCameraLostSince ?? Date()
+        virtualCameraLostSince = since
+        guard !virtualCameraLostRechecked, Date().timeIntervalSince(since) >= cameraLostRecheckAfter else { return }
+        virtualCameraLostRechecked = true
+        if readCameraDevice().isOurs(CameraExtensionPolicy.bundledVersion) { return }
+        ShellLog.write("vcam-ext: the core has not reached the camera for \(cameraLostRecheckAfter) s; checking what is installed")
+        queryCameraExtensionInstalls { [weak self] installs in
+            guard let self, self.cameraExtensionState == .active else { return }
+            if CameraExtensionPolicy.needsReboot(unregisteredWith: installs,
+                                                 bundledVersion: CameraExtensionPolicy.bundledVersion) {
+                self.setCameraExtensionState(.needsReboot)
+            }
+        }
+    }
+
     /// Activation said done; prove it. Our device must appear in the HAL within
     /// `cameraRegistrationTimeout`. If it never does, ask macOS what is
     /// installed: an older copy still uninstalling (or ours not enabled) means
@@ -1212,9 +1245,11 @@ final class AppModel: ObservableObject {
 
     private func pollCameraRegistration(token: UUID, deadline: Date) {
         guard cameraRegistrationToken == token, cameraExtensionState == .active else { return }
-        if readCameraDevice().registered {
+        // OUR version's device, not merely "a device": the old copy's device
+        // has the same UID and lingers while its process exits (review I4).
+        if readCameraDevice().isOurs(CameraExtensionPolicy.bundledVersion) {
             cameraRegistrationToken = nil
-            ShellLog.write("vcam-ext: device registered")
+            ShellLog.write("vcam-ext: device registered (version \(CameraExtensionPolicy.bundledVersion))")
             return
         }
         if Date() < deadline {

@@ -4,5 +4,5 @@
 # earlier builds used as the extension's CFBundleVersion (the owner's Mac had
 # 2881 and 2883), so the move to an independent version is an upgrade, never a
 # downgrade. Only ever increase it.
-extensionVersion=3000
-sourceHash=204a3c2f4e40259e9d4c9a19fdfd53cc0fa25781ebf90bcf139ec90b8a49036e
+extensionVersion=3001
+sourceHash=309207262fecce3945986ae023681f42da3972e066f5f87a25fd03c2cd9dd9e0
