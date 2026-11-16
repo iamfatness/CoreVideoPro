@@ -58,11 +58,43 @@ protocol CameraDeviceProbing: AnyObject {
     func read() -> CameraDeviceStatus
 }
 
+/// `status` is everything except our own core: registration and OTHER apps'
+/// streams. Our core's sink stream is modelled the way the HAL shows it:
+/// running from the first `sync-virtual-camera {on:true}` the model sends
+/// (feed every captured core command to `observe`) until `releaseAfterReads`
+/// reads after an `on:false`, because CMIODeviceStopStream lands a moment
+/// after the command. A fake that reads "not running" while our output is on
+/// tests a state the real HAL never produces.
 final class FakeCameraDeviceProbe: CameraDeviceProbing {
     var status: CameraDeviceStatus
+    var releaseAfterReads = 2
     private(set) var reads = 0
+    private(set) var ownStreaming = false
+    private var readsSinceOff: Int?
+
     init(_ status: CameraDeviceStatus = CameraDeviceStatus()) { self.status = status }
-    func read() -> CameraDeviceStatus { reads += 1; return status }
+
+    func read() -> CameraDeviceStatus {
+        reads += 1
+        if let n = readsSinceOff {
+            if n >= releaseAfterReads { ownStreaming = false; readsSinceOff = nil } else { readsSinceOff = n + 1 }
+        }
+        var s = status
+        s.runningSomewhere = s.runningSomewhere || ownStreaming
+        return s
+    }
+
+    /// Our core started (on:true) or was told to stop (on:false) its sink stream.
+    func wire(on: Bool) {
+        if on { ownStreaming = true; readsSinceOff = nil } else if ownStreaming, readsSinceOff == nil { readsSinceOff = 0 }
+    }
+
+    /// Feed a captured core command body (`coreCommandCaptureForTesting`).
+    func observe(_ body: JSONObject) {
+        for c in (body["commands"] as? [JSONObject]) ?? [] where c["type"] as? String == "sync-virtual-camera" {
+            wire(on: c["on"] as? Bool ?? true)
+        }
+    }
 }
 
 /// Reads the CoreMediaIO HAL directly (the same calls the core's
@@ -250,9 +282,21 @@ final class FakeCameraExtensionActivator: CameraExtensionActivating {
         done(current == .unknown ? .notInstalled : current)
     }
 
+    /// > 0: the first scripted state is delivered at once, the rest after this
+    /// delay (a request that stays `.activating` while sysextd works).
+    var completionDelay: TimeInterval = 0
+
     func activate(_ update: @escaping (CameraExtensionState) -> Void) {
         calls.append("activate")
-        for s in script { current = s; update(s) }
+        guard completionDelay > 0, let first = script.first else {
+            for s in script { current = s; update(s) }
+            return
+        }
+        current = first; update(first)
+        let rest = script.dropFirst()
+        DispatchQueue.main.asyncAfter(deadline: .now() + completionDelay) { [weak self] in
+            for s in rest { self?.current = s; update(s) }
+        }
     }
 
     func deactivate(_ update: @escaping (CameraExtensionState) -> Void) {

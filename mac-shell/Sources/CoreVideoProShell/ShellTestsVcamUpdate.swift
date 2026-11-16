@@ -106,28 +106,51 @@ extension ShellTests {
 
     static let olderInstall = CameraExtensionInstall(version: "2883", enabled: true)
 
+    /// Every sync-virtual-camera the model sends, with the extension state at
+    /// the moment it was sent.
+    final class WireLog {
+        var sent: [(on: Bool, state: CameraExtensionState)] = []
+        var ons: [Bool] { sent.map(\.on) }
+    }
+
+    /// Wires the model the way production runs: every core command goes to the
+    /// probe (our sink stream follows the wire) and to `log`.
+    @MainActor
+    static func wire(_ model: AppModel, _ probe: FakeCameraDeviceProbe, _ log: WireLog) {
+        model.coreCommandCaptureForTesting = { [weak model] body in
+            probe.observe(body)
+            for c in (body["commands"] as? [JSONObject]) ?? [] where c["type"] as? String == "sync-virtual-camera" {
+                log.sent.append((c["on"] as? Bool ?? true, model?.cameraExtensionState ?? .unknown))
+            }
+        }
+    }
+
     @MainActor
     static func launchedModel(installed: [CameraExtensionInstall], device: CameraDeviceStatus,
-                              intentOn: Bool = false, script: [CameraExtensionState] = [.activating, .active])
-        -> (AppModel, FakeCameraExtensionActivator, FakeCameraDeviceProbe) {
+                              intentOn: Bool = false, script: [CameraExtensionState] = [.activating, .active],
+                              settle: TimeInterval = 0.05)
+        -> (AppModel, FakeCameraExtensionActivator, FakeCameraDeviceProbe, WireLog) {
         let model = AppModel()
         let fake = FakeCameraExtensionActivator(script: script, installed: installed)
         let probe = FakeCameraDeviceProbe(device)
+        let log = WireLog()
         model.cameraExtension = fake
         model.cameraDeviceProbe = probe
-        model.coreCommandCaptureForTesting = { _ in }
+        wire(model, probe, log)
         model.cameraExtensionOptedIn = true
         model.virtualCamera = PersistedVirtualCamera(enabled: intentOn)
         model.startCameraExtensionAtLaunch()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        return (model, fake, probe)
+        // The core connecting re-sends the intent (onConnected's resend).
+        model.handleBridgeStatus(.connected(renderer: "test"))
+        RunLoop.current.run(until: Date().addingTimeInterval(settle))
+        return (model, fake, probe, log)
     }
 
     @MainActor
     static func testInUseUpdateIsDeferredAndNothingSubmitted() {
-        let (model, fake, _) = launchedModel(installed: [olderInstall],
-                                             device: CameraDeviceStatus(registered: true, runningSomewhere: true))
-        expectEqual(fake.calls, ["installs"], "camera streaming somewhere: no request is submitted")
+        let (model, fake, _, _) = launchedModel(installed: [olderInstall],
+                                                device: CameraDeviceStatus(registered: true, runningSomewhere: true))
+        expectEqual(fake.calls, ["installs"], "another app streaming: no request is submitted")
         expectEqual(model.cameraExtensionState, .updateReady, "the update waits as .updateReady")
         expectEqual(model.virtualCameraLabel,
                     "An update to CoreVideo Pro Camera is ready. Quit apps that are using the camera (Zoom, Teams, Photo Booth\u{2026}), then click Update camera.",
@@ -135,19 +158,12 @@ extension ShellTests {
         expect(VirtualCameraPresentation.showsUpdateButton(model.cameraExtensionState), "the Update camera button shows")
         expect(!VirtualCameraPresentation.showsUpdateButton(.active), "and only then")
         model.stopTimersForTesting()
-
-        let (own, ownFake, _) = launchedModel(installed: [olderInstall],
-                                              device: CameraDeviceStatus(registered: true, runningSomewhere: false),
-                                              intentOn: true)
-        expectEqual(ownFake.calls, ["installs"], "our own output on counts as in use")
-        expectEqual(own.cameraExtensionState, .updateReady, "and defers the update too")
-        own.stopTimersForTesting()
     }
 
     @MainActor
     static func testFreeCameraUpdateReplaces() {
-        let (model, fake, _) = launchedModel(installed: [olderInstall],
-                                             device: CameraDeviceStatus(registered: true, runningSomewhere: false))
+        let (model, fake, _, _) = launchedModel(installed: [olderInstall],
+                                                device: CameraDeviceStatus(registered: true, runningSomewhere: false))
         expectEqual(fake.calls, ["installs", "activate"], "a free camera is updated at launch")
         expectEqual(model.cameraExtensionState, .active, "and the activation result lands")
         model.stopTimersForTesting()
@@ -160,7 +176,7 @@ extension ShellTests {
         let probe = FakeCameraDeviceProbe(CameraDeviceStatus(registered: true, runningSomewhere: true))
         model.cameraExtension = fake
         model.cameraDeviceProbe = probe
-        model.coreCommandCaptureForTesting = { _ in }
+        wire(model, probe, WireLog())
         model.cameraExtensionOptedIn = true
         model.cameraUpdateRetryInterval = 0.1
         model.startCameraExtensionAtLaunch()
@@ -168,60 +184,48 @@ extension ShellTests {
         expectEqual(fake.calls, ["installs"], "still in use: the retry submits nothing")
         probe.status.runningSomewhere = false
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-        expectEqual(fake.calls, ["installs", "activate"], "the camera freed: the retry installs the update once")
+        expectEqual(fake.calls, ["installs", "activate"], "the other app quit: the retry installs the update once")
         expectEqual(model.cameraExtensionState, .active, "and the update completes")
         model.stopTimersForTesting()
-
-        // Our own output was the only user: switching it off retries at once.
-        let (own, ownFake, _) = launchedModel(installed: [olderInstall],
-                                              device: CameraDeviceStatus(registered: true, runningSomewhere: false),
-                                              intentOn: true)
-        own.cameraUpdateRetryInterval = 60
-        expectEqual(own.cameraExtensionState, .updateReady, "precondition: deferred by our own output")
-        own.setVirtualCamera(enabled: false)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        expectEqual(ownFake.calls, ["installs", "activate"], "turning our output off installs the update")
-        own.stopTimersForTesting()
     }
 
+    /// The production path of the button: our output is streaming (the HAL
+    /// says running), Update camera sends on:false, the stream stops a few
+    /// reads later, THEN the replacement is submitted, then our output resumes.
     @MainActor
     static func testUpdateCameraButtonPausesOurOutputThenReplaces() {
-        let (model, fake, _) = launchedModel(installed: [olderInstall],
-                                             device: CameraDeviceStatus(registered: true, runningSomewhere: false),
-                                             intentOn: true)
-        var sent: [Bool] = []
-        model.coreCommandCaptureForTesting = { body in
-            for c in (body["commands"] as? [JSONObject]) ?? [] where c["type"] as? String == "sync-virtual-camera" {
-                sent.append(c["on"] as? Bool ?? true)
-            }
-        }
-        expectEqual(model.cameraExtensionState, .updateReady, "precondition: deferred by our own output")
+        // Another app held the camera at launch, then quit; our output is on.
+        let (model, fake, probe, log) = launchedModel(
+            installed: [olderInstall], device: CameraDeviceStatus(registered: true, runningSomewhere: true),
+            intentOn: true)
+        model.cameraUpdateRetryInterval = 60
+        model.cameraUpdatePollInterval = 0.03
+        probe.status.runningSomewhere = false
+        expectEqual(model.cameraExtensionState, .updateReady, "precondition: an update is waiting")
+        expect(probe.ownStreaming, "precondition: our output is streaming")
+        log.sent.removeAll()
         model.updateCameraExtension()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        expectEqual(fake.calls, ["installs", "activate"], "Update camera replaces once our output is paused")
-        expectEqual(sent, [false, true], "our output is paused for the swap, then resumed")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        expectEqual(fake.calls, ["installs", "activate"], "Update camera replaces once our stream has stopped")
+        expectEqual(log.ons, [false, true], "our output is paused for the swap, then resumed")
+        expect(probe.reads >= 3, "the release was polled, not assumed")
         expectEqual(model.virtualCamera.enabled, true, "the saved intent is never touched")
         expectEqual(model.cameraExtensionState, .active, "the update completes")
         model.stopTimersForTesting()
 
         // Another app still streaming: no request, stay ready, resume our output.
-        let (busy, busyFake, _) = launchedModel(installed: [olderInstall],
-                                                device: CameraDeviceStatus(registered: true, runningSomewhere: true),
-                                                intentOn: true)
-        var busySent: [Bool] = []
-        busy.coreCommandCaptureForTesting = { body in
-            for c in (body["commands"] as? [JSONObject]) ?? [] where c["type"] as? String == "sync-virtual-camera" {
-                busySent.append(c["on"] as? Bool ?? true)
-            }
-        }
+        let (busy, busyFake, _, busyLog) = launchedModel(
+            installed: [olderInstall], device: CameraDeviceStatus(registered: true, runningSomewhere: true),
+            intentOn: true)
         busy.cameraUpdateReleaseWait = 0.2
         busy.cameraUpdatePollInterval = 0.05
         busy.cameraUpdateRetryInterval = 60
+        busyLog.sent.removeAll()
         busy.updateCameraExtension()
         RunLoop.current.run(until: Date().addingTimeInterval(0.45))
         expectEqual(busyFake.calls, ["installs"], "another app holds the camera: nothing is submitted")
         expectEqual(busy.cameraExtensionState, .updateReady, "the update stays ready")
-        expectEqual(busySent, [false, true], "and our output is resumed")
+        expectEqual(busyLog.ons, [false, true], "and our output is resumed")
         busy.stopTimersForTesting()
     }
 
@@ -351,7 +355,7 @@ extension ShellTests {
     @MainActor
     static func testVirtualCameraDiagnosticsReachTheSupportBundle() {
         let installed = [ours(), CameraExtensionInstall(version: "2881", enabled: false, uninstalling: true)]
-        let (model, _, _) = launchedModel(installed: installed,
+        let (model, _, _, _) = launchedModel(installed: installed,
                                           device: CameraDeviceStatus(registered: false, runningSomewhere: true))
         let input = model.supportBundleInput()
         guard let state = try? JSONSerialization.jsonObject(with: input.shellStateJson) as? JSONObject,
