@@ -33,6 +33,14 @@ extension ShellTests {
             // Task 3: Zoom slots are meeting-scoped; the toggle is persisted and drawn.
             ("sources-law/zoom-slots-meeting-scoped", testZoomSlotsAreNeverRestoredOrSaved),
             ("sources-law/toggle-persisted-default-on", testTheAutoAssignToggleIsPersistedAndDefaultsOn),
+            // Task 4: SourceRowFactsProjection — observed facts, never requests.
+            ("sources-facts/zoom-state-table", testZoomRowStateTable),
+            ("sources-facts/capture-reads-observations-only", testCaptureRowReadsObservationsNeverRequests),
+            ("sources-facts/reused-zoom-id-fenced", testReusedZoomIdClearsOldFormatAndRejectsOldFacts),
+            ("sources-facts/epoch-and-frame-clock-fence", testANewEpochAndAnOlderFrameAreRejected),
+            ("sources-facts/tally-precedence-all-inputs", testTallyPrecedenceOverEveryInputCombination),
+            ("sources-facts/iso-chip-is-writer-lifecycle", testIsoChipUsesObservedWriterLifecycle),
+            ("sources-facts/reassignment-resets-row", testReassigningASlotResetsItsRowBeforeTheNewSourceShows),
         ]
     }
 
@@ -413,6 +421,191 @@ extension ShellTests {
         after.resetAutomationDefaults()
         expect(after.autoAssignInputsEnabled, "Reset defaults turns it back on (MagicSceneCoordinator.cs:458)")
         expect(ShellPrefs.roundTripSelfCheck() == nil, "autoAssignInputs survives encode→decode")
+    }
+
+    // ── Task 4: SourceRowFactsProjection ────────────────────────────────────
+
+    private static func zref(_ slot: Int = 1, _ pid: String = "42", inShow: Bool = true) -> SourceSlotRef {
+        SourceSlotRef(slotId: slot, kind: "zoom", sourceId: pid, inShow: inShow)
+    }
+    private static func cref(_ slot: Int = 2, _ id: String = "cam1") -> SourceSlotRef {
+        SourceSlotRef(slotId: slot, kind: "capture", sourceId: id, inShow: true)
+    }
+    private static func zp(_ id: String = "42", video: Bool = true, talking: Bool = false, gen: Int64 = 1) -> ZoomParticipantFact {
+        ZoomParticipantFact(id: id, videoOn: video, talking: talking, sourceGeneration: gen)
+    }
+    private static func zr(_ ps: [ZoomParticipantFact], epoch: String = "1:1:t", state: String = "in_meeting") -> ZoomRosterFact {
+        ZoomRosterFact(epoch: epoch, meetingState: state, participants: ps)
+    }
+    private static func zf(_ w: Int, _ h: Int, fps: Int = 30, at: Double, gen: Int64 = 1,
+                           epoch: String = "1:1:t", pid: String = "42") -> ZoomFormatFact {
+        ZoomFormatFact(participantId: pid, rosterEpoch: epoch, sourceGeneration: gen,
+                       width: w, height: h, fps: fps, frameId: Int(at), frameAtMs: at)
+    }
+    private static func bus(_ id: String, w: Int = 0, h: Int = 0, frames: Double = 0, age: Double?) -> BusSourceRow {
+        BusSourceRow(sourceId: id, kind: id.hasPrefix("capture:") ? "capture" : "zoom", width: w, height: h,
+                     framesIngested: frames, sinceLastNewFrameMs: age, liveness: nil, onAir: nil, lossReason: nil,
+                     failInMs: nil, lastSampleAgeMs: nil, dropoutPolicy: "hold", dropoutPolicyApplies: nil)
+    }
+
+    /// MultiviewInputRowsProjection.cs:362-486, state by state. Windows proof:
+    /// ShowInputsCoordinatorTests.DeliveredFormatAndAgePatch… (:314), VersionedBridgeVideoOff… (:203).
+    static func testZoomRowStateTable() {
+        var p = SourceRowFactsProjection()
+        p.setSlots([zref()])
+        expectEqual(p.facts(slotId: 1).signal, "IDLE", "no roster fact yet")
+        p.applyRoster(zr([], state: "idle"))
+        expectEqual(p.facts(slotId: 1).signal, "NO INCOMING", "not in a meeting")
+        p.applyRoster(zr([]))
+        expectEqual(p.facts(slotId: 1).signal, "NO INCOMING", "guest absent")
+        p.applyRoster(zr([zp(video: false)]))
+        expectEqual(p.facts(slotId: 1).signal, "VIDEO OFF", "camera off")
+        p.applyRoster(zr([zp()]))
+        expectEqual(p.facts(slotId: 1).signal, "CONNECTING", "no delivered frame yet")
+        expectEqual(p.facts(slotId: 1).format, "—", "and no format")
+        p.applyFormat(zf(1920, 1080, at: 100))
+        expectEqual(p.facts(slotId: 1), SourceRowFacts(signal: "LIVE", format: "1920×1080", fps: "30"), "a delivered frame")
+        p.applyBus(["42": bus("42", age: 1500)], captures: [:], atMs: 1000)
+        expectEqual(p.facts(slotId: 1).signal, "LIVE", "exactly 1500 ms is not stale (> 1500)")
+        p.applyBus(["42": bus("42", age: 1501)], captures: [:], atMs: 1500)
+        let stalled = p.facts(slotId: 1)
+        expectEqual(stalled.signal, "STALLED", "a frame older than 1500 ms")
+        expectEqual(stalled.fps, "—", "a stale rate is never shown as live FPS")
+        expectEqual(stalled.format, "1920×1080", "the last format stays, marked stale")
+        expect(stalled.formatStale && stalled.frameAgeMs == 1501, "with its age")
+        p.applyRoster(zr([zp(talking: true)]))
+        expectEqual(p.facts(slotId: 1).signal, "STALLED", "stale outranks talking")
+        p.applyBus(["42": bus("42", age: 10)], captures: [:], atMs: 2000)
+        expectEqual(p.facts(slotId: 1).signal, "TALKING", "fresh and talking")
+        p.engineStopped()
+        expectEqual(p.facts(slotId: 1), SourceRowFacts(), "engine off: IDLE, nothing kept")
+        var parked = SourceRowFactsProjection()
+        parked.setSlots([zref(inShow: false)]); parked.applyRoster(zr([zp()])); parked.applyFormat(zf(1280, 720, at: 1))
+        expectEqual(parked.facts(slotId: 1).signal, "IDLE", "assigned but out of the show")
+    }
+
+    /// Spec correction 5. Windows proof: CaptureSignalFactPatchesHostUvcFormatWithoutRowClick (:704).
+    /// FIXTURE: the bus says 1280×720 and the device row would say 1920×1080 @ 30 if it were read.
+    /// The two never agree, so reading the wrong field is visible.
+    static func testCaptureRowReadsObservationsNeverRequests() {
+        var p = SourceRowFactsProjection()
+        p.setSlots([cref()])
+        p.applyBus([:], captures: [:], atMs: 0)
+        expectEqual(p.facts(slotId: 2).signal, "NO INCOMING", "no such device")
+        p.applyBus([:], captures: ["cam1": CaptureSignal(connectionState: "detected", signalPresent: false)], atMs: 0)
+        expectEqual(p.facts(slotId: 2).signal, "CONNECTING", "detected, not connected")
+        let live = ["cam1": CaptureSignal(connectionState: "connected", signalPresent: true)]
+        p.applyBus([:], captures: live, atMs: 0)
+        expectEqual(p.facts(slotId: 2), SourceRowFacts(signal: "LIVE", format: "—", fps: "—"),
+                    "live with no bus row: no format, and never the device's default 1920×1080@30")
+        p.applyBus(["capture:cam1": bus("capture:cam1", w: 1280, h: 720, frames: 0, age: 10)], captures: live, atMs: 0)
+        expectEqual(p.facts(slotId: 2).format, "1280×720", "format is the delivered frame size")
+        expectEqual(p.facts(slotId: 2).fps, "—", "one sample is not a rate")
+        p.applyBus(["capture:cam1": bus("capture:cam1", w: 1280, h: 720, frames: 15, age: 10)], captures: live, atMs: 500)
+        expectEqual(p.facts(slotId: 2).fps, "—", "500 ms is under the 900 ms window")
+        p.applyBus(["capture:cam1": bus("capture:cam1", w: 1280, h: 720, frames: 30, age: 10)], captures: live, atMs: 1000)
+        expectEqual(p.facts(slotId: 2).fps, "30", "30 frames over 1000 ms")
+        p.applyBus(["capture:cam1": bus("capture:cam1", w: 1280, h: 720, frames: 30, age: 1600)], captures: live, atMs: 2000)
+        expectEqual(p.facts(slotId: 2).fps, "—", "a stale capture shows no rate")
+    }
+
+    /// Port of ReusedZoomIdClearsOldFormatAndRejectsOldSourceFactWithoutTake (:133).
+    static func testReusedZoomIdClearsOldFormatAndRejectsOldFacts() {
+        var p = SourceRowFactsProjection()
+        p.setSlots([zref()]); p.applyRoster(zr([zp(gen: 1)]))
+        p.applyFormat(zf(1920, 1080, at: 100, gen: 1))
+        expectEqual(p.facts(slotId: 1).format, "1920×1080", "first person's format")
+        p.applyRoster(zr([zp(gen: 2)]))                                // same id, a different source
+        expectEqual(p.facts(slotId: 1).signal, "CONNECTING", "the new person has no frame yet")
+        expectEqual(p.facts(slotId: 1).format, "—", "the old format is cleared")
+        p.applyFormat(zf(1920, 1080, at: 200, gen: 1))
+        expectEqual(p.facts(slotId: 1).format, "—", "a late fact from the old source is rejected")
+        p.applyFormat(zf(1280, 720, at: 201, gen: 2))
+        expectEqual(p.facts(slotId: 1).format, "1280×720", "the new source's fact applies")
+    }
+
+    static func testANewEpochAndAnOlderFrameAreRejected() {
+        var p = SourceRowFactsProjection()
+        p.setSlots([zref()]); p.applyRoster(zr([zp()]))
+        p.applyFormat(zf(1920, 1080, at: 100))
+        p.applyFormat(zf(640, 360, at: 90))
+        expectEqual(p.facts(slotId: 1).format, "1920×1080", "an older frame cannot repaint the row")
+        p.applyRoster(zr([zp()], epoch: "1:2:t"))
+        expectEqual(p.facts(slotId: 1).format, "—", "a new meeting epoch clears every Zoom format")
+        p.applyFormat(zf(1920, 1080, at: 300, epoch: "1:1:t"))
+        expectEqual(p.facts(slotId: 1).format, "—", "a fact from the retired epoch is rejected")
+        p.applyFormat(zf(1280, 720, at: 301, epoch: "1:2:t"))
+        expectEqual(p.facts(slotId: 1).format, "1280×720", "the current epoch's fact applies")
+    }
+
+    /// Rule 3: quantifies over EVERY combination of on-program, on-preview, talking, stale and
+    /// camera-on (32). The oracle is written here from MultiviewTileCropPolicy.cs:31-37 and
+    /// MultiviewInputRowsProjection.cs:298, independently of the implementation.
+    /// Windows proof: PreviewTallyHonorsProgramPreviewTalkingAndStall (:664),
+    /// ProgramTallyChangesStatusChipWithoutReplacingSourceHealth (:694).
+    static func testTallyPrecedenceOverEveryInputCombination() {
+        for bits in 0..<32 {
+            let onProgram = bits & 1 != 0, onPreview = bits & 2 != 0, talking = bits & 4 != 0
+            let stale = bits & 8 != 0, videoOn = bits & 16 != 0
+            let oracle = !videoOn ? "none" : stale ? "hold" : onProgram ? "pgm" : onPreview ? "pvw"
+                : talking ? "talking" : "none"
+            var p = SourceRowFactsProjection()
+            p.setSlots([zref()]); p.applyRoster(zr([zp(video: videoOn, talking: talking)]))
+            p.applyFormat(zf(1920, 1080, at: 100))
+            p.applyBus(["42": bus("42", age: stale ? 2000 : 10)], captures: [:], atMs: 0)
+            p.applyTally(program: onProgram ? ["zoom:42"] : [], preview: onPreview ? ["zoom:42"] : [])
+            let facts = p.facts(slotId: 1)
+            expectEqual(facts.tally, oracle, "tally for bits \(bits)")
+            let oracleSignal = !videoOn ? "VIDEO OFF" : stale ? "STALLED" : talking ? "TALKING" : "LIVE"
+            expectEqual(facts.signal, oracleSignal, "a tally never replaces source health (bits \(bits))")
+            expectEqual(facts.chip, oracleSignal == "LIVE" && oracle == "pgm" ? "PGM" : oracleSignal,
+                        "PGM only for a LIVE row on Program (bits \(bits))")
+        }
+    }
+
+    /// Port of IsoChipUsesObservedWriterLifecycle (:407-432) plus the Mac "unreported" rule.
+    static func testIsoChipUsesObservedWriterLifecycle() {
+        func recording(_ state: String?, _ health: String?, stream: String,
+                       active: Bool = true, status: String = "recording") -> JSONObject {
+            var r: JSONObject = ["sessionId": "s", "status": status, "active": active,
+                                 "streams": [["kind": "iso", "sourceId": "zoom:guest", "status": stream]]]
+            if let state { r["lifecycle"] = ["state": state, "health": health ?? "healthy"] }
+            return r
+        }
+        let rows: [(String?, String?, String, String?)] = [
+            ("preparing", "healthy", "writing", "armed"),
+            ("producing", "healthy", "writing", "recording"),
+            ("producing", "healthy", "warning", "error"),
+            ("interrupted", "failed", "writing", "error"),
+            ("completed", "healthy", "writing", nil),            // off is omitted
+        ]
+        for (state, health, stream, expected) in rows {
+            expectEqual(IsoWriterChip.observe(recording(state, health, stream: stream))["zoom:guest"], expected,
+                        "\(state ?? "-")/\(health ?? "-")/\(stream)")
+        }
+        expectEqual(IsoWriterChip.observe(recording(nil, nil, stream: "writing"))["zoom:guest"], "recording",
+                    "no lifecycle: an active recording reads as recording")
+        let unreported: JSONObject = ["status": "recording", "active": true,
+                                      "streams": [["kind": "iso", "participantId": "zoom:guest", "status": "unreported"]]]
+        expectEqual(IsoWriterChip.observe(unreported)["zoom:guest"], "unknown", "unreported is unknown, never off")
+        var p = SourceRowFactsProjection(); p.setSlots([zref(1, "guest")])
+        p.applyWriters(["zoom:guest": "unknown"])
+        expectEqual(p.facts(slotId: 1).writer, "—", "the row shows — for an unreported writer")
+        p.applyWriters([:])
+        expectEqual(p.facts(slotId: 1).writer, "OFF", "no writer node: OFF")
+    }
+
+    /// Windows MultiviewInputRowsProjection.cs:334-344: reassignment clears before another identity shows.
+    static func testReassigningASlotResetsItsRowBeforeTheNewSourceShows() {
+        var p = SourceRowFactsProjection()
+        p.setSlots([zref(1, "42")]); p.applyRoster(zr([zp("42"), zp("43")]))
+        p.applyFormat(zf(1920, 1080, at: 100)); p.applyWriters(["zoom:42": "recording", "zoom:43": "armed"])
+        expectEqual(p.facts(slotId: 1).writer, "REC", "precondition")
+        p.setSlots([zref(1, "43")])
+        let row = p.facts(slotId: 1)
+        expectEqual(row.format, "—", "the old guest's format is gone")
+        expectEqual(row.signal, "CONNECTING", "the new guest has not delivered")
+        expectEqual(row.writer, "ARMED", "the writer chip is the new guest's")
     }
 }
 
