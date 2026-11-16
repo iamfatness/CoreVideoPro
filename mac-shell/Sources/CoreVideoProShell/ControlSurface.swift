@@ -237,6 +237,14 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             // the true value is false, not "unknown".
             "automationOn": false,
             "autoTake": false,
+            // RC2 (ControlStateProjection is the only mapping point).
+            "zoomStatus": ControlStateProjection.zoomStatus(meetingState: model.meetingState),
+            "engineStatus": ControlStateProjection.engineStatus(
+                captureEnabled: model.captureEnabled, rawMediaActive: model.rawMediaActive,
+                meetingState: model.meetingState),
+            "inputs": ControlStateProjection.inputs(model.slots, devices: model.captureDevices),
+            "zoomParticipantIds": model.roster.map(\.id),
+            "virtualCameraOn": model.virtualCamera.enabled,
         ])
     }
 }
@@ -293,7 +301,7 @@ final class ControlApiHost {
     private var server: ControlHttpServer?
     private var changes: AnyCancellable?
     private var terminate: NSObjectProtocol?
-    private var lastBroadcast = ""
+    private var lastPushKey = ""
 
     func start(model: AppModel, environment: [String: String] = ProcessInfo.processInfo.environment) {
         guard server == nil, Self.shouldAutoStart(environment: environment) else { return }
@@ -314,19 +322,43 @@ final class ControlApiHost {
                 }
             }
         }
-        // Windows coalesces StateChanged through a feedback timer; push only real changes.
-        changes = Self.stateChangeStream(model.objectWillChange)
-            .sink { [weak self, weak model] _ in
-                guard let self, let model,
-                      let json = ControlJSON.encode(AppModelControlSurface.state(model).dictionary),
-                      json != self.lastBroadcast else { return }
-                self.lastBroadcast = json
-                self.server?.broadcastState(json)
-            }
+        observe(model)
         terminate = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.stop() }
         }
+    }
+
+    /// Test seams: wire the same throttle and push-key sink without a server.
+    var broadcastSinkForTesting: ((String) -> Void)?
+    func attachForTesting(model: AppModel) { observe(model) }
+
+    /// Main-actor cost of the last /state build (µs), for the 1 ms budget.
+    private(set) var lastStateBuildMicros: Double = 0
+
+    /// Windows coalesces StateChanged through a feedback timer and pushes only its
+    /// curated FeedbackProps. Here: a push happens when the state's PUSH KEY (the
+    /// state minus meter fields) changes, and it carries the full state, meters
+    /// included. The current state is pushed once on attach so the key starts
+    /// from what clients were last told, not from nothing.
+    private func observe(_ model: AppModel) {
+        push(model)
+        changes = Self.stateChangeStream(model.objectWillChange)
+            .sink { [weak self, weak model] _ in
+                guard let self, let model else { return }
+                self.push(model)
+            }
+    }
+
+    private func push(_ model: AppModel) {
+        let started = DispatchTime.now().uptimeNanoseconds
+        let state = AppModelControlSurface.state(model).dictionary
+        let key = ControlStatePushKey.key(state)
+        let json = key == lastPushKey ? nil : ControlJSON.encode(state)
+        lastStateBuildMicros = Double(DispatchTime.now().uptimeNanoseconds - started) / 1000
+        guard let json else { return }
+        lastPushKey = key
+        if let sink = broadcastSinkForTesting { sink(json) } else { server?.broadcastState(json) }
     }
 
     func stop() {

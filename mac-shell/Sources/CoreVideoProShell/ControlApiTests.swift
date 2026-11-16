@@ -153,7 +153,7 @@ extension ShellTests {
         expectEqual(response.status, 200, "GET /manifest")
         expect(NSDictionary(dictionary: json(response.body)).isEqual(to: expected),
                "GET /manifest is the shared file with only the Mac-supported actions and feedback fields")
-        expectEqual(supportedFields.count, 10, "RC1: ten feedback fields (each slice updates this)")
+        expectEqual(supportedFields.count, 16, "RC2: sixteen feedback fields (each slice updates this)")
         for retired in ["automation.magic", "automation.toggle", "automation.autoTake.set"] {
             expect(!response.body.contains(retired), "retired \(retired) is not advertised")
         }
@@ -649,7 +649,9 @@ extension ShellTests {
         expectEqual(state["recording"] as? Bool, false, "state recording")
         expectEqual(state["automationOn"] as? Bool, false, "scene automation is retired: false")
         for field in ControlCatalog.feedbackFields {
-            expect(state[field] != nil, "advertised feedback field \(field) is published")
+            // input/{slot}/* are the rows of `inputs` (Windows ControlState.Inputs).
+            let key = field.hasPrefix("input/") ? "inputs" : field
+            expect(state[key] != nil, "advertised feedback field \(field) is published")
         }
     }
 
