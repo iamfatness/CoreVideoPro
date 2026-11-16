@@ -41,6 +41,20 @@ jobs:
       - name: Frame and recording QA harness tests
         run: npm run test:qa-harness
 
+  # The shared control contract (docs/superpowers/plans/2026-11-16-mac-remote-control-phase1.md T1):
+  # the Windows registry export, the macOS platform rows, and the shared fixtures. Runs on
+  # ubuntu so drift is caught on every push, not only by the Windows job.
+  control-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '9.0.x' }
+      - name: Control contract (export, platform rows, fixtures)
+        run: dotnet test native-shell/CoreVideoPro.Control.Tests/CoreVideoPro.Control.Tests.csproj
+      - name: Redaction fixtures (MediaCore observer)
+        run: dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tests.csproj --filter "FullyQualifiedName~ControlRedactionFixture"
+
   # Design-token gate for the macOS shell (docs/design-handoff-macos.md).
   # The 2026-08-04 audit found ~90% of mac-shell text rendering in SF Pro /
   # SF Mono and raw system colors despite a faithful DesignSystem.swift —
