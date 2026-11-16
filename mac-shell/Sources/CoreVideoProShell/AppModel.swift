@@ -652,6 +652,7 @@ final class AppModel: ObservableObject {
         }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.autoAssignInputs = autoAssignInputsEnabled
+        prefs.sourcesWorkspace = sourcesWorkspace.columns
         prefs.cameraExtensionOptedIn = cameraExtensionOptedIn
         prefs.virtualCamera = virtualCamera == PersistedVirtualCamera() ? nil : virtualCamera
         storeProductionSettings(into: &prefs)
@@ -691,6 +692,7 @@ final class AppModel: ObservableObject {
         // No reapply: no roster exists at launch.
         assignmentLaw.autoAssignEnabled = prefs.autoAssignInputs ?? true
         autoAssignInputsEnabled = assignmentLaw.autoAssignEnabled
+        sourcesWorkspace.columns = prefs.sourcesWorkspace ?? SourcesColumnPrefs()
         for key in prefs.chromaKeys ?? [] {
             if let index = restoredSlotIndex(sourceKey: key.sourceKey, legacySlotId: key.slotId) {
                 slots[index].keyEnabled = true
@@ -1713,16 +1715,7 @@ final class AppModel: ObservableObject {
         formatter.dateFormat = "HH:mm:ss"
         clockText = formatter.string(from: Date())
         if let devices = snapshot["captureDevices"] as? [JSONObject] {
-            captureDevices = devices.map { entry in
-                CaptureDeviceRow(
-                    id: entry["id"] as? String ?? "",
-                    name: entry["name"] as? String ?? "",
-                    kind: entry["kind"] as? String ?? "video",
-                    vendor: entry["vendor"] as? String ?? "",
-                    connectionState: entry["connectionState"] as? String ?? "detected",
-                    signalPresent: entry["signalPresent"] as? Bool ?? false,
-                    warning: entry["warning"] as? String ?? "")
-            }
+            captureDevices = Self.parseCaptureDevices(devices)
             refreshSlotHealth()
             reconnectRestoredCaptures()
         }
@@ -1900,6 +1893,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var autoAssignInputsEnabled = true
     /// The Sources status line (a guest left, a stale picker choice, a device offline).
     @Published var sourcesStatus = ""
+    /// The Sources table's UI state (selection, filter, columns). Never writes slots;
+    /// the column choices are saved under ShellPrefs.sourcesWorkspace.
+    @Published var sourcesWorkspace = SourcesWorkspaceState()
 
     static func isInMeeting(_ state: String) -> Bool {
         state == "in_meeting" || state == "in-meeting"
@@ -4717,6 +4713,60 @@ final class AppModel: ObservableObject {
         if let seam = quitRequestForTesting { return try await seam(body, 6) }
         guard let bridge else { throw BridgeError.notRunning }
         return try await bridge.request(body)
+    }
+
+    /// One mapping for the snapshot's `captureDevices` and the core's
+    /// `list-capture-devices` answer (`{type: "capture-devices", devices}`,
+    /// JsonRpcServer.cpp:243-245).
+    static func parseCaptureDevices(_ devices: [JSONObject]) -> [CaptureDeviceRow] {
+        devices.map { entry in
+            CaptureDeviceRow(
+                id: entry["id"] as? String ?? "",
+                name: entry["name"] as? String ?? "",
+                kind: entry["kind"] as? String ?? "video",
+                vendor: entry["vendor"] as? String ?? "",
+                connectionState: entry["connectionState"] as? String ?? "detected",
+                signalPresent: entry["signalPresent"] as? Bool ?? false,
+                warning: entry["warning"] as? String ?? "")
+        }
+    }
+
+    /// Sources "Refresh": asks the core for its device list and shows the answer.
+    func refreshCaptureDevices() {
+        guard bridge != nil || quitRequestForTesting != nil else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await quitRequest(["type": "list-capture-devices"], timeout: 6)
+                guard let devices = response["devices"] as? [JSONObject] else { return }
+                captureDevices = Self.parseCaptureDevices(devices)
+                refreshSlotHealth()
+                reconnectRestoredCaptures()
+            } catch {
+                pushWarning("capture: refresh failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Port of ShowInputsCoordinator.TakeCaptureDeviceOfflineAsync (:460-500): disconnect the
+    /// device and unassign every slot holding it. Those slots are NOT reserved — Windows calls
+    /// `editor.Unassign()` here, not `UnassignShowInput`.
+    func takeCaptureDeviceOffline(_ deviceId: String) {
+        guard !deviceId.isEmpty else { return }
+        let name = captureDevices.first { $0.id == deviceId }?.name ?? deviceId
+        ShellLog.write("lifecycle: take offline \(deviceId)")
+        if let bridge {
+            Task { _ = try? await bridge.request(CoreCommands.disconnectCaptureDevice(deviceId: deviceId)) }
+        }
+        var next = slots
+        for index in next.indices where next[index].kind == "capture" && next[index].sourceId == deviceId {
+            next[index] = ShowInputSlot(id: next[index].id)
+        }
+        if next != slots {
+            ShowInputWriteScope.run("capture-offline") { slots = next }
+            recomputeFromSlots()
+        }
+        sourcesStatus = "\(name) is offline."
     }
 
     func connectCaptureDevice(_ device: CaptureDeviceRow) {

@@ -43,7 +43,7 @@ struct TabPageContent: View {
                 switch tab {
                 case .studio: EmptyView()
                 case .zoom: ZoomPane()
-                case .sources: SourcesPane()
+                case .sources: SourcesTable()
                 case .scenes: ScenesPane()
                 case .routing: RoutingPane()
                 case .overlays: OverlaysPane()
@@ -67,21 +67,46 @@ struct TabPageContent: View {
 /// (comma-separated rawValues) narrows the set; default is every tab.
 @MainActor
 enum TabSnapshotHarness {
+    /// The mixed roster from spec §6, deterministic (no clock reads):
+    /// slot 1 Zoom 101 live + talking 1920×1080@30 with its ISO armed; slot 2 Zoom 102
+    /// stalled (bus age 2400 ms); slot 3 camera with a mic, live 1280×720, on Program;
+    /// slot 4 a screen; slot 5 a camera that is gone (offline).
     static func seed(_ model: AppModel) {
+        model.sourceFactsClockForTesting = { 0 }
+        model.captureDevices = [
+            CaptureDeviceRow(id: "cam-1", name: "Wide camera (Blackmagic)", kind: "video", vendor: "blackmagic",
+                             connectionState: "connected", signalPresent: true, warning: ""),
+            CaptureDeviceRow(id: "screen:0", name: "Display 1", kind: "video", vendor: "ScreenCaptureKit",
+                             connectionState: "detected", signalPresent: false, warning: ""),
+        ]
         ShowInputWriteScope.run("snapshot-seed") { seedSlots(model) }
-        // A revisioned roster through the real merge, then one delivered format
-        // fact: row 1 reads LIVE 1920×1080 30, row 2 CONNECTING (no frame yet).
         model.applyZoomForTesting([
             "meetingState": "in_meeting", "rosterEpoch": "1:1:seed", "rosterRevision": NSNumber(value: 1),
             "participants": [
-                ["userId": "101", "displayName": "Jordan Wallace", "videoOn": true, "talking": false,
+                ["userId": "101", "displayName": "Jordan Wallace", "videoOn": true, "talking": true,
                  "sourceGeneration": NSNumber(value: 1)],
                 ["userId": "102", "displayName": "Guest with a long display name", "videoOn": true,
                  "sourceGeneration": NSNumber(value: 1)],
             ] as [JSONObject]])
-        model.handleEventForTesting(["type": "zoom-source-format", "format": [
-            "participantId": "101", "rosterEpoch": "1:1:seed", "sourceGeneration": NSNumber(value: 1),
-            "width": 1920, "height": 1080, "fps": 30, "frameId": 1, "frameAtMs": 100.0] as JSONObject])
+        for pid in ["101", "102"] {
+            model.handleEventForTesting(["type": "zoom-source-format", "format": [
+                "participantId": pid, "rosterEpoch": "1:1:seed", "sourceGeneration": NSNumber(value: 1),
+                "width": 1920, "height": 1080, "fps": 30, "frameId": 1, "frameAtMs": 100.0] as JSONObject])
+        }
+        model.applySnapshotForTesting(["sources": [
+            ["sourceId": "101", "kind": "zoom", "width": 1920, "height": 1080, "framesIngested": 300,
+             "sinceLastNewFrameMs": 12.0],
+            ["sourceId": "102", "kind": "zoom", "width": 1920, "height": 1080, "framesIngested": 90,
+             "sinceLastNewFrameMs": 2400.0],
+            ["sourceId": "capture:cam-1", "kind": "capture", "width": 1280, "height": 720,
+             "framesIngested": 600, "sinceLastNewFrameMs": 10.0],
+        ] as [JSONObject]])
+        // Program and the ISO writer straight into the facts, so the seed does not
+        // drive the recording or program read models of the other tabs.
+        model.sourceFacts.mutate {
+            $0.applyTally(program: ["capture:cam-1"], preview: [])
+            $0.applyWriters(["zoom:101": "armed"])
+        }
     }
 
     private static func seedSlots(_ model: AppModel) {
@@ -89,6 +114,8 @@ enum TabSnapshotHarness {
         model.assignSlot(2, kind: "zoom", sourceId: "102", name: "Guest with a long display name")
         model.assignSlot(3, kind: "capture", sourceId: "cam-1", name: "Wide camera (Blackmagic)")
         model.slots[2].audioDeviceId = "mic"; model.slots[2].audioDeviceName = "USB Audio Interface"
+        model.assignSlot(4, kind: "capture", sourceId: "screen:0", name: "Display 1")
+        model.assignSlot(5, kind: "capture", sourceId: "cam-gone", name: "Old desk camera")
         model.toggleSlotIso(1)
     }
 

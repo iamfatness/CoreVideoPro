@@ -53,6 +53,10 @@ extension ShellTests {
             ("sources-table/filters-never-write", testInspectionFiltersAndColumnsNeverChangeAssignmentsOrLiveSelections),
             ("sources-table/column-prefs-round-trip", testColumnPreferencesRoundTripAndMissingFieldsDefaultVisible),
             ("sources-table/summary-copy", testSummaryUsesTheWindowsCopy),
+            // Task 7: the Sources table.
+            ("sources-table/fits-the-page", testSourcesTableFitsThePageAtBothWindowWidths),
+            ("sources-table/take-offline", testTakeOfflineUnassignsEverySlotHoldingTheDeviceWithoutReserving),
+            ("sources-table/refresh-capture-devices", testRefreshAsksTheCoreAndAppliesTheList),
         ]
     }
 
@@ -800,6 +804,60 @@ extension ShellTests {
         slots[2].kind = "capture"; slots[2].sourceId = "c"; slots[2].inShow = true
         expectEqual(SourcesSummary.text(slots: slots, matching: 2),
                     "3/10 assigned · 2 in MV · 1 ISO selected · 2 match filter", "the Windows summary line")
+    }
+
+    // ── Task 7: the Sources table ───────────────────────────────────────────
+
+    /// Replaces tier0/sources-rows-fit-the-page. FIXTURE: TabSnapshotHarness.seed (the mixed roster).
+    @MainActor
+    static func testSourcesTableFitsThePageAtBothWindowWidths() {
+        for window in [1360.0, 1920.0] {
+            let model = AppModel()
+            TabSnapshotHarness.seed(model)
+            let page = TabPageLayout.pageWidth(for: .sources, window: CGFloat(window))
+            // Ask the table what it WANTS at this width. An outer .frame(width: page) clamps
+            // the answer to the page and made this vacuous (the fixed-row mutation stayed
+            // green against that version).
+            let host = NSHostingController(rootView: SourcesTable().environmentObject(model))
+            let wanted = host.sizeThatFits(in: CGSize(width: page, height: 100_000))
+            expect(wanted.width <= page + 0.5, "the table fits a \(Int(window)) pt window (\(wanted.width) ≤ \(page))")
+            let table = page - 28
+            let fixed = SourcesColumnLayout.widths(tableWidth: table, prefs: model.sourcesWorkspace.columns)
+                .filter { $0 > 0 }.reduce(0, +)
+            expect(fixed < table, "the flexible Source column keeps a positive width at \(Int(window))")
+        }
+    }
+
+    @MainActor
+    static func testTakeOfflineUnassignsEverySlotHoldingTheDeviceWithoutReserving() {
+        let model = AppModel()
+        model.captureDevices = [CaptureDeviceRow(id: "cam1", name: "Wide cam", kind: "video", vendor: "avfoundation",
+                                                 connectionState: "connected", signalPresent: true, warning: "")]
+        model.assignSlot(1, kind: "capture", sourceId: "cam1", name: "Wide cam")
+        model.assignSlot(3, kind: "capture", sourceId: "cam1", name: "Wide cam")
+        var lines: [String] = []
+        model.slotWriteObserverForTesting = { lines.append($0) }
+        model.takeCaptureDeviceOffline("cam1")
+        expect(model.slots[0].kind == "unassigned" && model.slots[2].kind == "unassigned", "both slots are unassigned")
+        expect(lines.allSatisfy { $0.hasSuffix("by=capture-offline") } && !lines.isEmpty, "each write names capture-offline")
+        expectEqual(model.sourcesStatus, "Wide cam is offline.", "the Windows status copy")
+        model.applyZoomForTesting(lawRoster(["A"], revision: 1))
+        expectEqual(zoomSlot(model, holding: "A"), 1, "taking a device offline does not reserve its slot")
+    }
+
+    @MainActor
+    static func testRefreshAsksTheCoreAndAppliesTheList() {
+        let model = AppModel()
+        var asked: [String] = []
+        model.quitRequestForTesting = { body, _ in
+            asked.append(body["type"] as? String ?? "")
+            return ["type": "capture-devices", "devices": [["id": "screen:0", "name": "Display 1",
+                     "vendor": "ScreenCaptureKit", "connectionState": "detected", "signalPresent": false]]]
+        }
+        model.refreshCaptureDevices()
+        spin(until: { !model.captureDevices.isEmpty }, limit: 2)
+        expectEqual(asked, ["list-capture-devices"], "Refresh sends the core's list command")
+        expectEqual(model.captureDevices.map(\.id), ["screen:0"], "and shows what the core answered")
     }
 }
 

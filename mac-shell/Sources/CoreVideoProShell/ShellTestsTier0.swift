@@ -451,20 +451,8 @@ extension ShellTests {
     /// from fixed-width controls of ~1000 pt, so it was compressed or clipped.
     @MainActor
     static func testSourcesRowsFitThePageAtTheMinimumWindow() {
-        let model = AppModel()
-        TabSnapshotHarness.seed(model)   // zoom + capture-with-mic rows (the widest)
-        var widest: CGFloat = 0
-        for slot in model.slots where slot.kind != "unassigned" {
-            let host = NSHostingView(rootView: SlotRow(slot: slot).environmentObject(model)
-                .fixedSize())
-            host.layoutSubtreeIfNeeded()
-            widest = max(widest, host.fittingSize.width)
-        }
-        expect(widest > 600, "slot row measured (\(widest) pt)")
-        // The Sources card adds 14 pt padding each side inside the page.
-        let available = TabPageLayout.pageWidth(for: .sources, window: 1360) - 28
-        expect(widest <= available,
-               "an assigned Sources row (\(widest) pt) fits the page at the 1360 pt minimum window (\(available) pt)")
+        // The row measurement moved to sources-table/fits-the-page (SlotRow is gone,
+        // sources plan Task 7); the page-width and TabPage checks stay here.
         expect(TabPageLayout.pageWidth(for: .routing, window: 1360) >= 760,
                "the Routing grid (~724 pt) fits without clipping its last column")
         for tab in StudioTab.allCases where tab != .studio {
