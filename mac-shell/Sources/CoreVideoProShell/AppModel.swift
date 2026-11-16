@@ -301,6 +301,12 @@ struct RosterParticipant: Identifiable, Equatable {
     // field MediaCore::deriveDirectorSignals reads. Defaulted so the memberwise
     // init stays source-compatible.
     var sharingScreen = false
+    // The CoreVideo participant itself (the engine includes itself in the
+    // roster, main-macos.mm:507). Never auto-assigned (plan D6).
+    var isMe = false
+    // The engine's per-participant source generation: a reused Zoom id with a
+    // different generation is a different source (ZoomEngineRuntime.cpp).
+    var sourceGeneration: Int64 = 0
 
     // PURE, so it can be tested without a running core. This mapping is the one
     // that shipped an empty roster in a live meeting: the shell read
@@ -321,7 +327,9 @@ struct RosterParticipant: Identifiable, Equatable {
                 muted: entry["muted"] as? Bool ?? (entry["isMuted"] as? Bool ?? false),
                 talking: entry["talking"] as? Bool ?? (entry["isTalking"] as? Bool ?? false),
                 assigned: assignedIds.contains(id),
-                sharingScreen: entry["sharingScreen"] as? Bool ?? false)
+                sharingScreen: entry["sharingScreen"] as? Bool ?? false,
+                isMe: entry["isMe"] as? Bool ?? false,
+                sourceGeneration: (entry["sourceGeneration"] as? NSNumber)?.int64Value ?? 0)
         }
     }
 }
@@ -1832,25 +1840,20 @@ final class AppModel: ObservableObject {
             let cameraOnBefore = Set(roster.filter(\.hasVideo).map(\.id))
             let presentBefore = Set(roster.map(\.id))
             roster = RosterParticipant.parse(participants, assignedIds: assignedIds)
-            // Auto-assign video participants into empty slots (the Windows
-            // AutomationAutoAssignInputsEnabled default) — join → tiles with
-            // zero clicks. Manual unassigns are respected via the tombstones.
-            let slotted = Set(slots.filter { $0.kind == "zoom" }.map(\.sourceId))
-            var assignedAny = false
-            for participant in roster where participant.hasVideo
-                && !slotted.contains(participant.id)
-                && !manuallyUnassigned.contains(participant.id) {
-                guard let empty = firstEmptySlotIndex() else { break }
-                slots[empty].kind = "zoom"
-                slots[empty].sourceId = participant.id
-                slots[empty].name = participant.name
-                slots[empty].sourceName = participant.name
-                slots[empty].inShow = true
-                assignedAny = true
+            // THE LAW (ShowInputAssignmentLaw): free departed guests, fill only
+            // newcomers. Gated like Windows (StudioViewModel.cs:11128): an
+            // unrevisioned EMPTY roster is no roster fact and frees nothing.
+            var lawChanged = false
+            let revision = (snapshot["rosterRevision"] as? NSNumber)?.int64Value ?? 0
+            if !participants.isEmpty || revision > 0 {
+                let state = snapshot["meetingState"] as? String ?? meetingState
+                lawChanged = runAssignmentLaw { law, slots in
+                    law.syncFromMeeting(&slots, roster: Self.isInMeeting(state) ? roster : [])
+                }
             }
             refreshSlotHealth()
-            if assignedAny {
-                ShellLog.write("auto-assigned into slots")
+            if lawChanged {
+                ShellLog.write("roster: slot law changed the assignments")
                 recomputeFromSlots()
             }
             // A camera turning ON must re-push the spine: the budget filters on
@@ -1862,13 +1865,53 @@ final class AppModel: ObservableObject {
             // exists only while the meeting has participants. A camera-off guest
             // returning to their slot must get their audio back.
             let presentAfter = Set(roster.map(\.id))
-            if (cameraOnAfter != cameraOnBefore || presentAfter != presentBefore) && !assignedAny {
+            if (cameraOnAfter != cameraOnBefore || presentAfter != presentBefore) && !lawChanged {
                 syncSpine()
             }
         }
     }
 
-    private var manuallyUnassigned: Set<String> = []
+    /// THE LAW's memory: who was seen this meeting and which slots the operator
+    /// emptied. The only writer of auto-assignment.
+    private(set) var assignmentLaw = ShowInputAssignmentLaw()
+    /// The auto-assign toggle ("Fill free inputs when participants join"), mirrored
+    /// from `assignmentLaw.autoAssignEnabled` for the views.
+    @Published private(set) var autoAssignInputsEnabled = true
+    /// The Sources status line (a guest left, a stale picker choice, a device offline).
+    @Published var sourcesStatus = ""
+
+    static func isInMeeting(_ state: String) -> Bool {
+        state == "in_meeting" || state == "in-meeting"
+    }
+
+    /// Runs one law pass over a copy of the slots and writes them back once.
+    /// Returns true when any assignment field (kind, sourceId, inShow) changed;
+    /// the caller then calls `recomputeFromSlots()` exactly once.
+    private func runAssignmentLaw(
+        _ pass: (inout ShowInputAssignmentLaw, inout [ShowInputSlot]) -> [ShowInputAssignmentLaw.Freed]
+    ) -> Bool {
+        var next = slots
+        let freed = pass(&assignmentLaw, &next)
+        let changed = ShowInputAssignmentLaw.assignmentsDiffer(slots, next)
+        if next != slots { slots = next }
+        if let last = freed.last {
+            sourcesStatus = "\(last.name) left the meeting — input \(last.slotId) is free."
+        }
+        return changed
+    }
+
+    /// The auto-assign toggle. Either direction forgets both memories and reruns the
+    /// roster pass, which fills only when on (D7; Windows MagicSceneCoordinator.cs:509-514).
+    func setAutoAssignInputs(_ on: Bool) {
+        guard on != assignmentLaw.autoAssignEnabled else { return }
+        assignmentLaw.autoAssignEnabled = on
+        autoAssignInputsEnabled = on
+        let current = Self.isInMeeting(meetingState) ? roster : []
+        if runAssignmentLaw({ law, slots in law.reapply(&slots, roster: current) }) {
+            recomputeFromSlots()
+        }
+    }
+
     /// Capture device ids whose slot was restored (or survived a core respawn)
     /// and still need a connect once the core lists them.
     var captureReconnectPending: Set<String> = []
@@ -1907,15 +1950,14 @@ final class AppModel: ObservableObject {
         slots[index].sourceName = named.sourceName
         slots[index].inShow = true
         slots[index].offline = false
-        manuallyUnassigned.remove(sourceId)
         recomputeFromSlots()
     }
 
     func unassignSlot(_ slotId: Int) {
         guard let index = slots.firstIndex(where: { $0.id == slotId }) else { return }
-        if slots[index].kind == "zoom" {
-            manuallyUnassigned.insert(slots[index].sourceId)  // no auto re-add
-        }
+        // Reserved against auto-assign until the roster empties, whatever its kind
+        // (ShowInputsCoordinator.cs:517).
+        assignmentLaw.operatorUnassigned(slotId: slotId)
         slots[index] = ShowInputSlot(id: slotId)
         recomputeFromSlots()
     }
@@ -1923,14 +1965,9 @@ final class AppModel: ObservableObject {
     func toggleSlotInShow(_ slotId: Int) {
         guard let index = slots.firstIndex(where: { $0.id == slotId }),
               slots[index].kind != "unassigned" else { return }
+        // The slot still holds its guest, so auto-assign never touches it: no
+        // reservation, nothing freed.
         slots[index].inShow.toggle()
-        if slots[index].kind == "zoom" {
-            if slots[index].inShow {
-                manuallyUnassigned.remove(slots[index].sourceId)
-            } else {
-                manuallyUnassigned.insert(slots[index].sourceId)
-            }
-        }
         recomputeFromSlots()
     }
 
