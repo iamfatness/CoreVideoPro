@@ -28,7 +28,8 @@
 #      the feeder is live again within 3 s and the probe sees program again.
 #   6. --app: launch the app, enable the camera through the control API
 #      (transport.virtualcam.set), probe 3 s -> program, snapshot
-#      framesPublished advancing; quit the app -> slate within 1 s.
+#      framesPublished advancing, the sink helper is the installed core run
+#      with --vcam-sink-helper; quit the app -> slate within 1 s, no helper left.
 #  6b. --app, OH Framer + mirror on (Task 9): the framed camera shows the
 #      guide at the Windows location: pixel (420, 400) reads luma 74 +-3, and
 #      the owner glances that the "LUFS" label reads correctly (not mirrored).
@@ -304,6 +305,21 @@ if [ "$RUN_APP" = 1 ]; then
         done
         [ "$STATUS" = "live" ] || fail 6 "virtualCamera never reached live (last: '$STATUS'; $OUT/snapshot-1.json)"
         PUB1="$(json "$OUT/snapshot-1.json" snapshot.virtualCamera.framesPublished)"
+        # The sink runs in a helper process (plan 2026-11-16): the SAME installed
+        # core binary started with --vcam-sink-helper, a child of the core. A
+        # "live" camera whose frames come from anywhere else is not this build.
+        HELPER_PID="$(json "$OUT/snapshot-1.json" snapshot.virtualCamera.sink.helperPid)"
+        [ -n "$HELPER_PID" ] && [ "$HELPER_PID" != "null" ] \
+            || fail 6 "live, but the snapshot names no sink helper (virtualCamera.sink.helperPid; stale core?)"
+        HELPER_PID="${HELPER_PID%.*}"
+        HELPER_CMD="$(ps -o command= -p "$HELPER_PID" 2>/dev/null)"
+        case "$HELPER_CMD" in
+            "$INSTALLED_CORE --vcam-sink-helper"*) ;;
+            *) fail 6 "sink helper pid $HELPER_PID is not '$INSTALLED_CORE --vcam-sink-helper' (got: '$HELPER_CMD')" ;;
+        esac
+        [ "$(json "$OUT/snapshot-1.json" snapshot.virtualCamera.sink.deviceVisibleToSystem)" = "true" ] \
+            || fail 6 "live, but sink.deviceVisibleToSystem is not true"
+        echo "    sink helper pid $HELPER_PID; core's own CoreMediaIO view sees the camera: $(json "$OUT/snapshot-1.json" snapshot.virtualCamera.sink.deviceVisibleInProcess)"
         probe step6 3 --fps 30 || fail 6 "probe failed with the app feeding (see $OUT/step6.err)"
         curl -sf "$CONTROL/snapshot" >"$OUT/snapshot-2.json"
         PUB2="$(json "$OUT/snapshot-2.json" snapshot.virtualCamera.framesPublished)"
@@ -323,7 +339,9 @@ if [ "$RUN_APP" = 1 ]; then
         LATE_PROGRAM="$(awk -F, -v q="$QUIT_AT" 'NR > 1 && $1 > q + 1000 && $2 == "program" { n++ } END { print n + 0 }' "$OUT/step6-quit.csv")"
         [ "$LATE" -gt 0 ] || fail 6 "no frames captured more than 1 s after the quit"
         [ "$LATE_PROGRAM" = 0 ] || fail 6 "$LATE_PROGRAM program frame(s) more than 1 s after the quit (frozen frame?)"
-        pass 6 "app: program $PROGRAM of $FRAMES, framesPublished $PUB1 -> $PUB2; slate within 1 s of quit"
+        sleep 1
+        ! ps -p "$HELPER_PID" >/dev/null 2>&1 || fail 6 "sink helper pid $HELPER_PID outlived the app"
+        pass 6 "app: program $PROGRAM of $FRAMES, framesPublished $PUB1 -> $PUB2 through helper $HELPER_PID; slate within 1 s of quit; no helper left"
     fi
 else
     skip 6 "pass --app to drive the installed app through the control API"
