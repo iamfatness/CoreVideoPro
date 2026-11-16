@@ -41,6 +41,10 @@ enum CameraExtensionLaunchAction: Equatable {
     /// Another version is installed and enabled: activating REPLACES it, which
     /// must wait until the camera is not in use (CameraExtensionPolicy.inUse).
     case update
+    /// An older copy is still uninstalling and no device is registered: a
+    /// swap is already pending a restart. Submit NOTHING (another request
+    /// would stack a second copy on it) and say "Restart your Mac".
+    case needsReboot
 }
 
 /// What the shell can learn about OUR camera device from the CoreMediaIO HAL.
@@ -187,8 +191,15 @@ enum CameraExtensionPolicy {
     /// installed extension is exactly the step that can disturb a running one.
     /// nil (macOS never answered) falls back to activating, the pre-2026-11-15
     /// behaviour; the request's own replacement answer still keeps equal versions.
-    static func launchAction(installs: [CameraExtensionInstall]?, bundledVersion: String) -> CameraExtensionLaunchAction {
+    static func launchAction(installs: [CameraExtensionInstall]?, bundledVersion: String,
+                             deviceRegistered: Bool) -> CameraExtensionLaunchAction {
         guard let installs else { return .activate }
+        // Highest priority (review I2a, the owner's Mac on 2026-11-15: 2883
+        // enabled, 2881 waiting to uninstall, no device).
+        if !deviceRegistered,
+           installs.contains(where: { $0.uninstalling && $0.version != bundledVersion }) {
+            return .needsReboot
+        }
         if installs.contains(where: { $0.version == bundledVersion && $0.enabled && !$0.uninstalling }) {
             return .alreadyActive
         }
@@ -250,10 +261,14 @@ protocol CameraExtensionActivating: AnyObject {
     /// Every installed copy of our extension (any version, any state); nil when
     /// macOS refused the properties request.
     func installs(_ done: @escaping ([CameraExtensionInstall]?) -> Void)
+    /// The state that would stop an activation before anything is submitted
+    /// (not in /Applications, no provisioning profile), or nil.
+    func preflightState() -> CameraExtensionState?
 }
 
 extension CameraExtensionActivating {
     func installs(_ done: @escaping ([CameraExtensionInstall]?) -> Void) { done(nil) }
+    func preflightState() -> CameraExtensionState? { nil }
     func activate(deferringReplacementWhile inUse: @escaping () -> Bool,
                   _ update: @escaping (CameraExtensionState) -> Void) { activate(update) }
 }
@@ -266,6 +281,8 @@ final class FakeCameraExtensionActivator: CameraExtensionActivating {
     private let script: [CameraExtensionState]
     private var current: CameraExtensionState = .unknown
     var installed: [CameraExtensionInstall]?
+    var preflight: CameraExtensionState?
+    func preflightState() -> CameraExtensionState? { preflight }
 
     init(script: [CameraExtensionState] = [], installed: [CameraExtensionInstall]? = []) {
         self.script = script
@@ -430,6 +447,10 @@ final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating,
 
     func activate(_ update: @escaping (CameraExtensionState) -> Void) {
         activate(deferringReplacementWhile: { false }, update)
+    }
+
+    func preflightState() -> CameraExtensionState? {
+        CameraExtensionPolicy.preflight(bundlePath: bundlePath, hasEmbeddedProfile: hasProfile)
     }
 
     func activate(deferringReplacementWhile inUse: @escaping () -> Bool,

@@ -32,6 +32,8 @@ extension ShellTests {
             ("vcam-update/owner-mac-stuck-state-at-launch-needs-reboot", testOwnerMacStuckStateAtLaunchNeedsReboot),
             ("vcam-update/will-complete-after-reboot", testWillCompleteAfterRebootIsNeedsReboot),
             ("vcam-update/needs-reboot-policy", testNeedsRebootPolicy),
+            ("vcam-update/owner-mac-today-restart-not-another-swap", testOwnerMacTodayGoesStraightToNeedsReboot),
+            ("vcam-update/preflight-outranks-update", testPreflightOutranksAnUpdate),
             ("vcam-update/diagnostics-in-support-bundle", testVirtualCameraDiagnosticsReachTheSupportBundle),
         ]
     }
@@ -331,7 +333,7 @@ extension ShellTests {
         clean.stopTimersForTesting()
     }
 
-    /// The exact owner-Mac state on the next launch: our version
+    /// The owner-Mac state after a stuck swap to OUR version: ours
     /// [activated enabled], the old one uninstalling, no device.
     @MainActor
     static func testOwnerMacStuckStateAtLaunchNeedsReboot() {
@@ -347,9 +349,58 @@ extension ShellTests {
         model.virtualCamera = PersistedVirtualCamera(enabled: true)
         model.startCameraExtensionAtLaunch()
         RunLoop.current.run(until: Date().addingTimeInterval(0.5))
-        expectEqual(fake.calls, ["installs", "installs"], "nothing is submitted; the second ask follows the missing device")
+        expectEqual(fake.calls, ["installs"], "nothing is submitted")
         expectEqual(model.cameraExtensionState, .needsReboot, "the stuck swap is reported as needing a restart")
         model.stopTimersForTesting()
+    }
+
+    /// Review I2a: the owner's Mac as it is NOW (2883 enabled, 2881 waiting
+    /// to uninstall, no device). Not another swap, not "Update camera":
+    /// "Restart your Mac", nothing submitted, whatever the intent.
+    @MainActor
+    static func testOwnerMacTodayGoesStraightToNeedsReboot() {
+        let today = [CameraExtensionInstall(version: "2883", enabled: true),
+                     CameraExtensionInstall(version: "2881", enabled: false, uninstalling: true)]
+        for intentOn in [false, true] {
+            let (model, fake, _, _) = launchedModel(installed: today, device: CameraDeviceStatus(),
+                                                    intentOn: intentOn)
+            expectEqual(fake.calls, ["installs"], "intent \(intentOn): nothing is submitted")
+            expectEqual(model.cameraExtensionState, .needsReboot, "intent \(intentOn): a restart is what finishes it")
+            model.stopTimersForTesting()
+        }
+    }
+
+    /// Review I2b: from the DMG (or a dev build) with an older copy installed,
+    /// the preflight's own message comes first; a working copy of our version
+    /// is still fine from anywhere.
+    @MainActor
+    static func testPreflightOutranksAnUpdate() {
+        let model = AppModel()
+        let fake = FakeCameraExtensionActivator(installed: [olderInstall])
+        fake.preflight = .notInApplications
+        let probe = FakeCameraDeviceProbe(CameraDeviceStatus(registered: true, runningSomewhere: true))
+        model.cameraExtension = fake
+        model.cameraDeviceProbe = probe
+        wire(model, probe, WireLog())
+        model.cameraExtensionOptedIn = true
+        model.virtualCamera = PersistedVirtualCamera(enabled: true)
+        model.startCameraExtensionAtLaunch()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(model.cameraExtensionState, .notInApplications, "Move to Applications, not Update camera")
+        expectEqual(fake.calls, ["installs"], "and nothing is submitted")
+        model.stopTimersForTesting()
+
+        let fine = AppModel()
+        let fake2 = FakeCameraExtensionActivator(installed: [ours()])
+        fake2.preflight = .notInApplications
+        fine.cameraExtension = fake2
+        fine.cameraDeviceProbe = FakeCameraDeviceProbe(CameraDeviceStatus(registered: true))
+        fine.coreCommandCaptureForTesting = { _ in }
+        fine.cameraExtensionOptedIn = true
+        fine.startCameraExtensionAtLaunch()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(fine.cameraExtensionState, .active, "our version already working stays active from the DMG")
+        fine.stopTimersForTesting()
     }
 
     /// macOS's own "will complete after reboot" answer maps to .needsReboot.
@@ -387,7 +438,7 @@ extension ShellTests {
     static func testVirtualCameraDiagnosticsReachTheSupportBundle() {
         let installed = [ours(), CameraExtensionInstall(version: "2881", enabled: false, uninstalling: true)]
         let (model, _, _, _) = launchedModel(installed: installed,
-                                          device: CameraDeviceStatus(registered: false, runningSomewhere: true))
+                                          device: CameraDeviceStatus(registered: true, runningSomewhere: true))
         let input = model.supportBundleInput()
         guard let state = try? JSONSerialization.jsonObject(with: input.shellStateJson) as? JSONObject,
               let vcam = state["virtualCamera"] as? JSONObject else {
@@ -399,7 +450,7 @@ extension ShellTests {
         expectEqual(rows.compactMap { $0["version"] as? String }, [CameraExtensionPolicy.bundledVersion, "2881"],
                     "every installed version")
         expectEqual(rows.last?["uninstalling"] as? Bool, true, "with its state")
-        expectEqual(vcam["deviceRegistered"] as? Bool, false, "device registered yes/no")
+        expectEqual(vcam["deviceRegistered"] as? Bool, true, "device registered yes/no")
         expectEqual(vcam["inUse"] as? Bool, true, "the in-use flag")
         expect((vcam["lastActivationResult"] as? String ?? "").hasPrefix("already active at launch"),
                "the last activation result")

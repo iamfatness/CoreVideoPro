@@ -1072,8 +1072,23 @@ final class AppModel: ObservableObject {
         if cameraExtensionOptedIn == true {
             queryCameraExtensionInstalls { [weak self] installs in
                 guard let self else { return }
-                switch CameraExtensionPolicy.launchAction(installs: installs,
-                                                          bundledVersion: CameraExtensionPolicy.bundledVersion) {
+                let action = CameraExtensionPolicy.launchAction(
+                    installs: installs, bundledVersion: CameraExtensionPolicy.bundledVersion,
+                    deviceRegistered: self.readCameraDevice().registered)
+                // A working installed copy is fine even from the DMG; anything
+                // that would SUBMIT first passes the preflight (review I2b), so
+                // "Move to Applications" is never hidden behind "Update camera".
+                if action == .update || action == .activate, let blocked = self.cameraExtension.preflightState() {
+                    ShellLog.write("vcam-ext: launch blocked by preflight: \(blocked)")
+                    self.recordCameraExtensionResult("blocked at launch: \(blocked)")
+                    self.setCameraExtensionState(blocked)
+                    return
+                }
+                switch action {
+                case .needsReboot:
+                    ShellLog.write("vcam-ext: an older copy is uninstalling and no device is registered; restart pending, nothing submitted")
+                    self.recordCameraExtensionResult("restart pending at launch (nothing submitted)")
+                    self.setCameraExtensionState(.needsReboot)
                 case .alreadyActive:
                     ShellLog.write("vcam-ext: version \(CameraExtensionPolicy.bundledVersion) already active; nothing submitted")
                     self.recordCameraExtensionResult("already active at launch (nothing submitted)")
