@@ -11,6 +11,15 @@ public enum CameraConstants {
     public static let sinkStreamName = "CoreVideo Pro Camera Sink"
     public static let machServiceName = "42394L3353.us.iamfatness.corevideopro.shell.camera"
     public static let extensionBundleID = "us.iamfatness.corevideopro.shell.camera"
+    /// The camera extension's OWN version: its CFBundleVersion and
+    /// CFBundleShortVersionString (scripts/make-macos-shell-bundle.sh reads it
+    /// from this line). macOS replaces an installed extension whenever this
+    /// differs, and a replacement can need a restart, so it moves ONLY when
+    /// the extension changes, never with the app's build number.
+    /// scripts/camera-extension-version.sh fails the release and CI when the
+    /// extension's sources changed but this did not: bump it, then run
+    /// `scripts/camera-extension-version.sh update`.
+    public static let extensionVersion = 1
     /// Spec §4 law 6, tightened to Developer ID (2026-11-15 security review): an
     /// Apple-anchored chain whose intermediate is the Developer ID CA
     /// (1.2.840.113635.100.6.2.6) and whose leaf is a Developer ID Application

@@ -1,0 +1,4 @@
+# Written by scripts/camera-extension-version.sh update. Do not edit by hand.
+# The camera extension's version and a sha256 of the sources it is built from.
+extensionVersion=1
+sourceHash=72de445f11b61142626cf037b3a22b12705a56781c9a8321c760ea585e3606e4

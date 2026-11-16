@@ -531,6 +531,9 @@ final class AppModel: ObservableObject {
     /// calls back; the shell must not wait on it forever.
     var cameraExtensionQueryTimeout: TimeInterval = 5
     private var cameraExtensionQueryToken: UUID?
+    private var cameraExtensionInstallsToken: UUID?
+    /// The last installed-copies answer (diagnostics; nil = never answered).
+    @Published private(set) var cameraExtensionInstalls: [CameraExtensionInstall]?
     /// TEST-ONLY command capture. Set only by ShellTests: no env var, control
     /// command or wire field reaches it. When set, commands this seam covers are
     /// handed to it instead of the bridge.
@@ -1023,13 +1026,51 @@ final class AppModel: ObservableObject {
         lastSavedPrefs = prefs
     }
 
-    /// Launch: after an opt-in, activate (a silent update/replace — or the
-    /// approval prompt again if it was never granted); otherwise only ask.
+    /// Launch: after an opt-in, ask macOS what is installed first. Our exact
+    /// version already enabled submits NOTHING (an activation request for an
+    /// installed extension is the step that can disturb a running one);
+    /// otherwise activate (first install, a pending approval, an update).
+    /// Without an opt-in, only ask.
     func startCameraExtensionAtLaunch() {
         if cameraExtensionOptedIn == true {
-            activateCameraExtension()
+            queryCameraExtensionInstalls { [weak self] installs in
+                guard let self else { return }
+                switch CameraExtensionPolicy.launchAction(installs: installs,
+                                                          bundledVersion: CameraExtensionPolicy.bundledVersion) {
+                case .alreadyActive:
+                    ShellLog.write("vcam-ext: version \(CameraExtensionPolicy.bundledVersion) already active; nothing submitted")
+                    self.setCameraExtensionState(.active)
+                case .activate:
+                    self.activateCameraExtension()
+                }
+            }
         } else {
             queryCameraExtension()
+        }
+    }
+
+    /// Every installed copy of the extension, or nil when macOS gives no answer
+    /// within `cameraExtensionQueryTimeout` (a properties request that ends
+    /// with didFinish and no foundProperties never calls back).
+    func queryCameraExtensionInstalls(_ done: @escaping @MainActor ([CameraExtensionInstall]?) -> Void) {
+        let token = UUID()
+        cameraExtensionInstallsToken = token
+        cameraExtension.installs { [weak self] installs in
+            Task { @MainActor in
+                guard let self, self.cameraExtensionInstallsToken == token else { return }
+                self.cameraExtensionInstallsToken = nil
+                self.cameraExtensionInstalls = installs
+                done(installs)
+            }
+        }
+        let timeout = cameraExtensionQueryTimeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.cameraExtensionInstallsToken == token else { return }
+                self.cameraExtensionInstallsToken = nil
+                ShellLog.write("vcam-ext: installed-copies query gave no answer in \(timeout) s")
+                done(nil)
+            }
         }
     }
 

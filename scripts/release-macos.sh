@@ -132,6 +132,10 @@ if [ "$NOTARIZE" = "1" ]; then
     xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1 \
         || die "notarytool profile '$PROFILE' missing or auth failed (xcrun notarytool history); create it once with: xcrun notarytool store-credentials \"$PROFILE\" --team-id 42394L3353"
 fi
+# The camera extension's own version must move with its sources: an
+# unbumped change would ship a different extension under the installed
+# version (never replaced), a needless bump forces every user through a swap.
+scripts/camera-extension-version.sh check || die "camera extension version gate failed (see above)"
 DIRTY=false
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     DIRTY=true
@@ -271,6 +275,8 @@ log "check the camera extension"
 scripts/check-macos-camera-extension.sh --release "$APP" || die "camera extension check failed"
 EXT_DIR="$APP/Contents/Library/SystemExtensions/us.iamfatness.corevideopro.shell.camera.systemextension"
 EXT_BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT_DIR/Contents/Info.plist")"
+[ "$EXT_BUNDLE_VERSION" = "$(scripts/camera-extension-version.sh version)" ] \
+    || die "camera extension CFBundleVersion $EXT_BUNDLE_VERSION is not CameraConstants.extensionVersion"
 CAM_PROFILE_PLIST="$WORK/camera-profile.plist"
 security cms -D -i "$CAMERA_PROFILE" >"$CAM_PROFILE_PLIST" 2>/dev/null || die "cannot decode $CAMERA_PROFILE"
 CAM_PROFILE_EXPIRES="$(plutil -extract ExpirationDate raw -o - "$CAM_PROFILE_PLIST")"
@@ -280,7 +286,7 @@ CAM_PROFILE_EXPIRES="$(plutil -extract ExpirationDate raw -o - "$CAM_PROFILE_PLI
 CERT_END="$(sed 's/^notAfter=//' "$WORK/cert-end.txt")"
 CERT_EXPIRES="$(date -j -u -f '%b %e %T %Y %Z' "$CERT_END" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" \
     || die "cannot parse the signing certificate expiry '$CERT_END'"
-echo "camera extension: build $EXT_BUNDLE_VERSION, profile expires $CAM_PROFILE_EXPIRES, certificate expires $CERT_EXPIRES"
+echo "camera extension: version $EXT_BUNDLE_VERSION, profile expires $CAM_PROFILE_EXPIRES, certificate expires $CERT_EXPIRES"
 
 # notarytool submit --wait, JSON out; echoes the submission id. Rejected or
 # invalid → fetch the log into $WORK (copied to dist/ on success) and fail.

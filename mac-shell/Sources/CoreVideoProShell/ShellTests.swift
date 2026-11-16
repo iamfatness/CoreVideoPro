@@ -752,7 +752,9 @@ enum ShellTests {
         optedIn.cameraExtension = fake2
         optedIn.cameraExtensionOptedIn = true
         optedIn.startCameraExtensionAtLaunch()
-        expectEqual(fake2.calls, ["activate"], "launch after an opt-in activates (silent update)")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(fake2.calls, ["installs", "activate"],
+                    "launch after an opt-in with nothing installed asks, then activates")
 
         let fresh = AppModel()
         let fake3 = FakeCameraExtensionActivator()
@@ -4077,7 +4079,7 @@ enum ShellTests {
             ("camera-kit/device-name", testDeviceNamePolicy),
             ("camera-kit/slate-classifier", testSlateClassifier),
             ("camera-kit/producer-attestation", testProducerAttestation),
-        ] + tier0Cases
+        ] + tier0Cases + vcamUpdateCases
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
             body()

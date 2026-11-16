@@ -16,6 +16,25 @@ enum CameraExtensionState: Equatable {
 
 enum CameraExtensionReplacement: Equatable { case replace, keep }
 
+/// One OSSystemExtensionProperties entry, reduced to what the policy reads.
+/// `version` is the entry's bundleVersion, i.e. CameraConstants.extensionVersion
+/// of the build that installed it (an install from before 2026-11-15 carries
+/// that app's build number instead).
+struct CameraExtensionInstall: Equatable {
+    var version: String
+    var enabled = false
+    var awaitingApproval = false
+    var uninstalling = false
+}
+
+/// What an opted-in launch does after asking macOS what is installed.
+enum CameraExtensionLaunchAction: Equatable {
+    /// Our exact version is installed and enabled: submit NOTHING.
+    case alreadyActive
+    /// Submit an activation (first install, approval still pending, or no answer).
+    case activate
+}
+
 enum CameraExtensionPolicy {
     /// States that must stop an activation BEFORE a request is submitted.
     static func preflight(bundlePath: String, hasEmbeddedProfile: Bool) -> CameraExtensionState? {
@@ -47,6 +66,22 @@ enum CameraExtensionPolicy {
         existingVersion == newVersion ? .keep : .replace
     }
 
+    /// The bundled extension's version as macOS reports it (bundleVersion).
+    static let bundledVersion = String(CameraConstants.extensionVersion)
+
+    /// Opted-in launch. Equal versions never replace, and an equal version that
+    /// is already enabled is not even re-submitted: an activation request for an
+    /// installed extension is exactly the step that can disturb a running one.
+    /// nil (macOS never answered) falls back to activating, the pre-2026-11-15
+    /// behaviour; the request's own replacement answer still keeps equal versions.
+    static func launchAction(installs: [CameraExtensionInstall]?, bundledVersion: String) -> CameraExtensionLaunchAction {
+        guard let installs else { return .activate }
+        if installs.contains(where: { $0.version == bundledVersion && $0.enabled && !$0.uninstalling }) {
+            return .alreadyActive
+        }
+        return .activate
+    }
+
     static func state(forProperties props: [(enabled: Bool, awaitingApproval: Bool, uninstalling: Bool)]) -> CameraExtensionState {
         if props.contains(where: { $0.enabled && !$0.uninstalling }) { return .active }
         if props.contains(where: { $0.awaitingApproval }) { return .needsApproval }
@@ -70,16 +105,33 @@ protocol CameraExtensionActivating: AnyObject {
     func query(_ done: @escaping (CameraExtensionState) -> Void)
     func activate(_ update: @escaping (CameraExtensionState) -> Void)
     func deactivate(_ update: @escaping (CameraExtensionState) -> Void)
+    /// Every installed copy of our extension (any version, any state); nil when
+    /// macOS refused the properties request.
+    func installs(_ done: @escaping ([CameraExtensionInstall]?) -> Void)
+}
+
+extension CameraExtensionActivating {
+    func installs(_ done: @escaping ([CameraExtensionInstall]?) -> Void) { done(nil) }
 }
 
 /// Scripted stand-in: `activate` delivers `script` in order; `deactivate`
-/// delivers .notInstalled; `query` delivers the last state delivered.
+/// delivers .notInstalled; `query` delivers the last state delivered;
+/// `installs` delivers `installed`.
 final class FakeCameraExtensionActivator: CameraExtensionActivating {
     private(set) var calls: [String] = []
     private let script: [CameraExtensionState]
     private var current: CameraExtensionState = .unknown
+    var installed: [CameraExtensionInstall]?
 
-    init(script: [CameraExtensionState] = []) { self.script = script }
+    init(script: [CameraExtensionState] = [], installed: [CameraExtensionInstall]? = []) {
+        self.script = script
+        self.installed = installed
+    }
+
+    func installs(_ done: @escaping ([CameraExtensionInstall]?) -> Void) {
+        calls.append("installs")
+        done(installed)
+    }
 
     func query(_ done: @escaping (CameraExtensionState) -> Void) {
         calls.append("query")
@@ -161,6 +213,10 @@ final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating,
     }
 
     private var inFlight: [ObjectIdentifier: InFlight] = [:]
+    /// Properties requests asked for the raw install list (`installs`), kept
+    /// apart from the state-reducing requests above.
+    private var installRequests: [ObjectIdentifier: (request: OSSystemExtensionRequest,
+                                                      done: ([CameraExtensionInstall]?) -> Void)] = [:]
     private let bundlePath: String
     private let hasProfile: Bool
     private let submit: (OSSystemExtensionRequest) -> Void
@@ -217,6 +273,19 @@ final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating,
               kind: .activate, last: .activating, callback: update)
     }
 
+    func installs(_ done: @escaping ([CameraExtensionInstall]?) -> Void) {
+        let request = OSSystemExtensionRequest.propertiesRequest(
+            forExtensionWithIdentifier: CameraConstants.extensionBundleID, queue: .main)
+        request.delegate = self
+        installRequests[ObjectIdentifier(request)] = (request, done)
+        submit(request)
+    }
+
+    static func install(_ p: OSSystemExtensionProperties) -> CameraExtensionInstall {
+        CameraExtensionInstall(version: p.bundleVersion, enabled: p.isEnabled,
+                               awaitingApproval: p.isAwaitingUserApproval, uninstalling: p.isUninstalling)
+    }
+
     func deactivate(_ update: @escaping (CameraExtensionState) -> Void) {
         start(OSSystemExtensionRequest.deactivationRequest(
             forExtensionWithIdentifier: CameraConstants.extensionBundleID, queue: .main),
@@ -240,15 +309,29 @@ final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating,
     }
 
     func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {
+        // A properties request that finishes without foundProperties never
+        // answers; the caller's timeout covers it (same as `query`).
+        if installRequests[ObjectIdentifier(request)] != nil { return }
         deliver(.finished(rebootRequired: result == .willCompleteAfterReboot), for: request)
     }
 
     func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
         let ns = error as NSError
+        if let pending = installRequests.removeValue(forKey: ObjectIdentifier(request)) {
+            ShellLog.write("vcam-ext: installed-copies query failed (\(ns.domain) \(ns.code))")
+            pending.done(nil)
+            return
+        }
         deliver(.failed(domain: ns.domain, code: ns.code), for: request)
     }
 
     func request(_ request: OSSystemExtensionRequest, foundProperties properties: [OSSystemExtensionProperties]) {
+        if let pending = installRequests.removeValue(forKey: ObjectIdentifier(request)) {
+            let list = properties.map(Self.install)
+            ShellLog.write("vcam-ext: installed copies \(list.map { "\($0.version)[\($0.enabled ? "enabled" : "disabled")\($0.uninstalling ? ",uninstalling" : "")\($0.awaitingApproval ? ",awaiting" : "")]" })")
+            pending.done(list)
+            return
+        }
         deliver(.foundProperties(properties.map {
             (enabled: $0.isEnabled, awaitingApproval: $0.isAwaitingUserApproval, uninstalling: $0.isUninstalling)
         }), for: request)

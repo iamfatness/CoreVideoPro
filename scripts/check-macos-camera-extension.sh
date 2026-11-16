@@ -10,7 +10,8 @@
 #
 #   (a) the extension directory exists at the exact path
 #   (b) the extension Info.plist keys and values
-#   (c) extension CFBundleVersion equals the app's
+#   (c) extension CFBundleVersion equals CameraConstants.extensionVersion (its
+#       OWN version; scripts/camera-extension-version.sh), never the app's build
 #   (d) the mach service name starts with one of the extension's signed
 #       com.apple.security.application-groups values
 #   (e) the extension's signed entitlements include the app sandbox
@@ -78,7 +79,7 @@ if [ "$MODE" = "negatives" ]; then
             --entitlements scripts/macos-camera-extension.entitlements "$1" 2>/dev/null
     }
     mut_cmio() { plutil -remove CMIOExtension "$1/Contents/Info.plist"; }
-    negative "build-number-mismatch" c mut_version
+    negative "extension-version-mismatch" c mut_version
     negative "restricted-entitlements-ad-hoc" g mut_restricted
     negative "no-CMIOExtension" b mut_cmio
     echo "PASS: all 3 negatives were caught"
@@ -127,8 +128,7 @@ ok a "extension at Contents/Library/SystemExtensions/$EXT_ID.systemextension"
 EP="$EXT/Contents/Info.plist"
 AP="$APP/Contents/Info.plist"
 [ -f "$EP" ] || fail b "no Info.plist in the extension"
-VERSION="$(pb "$AP" CFBundleShortVersionString)"
-BUILD="$(pb "$AP" CFBundleVersion)"
+EXT_VERSION="$(scripts/camera-extension-version.sh version)" || fail b "no CameraConstants.extensionVersion"
 want() {  # want <keypath> <value>
     local got
     got="$(pb "$EP" "$1")" || fail b "extension Info.plist has no $1"
@@ -138,7 +138,7 @@ want CFBundleExecutable CoreVideoProCamera
 want CFBundleIdentifier "$EXT_ID"
 want CFBundleName "CoreVideo Pro Camera"
 want CFBundlePackageType SYSX
-want CFBundleShortVersionString "$VERSION"
+want CFBundleShortVersionString "$EXT_VERSION"
 want LSMinimumSystemVersion 13.0
 want CMIOExtension:CMIOExtensionMachServiceName "$MACH_SERVICE"
 want NSSystemExtensionUsageDescription "$USAGE"
@@ -147,9 +147,9 @@ ok b "extension Info.plist keys and values"
 
 # ── (c) ─────────────────────────────────────────────────────────────────────
 EXT_BUILD="$(pb "$EP" CFBundleVersion)"
-[ -n "$BUILD" ] && [ "$EXT_BUILD" = "$BUILD" ] || \
-    fail c "extension CFBundleVersion '$EXT_BUILD' != app CFBundleVersion '$BUILD'"
-ok c "CFBundleVersion $BUILD on both"
+[ "$EXT_BUILD" = "$EXT_VERSION" ] || \
+    fail c "extension CFBundleVersion '$EXT_BUILD' != CameraConstants.extensionVersion '$EXT_VERSION'"
+ok c "extension CFBundleVersion $EXT_VERSION = CameraConstants.extensionVersion"
 
 # ── (d) ─────────────────────────────────────────────────────────────────────
 EXT_ENT="$WORK/ext-ent.plist"

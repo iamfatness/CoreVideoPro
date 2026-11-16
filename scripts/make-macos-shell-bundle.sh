@@ -30,7 +30,10 @@
 #
 # Camera extension (roadmap M9.2): the CoreMediaIO system extension rides at
 # Contents/Library/SystemExtensions/us.iamfatness.corevideopro.shell.camera.systemextension
-# with CFBundleVersion = the app's. scripts/check-macos-camera-extension.sh
+# with CFBundleVersion = CFBundleShortVersionString = CameraConstants.extensionVersion
+# (its OWN version, never the app's build number: macOS replaces the installed
+# extension whenever it changes, and a replacement can need a restart; see
+# scripts/camera-extension-version.sh). scripts/check-macos-camera-extension.sh
 # checks the result. Ad-hoc: macos-camera-extension-adhoc.entitlements and the
 # shell on macos-shell.entitlements (no restricted entitlement anywhere: AMFI
 # kills a binary signed with one and no profile). Developer ID: both profiles
@@ -83,6 +86,8 @@ VERSION="$(node -p "require('./package.json').version" 2>/dev/null || true)"
 [ -n "$VERSION" ] || { echo "error: no version in package.json" >&2; exit 2; }
 BUILD_NUMBER="${COREVIDEO_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 0)}"
 case "$BUILD_NUMBER" in ''|*[!0-9]*) echo "error: build number '$BUILD_NUMBER' is not an integer" >&2; exit 2 ;; esac
+EXT_VERSION="$(scripts/camera-extension-version.sh version)" \
+    || { echo "error: no CameraConstants.extensionVersion" >&2; exit 2; }
 
 # Every helper the app resolves from Contents/Resources (ShellPaths.resolve in
 # AppModel.swift). Missing one in a release silently degrades a feature
@@ -164,8 +169,8 @@ cat > "$EXT/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>$EXT_ID</string>
     <key>CFBundleName</key><string>CoreVideo Pro Camera</string>
     <key>CFBundlePackageType</key><string>SYSX</string>
-    <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
+    <key>CFBundleShortVersionString</key><string>$EXT_VERSION</string>
+    <key>CFBundleVersion</key><string>$EXT_VERSION</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>CMIOExtension</key>
     <dict>

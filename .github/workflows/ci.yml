@@ -129,10 +129,14 @@ jobs:
           for f in scripts/release-macos.sh scripts/macos-sign-lib.sh \
                    scripts/make-macos-shell-bundle.sh scripts/make-macos-engine-bundle.sh \
                    scripts/run-mac-shell.sh scripts/check-macos-camera-extension.sh \
-                   scripts/macos-vcam-e2e.sh; do
+                   scripts/macos-vcam-e2e.sh scripts/camera-extension-version.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
+      - name: Camera extension version gate (sources changed => extensionVersion bumped)
+        run: |
+          bash scripts/camera-extension-version.sh check
+          bash scripts/camera-extension-version.sh self-test
 
   # The shell had ZERO tests for ~9k lines, so every regression reached the
   # owner in a live session first — including a prefs bug that silently wiped
