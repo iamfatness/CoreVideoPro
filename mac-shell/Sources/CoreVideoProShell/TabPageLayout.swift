@@ -69,12 +69,19 @@ struct TabPageContent: View {
 enum TabSnapshotHarness {
     static func seed(_ model: AppModel) {
         ShowInputWriteScope.run("snapshot-seed") { seedSlots(model) }
-        model.roster = [
-            RosterParticipant(id: "101", name: "Jordan Wallace", hasVideo: true,
-                              muted: false, talking: true, assigned: true),
-            RosterParticipant(id: "102", name: "Guest with a long display name", hasVideo: true,
-                              muted: false, talking: false, assigned: true),
-        ]
+        // A revisioned roster through the real merge, then one delivered format
+        // fact: row 1 reads LIVE 1920×1080 30, row 2 CONNECTING (no frame yet).
+        model.applyZoomForTesting([
+            "meetingState": "in_meeting", "rosterEpoch": "1:1:seed", "rosterRevision": NSNumber(value: 1),
+            "participants": [
+                ["userId": "101", "displayName": "Jordan Wallace", "videoOn": true, "talking": false,
+                 "sourceGeneration": NSNumber(value: 1)],
+                ["userId": "102", "displayName": "Guest with a long display name", "videoOn": true,
+                 "sourceGeneration": NSNumber(value: 1)],
+            ] as [JSONObject]])
+        model.handleEventForTesting(["type": "zoom-source-format", "format": [
+            "participantId": "101", "rosterEpoch": "1:1:seed", "sourceGeneration": NSNumber(value: 1),
+            "width": 1920, "height": 1080, "fps": 30, "frameId": 1, "frameAtMs": 100.0] as JSONObject])
     }
 
     private static func seedSlots(_ model: AppModel) {

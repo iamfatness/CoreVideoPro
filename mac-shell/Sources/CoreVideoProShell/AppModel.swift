@@ -951,6 +951,7 @@ final class AppModel: ObservableObject {
             self.audioRouteControl.resetForProcess()
             self.audioRouteControlNotice = "Audio route reconciling with restarted core"
             self.rosterProjection.resetForProcess()
+            self.sourceFacts.mutate { $0.engineStopped() }
             self.rosterRecoveryNotice = "Zoom roster reconciling with restarted core"
             self.recordingCommands.interrupted()
             self.recordingDesired = false
@@ -1579,6 +1580,7 @@ final class AppModel: ObservableObject {
         monitorControl.resetForProcess()
         audioRouteControl.resetForProcess()
         rosterProjection.resetForProcess()
+        sourceFacts.mutate { $0.engineStopped() }
         rosterRecoveryNotice = rosterProjection.notice
         // FIRST, before anything that can make a source audible (monitor, capture
         // mics, scenes with media): see reassertAudioConsole.
@@ -1724,6 +1726,7 @@ final class AppModel: ObservableObject {
             refreshSlotHealth()
             reconnectRestoredCaptures()
         }
+        applySourceFacts(snapshot)
         if let recording = snapshot["recording"] as? JSONObject {
             let nextStatus = RecordingLifecycleReadModel.status(recording)
             recordingCommands.observe(
@@ -1865,6 +1868,10 @@ final class AppModel: ObservableObject {
                     runAssignmentLaw { law, slots in law.syncFromMeeting(&slots, roster: lawRoster) }
                 }
             }
+            let rosterFact = Self.zoomRosterFact(
+                epoch: rosterProjection.epoch,
+                meetingState: snapshot["meetingState"] as? String ?? meetingState, roster: roster)
+            sourceFacts.mutate { $0.applyRoster(rosterFact) }
             refreshSlotHealth()
             if lawChanged {
                 ShellLog.write("roster: slot law changed the assignments")
@@ -1939,6 +1946,11 @@ final class AppModel: ObservableObject {
     }
     /// TEST-ONLY: receives every slot-write line. Set only by ShellTests.
     var slotWriteObserverForTesting: ((String) -> Void)?
+    /// Observed row facts, one box per slot. NOT @Published (frame-fact rate).
+    let sourceFacts = SourceFactsStore()
+    /// TEST-ONLY clock (ms) for the measured capture FPS.
+    var sourceFactsClockForTesting: (() -> Double)?
+    var sourceFactsNowMs: Double { sourceFactsClockForTesting?() ?? ProcessInfo.processInfo.systemUptime * 1000 }
 
     /// The slot choke point (Windows ShowInputModels.cs:165-190). Logs each
     /// assignment-field change with the ambient ShowInputWriteScope reason, then
@@ -1947,6 +1959,7 @@ final class AppModel: ObservableObject {
     /// Never writes `slots`.
     private func slotsDidChange(from oldValue: [ShowInputSlot]) {
         guard oldValue != slots else { return }
+        sourceFacts.mutate { $0.setSlots(slots.map(SourceSlotRef.init)) }
         for line in ShowInputWriteScope.lines(old: oldValue, new: slots,
                                               reason: ShowInputWriteScope.reason) {
             ShellLog.write(line)
@@ -1973,6 +1986,18 @@ final class AppModel: ObservableObject {
         projectIsoSelection()
         syncSpine()
         syncScenes()
+    }
+
+    /// The row picker's assign: refused when the slot changed while its menu was
+    /// open (`openedFor` = the slot's sourceKey when the menu was built; nil = it
+    /// was unassigned). Audit row 12.
+    func assignSlot(_ slotId: Int, kind: String, sourceId: String, name: String, openedFor: String?) {
+        guard let slot = slots.first(where: { $0.id == slotId }) else { return }
+        guard slot.sourceKey == openedFor else {
+            sourcesStatus = "Input \(slotId) changed while its menu was open. Choose again."
+            return
+        }
+        assignSlot(slotId, kind: kind, sourceId: sourceId, name: name)
     }
 
     func assignSlot(_ slotId: Int, kind: String, sourceId: String, name: String) {
@@ -2060,6 +2085,7 @@ final class AppModel: ObservableObject {
 
     func setCapture(enabled: Bool) {
         captureEnabled = enabled
+        if !enabled { sourceFacts.mutate { $0.engineStopped() } }
         syncSpine()
         if !enabled {
             guard let bridge else { return }
@@ -2084,6 +2110,11 @@ final class AppModel: ObservableObject {
         case "preview-shared-texture":
             if let id = event["iosurfaceId"] as? NSNumber {
                 previewSurfaceId = id.uint32Value
+            }
+        case "zoom-source-format":
+            // One row's facts; no sync and no AppModel @Published write (spec §4.4).
+            if let fact = ZoomFormatFact.parse(event: event) {
+                sourceFacts.mutate { $0.applyFormat(fact) }
             }
         default:
             break
@@ -4507,6 +4538,7 @@ final class AppModel: ObservableObject {
 
     /// Test seam: feed a snapshot through the real read path.
     func applySnapshotForTesting(_ snapshot: JSONObject) { applySnapshot(snapshot) }
+    func handleEventForTesting(_ event: JSONObject) { handleEvent(event) }
     /// Test seam: feed a zoom-snapshot through the real read path.
     func applyZoomForTesting(_ snapshot: JSONObject) { applyZoom(snapshot) }
 

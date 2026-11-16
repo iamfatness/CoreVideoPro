@@ -1535,6 +1535,10 @@ struct SourcesPane: View {
                 ForEach(model.slots) { slot in
                     SlotRow(slot: slot)
                 }
+                if !model.sourcesStatus.isEmpty {
+                    Text(model.sourcesStatus)
+                        .font(.grotesk(11)).foregroundStyle(Studio.amber)
+                }
             }
             .padding(14)
             .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
@@ -1735,13 +1739,16 @@ struct SlotRow: View {
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .disabled(!assigned)
+            // The assignment this menu was built for: a choice made after the slot
+            // changed underneath is refused (picker guard, audit row 12).
+            let openedFor = slot.sourceKey
             Menu {
                 Section("Zoom participants") {
                     ForEach(model.roster) { participant in
                         Button(participant.name) {
                             model.assignSlot(slot.id, kind: "zoom",
                                              sourceId: participant.id,
-                                             name: participant.name)
+                                             name: participant.name, openedFor: openedFor)
                         }
                     }
                 }
@@ -1749,7 +1756,8 @@ struct SlotRow: View {
                     ForEach(model.captureDevices) { device in
                         Button(device.name) {
                             model.assignSlot(slot.id, kind: "capture",
-                                             sourceId: device.id, name: device.name)
+                                             sourceId: device.id, name: device.name,
+                                             openedFor: openedFor)
                             if device.connectionState != "connected" {
                                 model.connectCaptureDevice(device)
                             }
@@ -1777,6 +1785,9 @@ struct SlotRow: View {
             .overlay(RoundedRectangle(cornerRadius: 8)
                 .stroke(slot.offline ? Studio.amber.opacity(0.6) : Studio.border,
                         lineWidth: 1))
+            if assigned {
+                SlotSignalFacts(box: model.sourceFacts.box(slot.id))
+            }
             if assigned, slot.kind == "capture",
                let device = model.captureDevices.first(where: { $0.id == slot.sourceId }),
                device.connectionState == "connected", !device.signalPresent {
@@ -1851,6 +1862,7 @@ struct SlotRow: View {
                     set: { _ in model.toggleSlotIso(slot.id) }))
                     .toggleStyle(.checkbox)
                     .font(.grotesk(11))
+                SlotWriterChip(box: model.sourceFacts.box(slot.id))
                 Button("Unassign") { model.unassignSlot(slot.id) }
                     .buttonStyle(GhostButtonStyle())
             }

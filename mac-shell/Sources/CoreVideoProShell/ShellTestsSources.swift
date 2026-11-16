@@ -41,6 +41,11 @@ extension ShellTests {
             ("sources-facts/tally-precedence-all-inputs", testTallyPrecedenceOverEveryInputCombination),
             ("sources-facts/iso-chip-is-writer-lifecycle", testIsoChipUsesObservedWriterLifecycle),
             ("sources-facts/reassignment-resets-row", testReassigningASlotResetsItsRowBeforeTheNewSourceShows),
+            // Task 5: facts wired from the core; picker guard.
+            ("sources-facts/wired-zoom-format-one-row-no-sync", testFormatEventsPatchOneRowWithoutASync),
+            ("sources-facts/wired-capture-bus-not-device", testCaptureRowIsWiredFromTheBus),
+            ("sources-facts/wired-tally-and-writer", testTallyAndWriterAreWiredFromTheSnapshot),
+            ("sources-facts/picker-guard", testAStalePickerChoiceIsRefused),
         ]
     }
 
@@ -606,6 +611,79 @@ extension ShellTests {
         expectEqual(row.format, "—", "the old guest's format is gone")
         expectEqual(row.signal, "CONNECTING", "the new guest has not delivered")
         expectEqual(row.writer, "ARMED", "the writer chip is the new guest's")
+    }
+
+    // ── Task 5: facts wired from the core ───────────────────────────────────
+
+
+    @MainActor
+    static func testFormatEventsPatchOneRowWithoutASync() {
+        let model = AppModel()
+        model.assignSlot(1, kind: "zoom", sourceId: "42", name: "Guest 42")
+        model.applyZoomForTesting(lawRoster(["42"], revision: 1))           // sourceGeneration 1, epoch 1:1:law
+        let spine = model.spineSyncRequests, scenes = model.sceneSyncRequestCount
+        var otherRowChanges = 0
+        let sink = model.sourceFacts.box(2).objectWillChange.sink { _ in otherRowChanges += 1 }
+        model.handleEventForTesting(["type": "zoom-source-format", "format": [
+            "participantId": "42", "rosterEpoch": "1:1:law", "sourceGeneration": NSNumber(value: 1),
+            "width": 1280, "height": 720, "fps": 30, "frameId": 5, "frameAtMs": 500.0]])
+        let facts = model.sourceFacts.box(1).facts
+        expectEqual(facts.format, "1280×720", "the event patches the row")
+        expectEqual(facts.signal, "LIVE", "and makes it live")
+        expectEqual(model.spineSyncRequests, spine, "no spine push")
+        expectEqual(model.sceneSyncRequestCount, scenes, "no scene sync")
+        expectEqual(otherRowChanges, 0, "another row is not invalidated")
+        sink.cancel()
+    }
+
+    @MainActor
+    static func testCaptureRowIsWiredFromTheBus() {
+        let model = AppModel()
+        var now = 0.0
+        model.sourceFactsClockForTesting = { now }
+        model.assignSlot(2, kind: "capture", sourceId: "cam1", name: "Cam")
+        func snapshot(frames: Double) -> JSONObject {
+            ["captureDevices": [["id": "cam1", "name": "Cam", "vendor": "avfoundation", "connectionState": "connected",
+                                 "signalPresent": true, "resolution": ["width": 1920, "height": 1080], "frameRate": 30]],
+             "sources": [["sourceId": "capture:cam1", "kind": "capture", "width": 1280, "height": 720,
+                          "framesIngested": frames, "sinceLastNewFrameMs": 10.0, "health": "producing"]]]
+        }
+        model.applySnapshotForTesting(snapshot(frames: 0))
+        expectEqual(model.sourceFacts.box(2).facts.format, "1280×720", "the bus frame size, not the device's 1920×1080")
+        now = 1000
+        model.applySnapshotForTesting(snapshot(frames: 25))
+        expectEqual(model.sourceFacts.box(2).facts.fps, "25", "a measured rate (25 frames / 1 s), not the device's 30")
+    }
+
+    @MainActor
+    static func testTallyAndWriterAreWiredFromTheSnapshot() {
+        let model = AppModel()
+        model.assignSlot(1, kind: "zoom", sourceId: "42", name: "Guest 42")
+        model.applyZoomForTesting(lawRoster(["42"], revision: 1))
+        model.handleEventForTesting(["type": "zoom-source-format", "format": [
+            "participantId": "42", "rosterEpoch": "1:1:law", "sourceGeneration": NSNumber(value: 1),
+            "width": 1920, "height": 1080, "fps": 30, "frameId": 1, "frameAtMs": 100.0]])
+        model.applySnapshotForTesting([
+            "programFrame": ["frameNumber": 7, "videoSources": [["sourceId": "zoom:42", "kind": "participant-video",
+                                                                 "participantId": "42"]]],
+            "recording": ["sessionId": "s", "status": "recording", "active": true,
+                          "lifecycle": ["state": "producing", "health": "healthy"],
+                          "streams": [["kind": "iso", "sourceId": "zoom:42", "status": "writing"]]]])
+        let facts = model.sourceFacts.box(1).facts
+        expectEqual(facts.chip, "PGM", "a live source on rendered Program reads PGM")
+        expectEqual(facts.writer, "REC", "the writer chip is the observed writer")
+    }
+
+    @MainActor
+    static func testAStalePickerChoiceIsRefused() {
+        let model = AppModel()
+        model.assignSlot(1, kind: "zoom", sourceId: "42", name: "Guest 42")     // the menu opens for zoom:42
+        model.assignSlot(1, kind: "capture", sourceId: "camA", name: "A")       // meanwhile slot 1 changes
+        model.assignSlot(1, kind: "capture", sourceId: "camB", name: "B", openedFor: "zoom:42")
+        expectEqual(model.slots[0].sourceId, "camA", "a choice made against an older assignment is refused")
+        expectEqual(model.sourcesStatus, "Input 1 changed while its menu was open. Choose again.", "and says so")
+        model.assignSlot(1, kind: "capture", sourceId: "camB", name: "B", openedFor: "capture:camA")
+        expectEqual(model.slots[0].sourceId, "camB", "a current choice applies")
     }
 }
 
