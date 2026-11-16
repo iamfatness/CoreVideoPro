@@ -9,6 +9,9 @@
 
 #include "EncoderCapacityProbeTestSupport.h"
 #include "MediaTestSupport.h"
+#if !COREVIDEO_STUB && COREVIDEO_WITH_AVF_MEDIA_DECODER
+#include "AvfMediaFixtures.h"
+#endif
 #include "MonitorTestMode.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
@@ -3903,6 +3906,93 @@ TEST(MediaCoreCommand, SceneMediaAudioReachesMasterThroughTheShellMediaStrip) {
   ASSERT_NE(mutedStrip, nullptr);
   EXPECT_EQ(mutedStrip->get("outputLevel")->asNumber(), 0);
 }
+
+#if !COREVIDEO_STUB && COREVIDEO_WITH_AVF_MEDIA_DECODER
+// Frequency of the LEFT channel of an interleaved stereo buffer, from the spacing of its zero
+// crossings (first to last), so a 20 ms tap resolves a tone to a few Hz. 0 when it has fewer than
+// three crossings.
+double leftChannelToneHz(const std::vector<float>& interleavedStereo) {
+  long first = -1, last = -1;
+  int crossings = 0;
+  for (size_t frame = 1; frame < interleavedStereo.size() / 2; ++frame) {
+    const float before = interleavedStereo[(frame - 1) * 2], after = interleavedStereo[frame * 2];
+    if ((before < 0.f) == (after < 0.f)) continue;
+    if (first < 0) first = static_cast<long>(frame);
+    last = static_cast<long>(frame);
+    ++crossings;
+  }
+  if (crossings < 3 || last <= first) return 0.0;
+  return (crossings - 1) / 2.0 * 48000.0 / static_cast<double>(last - first);
+}
+
+// The Windows oracle SceneMediaAudioReachesMasterThroughTheShellMediaStrip (above) uses a fake
+// decoder. This is the same assertion set on the REAL AVFoundation decoder through the real mixer,
+// plus the tone check that proves the PCM on master is the clip's and not anything else.
+TEST(MediaCoreCommand, ARealClipsToneReachesMasterThroughTheMediaStripAndMuteSilencesIt) {
+  // Fixture: 5 s of H.264 + AAC, a 440 Hz sine at amplitude 0.5 on both channels.
+  constexpr double kFixtureToneHz = 440.0;
+  const auto clipPath = std::filesystem::temp_directory_path() /
+      ("corevideo-avf-tone-master-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".mp4");
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{clipPath};
+  const auto written = corevideo::testing::writeToneClip(clipPath.string(), 5, kFixtureToneHz);
+  ASSERT_EQ(written, "") << written;
+
+  auto modules = corevideo::modules::createStubModules();
+  modules.mediaDecoderFactory = corevideo::modules::createAvFoundationMediaDecoderFactory();
+  ASSERT_TRUE(static_cast<bool>(modules.mediaDecoderFactory));
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "real-tone"},
+          {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+              {"routeId", "tone-main"}, {"mode", "fixed"}, {"mediaAssetId", "tone"}, {"mediaAssetName", "Tone"},
+              {"mediaAssetKind", "stinger"}, {"mediaAssetPath", clipPath.string()}, {"mediaAssetLoop", false},
+              {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}},
+      },
+      shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media"), shellAudioStrip("zoom-mix")}),
+      shellMediaRouting(),
+  });
+
+  // Wait for a tick whose master tap is past the AAC start-up ramp (a full-level window).
+  corevideo::rpc::Json state;
+  std::vector<float> master, stream;
+  ASSERT_TRUE(corevideo::testing::applyUntil(mediaCore, [&](corevideo::core::MediaCore& core) {
+    if (peakOfSamples(core.programAudioTapPcm()) > 0.3f && peakOfSamples(core.audioBusTapPcm("stream")) > 0.05f) {
+      master = core.programAudioTapPcm();
+      stream = core.audioBusTapPcm("stream");
+      return true;
+    }
+    return false;
+  }, 4000, &state)) << "the real clip's PCM never reached the master and stream buses";
+  EXPECT_TRUE(peakOfSamples(master) > 0.05f);
+  EXPECT_TRUE(peakOfSamples(stream) > 0.05f);
+
+  // The operator's "Media playback" strip meters the clip it governs.
+  const auto* mediaStrip = audioMixParticipant(state, "media");
+  ASSERT_NE(mediaStrip, nullptr);
+  EXPECT_TRUE(mediaStrip->get("outputLevel")->asNumber() > 0);
+  EXPECT_NE(mediaStrip->getString("status"), "waiting-for-pcm");
+
+  // It is the CLIP's tone. The tap is one 20 ms mixer tick of interleaved stereo (a fixture fact,
+  // asserted first): 960 frames hold 8.8 cycles of 440 Hz.
+  ASSERT_GE(master.size(), 1920u) << "the master tap is shorter than one 960-frame stereo tick";
+  EXPECT_NEAR(leftChannelToneHz(master), 440.0, 15.0) << "master does not carry the clip's 440 Hz tone";
+
+  // The alias respects the fader: muting the "media" strip silences the clip.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      shellAudioMix(corevideo::rpc::Json::Array{shellAudioStrip("media", true), shellAudioStrip("zoom-mix")}),
+  });
+  const auto mutedState = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  EXPECT_TRUE(peakOfSamples(mediaCore.programAudioTapPcm()) < 0.001f)
+      << "a muted Media strip must keep the clip off master";
+  EXPECT_TRUE(peakOfSamples(mediaCore.audioBusTapPcm("stream")) < 0.001f);
+  const auto* mutedStrip = audioMixParticipant(mutedState, "media");
+  ASSERT_NE(mutedStrip, nullptr);
+  EXPECT_EQ(mutedStrip->get("outputLevel")->asNumber(), 0);
+}
+#endif  // !COREVIDEO_STUB && COREVIDEO_WITH_AVF_MEDIA_DECODER
 
 // Two clips on Program under the ONE "media" strip + send: both sum into master
 // (each keeps its own source slot — neither overwrites the other).
