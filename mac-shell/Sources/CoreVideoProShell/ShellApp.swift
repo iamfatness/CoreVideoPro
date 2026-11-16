@@ -1516,6 +1516,7 @@ struct SourcesPane: View {
                     .font(.grotesk(12)).foregroundStyle(Studio.secondary)
                 Text("\(inShowCount) in show · \(assignedCount) assigned")
                     .font(.grotesk(12, .medium)).foregroundStyle(Studio.accent)
+                AutoAssignInputsToggle()
                 if !model.rosterRecoveryNotice.isEmpty {
                     Text(model.rosterRecoveryNotice)
                         .font(.plexMono(10)).foregroundStyle(Studio.amber)
@@ -1920,6 +1921,9 @@ struct AutomationPane: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Manual production").font(.grotesk(14, .semibold))
             Text("Scene automation is unavailable in this release. Compose your show and use manual Take.").font(.grotesk(12))
+            // Not scene automation: the slot law's newcomer fill, live in this release.
+            Divider()
+            AutoAssignInputsToggle()
         }
         .modifier(StudioPanel())
     }

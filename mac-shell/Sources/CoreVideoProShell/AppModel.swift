@@ -644,11 +644,14 @@ final class AppModel: ObservableObject {
             .filter { $0.kind == "zoom" && !$0.dropoutPolicy.isEmpty }
             .map { PersistedSlotPolicy(slotId: $0.id, dropoutPolicy: $0.dropoutPolicy,
                                        sourceKey: $0.sourceKey) }
-        prefs.showInputSlots = slots.filter { $0.sourceKey != nil }.map {
+        // Capture slots only (plan D2): Zoom reuses user ids across meetings, so a
+        // restored Zoom slot could attach a different person's name and settings.
+        prefs.showInputSlots = slots.filter { $0.kind == "capture" && $0.sourceKey != nil }.map {
             PersistedSlot(slotId: $0.id, kind: $0.kind, sourceId: $0.sourceId,
                           name: SlotNamePolicy.persisted($0), inShow: $0.inShow)
         }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
+        prefs.autoAssignInputs = autoAssignInputsEnabled
         prefs.cameraExtensionOptedIn = cameraExtensionOptedIn
         prefs.virtualCamera = virtualCamera == PersistedVirtualCamera() ? nil : virtualCamera
         storeProductionSettings(into: &prefs)
@@ -685,6 +688,9 @@ final class AppModel: ObservableObject {
         }
         overlays = prefs.overlays ?? OverlaysState()
         restoreSlotAssignments(prefs.showInputSlots ?? [])
+        // No reapply: no roster exists at launch.
+        assignmentLaw.autoAssignEnabled = prefs.autoAssignInputs ?? true
+        autoAssignInputsEnabled = assignmentLaw.autoAssignEnabled
         for key in prefs.chromaKeys ?? [] {
             if let index = restoredSlotIndex(sourceKey: key.sourceKey, legacySlotId: key.slotId) {
                 slots[index].keyEnabled = true
@@ -1919,6 +1925,7 @@ final class AppModel: ObservableObject {
             runAssignmentLaw { law, slots in law.reapply(&slots, roster: current) }
         }
         if changed { recomputeFromSlots() }
+        persistPrefsNow()
     }
 
     /// Capture device ids whose slot was restored (or survived a core respawn)

@@ -165,6 +165,9 @@ struct ShellPrefs: Codable, Equatable {
     // disconnected device can still be named). nil = system default output.
     var monitorDeviceId: String?
     var monitorDeviceName: String?
+    // "Fill free inputs when participants join" (Sources plan Task 3). nil = never
+    // set → on, the Windows default (MagicSceneCoordinator.cs:458).
+    var autoAssignInputs: Bool?
 
     // EVERY FIELD IS OPTIONAL ON READ. Swift's synthesized Decodable does NOT
     // honour a property's default value — it calls decode() and THROWS
@@ -231,6 +234,7 @@ struct ShellPrefs: Codable, Equatable {
         recordingFolder = ((try? c.decodeIfPresent(String.self, forKey: .recordingFolder)) ?? nil)
         monitorDeviceId = ((try? c.decodeIfPresent(String.self, forKey: .monitorDeviceId)) ?? nil)
         monitorDeviceName = ((try? c.decodeIfPresent(String.self, forKey: .monitorDeviceName)) ?? nil)
+        autoAssignInputs = ((try? c.decodeIfPresent(Bool.self, forKey: .autoAssignInputs)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -285,6 +289,7 @@ struct ShellPrefs: Codable, Equatable {
         p.recordPrefix = "gala"
         p.multiviewLayoutMode = "grid"
         p.multiviewTileCount = 6
+        p.autoAssignInputs = false
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
             return "decode failed"

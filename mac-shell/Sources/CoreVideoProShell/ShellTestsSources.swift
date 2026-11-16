@@ -30,6 +30,9 @@ extension ShellTests {
             ("sources-log/every-writer-names-itself", testEverySlotWriterNamesItself),
             ("sources-save/slot-changes-reach-disk-now", testSlotChangesReachDiskWithoutTheAutosave),
             ("sources-save/second-restore-refused", testASecondRestoreIsRefused),
+            // Task 3: Zoom slots are meeting-scoped; the toggle is persisted and drawn.
+            ("sources-law/zoom-slots-meeting-scoped", testZoomSlotsAreNeverRestoredOrSaved),
+            ("sources-law/toggle-persisted-default-on", testTheAutoAssignToggleIsPersistedAndDefaultsOn),
         ]
     }
 
@@ -357,7 +360,12 @@ extension ShellTests {
         expect(disk.showInputSlots?.contains { $0.slotId == 4 } != true, "and the slot is gone on disk")
 
         stale.save(); model.applyZoomForTesting(lawRoster(["A"], revision: 1)); disk = ShellPrefs.load()
-        expectEqual(disk.joinMeetingId, "meeting-T2", "an auto-assign saves now")   // Task 3 amends this block
+        expect(disk.showInputSlots?.contains { $0.kind == "zoom" } != true,
+               "an auto-assigned guest is never written to disk (D2)")   // Task 3 amendment
+
+        stale.save(); model.setAutoAssignInputs(false); disk = ShellPrefs.load()
+        expectEqual(disk.autoAssignInputs, false, "the toggle saves now")
+        expectEqual(disk.joinMeetingId, "meeting-T2", "the whole file")
     }
 
     /// Port of SecondLoad_IsRefused_AndNeverOverwritesLiveOperatorChanges (:1074). FIXTURE: the
@@ -375,6 +383,36 @@ extension ShellTests {
         model.applyRestoredPrefs(second)
         expectEqual(model.slots[1].kind, "unassigned", "a stale file never refills the slot the operator emptied")
         expectEqual(model.joinMeetingId, "first", "and overwrites nothing else")
+    }
+
+    // ── Task 3: Zoom slots are meeting-scoped; the toggle persists ──────────
+
+    @MainActor
+    static func testZoomSlotsAreNeverRestoredOrSaved() {
+        var legacy = ShellPrefs()                  // a file written before D2
+        legacy.showInputSlots = [PersistedSlot(slotId: 1, kind: "zoom", sourceId: "42", name: "Old guest", inShow: true),
+                                 PersistedSlot(slotId: 3, kind: "capture", sourceId: "cam1", name: "Cam", inShow: true)]
+        legacy.slotDropoutPolicies = [PersistedSlotPolicy(slotId: 1, dropoutPolicy: "black", sourceKey: "zoom:42")]
+        let model = AppModel()
+        model.applyRestoredPrefs(legacy)
+        expectEqual(model.slots[0].kind, "unassigned", "a saved Zoom slot is not restored")
+        expectEqual(model.slots[2].sourceId, "cam1", "a capture slot is")
+        expect(model.slots.allSatisfy { $0.dropoutPolicy.isEmpty }, "the old guest's policy attaches to nobody")
+        model.assignSlot(1, kind: "zoom", sourceId: "77", name: "Live guest")
+        expectEqual(model.currentPrefs().showInputSlots?.map(\.kind), ["capture"], "a live Zoom slot is not saved")
+    }
+
+    @MainActor
+    static func testTheAutoAssignToggleIsPersistedAndDefaultsOn() {
+        let fresh = AppModel()
+        fresh.applyRestoredPrefs((try? JSONDecoder().decode(ShellPrefs.self, from: Data("{}".utf8))) ?? ShellPrefs())
+        expect(fresh.autoAssignInputsEnabled, "a file without the key keeps the Windows default: on")
+        fresh.setAutoAssignInputs(false)
+        guard let after = relaunched(fresh) else { expect(false, "relaunch"); return }
+        expect(!after.autoAssignInputsEnabled, "off survives a relaunch")
+        after.resetAutomationDefaults()
+        expect(after.autoAssignInputsEnabled, "Reset defaults turns it back on (MagicSceneCoordinator.cs:458)")
+        expect(ShellPrefs.roundTripSelfCheck() == nil, "autoAssignInputs survives encode→decode")
     }
 }
 
