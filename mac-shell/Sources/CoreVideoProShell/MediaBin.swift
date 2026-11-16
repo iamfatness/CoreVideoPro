@@ -16,10 +16,24 @@ struct MediaAsset: Identifiable, Equatable {
     let filePath: String
     let naturalWidth: Int
     let naturalHeight: Int
+    /// Probed after the scan (MediaBin.probeDurations); nil = unknown or a still.
+    /// Defaulted so every existing memberwise call site still compiles.
+    var durationMs: Int? = nil
 
     var isStillImage: Bool {
         let ext = (filePath as NSString).pathExtension.lowercased()
         return ["png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff"].contains(ext)
+    }
+
+    /// Windows MediaAsset.SupportsPlayback (ProductionModels.cs): anything that is not a still.
+    var supportsPlayback: Bool { !isStillImage }
+
+    /// Windows MediaAsset.DurationLabel: `Math.Round(ms / 100.0) / 10.0` formatted "0.#" + "s".
+    /// .NET's Math.Round is banker's rounding, so 1250 ms is "1.2s" and 1350 ms is "1.4s".
+    var durationLabel: String {
+        guard let ms = durationMs else { return "" }
+        let tenths = Int((Double(ms) / 100.0).rounded(.toNearestOrEven))
+        return tenths % 10 == 0 ? "\(tenths / 10)s" : "\(tenths / 10).\(tenths % 10)s"
     }
 }
 
@@ -29,21 +43,84 @@ enum MediaBin {
     static let imageExtensions = ["png", "jpg", "jpeg", "gif"]
     static let audioExtensions = ["wav", "mp3", "aac", "m4a"]
 
-    static var root: String {
-        NSHomeDirectory() + "/Library/Application Support/CoreVideoPro/media"
-    }
+    /// What the bin accepts, in the Windows picker's order (MediaBinService.cs).
+    static let supportedExtensions = ["mp4", "mov", "webm", "png", "jpg", "jpeg", "gif",
+                                      "wav", "mp3", "aac", "m4a"]
 
-    static func classify(fileName: String, relativePath: String) -> String {
-        let lowerPath = relativePath.lowercased()
+    /// The operator's real bin. Never touched by a harness run.
+    static let realRoot = NSHomeDirectory() + "/Library/Application Support/CoreVideoPro/media"
+
+    /// Harness-isolated, the ShellPrefs rule: under COREVIDEO_SHELL_TESTS /
+    /// COREVIDEO_SHELL_SELFCHECK the bin is a per-process temp directory, so no
+    /// test can list, import into, or move files out of the operator's bin.
+    static let root: String = {
+        guard ShellHarness.isActive else { return realRoot }
+        return NSTemporaryDirectory() + "corevideo-shell-harness-\(getpid())/media"
+    }()
+
+    /// Windows MediaBinClassifier.ClassifyFile: slate (folder or name prefix)
+    /// first, then by extension; nil for an extension the bin does not accept.
+    static func classify(fileName: String, relativePath: String) -> String? {
+        let lowerPath = relativePath.lowercased().replacingOccurrences(of: "\\", with: "/")
         let lowerName = fileName.lowercased()
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        guard supportedExtensions.contains(ext) else { return nil }
         if lowerPath.contains("slates/") || lowerName.hasPrefix("slate") {
             return "slate"
         }
-        let ext = (fileName as NSString).pathExtension.lowercased()
         if videoExtensions.contains(ext) { return "stinger" }
         if imageExtensions.contains(ext) { return "lower-third" }
         if audioExtensions.contains(ext) { return "audio-bed" }
-        return "lower-third"
+        return nil
+    }
+
+    /// Windows MediaBinClassifier.KindLabel.
+    static func kindLabel(_ kind: String) -> String {
+        switch kind {
+        case "stinger": return "Stinger"
+        case "lower-third": return "Lower-third"
+        case "audio-bed": return "Audio bed"
+        case "slate": return "Slate"
+        default: return kind
+        }
+    }
+
+    /// Windows MediaBinClassifier.GroupAssets: kinds in `kinds` order, empty groups omitted.
+    static func groups(_ assets: [MediaAsset]) -> [(kind: String, label: String, assets: [MediaAsset])] {
+        kinds.compactMap { kind in
+            let members = assets.filter { $0.kind == kind }
+            return members.isEmpty ? nil : (kind: kind, label: kindLabel(kind), assets: members)
+        }
+    }
+
+    /// `<folder>/<name>`, or `<folder>/<base>-<n>.<ext>` for the first free n.
+    private static func uniqueDestination(folder: String, name: String) -> String {
+        let fm = FileManager.default
+        var target = folder + "/" + name
+        var suffix = 1
+        while fm.fileExists(atPath: target) {
+            let base = (name as NSString).deletingPathExtension
+            let ext = (name as NSString).pathExtension
+            target = folder + "/" + base + "-\(suffix)" + (ext.isEmpty ? "" : "." + ext)
+            suffix += 1
+        }
+        return target
+    }
+
+    /// Windows MediaBinService.DeleteAsset: NON-DESTRUCTIVE. The file moves into
+    /// <root>/.trash under a unique name, so an accidental remove is recoverable.
+    static func moveToTrash(_ asset: MediaAsset) -> Bool {
+        let fm = FileManager.default
+        guard !asset.filePath.isEmpty, fm.fileExists(atPath: asset.filePath) else { return false }
+        let trash = root + "/.trash"
+        do {
+            try fm.createDirectory(atPath: trash, withIntermediateDirectories: true)
+            let destination = uniqueDestination(folder: trash, name: (asset.filePath as NSString).lastPathComponent)
+            try fm.moveItem(atPath: asset.filePath, toPath: destination)
+            return true
+        } catch {
+            return false
+        }
     }
 
     static func assetId(relativePath: String) -> String {
@@ -64,30 +141,34 @@ enum MediaBin {
         return (width, height)
     }
 
-    static func importFiles(_ urls: [URL]) -> [MediaAsset] {
+    struct ImportResult: Equatable {
+        let imported: [MediaAsset]
+        /// File names the bin refused (an extension it does not accept) or could not copy.
+        let refused: [String]
+    }
+
+    static func importFiles(_ urls: [URL]) -> ImportResult {
         let fm = FileManager.default
         var imported: [MediaAsset] = []
+        var refused: [String] = []
         for url in urls {
             let name = url.lastPathComponent
-            let kind = classify(fileName: name, relativePath: name)
+            guard let kind = classify(fileName: name, relativePath: name) else {
+                refused.append(name)
+                continue
+            }
             let kindDir = root + "/" + kind
             try? fm.createDirectory(atPath: kindDir, withIntermediateDirectories: true)
-            var target = kindDir + "/" + name
-            var suffix = 1
-            while fm.fileExists(atPath: target) {
-                let base = (name as NSString).deletingPathExtension
-                let ext = (name as NSString).pathExtension
-                target = kindDir + "/" + base + "-\(suffix)" + (ext.isEmpty ? "" : "." + ext)
-                suffix += 1
-            }
+            let target = uniqueDestination(folder: kindDir, name: name)
             do {
                 try fm.copyItem(at: url, to: URL(fileURLWithPath: target))
             } catch {
+                refused.append(name)
                 continue
             }
-            if let asset = assetFrom(path: target) { imported.append(asset) }
+            if let asset = assetFrom(path: target) { imported.append(asset) } else { refused.append(name) }
         }
-        return imported
+        return ImportResult(imported: imported, refused: refused)
     }
 
     static func loadAssets() -> [MediaAsset] {
@@ -109,7 +190,8 @@ enum MediaBin {
         guard path.hasPrefix(root + "/") else { return nil }
         let relative = String(path.dropFirst(root.count + 1))
         let name = (path as NSString).lastPathComponent
-        let kind = classify(fileName: name, relativePath: relative)
+        // A file the classifier refuses is not an asset (Windows: unknown -> null).
+        guard let kind = classify(fileName: name, relativePath: relative) else { return nil }
         let size = naturalSize(of: path)
         return MediaAsset(
             id: assetId(relativePath: relative),

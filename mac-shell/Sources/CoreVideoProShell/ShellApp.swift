@@ -11,6 +11,7 @@ import AppKit
 import Combine
 import IOSurface
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct StudioPanel: ViewModifier {
     func body(content: Content) -> some View {
@@ -1876,9 +1877,11 @@ struct MediaPane: View {
                     let panel = NSOpenPanel()
                     panel.allowsMultipleSelection = true
                     panel.canChooseDirectories = false
-                    if panel.runModal() == .OK {
-                        model.importMedia(urls: panel.urls)
-                    }
+                    // The Windows picker filter: only what the bin accepts.
+                    panel.allowedContentTypes = MediaBin.supportedExtensions
+                        .compactMap { UTType(filenameExtension: $0) }
+                    // A cancelled panel is an import of nothing ("Media import canceled").
+                    model.importMedia(urls: panel.runModal() == .OK ? panel.urls : [])
                 }
                 Button("Refresh") { model.refreshMediaBin() }
             }

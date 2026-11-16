@@ -419,6 +419,8 @@ final class AppModel: ObservableObject {
     @Published var previewSceneId = "" { didSet { mediaAudioSceneChanged(oldValue != previewSceneId) } }
     @Published var mediaAssets: [MediaAsset] = []
     @Published var selectedAssetId = ""
+    /// The Media tab's one status line (Windows CommandStatus for media).
+    @Published var mediaStatus = ""
     @Published var logoBug: MediaAsset? {  // rides every scene as a top-right route
         didSet { mediaAudioSceneChanged(oldValue?.id != logoBug?.id) }
     }
@@ -3820,10 +3822,63 @@ final class AppModel: ObservableObject {
         mediaAssets = MediaBin.loadAssets()
     }
 
+    /// Import status is Windows' wording, verbatim (StudioViewModel.ImportMediaAsync).
+    /// An empty list is the cancelled open panel.
     func importMedia(urls: [URL]) {
-        let imported = MediaBin.importFiles(urls)
+        guard !urls.isEmpty else {
+            mediaStatus = "Media import canceled"
+            return
+        }
+        let result = MediaBin.importFiles(urls)
         refreshMediaBin()
-        if let first = imported.first { selectedAssetId = first.id }
+        guard let first = result.imported.first else {
+            mediaStatus = "No supported media files imported"
+            return
+        }
+        selectedAssetId = first.id
+        mediaStatus = result.imported.count == 1
+            ? "\(first.name) imported and selected"
+            : "\(result.imported.count) media assets imported"
+    }
+
+    /// Windows SelectMediaAsset: a selection only. It never pauses or plays anything.
+    func selectMediaAsset(_ id: String) {
+        guard let asset = mediaAssets.first(where: { $0.id == id }) else { return }
+        selectedAssetId = asset.id
+        mediaStatus = "\(asset.name) ready to cue or audition"
+    }
+
+    /// Everything that still uses an asset, in `scenes` order, a scene's layers
+    /// before its background, then the logo bug.
+    func mediaAssetReferences(_ id: String) -> [String] {
+        var references: [String] = []
+        for scene in scenes {
+            if scene.layers.contains(where: { $0.mediaAssetId == id }) { references.append("scene \(scene.name)") }
+            if scene.backgroundAssetId == id { references.append("scene \(scene.name) background") }
+        }
+        if logoBug?.id == id { references.append("logo bug") }
+        return references
+    }
+
+    /// Windows RemoveMediaAsset: refused while anything uses the asset (every
+    /// reference named); otherwise the file moves to the bin's .trash folder.
+    func removeMediaAsset(_ id: String) {
+        guard let asset = mediaAssets.first(where: { $0.id == id }) else { return }
+        let references = mediaAssetReferences(id)
+        guard references.isEmpty else {
+            mediaStatus = "'\(asset.name)' is in use (\(references.joined(separator: ", "))). "
+                + "Unassign it there before removing."
+            ShellLog.write("lifecycle: media remove blocked \(id) - referenced by "
+                           + references.joined(separator: "; "))
+            return
+        }
+        guard MediaBin.moveToTrash(asset) else {
+            mediaStatus = "Could not remove '\(asset.name)'."
+            return
+        }
+        if selectedAssetId == id { selectedAssetId = "" }
+        refreshMediaBin()
+        mediaStatus = "Removed '\(asset.name)' (recoverable from the media .trash folder)."
     }
 
     func toggleLogoBug(_ asset: MediaAsset) {
