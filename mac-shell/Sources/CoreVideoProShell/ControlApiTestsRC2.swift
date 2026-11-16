@@ -33,7 +33,6 @@ extension ShellTests {
             ("control/monitor-revisioned", testControlMonitorRevisioned),
             ("control/audio-route", testControlAudioRoute),
             ("control/osc-feedback-closure", testControlOscFeedbackCoversEverySupportedField),
-            // control/udp-spike (T16) is not registered: Network.framework failed the rule (BSD chosen).
         ]
     }
 

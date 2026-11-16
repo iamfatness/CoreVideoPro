@@ -382,20 +382,40 @@ final class ControlApiHost {
     }
 
     private var server: ControlHttpServer?
+    private(set) var oscServer: ControlOscServer?
     private var changes: AnyCancellable?
     private var terminate: NSObjectProtocol?
     private var lastPushKey = ""
 
     func start(model: AppModel, environment: [String: String] = ProcessInfo.processInfo.environment) {
         guard server == nil, Self.shouldAutoStart(environment: environment) else { return }
-        let options = ControlServerOptions.fromEnvironment(environment)
+        let osc = ControlOscOptions.fromEnvironment(environment)
+        if let notice = osc.notice { ShellLog.write(notice) }
+        startServers(model: model, http: ControlServerOptions.fromEnvironment(environment), osc: osc.options)
+        terminate = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stop() }
+        }
+    }
+
+    /// The real start path without the environment or shouldAutoStart (tests).
+    func startForTesting(model: AppModel, http: ControlServerOptions, osc: ControlOscOptions) {
+        startServers(model: model, http: http, osc: osc)
+    }
+    private(set) var httpPortForTesting: UInt16?
+    private(set) var oscFailedForTesting = false
+
+    /// HTTP/WS and OSC start side by side; an OSC failure (port in use) is logged
+    /// and warned about and never stops HTTP or the app.
+    private func startServers(model: AppModel, http options: ControlServerOptions, osc oscOptions: ControlOscOptions) {
         let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
         let server = ControlHttpServer(router: ControlRouter(surface: surface), options: options)
         self.server = server
-        server.start { [weak model] result in
+        server.start { [weak self, weak model] result in
             Task { @MainActor in
                 switch result {
                 case .success(let port):
+                    self?.httpPortForTesting = port
                     ShellLog.write("control: HTTP/WS API listening on http://\(options.host):\(port)/ "
                         + "(GET /manifest, /state, /snapshot, /ws; POST /invoke)"
                         + (options.hasToken ? " — bearer token required" : ""))
@@ -405,11 +425,22 @@ final class ControlApiHost {
                 }
             }
         }
-        observe(model)
-        terminate = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.stop() }
+        let osc = ControlOscServer(router: ControlOscRouter(surface: surface), options: oscOptions)
+        oscServer = osc
+        osc.start { [weak self, weak model] result in
+            Task { @MainActor in
+                switch result {
+                case .success(let port):
+                    ShellLog.write("control: OSC server listening on \(oscOptions.bindAddress):\(port)")
+                case .failure(let error):
+                    self?.oscFailedForTesting = true
+                    self?.oscServer = nil
+                    ShellLog.write("control: OSC server failed to start (\(error)) — HTTP still active")
+                    model?.pushWarning("OSC control unavailable: \(error)")
+                }
+            }
         }
+        observe(model)
     }
 
     /// Test seams: wire the same throttle and push-key sink without a server.
@@ -442,12 +473,16 @@ final class ControlApiHost {
         guard let json else { return }
         lastPushKey = key
         if let sink = broadcastSinkForTesting { sink(json) } else { server?.broadcastState(json) }
+        // OSC feedback rides the same push-key change (Windows OscControlServer.SendFeedbackAsync).
+        oscServer?.sendFeedback(ControlOscFeedback.encode(state))
     }
 
     func stop() {
         changes = nil
         server?.stop()
         server = nil
+        oscServer?.stop()
+        oscServer = nil
         if let terminate { NotificationCenter.default.removeObserver(terminate) }
         terminate = nil
     }
