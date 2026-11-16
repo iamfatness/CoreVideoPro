@@ -1031,10 +1031,13 @@ struct SuperSourceBackgroundPicker: View {
         return model.mediaAssets.first(where: { $0.id == id })
     }
 
-    // Stills only: a background is composited behind every route for the whole
-    // scene, and the core enables it only with a real asset PATH.
+    // Stills and AVFoundation-playable video: a background is composited behind
+    // every route for the whole scene (a video one loops), and the core enables
+    // it only with a real asset PATH. The old filter asked for kinds "image" /
+    // "background", which the bin classifier never produces, so this menu was
+    // always empty.
     var options: [MediaAsset] {
-        model.mediaAssets.filter { $0.kind == "image" || $0.kind == "background" }
+        MediaBin.backgroundOptions(model.mediaAssets)
     }
 
     var body: some View {
@@ -1081,7 +1084,7 @@ struct SuperSourceBackgroundPicker: View {
     var summary: String {
         guard let scene else { return "No scene selected." }
         if options.isEmpty {
-            return "No still images in the media bin — import one to use as a "
+            return "No stills or videos in the media bin — import one to use as a "
                 + "background for \(scene.name)."
         }
         if let selected {

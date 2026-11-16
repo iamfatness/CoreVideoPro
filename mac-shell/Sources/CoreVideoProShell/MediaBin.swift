@@ -118,6 +118,23 @@ enum MediaBin {
             naturalWidth: size.0, naturalHeight: size.1)
     }
 
+    /// Video containers AVFoundation plays on this Mac. `.webm` is in the bin's
+    /// video list (Windows plays it through FFmpeg) but is NOT playable here
+    /// until FFmpeg playback exists (plan default D1): the core refuses it loudly.
+    static let avFoundationVideoExtensions = ["mp4", "mov"]
+
+    /// Assets a scene background may use on this Mac: stills and AVFoundation-playable video.
+    /// `.webm` is excluded until FFmpeg playback exists (default D1). Audio is never a background.
+    /// Decided by what the FILE is, not by its bin kind: a slate or a stinger is a
+    /// background candidate when it is a picture or a playable clip. Bin order is kept.
+    static func backgroundOptions(_ assets: [MediaAsset]) -> [MediaAsset] {
+        assets.filter { asset in
+            if asset.isStillImage { return true }
+            let ext = (asset.filePath as NSString).pathExtension.lowercased()
+            return avFoundationVideoExtensions.contains(ext)
+        }
+    }
+
     // OverlayLayerService.ComputeOverlayRect: 15% canvas width, aspect-locked
     // height on a 16:9 canvas, snapped in a 5% safe area, 0.08 floor.
     static func bugRect(naturalWidth: Int, naturalHeight: Int)
