@@ -242,3 +242,69 @@ final class MediaTransportGestureLedger {
         return true
     }
 }
+
+// ── Take promotion and the media-selection rollback (S2) ─────────────────────
+
+extension MediaRoutePlayback {
+    /// Windows AssetsEnteringProgram: the pure set diff, in route order.
+    static func assetsEnteringProgram(previous: [JSONObject], current: [JSONObject]) -> [String] {
+        let before = Set(programMediaAssetIds(previous))
+        return programMediaAssetIds(current).filter { !before.contains($0) }
+    }
+
+    /// Windows ChooseAssetToPromote: the selected asset when it went live, else the
+    /// first that did. A still is never promoted (it has no play state).
+    static func chooseAssetToPromote(_ wentLive: [String], selected: String?,
+                                     supportsPlayback: ((String) -> Bool)?) -> String? {
+        let candidates = wentLive.filter { id in
+            !id.trimmingCharacters(in: .whitespaces).isEmpty && (supportsPlayback?(id) ?? true)
+        }
+        if let selected, !selected.isEmpty, candidates.contains(selected) { return selected }
+        return candidates.first
+    }
+
+    /// Windows SelectedAssetLeftProgram: only the SELECTED asset's departure counts.
+    static func selectedAssetLeftProgram(_ selected: String?, previous: [JSONObject], current: [JSONObject]) -> Bool {
+        guard let selected, !selected.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        return isRoutedOnProgram(selected, programRoutes: previous) && !isRoutedOnProgram(selected, programRoutes: current)
+    }
+}
+
+/// What a Take can move on the Media tab, captured so a rollback can put it back.
+struct MediaSelectionState: Equatable {
+    var assetId: String?
+    var name: String?
+    var supportsPlayback: Bool
+    var playing: Bool
+    var status: String
+}
+
+/// Windows TakeMediaSelectionRollback (T1.3 / #430). A failed Take puts the
+/// SCENES back; this decides what the selection reads afterwards:
+/// - the pre-Take selection, unless the operator moved it while the sync was
+///   pending (their choice is kept, like the scene rollback's newer-edits rule);
+/// - for a clip on the RESTORED Program, the playing flag and status come from
+///   the real on-air row, never from the saved flag;
+/// - an operator pick that the rollback takes off air reads "<name> left Program".
+enum TakeMediaSelectionRollback {
+    static func resolve(beforeTake: MediaSelectionState, afterTake: MediaSelectionState,
+                        current: MediaSelectionState, attemptedProgramRoutes: [JSONObject],
+                        restoredProgramRoutes: [JSONObject], rows: [MediaSourceRow]) -> MediaSelectionState {
+        let operatorMovedIt = current != afterTake
+        var target = operatorMovedIt ? current : beforeTake
+        guard let assetId = target.assetId, !assetId.isEmpty, target.supportsPlayback else { return target }
+        let name = target.name ?? assetId
+        guard MediaRoutePlayback.isRoutedOnProgram(assetId, programRoutes: restoredProgramRoutes) else {
+            if operatorMovedIt && MediaRoutePlayback.selectedAssetLeftProgram(
+                assetId, previous: attemptedProgramRoutes, current: restoredProgramRoutes) {
+                target.playing = false
+                target.status = "\(name) left Program"
+            }
+            return target
+        }
+        let playing = MediaRoutePlayback.isPlayingOnAir(assetId, rows: rows)
+        target.playing = playing
+        target.status = playing ? "Playing \(name) on Program" : "\(name) paused on Program"
+        return target
+    }
+}

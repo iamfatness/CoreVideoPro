@@ -3043,8 +3043,15 @@ final class AppModel: ObservableObject {
         // without an id change (a mid-Take multiview cue reuses the id not on the
         // new Program), so their captured cues are the routes to compare.
         let cuesAtTake = (soloCueByScene[taken], soloCueByScene[previousProgram])
+        // The media selection follows the LOCAL swap, before the sync, and is put
+        // back if the Take is rolled back (Windows TransportCoordinator, T1.3).
+        let mediaBeforeTake = captureMediaSelection()
+        let previousProgramRoutes = buildRoutes(for: previousProgram, isProgram: true)
         previewSceneId = previousProgram
         programSceneId = taken
+        let attemptedProgramRoutes = buildRoutes(for: taken, isProgram: true)
+        promoteMediaSelectionAfterLocalTake(previous: previousProgramRoutes, current: attemptedProgramRoutes)
+        let mediaAfterTake = captureMediaSelection()
         sceneSyncTask?.cancel()           // the Take batch carries the full current state
         sceneSyncRequestCount += 1
         guard bridge != nil || quitRequestForTesting != nil else {
@@ -3078,6 +3085,12 @@ final class AppModel: ObservableObject {
                 programSceneId = previousProgram
                 previewSceneId = taken
                 syncScenes()              // reconcile the core with the restored scenes
+                // Only on a real scene rollback; a refused one leaves the selection alone.
+                restoreMediaSelection(TakeMediaSelectionRollback.resolve(
+                    beforeTake: mediaBeforeTake, afterTake: mediaAfterTake, current: captureMediaSelection(),
+                    attemptedProgramRoutes: attemptedProgramRoutes,
+                    restoredProgramRoutes: buildRoutes(for: previousProgram, isProgram: true),
+                    rows: mediaSources))
                 failure = "Take was not confirmed; previous local Program restored. "
                     + "Verify live output before retrying. \(error.localizedDescription)"
             } else {
@@ -3904,6 +3917,43 @@ final class AppModel: ObservableObject {
         selectedMediaPlaying = asset.supportsPlayback && MediaRoutePlayback.isPlayingOnAir(asset.id, rows: mediaSources)
         mediaStatus = "\(asset.name) ready to cue or audition"
         syncScenes()   // the selection rides the batch as set-media-playback
+    }
+
+    // ── the media selection across a Take ────────────────────────────────────
+
+    /// A clip that ENTERS Program becomes the selection, reading playing (the core
+    /// rolls it from 0); a still never does. If nothing entered and the selected
+    /// clip left Program, it stops reading playing (Windows
+    /// PromoteProgramMediaRouteToPlayback / RefreshMediaBinPlaybackIndicators).
+    private func promoteMediaSelectionAfterLocalTake(previous: [JSONObject], current: [JSONObject]) {
+        let entering = MediaRoutePlayback.assetsEnteringProgram(previous: previous, current: current)
+        let promoted = MediaRoutePlayback.chooseAssetToPromote(
+            entering, selected: selectedAssetId.isEmpty ? nil : selectedAssetId,
+            supportsPlayback: { [mediaAssets] id in mediaAssets.first { $0.id == id }?.supportsPlayback == true })
+        if let promoted, let asset = mediaAssets.first(where: { $0.id == promoted }) {
+            selectedAssetId = asset.id
+            selectedMediaPlaying = true
+            mediaStatus = "Playing \(asset.name) on Program"
+            return
+        }
+        guard Set(MediaRoutePlayback.programMediaAssetIds(previous)) != Set(MediaRoutePlayback.programMediaAssetIds(current)),
+              MediaRoutePlayback.selectedAssetLeftProgram(selectedAssetId, previous: previous, current: current)
+        else { return }
+        selectedMediaPlaying = false
+        mediaStatus = selectedMediaAsset.map { "\($0.name) left Program" } ?? "No media asset playing"
+    }
+
+    func captureMediaSelection() -> MediaSelectionState {
+        let asset = selectedMediaAsset
+        return MediaSelectionState(assetId: asset?.id, name: asset?.name,
+                                   supportsPlayback: asset?.supportsPlayback ?? false,
+                                   playing: selectedMediaPlaying, status: mediaStatus)
+    }
+
+    func restoreMediaSelection(_ state: MediaSelectionState) {
+        selectedAssetId = state.assetId ?? ""
+        selectedMediaPlaying = state.playing
+        mediaStatus = state.status
     }
 
     // ── Play / Pause (Windows PlayMediaAsset / ToggleSelectedMediaPlayback) ──

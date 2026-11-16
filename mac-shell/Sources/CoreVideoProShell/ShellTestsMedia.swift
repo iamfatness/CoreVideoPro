@@ -40,6 +40,14 @@ extension ShellTests {
             ("media-play/armed-retry-dropped-by-newer-tap", testAnArmedRetryIsDroppedWhenANewerTapLands),
             ("media-play/remote-rejection-sends-once", testARemoteRejectionSendsOnceAndSaysSo),
             ("media-play/toggle-without-selection", testToggleWithoutASelectionSaysSo),
+            ("media-take/promotion-pure-rules", testTakePromotionPureRules),
+            ("media-take/rollback-restores-selection-a-live-clip-took", testTakeRollbackRestoresTheSelectionAClipThatWentLiveTookOver),
+            ("media-take/rollback-keeps-paused-program-clip-paused", testTakeRollbackKeepsAPausedProgramClipPausedWithAnHonestToggle),
+            ("media-take/rollback-rolling-clip-back-on-pause-program", testTakeRollbackPutsARollingClipThatLeftProgramBackOnPauseProgram),
+            ("media-take/refused-rollback-leaves-selection", testTakeRefusedRollbackLeavesTheSelectionAlone),
+            ("media-take/rollback-operator-pick-left-program", testTakeRollbackGivesAnOperatorPickThatLeftProgramOffProgramWording),
+            ("media-take/success-promotes-clip-never-still", testASuccessfulTakePromotesTheClipThatWentLiveButNeverAStill),
+            ("media-take/rollback-reads-on-air-row-not-saved-flag", testTakeRollbackReadsTheOnAirRowNotTheSavedFlag),
         ]
     }
 
@@ -694,6 +702,178 @@ extension ShellTests {
         let model = cueModel()
         model.toggleSelectedMediaPlayback()
         expectEqual(model.mediaStatus, "Select a media asset before playback", "Windows wording")
+    }
+
+    // ── Task 13: Take promotion and the media-selection rollback (S2) ───────
+
+    @MainActor
+    private static func mediaTakeModel(programClips: [String], previewClips: [String]) -> (AppModel, FakeTakeCore) {
+        // Program "intro", Preview "interview"; each scene is ONE layer per clip id (slotless media layers).
+        let core = FakeTakeCore()
+        let model = AppModel()
+        func scene(_ id: String, _ clips: [String]) -> SceneDef {
+            SceneDef(id: id, name: id.capitalized, layout: "single",
+                     layers: clips.enumerated().map { SceneLayer(id: "\(id)-layer-\($0.offset)", slotId: nil, mediaAssetId: $0.element) })
+        }
+        model.scenes = [scene("intro", programClips), scene("interview", previewClips)]
+        model.mediaAssets = ["bed", "x", "y", "z"].map {
+            MediaAsset(id: $0, name: $0.uppercased(), kind: "stinger", relativePath: "stinger/\($0).mp4",
+                       filePath: "/b/stinger/\($0).mp4", naturalWidth: 0, naturalHeight: 0)
+        }
+        model.programSceneId = "intro"; model.previewSceneId = "interview"
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.status = .connected(renderer: "test")
+        return (model, core)
+    }
+
+    @MainActor
+    private static func testTakeRollbackRestoresTheSelectionAClipThatWentLiveTookOver() {
+        let (model, core) = mediaTakeModel(programClips: [], previewClips: ["y"])
+        model.selectMediaAsset("bed")                      // "BED ready to cue or audition"
+        let prior = model.captureMediaSelection()
+        core.failure = "core answered with an unparseable snapshot"
+        _ = mediaRunTake(model)
+        expectEqual(model.captureMediaSelection(), prior, "Take_RollbackRestoresTheSelectionAClipThatWentLiveTookOver")
+        expectEqual(model.mediaPlaybackButtonLabel, "Audition", "…/toggle")
+    }
+
+    @MainActor
+    private static func testTakeRollbackKeepsAPausedProgramClipPausedWithAnHonestToggle() {
+        let (model, core) = mediaTakeModel(programClips: ["x"], previewClips: ["x", "y"])
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:x", "mediaAssetId": "x",
+                                                         "state": "paused", "onProgram": true]]])
+        model.selectMediaAsset("x")
+        expectEqual(model.mediaPlaybackButtonLabel, "Resume Program", "precondition")
+        core.failure = "media core did not answer within 4000 ms"
+        _ = mediaRunTake(model)
+        expectEqual(model.selectedAssetId, "x", "Take_RollbackKeepsAPausedProgramClipPaused…/selection")
+        expect(!model.selectedMediaPlaying, "…/still paused")
+        expectEqual(model.mediaStatus, "X paused on Program", "…/status")
+        expectEqual(model.mediaPlaybackButtonLabel, "Resume Program", "…/toggle")
+    }
+
+    @MainActor
+    private static func testTakeRollbackPutsARollingClipThatLeftProgramBackOnPauseProgram() {
+        let (model, core) = mediaTakeModel(programClips: ["x"], previewClips: [])
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:x", "mediaAssetId": "x",
+                                                         "state": "live", "onProgram": true]]])
+        model.selectMediaAsset("x")
+        expect(model.selectedMediaPlaying, "precondition: selecting a live Program clip reads playing")
+        core.failure = "native rejected scene"
+        _ = mediaRunTake(model)
+        expect(model.selectedMediaPlaying, "Take_RollbackPutsARollingClipThatLeftProgramBackOnPauseProgram")
+        expectEqual(model.mediaStatus, "Playing X on Program", "…/status")
+        expectEqual(model.mediaPlaybackButtonLabel, "Pause Program", "…/toggle")
+    }
+
+    @MainActor
+    private static func testTakeRefusedRollbackLeavesTheSelectionAlone() {
+        let (model, core) = mediaTakeModel(programClips: [], previewClips: ["y"])
+        model.scenes.append(SceneDef(id: "outro", name: "Outro", layout: "single"))
+        model.selectMediaAsset("bed")
+        core.hold = true; core.failure = "native rejected scene"
+        let box = mediaRunTake(model, wait: false)
+        spin(until: { core.bodies.count == 1 }, limit: 2)
+        // PLAN FIXTURE CORRECTED. The plan set previewSceneId = "intro" and renamed a scene. After the
+        // Take's local swap Preview already IS "intro", and the rollback guard compares only the two bus
+        // scene ids and the solo cues, so neither edit trips it: the rollback ran and the test could
+        // only pass by NOT restoring the selection on a real rollback. The operator cues a third scene
+        // instead, which is a newer edit the guard does see.
+        model.previewSceneId = "outro"
+        core.hold = false
+        spin(until: { box.result != nil }, limit: 3)
+        expectEqual(model.selectedAssetId, "y", "Take_RefusedRollbackLeavesTheSelectionAlone")
+    }
+
+    @MainActor
+    private static func testTakeRollbackGivesAnOperatorPickThatLeftProgramOffProgramWording() {
+        let (model, core) = mediaTakeModel(programClips: [], previewClips: ["y", "z"])
+        model.selectMediaAsset("bed")
+        core.hold = true; core.failure = "native rejected scene"
+        let box = mediaRunTake(model, wait: false)
+        spin(until: { core.bodies.count == 1 }, limit: 2)
+        model.selectMediaAsset("z")                        // the operator's pick during the pending sync
+        core.hold = false
+        spin(until: { box.result != nil }, limit: 3)
+        expectEqual(model.selectedAssetId, "z", "Take_RollbackGivesAnOperatorPickThatLeftProgramOffProgramWording/kept")
+        expect(!model.selectedMediaPlaying, "…/not playing")
+        expectEqual(model.mediaStatus, "Z left Program", "…/status")
+        expectEqual(model.mediaPlaybackButtonLabel, "Audition", "…/toggle")
+    }
+
+    @MainActor
+    private static func testASuccessfulTakePromotesTheClipThatWentLiveButNeverAStill() {
+        let (model, _) = mediaTakeModel(programClips: [], previewClips: ["y"])
+        model.mediaAssets.append(MediaAsset(id: "logo", name: "LOGO", kind: "lower-third",
+            relativePath: "lower-third/logo.png", filePath: "/b/lower-third/logo.png", naturalWidth: 0, naturalHeight: 0))
+        model.scenes[1].layers.insert(SceneLayer(id: "interview-layer-s", slotId: nil, mediaAssetId: "logo"), at: 0)
+        model.selectMediaAsset("bed")
+        _ = mediaRunTake(model)
+        expectEqual(model.selectedAssetId, "y", "AStillGoingLiveIsNeverPromoted: the clip, not the logo")
+        expect(model.selectedMediaPlaying, "promoted clip reads playing")
+        expectEqual(model.mediaStatus, "Playing Y on Program", "status")
+    }
+
+    // Windows MediaRoutePlaybackServiceTests, ported by name; routes are the wire dictionaries.
+    private static func testTakePromotionPureRules() {
+        typealias P = MediaRoutePlayback
+        func route(_ id: String) -> JSONObject { ["mode": "fixed", "mediaAssetId": id] }
+        expectEqual(P.assetsEnteringProgram(previous: [], current: [route("clip")]), ["clip"],
+                    "AssetsEnteringProgram_NamesAClipThatEntersProgram")
+        expectEqual(P.assetsEnteringProgram(previous: [route("clip")], current: [route("clip")]), [],
+                    "AssetsEnteringProgram_IgnoresAClipThatStaysOnProgram")
+        expectEqual(P.assetsEnteringProgram(previous: [route("clip")], current: []), [],
+                    "AssetsEnteringProgram_IgnoresAClipThatLeavesProgram")
+        expectEqual(P.chooseAssetToPromote(["intro", "outro"], selected: "outro", supportsPlayback: nil), "outro",
+                    "ChooseAssetToPromote_PrefersTheSelectedAssetWhenItWentLive")
+        expectEqual(P.chooseAssetToPromote(["intro", "outro"], selected: "bumper", supportsPlayback: nil), "intro",
+                    "ChooseAssetToPromote_OtherwiseTakesTheFirstWentLiveAsset/other selected")
+        expectEqual(P.chooseAssetToPromote(["intro", "outro"], selected: nil, supportsPlayback: nil), "intro",
+                    "ChooseAssetToPromote_OtherwiseTakesTheFirstWentLiveAsset/none selected")
+        expect(P.chooseAssetToPromote([], selected: "intro", supportsPlayback: nil) == nil,
+               "ChooseAssetToPromote_NothingWentLivePromotesNothing/selected")
+        expect(P.chooseAssetToPromote([], selected: nil, supportsPlayback: nil) == nil,
+               "ChooseAssetToPromote_NothingWentLivePromotesNothing/none")
+        let stills: (String) -> Bool = { $0 != "logo" }
+        expect(P.chooseAssetToPromote(["logo"], selected: "logo", supportsPlayback: stills) == nil,
+               "AStillGoingLiveIsNeverPromoted/only a still")
+        expectEqual(P.chooseAssetToPromote(["logo", "clip"], selected: "logo", supportsPlayback: stills), "clip",
+                    "AStillGoingLiveIsNeverPromoted/the clip, not the selected still")
+        expect(P.selectedAssetLeftProgram("clip", previous: [route("clip")], current: []),
+               "SelectedAssetLeftProgram_TrueWhenTheSelectedClipWasOnProgramAndIsNotNow")
+        expect(!P.selectedAssetLeftProgram("clip", previous: [route("clip")], current: [route("clip")]),
+               "SelectedAssetLeftProgram_FalseWhenTheSelectedClipStaysOnProgram")
+        expect(!P.selectedAssetLeftProgram("clip", previous: [], current: []),
+               "SelectedAssetLeftProgram_FalseWhenTheSelectedAssetWasNeverOnProgram")
+        expect(!P.selectedAssetLeftProgram("clip", previous: [route("clip"), route("other")], current: [route("clip")]),
+               "SelectedAssetLeftProgram_FalseWhenADifferentClipLeftProgram")
+        expect(!P.selectedAssetLeftProgram(nil, previous: [route("clip")], current: []),
+               "SelectedAssetLeftProgram_FalseWhenNoAssetIsSelected")
+    }
+
+    /// ADDED. The plan's mutation "restore the saved playing flag instead of the on-air row" stayed
+    /// GREEN: in every plan fixture the saved flag and the core's row agree (rule 2: both operands
+    /// came from the same state). Here they differ: X was LIVE when the selection was captured, and
+    /// the core reports it PAUSED while the Take is pending (another control surface paused it).
+    @MainActor
+    private static func testTakeRollbackReadsTheOnAirRowNotTheSavedFlag() {
+        let (model, core) = mediaTakeModel(programClips: ["x"], previewClips: ["x", "y"])
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:x", "mediaAssetId": "x",
+                                                         "state": "live", "onProgram": true]]])
+        model.selectMediaAsset("x")
+        expect(model.captureMediaSelection().playing, "precondition: the saved flag says playing")
+        core.hold = true; core.failure = "native rejected scene"
+        let box = mediaRunTake(model, wait: false)
+        spin(until: { core.bodies.count == 1 }, limit: 2)
+        expectEqual(model.selectedAssetId, "y", "precondition: the Take promoted the clip that went live")
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:x", "mediaAssetId": "x",
+                                                         "state": "paused", "onProgram": true]]])
+        core.hold = false
+        spin(until: { box.result != nil }, limit: 3)
+        expectEqual(model.selectedAssetId, "x", "the pre-Take selection is back")
+        expect(!model.selectedMediaPlaying, "the flag is the core's row (paused), not the saved 'playing'")
+        expectEqual(model.mediaStatus, "X paused on Program", "status from the on-air row")
+        expectEqual(model.mediaPlaybackButtonLabel, "Resume Program", "an honest toggle")
     }
 }
 
