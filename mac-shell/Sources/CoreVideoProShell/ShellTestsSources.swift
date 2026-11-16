@@ -46,6 +46,13 @@ extension ShellTests {
             ("sources-facts/wired-capture-bus-not-device", testCaptureRowIsWiredFromTheBus),
             ("sources-facts/wired-tally-and-writer", testTallyAndWriterAreWiredFromTheSnapshot),
             ("sources-facts/picker-guard", testAStalePickerChoiceIsRefused),
+            // Task 6: types, picker groups, column layout, workspace state.
+            ("sources-table/column-widths-windows-breakpoints", testColumnWidthsMatchTheWindowsBreakpoints),
+            ("sources-table/types-and-categories", testSourceTypesLabelsAndCategories),
+            ("sources-table/picker-groups", testPickerGroupsInWindowsOrderWithTheSavedUnavailableEntry),
+            ("sources-table/filters-never-write", testInspectionFiltersAndColumnsNeverChangeAssignmentsOrLiveSelections),
+            ("sources-table/column-prefs-round-trip", testColumnPreferencesRoundTripAndMissingFieldsDefaultVisible),
+            ("sources-table/summary-copy", testSummaryUsesTheWindowsCopy),
         ]
     }
 
@@ -684,6 +691,115 @@ extension ShellTests {
         expectEqual(model.sourcesStatus, "Input 1 changed while its menu was open. Choose again.", "and says so")
         model.assignSlot(1, kind: "capture", sourceId: "camB", name: "B", openedFor: "capture:camA")
         expectEqual(model.slots[0].sourceId, "camB", "a current choice applies")
+    }
+
+    // ── Task 6: types, picker, columns, workspace state ─────────────────────
+
+    private static func close(_ a: [CGFloat], _ b: [CGFloat], _ what: String) {
+        expect(a.count == b.count && zip(a, b).allSatisfy { abs($0 - $1) < 0.001 }, "\(what): \(a) vs \(b)")
+    }
+
+    /// Expected arrays computed by hand from the Windows formula (SourcesTableRowControl.cs:115-119).
+    static func testColumnWidthsMatchTheWindowsBreakpoints() {
+        let all = SourcesColumnPrefs()
+        func w(_ width: CGFloat, _ p: SourcesColumnPrefs = SourcesColumnPrefs()) -> [CGFloat] {
+            SourcesColumnLayout.widths(tableWidth: width, prefs: p)
+        }
+        close(w(700), [26, -1, 0, 91, 42, 0, 0, 36, 60, 140], "700")
+        close(w(749), [26, -1, 0, 97.37, 42, 0, 0, 36, 60, 140], "749: Signal still hidden")
+        close(w(750), [26, -1, 0, 100, 42, 86, 0, 36, 60, 140], "750: Signal appears, Format floor 100")
+        close(w(900), [26, -1, 0, 117, 45, 86, 0, 36, 60, 140], "900")
+        close(w(1049), [26, -1, 0, 136.37, 52.45, 94.41, 0, 41.96, 62.94, 140], "1049: Type and Audio still hidden")
+        close(w(1050), [26, -1, 84, 136.5, 52.5, 94.5, 126, 42, 63, 140], "1050: Type and Audio appear")
+        close(w(1100), [26, -1, 88, 143, 55, 99, 132, 44, 66, 140], "1100")
+        close(w(1600), [26, -1, 128, 208, 80, 144, 192, 64, 96, 140], "1600")
+        var hidden = all; hidden.showType = false; hidden.showSignal = false; hidden.showAudio = false
+        close(w(1600, hidden), [26, -1, 0, 208, 80, 0, 0, 64, 96, 140], "Columns menu hides Type, Signal, Audio")
+        expect(!SourcesColumnLayout.showsThumbnail(tableWidth: 749) && SourcesColumnLayout.showsThumbnail(tableWidth: 750),
+               "the thumbnail shows from 750")
+        expect(!SourcesColumnLayout.inspectorBeside(pageWidth: 1499) && SourcesColumnLayout.inspectorBeside(pageWidth: 1500),
+               "the inspector sits beside the table from 1500")
+        expectEqual(SourcesColumnLayout.headers, ["#", "Source", "Type", "Format", "FPS", "Signal", "Audio", "MV", "ISO", "Actions"],
+                    "the Windows headers (SourcesWorkspaceControl.cs:86)")
+    }
+
+    static func testSourceTypesLabelsAndCategories() {
+        let cases: [(String, String, String?, SourceType, String, String)] = [
+            ("zoom", "42", nil, .zoomGuest, "Zoom", "Zoom · "),
+            ("capture", "0x1234", "avfoundation", .camera, "Cameras", "Camera · "),
+            ("capture", "dl-1", "Blackmagic", .captureCard, "Cameras", "Capture card · "),
+            ("capture", "aja-1", "aja", .captureCard, "Cameras", "Capture card · "),
+            ("capture", "screen:0", "ScreenCaptureKit", .screen, "Screens", "Screen · "),
+            ("capture", "window:991", "ScreenCaptureKit", .window, "Screens", "Window · "),
+            ("unassigned", "", nil, .unassigned, "Unassigned", ""),
+        ]
+        for (kind, id, vendor, type, category, prefix) in cases {
+            let derived = SourceType.of(kind: kind, sourceId: id, vendor: vendor)
+            expectEqual(derived, type, "\(kind)/\(id)/\(vendor ?? "-")")
+            expectEqual(derived.category, category, "category of \(type.rawValue)")
+            expectEqual(derived.pickerPrefix, prefix, "a screen is never labelled Camera (spec §3.3)")
+        }
+    }
+
+    static func testPickerGroupsInWindowsOrderWithTheSavedUnavailableEntry() {
+        let roster = [RosterParticipant(id: "42", name: "Ana", hasVideo: true, muted: false, talking: false, assigned: false)]
+        let devices = [
+            CaptureDeviceRow(id: "screen:0", name: "Display 1", kind: "video", vendor: "ScreenCaptureKit",
+                             connectionState: "detected", signalPresent: false, warning: ""),
+            CaptureDeviceRow(id: "cam1", name: "FaceTime", kind: "video", vendor: "avfoundation",
+                             connectionState: "connected", signalPresent: true, warning: ""),
+        ]
+        let groups = SourcePickerCatalog.groups(roster: roster, devices: devices, current: nil)
+        expectEqual(groups.map(\.title), ["Zoom", "Camera", "Screen"], "Windows order")
+        expectEqual(groups[1].options.map(\.label), ["Camera · FaceTime"], "cameras")
+        expectEqual(groups[2].options.map(\.label), ["Screen · Display 1"], "screens are labelled Screen")
+        let noScreens = SourcePickerCatalog.groups(roster: [], devices: [devices[1]], current: nil)
+        expectEqual(noScreens.map(\.title), ["Camera"], "empty groups are not drawn")
+        var gone = ShowInputSlot(id: 3); gone.kind = "capture"; gone.sourceId = "cam9"; gone.name = "Old cam"; gone.offline = true
+        let withGone = SourcePickerCatalog.groups(roster: roster, devices: devices, current: gone)
+        expectEqual(withGone.first?.options.first?.label, "Saved source unavailable — Old cam",
+                    "a missing saved source is named, never substituted")
+        expect(withGone.first?.options.first?.unavailable == true, "and marked unavailable")
+    }
+
+    /// Port of SourcesWorkspaceTests.InspectionFiltersAndColumnsNeverChangeAssignmentsOrLiveSelections (:12).
+    @MainActor
+    static func testInspectionFiltersAndColumnsNeverChangeAssignmentsOrLiveSelections() {
+        let model = AppModel()
+        model.assignSlot(2, kind: "zoom", sourceId: "alice", name: "Alice")
+        model.toggleSlotIso(2)
+        let slotsBefore = model.slots, isoBefore = model.isoSelectedSourceIds
+        var writes: [String] = []
+        model.slotWriteObserverForTesting = { writes.append($0) }
+        var state = SourcesWorkspaceState()
+        state.inspect(2); state.query = "not alice"; state.category = "Cameras"
+        state.columns.showAudio = false; state.columns.inspectorOpen = false
+        expect(!state.matches(slotId: 2, displayName: "Alice", sourceLabel: "Zoom · Alice", type: .zoomGuest), "filtered out")
+        expectEqual(state.selectedSlotId, 2, "a filter never moves the selection")
+        expectEqual(model.slots, slotsBefore, "no slot changed")
+        expectEqual(model.isoSelectedSourceIds, isoBefore, "no ISO changed")
+        expect(writes.isEmpty, "no slot write at all")
+        state.query = "02"; state.category = "Zoom"
+        expect(state.matches(slotId: 2, displayName: "Alice", sourceLabel: "Zoom · Alice", type: .zoomGuest),
+               "the zero-padded slot number matches")
+    }
+
+    static func testColumnPreferencesRoundTripAndMissingFieldsDefaultVisible() {
+        var value = SourcesColumnPrefs(); value.showAudio = false; value.showType = false
+        let data = try? JSONEncoder().encode(value)
+        expectEqual(data.flatMap { try? JSONDecoder().decode(SourcesColumnPrefs.self, from: $0) }, value, "round trip")
+        let empty = try? JSONDecoder().decode(SourcesColumnPrefs.self, from: Data("{}".utf8))
+        expect(empty?.showSignal == true && empty?.showType == true, "missing fields default visible")
+        expect(ShellPrefs.roundTripSelfCheck() == nil, "sourcesWorkspace survives encode→decode")
+    }
+
+    static func testSummaryUsesTheWindowsCopy() {
+        var slots = (1...10).map { ShowInputSlot(id: $0) }
+        slots[0].kind = "zoom"; slots[0].sourceId = "a"; slots[0].inShow = true; slots[0].iso = true
+        slots[1].kind = "zoom"; slots[1].sourceId = "b"; slots[1].inShow = false
+        slots[2].kind = "capture"; slots[2].sourceId = "c"; slots[2].inShow = true
+        expectEqual(SourcesSummary.text(slots: slots, matching: 2),
+                    "3/10 assigned · 2 in MV · 1 ISO selected · 2 match filter", "the Windows summary line")
     }
 }
 
