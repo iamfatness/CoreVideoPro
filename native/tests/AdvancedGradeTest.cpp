@@ -64,3 +64,40 @@ TEST(AdvancedGrade, NonCurveOperationsHaveNeutralCurveResources) {
   EXPECT_EQ(points[0],0.f);EXPECT_EQ(points[1],0.f);
   EXPECT_EQ(points[2],1.f);EXPECT_EQ(points[3],1.f);
 }
+
+// Grading plan 2026-11-16, Task 8: the shared fixtures (contracts/grade.fixtures.json) that the
+// core, C# (GradeFixtureTests) and the Mac shell (ShellTestsGrade) all read. readRepoFile is
+// duplicated from ContractParityTest.cpp (a five-line helper; no shared test header exists).
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+namespace {
+std::string readGradeRepoFile(const std::string& relativePath) {
+  const std::filesystem::path root = COREVIDEO_REPO_ROOT;
+  std::ifstream input(root / relativePath);
+  if (!input) return {};
+  std::ostringstream buffer; buffer << input.rdbuf(); return buffer.str();
+}
+}  // namespace
+
+TEST(AdvancedGrade, SharedFixturesHaveTheDeclaredVerdictInTheCore) {
+  const auto fixtures = rpc::Json::parse(readGradeRepoFile("contracts/grade.fixtures.json"));
+  ASSERT_TRUE(fixtures && fixtures->isObject());
+  int checked = 0;
+  for (const auto& entry : fixtures->get("documents")->asArray()) {
+    const auto name = entry.getString("name");
+    const auto* expect = entry.get("coreRaw") ? entry.get("coreRaw") : entry.get("portable");
+    std::shared_ptr<const modules::AdvancedGradeDocument> doc;
+    const bool valid = modules::readAdvancedGrade(*entry.get("json"), doc) && doc;
+    EXPECT_EQ(valid, expect->asString() == "valid") << name;
+    ++checked;
+  }
+  EXPECT_EQ(checked, 24) << "fixture count: update this when adding fixtures";
+  for (const auto& entry : fixtures->get("macEncoded")->asArray()) {
+    const auto node = rpc::Json::parse(entry.getString("text"));
+    ASSERT_TRUE(node) << entry.getString("name");
+    std::shared_ptr<const modules::AdvancedGradeDocument> doc;
+    EXPECT_TRUE(modules::readAdvancedGrade(*node, doc) && doc)
+        << "the core must accept what the Mac shell writes: " << entry.getString("name");
+  }
+}

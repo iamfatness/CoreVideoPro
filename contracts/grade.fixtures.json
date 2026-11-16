@@ -1,0 +1,1852 @@
+{
+  "_doc": "Shared verdicts for advanced grade documents (spec §7). portable = C# AdvancedGradeDocument and Swift after decode-with-defaults; coreRaw = native readAdvancedGrade on the raw JSON (defaults to portable). needsCubeParser fixtures are skipped by Swift until G3 (D8). The three portable-valid/coreRaw-invalid rows are the known divergence: C# and Swift fill defaults on decode and always encode every field, so the core only ever receives complete documents. macEncoded holds the exact JSON text the Swift encoder writes. presets hold .cvgrade texts each platform writes.",
+  "documents": [
+    {
+      "name": "minimal",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": []
+      },
+      "portable": "valid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "primaries",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "p1",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 1.5,
+            "contrast": 1.2,
+            "pivot": 0.5,
+            "saturation": 0.8,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1.1,
+            "gain": 0.9,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "valid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "curve-off-grid",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "c1",
+            "kind": "curves",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.333,
+                  "y": 0.7
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "valid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "gamma-boundary",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "p1",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 0.1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "valid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "version-3",
+      "json": {
+        "version": 3,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": []
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "hdr",
+      "json": {
+        "version": 2,
+        "colorSpace": "hdr",
+        "intensity": 1,
+        "operations": []
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "intensity-2",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 2,
+        "operations": []
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "nine-operations",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "o1",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          },
+          {
+            "id": "o2",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          },
+          {
+            "id": "o3",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          },
+          {
+            "id": "o4",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          },
+          {
+            "id": "o5",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          },
+          {
+            "id": "o6",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          },
+          {
+            "id": "o7",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          },
+          {
+            "id": "o8",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          },
+          {
+            "id": "o9",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "duplicate-ids",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "dup",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          },
+          {
+            "id": "dup",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "unknown-kind",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "p1",
+            "kind": "lift-gamma-gain",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "gamma-below",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "p1",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 0.05,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "curve-unordered",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "c1",
+            "kind": "curves",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                {
+                  "x": 0.4,
+                  "y": 0.6
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "curve-no-start",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "c1",
+            "kind": "curves",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0.1,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "curve-17-points",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "c1",
+            "kind": "curves",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0.0,
+                  "y": 0.0
+                },
+                {
+                  "x": 0.0625,
+                  "y": 0.0625
+                },
+                {
+                  "x": 0.125,
+                  "y": 0.125
+                },
+                {
+                  "x": 0.1875,
+                  "y": 0.1875
+                },
+                {
+                  "x": 0.25,
+                  "y": 0.25
+                },
+                {
+                  "x": 0.3125,
+                  "y": 0.3125
+                },
+                {
+                  "x": 0.375,
+                  "y": 0.375
+                },
+                {
+                  "x": 0.4375,
+                  "y": 0.4375
+                },
+                {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                {
+                  "x": 0.5625,
+                  "y": 0.5625
+                },
+                {
+                  "x": 0.625,
+                  "y": 0.625
+                },
+                {
+                  "x": 0.6875,
+                  "y": 0.6875
+                },
+                {
+                  "x": 0.75,
+                  "y": 0.75
+                },
+                {
+                  "x": 0.8125,
+                  "y": 0.8125
+                },
+                {
+                  "x": 0.875,
+                  "y": 0.875
+                },
+                {
+                  "x": 0.9375,
+                  "y": 0.9375
+                },
+                {
+                  "x": 1.0,
+                  "y": 1.0
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "id-65-bytes",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "enabled-string",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "p1",
+            "kind": "primaries",
+            "enabled": "yes",
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "operations-null",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": null
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "operation-null",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          null
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "missing-curves",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "p1",
+            "kind": "primaries",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "cubeText": "",
+            "cubeSha256": "",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "valid",
+      "coreRaw": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "missing-version",
+      "json": {
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": []
+      },
+      "portable": "valid",
+      "coreRaw": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "missing-colorspace",
+      "json": {
+        "version": 2,
+        "intensity": 1,
+        "operations": []
+      },
+      "portable": "valid",
+      "coreRaw": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "cube-identity",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "k1",
+            "kind": "cube",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n",
+            "cubeSha256": "c8bce4299c8606d5ca59a4724f46e484e430c42d506cfc2a3f30bbe84d5199cc",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "valid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "cube-bad-hash",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "k1",
+            "kind": "cube",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n",
+            "cubeSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": false
+    },
+    {
+      "name": "cube-malformed",
+      "json": {
+        "version": 2,
+        "colorSpace": "rec709-sdr",
+        "intensity": 1,
+        "operations": [
+          {
+            "id": "k1",
+            "kind": "cube",
+            "enabled": true,
+            "intensity": 1,
+            "exposureStops": 0,
+            "contrast": 1,
+            "pivot": 0.5,
+            "saturation": 1,
+            "temperature": 0,
+            "tint": 0,
+            "lift": 0,
+            "gamma": 1,
+            "gain": 1,
+            "curves": [
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ],
+              [
+                {
+                  "x": 0,
+                  "y": 0
+                },
+                {
+                  "x": 1,
+                  "y": 1
+                }
+              ]
+            ],
+            "cubeText": "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n",
+            "cubeSha256": "d81447307a88d51b9d22bdb1d4e21fce030b5a0bbeeb9a11715e5b24fec7c8f0",
+            "name": ""
+          }
+        ]
+      },
+      "portable": "invalid",
+      "needsCubeParser": true
+    }
+  ],
+  "macEncoded": [
+    {
+      "name": "primaries-gain-zero",
+      "text": "{\"bypass\":false,\"colorSpace\":\"rec709-sdr\",\"intensity\":1,\"operations\":[{\"contrast\":1,\"cubeSha256\":\"\",\"cubeText\":\"\",\"curves\":[[{\"x\":0,\"y\":0},{\"x\":1,\"y\":1}],[{\"x\":0,\"y\":0},{\"x\":1,\"y\":1}],[{\"x\":0,\"y\":0},{\"x\":1,\"y\":1}],[{\"x\":0,\"y\":0},{\"x\":1,\"y\":1}]],\"enabled\":true,\"exposureStops\":0,\"gain\":0,\"gamma\":1,\"id\":\"black\",\"intensity\":1,\"kind\":\"primaries\",\"lift\":0,\"name\":\"\",\"pivot\":0.5,\"saturation\":1,\"temperature\":0,\"tint\":0}],\"version\":2}"
+    }
+  ],
+  "presets": [
+    {
+      "name": "windows-warm-film",
+      "origin": "windows",
+      "text": "{\"presetVersion\":1,\"grade\":{\"lut\":\"warm-film\",\"exposure\":2,\"contrast\":0,\"saturation\":0,\"temperature\":0,\"advanced\":{\"version\":2,\"colorSpace\":\"rec709-sdr\",\"bypass\":false,\"intensity\":1,\"operations\":[{\"id\":\"w1\",\"kind\":\"primaries\",\"enabled\":true,\"intensity\":1,\"exposureStops\":0,\"contrast\":1,\"pivot\":0.5,\"saturation\":1,\"temperature\":0,\"tint\":0,\"lift\":0,\"gamma\":1,\"gain\":1,\"curves\":[[{\"x\":0,\"y\":0},{\"x\":1,\"y\":1}],[{\"x\":0,\"y\":0},{\"x\":1,\"y\":1}],[{\"x\":0,\"y\":0},{\"x\":1,\"y\":1}],[{\"x\":0,\"y\":0},{\"x\":1,\"y\":1}]],\"cubeText\":\"\",\"cubeSha256\":\"\",\"name\":\"\"}]},\"summary\":\"Look warm-film \\u00B7 exposure \\u002B2 \\u00B7 contrast 0 \\u00B7 saturation 0\"}}",
+      "expect": {
+        "lut": "warm-film",
+        "exposure": 2,
+        "contrast": 0,
+        "saturation": 0,
+        "temperature": 0,
+        "operations": 1
+      }
+    },
+    {
+      "name": "mac-punch",
+      "origin": "mac",
+      "text": "{\"grade\":{\"contrast\":0,\"exposure\":-5,\"lut\":\"punch\",\"saturation\":10,\"temperature\":0},\"presetVersion\":1}",
+      "expect": {
+        "lut": "punch",
+        "exposure": -5,
+        "contrast": 0,
+        "saturation": 10,
+        "temperature": 0,
+        "operations": 0
+      }
+    }
+  ]
+}
