@@ -7,6 +7,17 @@
 //   VcamProbe capture --seconds N [--fps 30|60] [--json] [--device-id ID]
 //                     [--frames-csv PATH]
 //   VcamProbe list
+//   VcamProbe watch [--seconds N] [--interval S]
+//
+// `watch` is the provider-arrival repro harness (plan 2026-11-16, Task 2). It
+// touches the CoreMediaIO HAL once at start (the same C calls the core's sink
+// makes), services the main run loop like the core does, and prints this
+// process's OWN view of the device list every interval with a timestamp. A
+// camera extension that registers after that first touch is the case under
+// test: start `watch`, then install/update the extension, and compare its
+// lines with a `VcamProbe list` run afterwards (a newborn process). Needs no
+// camera permission. Line format:
+//   <ISO time> t=<s> devices=<n> ours=<yes|no> [devices-changed=<count>]
 //
 // `capture --json` prints one line, keys in this order:
 //   {"frames":Int,"fps":Double,"width":Int,"height":Int,"pixelFormat":"420v",
@@ -30,6 +41,7 @@
 import AVFoundation
 import CameraExtensionKit
 import CoreMedia
+import CoreMediaIO
 import CoreVideo
 import Foundation
 
@@ -47,6 +59,7 @@ func usage() -> Never {
     FileHandle.standardError.write(Data("""
     usage: VcamProbe capture --seconds N [--fps 30|60] [--json] [--device-id ID] [--frames-csv PATH]
            VcamProbe list
+           VcamProbe watch [--seconds N] [--interval S]
 
     """.utf8))
     exit(2)
@@ -290,11 +303,82 @@ func runList() -> Never {
     exit(0)
 }
 
+// MARK: - Watch (this process's own HAL view over time)
+
+func halAddress(_ selector: Int) -> CMIOObjectPropertyAddress {
+    CMIOObjectPropertyAddress(mSelector: CMIOObjectPropertySelector(selector),
+                              mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
+                              mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain))
+}
+
+/// Device UIDs in this process's HAL device list.
+func halDeviceUIDs() -> [String] {
+    var address = halAddress(kCMIOHardwarePropertyDevices)
+    let system = CMIOObjectID(kCMIOObjectSystemObject)
+    var size: UInt32 = 0
+    guard CMIOObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+    var ids = [CMIOObjectID](repeating: 0, count: Int(size) / MemoryLayout<CMIOObjectID>.size)
+    var used: UInt32 = 0
+    guard CMIOObjectGetPropertyData(system, &address, 0, nil, size, &used, &ids) == noErr else { return [] }
+    return ids.prefix(Int(used) / MemoryLayout<CMIOObjectID>.size).map { id in
+        var uidAddress = halAddress(kCMIODevicePropertyDeviceUID)
+        var uid: Unmanaged<CFString>?
+        var uidUsed: UInt32 = 0
+        let err = withUnsafeMutablePointer(to: &uid) { ptr in
+            CMIOObjectGetPropertyData(id, &uidAddress, 0, nil,
+                                      UInt32(MemoryLayout<Unmanaged<CFString>?>.size), &uidUsed, ptr)
+        }
+        guard err == noErr, let value = uid?.takeRetainedValue() else { return "?" }
+        return value as String
+    }
+}
+
+func runWatch(_ args: ArraySlice<String>) -> Never {
+    var seconds = Double.infinity
+    var interval = 1.0
+    var it = args.makeIterator()
+    while let arg = it.next() {
+        switch arg {
+        case "--seconds":
+            guard let v = it.next(), let s = Double(v), s > 0 else { usage() }
+            seconds = s
+        case "--interval":
+            guard let v = it.next(), let s = Double(v), s > 0 else { usage() }
+            interval = s
+        default: usage()
+        }
+    }
+    setvbuf(stdout, nil, _IOLBF, 0)
+    let started = Date()
+    let stamp = ISO8601DateFormatter()
+    stamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    var changes = 0
+    var address = halAddress(kCMIOHardwarePropertyDevices)
+    CMIOObjectAddPropertyListenerBlock(CMIOObjectID(kCMIOObjectSystemObject), &address, .main) { _, _ in
+        changes += 1
+    }
+    func line() {
+        let uids = halDeviceUIDs()
+        let ours = uids.contains(where: isCoreVideoProCamera)
+        print("\(stamp.string(from: Date())) t=\(String(format: "%.1f", Date().timeIntervalSince(started))) "
+              + "devices=\(uids.count) ours=\(ours ? "yes" : "no") devices-changed=\(changes)")
+    }
+    line()  // the first CMIO touch
+    let timer = Timer(timeInterval: interval, repeats: true) { _ in
+        line()
+        if Date().timeIntervalSince(started) >= seconds { exit(0) }
+    }
+    RunLoop.main.add(timer, forMode: .common)
+    RunLoop.main.run()
+    exit(0)
+}
+
 // MARK: - Entry
 
 let arguments = CommandLine.arguments.dropFirst()
 switch arguments.first {
 case "capture": runCapture(parseCapture(arguments.dropFirst()))
 case "list": runList()
+case "watch": runWatch(arguments.dropFirst())
 default: usage()
 }
