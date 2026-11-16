@@ -675,7 +675,7 @@ ModuleSet createStubModules() {
   for (const char* name : {"gpu-compositor", "local-audio-capture", "audio-monitor-output",
                            "rtmp-output", "srt-output", "hls-output", "ndi-output", "ndi-ingest",
                            "srt-ingest", "rtmp-ingest",
-                           "decklink-capture", "aja-capture", "uvc-capture"}) {
+                           "decklink-capture", "aja-capture", "uvc-capture", "media-clip-playback"}) {
     recordCapability(modules, name, "omitted", "stub-or-unbuilt");
   }
   modules.compositor = std::make_unique<CpuNoopCompositor>();
@@ -707,6 +707,9 @@ std::unique_ptr<ICompositor> createMetalCompositor() {
 }
 std::unique_ptr<IEncoderSink> createAVFoundationEncoderSink() {
   return nullptr;
+}
+std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationMediaDecoderFactory() {
+  return {};
 }
 std::unique_ptr<ICaptureDevice> createAvfCaptureDevice() {
   return nullptr;

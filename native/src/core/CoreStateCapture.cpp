@@ -267,7 +267,7 @@ CapabilityReport capabilityReport(const modules::ModuleSet& modules, bool zoomCo
   intrinsic("iso-recording", encoderSession.hardwareAccelerated);
   for (const char* name : {"rtmp-output", "ndi-output", "ndi-ingest", "srt-output", "hls-output",
                            "srt-ingest", "rtmp-ingest",
-                           "decklink-capture", "aja-capture", "uvc-capture"}) factory(name);
+                           "decklink-capture", "aja-capture", "uvc-capture", "media-clip-playback"}) factory(name);
   return report;
 }
 

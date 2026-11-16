@@ -8,7 +8,7 @@ namespace corevideo::core {
 // Exactly the capability names MediaCore::profile() reports in capabilityStates.
 // ContractParity compares this with a constructed core in both directions, so a
 // name the core never reports cannot sit here looking supported.
-inline constexpr std::array<std::string_view, 24> kNativeMediaCoreCapabilities = {
+inline constexpr std::array<std::string_view, 25> kNativeMediaCoreCapabilities = {
     "zoom-raw-video",
     "zoom-raw-audio",
     "gpu-compositor",
@@ -33,6 +33,7 @@ inline constexpr std::array<std::string_view, 24> kNativeMediaCoreCapabilities =
     "decklink-capture",
     "aja-capture",
     "uvc-capture",
+    "media-clip-playback",
 };
 
 inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
