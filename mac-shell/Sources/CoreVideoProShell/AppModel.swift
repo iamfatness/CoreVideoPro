@@ -532,6 +532,20 @@ final class AppModel: ObservableObject {
     var cameraExtensionQueryTimeout: TimeInterval = 5
     private var cameraExtensionQueryToken: UUID?
     private var cameraExtensionInstallsToken: UUID?
+    /// CoreMediaIO view of our camera device (registered? in use?). Tests swap
+    /// in FakeCameraDeviceProbe.
+    var cameraDeviceProbe: CameraDeviceProbing = SystemCameraDeviceProbe()
+    /// While `.updateReady`, how often the shell re-checks whether the camera
+    /// is free and installs the update on its own.
+    var cameraUpdateRetryInterval: TimeInterval = 5
+    /// Update camera: how long to wait for the camera to stop after pausing our
+    /// own output before giving up (another app still has it).
+    var cameraUpdateReleaseWait: TimeInterval = 5
+    var cameraUpdatePollInterval: TimeInterval = 0.5
+    private var cameraUpdateTimer: Timer?
+    /// True only while an operator's Update camera has paused our own output
+    /// (the wire says off; the persisted intent is untouched).
+    @Published private(set) var virtualCameraPausedForUpdate = false
     /// The last installed-copies answer (diagnostics; nil = never answered).
     @Published private(set) var cameraExtensionInstalls: [CameraExtensionInstall]?
     /// TEST-ONLY command capture. Set only by ShellTests: no env var, control
@@ -886,6 +900,7 @@ final class AppModel: ObservableObject {
     func stopTimersForTesting() {
         syncTimer?.invalidate(); syncTimer = nil
         zoomTimer?.invalidate(); zoomTimer = nil
+        cameraUpdateTimer?.invalidate(); cameraUpdateTimer = nil
     }
 
     // The Studio center is ONE multiview canvas (reference 01-studio): the
@@ -931,11 +946,15 @@ final class AppModel: ObservableObject {
         next.enabled = enabled
         if enabled {
             if cameraExtensionOptedIn != true { cameraExtensionOptedIn = true }
-            if cameraExtensionState != .active && cameraExtensionState != .activating {
+            // .updateReady: the installed copy works, the update waits;
+            // .needsReboot: only a restart finishes it. Neither re-submits.
+            if ![.active, .activating, .updateReady, .needsReboot].contains(cameraExtensionState) {
                 activateCameraExtension()
             }
         }
         applyVirtualCamera(next)
+        // Our own output was what held the update back: try it now.
+        if !enabled { retryCameraUpdateIfFree() }
     }
 
     /// Settings "Remove virtual camera". Turns the intent off (one
@@ -1004,8 +1023,10 @@ final class AppModel: ObservableObject {
     /// One-shot command, so it is also re-sent on every core generation
     /// (onConnected): a respawned core forgets it and answers with its default.
     private func sendVirtualCameraSync() {
+        var wire = virtualCamera
+        if virtualCameraPausedForUpdate { wire.enabled = false }
         let body = CoreCommands.mediaCoreSync(elapsedMs: Double(elapsedMs()),
-                                              commands: [CoreCommands.syncVirtualCamera(virtualCamera)])
+                                              commands: [CoreCommands.syncVirtualCamera(wire)])
         if let capture = coreCommandCaptureForTesting { capture(body); return }
         guard let bridge else { return }
         Task {
@@ -1042,10 +1063,81 @@ final class AppModel: ObservableObject {
                     self.setCameraExtensionState(.active)
                 case .activate:
                     self.activateCameraExtension()
+                case .update:
+                    if self.cameraInUse() {
+                        ShellLog.write("vcam-ext: update to \(CameraExtensionPolicy.bundledVersion) deferred; the camera is in use")
+                        self.setCameraExtensionState(.updateReady)
+                    } else {
+                        self.activateCameraExtension()
+                    }
                 }
             }
         } else {
             queryCameraExtension()
+        }
+    }
+
+    /// CameraExtensionPolicy.inUse over a fresh HAL read and our own intent.
+    func cameraInUse() -> Bool {
+        CameraExtensionPolicy.inUse(device: cameraDeviceProbe.read(), intentOn: virtualCamera.enabled,
+                                    pausedForUpdate: virtualCameraPausedForUpdate)
+    }
+
+    /// The `.updateReady` retry: the 5 s timer, and our intent turning off.
+    func retryCameraUpdateIfFree() {
+        guard cameraExtensionState == .updateReady, !cameraInUse() else { return }
+        ShellLog.write("vcam-ext: the camera is free; installing the update")
+        activateCameraExtension()
+    }
+
+    /// The "Update camera" button. The operator asked, so our OWN output is
+    /// paused for the swap (the wire says off; the saved intent is untouched),
+    /// then the shell waits up to `cameraUpdateReleaseWait` for the device to
+    /// stop. Still running = another app has it: stay `.updateReady` and
+    /// resume our output.
+    func updateCameraExtension() {
+        guard cameraExtensionState == .updateReady else { return }
+        ShellLog.write("vcam-ext: Update camera clicked")
+        if virtualCamera.enabled && !virtualCameraPausedForUpdate {
+            virtualCameraPausedForUpdate = true
+            sendVirtualCameraSync()
+        }
+        waitForCameraRelease(until: Date().addingTimeInterval(cameraUpdateReleaseWait))
+    }
+
+    private func waitForCameraRelease(until deadline: Date) {
+        guard cameraExtensionState == .updateReady else { resumeVirtualCameraAfterUpdate(); return }
+        if !cameraInUse() {
+            activateCameraExtension()
+            return
+        }
+        if Date() >= deadline {
+            ShellLog.write("vcam-ext: another app still has the camera; the update stays ready")
+            resumeVirtualCameraAfterUpdate()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + cameraUpdatePollInterval) { [weak self] in
+            Task { @MainActor in self?.waitForCameraRelease(until: deadline) }
+        }
+    }
+
+    private func resumeVirtualCameraAfterUpdate() {
+        guard virtualCameraPausedForUpdate else { return }
+        virtualCameraPausedForUpdate = false
+        sendVirtualCameraSync()
+    }
+
+    /// Runs the `.updateReady` retry while (and only while) that state holds.
+    private func updateCameraUpdateTimer() {
+        let wanted = cameraExtensionState == .updateReady
+        if wanted, cameraUpdateTimer == nil {
+            cameraUpdateTimer = Timer.scheduledTimer(withTimeInterval: cameraUpdateRetryInterval,
+                                                     repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.retryCameraUpdateIfFree() }
+            }
+        } else if !wanted {
+            cameraUpdateTimer?.invalidate()
+            cameraUpdateTimer = nil
         }
     }
 
@@ -1076,8 +1168,17 @@ final class AppModel: ObservableObject {
 
     private func activateCameraExtension() {
         cameraExtensionQueryToken = nil  // an activation outranks any pending query
-        cameraExtension.activate { [weak self] state in
-            Task { @MainActor in self?.setCameraExtensionState(state) }
+        // Re-checked at the moment macOS offers the replacement (main queue).
+        let inUse: () -> Bool = { [weak self] in
+            MainActor.assumeIsolated { self?.cameraInUse() ?? false }
+        }
+        cameraExtension.activate(deferringReplacementWhile: inUse) { [weak self] state in
+            Task { @MainActor in
+                guard let self else { return }
+                self.setCameraExtensionState(state)
+                // A finished (or deferred) request releases an Update camera pause.
+                if state != .activating && state != .needsApproval { self.resumeVirtualCameraAfterUpdate() }
+            }
         }
     }
 
@@ -1106,6 +1207,7 @@ final class AppModel: ObservableObject {
         guard state != cameraExtensionState else { return }
         ShellLog.write("vcam-ext: shell state \(cameraExtensionState) -> \(state)")
         cameraExtensionState = state
+        updateCameraUpdateTimer()
     }
 
     /// A virtual camera proof shot needs BOTH variables: COREVIDEO_SHELL_VCAM

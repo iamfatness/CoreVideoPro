@@ -208,6 +208,10 @@ struct SettingsPane: View {
                 row("Virtual camera", model.virtualCameraLabel)
                 labeled("") {
                     VStack(alignment: .leading, spacing: 4) {
+                        if VirtualCameraPresentation.showsUpdateButton(model.cameraExtensionState) {
+                            Button("Update camera") { model.updateCameraExtension() }
+                                .buttonStyle(AccentButtonStyle())
+                        }
                         Button("Remove virtual camera") { model.removeVirtualCamera() }
                             .buttonStyle(GhostButtonStyle())
                         if let status = model.virtualCameraRemovalStatus {

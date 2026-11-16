@@ -80,7 +80,14 @@ enum VirtualCameraPresentation {
     /// Status line. Precedence: operator intent, then the extension's
     /// activation state, then the core's own status (Windows wording where it
     /// exists — StudioViewModel.VirtualCameraStatusLabel).
+    static let updateReadyLabel =
+        "An update to CoreVideo Pro Camera is ready. Quit apps that are using the camera (Zoom, Teams, Photo Booth\u{2026}), then click Update camera."
+
     static func label(intent: Bool, ext: CameraExtensionState, core: VirtualCameraReadModel?) -> String {
+        // An update that waits on the operator outranks intent: with the
+        // output off, another app holding the camera still blocks it, and the
+        // operator must be told what to do (owner: no support tickets).
+        if ext == .updateReady { return updateReadyLabel }
         if !intent { return "Virtual camera off" }
         switch ext {
         case .activating: return "Installing the virtual camera\u{2026}"
@@ -88,7 +95,7 @@ enum VirtualCameraPresentation {
         case .notInApplications: return "Move CoreVideo Pro to the Applications folder to use the virtual camera."
         case .needsReboot: return "Restart your Mac to finish installing the virtual camera."
         case .unavailable(let reason), .failed(let reason): return reason
-        case .unknown, .notInstalled, .active: break
+        case .unknown, .notInstalled, .active, .updateReady: break
         }
         guard let core else { return "Virtual camera on" }
         switch core.status {
@@ -107,6 +114,11 @@ enum VirtualCameraPresentation {
         default:
             return "Virtual camera on"
         }
+    }
+
+    /// The "Update camera" button exists only while an update waits.
+    static func showsUpdateButton(_ ext: CameraExtensionState) -> Bool {
+        ext == .updateReady
     }
 
     /// The "Open System Settings" affordance exists only while approval is pending.

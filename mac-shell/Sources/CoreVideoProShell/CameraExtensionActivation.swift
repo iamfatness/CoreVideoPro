@@ -6,11 +6,16 @@
 // window server and cannot activate system extensions).
 
 import CameraExtensionKit
+import CoreMediaIO
 import Foundation
 import SystemExtensions
 
 enum CameraExtensionState: Equatable {
     case unknown, notInstalled, activating, needsApproval, active, needsReboot, notInApplications
+    /// A different extension version is installed and enabled, and replacing it
+    /// now would happen while the camera is in use (an app streaming from it, or
+    /// our own output on). Nothing was submitted; the old copy keeps working.
+    case updateReady
     case unavailable(String), failed(String)
 }
 
@@ -33,6 +38,82 @@ enum CameraExtensionLaunchAction: Equatable {
     case alreadyActive
     /// Submit an activation (first install, approval still pending, or no answer).
     case activate
+    /// Another version is installed and enabled: activating REPLACES it, which
+    /// must wait until the camera is not in use (CameraExtensionPolicy.inUse).
+    case update
+}
+
+/// What the shell can learn about OUR camera device from the CoreMediaIO HAL.
+struct CameraDeviceStatus: Equatable {
+    /// The device is in the HAL device list (the installed extension is running
+    /// and published it).
+    var registered = false
+    /// kCMIODevicePropertyDeviceIsRunningSomewhere: some process has a stream
+    /// of the device running (Zoom, Photo Booth, our own core feeding the sink).
+    var runningSomewhere = false
+}
+
+/// The HAL probe behind a protocol: CI has no camera device to look at.
+protocol CameraDeviceProbing: AnyObject {
+    func read() -> CameraDeviceStatus
+}
+
+final class FakeCameraDeviceProbe: CameraDeviceProbing {
+    var status: CameraDeviceStatus
+    private(set) var reads = 0
+    init(_ status: CameraDeviceStatus = CameraDeviceStatus()) { self.status = status }
+    func read() -> CameraDeviceStatus { reads += 1; return status }
+}
+
+/// Reads the CoreMediaIO HAL directly (the same calls the core's
+/// CmioVirtualCameraSink makes). The HAL device list only updates in a process
+/// whose main run loop is serviced; the shell's main thread runs one.
+final class SystemCameraDeviceProbe: CameraDeviceProbing {
+    static func isOurDeviceUID(_ uid: String) -> Bool {
+        uid == CameraConstants.legacyDeviceID
+            || uid.caseInsensitiveCompare(CameraConstants.deviceUUID.uuidString) == .orderedSame
+    }
+
+    func read() -> CameraDeviceStatus {
+        guard let device = Self.ourDevice() else { return CameraDeviceStatus() }
+        var address = Self.global(CMIOObjectPropertySelector(kCMIODevicePropertyDeviceIsRunningSomewhere))
+        var running: UInt32 = 0
+        var used: UInt32 = 0
+        let err = CMIOObjectGetPropertyData(device, &address, 0, nil,
+                                            UInt32(MemoryLayout<UInt32>.size), &used, &running)
+        // An unreadable flag counts as running: claiming "free" wrongly is the
+        // failure that strands an update, claiming "busy" only waits.
+        return CameraDeviceStatus(registered: true, runningSomewhere: err != noErr || running != 0)
+    }
+
+    private static func global(_ selector: CMIOObjectPropertySelector) -> CMIOObjectPropertyAddress {
+        CMIOObjectPropertyAddress(mSelector: selector,
+                                  mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
+                                  mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain))
+    }
+
+    private static func ourDevice() -> CMIOObjectID? {
+        var address = global(CMIOObjectPropertySelector(kCMIOHardwarePropertyDevices))
+        let system = CMIOObjectID(kCMIOObjectSystemObject)
+        var size: UInt32 = 0
+        guard CMIOObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return nil }
+        var ids = [CMIOObjectID](repeating: 0, count: Int(size) / MemoryLayout<CMIOObjectID>.size)
+        var used: UInt32 = 0
+        guard CMIOObjectGetPropertyData(system, &address, 0, nil, size, &used, &ids) == noErr else { return nil }
+        ids = Array(ids.prefix(Int(used) / MemoryLayout<CMIOObjectID>.size))
+        for id in ids {
+            var uidAddress = global(CMIOObjectPropertySelector(kCMIODevicePropertyDeviceUID))
+            var uid: Unmanaged<CFString>?
+            var uidUsed: UInt32 = 0
+            let err = withUnsafeMutablePointer(to: &uid) { ptr in
+                CMIOObjectGetPropertyData(id, &uidAddress, 0, nil,
+                                          UInt32(MemoryLayout<Unmanaged<CFString>?>.size), &uidUsed, ptr)
+            }
+            guard err == noErr, let value = uid?.takeRetainedValue() else { continue }
+            if isOurDeviceUID(value as String) { return id }
+        }
+        return nil
+    }
 }
 
 enum CameraExtensionPolicy {
@@ -79,7 +160,17 @@ enum CameraExtensionPolicy {
         if installs.contains(where: { $0.version == bundledVersion && $0.enabled && !$0.uninstalling }) {
             return .alreadyActive
         }
+        if installs.contains(where: { $0.version != bundledVersion && $0.enabled && !$0.uninstalling }) {
+            return .update
+        }
         return .activate
+    }
+
+    /// "In use" for a replacement: any process streaming our device, or our
+    /// own output switched on (the core feeds the sink while the intent is on;
+    /// it is paused only for an operator's explicit Update camera).
+    static func inUse(device: CameraDeviceStatus, intentOn: Bool, pausedForUpdate: Bool) -> Bool {
+        device.runningSomewhere || (intentOn && !pausedForUpdate)
     }
 
     static func state(forProperties props: [(enabled: Bool, awaitingApproval: Bool, uninstalling: Bool)]) -> CameraExtensionState {
@@ -104,6 +195,11 @@ enum CameraExtensionPolicy {
 protocol CameraExtensionActivating: AnyObject {
     func query(_ done: @escaping (CameraExtensionState) -> Void)
     func activate(_ update: @escaping (CameraExtensionState) -> Void)
+    /// Activation whose replacement answer re-checks `inUse` at the moment
+    /// macOS asks: a different version is replaced only while it is false;
+    /// otherwise the request is cancelled and ends in `.updateReady`.
+    func activate(deferringReplacementWhile inUse: @escaping () -> Bool,
+                  _ update: @escaping (CameraExtensionState) -> Void)
     func deactivate(_ update: @escaping (CameraExtensionState) -> Void)
     /// Every installed copy of our extension (any version, any state); nil when
     /// macOS refused the properties request.
@@ -112,6 +208,8 @@ protocol CameraExtensionActivating: AnyObject {
 
 extension CameraExtensionActivating {
     func installs(_ done: @escaping ([CameraExtensionInstall]?) -> Void) { done(nil) }
+    func activate(deferringReplacementWhile inUse: @escaping () -> Bool,
+                  _ update: @escaping (CameraExtensionState) -> Void) { activate(update) }
 }
 
 /// Scripted stand-in: `activate` delivers `script` in order; `deactivate`
@@ -164,13 +262,22 @@ struct CameraExtensionRequestReducer {
 
     let kind: Kind
     private(set) var canceledByUs = false
+    /// We cancelled a REPLACEMENT because the camera was in use.
+    private(set) var deferredInUse = false
     private(set) var isDone = false
 
     init(kind: Kind) { self.kind = kind }
 
-    /// The delegate's replacement answer; `.keep` marks this request as canceled by us.
-    mutating func replacement(existingVersion: String, newVersion: String) -> CameraExtensionReplacement {
-        let r = CameraExtensionPolicy.replacement(existingVersion: existingVersion, newVersion: newVersion)
+    /// The delegate's replacement answer; `.keep` marks this request as canceled
+    /// by us. A different version found while `inUse` is also kept (never
+    /// replace under a running stream) and the request then ends `.updateReady`.
+    mutating func replacement(existingVersion: String, newVersion: String,
+                              inUse: Bool = false) -> CameraExtensionReplacement {
+        var r = CameraExtensionPolicy.replacement(existingVersion: existingVersion, newVersion: newVersion)
+        if r == .replace && inUse {
+            r = .keep
+            deferredInUse = true
+        }
         if r == .keep { canceledByUs = true }
         return r
     }
@@ -191,6 +298,7 @@ struct CameraExtensionRequestReducer {
             }
         case .failed(let domain, let code):
             isDone = true
+            if deferredInUse && domain == "OSSystemExtensionErrorDomain" && code == 11 { return .updateReady }
             return CameraExtensionPolicy.state(forActivationError: domain, code: code,
                                                canceledByUs: canceledByUs)
         case .foundProperties(let props):
@@ -210,6 +318,7 @@ final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating,
         var callback: (CameraExtensionState) -> Void
         var last: CameraExtensionState = .unknown
         let request: OSSystemExtensionRequest
+        var inUse: () -> Bool = { false }
     }
 
     private var inFlight: [ObjectIdentifier: InFlight] = [:]
@@ -234,11 +343,12 @@ final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating,
 
     private func start(_ request: OSSystemExtensionRequest, kind: CameraExtensionRequestReducer.Kind,
                        last: CameraExtensionState = .unknown,
+                       inUse: @escaping () -> Bool = { false },
                        callback: @escaping (CameraExtensionState) -> Void) {
         request.delegate = self
         inFlight[ObjectIdentifier(request)] = InFlight(
             reducer: CameraExtensionRequestReducer(kind: kind), callback: callback,
-            last: last, request: request)
+            last: last, request: request, inUse: inUse)
         submit(request)
     }
 
@@ -261,6 +371,11 @@ final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating,
     }
 
     func activate(_ update: @escaping (CameraExtensionState) -> Void) {
+        activate(deferringReplacementWhile: { false }, update)
+    }
+
+    func activate(deferringReplacementWhile inUse: @escaping () -> Bool,
+                  _ update: @escaping (CameraExtensionState) -> Void) {
         if let blocked = CameraExtensionPolicy.preflight(bundlePath: bundlePath, hasEmbeddedProfile: hasProfile) {
             ShellLog.write("vcam-ext: \(CameraExtensionState.unknown) -> \(blocked)")
             update(blocked)
@@ -270,7 +385,7 @@ final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating,
         update(.activating)
         start(OSSystemExtensionRequest.activationRequest(
             forExtensionWithIdentifier: CameraConstants.extensionBundleID, queue: .main),
-              kind: .activate, last: .activating, callback: update)
+              kind: .activate, last: .activating, inUse: inUse, callback: update)
     }
 
     func installs(_ done: @escaping ([CameraExtensionInstall]?) -> Void) {
@@ -299,7 +414,12 @@ final class SystemCameraExtensionActivator: NSObject, CameraExtensionActivating,
                  withExtension ext: OSSystemExtensionProperties) -> OSSystemExtensionRequest.ReplacementAction {
         let key = ObjectIdentifier(request)
         guard var entry = inFlight[key] else { return .cancel }
-        let r = entry.reducer.replacement(existingVersion: existing.bundleVersion, newVersion: ext.bundleVersion)
+        let differs = existing.bundleVersion != ext.bundleVersion
+        let busy = differs && entry.inUse()
+        let r = entry.reducer.replacement(existingVersion: existing.bundleVersion, newVersion: ext.bundleVersion,
+                                          inUse: busy)
+        ShellLog.write("vcam-ext: replace \(existing.bundleVersion) with \(ext.bundleVersion)? "
+                       + (r == .replace ? "yes" : (busy ? "no, the camera is in use" : "no, same version")))
         inFlight[key] = entry
         return r == .replace ? .replace : .cancel
     }

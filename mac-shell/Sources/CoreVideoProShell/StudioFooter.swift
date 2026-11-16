@@ -622,6 +622,11 @@ struct VirtualCameraFlyout: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel("Virtual camera status")
                     .accessibilityValue(model.virtualCameraLabel)
+                if VirtualCameraPresentation.showsUpdateButton(model.cameraExtensionState) {
+                    Button("Update camera") { model.updateCameraExtension() }
+                        .buttonStyle(AccentButtonStyle())
+                        .accessibilityLabel("Update camera")
+                }
                 if VirtualCameraPresentation.showsSettingsButton(model.cameraExtensionState) {
                     caption(CameraExtensionPolicy.settingsInstruction(
                         osMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion))
