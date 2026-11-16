@@ -153,6 +153,7 @@ add_library(corevideo_native
   src/modules/SharedGpuVideoEncoder.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
+  src/modules/MediaClipDecoder.cpp
   src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
   src/modules/NdiOutputSenderAdapter.cpp
   src/modules/NdiReceiveCaptureAdapter.cpp
@@ -979,6 +980,7 @@ if(BUILD_TESTING)
     tests/LumaRangeProbeTest.cpp
     tests/MediaFrameSourceCompatibilityTest.cpp
     tests/MediaPlaybackTimelineTest.cpp
+    tests/MediaClipDecoderTest.cpp
     tests/MultiviewLayoutTest.cpp
     tests/AnchoredFrameDeadlineTrackerTest.cpp
     tests/ProgramAudioDelayTest.cpp
