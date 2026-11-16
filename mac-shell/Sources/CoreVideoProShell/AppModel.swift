@@ -535,6 +535,19 @@ final class AppModel: ObservableObject {
     /// the "core is gone" answer when that path is replaced, and the timings.
     var quitRequestForTesting: ((JSONObject, TimeInterval) async throws -> JSONObject)?
     var quitCoreGoneForTesting = false
+    /// Per-source grades (grading plan Task 5): the only sender of set-source-grade.
+    /// Harness-only: the saved-grade file the NEXT AppModel() uses (nil → SourceGradeFile.path),
+    /// so one harness case's debounced save can never land in another case.
+    static var gradeFilePathForTesting: String?
+    private let gradeFilePath = AppModel.gradeFilePathForTesting ?? SourceGradeFile.path
+    private(set) lazy var sourceGrades: SourceGradeStore = {
+        let store = SourceGradeStore(send: { [weak self] body in
+            guard let self else { throw BridgeError.notRunning }
+            return try await self.gradeRequest(body)
+        }, filePath: gradeFilePath)
+        store.identityProvider = { [weak self] in self?.gradeIdentity(for: $0) }
+        return store
+    }()
     /// Test seams for where the quit prompt is presented (production: nil).
     var quitPresentForTesting: ((QuitPromptPlacement) -> Void)?
     var mainWindowAvailableForTesting: Bool?
@@ -1628,6 +1641,8 @@ final class AppModel: ObservableObject {
         // Re-assert a restored grade: the core starts neutral every launch, so
         // a persisted grade that is never pushed silently does nothing.
         if !gradeIsNeutral { applyColorGrade() }
+        // Per-source grades: forget every epoch/revision and re-assert on this generation.
+        sourceGrades.coreGenerationChanged()
         // One-shot: a respawned core forgets the virtual camera (CLAUDE.md).
         sendVirtualCameraSync()
         audioInputs = AudioInputs.available()
@@ -1745,6 +1760,10 @@ final class AppModel: ObservableObject {
             reconnectRestoredCaptures()
         }
         applySourceFacts(snapshot)
+        if !snapshot.isEmpty {
+            sourceGrades.observe(sourceGrades: snapshot["sourceGrades"] as? [JSONObject],
+                                 sources: gradeSources, now: sourceGrades.now())
+        }
         if let recording = snapshot["recording"] as? JSONObject {
             let nextStatus = RecordingLifecycleReadModel.status(recording)
             recordingCommands.observe(
@@ -1867,6 +1886,7 @@ final class AppModel: ObservableObject {
         }
         if acceptRoster, Self.meetingHasEnded(snapshot["meetingState"] as? String ?? "") {
             endMeetingAudioSession()
+            sourceGrades.meetingEnded()
         }
         if acceptRoster, let participants = snapshot["participants"] as? [JSONObject] {
             // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
@@ -4786,6 +4806,7 @@ final class AppModel: ObservableObject {
     /// NSApplicationDelegate.applicationShouldTerminate. Idle quits at once;
     /// live outputs defer the quit behind the in-app confirmation.
     func handleQuitRequest() -> NSApplication.TerminateReply {
+        sourceGrades.flush()
         switch quitGate.request(quitOutputs) {
         case .quitNow: return .terminateNow
         case .ask:
@@ -4898,6 +4919,13 @@ final class AppModel: ObservableObject {
         case .exited, .failed: return true
         default: return false
         }
+    }
+
+    /// The grade store's request path: the test seam, else the bridge.
+    private func gradeRequest(_ body: JSONObject) async throws -> JSONObject {
+        if let seam = quitRequestForTesting { return try await seam(body, 6) }
+        guard let bridge else { throw BridgeError.notRunning }
+        return try await bridge.request(body)
     }
 
     private func quitRequest(_ body: JSONObject, timeout: TimeInterval) async throws -> JSONObject {
