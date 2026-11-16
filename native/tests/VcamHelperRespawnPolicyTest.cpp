@@ -125,6 +125,52 @@ TEST(VcamHelperRespawnPolicy, AnUnreachableCameraDoesNotSpendTheHelperFailureBud
   EXPECT_FALSE(policy.gaveUp());
 }
 
+// Review finding 2 (2026-11-16): the budget is for CONSECUTIVE helper failures.
+// An extension awaiting approval on a loaded Mac: hundreds of clean "camera
+// unreachable" answers with an occasional answer timeout among them. Each clean
+// answer is a helper that started, looked and reported, so the timeouts are
+// never consecutive and the camera must still connect when it is approved.
+TEST(VcamHelperRespawnPolicy, ScatteredHelperFailuresAmongCleanUnreachableAnswersNeverReachGiveUp) {
+  VcamHelperRespawnPolicy policy;
+  std::int64_t now = 0;
+  int helperFailures = 0;
+  for (int attempt = 1; attempt <= 1000; ++attempt) {
+    ASSERT_TRUE(policy.next(now).spawnNow) << "attempt " << attempt;
+    policy.onSpawned();
+    const bool timedOut = attempt % 50 == 0;
+    policy.onOutcome(timedOut ? VcamHelperOutcome::HelperFailed : VcamHelperOutcome::CameraUnreachable, now);
+    const auto wait = policy.next(now);
+    ASSERT_FALSE(wait.gaveUp) << "attempt " << attempt << ": " << helperFailures + 1 << " scattered helper failures";
+    if (timedOut) {
+      ++helperFailures;
+      ASSERT_EQ(policy.consecutiveHelperFailures(), 1) << "attempt " << attempt;
+      ASSERT_EQ(wait.waitMs, 5'000) << "a lone failure waits the first rung, whatever came long before";
+    } else {
+      ASSERT_EQ(policy.consecutiveHelperFailures(), 0) << "attempt " << attempt;
+    }
+    now += wait.waitMs;
+  }
+  EXPECT_EQ(helperFailures, 20);
+  policy.onSpawned();
+  policy.onOutcome(VcamHelperOutcome::Connected, now);
+  EXPECT_FALSE(policy.gaveUp());
+}
+
+// The other side: a clean answer between failures resets the count, but five
+// in a row still give up, wherever in the run they come.
+TEST(VcamHelperRespawnPolicy, FiveHelperFailuresInARowStillGiveUpAfterCleanAnswers) {
+  VcamHelperRespawnPolicy policy;
+  std::int64_t now = 0;
+  for (int i = 0; i < 4; ++i) policy.onOutcome(VcamHelperOutcome::HelperFailed, now += 60'000);
+  policy.onOutcome(VcamHelperOutcome::CameraUnreachable, now += 60'000);
+  for (int i = 0; i < 4; ++i) {
+    policy.onOutcome(VcamHelperOutcome::HelperFailed, now += 60'000);
+    ASSERT_FALSE(policy.gaveUp()) << i;
+  }
+  policy.onOutcome(VcamHelperOutcome::HelperFailed, now += 60'000);
+  EXPECT_TRUE(policy.gaveUp());
+}
+
 TEST(VcamHelperRespawnPolicy, WarningsAreClassifiedByTheirCameraPrefix) {
   EXPECT_EQ(classifyVcamHelperWarning("CAMERA_EXTENSION_NOT_FOUND: x"), VcamHelperOutcome::CameraUnreachable);
   EXPECT_EQ(classifyVcamHelperWarning("CAMERA_PRODUCER_REFUSED: x"), VcamHelperOutcome::CameraUnreachable);

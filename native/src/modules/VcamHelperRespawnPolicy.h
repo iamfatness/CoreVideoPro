@@ -24,8 +24,13 @@
 //     for the whole show.
 //   * The helper itself failed (could not be spawned, crashed, hung). That is
 //     the house ladder (OutputDestinationSupervisorPolicy.h): 5 -> 10 -> 20 ->
-//     40 -> 60 s, give up loudly after 5 consecutive failures, a healthy run
+//     40 -> 60 s, give up loudly after 5 CONSECUTIVE failures, a healthy run
 //     earns the budget back, an operator re-arm always clears give-up.
+//     "Consecutive" is literal: a helper that answers "camera unreachable"
+//     started, looked and reported, which proves the helper works, so that
+//     answer clears the count too. Otherwise five answer timeouts scattered
+//     among hundreds of clean answers (an extension awaiting approval on a
+//     loaded Mac) reach give-up, and the camera never connects once approved.
 
 #include <cstdint>
 #include <string>
@@ -108,6 +113,7 @@ class VcamHelperRespawnPolicy {
         return;
       case VcamHelperOutcome::CameraUnreachable:
         settleRun(nowMs);
+        consecutiveHelperFailures_ = 0;  // the helper answered: it works
         ++consecutiveUnreachable_;
         nextAllowedMs_ = nowMs + vcamUnreachableRetryMs(consecutiveUnreachable_);
         return;
