@@ -159,28 +159,105 @@ extension ShellTests {
         }
     }
 
+    struct FixtureError: LocalizedError { let errorDescription: String? }
+
+    /// contracts/control.fixtures.json through ControlRouter and ControlSnapshotRedactor. Windows runs
+    /// the same file (CT ControlFixtureTests, MCT ControlRedactionFixtureTests); editing an
+    /// expectation turns both red. A missing file is a failure, never a skip.
+    @MainActor
+    static func testControlSharedFixtures() {
+        guard let fixtures = repoJSON("contracts/control.fixtures.json"),
+              let http = fixtures["http"] as? [[String: Any]],
+              let snapshots = fixtures["snapshot"] as? [[String: Any]],
+              let redaction = fixtures["redaction"] as? [String: Any] else {
+            expect(false, "contracts/control.fixtures.json is readable from the checkout"); return
+        }
+        func same(_ a: Any?, _ b: Any?) -> Bool {
+            if a == nil || a is NSNull { return b == nil || b is NSNull }
+            return NSArray(array: [a!]).isEqual(to: [b ?? NSNull()])
+        }
+        var ran = 0
+        for test in http where (test["hosts"] as? [String])?.contains("mac") ?? true {
+            let name = test["name"] as? String ?? "?"
+            let request = test["request"] as? [String: Any] ?? [:]
+            let reply = test["surfaceReply"] as? [String: Any] ?? ["ok": true]
+            let surface = FakeSurface()
+            surface.handler = { _, _ in
+                ControlInvokeResult(ok: reply["ok"] as? Bool ?? false, error: reply["error"] as? String,
+                                    previewSceneId: reply["previewSceneId"] as? String, data: reply["data"] as? String)
+            }
+            let response = route(ControlRouter(surface: surface), request["method"] as? String ?? "",
+                                 request["path"] as? String ?? "", request["body"] as? String)
+            let expected = test["expect"] as? [String: Any] ?? [:]
+            expectEqual(response.status, expected["status"] as? Int, "\(name): status")
+            var body = json(response.body)
+            if let prefix = expected["errorPrefix"] as? String {
+                expect((body["error"] as? String ?? "").hasPrefix(prefix), "\(name): error starts with \(prefix)")
+                body["error"] = nil
+            }
+            if let want = expected["body"] as? [String: Any] {
+                expect(NSDictionary(dictionary: body).isEqual(to: want), "\(name): body \(response.body)")
+            }
+            if let want = expected["invocations"] as? [[String: Any]] {
+                let got = surface.invocations.map { ["action": $0.0, "args": $0.1.map { $0 ?? NSNull() }] as [String: Any] }
+                expect(NSArray(array: got).isEqual(to: want), "\(name): invocations \(got)")
+            }
+            ran += 1
+        }
+        for test in snapshots {
+            let name = test["name"] as? String ?? "?"
+            let observation = test["observation"] as? [String: Any] ?? [:]
+            let surface = FakeSurface()
+            switch observation["kind"] as? String {
+            case "available":
+                let age = observation["ageMs"] as? Double
+                surface.observation = ControlSnapshotObservation(
+                    state: observation["state"] as? [String: Any],
+                    receivedAt: age.map { Date().addingTimeInterval(-$0 / 1000) })
+            case "unavailable": surface.observation = .unavailable(observation["reason"] as? String ?? "")
+            case "notObserved": surface.observesCore = false
+            default: surface.observationError = FixtureError(errorDescription: observation["message"] as? String)
+            }
+            let root = json(route(ControlRouter(surface: surface), "GET", "/snapshot").body)
+            for (key, want) in test["expect"] as? [String: Any] ?? [:] where key != "ageMsNear" {
+                // Presence first: an absent key must not pass as an expected null.
+                expect(root.keys.contains(key), "\(name): \(key) is present")
+                expect(same(root[key], want), "\(name): \(key) = \(String(describing: root[key]))")
+            }
+            if let near = (test["expect"] as? [String: Any])?["ageMsNear"] as? Double {
+                expect(abs(((root["ageMs"] as? NSNumber)?.doubleValue ?? -1e9) - near) <= 400, "\(name): ageMs near \(near)")
+            }
+            ran += 1
+        }
+        for pair in redaction["names"] as? [[String: Any]] ?? [] {
+            let name = pair["name"] as? String ?? ""
+            expectEqual(ControlSnapshotRedactor.isSecretName(name), pair["secret"] as? Bool, "isSecretName(\(name))"); ran += 1
+        }
+        for pair in redaction["texts"] as? [[String: Any]] ?? [] {
+            let input = pair["input"] as? String ?? ""
+            expectEqual(ControlSnapshotRedactor.redactText(input), pair["expected"] as? String, "redactText(\(input))"); ran += 1
+        }
+        for pair in redaction["documents"] as? [[String: Any]] ?? [] {
+            let got = ControlSnapshotRedactor.redact(pair["input"] ?? [:])
+            expect(same(got, pair["expected"]), "redact(document) equals the fixture"); ran += 1
+        }
+        // RC1 total: 31 mac http + 6 snapshot + 21 names + 11 texts + 1 document = 70 (each slice updates this).
+        expectEqual(ran, 70, "every fixture case ran")
+    }
+
     // ── contract: /invoke statuses and errors (Windows router output) ────────
 
     @MainActor
     static func testControlInvokeRejectsLikeWindows() {
         let surface = FakeSurface()
         let router = ControlRouter(surface: surface)
+        // The bind/route cases both hosts share are in contracts/control.fixtures.json
+        // (control/fixtures). These rows are the ones that file does not carry: the
+        // other two retired ids and an absent body.
         let cases: [(String?, Int, String)] = [
-            (#"{"action":"automation.magic","args":[true]}"#, 400, "Unknown action 'automation.magic'."),
             (#"{"action":"automation.toggle","args":[true]}"#, 400, "Unknown action 'automation.toggle'."),
             (#"{"action":"automation.autoTake.set","args":[true]}"#, 400, "Unknown action 'automation.autoTake.set'."),
-            (#"{"action":"bogus"}"#, 400, "Unknown action 'bogus'."),
-            // A Windows action the Mac does not answer yet: 422 with the reason (D1).
-            (#"{"action":"zoom.join","args":["123"]}"#, 422,
-             "'zoom.join' is not available on macOS yet (Remote control: session and inputs)."),
-            ("", 400, "Request body is required."),
-            ("   ", 400, "Request body is required."),
             (nil, 400, "Request body is required."),
-            (#"{"args":[1]}"#, 400, "Missing 'action'."),
-            (#"{"action":7}"#, 400, "Missing 'action'."),
-            (#"{"action":"scene.select"}"#, 400, "Action 'scene.select' requires parameter 'sceneId' at position 0."),
-            (#"{"action":"transport.ftb.set","args":["maybe"]}"#, 400, "Action 'transport.ftb.set' parameter 'enabled' must be Bool."),
-            (#"{"action":"transport.ftb.set","args":[null]}"#, 400, "Action 'transport.ftb.set' requires parameter 'enabled' at position 0."),
         ]
         for (body, status, error) in cases {
             let response = route(router, "POST", "/invoke", body)
@@ -373,34 +450,8 @@ extension ShellTests {
         expectEqual((overlay["keyPosition"] as? NSNumber)?.intValue, 3, "keyPosition survives")
         expectEqual(snapshot["sceneId"] as? String, "scene:solo", "unrelated root survives")
 
-        // CoreSnapshotObserverTests.SecretNamedValuesAreDropped... theory, plus the exact-name set.
-        let names: [(String, Bool)] = [
-            ("keyPhase", false), ("keyer", false), ("keyPosition", false), ("keyLength", false),
-            ("layerId", false), ("streamKey", true), ("passphrase", true), ("srtPassphrase", true),
-            ("accessToken", true), ("sdkJwt", true), ("userZak", true), ("clientSecret", true),
-            ("pwd", true), ("Authorization", true), ("auth", true), ("sig", true), ("signature", true),
-            ("credential", true), ("password", true), ("STREAMKEY", true), ("author", false),
-        ]
-        for (name, secret) in names {
-            expectEqual(ControlSnapshotRedactor.isSecretName(name), secret, "isSecretName(\(name))")
-        }
-        // SupportBundleLogRedactorTests.RedactsWhatItAlwaysRedacted, case for case.
-        let texts: [(String, String)] = [
-            ("access_token=abc", "access_token=[redacted]"),
-            ("pwd=hunter2&a=b", "pwd=[redacted]&a=b"),
-            ("srtPassphrase=xyz end", "srtPassphrase=[redacted] end"),
-            ("USERZAK=zzz", "USERZAK=[redacted]"),
-            ("key=value", "key=[redacted]"),
-            ("x_key_y=1", "x_key_y=1"),
-            (#"{"streamKey":"abc"}"#, #"{"streamKey":"[redacted]"}"#),
-            ("rtmp://live.example/app/SECRET", "rtmp://live.example/[redacted]"),
-            ("tok eyJhbGciOiJI.eyJzdWIiOiIx.abcd end", "tok [redacted] end"),
-            ("eyJaaaaaaaa.bbbbbbbb.cccc-", "[redacted]-"),
-            ("Authorization: Bearer abc.def", "Authorization: Bearer [redacted]"),
-        ]
-        for (input, expected) in texts {
-            expectEqual(ControlSnapshotRedactor.redactText(input), expected, "redactText(\(input))")
-        }
+        // The name and text cases (CoreSnapshotObserverTests / SupportBundleLogRedactorTests)
+        // live in contracts/control.fixtures.json and run in control/fixtures on both hosts.
         // #998: long ordinary strings must redact in bounded time.
         let longCases = [String(repeating: "a", count: 200_000),
                          String(repeating: "key", count: 66_666),

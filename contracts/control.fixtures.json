@@ -1,0 +1,903 @@
+{
+  "version": 1,
+  "notes": "Router-level cases both hosts must answer identically (plan 2026-11-16-mac-remote-control-phase1, T4). Bodies compare as parsed JSON; key order and escaping are not part of the contract. An absent hosts means both hosts; an absent expect.body is not compared; expect.errorPrefix replaces the check of body.error; expect.invocations is the exact list the fake surface received ([] = none, absent = not checked). surfaceReply defaults to {\"ok\":true}. Invariant: every action id in an http case for both hosts is supported on macOS when the case is added, or is in neither file (bogus, automation.magic); rows only move toward supported, so a case stays valid. Snapshot states keep their keys in sorted order (the Mac sorts nodes, Windows writes document order) and hold no secret-named key or redactable string, so Mac redaction is the identity there. ageMsNear allows +/-400 ms; 500 and 5000 sit at least 1500 ms from the 2000 ms stale boundary.",
+  "http": [
+    {
+      "name": "empty-body",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": ""
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Request body is required."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "whitespace-body",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "   "
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Request body is required."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "invalid-json",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "not json"
+      },
+      "expect": {
+        "status": 400,
+        "errorPrefix": "Invalid JSON: ",
+        "body": {
+          "ok": false
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "missing-action",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"args\":[1]}"
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Missing 'action'."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "non-string-action",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":7}"
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Missing 'action'."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "blank-action",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"  \"}"
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Missing 'action'."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "unknown-action",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"bogus\"}"
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Unknown action 'bogus'."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "retired-magic",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"automation.magic\",\"args\":[true]}"
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Unknown action 'automation.magic'."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "missing-required",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"scene.select\"}"
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Action 'scene.select' requires parameter 'sceneId' at position 0."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "args-not-array",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"scene.select\",\"args\":\"x\"}"
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Action 'scene.select' requires parameter 'sceneId' at position 0."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "null-required",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"transport.ftb.set\",\"args\":[null]}"
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Action 'transport.ftb.set' requires parameter 'enabled' at position 0."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "bad-bool",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"transport.ftb.set\",\"args\":[\"maybe\"]}"
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Action 'transport.ftb.set' parameter 'enabled' must be Bool."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "bool-from-int",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"transport.ftb.set\",\"args\":[1]}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "transport.ftb.set",
+            "args": [
+              true
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "bool-from-text",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"transport.record.set\",\"args\":[\" TRUE \"]}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "transport.record.set",
+            "args": [
+              true
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "bool-from-zero-text",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"transport.stream.set\",\"args\":[\"0\"]}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "transport.stream.set",
+            "args": [
+              false
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "bool-from-double",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"transport.ftb.set\",\"args\":[2.5]}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "transport.ftb.set",
+            "args": [
+              true
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "string-from-int",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"scene.select\",\"args\":[3,\"extra ignored\"]}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "scene.select",
+            "args": [
+              "3"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "string-from-bool",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"scene.select\",\"args\":[true]}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "scene.select",
+            "args": [
+              "True"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "string-from-double",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"scene.select\",\"args\":[2.5]}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "scene.select",
+            "args": [
+              "2.5"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "optional-omitted",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"transport.virtualcam.name.set\",\"args\":[]}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "transport.virtualcam.name.set",
+            "args": [
+              null
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "preview-reply",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"scene.select\",\"args\":[\"s3\"]}"
+      },
+      "surfaceReply": {
+        "ok": true,
+        "previewSceneId": "s3"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true,
+          "previewSceneId": "s3"
+        }
+      }
+    },
+    {
+      "name": "empty-preview-reply",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"scene.select\",\"args\":[\"s3\"]}"
+      },
+      "surfaceReply": {
+        "ok": true,
+        "previewSceneId": ""
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "data-reply",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"scene.list\"}"
+      },
+      "surfaceReply": {
+        "ok": true,
+        "data": "{\"scenes\":[],\"previewSceneId\":\"\",\"activeSceneId\":\"\"}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true,
+          "data": {
+            "scenes": [],
+            "previewSceneId": "",
+            "activeSceneId": ""
+          }
+        }
+      }
+    },
+    {
+      "name": "refusal-reply",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"transport.take\"}"
+      },
+      "surfaceReply": {
+        "ok": false,
+        "error": "Take is unavailable. Queue a valid Preview scene or a changed draft and wait for any current Take to finish."
+      },
+      "expect": {
+        "status": 422,
+        "body": {
+          "ok": false,
+          "error": "Take is unavailable. Queue a valid Preview scene or a changed draft and wait for any current Take to finish."
+        }
+      }
+    },
+    {
+      "name": "refusal-without-text",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"transport.take\"}"
+      },
+      "surfaceReply": {
+        "ok": false
+      },
+      "expect": {
+        "status": 422,
+        "body": {
+          "ok": false,
+          "error": "Invocation failed."
+        }
+      }
+    },
+    {
+      "name": "invoke-unavailable-on-mac",
+      "hosts": [
+        "mac"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"showEngine.restart\"}"
+      },
+      "expect": {
+        "status": 422,
+        "body": {
+          "ok": false,
+          "error": "'showEngine.restart' is not available on macOS (the OHG show engine is not part of macOS 1.0)."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "not-found",
+      "request": {
+        "method": "GET",
+        "path": "/nope"
+      },
+      "expect": {
+        "status": 404,
+        "body": {
+          "ok": false,
+          "error": "Not found"
+        }
+      }
+    },
+    {
+      "name": "get-invoke",
+      "request": {
+        "method": "GET",
+        "path": "/invoke"
+      },
+      "expect": {
+        "status": 404,
+        "body": {
+          "ok": false,
+          "error": "Not found"
+        }
+      }
+    },
+    {
+      "name": "post-state",
+      "request": {
+        "method": "POST",
+        "path": "/state"
+      },
+      "expect": {
+        "status": 404,
+        "body": {
+          "ok": false,
+          "error": "Not found"
+        }
+      }
+    },
+    {
+      "name": "manifest-trailing-slash",
+      "request": {
+        "method": "GET",
+        "path": "/manifest/"
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "manifest-query",
+      "request": {
+        "method": "GET",
+        "path": "/manifest?x=1"
+      },
+      "expect": {
+        "status": 200
+      }
+    }
+  ],
+  "snapshot": [
+    {
+      "name": "fresh",
+      "observation": {
+        "kind": "available",
+        "ageMs": 500,
+        "state": {
+          "multiviewer": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 8
+          },
+          "programBuffer": {
+            "underruns": 3
+          },
+          "sceneId": "scene:solo"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "available": true,
+        "stale": false,
+        "staleAfterMs": 2000,
+        "redacted": true,
+        "nodes": [
+          "multiviewer",
+          "programBuffer",
+          "sceneId"
+        ],
+        "snapshot": {
+          "multiviewer": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 8
+          },
+          "programBuffer": {
+            "underruns": 3
+          },
+          "sceneId": "scene:solo"
+        },
+        "ageMsNear": 500
+      }
+    },
+    {
+      "name": "stale",
+      "observation": {
+        "kind": "available",
+        "ageMs": 5000,
+        "state": {
+          "multiviewer": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 8
+          },
+          "programBuffer": {
+            "underruns": 3
+          },
+          "sceneId": "scene:solo"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "available": true,
+        "stale": true,
+        "staleAfterMs": 2000,
+        "ageMsNear": 5000
+      }
+    },
+    {
+      "name": "undated",
+      "observation": {
+        "kind": "available",
+        "ageMs": null,
+        "state": {
+          "multiviewer": {
+            "layoutMode": "pgmPvwTop",
+            "tileCount": 8
+          },
+          "programBuffer": {
+            "underruns": 3
+          },
+          "sceneId": "scene:solo"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "available": true,
+        "stale": true,
+        "receivedUtc": null,
+        "ageMs": null,
+        "staleReason": "The shell did not record when this snapshot arrived."
+      }
+    },
+    {
+      "name": "absent",
+      "observation": {
+        "kind": "unavailable",
+        "reason": "engine off"
+      },
+      "expect": {
+        "ok": true,
+        "available": false,
+        "stale": true,
+        "reasonCode": "no-snapshot",
+        "reason": "engine off",
+        "nodes": [],
+        "snapshot": null,
+        "receivedUtc": null,
+        "ageMs": null,
+        "staleAfterMs": 2000
+      }
+    },
+    {
+      "name": "not-observed",
+      "observation": {
+        "kind": "notObserved"
+      },
+      "expect": {
+        "ok": true,
+        "available": false,
+        "reasonCode": "not-observed",
+        "reason": "This control surface does not observe a media core."
+      }
+    },
+    {
+      "name": "observer-throws",
+      "observation": {
+        "kind": "throws",
+        "message": "bridge gone"
+      },
+      "expect": {
+        "ok": true,
+        "available": false,
+        "reasonCode": "observer-failed",
+        "reason": "bridge gone"
+      }
+    }
+  ],
+  "redaction": {
+    "names": [
+      {
+        "name": "keyPhase",
+        "secret": false
+      },
+      {
+        "name": "keyer",
+        "secret": false
+      },
+      {
+        "name": "keyPosition",
+        "secret": false
+      },
+      {
+        "name": "keyLength",
+        "secret": false
+      },
+      {
+        "name": "layerId",
+        "secret": false
+      },
+      {
+        "name": "streamKey",
+        "secret": true
+      },
+      {
+        "name": "passphrase",
+        "secret": true
+      },
+      {
+        "name": "srtPassphrase",
+        "secret": true
+      },
+      {
+        "name": "accessToken",
+        "secret": true
+      },
+      {
+        "name": "sdkJwt",
+        "secret": true
+      },
+      {
+        "name": "userZak",
+        "secret": true
+      },
+      {
+        "name": "clientSecret",
+        "secret": true
+      },
+      {
+        "name": "pwd",
+        "secret": true
+      },
+      {
+        "name": "Authorization",
+        "secret": true
+      },
+      {
+        "name": "auth",
+        "secret": true
+      },
+      {
+        "name": "sig",
+        "secret": true
+      },
+      {
+        "name": "signature",
+        "secret": true
+      },
+      {
+        "name": "credential",
+        "secret": true
+      },
+      {
+        "name": "password",
+        "secret": true
+      },
+      {
+        "name": "STREAMKEY",
+        "secret": true
+      },
+      {
+        "name": "author",
+        "secret": false
+      }
+    ],
+    "texts": [
+      {
+        "input": "access_token=abc",
+        "expected": "access_token=[redacted]"
+      },
+      {
+        "input": "pwd=hunter2&a=b",
+        "expected": "pwd=[redacted]&a=b"
+      },
+      {
+        "input": "srtPassphrase=xyz end",
+        "expected": "srtPassphrase=[redacted] end"
+      },
+      {
+        "input": "USERZAK=zzz",
+        "expected": "USERZAK=[redacted]"
+      },
+      {
+        "input": "key=value",
+        "expected": "key=[redacted]"
+      },
+      {
+        "input": "x_key_y=1",
+        "expected": "x_key_y=1"
+      },
+      {
+        "input": "{\"streamKey\":\"abc\"}",
+        "expected": "{\"streamKey\":\"[redacted]\"}"
+      },
+      {
+        "input": "rtmp://live.example/app/SECRET",
+        "expected": "rtmp://live.example/[redacted]"
+      },
+      {
+        "input": "tok eyJhbGciOiJI.eyJzdWIiOiIx.abcd end",
+        "expected": "tok [redacted] end"
+      },
+      {
+        "input": "eyJaaaaaaaa.bbbbbbbb.cccc-",
+        "expected": "[redacted]-"
+      },
+      {
+        "input": "Authorization: Bearer abc.def",
+        "expected": "Authorization: Bearer [redacted]"
+      }
+    ],
+    "documents": [
+      {
+        "input": {
+          "sceneId": "scene:solo",
+          "outputSenderSession": {
+            "status": "live",
+            "senders": [
+              {
+                "senderId": "rtmp-0",
+                "destination": "rtmp",
+                "status": "failed",
+                "streamKey": "live_1234_SUPERSECRETKEY",
+                "lastError": "ffmpeg exited: rtmps://live.example.com/app/live_1234_SUPERSECRETKEY",
+                "runtimeDetail": "srtPassphrase=hunter2hunter2 accepted"
+              }
+            ]
+          },
+          "browserSources": {
+            "sources": [
+              {
+                "id": "b1",
+                "url": "https://scores.example.com/board?access_token=abc123def456"
+              }
+            ],
+            "credential": {
+              "value": "hidden"
+            }
+          },
+          "warnings": [
+            "configure-outputs echoed {\"streamKey\":\"live_1234_SUPERSECRETKEY\"}"
+          ],
+          "recording": {
+            "programPath": "/Users/op/Movies/show-program-0.mp4"
+          },
+          "overlay": {
+            "keyPhase": "visible",
+            "keyer": "luma",
+            "keyPosition": 3,
+            "keyLength": "16",
+            "layerId": "lt"
+          }
+        },
+        "expected": {
+          "sceneId": "scene:solo",
+          "outputSenderSession": {
+            "status": "live",
+            "senders": [
+              {
+                "senderId": "rtmp-0",
+                "destination": "rtmp",
+                "status": "failed",
+                "streamKey": "[redacted]",
+                "lastError": "ffmpeg exited: rtmps://live.example.com/[redacted]",
+                "runtimeDetail": "srtPassphrase=[redacted] accepted"
+              }
+            ]
+          },
+          "browserSources": {
+            "sources": [
+              {
+                "id": "b1",
+                "url": "https://scores.example.com/board?access_token=[redacted]"
+              }
+            ],
+            "credential": "[redacted]"
+          },
+          "warnings": [
+            "configure-outputs echoed {\"streamKey\":\"[redacted]\"}"
+          ],
+          "recording": {
+            "programPath": "/Users/op/Movies/show-program-0.mp4"
+          },
+          "overlay": {
+            "keyPhase": "visible",
+            "keyer": "luma",
+            "keyPosition": 3,
+            "keyLength": "16",
+            "layerId": "lt"
+          }
+        }
+      }
+    ]
+  }
+}

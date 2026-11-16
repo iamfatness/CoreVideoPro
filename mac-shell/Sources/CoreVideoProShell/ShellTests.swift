@@ -4091,6 +4091,7 @@ enum ShellTests {
             ("control/dispatch-drive", testControlEverySupportedIdIsDispatched),
             ("control/unavailable-422", testControlUnavailableActionsAnswer422),
             ("control/manifest-shared-file", testControlManifestIsTheSharedFileFiltered),
+            ("control/fixtures", testControlSharedFixtures),
             ("control/invoke-rejections", testControlInvokeRejectsLikeWindows),
             ("control/invoke-bind-and-replies", testControlInvokeBindsAndShapesReplies),
             ("control/snapshot-envelope", testControlSnapshotEnvelopeIsWindows),
