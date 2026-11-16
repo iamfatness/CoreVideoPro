@@ -28,6 +28,7 @@ extension ShellTests {
             ("control/input-actions", testControlInputActions),
             ("control/transition-and-engine", testControlTransitionAndEngine),
             ("control/join-leave-capture-online", testControlJoinLeaveAndCaptureOnline),
+            ("control/rtmp-configure", testControlRtmpConfigure),
         ]
     }
 
@@ -312,5 +313,49 @@ extension ShellTests {
                                                                                    "connectionState": "failed", "signalPresent": false, "warning": ""]]]] }
         expectEqual(invoke(s, "source.capture.online.set", ["capture:cam1", true]),
                     .fail("Capture device 'cam1' is failed, not connected."), "a connect the core did not honour is reported")
+    }
+
+    @MainActor
+    static func testControlRtmpConfigure() {
+        func fail(_ args: [Any?], _ text: String, busy: Bool = false, _ why: String) {
+            let r = RtmpDestinationPolicy.configure(args: args, busy: busy, currentKey: "saved-key")
+            if case .failure(let e) = r { expectEqual(e.message, text, why) } else { expect(false, "\(why): expected refusal") }
+        }
+        let good: [Any?] = [true, "rtmps", "rtmps://example.test/live", "test-key-sentinel"]
+        fail(good, "Stop streaming and wait for the transition to finish before configuring destinations.", busy: true, "busy")
+        fail([false, "rtmps", "", ""], "macOS streams to one RTMP destination; it cannot be disabled. Send enabled=true to configure it.", "disable (D9)")
+        fail([true, "invalid-mode-test-secret", "example.test/live", "k"], "RTMP protocol must be rtmp or rtmps.", "protocol")
+        fail([true, "rtmps", "rtmps://user:pw@example.test/live", "k"],
+             "Put RTMP credentials in streamKey; serverUrl cannot contain user info, a query, or a fragment.", "user info")
+        fail([true, "rtmps", "example.test/live?key=x", "k"],
+             "Put RTMP credentials in streamKey; serverUrl cannot contain user info, a query, or a fragment.", "query")
+        fail([true, "rtmp", "rtmps://live.example.com/app", "k"], "RTMP protocol selection must match the server URL scheme.", "scheme mismatch")
+        fail([true, "rtmps", "live.example.com", "k"], "RTMP server URL must include an application path.", "no app path")
+        fail([true, "rtmps", "live.example.com/app", "stream key"], "RTMP stream key cannot contain whitespace.", "whitespace key")
+        fail([true, "rtmps", "live.example.com/app", ""], "Configure RTMP stream key before streaming.", "explicit empty key while enabled")
+        fail([true, "rtmps", "", "k"], "Configure RTMP server URL before streaming.", "no URL")
+        for secret in ["invalid-mode-test-secret", "pw", "key=x"] {
+            for args in [[true, "invalid-mode-test-secret", "example.test/live", "k"], [true, "rtmps", "rtmps://user:pw@example.test/live?key=x", "k"]] as [[Any?]] {
+                if case .failure(let e) = RtmpDestinationPolicy.configure(args: args, busy: false, currentKey: "") {
+                    expect(!e.message.contains(secret), "no refusal echoes caller data (\(secret))")
+                }
+            }
+        }
+        expectEqual(RtmpDestinationPolicy.buildUrl(protocol: "rtmps", serverUrl: "live.example.com/app"), "rtmps://live.example.com/app", "Windows BuildRtmpUrl")
+        expectEqual(try? RtmpDestinationPolicy.configure(args: [true, "RTMPS ", "live.example.com/app"], busy: false, currentKey: "saved-key").get(),
+                    .init(url: "rtmps://live.example.com/app", key: "saved-key"), "omitted key keeps the saved key")
+
+        let model = takeModel(FakeTakeCore())
+        var saved: [String] = []
+        model.streamKeySaver = { saved.append($0); return true }
+        let s = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        expectEqual(invoke(s, "transport.stream.rtmp.configure", good), .success, "configure")
+        expectEqual(model.streamUrl, "rtmps://example.test/live", "URL applied"); expectEqual(model.streamKey, "test-key-sentinel", "key applied")
+        expectEqual(saved, ["test-key-sentinel"], "the key went to the Keychain seam, never to prefs")
+        expect(!model.streamingDesired, "configuring never starts streaming")
+        model.streamKeySaver = { _ in false }
+        expectEqual(invoke(s, "transport.stream.rtmp.configure", [true, "rtmp", "rtmp://other.test/app", "new-key"]),
+                    .fail("Destination settings were not saved. Previous settings remain active; retry after resolving preference storage."), "storage failure")
+        expectEqual(model.streamUrl, "rtmps://example.test/live", "a failed save changes nothing"); expectEqual(model.streamKey, "test-key-sentinel", "key kept")
     }
 }

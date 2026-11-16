@@ -22,7 +22,7 @@
     {"id": "transport.record.set", "mac": "supported"},
     {"id": "transport.stream.toggle", "mac": "supported"},
     {"id": "transport.stream.set", "mac": "supported"},
-    {"id": "transport.stream.rtmp.configure", "mac": "blocked", "blockedOn": "RC2"},
+    {"id": "transport.stream.rtmp.configure", "mac": "supported"},
     {"id": "transport.stream.srt.configure", "mac": "blocked", "blockedOn": "OUT"},
     {"id": "transport.ndi.toggle", "mac": "blocked", "blockedOn": "OUT"},
     {"id": "transport.ndi.set", "mac": "blocked", "blockedOn": "OUT"},

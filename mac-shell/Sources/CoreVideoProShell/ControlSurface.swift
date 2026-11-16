@@ -142,6 +142,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return await model.leaveZoomForControl()
         case "source.capture.online.set":
             return await setCaptureOnline(model, sourceId: string(0), online: bool(1))
+        case "transport.stream.rtmp.configure":
+            return model.configureRtmpForControl(args.map(\.value))
         case "transport.transition.set":
             return setTransition(model, mode: string(0))
         case "transport.engine.toggle":
@@ -180,7 +182,7 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         // RC2
         "input.assign", "input.unassign", "input.name", "input.inShow.set", "source.dropout.set",
         "transport.transition.set", "transport.engine.toggle", "transport.engine.set",
-        "zoom.join", "zoom.leave", "source.capture.online.set",
+        "zoom.join", "zoom.leave", "source.capture.online.set", "transport.stream.rtmp.configure",
     ]
 
     /// The `default:` branch's text (Windows' unknown-action wording).

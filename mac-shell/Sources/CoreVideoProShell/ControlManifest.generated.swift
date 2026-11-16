@@ -65,7 +65,7 @@ enum ControlManifestGenerated {
                 ControlParam(name: "serverUrl", type: .string, required: true, description: nil),
                 ControlParam(name: "streamKey", type: .string, required: false, description: nil),
             ]),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "transport.stream.srt.configure", title: "Configure SRT destination", description: "Save SRT settings without starting streaming. Refused while streaming or transitioning; omitted passphrase retains it, empty clears it.", params: [
                 ControlParam(name: "enabled", type: .bool, required: true, description: nil),

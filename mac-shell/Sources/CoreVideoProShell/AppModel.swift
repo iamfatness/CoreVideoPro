@@ -509,6 +509,10 @@ final class AppModel: ObservableObject {
     var controlSettleSeconds: TimeInterval = 5
     /// Test seam for the capture connect/disconnect path (production: nil = bridge).
     var captureRequestForTesting: ((JSONObject) async throws -> JSONObject)?
+    /// Where a remotely configured stream key is stored (the Keychain, never
+    /// prefs); false = not saved. Tests replace it so the harness never writes
+    /// the operator's Keychain.
+    var streamKeySaver: (String) -> Bool = { StreamKeychain.save($0); return true }
     /// Test seams for where the quit prompt is presented (production: nil).
     var quitPresentForTesting: ((QuitPromptPlacement) -> Void)?
     var mainWindowAvailableForTesting: Bool?
@@ -2358,6 +2362,24 @@ final class AppModel: ObservableObject {
         guard let bridge else { return }
         assignedIds.removeAll()
         Task { _ = try? await bridge.request(["type": "zoom-leave"], timeout: 15) }
+    }
+
+    /// transport.stream.rtmp.configure (Windows StreamDestinationControl.Configure):
+    /// validate everything, save the key FIRST, then apply; never starts streaming.
+    func configureRtmpForControl(_ args: [Any?]) -> ControlInvokeResult {
+        let decision: RtmpDestinationPolicy.Decision
+        switch RtmpDestinationPolicy.configure(args: args, busy: streamingDesired || streamingObservedLive,
+                                               currentKey: streamKey) {
+        case .failure(let refusal): return .fail(refusal.message)
+        case .success(let value): decision = value
+        }
+        guard streamKeySaver(decision.key) else {
+            return .fail("Destination settings were not saved. Previous settings remain active; retry after resolving preference storage.")
+        }
+        streamKey = decision.key
+        streamUrl = decision.url
+        persistPrefsNow()
+        return .success
     }
 
     // ── remote control: awaitable twins of the fire-and-forget UI calls ──────
