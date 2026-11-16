@@ -24,6 +24,35 @@ extension ShowInputSlot {
     }
 }
 
+/// #1213 (owner ruling 2026-11-16): a hand-typed slot name lasts one session
+/// and one source. A slot keeps the source's own name (`sourceName`) beside the
+/// displayed `name`; "renamed by hand" is simply `name != sourceName`.
+enum SlotNamePolicy {
+    /// Assigning the SAME source again keeps a rename; a different source
+    /// (kind or id) shows its own name.
+    static func afterAssign(_ slot: ShowInputSlot, kind: String, sourceId: String,
+                            sourceName: String) -> (name: String, sourceName: String) {
+        let sameSource = slot.kind == kind && slot.sourceId == sourceId
+        let keepRename = sameSource && !slot.name.isEmpty
+        return (keepRename ? slot.name : sourceName, sourceName)
+    }
+
+    /// What is written to disk: the source's own name, never the rename.
+    static func persisted(_ slot: ShowInputSlot) -> String {
+        slot.sourceName.isEmpty ? slot.name : slot.sourceName
+    }
+
+    /// The source is present and reports `liveName`. A slot that was not
+    /// renamed this session follows it (this is also what retires a manual name
+    /// saved by a build before #1213); a renamed slot keeps its rename and only
+    /// learns the source's name. An unknown live name changes nothing.
+    static func withLiveName(name: String, sourceName: String,
+                             liveName: String) -> (name: String, sourceName: String) {
+        guard !liveName.isEmpty else { return (name, sourceName) }
+        return (name == sourceName ? liveName : name, liveName)
+    }
+}
+
 extension AppModel {
     /// Restores operator intent: kind, source, name, in-show. A restored source
     /// reads offline until the roster / device list produces it (Windows marks
@@ -40,6 +69,7 @@ extension AppModel {
             slot.kind = record.kind
             slot.sourceId = record.sourceId
             slot.name = record.name
+            slot.sourceName = record.name
             slot.inShow = record.inShow
             slot.offline = true
             guard let key = slot.sourceKey, seen.insert(key).inserted else { continue }
