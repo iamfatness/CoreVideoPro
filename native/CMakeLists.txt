@@ -75,6 +75,7 @@ option(COREVIDEO_WITH_ZOOM "Build the Zoom Meeting SDK capture adapter. Requires
 option(COREVIDEO_WITH_D3D11 "Build the Windows D3D11 GPU compositor adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_METAL "Build the macOS Metal GPU compositor adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_AVF_ENCODER "Build the macOS AVFoundation/VideoToolbox recording encoder. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_AVF_MEDIA_DECODER "Build the macOS AVFoundation media clip decoder. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_COREAUDIO "Build the macOS CoreAudio monitor-output and capture-audio adapters. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_AVF_CAPTURE "Build the macOS AVFoundation camera capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_SCK "Build the macOS ScreenCaptureKit screen/window capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
@@ -202,11 +203,13 @@ if(APPLE)
   target_sources(corevideo_native PRIVATE
     src/compositor/MetalCompositorAdapter.mm
     src/modules/AVFoundationEncoderAdapter.mm
+    src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
     src/modules/SckScreenCaptureAdapter.mm)
   set_source_files_properties(
     src/compositor/MetalCompositorAdapter.mm
     src/modules/AVFoundationEncoderAdapter.mm
+    src/modules/AVFoundationMediaDecoderAdapter.mm
     src/modules/AvfCaptureDeviceAdapter.mm
     src/modules/SckScreenCaptureAdapter.mm
     PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
@@ -228,6 +231,7 @@ target_compile_definitions(corevideo_native
     COREVIDEO_WITH_D3D11=$<BOOL:${COREVIDEO_WITH_D3D11}>
     COREVIDEO_WITH_METAL=$<BOOL:${COREVIDEO_WITH_METAL}>
     COREVIDEO_WITH_AVF_ENCODER=$<BOOL:${COREVIDEO_WITH_AVF_ENCODER}>
+    COREVIDEO_WITH_AVF_MEDIA_DECODER=$<BOOL:${COREVIDEO_WITH_AVF_MEDIA_DECODER}>
     COREVIDEO_WITH_COREAUDIO=$<BOOL:${COREVIDEO_WITH_COREAUDIO}>
     COREVIDEO_WITH_AVF_CAPTURE=$<BOOL:${COREVIDEO_WITH_AVF_CAPTURE}>
     COREVIDEO_WITH_SCK=$<BOOL:${COREVIDEO_WITH_SCK}>
@@ -317,6 +321,17 @@ if(COREVIDEO_WITH_AVF_ENCODER)
   endif()
   target_link_libraries(corevideo_native PUBLIC
     "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
+endif()
+
+if(COREVIDEO_WITH_AVF_MEDIA_DECODER)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_AVF_MEDIA_DECODER requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT APPLE)
+    message(FATAL_ERROR "COREVIDEO_WITH_AVF_MEDIA_DECODER supports the macOS adapter only.")
+  endif()
+  target_link_libraries(corevideo_native PUBLIC
+    "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework VideoToolbox")
 endif()
 
 if(COREVIDEO_WITH_COREAUDIO)
@@ -1044,6 +1059,12 @@ if(BUILD_TESTING)
     target_sources(corevideo-native-tests PRIVATE tests/AvfMp4Decode.mm)
     set_source_files_properties(tests/AvfMp4Decode.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   endif()
+  if(COREVIDEO_WITH_AVF_MEDIA_DECODER AND NOT COREVIDEO_STUB)
+    # Real AVFoundation decode against fixtures written at test time.
+    target_sources(corevideo-native-tests PRIVATE tests/AvfMediaFixtures.mm tests/AvfMediaDecoderTest.cpp)
+    set_source_files_properties(tests/AvfMediaFixtures.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(corevideo-native-tests PRIVATE "-framework ImageIO" "-framework UniformTypeIdentifiers")
+  endif()
   # Comms: core relay, engine comms core/protocol, and ZComms' own tests for
   # the ported pieces (tests/comms/test_util.h maps ZC_CHECK onto the shim).
   target_sources(corevideo-native-tests PRIVATE
@@ -1074,6 +1095,7 @@ if(BUILD_TESTING)
     COREVIDEO_WITH_D3D11=$<BOOL:${COREVIDEO_WITH_D3D11}>
     COREVIDEO_WITH_METAL=$<BOOL:${COREVIDEO_WITH_METAL}>
     COREVIDEO_WITH_AVF_ENCODER=$<BOOL:${COREVIDEO_WITH_AVF_ENCODER}>
+    COREVIDEO_WITH_AVF_MEDIA_DECODER=$<BOOL:${COREVIDEO_WITH_AVF_MEDIA_DECODER}>
     COREVIDEO_WITH_COREAUDIO=$<BOOL:${COREVIDEO_WITH_COREAUDIO}>
     COREVIDEO_WITH_AVF_CAPTURE=$<BOOL:${COREVIDEO_WITH_AVF_CAPTURE}>
     COREVIDEO_WITH_SCK=$<BOOL:${COREVIDEO_WITH_SCK}>

@@ -4074,7 +4074,7 @@ TEST(MediaCoreCommand, TheMediaStripCompressesTheSumOfItsClipsInOneChain) {
   EXPECT_TRUE(std::find(dspIds.begin(), dspIds.end(), "media:clip-b") == dspIds.end());
 }
 
-#if !COREVIDEO_STUB && COREVIDEO_WITH_MF_ENCODER
+#if !COREVIDEO_STUB && (COREVIDEO_WITH_MF_ENCODER || COREVIDEO_WITH_AVF_MEDIA_DECODER)
 // A 1 s, 30-frame, 64x64 H.264 MP4 (Media Foundation decodes it natively).
 void writeMfVideoFixture(const std::filesystem::path& path) {
   const auto videoBytes = corevideo::modules::base64Decode(R"(
@@ -4084,12 +4084,21 @@ AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAASibW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAA
   output.write(reinterpret_cast<const char*>(videoBytes.data()), static_cast<std::streamsize>(videoBytes.size()));
 }
 
+// The decoder under test: Media Foundation on Windows, AVFoundation on a Mac
+// built with COREVIDEO_WITH_AVF_MEDIA_DECODER. The suite keeps its name on both
+// (plan default D7: no Windows test-id churn).
+std::unique_ptr<corevideo::modules::IMediaDecoder> testMediaDecoder() {
+  if (auto mediaFoundation = corevideo::modules::createMediaFoundationMediaDecoderFactory()) return mediaFoundation();
+  if (auto avFoundation = corevideo::modules::createAvFoundationMediaDecoderFactory()) return avFoundation();
+  return nullptr;
+}
+
 TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
   const auto videoPath = std::filesystem::temp_directory_path() / "corevideo-mf-preview-cue.mp4";
   std::filesystem::remove(videoPath);
   writeMfVideoFixture(videoPath);
 
-  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
+  auto source = testMediaDecoder();
   ASSERT_NE(source, nullptr);
   corevideo::modules::MediaDecodeRequest request;
   request.kind = "media-video";
@@ -4118,6 +4127,7 @@ TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
   std::filesystem::remove(videoPath);
 }
 
+#if COREVIDEO_WITH_MF_ENCODER
 TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   const auto wavPath = std::filesystem::temp_directory_path() / "corevideo-mf-media-audio-test.wav";
   std::filesystem::remove(wavPath);
@@ -4157,6 +4167,7 @@ TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   source.reset(); // Release owned decoder workers before deleting their fixture.
   std::filesystem::remove(wavPath);
 }
+#endif  // COREVIDEO_WITH_MF_ENCODER (audio: Task 6 moves this under the either-decoder gate)
 
 namespace {
 int64_t steadyNow100ns() {
@@ -4204,7 +4215,7 @@ TEST(MediaFoundationMediaFrameSource, PausingMidPlaybackHoldsTheOnAirFrameAndRes
       ("corevideo-mf-pause-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".mp4");
   writeMfVideoFixture(videoPath);
   struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{videoPath};
-  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
+  auto source = testMediaDecoder();
   ASSERT_NE(source, nullptr);
   corevideo::modules::MediaDecodeRequest request;
   request.kind = "media-video";
@@ -4248,6 +4259,7 @@ TEST(MediaFoundationMediaFrameSource, PausingMidPlaybackHoldsTheOnAirFrameAndRes
   source.reset(); // Release owned decoder workers before deleting their fixture.
 }
 
+#if COREVIDEO_WITH_MF_ENCODER
 // The audio half: no PCM while paused, and Play resumes from the paused media
 // position (within the 50 ms A/V budget) — not from 0, not after the pause.
 TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePausedPosition) {
@@ -4306,7 +4318,9 @@ TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePaused
   EXPECT_TRUE(std::abs(resumedMs - lastHeardMs) <= 50) << "lastHeard=" << lastHeardMs << "ms resumed=" << resumedMs << "ms";
   source.reset(); // Release owned decoder workers before deleting their fixture.
 }
+#endif  // COREVIDEO_WITH_MF_ENCODER (audio: Task 6 moves this under the either-decoder gate)
 
+#if COREVIDEO_WITH_MF_ENCODER  // the FFmpeg fallback exists only behind Media Foundation
 // ProRes MOVs (Media Foundation has no decoder) run on the FFmpeg fallback,
 // which paces itself with -re and cannot be paused in place: the adapter stops
 // it on Pause and restarts it at the frozen clock position on Play. The clip's
@@ -4491,6 +4505,7 @@ TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositi
   EXPECT_TRUE(resumedSeconds <= heldSeconds + 4.0) << "held=" << heldSeconds << " resumed=" << resumedSeconds;
   source.reset();
 }
+#endif  // COREVIDEO_WITH_MF_ENCODER (FFmpeg fallback cases)
 #endif
 
 // #739: the fake DeckLink/AJA pair belongs to the stub tier. A real core used to

@@ -2085,6 +2085,8 @@ std::unique_ptr<ICompositor> createD3D11Compositor(bool prepareCpuSources = fals
 std::unique_ptr<ICompositor> createMetalCompositor();
 // One MF decoder per call; empty on a build with no Media Foundation.
 std::function<std::unique_ptr<IMediaDecoder>()> createMediaFoundationMediaDecoderFactory();
+// One AVFoundation-backed MediaClipDecoder per call; empty unless COREVIDEO_WITH_AVF_MEDIA_DECODER.
+std::function<std::unique_ptr<IMediaDecoder>()> createAvFoundationMediaDecoderFactory();
 std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();
 // macOS CoreAudio twins; nullptr unless COREVIDEO_WITH_COREAUDIO.
 std::unique_ptr<IAudioMonitorOutput> createCoreAudioMonitorOutput();
