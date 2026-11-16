@@ -44,6 +44,10 @@ extension ShellTests {
             ("vcam-update/launch-action-policy", testLaunchActionPolicy),
             ("vcam-update/preflight-outranks-update", testPreflightOutranksAnUpdate),
             ("vcam-update/diagnostics-in-support-bundle", testVirtualCameraDiagnosticsReachTheSupportBundle),
+            ("vcam-update/device-is-never-read-on-the-main-thread", testTheDeviceIsNeverReadOnTheMainThread),
+            ("vcam-update/device-reads-never-overlap", testDeviceReadsNeverOverlap),
+            ("vcam-update/superseded-device-read-is-dropped", testASupersededDeviceReadDoesNotOverwriteANewerOne),
+            ("vcam-update/late-device-read-decides-nothing", testADeviceReadThatArrivesLateDecidesNothing),
         ]
     }
 
@@ -331,7 +335,8 @@ extension ShellTests {
         on.cameraUpdateRetryInterval = 60
         expectEqual(on.cameraExtensionState, .updateReady, "precondition: deferred by Zoom")
         onProbe.status.runningSomewhere = false   // Zoom quits
-        _ = on.cameraInUse()                      // a later re-check (the 5 s retry)
+        on.checkCameraInUse { _ in }              // a later re-check (the 5 s retry)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         expect(on.virtualCameraUpdateNotice?.contains("Quit apps") == false,
                "our output on: the notice no longer says quit apps")
         expect(on.virtualCameraUpdateNotice?.contains("Close any other apps") == true, "it is the neutral copy")
@@ -343,7 +348,8 @@ extension ShellTests {
         expect(off.virtualCameraUpdateNotice?.contains("Quit apps") == true,
                "precondition: our output off, Zoom on the camera: quit apps")
         offProbe.status.runningSomewhere = false   // Zoom quits
-        _ = off.readCameraDevice()
+        off.readCameraDevice { _ in }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         expect(!off.cameraUpdateOthersHolding, "a free read clears 'another app holds it'")
         expect(off.virtualCameraUpdateNotice?.contains("Quit apps") == false, "and the quit-apps copy goes")
         off.stopTimersForTesting()
@@ -635,7 +641,12 @@ extension ShellTests {
         // An unreadable device never reads as a fact.
         let model = AppModel()
         model.cameraDeviceProbe = FreshProcessCameraDeviceProbe(executable: { nil })
-        expect(model.cameraInUse(), "unreadable counts as in use: nothing is replaced on a guess")
+        var unreadableInUse: Bool?
+        model.checkCameraInUse { unreadableInUse = $0 }
+        expect(unreadableInUse == nil, "the read is not made in place: no answer before the caller returns")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(unreadableInUse, true, "unreadable counts as in use: nothing is replaced on a guess")
+        expect(model.cameraInUseNow(), "and the in-place check at a replacement offer says the same")
         let diag = model.virtualCameraDiagnostics()
         expect(diag.json["deviceRegistered"] is NSNull, "unreadable is null in the support bundle, never false")
         expect(diag.rows.contains { $0.label.hasPrefix("device registered") && $0.value.hasPrefix("not read:") },
@@ -753,6 +764,187 @@ extension ShellTests {
         let diag = model.virtualCameraDiagnostics()
         expect(diag.rows.contains { $0.label == "installed" && $0.value.contains("2881 [disabled, uninstalling") },
                "the Health tab row names the uninstalling copy")
+        model.stopTimersForTesting()
+    }
+
+    // ── review finding 1 (2026-11-16): the probe never blocks the operator UI ──
+
+    /// A probe that takes `delay` per read and records WHERE it was read. The
+    /// real one is a spawn-and-wait of up to 2 s; on the main thread that is
+    /// the operator UI frozen, and the operator cannot cut.
+    final class SlowSpyCameraDeviceProbe: CameraDeviceProbing {
+        private let lock = NSLock()
+        private var _status: CameraDeviceStatus
+        private var _reads = 0, _mainThreadReads = 0, _active = 0, _maxActive = 0
+        let delay: TimeInterval
+
+        init(_ status: CameraDeviceStatus, delay: TimeInterval) { _status = status; self.delay = delay }
+
+        private func locked<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
+        var status: CameraDeviceStatus {
+            get { locked { _status } }
+            set { locked { _status = newValue } }
+        }
+        var reads: Int { locked { _reads } }
+        var mainThreadReads: Int { locked { _mainThreadReads } }
+        var maxConcurrentReads: Int { locked { _maxActive } }
+        var reading: Bool { locked { _active > 0 } }
+
+        func read() -> CameraDeviceStatus {
+            let main = Thread.isMainThread
+            locked {
+                _reads += 1
+                if main { _mainThreadReads += 1 }
+                _active += 1
+                _maxActive = max(_maxActive, _active)
+            }
+            // What the probe saw when it looked; the answer arrives `delay` later.
+            let seen = locked { _status }
+            Thread.sleep(forTimeInterval: delay)
+            locked { _active -= 1 }
+            return seen
+        }
+    }
+
+    /// Every path that reads the device, with a slow probe: launch, the
+    /// `.updateReady` retry timer, the Health tab, the support bundle, Update
+    /// camera's release wait and the registration check after the swap. None
+    /// may read on the main thread, no two reads may overlap, and the main
+    /// run loop must keep turning while a read is in progress.
+    @MainActor
+    static func testTheDeviceIsNeverReadOnTheMainThread() {
+        let model = AppModel()
+        let fake = FakeCameraExtensionActivator(script: [.activating, .active], installed: [olderInstall])
+        let probe = SlowSpyCameraDeviceProbe(ourDevice(running: true), delay: 0.06)
+        model.cameraExtension = fake
+        model.cameraDeviceProbe = probe
+        model.coreCommandCaptureForTesting = { _ in }
+        model.cameraExtensionOptedIn = true
+        model.cameraUpdateRetryInterval = 0.05
+        model.cameraUpdatePollInterval = 0.02
+        model.cameraUpdateReleaseWait = 0.3
+        model.cameraRegistrationPollInterval = 0.02
+        model.cameraRegistrationTimeout = 0.3
+
+        // What the operator's UI is: main-thread work that must keep running.
+        var turnsWhileReading = 0
+        let heartbeat = Timer.scheduledTimer(withTimeInterval: 0.005, repeats: true) { _ in
+            if probe.reading { turnsWhileReading += 1 }
+        }
+        defer { heartbeat.invalidate() }
+
+        model.startCameraExtensionAtLaunch()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        expectEqual(model.cameraExtensionState, .updateReady, "precondition: another app holds the camera")
+        expectEqual(fake.calls, ["installs"], "and nothing was submitted")
+        let afterRetries = probe.reads
+        expect(afterRetries >= 3, "launch and the retry timer read the device (\(afterRetries) reads)")
+
+        model.refreshCameraExtensionDiagnostics()   // the Health tab appearing
+        _ = model.supportBundleInput()              // Export support bundle
+        model.updateCameraExtension()               // the Update camera button
+        RunLoop.current.run(until: Date().addingTimeInterval(0.7))
+        expectEqual(model.cameraExtensionState, .updateReady, "still held: the update stays ready")
+        expect(!model.cameraUpdateInProgress, "and the click's wait ended")
+
+        fake.installed = [ours()]                   // what macOS lists once the swap ran
+        probe.status = ourDevice()                  // the other app quit; the swap can run
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+        expectEqual(fake.calls.filter { $0 == "activate" }.count, 1, "the retry installs the update once")
+        expectEqual(model.cameraExtensionState, .active, "and the swap completes")
+        model.stopTimersForTesting()
+
+        expect(probe.reads > afterRetries + 3, "the later paths read the device too (\(probe.reads) reads)")
+        expectEqual(probe.mainThreadReads, 0, "no device read ran on the main thread")
+        expectEqual(probe.maxConcurrentReads, 1, "and no two reads overlapped")
+        expect(turnsWhileReading > 0,
+               "the main run loop kept turning while a read was in progress (\(turnsWhileReading) turns)")
+    }
+
+    /// The poll loops ask far faster than a slow probe answers. One probe runs
+    /// at a time, and everything asked while it runs shares ONE follow-up that
+    /// starts afterwards (so nobody is handed a reading older than their
+    /// question).
+    @MainActor
+    static func testDeviceReadsNeverOverlap() {
+        let probe = SlowSpyCameraDeviceProbe(ourDevice(running: true), delay: 0.1)
+        let reader = CameraDeviceReader(probe: probe)
+        var first: CameraDeviceStatus?
+        var later: [CameraDeviceStatus] = []
+        reader.read { first = $0 }
+        expect(first == nil && reader.isReading, "read returns at once with the probe still out")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        probe.status = ourDevice(running: false)   // the world changes while the first probe is out
+        for _ in 0..<4 { reader.read { later.append($0) } }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        expectEqual(first, ourDevice(running: true), "the first caller gets the first reading")
+        expectEqual(later, Array(repeating: ourDevice(running: false), count: 4),
+                    "everyone who asked meanwhile gets a reading that started after they asked")
+        expectEqual(probe.reads, 2, "five requests cost two probes, not five")
+        expectEqual(probe.maxConcurrentReads, 1, "and the two never overlapped")
+        expectEqual(probe.mainThreadReads, 0, "neither ran on the main thread")
+        expectEqual(reader.latest, ourDevice(running: false), "the newest reading is the one kept")
+        expect(!reader.isReading, "nothing is left running")
+    }
+
+    /// A probe started earlier can answer AFTER a newer reading was applied
+    /// (the in-place read at a replacement offer overtakes it). Its stale
+    /// answer must not become the current state, and its caller is handed the
+    /// newer reading: "running" from before the other app quit must not undo
+    /// "free", nor the reverse.
+    @MainActor
+    static func testASupersededDeviceReadDoesNotOverwriteANewerOne() {
+        let probe = SlowSpyCameraDeviceProbe(ourDevice(running: false), delay: 0.15)
+        let reader = CameraDeviceReader(probe: probe)
+        var asynchronous: CameraDeviceStatus?
+        reader.read { asynchronous = $0 }           // looks now: free
+        RunLoop.current.run(until: Date().addingTimeInterval(0.03))
+        probe.status = ourDevice(running: true)     // Zoom opens the camera
+        let inPlace = reader.readNow()              // the newer reading: in use
+        expectEqual(inPlace, ourDevice(running: true), "the in-place read sees the camera in use")
+        expect(asynchronous == nil, "precondition: the earlier probe has not been delivered yet")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        expectEqual(reader.latest, ourDevice(running: true), "the earlier probe's 'free' did not overwrite 'in use'")
+        expectEqual(asynchronous, ourDevice(running: true), "and its caller got the newer reading, not the stale one")
+
+        // The same through the model: the published reading and the in-use answer.
+        let model = AppModel()
+        let slow = SlowSpyCameraDeviceProbe(ourDevice(running: false), delay: 0.15)
+        model.cameraDeviceProbe = slow
+        var staleAnswer: Bool?
+        model.checkCameraInUse { staleAnswer = $0 }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.03))
+        slow.status = ourDevice(running: true)
+        expect(model.cameraInUseNow(), "in use at the moment macOS offers the replacement")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        expectEqual(model.cameraDeviceStatus, ourDevice(running: true), "the model keeps the newer reading")
+        expectEqual(staleAnswer, true, "and the earlier question is answered from it")
+        model.stopTimersForTesting()
+    }
+
+    /// A reading that comes back after the state it was asked for has moved on
+    /// decides nothing: the camera being removed while the registration check's
+    /// probe is out must not be followed by that check's verdict.
+    @MainActor
+    static func testADeviceReadThatArrivesLateDecidesNothing() {
+        let model = AppModel()
+        let fake = FakeCameraExtensionActivator(script: [.activating, .active], installed: [ours(enabled: false)])
+        let probe = SlowSpyCameraDeviceProbe(CameraDeviceStatus(), delay: 0.15)   // no device, slowly
+        model.cameraExtension = fake
+        model.cameraDeviceProbe = probe
+        model.coreCommandCaptureForTesting = { _ in }
+        model.cameraRegistrationTimeout = 0.05
+        model.cameraRegistrationPollInterval = 0.02
+        model.setVirtualCamera(enabled: true)       // activates; .active starts the registration check
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(model.cameraExtensionState, .active, "precondition: activation completed")
+        expect(model.cameraDeviceReader.isReading, "precondition: the registration check's probe is out")
+        model.removeVirtualCamera()                 // the operator removes the camera meanwhile
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        expectEqual(model.cameraExtensionState, .notInstalled,
+                    "the late 'no device' reading does not turn a removed camera into Restart your Mac")
+        expectEqual(fake.calls.filter { $0 == "installs" }.count, 0,
+                    "and the abandoned check never asked what is installed")
         model.stopTimersForTesting()
     }
 }

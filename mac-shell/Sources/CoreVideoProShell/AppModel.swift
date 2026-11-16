@@ -546,8 +546,17 @@ final class AppModel: ObservableObject {
     private var cameraExtensionInstallsToken: UUID?
     /// A NEW process's CoreMediaIO view of our camera device (registered? in
     /// use?), never this process's own: see FreshProcessCameraDeviceProbe.
-    /// Tests swap in FakeCameraDeviceProbe.
-    var cameraDeviceProbe: CameraDeviceProbing = FreshProcessCameraDeviceProbe()
+    /// Tests swap in FakeCameraDeviceProbe. A read blocks until that process
+    /// answers, so it is never made here: `cameraDeviceReader` runs every read
+    /// off the main actor, one at a time (readCameraDevice).
+    var cameraDeviceProbe: CameraDeviceProbing {
+        get { cameraDeviceReader.probe }
+        set { cameraDeviceReader.probe = newValue }
+    }
+    let cameraDeviceReader = CameraDeviceReader(probe: FreshProcessCameraDeviceProbe())
+    /// One `.updateReady` retry check at a time: a tick that finds the last
+    /// tick's read still out does nothing.
+    private var cameraUpdateRetryChecking = false
     /// While `.updateReady`, how often the shell re-checks whether the camera
     /// is free and installs the update on its own.
     var cameraUpdateRetryInterval: TimeInterval = 5
@@ -1113,45 +1122,48 @@ final class AppModel: ObservableObject {
                 }
             }
             queryCameraExtensionInstalls { [weak self] installs in
-                guard let self else { return }
-                // Every path below that does not start a swap releases the
-                // hold now; a swap releases it on its result.
-                var startedSwap = false
-                defer { if !startedSwap { self.releaseCameraLaunchHold() } }
-                let action = CameraExtensionPolicy.launchAction(
-                    installs: installs, bundledVersion: CameraExtensionPolicy.bundledVersion,
-                    deviceRegistered: self.readCameraDevice().registered)
-                // A working installed copy is fine from anywhere; anything
-                // that would SUBMIT first passes the preflight (review I2b), so
-                // "Move to Applications" is never hidden behind "Update camera".
-                if action == .update || action == .activate, let blocked = self.cameraExtension.preflightState() {
-                    ShellLog.write("vcam-ext: launch blocked by preflight: \(blocked)")
-                    self.recordCameraExtensionResult("blocked at launch: \(blocked)")
-                    self.setCameraExtensionState(blocked)
-                    return
-                }
-                switch action {
-                case .needsReboot:
-                    ShellLog.write("vcam-ext: version \(CameraExtensionPolicy.bundledVersion) is installed but not enabled, an older copy is uninstalling and no device is registered; restart pending, nothing submitted")
-                    self.recordCameraExtensionResult("restart pending at launch (nothing submitted)")
-                    self.setCameraExtensionState(.needsReboot)
-                case .alreadyActive:
-                    ShellLog.write("vcam-ext: version \(CameraExtensionPolicy.bundledVersion) already active; nothing submitted")
-                    self.recordCameraExtensionResult("already active at launch (nothing submitted)")
-                    self.setCameraExtensionState(.active)
-                case .activate:
-                    startedSwap = true
-                    self.activateCameraExtension()
-                case .update:
-                    if self.cameraInUse() {
-                        // Our output is held (or off), so this is another app.
-                        self.cameraUpdateOthersHolding = true
-                        ShellLog.write("vcam-ext: update to \(CameraExtensionPolicy.bundledVersion) deferred; the camera is in use")
-                        self.recordCameraExtensionResult("update deferred at launch (camera in use)")
-                        self.setCameraExtensionState(.updateReady)
-                    } else {
+                // One device reading decides the whole launch (registered? in use?).
+                self?.readCameraDevice { [weak self] device in
+                    guard let self else { return }
+                    // Every path below that does not start a swap releases the
+                    // hold now; a swap releases it on its result.
+                    var startedSwap = false
+                    defer { if !startedSwap { self.releaseCameraLaunchHold() } }
+                    let action = CameraExtensionPolicy.launchAction(
+                        installs: installs, bundledVersion: CameraExtensionPolicy.bundledVersion,
+                        deviceRegistered: device.registered)
+                    // A working installed copy is fine from anywhere; anything
+                    // that would SUBMIT first passes the preflight (review I2b), so
+                    // "Move to Applications" is never hidden behind "Update camera".
+                    if action == .update || action == .activate, let blocked = self.cameraExtension.preflightState() {
+                        ShellLog.write("vcam-ext: launch blocked by preflight: \(blocked)")
+                        self.recordCameraExtensionResult("blocked at launch: \(blocked)")
+                        self.setCameraExtensionState(blocked)
+                        return
+                    }
+                    switch action {
+                    case .needsReboot:
+                        ShellLog.write("vcam-ext: version \(CameraExtensionPolicy.bundledVersion) is installed but not enabled, an older copy is uninstalling and no device is registered; restart pending, nothing submitted")
+                        self.recordCameraExtensionResult("restart pending at launch (nothing submitted)")
+                        self.setCameraExtensionState(.needsReboot)
+                    case .alreadyActive:
+                        ShellLog.write("vcam-ext: version \(CameraExtensionPolicy.bundledVersion) already active; nothing submitted")
+                        self.recordCameraExtensionResult("already active at launch (nothing submitted)")
+                        self.setCameraExtensionState(.active)
+                    case .activate:
                         startedSwap = true
                         self.activateCameraExtension()
+                    case .update:
+                        if self.cameraInUse(given: device) {
+                            // Our output is held (or off), so this is another app.
+                            self.cameraUpdateOthersHolding = true
+                            ShellLog.write("vcam-ext: update to \(CameraExtensionPolicy.bundledVersion) deferred; the camera is in use")
+                            self.recordCameraExtensionResult("update deferred at launch (camera in use)")
+                            self.setCameraExtensionState(.updateReady)
+                        } else {
+                            startedSwap = true
+                            self.activateCameraExtension()
+                        }
                     }
                 }
             }
@@ -1160,9 +1172,26 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// CameraExtensionPolicy.inUse over a fresh HAL read and our own intent.
-    func cameraInUse() -> Bool {
-        let device = readCameraDevice()
+    /// "Is the camera in use?" over a NEW device reading and our own intent.
+    /// The reading is made off the main actor; `done` runs on it. Whoever asks
+    /// re-checks its own state in `done`: the answer arrives later.
+    func checkCameraInUse(_ done: @escaping @MainActor (Bool) -> Void) {
+        readCameraDevice { [weak self] device in
+            guard let self else { return }
+            done(self.cameraInUse(given: device))
+        }
+    }
+
+    /// The same question answered in place, for the one caller that cannot
+    /// wait: the delegate call in which macOS asks whether to replace the
+    /// installed extension (CameraDeviceReader.readNow; a short bound, once
+    /// per replacement offer). Never from a poll or a timer.
+    func cameraInUseNow() -> Bool {
+        cameraInUse(given: noteCameraDevice(cameraDeviceReader.readNow()))
+    }
+
+    /// CameraExtensionPolicy.inUse over a device reading and our own intent.
+    func cameraInUse(given device: CameraDeviceStatus) -> Bool {
         // Our output off (or held off): a running device is someone else.
         if device.runningSomewhere && (!virtualCamera.enabled || virtualCameraHeldForLaunch) {
             cameraUpdateOthersHolding = true
@@ -1181,11 +1210,12 @@ final class AppModel: ObservableObject {
         cameraExtensionLastResult = what + " (" + ISO8601DateFormatter().string(from: Date()) + ")"
     }
 
-    /// Health tab / support bundle snapshot. The bundle reads the HAL afresh
-    /// (cheap); a view body passes `readDevice: false` and shows the last
-    /// reading (publishing from inside a view update is not allowed).
-    func virtualCameraDiagnostics(readDevice: Bool = true) -> VirtualCameraDiagnostics {
-        let device = readDevice ? readCameraDevice() : cameraDeviceStatus
+    /// Health tab / support bundle snapshot, over the LAST device reading
+    /// (nil = never read). It never reads the device itself: a read blocks,
+    /// and both callers are on the main actor (a view body, and the support
+    /// bundle export). The Health tab asks for a new reading when it appears.
+    func virtualCameraDiagnostics() -> VirtualCameraDiagnostics {
+        let device = cameraDeviceStatus
         return VirtualCameraDiagnostics(
             label: virtualCameraLabel, updateNotice: virtualCameraUpdateNotice,
             state: cameraExtensionState, optedIn: cameraExtensionOptedIn,
@@ -1200,15 +1230,24 @@ final class AppModel: ObservableObject {
     /// unless another installed-copies question is already in flight (that one
     /// owns the token and its answer lands in `cameraExtensionInstalls` too).
     func refreshCameraExtensionDiagnostics() {
-        readCameraDevice()
+        readCameraDevice { _ in }
         guard cameraExtensionInstallsToken == nil else { return }
         queryCameraExtensionInstalls { _ in }
     }
 
-    /// One read from a new process, remembered for the Health tab and the support bundle.
+    /// One read from a new process, made off the main actor (it is a
+    /// spawn-and-wait of up to 2 s; CameraDeviceReader) and remembered for the
+    /// Health tab and the support bundle. `done` runs on the main actor with a
+    /// reading that started after this call.
+    func readCameraDevice(_ done: @escaping @MainActor (CameraDeviceStatus) -> Void) {
+        cameraDeviceReader.read { [weak self] status in
+            guard let self else { return }
+            done(self.noteCameraDevice(status))
+        }
+    }
+
     @discardableResult
-    func readCameraDevice() -> CameraDeviceStatus {
-        let status = cameraDeviceProbe.read()
+    private func noteCameraDevice(_ status: CameraDeviceStatus) -> CameraDeviceStatus {
         if status != cameraDeviceStatus { cameraDeviceStatus = status }
         // Nobody on the camera right now: whoever held it has let go.
         if !status.runningSomewhere && cameraUpdateOthersHolding { cameraUpdateOthersHolding = false }
@@ -1229,13 +1268,19 @@ final class AppModel: ObservableObject {
         virtualCameraLostSince = since
         guard !virtualCameraLostRechecked, Date().timeIntervalSince(since) >= cameraLostRecheckAfter else { return }
         virtualCameraLostRechecked = true
-        if readCameraDevice().isOurs(CameraExtensionPolicy.bundledVersion) { return }
-        ShellLog.write("vcam-ext: the core has not reached the camera for \(cameraLostRecheckAfter) s; checking what is installed")
-        queryCameraExtensionInstalls { [weak self] installs in
-            guard let self, self.cameraExtensionState == .active else { return }
-            if CameraExtensionPolicy.needsReboot(unregisteredWith: installs,
-                                                 bundledVersion: CameraExtensionPolicy.bundledVersion) {
-                self.setCameraExtensionState(.needsReboot)
+        let recheckAfter = cameraLostRecheckAfter
+        readCameraDevice { [weak self] device in
+            // Decided when the reading arrives: the loss may have ended, or
+            // the state moved on, while the probe ran.
+            guard let self, self.virtualCameraLostSince != nil, self.cameraExtensionState == .active,
+                  !device.isOurs(CameraExtensionPolicy.bundledVersion) else { return }
+            ShellLog.write("vcam-ext: the core has not reached the camera for \(recheckAfter) s; checking what is installed")
+            self.queryCameraExtensionInstalls { [weak self] installs in
+                guard let self, self.cameraExtensionState == .active else { return }
+                if CameraExtensionPolicy.needsReboot(unregisteredWith: installs,
+                                                     bundledVersion: CameraExtensionPolicy.bundledVersion) {
+                    self.setCameraExtensionState(.needsReboot)
+                }
             }
         }
     }
@@ -1253,9 +1298,18 @@ final class AppModel: ObservableObject {
 
     private func pollCameraRegistration(token: UUID, deadline: Date) {
         guard cameraRegistrationToken == token, cameraExtensionState == .active else { return }
+        readCameraDevice { [weak self] device in
+            self?.cameraRegistrationRead(device, token: token, deadline: deadline)
+        }
+    }
+
+    /// The token is checked again here: a reading that comes back after a
+    /// newer check started (or after the state left `.active`) decides nothing.
+    private func cameraRegistrationRead(_ device: CameraDeviceStatus, token: UUID, deadline: Date) {
+        guard cameraRegistrationToken == token, cameraExtensionState == .active else { return }
         // OUR version's device, not merely "a device": the old copy's device
         // has the same UID and lingers while its process exits (review I4).
-        if readCameraDevice().isOurs(CameraExtensionPolicy.bundledVersion) {
+        if device.isOurs(CameraExtensionPolicy.bundledVersion) {
             cameraRegistrationToken = nil
             ShellLog.write("vcam-ext: device registered (version \(CameraExtensionPolicy.bundledVersion))")
             return
@@ -1282,9 +1336,17 @@ final class AppModel: ObservableObject {
 
     /// The `.updateReady` retry: the 5 s timer, and our intent turning off.
     func retryCameraUpdateIfFree() {
-        guard cameraExtensionState == .updateReady, !cameraUpdateInProgress, !cameraInUse() else { return }
-        ShellLog.write("vcam-ext: the camera is free; installing the update")
-        activateCameraExtension()
+        guard cameraExtensionState == .updateReady, !cameraUpdateInProgress, !cameraUpdateRetryChecking else { return }
+        cameraUpdateRetryChecking = true
+        checkCameraInUse { [weak self] inUse in
+            guard let self else { return }
+            self.cameraUpdateRetryChecking = false
+            // Still the state this check was made for (an operator's Update
+            // camera, or another result, may have landed meanwhile).
+            guard self.cameraExtensionState == .updateReady, !self.cameraUpdateInProgress, !inUse else { return }
+            ShellLog.write("vcam-ext: the camera is free; installing the update")
+            self.activateCameraExtension()
+        }
     }
 
     /// The "Update camera" button. The operator asked, so our OWN output is
@@ -1304,15 +1366,31 @@ final class AppModel: ObservableObject {
     }
 
     private func waitForCameraRelease(until deadline: Date) {
+        guard cameraUpdateStillWaitingForRelease() else { return }
+        checkCameraInUse { [weak self] inUse in
+            self?.cameraReleaseRead(inUse: inUse, deadline: deadline)
+        }
+    }
+
+    /// False once this Update camera is no longer waiting on the device (and
+    /// then it has been finished, unless the replacement owns the ending).
+    private func cameraUpdateStillWaitingForRelease() -> Bool {
+        guard cameraUpdateInProgress else { return false }
         guard cameraExtensionState == .updateReady else {
             // The replacement is in flight: its result finishes the update
             // (resuming our output now would put it back on the device that
             // is being swapped, and the delegate would refuse the swap).
-            if cameraExtensionState == .activating { return }
+            if cameraExtensionState == .activating { return false }
             finishCameraUpdate()
-            return
+            return false
         }
-        if !cameraInUse() {
+        return true
+    }
+
+    /// Checked again here: the state may have moved while the probe ran.
+    private func cameraReleaseRead(inUse: Bool, deadline: Date) {
+        guard cameraUpdateStillWaitingForRelease() else { return }
+        if !inUse {
             activateCameraExtension()
             return
         }
@@ -1382,7 +1460,7 @@ final class AppModel: ObservableObject {
         cameraExtensionQueryToken = nil  // an activation outranks any pending query
         // Re-checked at the moment macOS offers the replacement (main queue).
         let inUse: () -> Bool = { [weak self] in
-            MainActor.assumeIsolated { self?.cameraInUse() ?? false }
+            MainActor.assumeIsolated { self?.cameraInUseNow() ?? false }
         }
         cameraExtension.activate(deferringReplacementWhile: inUse) { [weak self] state in
             Task { @MainActor in

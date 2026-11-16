@@ -72,8 +72,106 @@ struct CameraDeviceStatus: Equatable {
 }
 
 /// The device probe behind a protocol: CI has no camera device to look at.
+///
+/// `read()` may BLOCK (the real probe starts a process and waits up to 2 s for
+/// its answer), so nothing on the main actor calls it: reads go through
+/// CameraDeviceReader, which runs them on its own queue.
 protocol CameraDeviceProbing: AnyObject {
     func read() -> CameraDeviceStatus
+    /// The one read that has to answer in place (CameraDeviceReader.readNow):
+    /// the same reading under a short bound. Default: `read()`.
+    func quickRead() -> CameraDeviceStatus
+}
+
+extension CameraDeviceProbing {
+    func quickRead() -> CameraDeviceStatus { read() }
+}
+
+/// Every device read the shell makes, off the main actor and one at a time.
+///
+/// The probe is a spawn-and-wait. On the main actor that froze the operator UI
+/// for as long as the probe took (up to its 2 s timeout) on every 0.5 s poll
+/// and every 5 s `.updateReady` retry, and an operator with a frozen UI cannot
+/// cut (review finding 1, 2026-11-16). So:
+///
+///   * `read` returns at once; the probe runs on `queue` and the result comes
+///     back on the main actor.
+///   * No overlapping probes. A request made while one is in flight does not
+///     join it (that reading began before the request, so it could report a
+///     camera free that has since been taken); it waits for ONE follow-up
+///     probe, shared by everything asked meanwhile. At most one probe runs and
+///     at most one is owed, however fast the callers poll.
+///   * Every reading has a ticket in start order. A result older than the
+///     newest one applied (an asynchronous probe that `readNow` overtook) is
+///     dropped: `latest` never goes backwards, and that probe's callers get
+///     the newer reading.
+///
+/// The decisions made from a reading stay pure (CameraExtensionPolicy); the
+/// caller re-checks its own state when the answer arrives.
+@MainActor
+final class CameraDeviceReader {
+    typealias Answer = @MainActor (CameraDeviceStatus) -> Void
+
+    var probe: CameraDeviceProbing
+    /// The newest reading applied; nil = never read.
+    private(set) var latest: CameraDeviceStatus?
+    private let queue = DispatchQueue(label: "us.iamfatness.corevideopro.shell.camera-device-probe",
+                                      qos: .userInitiated)
+    private var inFlight: [Answer]?
+    private var owed: [Answer] = []
+    private var lastTicket = 0
+    private var appliedTicket = 0
+
+    init(probe: CameraDeviceProbing) { self.probe = probe }
+
+    /// True while a probe is running (diagnostics and tests).
+    var isReading: Bool { inFlight != nil }
+
+    /// A reading that STARTS after this call, delivered on the main actor.
+    func read(_ done: @escaping Answer) {
+        owed.append(done)
+        startIfIdle()
+    }
+
+    /// A reading in place, for the single caller that cannot wait: macOS asks
+    /// "replace the installed extension?" in a delegate call that must return
+    /// its answer. Blocks the main actor for at most the probe's short bound,
+    /// once per replacement offer; never use it for a poll or a timer.
+    func readNow() -> CameraDeviceStatus {
+        lastTicket += 1
+        return apply(probe.quickRead(), ticket: lastTicket)
+    }
+
+    private func startIfIdle() {
+        guard inFlight == nil, !owed.isEmpty else { return }
+        inFlight = owed
+        owed = []
+        lastTicket += 1
+        let ticket = lastTicket
+        let probe = self.probe
+        queue.async { [weak self] in
+            let status = probe.read()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.finish(status, ticket: ticket) }
+            }
+        }
+    }
+
+    private func finish(_ status: CameraDeviceStatus, ticket: Int) {
+        let waiting = inFlight ?? []
+        inFlight = nil
+        let current = apply(status, ticket: ticket)
+        for done in waiting { done(current) }
+        startIfIdle()
+    }
+
+    /// The newest reading wins; a superseded one changes nothing.
+    private func apply(_ status: CameraDeviceStatus, ticket: Int) -> CameraDeviceStatus {
+        guard ticket > appliedTicket else { return latest ?? status }
+        appliedTicket = ticket
+        latest = status
+        return status
+    }
 }
 
 /// `status` is everything except our own core: registration and OTHER apps'
@@ -83,28 +181,45 @@ protocol CameraDeviceProbing: AnyObject {
 /// reads after an `on:false`, because CMIODeviceStopStream lands a moment
 /// after the command. A fake that reads "not running" while our output is on
 /// tests a state the real HAL never produces.
+///
+/// Read on CameraDeviceReader's queue and scripted from the main thread, so
+/// its state sits behind a lock.
 final class FakeCameraDeviceProbe: CameraDeviceProbing {
-    var status: CameraDeviceStatus
-    var releaseAfterReads = 2
-    private(set) var reads = 0
-    private(set) var ownStreaming = false
+    private let lock = NSLock()
+    private var _status: CameraDeviceStatus
+    private var _reads = 0
+    private var _ownStreaming = false
     private var readsSinceOff: Int?
+    var releaseAfterReads = 2
 
-    init(_ status: CameraDeviceStatus = CameraDeviceStatus()) { self.status = status }
+    init(_ status: CameraDeviceStatus = CameraDeviceStatus()) { _status = status }
+
+    private func locked<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
+
+    var status: CameraDeviceStatus {
+        get { locked { _status } }
+        set { locked { _status = newValue } }
+    }
+    var reads: Int { locked { _reads } }
+    var ownStreaming: Bool { locked { _ownStreaming } }
 
     func read() -> CameraDeviceStatus {
-        reads += 1
-        if let n = readsSinceOff {
-            if n >= releaseAfterReads { ownStreaming = false; readsSinceOff = nil } else { readsSinceOff = n + 1 }
+        locked {
+            _reads += 1
+            if let n = readsSinceOff {
+                if n >= releaseAfterReads { _ownStreaming = false; readsSinceOff = nil } else { readsSinceOff = n + 1 }
+            }
+            var s = _status
+            s.runningSomewhere = s.runningSomewhere || _ownStreaming
+            return s
         }
-        var s = status
-        s.runningSomewhere = s.runningSomewhere || ownStreaming
-        return s
     }
 
     /// Our core started (on:true) or was told to stop (on:false) its sink stream.
     func wire(on: Bool) {
-        if on { ownStreaming = true; readsSinceOff = nil } else if ownStreaming, readsSinceOff == nil { readsSinceOff = 0 }
+        locked {
+            if on { _ownStreaming = true; readsSinceOff = nil } else if _ownStreaming, readsSinceOff == nil { readsSinceOff = 0 }
+        }
     }
 
     /// Feed a captured core command body (`coreCommandCaptureForTesting`).
@@ -152,6 +267,10 @@ final class FreshProcessCameraDeviceProbe: CameraDeviceProbing {
     private let executable: () -> String?
     private let arguments: [String]
     private let timeout: TimeInterval
+    /// `quickRead`'s bound: the probe answers in about 20 ms, and an answer
+    /// that does not come in this long is `unreadable`, which counts as in use.
+    static let quickTimeout: TimeInterval = 0.5
+    private let failureLock = NSLock()   // read() runs off the main actor, quickRead() on it
     private var lastFailure: String?
 
     /// The core the shell launches (or would launch). The test harness sets
@@ -166,17 +285,23 @@ final class FreshProcessCameraDeviceProbe: CameraDeviceProbing {
         self.timeout = timeout
     }
 
-    func read() -> CameraDeviceStatus {
+    /// Blocks for up to `timeout`: call it through CameraDeviceReader, never
+    /// on the main actor.
+    func read() -> CameraDeviceStatus { read(within: timeout) }
+
+    func quickRead() -> CameraDeviceStatus { read(within: min(timeout, Self.quickTimeout)) }
+
+    private func read(within limit: TimeInterval) -> CameraDeviceStatus {
         let result: Result<String, ProbeError>
         if let path = executable() {
-            result = Self.run(path, arguments, timeout: timeout)
+            result = Self.run(path, arguments, timeout: limit)
         } else {
             result = .failure(ProbeError("no core executable to ask"))
         }
         switch result {
         case .success(let output):
             if let status = CameraDeviceProbeReport.parse(output) {
-                lastFailure = nil
+                failureLock.lock(); lastFailure = nil; failureLock.unlock()
                 return status
             }
             return failed("the probe's answer was not understood")
@@ -187,9 +312,14 @@ final class FreshProcessCameraDeviceProbe: CameraDeviceProbing {
 
     /// Logged when it changes, not on every poll.
     private func failed(_ why: String) -> CameraDeviceStatus {
-        if lastFailure != why {
-            lastFailure = why
-            ShellLog.write("vcam-ext: could not read the camera device from a new process: \(why)")
+        failureLock.lock()
+        let changed = lastFailure != why
+        lastFailure = why
+        failureLock.unlock()
+        if changed {
+            let line = "vcam-ext: could not read the camera device from a new process: \(why)"
+            // The shell log is written from the main thread only.
+            if Thread.isMainThread { ShellLog.write(line) } else { DispatchQueue.main.async { ShellLog.write(line) } }
         }
         return .unreadable(why)
     }
@@ -199,9 +329,10 @@ final class FreshProcessCameraDeviceProbe: CameraDeviceProbing {
         init(_ message: String) { self.message = message }
     }
 
-    /// Runs `path` and returns its stdout. posix_spawn and waitpid, never
-    /// Process.waitUntilExit: that spins the caller's run loop, and callers
-    /// are on the main actor in the middle of a decision.
+    /// Runs `path` and returns its stdout, blocking until it exits or
+    /// `timeout` passes. posix_spawn and waitpid, never Process.waitUntilExit:
+    /// that spins the caller's run loop, and the one in-place caller
+    /// (`quickRead`) is on the main actor in the middle of a decision.
     static func run(_ path: String, _ arguments: [String], timeout: TimeInterval) -> Result<String, ProbeError> {
         var fds: [Int32] = [0, 0]
         guard pipe(&fds) == 0 else { return .failure(ProbeError("pipe failed (errno \(errno))")) }

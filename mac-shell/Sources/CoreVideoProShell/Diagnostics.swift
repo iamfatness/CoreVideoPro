@@ -913,7 +913,7 @@ struct DiagnosePane: View {
     // ── virtual camera (no-support-ticket updates, 2026-11-15) ───────────────
 
     private var virtualCameraItems: [DiagItem] {
-        let diag = model.virtualCameraDiagnostics(readDevice: false)
+        let diag = model.virtualCameraDiagnostics()
         return diag.rows.map { row in
             let tone: DiagTone
             switch (row.label, diag.state) {
