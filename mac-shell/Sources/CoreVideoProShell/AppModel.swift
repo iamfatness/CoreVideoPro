@@ -427,6 +427,16 @@ final class AppModel: ObservableObject {
     /// snapshot says so: an unknown state disables clip Cue/Play honestly.
     @Published private(set) var mediaClipPlaybackAvailable = false
     @Published private(set) var mediaPlayback: MediaPlaybackReadModel?
+    /// The selection's play flag: the core's row when the clip is on Program, the
+    /// local audition otherwise.
+    @Published private(set) var selectedMediaPlaying = false
+    /// The live set, the only bin-wide play-state scalar (rows read it).
+    @Published private(set) var mediaLiveSignature = ""
+    private var lastSelectedTransportState: String?
+    private let mediaTransportGestures = MediaTransportGestureLedger()
+    /// Test seam for the one-shot transport gesture; nil = the real core request.
+    var mediaTransportSendForTesting: ((JSONObject) async throws -> JSONObject)?
+    static let mediaTransportRetryDelayNs: UInt64 = 120_000_000
     private var mediaDurationProbeGeneration = 0
     @Published var logoBug: MediaAsset? {  // rides every scene as a top-right route
         didSet { mediaAudioSceneChanged(oldValue?.id != logoBug?.id) }
@@ -3889,8 +3899,102 @@ final class AppModel: ObservableObject {
     func selectMediaAsset(_ id: String) {
         guard let asset = mediaAssets.first(where: { $0.id == id }) else { return }
         selectedAssetId = asset.id
+        // The flag is the REAL on-air state, so selecting a rolling Program clip
+        // reads "Pause Program" and never pauses it.
+        selectedMediaPlaying = asset.supportsPlayback && MediaRoutePlayback.isPlayingOnAir(asset.id, rows: mediaSources)
         mediaStatus = "\(asset.name) ready to cue or audition"
         syncScenes()   // the selection rides the batch as set-media-playback
+    }
+
+    // ── Play / Pause (Windows PlayMediaAsset / ToggleSelectedMediaPlayback) ──
+
+    private func mediaAssetIsOnProgram(_ id: String) -> Bool {
+        MediaRoutePlayback.isRoutedOnProgram(id, programRoutes: buildRoutes(for: programSceneId, isProgram: true))
+    }
+
+    var mediaPlaybackButtonLabel: String {
+        MediaRoutePlayback.actionLabel(isOnProgram: mediaAssetIsOnProgram(selectedAssetId), playing: selectedMediaPlaying)
+    }
+
+    func toggleSelectedMediaPlayback() {
+        guard !selectedAssetId.isEmpty else {
+            mediaStatus = "Select a media asset before playback"
+            return
+        }
+        playMediaAsset(selectedAssetId)
+    }
+
+    /// A tap on a clip. On Program it pauses or resumes ON AIR through a one-shot
+    /// gesture; off Program it toggles the muted local audition and sends nothing.
+    func playMediaAsset(_ id: String) {
+        guard let asset = mediaAssets.first(where: { $0.id == id }) else { return }
+        let sameAsset = selectedAssetId == asset.id
+        let isOnProgram = mediaAssetIsOnProgram(asset.id)
+        let tap = MediaRoutePlayback.resolveTap(
+            isOnProgram: isOnProgram, isLooping: MediaRoutePlayback.isLoopingKind(asset.kind),
+            state: MediaRoutePlayback.resolveTransportState(asset.id, rows: mediaSources))
+        selectedAssetId = asset.id
+        switch tap {
+        case .pause:
+            sendMediaTransportGesture(asset.id, action: "pause")
+            selectedMediaPlaying = false
+        case .resume:
+            sendMediaTransportGesture(asset.id, action: "play")
+            selectedMediaPlaying = true
+        case .select:
+            selectedMediaPlaying = !(sameAsset && selectedMediaPlaying)
+        }
+        mediaStatus = isOnProgram
+            ? (selectedMediaPlaying ? "Playing \(asset.name) on Program" : "\(asset.name) paused on Program")
+            : (selectedMediaPlaying ? "Auditioning \(asset.name)" : "\(asset.name) audition paused")
+        syncScenes()   // the selection rides the batch; the gesture never does
+    }
+
+    private func mediaAssetLabel(_ id: String) -> String {
+        mediaAssets.first { $0.id == id }?.name ?? id
+    }
+
+    /// ONE-SHOT: never part of sceneSyncBatch, never re-sent on a core respawn.
+    private func sendMediaTransportGesture(_ id: String, action: String) {
+        let token = mediaTransportGestures.claim(id)
+        attemptMediaTransportGesture(id, action: action, token: token, attempt: 0)
+    }
+
+    private func attemptMediaTransportGesture(_ id: String, action: String, token: Int64, attempt: Int) {
+        // Asked again before EVERY send: a re-armed retry must not land after a newer tap.
+        guard mediaTransportGestures.shouldSend(id, token) else { return }
+        let body = CoreCommands.mediaCoreSync(elapsedMs: Double(elapsedMs()), commands: [
+            ["type": "set-media-transport", "mediaAssetId": id, "action": action],
+        ])
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let response: JSONObject
+                if let seam = self.mediaTransportSendForTesting { response = try await seam(body) }
+                else { response = try await self.outputRequest(body) }
+                self.mediaTransportGestures.release(id, token)
+                if let snapshot = response["snapshot"] as? JSONObject { self.applySnapshot(snapshot) }
+            } catch BridgeError.remote(let message) {
+                // The core answered and said no: a refusal, not backpressure. Never retried.
+                if self.mediaTransportGestures.release(id, token) {
+                    self.mediaStatus = "Could not \(action) \(self.mediaAssetLabel(id)); "
+                        + "the media core rejected it. \(message)"
+                }
+            } catch {
+                // .timeout / .notRunning / .processExited: the Mac's "skipped" (plan default D8).
+                switch self.mediaTransportGestures.onSkipped(id, token, attempt: attempt) {
+                case .superseded:
+                    break
+                case .retry:
+                    try? await Task.sleep(nanoseconds: Self.mediaTransportRetryDelayNs)
+                    self.attemptMediaTransportGesture(id, action: action, token: token, attempt: attempt + 1)
+                case .giveUp:
+                    ShellLog.write("media: \(action) for \(id) was skipped \(attempt + 1) times; giving up")
+                    self.mediaStatus = "Could not \(action) \(self.mediaAssetLabel(id)) - "
+                        + "the media core stayed busy. Press it again."
+                }
+            }
+        }
     }
 
     // ── Cue in Preview (Windows AddSelectedMediaAssetToPreview) ─────────────
@@ -3954,7 +4058,7 @@ final class AppModel: ObservableObject {
             isOnProgram: MediaRoutePlayback.isRoutedOnProgram(
                 asset.id, programRoutes: buildRoutes(for: programSceneId, isProgram: true)),
             isCuedInPreview: MediaRoutePlayback.isRoutedOnProgram(asset.id, programRoutes: buildRoutes(for: previewSceneId)),
-            playing: false)   // S2 (Task 12) binds the on-air flag
+            playing: selectedMediaPlaying)
     }
 
     /// Every assignment is change-gated: snapshots arrive several times a second
@@ -3967,6 +4071,27 @@ final class AppModel: ObservableObject {
             if available != mediaClipPlaybackAvailable { mediaClipPlaybackAvailable = available }
         }
         if let playback = MediaPlaybackReadModel.parse(snapshot), playback != mediaPlayback { mediaPlayback = playback }
+        // The core's rows own the selected flag while the clip is on Program.
+        let selected = selectedMediaAsset
+        let projection = MediaBinPlaybackProjection.resolve(
+            rows: mediaSources, lastLiveSignature: mediaLiveSignature,
+            lastSelectedTransportState: lastSelectedTransportState,
+            selectedId: selected?.id, selectedName: selected?.name, selectedPlaying: selectedMediaPlaying)
+        if projection.rewriteBinScalars { mediaLiveSignature = projection.liveSignature }
+        lastSelectedTransportState = projection.selectedTransportState
+        if projection.rewriteSelection {
+            if projection.selectedPlaying != selectedMediaPlaying { selectedMediaPlaying = projection.selectedPlaying }
+            if let status = projection.selectedStatus, status != mediaStatus { mediaStatus = status }
+        }
+        // A refused gesture: the core says why in programFrame.warnings
+        // (MediaTransportPolicy.h: "... is a loop ..." / "... is not on Program ...").
+        if let selected, let warnings = (snapshot["programFrame"] as? JSONObject)?["warnings"] as? [String] {
+            let prefixes = ["media:\(selected.id) is a loop", "media:\(selected.id) is not on Program"]
+            if let refusal = warnings.first(where: { warning in prefixes.contains { warning.hasPrefix($0) } }),
+               refusal != mediaStatus {
+                mediaStatus = refusal
+            }
+        }
     }
 
     /// Everything that still uses an asset, in `scenes` order, a scene's layers

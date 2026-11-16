@@ -112,3 +112,133 @@ enum MediaRoutePlayback {
     static let webmRefusal =
         "AVFoundation cannot open .webm files; WebM playback on Mac needs FFmpeg, which this build does not use yet."
 }
+
+// ── Play / Pause (S2) ────────────────────────────────────────────────────────
+
+extension MediaRoutePlayback {
+    enum TapAction: Equatable { case select, pause, resume }
+
+    /// Windows ResolveTap. Only a non-looping clip ON PROGRAM is paused or resumed,
+    /// and only from a state the core reported: an unknown or missing state is a
+    /// selection, never a guess.
+    static func resolveTap(isOnProgram: Bool, isLooping: Bool, state: String?) -> TapAction {
+        guard isOnProgram, !isLooping else { return .select }
+        if state == "live" { return .pause }
+        return state == "paused" || state == "ended" ? .resume : .select
+    }
+
+    /// Windows ResolveTransportRow: the route row (`media:<assetId>`) wins when an
+    /// asset is both a route and a scene background; otherwise the first row for
+    /// the asset, preferring a live one.
+    static func resolveTransportRow(_ assetId: String?, rows: [MediaSourceRow]) -> MediaSourceRow? {
+        guard let assetId, !assetId.trimmingCharacters(in: .whitespaces).isEmpty, !rows.isEmpty else { return nil }
+        let routeSourceId = "media:" + assetId
+        var fallback: MediaSourceRow?
+        for row in rows where row.mediaAssetId == assetId {
+            if row.sourceId == routeSourceId { return row }
+            if fallback == nil || row.state == "live" { fallback = row }
+        }
+        return fallback
+    }
+
+    static func resolveTransportState(_ assetId: String?, rows: [MediaSourceRow]) -> String? {
+        resolveTransportRow(assetId, rows: rows)?.state
+    }
+
+    /// The real on-air state, from the core's row; never "is it the selection".
+    static func isPlayingOnAir(_ assetId: String, rows: [MediaSourceRow]) -> Bool {
+        resolveTransportState(assetId, rows: rows) == "live"
+    }
+
+    /// StudioViewModel.FormatMediaPlaybackActionLabel.
+    static func actionLabel(isOnProgram: Bool, playing: Bool) -> String {
+        isOnProgram ? (playing ? "Pause Program" : "Resume Program") : (playing ? "Pause audition" : "Audition")
+    }
+}
+
+/// Windows MediaBinPlaybackProjection: what a snapshot may rewrite on the Media
+/// tab. A row on Program OWNS the selected flag; a Preview-only row or no row
+/// never clears a local audition; nothing is rewritten when nothing moved.
+enum MediaBinPlaybackProjection {
+    struct Result: Equatable {
+        let liveSignature: String
+        let rewriteBinScalars: Bool
+        let rewriteSelection: Bool
+        let selectedPlaying: Bool
+        let selectedStatus: String?
+        let selectedTransportState: String?
+    }
+
+    static func resolve(rows: [MediaSourceRow], lastLiveSignature: String, lastSelectedTransportState: String?,
+                        selectedId: String?, selectedName: String?, selectedPlaying: Bool) -> Result {
+        let signature = liveSignature(rows)
+        let rewriteBinScalars = lastLiveSignature != signature
+        guard let row = MediaRoutePlayback.resolveTransportRow(selectedId, rows: rows), row.onProgram else {
+            return Result(liveSignature: signature, rewriteBinScalars: rewriteBinScalars, rewriteSelection: false,
+                          selectedPlaying: selectedPlaying, selectedStatus: nil, selectedTransportState: nil)
+        }
+        let playing = row.state == "live"
+        let stateMoved = lastSelectedTransportState != row.state
+        if playing == selectedPlaying && !stateMoved {
+            return Result(liveSignature: signature, rewriteBinScalars: rewriteBinScalars, rewriteSelection: false,
+                          selectedPlaying: selectedPlaying, selectedStatus: nil, selectedTransportState: row.state)
+        }
+        let trimmed = (selectedName ?? "").trimmingCharacters(in: .whitespaces)
+        let name = trimmed.isEmpty ? (selectedId ?? "") : (selectedName ?? "")
+        let status: String? = name.isEmpty ? nil
+            : playing ? "Playing \(name) on Program"
+            : row.state == "ended" ? "\(name) ended on Program" : "\(name) paused on Program"
+        return Result(liveSignature: signature, rewriteBinScalars: rewriteBinScalars, rewriteSelection: true,
+                      selectedPlaying: playing, selectedStatus: status, selectedTransportState: row.state)
+    }
+
+    /// One expression for a bin row's play indicator: on air, or the local audition.
+    static func binRowIsPlaying(_ assetId: String, supportsPlayback: Bool, rows: [MediaSourceRow],
+                                selectedId: String?, selectedPlaying: Bool) -> Bool {
+        (supportsPlayback && MediaRoutePlayback.isPlayingOnAir(assetId, rows: rows))
+            || (selectedPlaying && assetId == selectedId)
+    }
+
+    /// The live set, order-independent: the only bin-wide play-state scalar.
+    static func liveSignature(_ rows: [MediaSourceRow]) -> String {
+        rows.filter { $0.state == "live" }.map { $0.mediaAssetId ?? $0.sourceId }.sorted().joined(separator: "|")
+    }
+}
+
+/// Windows MediaTransportGestureLedger: one slot per asset, newest tap wins. A
+/// pause/play is a ONE-SHOT gesture (never part of the repeating scene sync), so
+/// a send that was skipped is re-armed; but a re-armed send must never land
+/// after a newer tap, or the clip would flip back on air.
+final class MediaTransportGestureLedger {
+    enum Step: Equatable { case superseded, retry, giveUp }
+
+    private var current: [String: Int64] = [:]
+    private var sequence: Int64 = 0
+    private let retryAttempts: Int
+
+    init(retryAttempts: Int = 5) { self.retryAttempts = retryAttempts }
+
+    func claim(_ assetId: String) -> Int64 {
+        sequence += 1
+        current[assetId] = sequence
+        return sequence
+    }
+
+    func shouldSend(_ assetId: String, _ token: Int64) -> Bool { current[assetId] == token }
+
+    func onSkipped(_ assetId: String, _ token: Int64, attempt: Int) -> Step {
+        guard shouldSend(assetId, token) else { return .superseded }
+        if attempt >= retryAttempts {
+            current[assetId] = nil
+            return .giveUp
+        }
+        return .retry
+    }
+
+    @discardableResult
+    func release(_ assetId: String, _ token: Int64) -> Bool {
+        guard shouldSend(assetId, token) else { return false }
+        current[assetId] = nil
+        return true
+    }
+}

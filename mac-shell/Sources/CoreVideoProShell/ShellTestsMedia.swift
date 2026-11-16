@@ -30,6 +30,16 @@ extension ShellTests {
             ("media-cue/refuses-clip-without-capability", testCueRefusesAClipWhenTheBuildCannotPlayClipsButCuesStills),
             ("media-cue/refuses-solo-preview", testCueRefusesASoloPreview),
             ("media-cue/selected-summary-windows-wording", testSelectedSummaryIsWindowsWording),
+            ("media-play/resolve-tap", testResolveTap),
+            ("media-play/transport-state-and-on-air", testResolveTransportStateAndOnAir),
+            ("media-play/bin-playback-projection", testMediaBinPlaybackProjection),
+            ("media-play/transport-gesture-ledger", testMediaTransportGestureLedger),
+            ("media-play/one-shot-gestures-retry-only-latest", testPlayMediaAssetSendsOneShotGesturesAndRetriesOnlyTheLatest),
+            ("media-play/busy-gesture-gives-up-visibly", testAGestureThatStaysBusyGivesUpVisibly),
+            ("media-play/off-program-tap-is-local-audition", testAnOffProgramTapIsALocalAuditionAndSendsNothing),
+            ("media-play/armed-retry-dropped-by-newer-tap", testAnArmedRetryIsDroppedWhenANewerTapLands),
+            ("media-play/remote-rejection-sends-once", testARemoteRejectionSendsOnceAndSaysSo),
+            ("media-play/toggle-without-selection", testToggleWithoutASelectionSaysSo),
         ]
     }
 
@@ -437,6 +447,253 @@ extension ShellTests {
                     "Sting cued in Preview", "cued")
         expectEqual(P.selectedSummary(name: "Sting", isOnProgram: false, isCuedInPreview: false, playing: false),
                     "Sting ready to cue", "idle")
+    }
+
+    // ── Task 12: Play/Pause - tap rules, projection, gesture ledger (S2) ────
+
+    static func row(_ source: String, _ asset: String, _ state: String,
+                            onProgram: Bool = true, onPreview: Bool = false) -> MediaSourceRow {
+        MediaSourceRow(sourceId: source, mediaAssetId: asset, state: state, loop: source.hasPrefix("background:"),
+                       onProgram: onProgram, onPreview: onPreview, positionMs: 0, durationMs: -1,
+                       decodedVideoFrames: nil, lastDecodedAgeMs: nil, presentedVideoFrames: nil,
+                       lastPresentedAgeMs: nil, videoQueued: nil, decoderRestarts: nil)
+    }
+
+    // MediaRoutePlaybackServiceTests (Windows) — names kept.
+    private static func testResolveTap() {
+        typealias P = MediaRoutePlayback
+        expectEqual(P.resolveTap(isOnProgram: true, isLooping: false, state: "live"), .pause, "ResolveTap_ALiveProgramClipPauses")
+        expectEqual(P.resolveTap(isOnProgram: true, isLooping: false, state: "paused"), .resume, "ResolveTap_APausedOrEndedProgramClipResumes/paused")
+        expectEqual(P.resolveTap(isOnProgram: true, isLooping: false, state: "ended"), .resume, "…/ended")
+        expectEqual(P.resolveTap(isOnProgram: false, isLooping: false, state: "live"), .select, "ResolveTap_AClipNotOnProgramIsJustSelected")
+        expectEqual(P.resolveTap(isOnProgram: true, isLooping: true, state: "live"), .select, "ResolveTap_ALoopOnProgramIsJustSelectedNeverPaused")
+        expectEqual(P.resolveTap(isOnProgram: true, isLooping: false, state: nil), .select, "ResolveTap_AnUnknownOrMissingStateIsJustSelected/nil")
+        expectEqual(P.resolveTap(isOnProgram: true, isLooping: false, state: "unavailable"), .select, "…/unavailable")
+    }
+    private static func testResolveTransportStateAndOnAir() {
+        typealias P = MediaRoutePlayback
+        expectEqual(P.resolveTransportState("clip", rows: [row("media:clip", "clip", "paused")]), "paused",
+                    "ResolveTransportState_ReturnsTheRowsStateForTheAsset")
+        expect(P.resolveTransportState("clip", rows: []) == nil, "ResolveTransportState_ReturnsNullWhenTheCoreHasNoRow")
+        expect(P.resolveTransportState(nil, rows: [row("media:clip", "clip", "live")]) == nil, "…/nil asset")
+        let both = [row("background:clip", "clip", "live"), row("media:clip", "clip", "paused")]
+        expectEqual(P.resolveTransportState("clip", rows: both), "paused",
+                    "ResolveTransportState_TheRouteRowWinsWhenAnAssetIsBothARouteAndABackground")
+        expectEqual(P.resolveTransportState("bg", rows: [row("background:bg", "bg", "live")]), "live",
+                    "ResolveTransportState_ABackgroundRowStillAnswersWhenTheAssetHasNoRoute")
+        expectEqual(P.resolveTap(isOnProgram: true, isLooping: false, state: P.resolveTransportState("clip", rows: both)),
+                    .resume, "ResolveTap_ALiveBackgroundRowCannotMakeAPausedClipLookPausable")
+        expect(P.isPlayingOnAir("clip", rows: [row("media:clip", "clip", "live")]), "IsPlayingOnAir_ReadsTheCoreRowLive")
+        for s in ["paused", "cued", "ended"] {
+            expect(!P.isPlayingOnAir("clip", rows: [row("media:clip", "clip", s)]), "IsPlayingOnAir_ReadsTheCoreRowPausedAsNotPlaying/\(s)")
+        }
+        expect(!P.isPlayingOnAir("clip", rows: []), "IsPlayingOnAir_ReadsTheCoreRowAbsentAsNotPlaying")
+        expect(!P.isPlayingOnAir("clip", rows: [row("media:other", "other", "live")]), "…/another asset")
+        expect(P.isPlayingOnAir("bg", rows: [row("background:bg", "bg", "live")]), "IsPlayingOnAir_ALoopingBackgroundRowAnswersForItsAsset")
+        expectEqual(P.actionLabel(isOnProgram: true, playing: true), "Pause Program", "label")
+        expectEqual(P.actionLabel(isOnProgram: true, playing: false), "Resume Program", "label")
+        expectEqual(P.actionLabel(isOnProgram: false, playing: true), "Pause audition", "label")
+        expectEqual(P.actionLabel(isOnProgram: false, playing: false), "Audition", "label")
+    }
+
+    // MediaBinPlaybackProjectionTests (Windows) — names kept, bodies 1:1.
+    private static func testMediaBinPlaybackProjection() {
+        typealias J = MediaBinPlaybackProjection
+        var r = J.resolve(rows: [row("media:clip", "clip", "cued", onProgram: false, onPreview: true)],
+                          lastLiveSignature: "", lastSelectedTransportState: nil,
+                          selectedId: "clip", selectedName: "Clip", selectedPlaying: true)
+        expect(!r.rewriteSelection && r.selectedPlaying && r.selectedStatus == nil, "ACuedPreviewRowNeverClearsALocalAudition")
+        r = J.resolve(rows: [], lastLiveSignature: "", lastSelectedTransportState: nil,
+                      selectedId: "clip", selectedName: "Clip", selectedPlaying: true)
+        expect(!r.rewriteSelection && r.selectedPlaying, "NoRowAtAllNeverClearsALocalAudition")
+        r = J.resolve(rows: [row("media:clip", "clip", "live")], lastLiveSignature: "", lastSelectedTransportState: nil,
+                      selectedId: "clip", selectedName: "Clip", selectedPlaying: false)
+        expect(r.rewriteSelection && r.selectedPlaying, "AProgramRowOwnsTheSelectedFlag/live")
+        expectEqual(r.selectedStatus ?? "", "Playing Clip on Program", "…/live status")
+        r = J.resolve(rows: [row("media:clip", "clip", "paused")], lastLiveSignature: "", lastSelectedTransportState: nil,
+                      selectedId: "clip", selectedName: "Clip", selectedPlaying: true)
+        expect(r.rewriteSelection && !r.selectedPlaying, "AProgramRowOwnsTheSelectedFlag/paused")
+        expectEqual(r.selectedStatus ?? "", "Clip paused on Program", "…/paused status")
+        r = J.resolve(rows: [row("media:clip", "clip", "ended")], lastLiveSignature: "", lastSelectedTransportState: "paused",
+                      selectedId: "clip", selectedName: "Clip", selectedPlaying: false)
+        expect(r.rewriteSelection && !r.selectedPlaying, "TheStatusIsRewrittenWhenTheSTATEMovesEvenThoughTheBooleanDoesNot")
+        expectEqual(r.selectedStatus ?? "", "Clip ended on Program", "…/status")
+        expectEqual(r.selectedTransportState ?? "", "ended", "…/state")
+        r = J.resolve(rows: [row("media:clip", "clip", "live")], lastLiveSignature: "clip", lastSelectedTransportState: "live",
+                      selectedId: "clip", selectedName: "Clip", selectedPlaying: true)
+        expect(!r.rewriteSelection && !r.rewriteBinScalars, "ASettledSelectionWritesNothing")
+        let rows = [row("media:clip", "clip", "live")]
+        let first = J.resolve(rows: rows, lastLiveSignature: "", lastSelectedTransportState: nil,
+                              selectedId: nil, selectedName: nil, selectedPlaying: false)
+        expect(first.rewriteBinScalars, "TheBinScalarsAreRewrittenOnlyWhenTheLiveSetMoves/first")
+        expectEqual(first.liveSignature, "clip", "…/signature")
+        let second = J.resolve(rows: rows, lastLiveSignature: first.liveSignature, lastSelectedTransportState: nil,
+                               selectedId: nil, selectedName: nil, selectedPlaying: false)
+        expect(!second.rewriteBinScalars, "…/second")
+        let other = [row("media:other", "other", "live")]
+        expect(J.binRowIsPlaying("other", supportsPlayback: true, rows: other, selectedId: nil, selectedPlaying: false),
+               "ABinRowsIndicatorIsTheSameExpressionAsTheOperatorRebuild/on air")
+        expect(J.binRowIsPlaying("clip", supportsPlayback: true, rows: other, selectedId: "clip", selectedPlaying: true),
+               "…/local audition")
+        expect(!J.binRowIsPlaying("other", supportsPlayback: false, rows: other, selectedId: nil, selectedPlaying: false),
+               "…/still")
+        r = J.resolve(rows: [row("background:clip", "clip", "live"), row("media:clip", "clip", "paused")],
+                      lastLiveSignature: "", lastSelectedTransportState: nil,
+                      selectedId: "clip", selectedName: "Clip", selectedPlaying: true)
+        expect(r.rewriteSelection && !r.selectedPlaying, "ALiveBackgroundRowDoesNotSpeakForAClipThatIsAlsoARoute")
+        expectEqual(r.selectedStatus ?? "", "Clip paused on Program", "…/status")
+    }
+
+    // MediaTransportGestureLedgerTests (Windows) — names kept.
+    private static func testMediaTransportGestureLedger() {
+        var l = MediaTransportGestureLedger()
+        let pause = l.claim("clip")
+        expect(l.shouldSend("clip", pause), "ASupersededRetryIsRefusedBeforeItSends/a")
+        expectEqual(l.onSkipped("clip", pause, attempt: 0), .retry, "…/b")
+        let resume = l.claim("clip")
+        expect(l.shouldSend("clip", resume), "…/c"); expect(l.release("clip", resume), "…/d")
+        expect(!l.shouldSend("clip", pause), "…/stale pause refused")
+        l = MediaTransportGestureLedger()
+        let p2 = l.claim("clip"), r2 = l.claim("clip")
+        expect(!l.shouldSend("clip", p2) && l.shouldSend("clip", r2), "ANewerTapSupersedesAnOlderOneWhileItIsStillInFlight")
+        expectEqual(l.onSkipped("clip", p2, attempt: 0), .superseded, "…/superseded")
+        expect(!l.release("clip", p2) && l.shouldSend("clip", r2) && l.release("clip", r2),
+               "ASupersededGestureNeverReleasesTheNewerOnesSlot")
+        l = MediaTransportGestureLedger()
+        let intro = l.claim("intro"), outro = l.claim("outro")
+        expect(l.shouldSend("intro", intro) && l.shouldSend("outro", outro), "TheSlotIsPerAssetSoTwoClipsDoNotSupersedeEachOther")
+        l = MediaTransportGestureLedger(retryAttempts: 2)
+        let t = l.claim("clip")
+        expectEqual(l.onSkipped("clip", t, attempt: 0), .retry, "ASkippedGestureReArmsUntilTheAttemptBudgetRunsOut/0")
+        expectEqual(l.onSkipped("clip", t, attempt: 1), .retry, "…/1")
+        expectEqual(l.onSkipped("clip", t, attempt: 2), .giveUp, "…/2")
+        expect(!l.shouldSend("clip", t), "…/released on give-up")
+        l = MediaTransportGestureLedger()
+        let done = l.claim("clip"); l.release("clip", done)
+        expect(!l.shouldSend("clip", done), "ACompletedGestureCannotSendAgain")
+        expect(!l.shouldSend("never-claimed", 1), "AnUnknownAssetNeverSends")
+    }
+
+    @MainActor
+    private static func testPlayMediaAssetSendsOneShotGesturesAndRetriesOnlyTheLatest() {
+        // Fixture: Program s2 carries a fixed media route for "clip" (append a SceneLayer with
+        // mediaAssetId "clip" to s2 after ensureLayers); the core row says live.
+        let model = cueModel()
+        model.ensureLayers(for: "s2")
+        model.scenes[1].layers.append(SceneLayer(id: "s2-layer-9", slotId: nil, mediaAssetId: "clip"))
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:clip", "mediaAssetId": "clip",
+                                                         "state": "live", "onProgram": true]]])
+        var sent: [JSONObject] = []
+        var failNext = 1                                   // the FIRST send times out, then succeed
+        model.mediaTransportSendForTesting = { body in
+            sent.append(body)
+            if failNext > 0 { failNext -= 1; throw BridgeError.timeout }
+            return ["ok": true]
+        }
+        model.playMediaAsset("clip")                       // live on Program -> pause
+        expect(!model.selectedMediaPlaying, "pause flips the flag at once")
+        expectEqual(model.mediaStatus, "Sting paused on Program", "status")
+        spin(until: { sent.count == 2 }, limit: 2)
+        let gestures = sent.compactMap { ($0["commands"] as? [JSONObject])?.first }
+        expectEqual(gestures.map { $0["type"] as? String ?? "" }, ["set-media-transport", "set-media-transport"],
+                    "a skipped send re-arms the SAME gesture")
+        expectEqual(gestures.map { $0["action"] as? String ?? "" }, ["pause", "pause"], "pause twice")
+        // Supersession end to end: tap 1 times out and is re-armed; tap 2 lands first; tap 1 must not send.
+        sent = []; failNext = 1
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:clip", "mediaAssetId": "clip",
+                                                         "state": "paused", "onProgram": true]]])
+        model.playMediaAsset("clip")                       // paused -> play (times out, retry armed)
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:clip", "mediaAssetId": "clip",
+                                                         "state": "live", "onProgram": true]]])
+        model.playMediaAsset("clip")                       // live -> pause (succeeds)
+        spin(until: { false }, limit: 0.4)                 // let the 120 ms retry fire if it would
+        let actions = sent.compactMap { (($0["commands"] as? [JSONObject])?.first?["action"]) as? String }
+        expectEqual(actions, ["play", "pause"], "the stale play retry never reaches the core")
+        expect(!sent.contains { body in (body["commands"] as? [JSONObject] ?? []).contains { $0["type"] as? String == "load-scene-graph" } },
+               "the gesture is never folded into a scene sync")
+    }
+
+    @MainActor
+    private static func testAGestureThatStaysBusyGivesUpVisibly() {
+        let model = cueModel()
+        model.ensureLayers(for: "s2")
+        model.scenes[1].layers.append(SceneLayer(id: "s2-layer-9", slotId: nil, mediaAssetId: "clip"))
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:clip", "mediaAssetId": "clip",
+                                                         "state": "live", "onProgram": true]]])
+        var sends = 0
+        model.mediaTransportSendForTesting = { _ in sends += 1; throw BridgeError.timeout }
+        model.playMediaAsset("clip")
+        spin(until: { model.mediaStatus.hasPrefix("Could not") }, limit: 2)
+        expectEqual(sends, 6, "attempt 0 + 5 retries")
+        expectEqual(model.mediaStatus, "Could not pause Sting - the media core stayed busy. Press it again.", "Windows wording")
+    }
+
+    @MainActor
+    private static func testAnOffProgramTapIsALocalAuditionAndSendsNothing() {
+        let model = cueModel()
+        var sends = 0
+        model.mediaTransportSendForTesting = { _ in sends += 1; return [:] }
+        model.playMediaAsset("clip")
+        expect(model.selectedMediaPlaying, "audition on"); expectEqual(model.mediaStatus, "Auditioning Sting", "status")
+        model.playMediaAsset("clip")
+        expect(!model.selectedMediaPlaying, "audition off"); expectEqual(model.mediaStatus, "Sting audition paused", "status")
+        expectEqual(sends, 0, "no core gesture for an off-Program clip")
+        expectEqual(model.mediaPlaybackButtonLabel, "Audition", "label")
+    }
+
+    /// ADDED. The plan's supersession leg taps twice with no run-loop turn between, so the first
+    /// send has not even failed when the second tap claims the slot: the ledger's onSkipped already
+    /// answers `superseded` and the 120 ms retry is never armed. That leaves "the retry asks
+    /// shouldSend again before it sends" unpinned (the named mutation stayed GREEN). Here the first
+    /// send fails and its retry IS armed before the newer tap lands.
+    @MainActor
+    private static func testAnArmedRetryIsDroppedWhenANewerTapLands() {
+        let model = cueModel()
+        model.ensureLayers(for: "s2")
+        model.scenes[1].layers.append(SceneLayer(id: "s2-layer-9", slotId: nil, mediaAssetId: "clip"))
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:clip", "mediaAssetId": "clip",
+                                                         "state": "paused", "onProgram": true]]])
+        var sent: [JSONObject] = []
+        var failNext = 1
+        model.mediaTransportSendForTesting = { body in
+            sent.append(body)
+            if failNext > 0 { failNext -= 1; throw BridgeError.timeout }
+            return ["ok": true]
+        }
+        model.playMediaAsset("clip")                       // paused -> play; the send times out
+        spin(until: { sent.count == 1 }, limit: 2)
+        spin(until: { false }, limit: 0.03)                // the failure is handled: the retry is armed (120 ms)
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:clip", "mediaAssetId": "clip",
+                                                         "state": "live", "onProgram": true]]])
+        model.playMediaAsset("clip")                       // live -> pause, inside the retry delay
+        spin(until: { false }, limit: 0.5)                 // well past the 120 ms retry
+        let actions = sent.compactMap { (($0["commands"] as? [JSONObject])?.first?["action"]) as? String }
+        expectEqual(actions, ["play", "pause"], "the armed play retry asks shouldSend again and does not send")
+    }
+
+    /// ADDED (the plan asks for it if "treat BridgeError.remote as skipped" stays green; pinned up front).
+    @MainActor
+    private static func testARemoteRejectionSendsOnceAndSaysSo() {
+        let model = cueModel()
+        model.ensureLayers(for: "s2")
+        model.scenes[1].layers.append(SceneLayer(id: "s2-layer-9", slotId: nil, mediaAssetId: "clip"))
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:clip", "mediaAssetId": "clip",
+                                                         "state": "live", "onProgram": true]]])
+        var sends = 0
+        model.mediaTransportSendForTesting = { _ in sends += 1; throw BridgeError.remote("clip is not on Program") }
+        model.playMediaAsset("clip")
+        spin(until: { model.mediaStatus.hasPrefix("Could not") }, limit: 2)
+        spin(until: { false }, limit: 0.3)
+        expectEqual(sends, 1, "a remote error sends once: it is a refusal, not backpressure")
+        expectEqual(model.mediaStatus, "Could not pause Sting; the media core rejected it. clip is not on Program",
+                    "Windows wording")
+    }
+
+    @MainActor
+    private static func testToggleWithoutASelectionSaysSo() {
+        let model = cueModel()
+        model.toggleSelectedMediaPlayback()
+        expectEqual(model.mediaStatus, "Select a media asset before playback", "Windows wording")
     }
 }
 

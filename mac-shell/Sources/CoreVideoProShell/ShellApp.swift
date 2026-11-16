@@ -1891,12 +1891,21 @@ struct MediaPane: View {
                 Button("Refresh") { model.refreshMediaBin() }
                     .accessibilityLabel("Refresh the media bin")
             }
-            MediaSelectedCard(asset: selected)
+            MediaSelectedCard(asset: selected, playing: model.selectedMediaPlaying)
             HStack(spacing: 8) {
                 Text(model.selectedMediaSummary)
                     .font(.grotesk(12, .semibold)).foregroundStyle(Studio.textPrimary)
                     .accessibilityLabel("Selected media: \(model.selectedMediaSummary)")
                 Spacer()
+                if let selected, selected.supportsPlayback {
+                    Button(model.mediaPlaybackButtonLabel) { model.toggleSelectedMediaPlayback() }
+                        .buttonStyle(GhostButtonStyle())
+                        .disabled(!model.mediaClipPlaybackAvailable)
+                        .help(model.mediaClipPlaybackAvailable
+                              ? "Pause or resume the clip on Program; off Program, audition it here (muted)"
+                              : "Clip playback is unavailable in this build")
+                        .accessibilityLabel("\(model.mediaPlaybackButtonLabel): \(selected.name)")
+                }
                 Button("Cue in Preview") { model.cueSelectedInPreview() }
                     .buttonStyle(GhostButtonStyle())
                     .disabled(!model.canCueSelectedMedia)
@@ -1950,6 +1959,7 @@ func mediaAssetDetail(_ asset: MediaAsset) -> String {
 /// on its first frame; a still is drawn; audio has no picture.
 struct MediaSelectedCard: View {
     let asset: MediaAsset?
+    var playing = false
 
     private var isAudio: Bool {
         guard let asset else { return false }
@@ -1973,7 +1983,7 @@ struct MediaSelectedCard: View {
                             .accessibilityLabel("Preview of \(asset.name)")
                     }
                 } else if playsLocally {
-                    MediaPreviewPlayer(url: URL(fileURLWithPath: asset.filePath))
+                    MediaPreviewPlayer(url: URL(fileURLWithPath: asset.filePath), playing: playing)
                         .frame(width: 320, height: 180)
                         .background(Studio.field)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -2013,6 +2023,19 @@ struct MediaBinRow: View {
                 .font(.grotesk(11))
                 .accessibilityLabel(model.logoBug?.id == asset.id
                                     ? "Remove \(asset.name) as the logo bug" : "Use \(asset.name) as the logo bug")
+            }
+            // Windows PlaybackLabel: Play / Pause for anything that plays, "Still" otherwise.
+            let rowPlaying = MediaBinPlaybackProjection.binRowIsPlaying(
+                asset.id, supportsPlayback: asset.supportsPlayback, rows: model.mediaSources,
+                selectedId: model.selectedAssetId, selectedPlaying: model.selectedMediaPlaying)
+            if asset.supportsPlayback {
+                Button(rowPlaying ? "Pause" : "Play") { model.playMediaAsset(asset.id) }
+                    .font(.grotesk(11))
+                    .disabled(!model.mediaClipPlaybackAvailable)
+                    .help(model.mediaClipPlaybackAvailable ? "" : "Clip playback is unavailable in this build")
+                    .accessibilityLabel(rowPlaying ? "Pause \(asset.name)" : "Play \(asset.name)")
+            } else {
+                Text("Still").font(.plexMono(9)).foregroundStyle(Studio.textDim)
             }
             Button(isSelected ? "Selected" : "Select") { model.selectMediaAsset(asset.id) }
                 .font(.grotesk(11))
