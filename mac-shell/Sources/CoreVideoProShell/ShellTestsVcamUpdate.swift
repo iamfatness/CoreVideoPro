@@ -26,6 +26,11 @@ extension ShellTests {
             ("vcam-update/update-button-pauses-our-output", testUpdateCameraButtonPausesOurOutputThenReplaces),
             ("vcam-update/replacement-offered-in-use-is-cancelled",
              testReplacementOfferedWhileInUseEndsUpdateReady),
+            ("vcam-update/completed-unregistered-old-uninstalling-needs-reboot",
+             testCompletedButUnregisteredWithOldUninstallingNeedsReboot),
+            ("vcam-update/owner-mac-stuck-state-at-launch-needs-reboot", testOwnerMacStuckStateAtLaunchNeedsReboot),
+            ("vcam-update/will-complete-after-reboot", testWillCompleteAfterRebootIsNeedsReboot),
+            ("vcam-update/needs-reboot-policy", testNeedsRebootPolicy),
         ]
     }
 
@@ -250,5 +255,90 @@ extension ShellTests {
         let same = run(inUse: true, existing: v)
         expectEqual(same.0, .cancel, "equal versions are kept")
         expectEqual(same.1, [.activating, .active], "kept, not an update")
+    }
+
+    // ── item 3: detect stuck / needs-restart ────────────────────────────────
+
+    @MainActor
+    static func activatedModel(installed: [CameraExtensionInstall], device: CameraDeviceStatus)
+        -> (AppModel, FakeCameraExtensionActivator) {
+        let model = AppModel()
+        let fake = FakeCameraExtensionActivator(script: [.activating, .active], installed: installed)
+        model.cameraExtension = fake
+        model.cameraDeviceProbe = FakeCameraDeviceProbe(device)
+        model.coreCommandCaptureForTesting = { _ in }
+        model.cameraRegistrationTimeout = 0.2
+        model.cameraRegistrationPollInterval = 0.05
+        model.setVirtualCamera(enabled: true)  // first enable: activates
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        return (model, fake)
+    }
+
+    @MainActor
+    static func testCompletedButUnregisteredWithOldUninstallingNeedsReboot() {
+        let stuck = [ours(), CameraExtensionInstall(version: "2883", enabled: false, uninstalling: true)]
+        let (model, fake) = activatedModel(installed: stuck, device: CameraDeviceStatus())
+        expectEqual(fake.calls, ["activate", "installs"], "no device after completion: ask what is installed")
+        expectEqual(model.cameraExtensionState, .needsReboot, "an older copy uninstalling: only a restart finishes it")
+        expectEqual(model.virtualCameraLabel, "Restart your Mac to finish updating the virtual camera.",
+                    "the label says so")
+        model.stopTimersForTesting()
+
+        let (registered, regFake) = activatedModel(installed: stuck,
+                                                   device: CameraDeviceStatus(registered: true))
+        expectEqual(regFake.calls, ["activate"], "a registered device needs no question")
+        expectEqual(registered.cameraExtensionState, .active, "and stays active")
+        registered.stopTimersForTesting()
+
+        let (clean, _) = activatedModel(installed: [ours()], device: CameraDeviceStatus())
+        expectEqual(clean.cameraExtensionState, .active, "unregistered but nothing pending: no restart claim")
+        clean.stopTimersForTesting()
+    }
+
+    /// The exact owner-Mac state on the next launch: our version
+    /// [activated enabled], the old one uninstalling, no device.
+    @MainActor
+    static func testOwnerMacStuckStateAtLaunchNeedsReboot() {
+        let model = AppModel()
+        let fake = FakeCameraExtensionActivator(
+            installed: [ours(), CameraExtensionInstall(version: "2881", enabled: false, uninstalling: true)])
+        model.cameraExtension = fake
+        model.cameraDeviceProbe = FakeCameraDeviceProbe(CameraDeviceStatus())
+        model.coreCommandCaptureForTesting = { _ in }
+        model.cameraRegistrationTimeout = 0.2
+        model.cameraRegistrationPollInterval = 0.05
+        model.cameraExtensionOptedIn = true
+        model.virtualCamera = PersistedVirtualCamera(enabled: true)
+        model.startCameraExtensionAtLaunch()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        expectEqual(fake.calls, ["installs", "installs"], "nothing is submitted; the second ask follows the missing device")
+        expectEqual(model.cameraExtensionState, .needsReboot, "the stuck swap is reported as needing a restart")
+        model.stopTimersForTesting()
+    }
+
+    /// macOS's own "will complete after reboot" answer maps to .needsReboot.
+    static func testWillCompleteAfterRebootIsNeedsReboot() {
+        var submitted: [OSSystemExtensionRequest] = []
+        let a = SystemCameraExtensionActivator(bundlePath: "/Applications/CoreVideo Pro.app",
+                                               hasProfile: true, submit: { submitted.append($0) })
+        var states: [CameraExtensionState] = []
+        a.activate { states.append($0) }
+        guard let r = submitted.first else { expect(false, "activation submitted"); return }
+        a.request(r, didFinishWithResult: .willCompleteAfterReboot)
+        expectEqual(states, [.activating, .needsReboot], "willCompleteAfterReboot -> needsReboot")
+        expectEqual(VirtualCameraPresentation.label(intent: false, ext: .needsReboot, core: nil),
+                    "Restart your Mac to finish updating the virtual camera.",
+                    "persistent: shown even with the output off")
+    }
+
+    static func testNeedsRebootPolicy() {
+        let v = CameraExtensionPolicy.bundledVersion
+        let f = { CameraExtensionPolicy.needsReboot(unregisteredWith: $0, bundledVersion: v) }
+        expect(!f(nil), "no answer never claims a restart")
+        expect(!f([ours()]), "ours enabled, nothing uninstalling: no")
+        expect(f([ours(), CameraExtensionInstall(version: "2883", uninstalling: true)]), "older uninstalling: yes")
+        expect(f([ours(enabled: false)]), "ours not enabled: yes")
+        expect(f([]), "ours missing after a completed activation: yes")
+        expect(!f([CameraExtensionInstall(version: v, awaitingApproval: true)]), "awaiting approval is not a restart")
     }
 }

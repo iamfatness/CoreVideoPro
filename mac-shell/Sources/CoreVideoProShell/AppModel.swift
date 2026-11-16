@@ -543,6 +543,13 @@ final class AppModel: ObservableObject {
     var cameraUpdateReleaseWait: TimeInterval = 5
     var cameraUpdatePollInterval: TimeInterval = 0.5
     private var cameraUpdateTimer: Timer?
+    /// After a completed activation: how long to wait for our device to appear
+    /// in the HAL before asking macOS whether only a restart finishes it.
+    var cameraRegistrationTimeout: TimeInterval = 10
+    var cameraRegistrationPollInterval: TimeInterval = 0.5
+    private var cameraRegistrationToken: UUID?
+    /// The last HAL reading of our device (diagnostics; nil = never read).
+    @Published private(set) var cameraDeviceStatus: CameraDeviceStatus?
     /// True only while an operator's Update camera has paused our own output
     /// (the wire says off; the persisted intent is untouched).
     @Published private(set) var virtualCameraPausedForUpdate = false
@@ -972,7 +979,10 @@ final class AppModel: ObservableObject {
         cameraExtension.deactivate { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
-                self.setCameraExtensionState(state)
+                // A removal that needs a restart says so in
+                // virtualCameraRemovalStatus; the state must not read as an
+                // unfinished UPDATE ("Restart your Mac to finish updating").
+                self.setCameraExtensionState(state == .needsReboot ? .notInstalled : state)
                 switch state {
                 case .notInstalled, .needsReboot:
                     self.cameraExtensionOptedIn = false
@@ -1079,8 +1089,54 @@ final class AppModel: ObservableObject {
 
     /// CameraExtensionPolicy.inUse over a fresh HAL read and our own intent.
     func cameraInUse() -> Bool {
-        CameraExtensionPolicy.inUse(device: cameraDeviceProbe.read(), intentOn: virtualCamera.enabled,
+        CameraExtensionPolicy.inUse(device: readCameraDevice(), intentOn: virtualCamera.enabled,
                                     pausedForUpdate: virtualCameraPausedForUpdate)
+    }
+
+    /// One HAL read, remembered for the Health tab and the support bundle.
+    @discardableResult
+    func readCameraDevice() -> CameraDeviceStatus {
+        let status = cameraDeviceProbe.read()
+        if status != cameraDeviceStatus { cameraDeviceStatus = status }
+        return status
+    }
+
+    /// Activation said done; prove it. Our device must appear in the HAL within
+    /// `cameraRegistrationTimeout`. If it never does, ask macOS what is
+    /// installed: an older copy still uninstalling (or ours not enabled) means
+    /// only a restart finishes it, and the operator is told so instead of
+    /// staring at "Connecting..." forever (owner Mac, 2026-11-15: activating ->
+    /// active, no device, no needsReboot).
+    private func verifyCameraRegistration() {
+        let token = UUID()
+        cameraRegistrationToken = token
+        pollCameraRegistration(token: token, deadline: Date().addingTimeInterval(cameraRegistrationTimeout))
+    }
+
+    private func pollCameraRegistration(token: UUID, deadline: Date) {
+        guard cameraRegistrationToken == token, cameraExtensionState == .active else { return }
+        if readCameraDevice().registered {
+            cameraRegistrationToken = nil
+            ShellLog.write("vcam-ext: device registered")
+            return
+        }
+        if Date() < deadline {
+            DispatchQueue.main.asyncAfter(deadline: .now() + cameraRegistrationPollInterval) { [weak self] in
+                Task { @MainActor in self?.pollCameraRegistration(token: token, deadline: deadline) }
+            }
+            return
+        }
+        cameraRegistrationToken = nil
+        ShellLog.write("vcam-ext: no device \(cameraRegistrationTimeout) s after activation; asking what is installed")
+        queryCameraExtensionInstalls { [weak self] installs in
+            guard let self, self.cameraExtensionState == .active else { return }
+            if CameraExtensionPolicy.needsReboot(unregisteredWith: installs,
+                                                 bundledVersion: CameraExtensionPolicy.bundledVersion) {
+                self.setCameraExtensionState(.needsReboot)
+            } else {
+                ShellLog.write("vcam-ext: device still not registered, but nothing is pending a restart")
+            }
+        }
     }
 
     /// The `.updateReady` retry: the 5 s timer, and our intent turning off.
@@ -1208,6 +1264,7 @@ final class AppModel: ObservableObject {
         ShellLog.write("vcam-ext: shell state \(cameraExtensionState) -> \(state)")
         cameraExtensionState = state
         updateCameraUpdateTimer()
+        if state == .active { verifyCameraRegistration() } else { cameraRegistrationToken = nil }
     }
 
     /// A virtual camera proof shot needs BOTH variables: COREVIDEO_SHELL_VCAM

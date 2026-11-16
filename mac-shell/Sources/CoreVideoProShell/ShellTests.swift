@@ -584,7 +584,7 @@ enum ShellTests {
         expectEqual(P.label(intent: true, ext: .notInApplications, core: nil),
                     "Move CoreVideo Pro to the Applications folder to use the virtual camera.", "4 not in /Applications")
         expectEqual(P.label(intent: true, ext: .needsReboot, core: nil),
-                    "Restart your Mac to finish installing the virtual camera.", "5 needs reboot")
+                    "Restart your Mac to finish updating the virtual camera.", "5 needs reboot")
         expectEqual(P.label(intent: true, ext: .unavailable("U reason"), core: nil), "U reason", "6 unavailable")
         expectEqual(P.label(intent: true, ext: .failed("F reason"), core: nil), "F reason", "6 failed")
         expectEqual(P.label(intent: true, ext: .active, core: vcamCore("live", width: 1280, height: 720)),

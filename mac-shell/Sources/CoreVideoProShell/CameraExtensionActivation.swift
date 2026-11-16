@@ -166,6 +166,20 @@ enum CameraExtensionPolicy {
         return .activate
     }
 
+    /// A completed activation (or an already-active launch) whose device never
+    /// registered: is a restart what finishes it? Yes when macOS lists an older
+    /// copy still uninstalling (the owner-Mac case: the old copy "terminated
+    /// waiting to uninstall on reboot" blocks the new one from starting), or our
+    /// version is not enabled (and not merely awaiting approval). nil (no
+    /// answer) never claims a restart.
+    static func needsReboot(unregisteredWith installs: [CameraExtensionInstall]?, bundledVersion: String) -> Bool {
+        guard let installs else { return false }
+        if installs.contains(where: { $0.uninstalling && $0.version != bundledVersion }) { return true }
+        let ours = installs.filter { $0.version == bundledVersion }
+        if ours.contains(where: { $0.awaitingApproval }) { return false }
+        return !ours.contains(where: { $0.enabled && !$0.uninstalling })
+    }
+
     /// "In use" for a replacement: any process streaming our device, or our
     /// own output switched on (the core feeds the sink while the intent is on;
     /// it is paused only for an operator's explicit Update camera).
