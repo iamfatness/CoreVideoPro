@@ -421,6 +421,12 @@ final class AppModel: ObservableObject {
     @Published var selectedAssetId = ""
     /// The Media tab's one status line (Windows CommandStatus for media).
     @Published var mediaStatus = ""
+    /// The core's media transports, last parsed. Unchanged when a snapshot has no node.
+    @Published private(set) var mediaSources: [MediaSourceRow] = []
+    /// profile.capabilityStates["media-clip-playback"].state == "available". False until a
+    /// snapshot says so: an unknown state disables clip Cue/Play honestly.
+    @Published private(set) var mediaClipPlaybackAvailable = false
+    @Published private(set) var mediaPlayback: MediaPlaybackReadModel?
     private var mediaDurationProbeGeneration = 0
     @Published var logoBug: MediaAsset? {  // rides every scene as a top-right route
         didSet { mediaAudioSceneChanged(oldValue?.id != logoBug?.id) }
@@ -1603,6 +1609,7 @@ final class AppModel: ObservableObject {
             observeAudioObservation(snapshot)
         }
         if !snapshot.isEmpty { applyProgramBlackout(snapshot) }
+        if !snapshot.isEmpty { applyMediaReadModels(snapshot) }
         if !snapshot.isEmpty {
             virtualCameraCore = VirtualCameraReadModel.parse(snapshot)
         }
@@ -2593,7 +2600,7 @@ final class AppModel: ObservableObject {
                         "zIndex": index,
                         "mediaAssetId": assetId, "mediaAssetName": asset.name,
                         "mediaAssetKind": asset.kind, "mediaAssetPath": asset.filePath,
-                        "mediaPlaybackKey": "", "mediaAssetPlaying": false,
+                        "mediaAssetLoop": MediaRoutePlayback.isLoopingKind(asset.kind),
                         "rect": ["x": layer.x, "y": layer.y, "width": layer.width, "height": layer.height],
                     ]
                 }
@@ -2622,7 +2629,7 @@ final class AppModel: ObservableObject {
                     "fitMode": "fit", "opacity": 1.0, "zIndex": edited.count,
                     "mediaAssetId": bug.id, "mediaAssetName": bug.name,
                     "mediaAssetKind": bug.kind, "mediaAssetPath": bug.filePath,
-                    "mediaPlaybackKey": "", "mediaAssetPlaying": false,
+                    "mediaAssetLoop": MediaRoutePlayback.isLoopingKind(bug.kind),
                     "rect": ["x": rect.x, "y": rect.y,
                              "width": rect.w, "height": rect.h],
                 ])
@@ -2661,7 +2668,7 @@ final class AppModel: ObservableObject {
                 "fitMode": "fit", "opacity": 1.0, "zIndex": routes.count,
                 "mediaAssetId": bug.id, "mediaAssetName": bug.name,
                 "mediaAssetKind": bug.kind, "mediaAssetPath": bug.filePath,
-                "mediaPlaybackKey": "", "mediaAssetPlaying": false,
+                "mediaAssetLoop": MediaRoutePlayback.isLoopingKind(bug.kind),
                 "rect": ["x": rect.x, "y": rect.y, "width": rect.w, "height": rect.h],
             ])
         }
@@ -3234,7 +3241,6 @@ final class AppModel: ObservableObject {
             "mediaAssetName": asset.name,
             "mediaAssetKind": asset.kind,
             "mediaAssetPath": asset.filePath,
-            "playing": true,
         ]
     }
 
@@ -3268,6 +3274,15 @@ final class AppModel: ObservableObject {
                 preview["background"] = background
             }
             commands.append(preview)
+        }
+        // The bin SELECTION rides every scene sync (Windows BuildSyncCommands), so
+        // the core's mediaPlayback status follows it. Root level, not payload-wrapped:
+        // MediaCore::setMediaPlayback reads the command root.
+        if let selected = mediaAssets.first(where: { $0.id == selectedAssetId }) {
+            commands.append([
+                "type": "set-media-playback", "mediaAssetId": selected.id, "mediaAssetName": selected.name,
+                "mediaAssetKind": selected.kind, "mediaAssetPath": selected.filePath,
+            ])
         }
         return Self.appendSourcePolicies(to: commands, slots: slots)
     }
@@ -3875,6 +3890,19 @@ final class AppModel: ObservableObject {
         guard let asset = mediaAssets.first(where: { $0.id == id }) else { return }
         selectedAssetId = asset.id
         mediaStatus = "\(asset.name) ready to cue or audition"
+        syncScenes()   // the selection rides the batch as set-media-playback
+    }
+
+    /// Every assignment is change-gated: snapshots arrive several times a second
+    /// and an unconditional @Published write would invalidate the Media tab at
+    /// snapshot rate.
+    private func applyMediaReadModels(_ snapshot: JSONObject) {
+        if let rows = MediaSourceRow.parse(snapshot), rows != mediaSources { mediaSources = rows }
+        if let states = (snapshot["profile"] as? JSONObject)?["capabilityStates"] as? JSONObject {
+            let available = (states["media-clip-playback"] as? JSONObject)?["state"] as? String == "available"
+            if available != mediaClipPlaybackAvailable { mediaClipPlaybackAvailable = available }
+        }
+        if let playback = MediaPlaybackReadModel.parse(snapshot), playback != mediaPlayback { mediaPlayback = playback }
     }
 
     /// Everything that still uses an asset, in `scenes` order, a scene's layers

@@ -3,6 +3,7 @@
 // parallel branches extending ShellTests.swift do not collide line-for-line.
 
 import AVFoundation
+import Combine
 import Foundation
 
 extension ShellTests {
@@ -20,6 +21,11 @@ extension ShellTests {
             ("media-bin/import-status-windows-wording", testMediaImportStatusIsWindowsWording),
             ("media-tab/summary-counts-by-kind", testMediaSummaryCountsByKind),
             ("media-tab/durations-probe-real-files", testMediaDurationsProbeRealFiles),
+            ("media-wire/media-sources-row-shape", testMediaSourcesDecodeTheCoreRowShape),
+            ("media-wire/media-sources-apply-only-when-changed", testMediaSourcesApplyOnlyWhenChanged),
+            ("media-wire/clip-capability-from-profile", testClipCapabilityComesFromTheProfile),
+            ("media-wire/route-wire-drops-retired-fields", testMediaRouteWireDropsRetiredFieldsAndSendsLoop),
+            ("media-wire/logo-bug-route-drops-retired-fields", testLogoBugRouteWireDropsRetiredFields),
         ]
     }
 
@@ -256,6 +262,110 @@ extension ShellTests {
         expectEqual(model.mediaAssets.first { $0.name == "second" }?.durationLabel ?? "", "1s",
                     "refreshMediaBin fills durationMs from the probe")
         try? fm.removeItem(atPath: MediaBin.root)
+    }
+
+    // ── Task 10: mediaSources[], the capability flag, the wire cleanup (S1) ─
+
+    /// ShellTests.runTake is file-private; the same thing for the media cases.
+    @MainActor
+    @discardableResult
+    static func mediaRunTake(_ model: AppModel, wait: Bool = true) -> TakeBox {
+        let box = TakeBox()
+        Task { @MainActor in box.result = await model.take() }
+        if wait { spin(until: { box.result != nil }, limit: 3) }
+        return box
+    }
+
+    private static func testMediaSourcesDecodeTheCoreRowShape() {
+        // Fixture: two rows exactly as CoreStateCapture.cpp:1199-1217 writes them (numbers are doubles).
+        let snapshot: JSONObject = ["mediaSources": [
+            ["sourceId": "media:clip", "mediaAssetId": "clip", "state": "live", "loop": false,
+             "onProgram": true, "onPreview": false, "positionMs": 1250.0, "durationMs": 3000.0,
+             "decodedVideoFrames": 75.0, "lastDecodedAgeMs": 4.0, "presentedVideoFrames": 74.0,
+             "lastPresentedAgeMs": 9.0, "videoQueued": 1.0, "decoderRestarts": 0.0],
+            ["sourceId": "background:bg", "mediaAssetId": "bg", "state": "live", "loop": true,
+             "onProgram": true, "onPreview": true, "positionMs": 400.0, "durationMs": -1.0],
+            ["mediaAssetId": "orphan", "state": "live"],                       // no sourceId: dropped
+        ]]
+        let rows = MediaSourceRow.parse(snapshot) ?? []
+        expectEqual(rows.count, 2, "row without sourceId dropped")
+        expectEqual(rows[0].state, "live", "state"); expectEqual(rows[0].positionMs, 1250, "position")
+        expectEqual(rows[0].decodedVideoFrames, 75, "#701 trace read")
+        expectEqual(rows[1].durationMs, -1, "unknown duration stays -1, never 0")
+        expect(rows[1].decodedVideoFrames == nil, "absent trace field is nil (older core)")
+        expect(MediaSourceRow.parse([:]) == nil, "absent node -> nil")
+        expectEqual(MediaSourceRow.parse(["mediaSources": [JSONObject]()])?.count ?? -1, 0, "present-empty -> []")
+    }
+
+    @MainActor
+    private static func testMediaSourcesApplyOnlyWhenChanged() {
+        let model = AppModel()
+        let snap: JSONObject = ["mediaSources": [["sourceId": "media:c", "mediaAssetId": "c", "state": "live",
+                                                  "onProgram": true]]]
+        var publishes = 0
+        let sink = model.$mediaSources.dropFirst().sink { _ in publishes += 1 }
+        model.applySnapshotForTesting(snap); model.applySnapshotForTesting(snap); model.applySnapshotForTesting(snap)
+        expectEqual(publishes, 1, "identical snapshots publish once")
+        model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:c", "mediaAssetId": "c",
+                                                         "state": "paused", "onProgram": true]]])
+        expectEqual(publishes, 2, "a state change publishes")
+        model.applySnapshotForTesting(["programBlackout": false])
+        expectEqual(model.mediaSources.first?.state ?? "", "paused", "a snapshot without the node keeps the rows")
+        sink.cancel()
+    }
+
+    @MainActor
+    private static func testClipCapabilityComesFromTheProfile() {
+        let model = AppModel()
+        expect(!model.mediaClipPlaybackAvailable, "unknown -> unavailable")
+        model.applySnapshotForTesting(["profile": ["capabilityStates": ["media-clip-playback": ["state": "omitted"]]]])
+        expect(!model.mediaClipPlaybackAvailable, "omitted -> unavailable")
+        model.applySnapshotForTesting(["profile": ["capabilityStates": ["media-clip-playback": ["state": "available"]]]])
+        expect(model.mediaClipPlaybackAvailable, "available")
+    }
+
+    @MainActor
+    private static func testMediaRouteWireDropsRetiredFieldsAndSendsLoop() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)                         // Program s2, Preview s1
+        model.mediaAssets = [MediaAsset(id: "clip", name: "Clip", kind: "stinger",
+            relativePath: "stinger/clip.mp4", filePath: "/b/stinger/clip.mp4", naturalWidth: 0, naturalHeight: 0),
+            MediaAsset(id: "bg-asset", name: "BG", kind: "stinger", relativePath: "stinger/bg.mp4",
+            filePath: "/b/stinger/bg.mp4", naturalWidth: 0, naturalHeight: 0)]
+        model.scenes[0].layers.append(SceneLayer(id: "s1-layer-1", slotId: nil, mediaAssetId: "clip"))
+        model.selectedAssetId = "clip"
+        _ = mediaRunTake(model)                                  // s1 becomes Program
+        let cmds = core.bodies.first?["commands"] as? [JSONObject] ?? []
+        let load = cmds.first { $0["type"] as? String == "load-scene-graph" } ?? [:]
+        let media = (load["routes"] as? [JSONObject] ?? []).first { $0["mediaAssetId"] as? String == "clip" } ?? [:]
+        expect(media["mediaPlaybackKey"] == nil, "retired mediaPlaybackKey not sent")
+        expect(media["mediaAssetPlaying"] == nil, "retired mediaAssetPlaying not sent")
+        expectEqual(media["mediaAssetLoop"] as? Bool, false, "mediaAssetLoop sent, false for a stinger")
+        let bg = load["background"] as? JSONObject ?? [:]
+        expect(bg["playing"] == nil, "background carries no playing flag")
+        expectEqual(bg["mediaAssetPath"] as? String ?? "", "/b/stinger/bg.mp4", "background path")
+        let sel = cmds.first { $0["type"] as? String == "set-media-playback" } ?? [:]
+        expectEqual(sel["mediaAssetId"] as? String ?? "", "clip", "selection rides the batch")
+        expectEqual(sel["mediaAssetPath"] as? String ?? "", "/b/stinger/clip.mp4", "with its path")
+        expect(sel["payload"] == nil, "root-level command")
+    }
+
+    /// ADDED (the plan's mutation "keep mediaAssetPlaying on the logo-bug route only" stayed GREEN
+    /// against testMediaRouteWireDropsRetiredFieldsAndSendsLoop, which has no bug route). The logo
+    /// bug is emitted at TWO sites: after the edited canvas layers, and after the layout preset.
+    @MainActor
+    private static func testLogoBugRouteWireDropsRetiredFields() {
+        let model = sceneEditModel()          // s1 has edited layers; s2 "two-up" has none (preset path)
+        model.logoBug = MediaAsset(id: "bug", name: "Bug", kind: "lower-third", relativePath: "lower-third/bug.png",
+                                   filePath: "/b/lower-third/bug.png", naturalWidth: 400, naturalHeight: 200)
+        for sceneId in ["s1", "s2"] {
+            let routes = model.buildRoutes(for: sceneId, isProgram: true)
+            let bug = routes.first { $0["mediaAssetId"] as? String == "bug" }
+            expect(bug != nil, "\(sceneId): the logo bug rides the scene as a route")
+            expect(bug?["mediaPlaybackKey"] == nil, "\(sceneId): bug route sends no mediaPlaybackKey")
+            expect(bug?["mediaAssetPlaying"] == nil, "\(sceneId): bug route sends no mediaAssetPlaying")
+            expectEqual(bug?["mediaAssetLoop"] as? Bool, false, "\(sceneId): bug route sends mediaAssetLoop false")
+        }
     }
 }
 
