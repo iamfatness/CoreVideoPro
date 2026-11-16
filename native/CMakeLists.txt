@@ -1061,7 +1061,8 @@ if(BUILD_TESTING)
   endif()
   if(COREVIDEO_WITH_AVF_MEDIA_DECODER AND NOT COREVIDEO_STUB)
     # Real AVFoundation decode against fixtures written at test time.
-    target_sources(corevideo-native-tests PRIVATE tests/AvfMediaFixtures.mm tests/AvfMediaDecoderTest.cpp)
+    target_sources(corevideo-native-tests PRIVATE tests/AvfMediaFixtures.mm tests/AvfMediaDecoderTest.cpp
+      tests/AvfMediaPixelTest.cpp)
     set_source_files_properties(tests/AvfMediaFixtures.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(corevideo-native-tests PRIVATE "-framework ImageIO" "-framework UniformTypeIdentifiers")
   endif()
