@@ -801,6 +801,68 @@ extension ShellTests {
         return (server, box.value)
     }
 
+    // ── hardening: the Mac's stricter-than-Windows rules stay pinned (T5) ──
+
+    @MainActor
+    static func testControlHardeningTimeouts() {
+        let surface = FakeSurface()
+        var options = ControlServerOptions(port: 0, host: "127.0.0.1", authToken: nil)
+        options.requestTimeout = 0.4
+        let (server, started) = startServer(ControlRouter(surface: surface), options)
+        defer { server.stop() }
+        guard case .success(let port)? = started else { expect(false, "server starts"); return }
+        // A client that sends half a head and stalls is answered 408 by the request timer.
+        let stalled = RawClient(port: port)
+        stalled.run(Data("GET /state HTTP/1.1\r\nHost: 127.0.0.1\r\n".utf8))
+        spin(until: { stalled.box.value != nil }, limit: 3)
+        stalled.connection.cancel()
+        expect((stalled.box.value ?? "").hasPrefix("HTTP/1.1 408"), "a stalled request is 408: \((stalled.box.value ?? "").prefix(20))")
+        // The timer stops once the request reaches the router: an invoke that runs 3x the timeout is answered 200.
+        surface.handler = { _, _ in Thread.sleep(forTimeInterval: 1.2); return .success }
+        let slow = raw(port, Data("POST /invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"action\":\"transport.take\"}".utf8))
+        expect(slow.hasPrefix("HTTP/1.1 200"), "a long invoke is not cut off by the request timer: \(slow.prefix(20))")
+        expectEqual(ControlServerOptions.fromEnvironment([:]).requestTimeout, 10, "the default is 10 s")
+    }
+
+    @MainActor
+    static func testControlHardeningConnectionCap() {
+        var options = ControlServerOptions(port: 0, host: "127.0.0.1", authToken: nil)
+        options.requestTimeout = 5   // idle clients must outlive the test
+        let (server, started) = startServer(ControlRouter(surface: FakeSurface()), options)
+        defer { server.stop() }
+        guard case .success(let port)? = started else { expect(false, "server starts"); return }
+        let queue = DispatchQueue(label: "control-test-cap")
+        var idle: [NWConnection] = []
+        for _ in 0..<64 {
+            let c = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+            c.start(queue: queue)
+            idle.append(c)
+        }
+        spin(until: { server.openConnectionCount == 64 }, limit: 3)
+        expectEqual(server.openConnectionCount, 64, "64 idle connections are held")
+        let refused = raw(port, Data("GET /state HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8))
+        expect(!refused.hasPrefix("HTTP/1.1"), "the 65th connection is closed without an answer: \(refused.prefix(30))")
+        expectEqual(server.openConnectionCount, 64, "the refused connection was never admitted")
+        idle.forEach { $0.cancel() }
+        spin(until: { server.openConnectionCount == 0 }, limit: 3)
+        expectEqual(http("GET", "http://127.0.0.1:\(port)/state").status, 200, "serving again once clients leave")
+    }
+
+    @MainActor
+    static func testControlHardeningNoPreflight() {
+        let (server, started) = startServer(ControlRouter(surface: FakeSurface()),
+                                            ControlServerOptions(port: 0, host: "127.0.0.1", authToken: nil))
+        defer { server.stop() }
+        guard case .success(let port)? = started else { expect(false, "server starts"); return }
+        let preflight = raw(port, Data("OPTIONS /invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n\r\n".utf8))
+        expect(preflight.hasPrefix("HTTP/1.1 404"), "a CORS preflight is not a route")
+        expect(!preflight.lowercased().contains("access-control-"), "no Access-Control-* header on any answer")
+        for path in ["/manifest", "/state", "/snapshot", "/nope"] {
+            let response = raw(port, Data("GET \(path) HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\n\r\n".utf8))
+            expect(!response.lowercased().contains("access-control-"), "\(path): no CORS header even with an Origin")
+        }
+    }
+
     @MainActor
     static func testControlServerEndToEnd() {
         let surface = FakeSurface()
