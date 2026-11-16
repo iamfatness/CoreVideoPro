@@ -14,6 +14,8 @@
 #include "modules/CmioVirtualCameraSink.h"
 
 #include "core/BoundedAsyncLog.h"
+#include "modules/OwnVirtualCamera.h"
+#include "modules/SinkVirtualCameraPublisher.h"
 
 #import <CoreMediaIO/CMIOHardware.h>
 #import <CoreMedia/CoreMedia.h>
@@ -35,8 +37,6 @@ namespace {
 // Fixed IDs (plan Global Constraints). The device UID is matched against BOTH
 // the UUID string and the legacy ID: which one CMIO reports depends on how the
 // extension publishes the device.
-constexpr const char* kDeviceUuid = "791E98ED-72E7-4716-9A26-1B4FBB9A1520";
-constexpr const char* kLegacyDeviceId = "us.iamfatness.corevideopro.camera.device";
 constexpr const char* kSinkStreamName = "CoreVideo Pro Camera Sink";
 constexpr int kSinkWidth = 1920;
 constexpr int kSinkHeight = 1080;
@@ -80,9 +80,7 @@ std::vector<CMIOObjectID> copyObjectList(CMIOObjectID object, CMIOObjectProperty
   return ids;
 }
 
-bool isOurDevice(const std::string& uid) {
-  return strcasecmp(uid.c_str(), kDeviceUuid) == 0 || uid == kLegacyDeviceId;
-}
+bool isOurDevice(const std::string& uid) { return isOwnVirtualCameraUid(uid); }
 
 CMIODeviceID findDevice() {
   for (CMIOObjectID device : copyObjectList(kCMIOObjectSystemObject, kCMIOHardwarePropertyDevices))
@@ -123,7 +121,7 @@ class CmioVirtualCameraSink final : public IVirtualCameraSink {
     if (status != noErr || queue_ == nullptr)
       return fail("CAMERA_SINK_FAILED: " + statusText("CMIOStreamCopyBufferQueue", status));
     status = CMIODeviceStartStream(device_, stream_);
-    if (status != noErr) return fail("CAMERA_SINK_FAILED: " + statusText("CMIODeviceStartStream", status));
+    if (status != noErr) return fail(sinkStartStreamWarning(static_cast<std::int32_t>(status)));
     streaming_ = true;
 
     if (!createPool()) return fail("CAMERA_SINK_FAILED: CVPixelBufferPoolCreate failed.");

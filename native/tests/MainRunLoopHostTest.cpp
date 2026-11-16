@@ -56,3 +56,18 @@ TEST(MainRunLoopHost, ReturnsPromptlyOnceTheBodyEnds) {
   EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(1));
 }
 #endif
+
+#if defined(__APPLE__)
+// The body used to own the main thread's 8 MiB stack; a std::thread worker
+// would get 512 KiB (review M1).
+TEST(MainRunLoopHost, TheBodyKeepsTheMainThreadsStackSize) {
+  const std::size_t stack = static_cast<std::size_t>(
+      runWithMainRunLoop([] { return static_cast<int>(pthread_get_stacksize_np(pthread_self()) / 1024); })) * 1024;
+  EXPECT_GE(stack, corevideo::core::kMainRunLoopBodyStackBytes);
+}
+
+TEST(MainRunLoopHost, AnLvalueBodyIsAccepted) {
+  auto body = [] { return 3; };
+  EXPECT_EQ(runWithMainRunLoop(body), 3);
+}
+#endif

@@ -30,6 +30,19 @@ inline bool shouldLogRepeatedSinkConnectFailure(std::uint64_t consecutiveFailure
   return consecutiveFailures > 0 && consecutiveFailures % kSinkConnectFailureLogEvery == 0;
 }
 
+// CMIODeviceStartStream's status, as an operator-facing warning. -4 is what a
+// client gets when the extension's authorizedToStartStream says no (measured
+// live 2026-11-15: every "producer pid N denied" in the extension's auth log
+// paired with -4 here). The reason itself is only in the extension's log, so
+// the warning says what to do. CAMERA_-prefixed: the 1 s retry continues.
+inline std::string sinkStartStreamWarning(std::int32_t status) {
+  if (status == -4) {
+    return "CAMERA_PRODUCER_REFUSED: CoreVideo Pro Camera refused this copy of CoreVideo Pro. "
+           "Install the signed app in the Applications folder (CMIODeviceStartStream -4).";
+  }
+  return "CAMERA_SINK_FAILED: CMIODeviceStartStream failed (OSStatus " + std::to_string(status) + ")";
+}
+
 class SinkVirtualCameraPublisher final : public IVirtualCameraPublisher {
  public:
   SinkVirtualCameraPublisher(std::unique_ptr<IVirtualCameraSink> sink, std::function<int64_t()> hostClockNs);

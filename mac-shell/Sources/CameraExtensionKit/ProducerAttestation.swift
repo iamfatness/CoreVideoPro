@@ -15,15 +15,25 @@ import Foundation
 /// entitlements), never a weaker check. `CMIOExtensionClient` exposes only
 /// clientID / signingID / pid, so there is no audit token to validate instead.
 public enum ProducerAttestation {
-    /// The installed app, and the one place the signed vcam probe may run from
-    /// (scripts/macos-vcam-e2e.sh copies it there). Must match the
+    /// All of /Applications (the shell's install preflight accepts any bundle
+    /// there, so a renamed copy or a subfolder install must still be readable;
+    /// read access reveals nothing and the requirement stays the only gate), and
+    /// the one place the signed vcam probe may run from (scripts/macos-vcam-e2e.sh
+    /// copies it there). Must match the
     /// com.apple.security.temporary-exception.files.absolute-path.read-only
     /// array in scripts/macos-camera-extension*.entitlements.
-    public static let producerReadPaths = ["/Applications/CoreVideo Pro.app/", "/Users/Shared/CoreVideoPro/vcam-probe/"]
+    public static let producerReadPaths = ["/Applications/", "/Users/Shared/CoreVideoPro/vcam-probe/"]
 
     /// Security reports a POSIX error as 100000 + errno.
     public static let posixEPERM: Int32 = 100_001
     public static let posixEACCES: Int32 = 100_013
+
+    /// True when the extension's sandbox can read `path` (a producer executable
+    /// or an app bundle path).
+    public static func sandboxCanRead(_ path: String) -> Bool {
+        let probe = path.hasSuffix("/") ? path : path + "/"
+        return producerReadPaths.contains { probe.hasPrefix($0) }
+    }
 
     public enum Verdict: Equatable {
         case authorized

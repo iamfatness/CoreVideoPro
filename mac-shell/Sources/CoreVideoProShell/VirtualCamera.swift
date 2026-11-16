@@ -73,6 +73,9 @@ enum VirtualCameraPresentation {
     /// installed, awaiting approval, restarting, updated) — the core retries
     /// every 1 s, so the operator sees progress, not an error (spec §5).
     static let connectingPrefixes = ["CAMERA_EXTENSION_NOT_FOUND:", "CAMERA_EXTENSION_LOST:"]
+    static let producerRefusedPrefix = "CAMERA_PRODUCER_REFUSED:"
+    static let producerRefusedLabel =
+        "CoreVideo Pro Camera refused this copy of CoreVideo Pro. Reinstall CoreVideo Pro in the Applications folder."
 
     /// Status line. Precedence: operator intent, then the extension's
     /// activation state, then the core's own status (Windows wording where it
@@ -95,6 +98,9 @@ enum VirtualCameraPresentation {
             if connectingPrefixes.contains(where: { core.warning.hasPrefix($0) }) {
                 return "Connecting to CoreVideo Pro Camera\u{2026}"
             }
+            // The extension refused this producer (its reason is only in the
+            // extension's own log); say what fixes it.
+            if core.warning.hasPrefix(producerRefusedPrefix) { return producerRefusedLabel }
             // Windows wording: an empty warning reads "Virtual camera failed";
             // any other warning is shown whole.
             return core.warning.isEmpty ? "Virtual camera failed" : core.warning

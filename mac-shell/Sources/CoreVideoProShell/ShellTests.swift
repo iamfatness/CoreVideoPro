@@ -602,6 +602,10 @@ enum ShellTests {
                             core: vcamCore("failed", warning: "CAMERA_TAP_PREP_FAILED: the GPU camera tap could not be prepared; restart CoreVideo Pro.")),
                     "CAMERA_TAP_PREP_FAILED: the GPU camera tap could not be prepared; restart CoreVideo Pro.",
                     "9 a failed GPU tap preparation is shown whole, never as connecting")
+        expectEqual(P.label(intent: true, ext: .active,
+                            core: vcamCore("failed", warning: "CAMERA_PRODUCER_REFUSED: CoreVideo Pro Camera refused this copy of CoreVideo Pro. Install the signed app in the Applications folder (CMIODeviceStartStream -4).")),
+                    "CoreVideo Pro Camera refused this copy of CoreVideo Pro. Reinstall CoreVideo Pro in the Applications folder.",
+                    "9 a refused producer says what fixes it, never 'connecting' or a bare -4")
         expectEqual(P.label(intent: true, ext: .active, core: vcamCore("failed", warning: "plain words")),
                     "plain words", "9 warning without a code prefix is shown whole")
         expectEqual(P.label(intent: true, ext: .active, core: vcamCore("failed")),

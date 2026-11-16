@@ -19,12 +19,14 @@
       Read only, so the producer check (SecCodeCopyGuestWithAttributes, then
       the code requirement) can read the producer from disk: the
       cmioextension sandbox reads neither /Applications nor any home folder.
-      Exactly the installed app and the signed vcam probe location; must match
-      ProducerAttestation.producerReadPaths. Not a restricted entitlement.
+      All of /Applications (the app's own install preflight accepts any bundle
+      there: a Finder copy "CoreVideo Pro 2.app", a subfolder) and the signed
+      vcam probe location; must match ProducerAttestation.producerReadPaths.
+      Read only: the code requirement stays the only gate. Not restricted.
     -->
     <key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
     <array>
-        <string>/Applications/CoreVideo Pro.app/</string>
+        <string>/Applications/</string>
         <string>/Users/Shared/CoreVideoPro/vcam-probe/</string>
     </array>
     <key>com.apple.security.app-sandbox</key>

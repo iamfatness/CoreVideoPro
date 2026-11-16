@@ -94,9 +94,11 @@ the extension) so consumers that ask for 720p get it without a second producer s
    (Developer ID CA intermediate, Developer ID Application leaf; tightened 2026-11-15).
    It fails closed, with no fallback. The check reads the producer from disk, and
    the `cmioextension` sandbox reads neither `/Applications` nor home folders, so the
-   extension carries a read-only `temporary-exception.files.absolute-path` for exactly
-   `/Applications/CoreVideo Pro.app/` and `/Users/Shared/CoreVideoPro/vcam-probe/`
-   (where the e2e script puts the signed probe). Without it every producer was
+   extension carries a read-only `temporary-exception.files.absolute-path` for
+   `/Applications/` (any install the shell's preflight accepts, renamed copies and
+   subfolders included) and `/Users/Shared/CoreVideoPro/vcam-probe/` (where the e2e
+   script puts the signed probe). Read access reveals nothing; the requirement stays
+   the only gate. A refused producer surfaces in the core as `CAMERA_PRODUCER_REFUSED:`. Without it every producer was
    refused (OSStatus 100001). `CMIOExtensionClient` exposes no audit token, so the
    pid is the only handle. Any consumer may read the source stream.
 

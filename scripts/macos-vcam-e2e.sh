@@ -91,6 +91,9 @@ collect_logs() {
 
 cleanup() {
     if [ -n "$FEED_PID" ] && kill -0 "$FEED_PID" 2>/dev/null; then kill "$FEED_PID" 2>/dev/null; fi
+    # The probe is an admitted producer signed with get-task-allow; never leave
+    # it behind in the world-writable /Users/Shared.
+    rm -f "$FEED"
     collect_logs
     echo "artifacts: $OUT"
 }

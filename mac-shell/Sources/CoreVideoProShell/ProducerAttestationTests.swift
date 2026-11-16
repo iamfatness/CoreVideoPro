@@ -25,15 +25,28 @@ extension ShellTests {
             }
         }
 
-        // The requirement is Developer ID, our team, our two identifiers.
+        // The requirement is exactly Developer ID, our team, our two identifiers:
+        // an equality pin, so a widening "or" clause cannot slip in (review M6).
+        expectEqual(CameraConstants.producerRequirement,
+                    #"anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "42394L3353" and (identifier "us.iamfatness.corevideopro.core" or identifier "us.iamfatness.corevideopro.vcam-probe")"#,
+                    "the producer requirement, verbatim")
         let requirement = CameraConstants.producerRequirement
-        expect(requirement.hasPrefix("anchor apple generic and "), "Apple-anchored")
-        expect(requirement.contains("certificate 1[field.1.2.840.113635.100.6.2.6] exists"), "Developer ID CA")
-        expect(requirement.contains("certificate leaf[field.1.2.840.113635.100.6.1.13] exists"),
-               "Developer ID Application leaf")
-        expect(requirement.contains(#"certificate leaf[subject.OU] = "42394L3353""#), "our team")
-        expect(requirement.contains(#"identifier "us.iamfatness.corevideopro.core""#), "the core")
-        expect(requirement.contains(#"identifier "us.iamfatness.corevideopro.vcam-probe""#), "the probe")
+
+        // Review I1: every bundle the install preflight accepts must be readable
+        // by the extension's sandbox, or the camera installs and then refuses
+        // every producer. Finder's "CoreVideo Pro 2.app" and subfolders included.
+        for bundle in ["/Applications/CoreVideo Pro.app", "/Applications/CoreVideo Pro 2.app",
+                       "/Applications/Video/CoreVideo Pro.app", "/Applications/Renamed.app"] {
+            expect(CameraExtensionPolicy.preflight(bundlePath: bundle, hasEmbeddedProfile: true) == nil,
+                   "preflight accepts \(bundle)")
+            expect(P.sandboxCanRead(bundle + "/Contents/Resources/corevideo-native"),
+                   "the sandbox can read the core inside \(bundle)")
+        }
+        expect(CameraExtensionPolicy.preflight(bundlePath: "/Users/x/Downloads/CoreVideo Pro.app",
+                                               hasEmbeddedProfile: true) == .notInApplications,
+               "outside /Applications the preflight stops first")
+        expect(P.sandboxCanRead("/Users/Shared/CoreVideoPro/vcam-probe/corevideo-vcam-feed"), "the e2e probe")
+        expect(!P.sandboxCanRead("/Users/Shared/elsewhere/corevideo-vcam-feed"), "nothing else under /Users/Shared")
         var compiled: SecRequirement?
         expectEqual(SecRequirementCreateWithString(requirement as CFString, [], &compiled), errSecSuccess,
                     "the requirement compiles")

@@ -18,16 +18,26 @@
 // Windows thread/COM-apartment layout is unchanged.
 
 #include <exception>
+#include <type_traits>
 #include <utility>
 
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
+#include <pthread.h>
 
 #include <atomic>
-#include <thread>
+#include <cstddef>
+#include <stdexcept>
 #endif
 
 namespace corevideo::core {
+
+#if defined(__APPLE__)
+// The body used to run on the main thread (8 MiB stack); a std::thread gets
+// 512 KiB on macOS. Keep the main thread's size so nothing that ran there
+// (MediaCore construction/teardown, every RPC handler) loses headroom.
+inline constexpr std::size_t kMainRunLoopBodyStackBytes = 8u * 1024u * 1024u;
+#endif
 
 template <typename Body>
 int runWithMainRunLoop(Body&& body) {
@@ -41,19 +51,38 @@ int runWithMainRunLoop(Body&& body) {
   CFRunLoopTimerRef keepAlive = CFRunLoopTimerCreate(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 3600.0,
                                                      3600.0, 0, 0, [](CFRunLoopTimerRef, void*) {}, nullptr);
   CFRunLoopAddTimer(mainLoop, keepAlive, kCFRunLoopCommonModes);
-  std::thread worker([&] {
+  struct Context {
+    std::remove_reference_t<Body>* body;
+    int* result;
+    std::exception_ptr* failure;
+    std::atomic<bool>* done;
+    CFRunLoopRef mainLoop;
+  } context{&body, &result, &failure, &done, mainLoop};
+  pthread_attr_t attributes;
+  pthread_attr_init(&attributes);
+  pthread_attr_setstacksize(&attributes, kMainRunLoopBodyStackBytes);
+  pthread_t worker;
+  const int created = pthread_create(&worker, &attributes, [](void* raw) -> void* {
+    auto* c = static_cast<Context*>(raw);
     try {
-      result = std::forward<Body>(body)();
+      *c->result = std::forward<Body>(*c->body)();
     } catch (...) {
-      failure = std::current_exception();
+      *c->failure = std::current_exception();
     }
-    done.store(true, std::memory_order_release);
-    CFRunLoopStop(mainLoop);
-    CFRunLoopWakeUp(mainLoop);
-  });
+    c->done->store(true, std::memory_order_release);
+    CFRunLoopStop(c->mainLoop);
+    CFRunLoopWakeUp(c->mainLoop);
+    return nullptr;
+  }, &context);
+  pthread_attr_destroy(&attributes);
+  if (created != 0) {
+    CFRunLoopRemoveTimer(mainLoop, keepAlive, kCFRunLoopCommonModes);
+    CFRelease(keepAlive);
+    throw std::runtime_error("runWithMainRunLoop: pthread_create failed");
+  }
   // Bounded slices: a stop that lands between two slices is caught by `done`.
   while (!done.load(std::memory_order_acquire)) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.25, false);
-  worker.join();
+  pthread_join(worker, nullptr);
   CFRunLoopRemoveTimer(mainLoop, keepAlive, kCFRunLoopCommonModes);
   CFRelease(keepAlive);
   if (failure) std::rethrow_exception(failure);
