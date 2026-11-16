@@ -555,6 +555,10 @@ final class AppModel: ObservableObject {
     /// True only while an operator's Update camera has paused our own output
     /// (the wire says off; the persisted intent is untouched).
     @Published private(set) var virtualCameraPausedForUpdate = false
+    /// An operator's Update camera is running (from the click until the
+    /// replacement finishes or the wait gives up). A second click and the 5 s
+    /// retry do nothing meanwhile, and the status reads "Updating camera…".
+    @Published private(set) var cameraUpdateInProgress = false
     /// The last installed-copies answer (diagnostics; nil = never answered).
     @Published private(set) var cameraExtensionInstalls: [CameraExtensionInstall]?
     /// TEST-ONLY command capture. Set only by ShellTests: no env var, control
@@ -939,7 +943,7 @@ final class AppModel: ObservableObject {
 
     var virtualCameraLabel: String {
         VirtualCameraPresentation.label(intent: virtualCamera.enabled, ext: cameraExtensionState,
-                                        core: virtualCameraCore)
+                                        core: virtualCameraCore, updating: cameraUpdateInProgress)
     }
 
     var virtualCameraFramerLabel: String {
@@ -1172,7 +1176,7 @@ final class AppModel: ObservableObject {
 
     /// The `.updateReady` retry: the 5 s timer, and our intent turning off.
     func retryCameraUpdateIfFree() {
-        guard cameraExtensionState == .updateReady, !cameraInUse() else { return }
+        guard cameraExtensionState == .updateReady, !cameraUpdateInProgress, !cameraInUse() else { return }
         ShellLog.write("vcam-ext: the camera is free; installing the update")
         activateCameraExtension()
     }
@@ -1183,7 +1187,8 @@ final class AppModel: ObservableObject {
     /// stop. Still running = another app has it: stay `.updateReady` and
     /// resume our output.
     func updateCameraExtension() {
-        guard cameraExtensionState == .updateReady else { return }
+        guard cameraExtensionState == .updateReady, !cameraUpdateInProgress else { return }
+        cameraUpdateInProgress = true
         ShellLog.write("vcam-ext: Update camera clicked")
         if virtualCamera.enabled && !virtualCameraPausedForUpdate {
             virtualCameraPausedForUpdate = true
@@ -1193,19 +1198,32 @@ final class AppModel: ObservableObject {
     }
 
     private func waitForCameraRelease(until deadline: Date) {
-        guard cameraExtensionState == .updateReady else { resumeVirtualCameraAfterUpdate(); return }
+        guard cameraExtensionState == .updateReady else {
+            // The replacement is in flight: its result finishes the update
+            // (resuming our output now would put it back on the device that
+            // is being swapped, and the delegate would refuse the swap).
+            if cameraExtensionState == .activating { return }
+            finishCameraUpdate()
+            return
+        }
         if !cameraInUse() {
             activateCameraExtension()
             return
         }
         if Date() >= deadline {
             ShellLog.write("vcam-ext: another app still has the camera; the update stays ready")
-            resumeVirtualCameraAfterUpdate()
+            finishCameraUpdate()
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + cameraUpdatePollInterval) { [weak self] in
             Task { @MainActor in self?.waitForCameraRelease(until: deadline) }
         }
+    }
+
+    /// Ends an operator's Update camera: our output resumes, the button returns.
+    private func finishCameraUpdate() {
+        cameraUpdateInProgress = false
+        resumeVirtualCameraAfterUpdate()
     }
 
     private func resumeVirtualCameraAfterUpdate() {
@@ -1263,9 +1281,12 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.setCameraExtensionState(state)
-                if state != .activating { self.recordCameraExtensionResult("activation: \(state)") }
-                // A finished (or deferred) request releases an Update camera pause.
-                if state != .activating && state != .needsApproval { self.resumeVirtualCameraAfterUpdate() }
+                // Any result but "still working" ends an Update camera (a
+                // needsApproval included: staying paused gains nothing).
+                if state != .activating {
+                    self.recordCameraExtensionResult("activation: \(state)")
+                    self.finishCameraUpdate()
+                }
             }
         }
     }

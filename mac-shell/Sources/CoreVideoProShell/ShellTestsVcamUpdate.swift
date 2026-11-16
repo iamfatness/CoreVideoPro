@@ -24,6 +24,7 @@ extension ShellTests {
             ("vcam-update/free-camera-replaces", testFreeCameraUpdateReplaces),
             ("vcam-update/update-ready-retries-when-free", testUpdateReadyRetriesWhenTheCameraFrees),
             ("vcam-update/update-button-pauses-our-output", testUpdateCameraButtonPausesOurOutputThenReplaces),
+            ("vcam-update/update-button-race-never-resumes-mid-swap", testUpdateCameraNeverResumesOurOutputMidSwap),
             ("vcam-update/replacement-offered-in-use-is-cancelled",
              testReplacementOfferedWhileInUseEndsUpdateReady),
             ("vcam-update/completed-unregistered-old-uninstalling-needs-reboot",
@@ -227,6 +228,36 @@ extension ShellTests {
         expectEqual(busy.cameraExtensionState, .updateReady, "the update stays ready")
         expectEqual(busyLog.ons, [false, true], "and our output is resumed")
         busy.stopTimersForTesting()
+    }
+
+    /// Review I1: a double click, and the 5 s retry firing while the click
+    /// waits, must not start a second swap or resume our output while the
+    /// replacement is still in flight.
+    @MainActor
+    static func testUpdateCameraNeverResumesOurOutputMidSwap() {
+        let (model, fake, probe, log) = launchedModel(
+            installed: [olderInstall], device: CameraDeviceStatus(registered: true, runningSomewhere: true),
+            intentOn: true)
+        probe.status.runningSomewhere = false   // the other app quit; our output still streams
+        fake.completionDelay = 0.3              // sysextd takes a while
+        model.cameraUpdateRetryInterval = 0.05   // the retry fires during the wait and the swap
+        model.cameraUpdatePollInterval = 0.03
+        log.sent.removeAll()
+        model.updateCameraExtension()
+        expectEqual(model.virtualCameraLabel, "Updating camera\u{2026}", "the click shows progress")
+        expect(!VirtualCameraPresentation.showsUpdateButton(model.cameraExtensionState,
+                                                           updating: model.cameraUpdateInProgress),
+               "and the button goes away while it runs")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.04))
+        model.updateCameraExtension()            // the double click
+        RunLoop.current.run(until: Date().addingTimeInterval(0.7))
+        expectEqual(fake.calls, ["installs", "activate"], "exactly one replacement")
+        expectEqual(log.ons, [false, true], "paused once, resumed once")
+        expect(log.sent.last.map { $0.state != .activating } ?? false,
+               "our output resumes only after the replacement finished, never mid-swap")
+        expectEqual(model.cameraExtensionState, .active, "the update completes")
+        expect(!model.cameraUpdateInProgress, "and the progress state clears")
+        model.stopTimersForTesting()
     }
 
     /// Belt and braces at the moment macOS offers the replacement: a different

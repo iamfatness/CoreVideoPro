@@ -208,7 +208,8 @@ struct SettingsPane: View {
                 row("Virtual camera", model.virtualCameraLabel)
                 labeled("") {
                     VStack(alignment: .leading, spacing: 4) {
-                        if VirtualCameraPresentation.showsUpdateButton(model.cameraExtensionState) {
+                        if VirtualCameraPresentation.showsUpdateButton(model.cameraExtensionState,
+                                                             updating: model.cameraUpdateInProgress) {
                             Button("Update camera") { model.updateCameraExtension() }
                                 .buttonStyle(AccentButtonStyle())
                         }

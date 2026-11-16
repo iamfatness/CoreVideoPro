@@ -85,7 +85,11 @@ enum VirtualCameraPresentation {
 
     static let needsRebootLabel = "Restart your Mac to finish updating the virtual camera."
 
-    static func label(intent: Bool, ext: CameraExtensionState, core: VirtualCameraReadModel?) -> String {
+    static let updatingLabel = "Updating camera\u{2026}"
+
+    static func label(intent: Bool, ext: CameraExtensionState, core: VirtualCameraReadModel?,
+                      updating: Bool = false) -> String {
+        if updating { return updatingLabel }
         // An update that waits on the operator outranks intent: with the
         // output off, another app holding the camera still blocks it, and the
         // operator must be told what to do (owner: no support tickets).
@@ -119,8 +123,8 @@ enum VirtualCameraPresentation {
     }
 
     /// The "Update camera" button exists only while an update waits.
-    static func showsUpdateButton(_ ext: CameraExtensionState) -> Bool {
-        ext == .updateReady
+    static func showsUpdateButton(_ ext: CameraExtensionState, updating: Bool = false) -> Bool {
+        ext == .updateReady && !updating
     }
 
     /// The "Open System Settings" affordance exists only while approval is pending.
