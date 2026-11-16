@@ -6,6 +6,8 @@
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <functional>
 
@@ -144,6 +146,133 @@ std::string writeBt709BarsClip(const std::string& path, int frames, int fps) {
       }
     }
   });
+}
+
+std::string writeToneClip(const std::string& path, int seconds, double toneHz) {
+  @autoreleasepool {
+    constexpr int kSize = 64, kFps = 30, kRate = 48000;
+    if (seconds <= 0) return "invalid fixture duration";
+    NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+    [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+    NSError* error = nil;
+    AVAssetWriter* writer = [[AVAssetWriter alloc] initWithURL:url fileType:AVFileTypeMPEG4 error:&error];
+    if (!writer) return std::string("AVAssetWriter: ") + (error.localizedDescription.UTF8String ?: "unknown");
+    AVAssetWriterInput* video = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeVideo outputSettings:@{
+      AVVideoCodecKey : AVVideoCodecTypeH264, AVVideoWidthKey : @(kSize), AVVideoHeightKey : @(kSize),
+      AVVideoColorPropertiesKey : bt709ColourProperties() }];
+    NSDictionary* bufferAttributes = @{ (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+      (id)kCVPixelBufferWidthKey : @(kSize), (id)kCVPixelBufferHeightKey : @(kSize),
+      (id)kCVPixelBufferIOSurfacePropertiesKey : @{} };
+    AVAssetWriterInputPixelBufferAdaptor* adaptor =
+        [[AVAssetWriterInputPixelBufferAdaptor alloc] initWithAssetWriterInput:video
+                                                   sourcePixelBufferAttributes:bufferAttributes];
+    AudioChannelLayout layout = {};
+    layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo;
+    AVAssetWriterInput* audio = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeAudio outputSettings:@{
+      AVFormatIDKey : @(kAudioFormatMPEG4AAC), AVSampleRateKey : @(kRate), AVNumberOfChannelsKey : @2,
+      AVEncoderBitRateKey : @192000,
+      AVChannelLayoutKey : [NSData dataWithBytes:&layout length:sizeof(layout)] }];
+    video.expectsMediaDataInRealTime = NO;
+    audio.expectsMediaDataInRealTime = NO;
+    if (![writer canAddInput:video] || ![writer canAddInput:audio]) return "AVAssetWriter refused an input";
+    [writer addInput:video];
+    [writer addInput:audio];
+    if (![writer startWriting]) {
+      return std::string("startWriting: ") + (writer.error.localizedDescription.UTF8String ?: "unknown");
+    }
+    [writer startSessionAtSourceTime:kCMTimeZero];
+    AudioStreamBasicDescription format = {};
+    format.mSampleRate = kRate;
+    format.mFormatID = kAudioFormatLinearPCM;
+    format.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+    format.mChannelsPerFrame = 2;
+    format.mBitsPerChannel = 32;
+    format.mBytesPerFrame = 8;
+    format.mFramesPerPacket = 1;
+    format.mBytesPerPacket = 8;
+    CMAudioFormatDescriptionRef description = nullptr;
+    if (CMAudioFormatDescriptionCreate(kCFAllocatorDefault, &format, sizeof(layout), &layout, 0, nullptr, nullptr,
+                                       &description) != noErr) {
+      return "CMAudioFormatDescriptionCreate failed";
+    }
+    std::string failure;
+    // Feed whichever input is ready. AVAssetWriter interleaves the two tracks itself and stops
+    // accepting one while the other is behind, so a fixed "video then audio" order can wait forever.
+    constexpr int kAudioChunk = 1024;
+    const int videoFrames = seconds * kFps;
+    const int64_t audioFrames = static_cast<int64_t>(seconds) * kRate;
+    int videoIndex = 0;
+    int64_t audioIndex = 0;
+    const auto giveUpAt = [NSDate dateWithTimeIntervalSinceNow:30.0];
+    while ((videoIndex < videoFrames || audioIndex < audioFrames) && failure.empty()) {
+      bool progressed = false;
+      if (videoIndex < videoFrames && video.readyForMoreMediaData) {
+        CVPixelBufferRef buffer = nullptr;
+        if (CVPixelBufferCreate(kCFAllocatorDefault, kSize, kSize, kCVPixelFormatType_32BGRA,
+                                (__bridge CFDictionaryRef)bufferAttributes, &buffer) != kCVReturnSuccess || !buffer) {
+          failure = "CVPixelBufferCreate failed";
+          break;
+        }
+        CVPixelBufferLockBaseAddress(buffer, 0);
+        std::memset(CVPixelBufferGetBaseAddress(buffer), 0x80, CVPixelBufferGetBytesPerRow(buffer) * kSize);
+        CVPixelBufferUnlockBaseAddress(buffer, 0);
+        tagBt709(buffer);
+        if (![adaptor appendPixelBuffer:buffer withPresentationTime:CMTimeMake(videoIndex, kFps)]) {
+          failure = "the video frame could not be appended";
+        }
+        CVPixelBufferRelease(buffer);
+        ++videoIndex;
+        progressed = true;
+        if (videoIndex == videoFrames) [video markAsFinished];
+      }
+      if (failure.empty() && audioIndex < audioFrames && audio.readyForMoreMediaData) {
+        const int count = static_cast<int>((std::min)(static_cast<int64_t>(kAudioChunk), audioFrames - audioIndex));
+        std::vector<float> pcm(static_cast<size_t>(count) * 2u);
+        for (int i = 0; i < count; ++i) {
+          const float value = 0.5f * static_cast<float>(
+              std::sin(2.0 * M_PI * toneHz * static_cast<double>(audioIndex + i) / kRate));
+          pcm[static_cast<size_t>(i) * 2u] = value;
+          pcm[static_cast<size_t>(i) * 2u + 1u] = value;
+        }
+        CMBlockBufferRef block = nullptr;
+        const size_t bytes = pcm.size() * sizeof(float);
+        if (CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, nullptr, bytes, kCFAllocatorDefault, nullptr, 0,
+                                               bytes, kCMBlockBufferAssureMemoryNowFlag, &block) != kCMBlockBufferNoErr ||
+            CMBlockBufferReplaceDataBytes(pcm.data(), block, 0, bytes) != kCMBlockBufferNoErr) {
+          if (block) CFRelease(block);
+          failure = "CMBlockBuffer failed";
+          break;
+        }
+        CMSampleBufferRef sample = nullptr;
+        const OSStatus created = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            kCFAllocatorDefault, block, description, count, CMTimeMake(audioIndex, kRate), nullptr, &sample);
+        CFRelease(block);
+        if (created != noErr || !sample) { failure = "the audio sample buffer could not be created"; break; }
+        if (![audio appendSampleBuffer:sample]) failure = "the audio chunk could not be appended";
+        CFRelease(sample);
+        audioIndex += count;
+        progressed = true;
+        if (audioIndex == audioFrames) [audio markAsFinished];
+      }
+      if (!progressed) {
+        if ([giveUpAt timeIntervalSinceNow] < 0) { failure = "AVAssetWriter never became ready for more media"; break; }
+        [NSThread sleepForTimeInterval:0.001];
+      }
+    }
+    CFRelease(description);
+    if (!failure.empty()) {
+      [writer cancelWriting];
+      return failure + (writer.error ? std::string(": ") + (writer.error.localizedDescription.UTF8String ?: "") : "");
+    }
+    [writer endSessionAtSourceTime:CMTimeMake(seconds, 1)];
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    [writer finishWritingWithCompletionHandler:^{ dispatch_semaphore_signal(done); }];
+    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+    if (writer.status != AVAssetWriterStatusCompleted) {
+      return std::string("finishWriting: ") + (writer.error.localizedDescription.UTF8String ?: "not completed");
+    }
+    return "";
+  }
 }
 
 std::string writeFlatColourPng(const std::string& path, int width, int height,

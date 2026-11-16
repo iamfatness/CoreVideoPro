@@ -4127,13 +4127,12 @@ TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
   std::filesystem::remove(videoPath);
 }
 
-#if COREVIDEO_WITH_MF_ENCODER
 TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   const auto wavPath = std::filesystem::temp_directory_path() / "corevideo-mf-media-audio-test.wav";
   std::filesystem::remove(wavPath);
   writeSineWaveFile(wavPath, 44100, 1);
 
-  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
+  auto source = testMediaDecoder();
   ASSERT_NE(source, nullptr);
 
   corevideo::modules::MediaDecodeRequest request;
@@ -4167,7 +4166,6 @@ TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   source.reset(); // Release owned decoder workers before deleting their fixture.
   std::filesystem::remove(wavPath);
 }
-#endif  // COREVIDEO_WITH_MF_ENCODER (audio: Task 6 moves this under the either-decoder gate)
 
 namespace {
 int64_t steadyNow100ns() {
@@ -4259,7 +4257,6 @@ TEST(MediaFoundationMediaFrameSource, PausingMidPlaybackHoldsTheOnAirFrameAndRes
   source.reset(); // Release owned decoder workers before deleting their fixture.
 }
 
-#if COREVIDEO_WITH_MF_ENCODER
 // The audio half: no PCM while paused, and Play resumes from the paused media
 // position (within the 50 ms A/V budget) — not from 0, not after the pause.
 TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePausedPosition) {
@@ -4267,7 +4264,7 @@ TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePaused
       ("corevideo-mf-pause-audio-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".wav");
   writeTimecodedFloatWav(wavPath, 3);
   struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{wavPath};
-  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
+  auto source = testMediaDecoder();
   ASSERT_NE(source, nullptr);
   corevideo::modules::MediaDecodeRequest request;
   request.kind = "media-video";
@@ -4318,7 +4315,6 @@ TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePaused
   EXPECT_TRUE(std::abs(resumedMs - lastHeardMs) <= 50) << "lastHeard=" << lastHeardMs << "ms resumed=" << resumedMs << "ms";
   source.reset(); // Release owned decoder workers before deleting their fixture.
 }
-#endif  // COREVIDEO_WITH_MF_ENCODER (audio: Task 6 moves this under the either-decoder gate)
 
 #if COREVIDEO_WITH_MF_ENCODER  // the FFmpeg fallback exists only behind Media Foundation
 // ProRes MOVs (Media Foundation has no decoder) run on the FFmpeg fallback,

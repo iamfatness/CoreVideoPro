@@ -77,12 +77,28 @@ struct MediaClipDecoder::Impl {
     VideoFrame presentedFrame;  // the frame the direct-poll path last presented
     int64_t decodedPts = 0, decodedDuration = 0, loopOffset = 0;
     int64_t duration100ns = -1;
+    // Audio: a SECOND reader on the same clock (MF:938-988, 1054-1103, 1223-1290).
+    std::unique_ptr<IClipAudioReader> audioReader;
+    std::unique_ptr<IClipAudioReader> nextAudioReader;  // a loop's pre-opened successor (start 0)
+    bool audioPreopenTried = false;
+    int audioSamplesFromReader = 0;
+    bool audioAbsent = false;      // the asset has no audio track: silent, never warned
+    bool audioOpenFailed = false;  // sticky, like the video open
+    bool audioEnded = false;
+    int64_t audioLoopOffset = 0;   // media time the finished loop passes covered
+    int64_t audioEndPts = 0;       // end of the last sample appended, loop offset included
+    MediaAudioWindows audioWindows;
   };
 
   std::shared_ptr<IClipReaderFactory> readers;
   std::function<int64_t()> nowMs;
   std::shared_ptr<WakeRelay> relay = std::make_shared<WakeRelay>();
-  std::vector<std::string> warnings;
+  // Video and audio warnings are rebuilt by their OWN poll and reported
+  // together. DELIBERATE DEVIATION FROM MF, which keeps one list and clears it
+  // in both polls: the owner polls video, then audio, then reads warnings(), so
+  // on MF a playing clip's video warning is erased before anything reads it.
+  std::vector<std::string> warnings;       // video
+  std::vector<std::string> audioWarnings;
   State state;
   bool reached = false;   // a request has reached the clip (position is -1 before)
   // DELIBERATE DEVIATION FROM MF: ids keep rising across an identity change and
@@ -226,6 +242,110 @@ struct MediaClipDecoder::Impl {
     return false;
   }
 
+  // False = no audio reader (no track, or the open failed; the flags say which).
+  bool openAudioReader(int64_t start100ns, bool firstOpen) {
+    std::string error;
+    state.audioReader = readers ? readers->openAudio(state.path, start100ns, wakeForReader(), error) : nullptr;
+    state.audioSamplesFromReader = 0;
+    state.audioPreopenTried = false;
+    if (state.audioReader) return true;
+    // nullptr with an EMPTY error = no audio track: not a failure (MF:1080-1086).
+    if (error.empty()) { if (firstOpen) state.audioAbsent = true; else state.audioEnded = true; }
+    else state.audioOpenFailed = true;
+    return false;
+  }
+
+  // One 960-frame stereo window cut at the CLOCK position, or nothing. Paused
+  // emits nothing, not even silence (MF:673-681): the caller returned before
+  // this. Chunks are appended by media PTS, so a window is exact whatever the
+  // reader's chunk size, and the 200 ms history lets a resume replay samples
+  // decoded ahead before the pause (MediaPlaybackTimeline.h).
+  bool decodeAudio(const MediaDecodeRequest& request, int64_t timestampMs, AudioFrame& out) {
+    constexpr int kWindowFrames = 960;
+    constexpr int64_t kRate = 48000;
+    configure(request, timestampMs * 10000);
+    if (state.audioAbsent) return false;
+    const auto warnOpen = [&] {
+      audioWarnings.push_back("Media asset " + request.assetId + " could not be opened for Program audio.");
+    };
+    if (state.audioOpenFailed) { warnOpen(); return false; }
+    const auto elapsed = state.clock.elapsed100ns(timestampMs * 10000);
+    bool firstOpen = !state.audioReader && !state.audioEnded && state.audioLoopOffset == 0 && state.audioEndPts == 0;
+    state.audioWindows.seek(elapsed * kRate / 10'000'000);  // MF:972-977
+    for (int chunks = 0; chunks < 8 && !state.audioEnded &&
+         state.audioWindows.bufferedThrough() < state.audioWindows.cursor() + kWindowFrames; ++chunks) {
+      if (!state.audioReader) {
+        // First playing poll, or a loop seam with nothing pre-opened: start at
+        // the clock position inside the current loop pass (MF:1093-1101).
+        if (!openAudioReader(mediaLoopSeek100ns(elapsed, state.audioLoopOffset), firstOpen)) {
+          if (state.audioOpenFailed) warnOpen();
+          break;
+        }
+        firstOpen = false;
+      }
+      ClipAudioSample sample;
+      std::string error;
+      const auto status = state.audioReader->take(sample, error);
+      if (status == ClipReadStatus::Pending) break;
+      if (status == ClipReadStatus::Failed) {
+        if (state.audioSamplesFromReader == 0) {
+          state.audioReader.reset();
+          state.audioOpenFailed = true;
+          warnOpen();
+        } else {
+          audioWarnings.push_back("Media asset " + request.assetId + " failed while decoding Program audio.");
+        }
+        break;
+      }
+      if (status == ClipReadStatus::EndOfStream) {
+        if (state.audioSamplesFromReader == 0 && state.audioLoopOffset == 0 && state.audioEndPts == 0) {
+          // The first reader ended without one sample: the asset has no audio
+          // track (an asynchronous reader can only say so this way).
+          state.audioReader.reset();
+          state.audioAbsent = true;
+          break;
+        }
+        if (!request.loop || state.audioSamplesFromReader == 0) { state.audioEnded = true; break; }
+        // LOOP SEAM (MF:953-958): time keeps running forward by the media the
+        // finished pass covered; the pre-opened successor takes over in the same
+        // poll, so the window that straddles the seam is filled from both sides.
+        state.audioLoopOffset = state.audioEndPts;
+        state.audioReader = std::move(state.nextAudioReader);
+        state.audioSamplesFromReader = 0;
+        state.audioPreopenTried = false;
+        continue;
+      }
+      const auto frames = static_cast<int64_t>(sample.pcm.size() / 2);
+      if (frames <= 0) continue;
+      const auto pts = sample.pts100ns + state.audioLoopOffset;
+      const auto duration = frames * 10'000'000 / kRate;
+      state.audioWindows.append(pts, std::move(sample.pcm));
+      state.audioEndPts = pts + duration;
+      state.audioSamplesFromReader += 1;
+      if (request.loop && !state.nextAudioReader && !state.audioPreopenTried && state.duration100ns > 0 &&
+          sample.pts100ns + duration >= state.duration100ns - kLoopPreopenLead100ns) {
+        // Pre-open from the top (new; not in MF). The duration is the video
+        // reader's; an asset with no video has none and reopens at the seam.
+        state.audioPreopenTried = true;
+        std::string ignored;
+        state.nextAudioReader = readers ? readers->openAudio(state.path, 0, wakeForReader(), ignored) : nullptr;
+      }
+    }
+    // Emit only a FULL window, or the tail when the reader is at its end (MF:978-986).
+    if (state.audioWindows.bufferedThrough() <= state.audioWindows.cursor() ||
+        (!state.audioEnded && state.audioWindows.bufferedThrough() < state.audioWindows.cursor() + kWindowFrames)) {
+      return false;
+    }
+    out.participantId = frameSourceIdOf(request);
+    out.sampleRate = static_cast<int>(kRate);
+    out.channels = 2;
+    out.sampleCount = kWindowFrames;
+    out.timestampMs = timestampMs;
+    out.voiceActive = true;
+    out.pcm = state.audioWindows.take(kWindowFrames);
+    return true;
+  }
+
   bool decode(const MediaDecodeRequest& request, int64_t now100ns, bool prefetching, VideoFrame& out) {
     warnings.clear();
     if (request.assetId.empty() || request.assetPath.empty()) return false;
@@ -347,12 +467,22 @@ std::vector<ScheduledMediaVideo> MediaClipDecoder::prefetchMediaVideo(const Medi
 }
 
 std::vector<AudioFrame> MediaClipDecoder::pollMediaAudioFrames(const MediaDecodeRequest& request, int64_t timestampMs) {
-  (void)request;
-  (void)timestampMs;
+  impl_->audioWarnings.clear();
+  if (request.kind != "media-video" || request.assetId.empty() || request.assetPath.empty()) return {};
+  // A paused clip emits no PCM. Returning BEFORE the clock is touched also keeps
+  // an audio-slot timestamp (which runs ahead of now) from ever becoming the
+  // instant the clock froze; the video path / syncMediaClock owns that (MF:938-946).
+  if (!request.playing || isStillImagePath(normalizeMediaAssetPath(request.assetPath))) return {};
+  AudioFrame frame;
+  if (impl_->decodeAudio(request, timestampMs, frame)) return {std::move(frame)};
   return {};
 }
 
-std::vector<std::string> MediaClipDecoder::warnings() const { return impl_->warnings; }
+std::vector<std::string> MediaClipDecoder::warnings() const {
+  auto all = impl_->warnings;
+  all.insert(all.end(), impl_->audioWarnings.begin(), impl_->audioWarnings.end());
+  return all;
+}
 
 int64_t MediaClipDecoder::playbackPositionMs() const {
   if (!impl_->reached) return -1;

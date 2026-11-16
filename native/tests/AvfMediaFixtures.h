@@ -20,6 +20,10 @@ std::string writeFlatColourClip(const std::string& path, int width, int height, 
 // BL (173,42,26) BT.709 green, BR (63,102,240) BT.709 red.
 std::string writeBt709BarsClip(const std::string& path, int frames, int fps);
 
+// H.264 + AAC MP4: `seconds` of video (flat grey 64x64 @30) and a sine at `toneHz`, 48 kHz stereo,
+// amplitude 0.5.
+std::string writeToneClip(const std::string& path, int seconds, double toneHz);
+
 // A flat-colour PNG (straight-alpha BGRA source) written with ImageIO.
 std::string writeFlatColourPng(const std::string& path, int width, int height,
                                uint8_t b, uint8_t g, uint8_t r, uint8_t a = 0xff);

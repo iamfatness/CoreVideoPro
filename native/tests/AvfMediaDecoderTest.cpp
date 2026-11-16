@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -261,4 +262,53 @@ TEST(AvfMediaDecoder, AReaderNeverWakesAfterItsDestructorReturns) {
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   EXPECT_EQ(samplesTaken, 147) << "fixture fact: sum of i % 7 for i in 0..49; fewer means takes timed out";
   EXPECT_EQ(lateWakes->load(), 0);
+}
+
+TEST(AvfMediaDecoder, A440HzClipDecodesTo440HzStereoAt48k) {
+  // Fixture: 3 s of H.264 + AAC, a 440 Hz sine at amplitude 0.5 on both channels.
+  const auto p = tmp("tone.mp4"); Cleanup c{p};
+  const auto toneWritten = corevideo::testing::writeToneClip(p.string(), 3, 440.0);
+  ASSERT_EQ(toneWritten, "") << toneWritten;
+  auto d = modules::createAvFoundationMediaDecoderFactory()();
+  auto* pre = dynamic_cast<modules::IMediaVideoPrefetch*>(d.get());
+  ASSERT_NE(pre, nullptr);
+  auto r = req(p, true);
+  const auto startMs = steadyMs();
+  pre->syncMediaClock(r, startMs);
+  // One second of windows on the owner's cadence: a 20 ms audio slot, video polled too. The slots
+  // are media-time slots (start + n * 20 ms), each asked for once the wall clock reaches it, so the
+  // windows are contiguous and the left channel can be judged as one signal.
+  std::vector<float> left;
+  float peak = 0.f;
+  int windows = 0;
+  for (int slot = 10; slot < 60; ++slot) {  // 0.2 s .. 1.2 s: clear of the AAC encoder's start-up ramp
+    const auto slotMs = startMs + slot * 20;
+    std::vector<modules::AudioFrame> frames;
+    for (const auto deadline = slotMs + 2000; steadyMs() < deadline;) {
+      if (steadyMs() >= slotMs) {
+        (void)pre->prefetchMediaVideo(r, steadyMs());
+        frames = d->pollMediaAudioFrames(r, slotMs);
+        if (!frames.empty()) break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(frames.size(), 1u) << "slot " << slot << " produced no window";
+    const auto& frame = frames.front();
+    ASSERT_EQ(frame.sampleRate, 48000); ASSERT_EQ(frame.channels, 2); ASSERT_EQ(frame.sampleCount, 960);
+    ASSERT_EQ(frame.pcm.size(), 1920u);
+    ++windows;
+    for (size_t i = 0; i < frame.pcm.size(); i += 2) {
+      left.push_back(frame.pcm[i]);
+      peak = (std::max)(peak, std::abs(frame.pcm[i]));
+    }
+  }
+  ASSERT_EQ(windows, 50);
+  ASSERT_EQ(left.size(), 48000u) << "fixture fact: 50 windows of 960 frames is exactly one second";
+  EXPECT_GT(peak, 0.1f);
+  int crossings = 0;
+  for (size_t i = 1; i < left.size(); ++i) {
+    if ((left[i - 1] < 0.f) != (left[i] < 0.f)) ++crossings;
+  }
+  EXPECT_NEAR(crossings / 2.0, 440.0, 10.0) << "the tone, not noise and not a resampled pitch";
+  EXPECT_TRUE(d->warnings().empty());
 }

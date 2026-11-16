@@ -1,7 +1,10 @@
 #include "modules/MediaClipDecoder.h"
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <memory>
+#include <vector>
 
 using namespace corevideo::modules;
 
@@ -19,10 +22,54 @@ struct Script {
   bool stallAfterLast = false;  // Pending forever instead of EndOfStream
   int64_t duration100ns = 10 * kFrame;
 };
+// Audio script (Task 6). Fixture invariants (rule 1): 48 kHz interleaved stereo;
+// chunks are 480 frames (10 ms); pts are contiguous from the reader's start; every
+// sample's VALUE encodes its own media millisecond, value = (ms + 1) / 4096 (the
+// timecode scheme of MediaCoreCommandTest.cpp's timecoded WAV), so "which media
+// time is this" is a fixture constant and a sample is never exactly 0.0.
+// The fake honours the reader contract (rule 9): take() never blocks, and an
+// open takes `openLatencyMs` of FIXTURE time before the first sample is ready,
+// as a real open does.
+struct AudioScript {
+  bool present = true;       // false: openAudio returns nullptr + "" (no audio track)
+  int seconds = 3;
+  int openLatencyMs = 0;
+};
 struct Shared {
   int opened = 0, takesReady = 0, stillDecodes = 0, destroyed = 0;
   std::function<void()> lastWake;
   Script script;
+  AudioScript audio;
+  int audioOpened = 0, audioDestroyed = 0;
+  std::vector<int64_t> audioStarts100ns;
+  const int64_t* nowMs = nullptr;  // the rig's clock
+};
+int timecodeMs(float sample) { return static_cast<int>(std::lround(sample * 4096.f)) - 1; }
+class FakeAudioReader final : public IClipAudioReader {
+ public:
+  FakeAudioReader(std::shared_ptr<Shared> s, int64_t start100ns) : s_(std::move(s)) {
+    frame_ = start100ns * 48000 / 10'000'000;
+    readyAtMs_ = (s_->nowMs ? *s_->nowMs : 0) + s_->audio.openLatencyMs;
+  }
+  ~FakeAudioReader() override { s_->audioDestroyed += 1; }
+  ClipReadStatus take(ClipAudioSample& out, std::string&) override {
+    if (s_->nowMs && *s_->nowMs < readyAtMs_) return ClipReadStatus::Pending;
+    const int64_t total = static_cast<int64_t>(s_->audio.seconds) * 48000;
+    if (frame_ >= total) return ClipReadStatus::EndOfStream;
+    const int64_t count = (std::min)(int64_t{480}, total - frame_);
+    out.pcm.resize(static_cast<size_t>(count) * 2u);
+    for (int64_t i = 0; i < count; ++i) {
+      const float value = static_cast<float>((frame_ + i) / 48 + 1) / 4096.f;
+      out.pcm[static_cast<size_t>(i) * 2u] = value;
+      out.pcm[static_cast<size_t>(i) * 2u + 1u] = value;
+    }
+    out.pts100ns = frame_ * 10'000'000 / 48000;
+    frame_ += count;
+    return ClipReadStatus::Ready;
+  }
+ private:
+  std::shared_ptr<Shared> s_;
+  int64_t frame_ = 0, readyAtMs_ = 0;
 };
 class FakeReader final : public IClipVideoReader {
  public:
@@ -55,6 +102,14 @@ class FakeReaders final : public IClipReaderFactory {
     s_->opened += 1;
     return std::make_unique<FakeReader>(s_, std::move(wake));
   }
+  std::unique_ptr<IClipAudioReader> openAudio(const std::string&, int64_t start100ns, std::function<void()>,
+                                              std::string& error) override {
+    error.clear();
+    if (!s_->audio.present) return nullptr;
+    s_->audioOpened += 1;
+    s_->audioStarts100ns.push_back(start100ns);
+    return std::make_unique<FakeAudioReader>(s_, start100ns);
+  }
   bool decodeStill(const std::string&, VideoFrame& frame, std::string&) override {
     s_->stillDecodes += 1;
     frame.width = frame.pixelWidth = frame.naturalWidth = 2;
@@ -77,8 +132,10 @@ struct Rig {
   std::shared_ptr<Shared> s = std::make_shared<Shared>();
   int64_t now = 1'000;
   std::unique_ptr<MediaClipDecoder> d;
-  explicit Rig(Script script = {}) {
+  explicit Rig(Script script = {}, AudioScript audio = {}) {
     s->script = script;
+    s->audio = audio;
+    s->nowMs = &now;
     d = std::make_unique<MediaClipDecoder>(std::make_shared<FakeReaders>(s), [this] { return now; });
   }
   // Prefetch until a sample arrives (fake is synchronous; Pending only by script).
@@ -313,4 +370,110 @@ TEST(MediaClipDecoder, AReaderWakeReachesTheOwnerAndNeverAfterDestruction) {
   rig.d.reset();
   lateWake();
   EXPECT_EQ(wakes.load(), 1) << "no wake may reach a retired decoder's owner";
+}
+
+// ---- Audio (Task 6): the second reader, windows cut at the clock position ----
+
+TEST(MediaClipDecoder, NoAudioWhilePausedAndAudioResumesAtTheClockPosition) {
+  // Play 300 ms, pause 400 ms, play. Polled every 20 ms of fixture time, as the owner's audio slots are.
+  Rig rig;
+  rig.d->syncMediaClock(clip(true), 1'000);
+  int lastHeardMs = -1;
+  for (rig.now = 1'000; rig.now <= 1'300; rig.now += 20) {
+    for (const auto& frame : rig.d->pollMediaAudioFrames(clip(true), rig.now)) lastHeardMs = timecodeMs(frame.pcm.back());
+  }
+  ASSERT_GE(lastHeardMs, 300);  // fixture fact: 300 ms were played, so media ms >= 300 was heard
+  ASSERT_LE(lastHeardMs, 340);
+  rig.now = 1'300;
+  rig.d->syncMediaClock(clip(false), 1'300);
+  for (; rig.now < 1'700; rig.now += 20) {
+    EXPECT_EQ(rig.d->pollMediaAudioFrames(clip(false), rig.now).size(), 0u) << "paused at " << rig.now;
+  }
+  rig.now = 1'700;
+  rig.d->syncMediaClock(clip(true), 1'700);
+  int resumedMs = -1;
+  for (int polls = 0; polls < 10 && resumedMs < 0; ++polls, rig.now += 20) {
+    for (const auto& frame : rig.d->pollMediaAudioFrames(clip(true), rig.now)) {
+      for (const auto sample : frame.pcm) if (sample != 0.f) { resumedMs = timecodeMs(sample); break; }
+      if (resumedMs >= 0) break;
+    }
+  }
+  ASSERT_GE(resumedMs, 0);
+  EXPECT_LE(std::abs(resumedMs - lastHeardMs), 50) << "lastHeard=" << lastHeardMs << " resumed=" << resumedMs;
+  EXPECT_GE(resumedMs, lastHeardMs - 50) << "bounded below: not a restart from 0";
+  EXPECT_LE(resumedMs, lastHeardMs + 50) << "bounded above: the 400 ms spent paused was not skipped";
+  EXPECT_EQ(rig.s->audioOpened, 1) << "resume never reopens the audio reader";
+}
+
+TEST(MediaClipDecoder, AudioWindowsAreContiguousAcrossALoopSeam) {
+  // 1 s looping script (video 30 x 33.3 ms, audio 1 s) with a 100 ms open latency on every audio
+  // reader. 2.5 s of windows at a fixed 20 ms cadence; video is polled too, as the owner does (the
+  // loop's pre-open threshold comes from the video reader's duration).
+  Script video; video.samples = 30; video.duration100ns = 30 * kFrame;
+  AudioScript audio; audio.seconds = 1; audio.openLatencyMs = 100;
+  Rig rig(video, audio);
+  const auto request = clip(true, /*loop=*/true);
+  rig.d->syncMediaClock(request, 1'000);
+  std::vector<float> heard;
+  int pollsAfterFirstWindow = 0, windowsAfterFirst = 0;
+  bool started = false;
+  for (int t = 0; t < 2'500; t += 20) {
+    rig.now = 1'000 + t;
+    (void)rig.d->prefetchMediaVideo(request, rig.now);
+    const auto windows = rig.d->pollMediaAudioFrames(request, rig.now);
+    if (started) { ++pollsAfterFirstWindow; windowsAfterFirst += static_cast<int>(windows.size()); }
+    if (!windows.empty()) started = true;
+    for (const auto& window : windows) {
+      for (size_t i = 0; i < window.pcm.size(); i += 2) heard.push_back(window.pcm[i]);
+    }
+  }
+  ASSERT_TRUE(started);
+  // Fixture fact: the first reader is ready 100 ms in, so windows start by 200 ms and at least
+  // 2.2 s of them follow. One window per poll from then on: a missed slot is a hole on air.
+  EXPECT_GE(pollsAfterFirstWindow, 110);
+  EXPECT_EQ(windowsAfterFirst, pollsAfterFirstWindow) << "a poll after the first window produced no audio";
+  int wraps = 0;
+  for (size_t i = 0; i < heard.size(); ++i) {
+    ASSERT_TRUE(heard[i] != 0.f) << "sample " << i << " is a hole (the timecode is never 0.0)";
+    if (i == 0) continue;
+    const int previous = timecodeMs(heard[i - 1]), current = timecodeMs(heard[i]);
+    if (previous == 999 && current == 0) { ++wraps; continue; }
+    ASSERT_TRUE(current == previous || current == previous + 1)
+        << "sample " << i << ": media ms " << previous << " -> " << current;
+  }
+  EXPECT_EQ(wraps, 2) << "2.5 s of a 1 s loop crosses its seam twice";
+  EXPECT_EQ(rig.s->audioStarts100ns.size(), 3u) << "one reader per loop pass heard";
+  for (size_t i = 1; i < rig.s->audioStarts100ns.size(); ++i) EXPECT_EQ(rig.s->audioStarts100ns[i], 0);
+}
+
+TEST(MediaClipDecoder, AnAssetWithNoAudioTrackIsSilentAndNotWarned) {
+  AudioScript audio; audio.present = false;
+  Rig rig({}, audio);
+  rig.d->syncMediaClock(clip(true), 1'000);
+  for (rig.now = 1'000; rig.now < 1'200; rig.now += 20) {
+    EXPECT_TRUE(rig.d->pollMediaAudioFrames(clip(true), rig.now).empty());
+    EXPECT_TRUE(rig.d->warnings().empty());
+  }
+  EXPECT_EQ(rig.s->audioOpened, 0);
+  const auto s = rig.next(clip(true));
+  EXPECT_EQ(s.frame.frameId, 1) << "video is unaffected";
+  EXPECT_TRUE(rig.d->warnings().empty());
+}
+
+TEST(MediaClipDecoder, AudioWindowsAreExactly960StereoFramesAt48k) {
+  Rig rig;
+  rig.d->syncMediaClock(clip(true), 1'000);
+  int windows = 0;
+  for (rig.now = 1'000; rig.now < 1'400; rig.now += 20) {
+    for (const auto& frame : rig.d->pollMediaAudioFrames(clip(true), rig.now)) {
+      ++windows;
+      EXPECT_EQ(frame.sampleRate, 48000);
+      EXPECT_EQ(frame.channels, 2);
+      EXPECT_EQ(frame.sampleCount, 960);
+      EXPECT_EQ(frame.pcm.size(), 1920u);
+      EXPECT_EQ(frame.participantId, "media:clip");
+      EXPECT_TRUE(frame.voiceActive);
+    }
+  }
+  EXPECT_EQ(windows, 20) << "fixture fact: 20 polls 20 ms apart against a synchronous reader";
 }

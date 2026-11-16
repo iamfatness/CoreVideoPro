@@ -375,12 +375,213 @@ class AvfClipVideoReader final : public IClipVideoReader {
   dispatch_queue_t queue_;
 };
 
+// ---- Audio: the second reader. Same queue, one-ahead, wake and teardown rules
+// as video. AVFoundation resamples to 48 kHz and up/down-mixes to stereo, so
+// every sample handed over is interleaved float32 48000 Hz stereo.
+
+struct AudioReaderState {
+  std::string path;
+  int64_t start100ns = 0;
+  std::function<void()> wake;
+  std::mutex mutex;
+  // Guarded by `mutex`.
+  std::deque<ClipAudioSample> ready;
+  bool endOfStream = false;
+  bool failed = false;
+  std::string error;
+  AVAssetReader* reader = nil;
+  AVURLAsset* asset = nil;
+  // Reader-queue only.
+  AVAssetReaderOutput* output = nil;
+  // Any thread.
+  std::atomic<bool> cancelled{false};
+};
+
+void wakeOwner(const std::shared_ptr<AudioReaderState>& state) {
+  if (!state->cancelled.load() && state->wake) state->wake();
+}
+
+void failReader(const std::shared_ptr<AudioReaderState>& state, std::string error) {
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->failed = true;
+    state->error = std::move(error);
+  }
+  wakeOwner(state);
+}
+
+void endReader(const std::shared_ptr<AudioReaderState>& state) {
+  { std::lock_guard<std::mutex> lock(state->mutex); state->endOfStream = true; }
+  wakeOwner(state);
+}
+
+// Runs on the reader queue.
+void decodeNextAudio(const std::shared_ptr<AudioReaderState>& state) {
+  for (;;) {
+    @autoreleasepool {
+      if (state->cancelled.load() || !state->output) return;
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->ready.size() >= kSamplesDecodedAhead || state->endOfStream || state->failed) return;
+      }
+      CMSampleBufferRef sampleBuffer = [state->output copyNextSampleBuffer];
+      if (!sampleBuffer) {
+        AVAssetReader* reader = nil;
+        { std::lock_guard<std::mutex> lock(state->mutex); reader = state->reader; }
+        if (state->cancelled.load() || reader.status == AVAssetReaderStatusCancelled) return;
+        if (reader.status == AVAssetReaderStatusCompleted) endReader(state);
+        else failReader(state, "AVFoundation stopped decoding audio (" + describe(reader.error) + ")");
+        return;
+      }
+      ClipAudioSample decoded;
+      decoded.pts100ns = (std::max)(int64_t{0}, to100ns(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)));
+      CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sampleBuffer);
+      const size_t bytes = block ? CMBlockBufferGetDataLength(block) : 0;
+      // Whole stereo frames only (2 x float32).
+      const size_t floats = (bytes / (2 * sizeof(float))) * 2;
+      if (floats > 0) {
+        decoded.pcm.resize(floats);
+        if (CMBlockBufferCopyDataBytes(block, 0, floats * sizeof(float), decoded.pcm.data()) != kCMBlockBufferNoErr) {
+          decoded.pcm.clear();
+        }
+      }
+      CFRelease(sampleBuffer);
+      if (decoded.pcm.empty()) continue;
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->ready.push_back(std::move(decoded));
+      }
+      wakeOwner(state);
+    }
+  }
+}
+
+// Runs on the reader queue.
+void openAudio(const std::shared_ptr<AudioReaderState>& state) {
+  @autoreleasepool {
+    if (state->cancelled.load()) return;
+    if (lowercaseExtension(state->path) == ".webm") { failReader(state, kWebmRefusal); return; }
+    std::error_code exists;
+    if (!std::filesystem::exists(std::filesystem::path(state->path), exists)) {
+      failReader(state, "the file does not exist");
+      return;
+    }
+    NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:state->path.c_str()]];
+    AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url options:nil];
+    { std::lock_guard<std::mutex> lock(state->mutex); state->asset = asset; }
+    NSError* error = nil;
+    NSArray<AVAssetTrack*>* tracks = loadTracks(asset, AVMediaTypeAudio, state->cancelled, &error);
+    if (state->cancelled.load()) return;
+    if (!tracks || error) {
+      failReader(state, "AVFoundation cannot open this file (" + describe(error) + ")");
+      return;
+    }
+    // No audio track is NOT a failure: the reader ends without one sample and
+    // MediaClipDecoder treats the clip as silent, unwarned.
+    if (tracks.count == 0) { endReader(state); return; }
+    AVAssetReader* reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
+    if (!reader) {
+      failReader(state, "AVFoundation cannot open this file (" + describe(error) + ")");
+      return;
+    }
+    if (state->start100ns > 0) {
+      reader.timeRange = CMTimeRangeMake(CMTimeMake(state->start100ns, 10'000'000), kCMTimePositiveInfinity);
+    }
+    NSDictionary* settings = @{
+      AVFormatIDKey : @(kAudioFormatLinearPCM),
+      AVSampleRateKey : @48000,
+      AVNumberOfChannelsKey : @2,
+      AVLinearPCMBitDepthKey : @32,
+      AVLinearPCMIsFloatKey : @YES,
+      AVLinearPCMIsBigEndianKey : @NO,
+      AVLinearPCMIsNonInterleaved : @NO,
+    };
+    AVAssetReaderAudioMixOutput* output = nil;
+    @try {
+      output = [AVAssetReaderAudioMixOutput assetReaderAudioMixOutputWithAudioTracks:@[ tracks.firstObject ]
+                                                                      audioSettings:settings];
+    } @catch (NSException* exception) {
+      failReader(state, std::string("AVFoundation cannot open this file (") +
+                            (exception.reason.UTF8String ?: "invalid audio reader settings") + ")");
+      return;
+    }
+    output.alwaysCopiesSampleData = NO;
+    if (![reader canAddOutput:output]) {
+      failReader(state, "AVFoundation cannot open this file (the audio track cannot be decoded to PCM)");
+      return;
+    }
+    [reader addOutput:output];
+    if (![reader startReading]) {
+      failReader(state, "AVFoundation cannot open this file (" + describe(reader.error) + ")");
+      return;
+    }
+    { std::lock_guard<std::mutex> lock(state->mutex); state->reader = reader; }
+    state->output = output;
+  }
+  decodeNextAudio(state);
+}
+
+class AvfClipAudioReader final : public IClipAudioReader {
+ public:
+  AvfClipAudioReader(const std::string& path, int64_t start100ns, std::function<void()> wake)
+      : state_(std::make_shared<AudioReaderState>()),
+        queue_(dispatch_queue_create("com.corevideo.media-decoder.audio",
+                                     dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
+                                                                             QOS_CLASS_USER_INITIATED, 0))) {
+    state_->path = path;
+    state_->start100ns = (std::max)(int64_t{0}, start100ns);
+    state_->wake = std::move(wake);
+    const auto state = state_;
+    dispatch_async(queue_, ^{ openAudio(state); });
+  }
+
+  ~AvfClipAudioReader() override {
+    state_->cancelled.store(true);
+    AVAssetReader* reader = nil;
+    AVURLAsset* asset = nil;
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      reader = state_->reader;
+      asset = state_->asset;
+    }
+    [asset cancelLoading];
+    [reader cancelReading];
+    dispatch_sync(queue_, ^{});
+  }
+
+  ClipReadStatus take(ClipAudioSample& out, std::string& error) override {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (!state_->ready.empty()) {
+      out = std::move(state_->ready.front());
+      state_->ready.pop_front();
+      const auto state = state_;
+      dispatch_async(queue_, ^{ decodeNextAudio(state); });
+      return ClipReadStatus::Ready;
+    }
+    if (state_->failed) { error = state_->error; return ClipReadStatus::Failed; }
+    if (state_->endOfStream) return ClipReadStatus::EndOfStream;
+    return ClipReadStatus::Pending;
+  }
+
+ private:
+  std::shared_ptr<AudioReaderState> state_;
+  dispatch_queue_t queue_;
+};
+
 class AvfClipReaderFactory final : public IClipReaderFactory {
  public:
   std::unique_ptr<IClipVideoReader> openVideo(const std::string& path, std::function<void()> wake,
                                               std::string& error) override {
     error.clear();
     return std::make_unique<AvfClipVideoReader>(path, std::move(wake));
+  }
+
+  // Returns a reader at once; "no audio track" is learned on the reader's queue
+  // and reported as an end of stream with no samples.
+  std::unique_ptr<IClipAudioReader> openAudio(const std::string& path, int64_t start100ns,
+                                              std::function<void()> wake, std::string& error) override {
+    error.clear();
+    return std::make_unique<AvfClipAudioReader>(path, start100ns, std::move(wake));
   }
 
   // ImageIO on Apple (StillMediaFrameCache.cpp), straight-alpha BGRA.
