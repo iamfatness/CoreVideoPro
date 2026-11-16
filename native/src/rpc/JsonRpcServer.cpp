@@ -288,6 +288,13 @@ Json JsonRpcServer::handle(const Json& request) {
     if(hash.str()!=ref || !node || !modules::readAdvancedGrade(*node,doc) || !doc) return failure(id,"protocol-error","Invalid grade document content.");
     modules::GradeDocuments::remember(ref,std::move(doc)); return success(id,Json::Object{{"present",true}});
   }
+  if (hasType(request, "query-source-grade")) {
+    // Root-level (like set-source-grade). Renderer-independent: the stub answers too.
+    const auto* sourceId = request.get("sourceId");
+    if (!sourceId || !sourceId->isString() || sourceId->asString().empty() || sourceId->asString().size() > 256)
+      return failure(id, "protocol-error", "query-source-grade requires a sourceId of 1-256 bytes.");
+    return success(id, mediaCore_.querySourceGrade(sourceId->asString()).asObject());
+  }
   if (hasType(request, "set-source-grade")) {
     return success(id, mediaCore_.applySourceGrade(request).asObject());
   }

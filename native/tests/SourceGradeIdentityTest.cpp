@@ -98,3 +98,135 @@ TEST(SourceGradeIdentity, ActiveAgreesWithWhatApplyToPaints) {
   EXPECT_EQ(plan.layers[0].colorGrade.exposure, 0.f) << "inactive == painted neutral";
 }
 
+// ---------------------------------------------------------------------------
+// Task 2 (G0): query-source-grade and the sourceGrades snapshot node on the wire.
+// Fixture invariants: sources are kind "test" (SourceGradeTestSupport.h: a "capture"-kind
+// bus source would be removed by syncCaptureSources); the routes use capture-input so
+// RouteSourcePolicy binds participantId = "capture:cam-a" / "capture:cam-b", the frame keys;
+// both route rects are disjoint halves of the canvas. These run on the stub and Metal alike.
+#include "core/MediaCore.h"
+#include "rpc/JsonRpcServer.h"
+#include "SourceGradeTestSupport.h"
+
+namespace {
+struct Rig {
+  modules::ModuleSet modules = modules::createStubModules();
+  gradetest::GradeTestCompositor* compositor = nullptr;
+  std::unique_ptr<core::MediaCore> core;
+  std::unique_ptr<rpc::JsonRpcServer> server;
+  Rig() {
+    auto wrapped = std::make_unique<gradetest::GradeTestCompositor>(std::move(modules.compositor));
+    compositor = wrapped.get();
+    modules.compositor = std::move(wrapped);
+    core = std::make_unique<core::MediaCore>(std::move(modules));
+    core->useZoomSourcesForTest({});
+    server = std::make_unique<rpc::JsonRpcServer>(*core);
+  }
+  rpc::Json query(const std::string& id) {
+    return server->handle(rpc::Json::Object{{"id", "q"}, {"type", "query-source-grade"}, {"sourceId", id}});
+  }
+  rpc::Json set(const std::string& id, double epoch, double expected, double exposure) {
+    return server->handle(rpc::Json::Object{{"id", "s"}, {"type", "set-source-grade"}, {"sourceId", id},
+        {"sourceEpoch", epoch}, {"expectedRevision", expected},
+        {"grade", rpc::Json::Object{{"lut", "none"}, {"exposure", exposure}}}});
+  }
+  void routeSideBySide() {
+    (void)core->applyCommands(rpc::Json::Array{rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "pair"},
+        {"routes", rpc::Json::Array{
+            rpc::Json::Object{{"routeId", "a"}, {"mode", "capture-input"}, {"captureDeviceId", "cam-a"}, {"fitMode", "fill"},
+                              {"rect", rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 0.5}, {"height", 1}}}},
+            rpc::Json::Object{{"routeId", "b"}, {"mode", "capture-input"}, {"captureDeviceId", "cam-b"}, {"fitMode", "fill"},
+                              {"rect", rpc::Json::Object{{"x", 0.5}, {"y", 0}, {"width", 0.5}, {"height", 1}}}}}}}});
+  }
+  const modules::CompositorRenderPlanLayer* layer(const std::string& participantId) const {
+    for (const auto& l : compositor->lastPlan.layers) if (l.participantId == participantId) return &l;
+    return nullptr;
+  }
+};
+const rpc::Json* gradeRow(const rpc::Json& state, const std::string& id) {
+  const auto* rows = state.get("sourceGrades");
+  if (!rows || !rows->isArray()) return nullptr;
+  for (const auto& row : rows->asArray()) if (row.getString("sourceId") == id) return &row;
+  return nullptr;
+}
+}  // namespace
+
+TEST(SourceGradeWire, QueryAnswersFromTheLiveTickAndRefusesAMalformedId) {
+  Rig rig;
+  auto cam = std::make_shared<gradetest::EpochSource>("capture:cam-a", 192, 96, 64, 7);
+  rig.core->addSourceForTest(cam);
+
+  auto r = rig.query("capture:cam-a");
+  ASSERT_TRUE(r.get("ok")->asBool());
+  EXPECT_FALSE(r.get("present")->asBool()) << "no tick has observed the source yet";
+  EXPECT_EQ(r.getNumber("sourceEpoch"), 0); EXPECT_EQ(r.getNumber("revision"), 0);
+
+  rig.core->renderDisplayTick();
+  r = rig.query("capture:cam-a");
+  EXPECT_TRUE(r.get("present")->asBool()); EXPECT_EQ(r.getNumber("sourceEpoch"), 7);
+
+  cam->setPresent(false);
+  rig.core->renderDisplayTick();
+  EXPECT_FALSE(rig.query("capture:cam-a").get("present")->asBool()) << "absent this tick";
+
+  for (const auto& bad : {rpc::Json(rpc::Json::Object{{"id", "b"}, {"type", "query-source-grade"}}),
+                          rpc::Json(rpc::Json::Object{{"id", "b"}, {"type", "query-source-grade"}, {"sourceId", ""}}),
+                          rpc::Json(rpc::Json::Object{{"id", "b"}, {"type", "query-source-grade"}, {"sourceId", std::string(257, 'x')}}),
+                          rpc::Json(rpc::Json::Object{{"id", "b"}, {"type", "query-source-grade"}, {"sourceId", 5}}),
+                          // root-level contract: a payload wrapper is NOT read
+                          rpc::Json(rpc::Json::Object{{"id", "b"}, {"type", "query-source-grade"},
+                                                      {"payload", rpc::Json::Object{{"sourceId", "capture:cam-a"}}}})}) {
+    const auto refused = rig.server->handle(bad);
+    EXPECT_FALSE(refused.get("ok")->asBool());
+    EXPECT_EQ(refused.get("error")->getString("code"), "protocol-error");
+  }
+  EXPECT_TRUE(rig.query(std::string(256, 'x')).get("ok")->asBool()) << "256 bytes is the inclusive bound";
+}
+
+TEST(SourceGradeWire, SnapshotNodeIsUnconditionalAndTracksActivity) {
+  Rig rig;
+  auto a = std::make_shared<gradetest::EpochSource>("capture:cam-a", 192, 96, 64, 7);
+  auto b = std::make_shared<gradetest::EpochSource>("capture:cam-b", 192, 96, 64, 11);
+  rig.core->addSourceForTest(a); rig.core->addSourceForTest(b);
+  rig.routeSideBySide();
+
+  auto state = rig.core->sessionState();
+  ASSERT_NE(state.get("sourceGrades"), nullptr) << "published even with no grade";
+  EXPECT_TRUE(state.get("sourceGrades")->isArray());
+  EXPECT_TRUE(state.get("sourceGrades")->asArray().empty());
+
+  rig.core->renderDisplayTick();
+  // Fixture invariant: both route layers exist and carry the frame keys.
+  ASSERT_NE(rig.layer("capture:cam-a"), nullptr);
+  ASSERT_NE(rig.layer("capture:cam-b"), nullptr);
+
+  const auto accepted = rig.set("capture:cam-a", 7, 0, 2);
+  ASSERT_TRUE(accepted.get("accepted")->asBool()) << accepted.stringify();
+  rig.core->renderDisplayTick();
+  state = rig.core->sessionState();
+  const auto* row = gradeRow(state, "capture:cam-a");
+  ASSERT_NE(row, nullptr);
+  EXPECT_EQ(row->getNumber("revision"), 1);
+  EXPECT_EQ(row->getNumber("appliedEpoch"), 7); EXPECT_EQ(row->getNumber("liveEpoch"), 7);
+  EXPECT_TRUE(row->get("livePresent")->asBool()); EXPECT_TRUE(row->get("active")->asBool());
+  EXPECT_EQ(gradeRow(state, "capture:cam-b"), nullptr) << "the ungraded neighbour is not listed";
+  EXPECT_TRUE(rig.layer("capture:cam-a")->hasColorGrade);
+  EXPECT_EQ(rig.layer("capture:cam-a")->colorGrade.exposure, 2.f);
+  EXPECT_FALSE(rig.layer("capture:cam-b")->hasColorGrade) << "the neighbour keeps the Program look";
+
+  a->setEpoch(8);
+  rig.core->renderDisplayTick();
+  state = rig.core->sessionState();
+  row = gradeRow(state, "capture:cam-a");
+  ASSERT_NE(row, nullptr);
+  EXPECT_EQ(row->getNumber("liveEpoch"), 8);
+  EXPECT_FALSE(row->get("active")->asBool());
+  EXPECT_EQ(rig.layer("capture:cam-a")->colorGrade.exposure, 0.f) << "inactive is painted neutral";
+
+  a->setPresent(false);
+  rig.core->renderDisplayTick();
+  state = rig.core->sessionState();
+  row = gradeRow(state, "capture:cam-a");
+  ASSERT_NE(row, nullptr) << "an accepted grade stays listed while its source is absent";
+  EXPECT_FALSE(row->get("livePresent")->asBool()); EXPECT_EQ(row->getNumber("liveEpoch"), 0);
+}
