@@ -81,7 +81,7 @@ extension ShellTests {
             expect(false, "contracts/control.platforms.json is readable from the checkout"); return
         }
         // Each slice updates this number: RC1 13, after RC2 25, after RC3 36.
-        expectEqual(fileSupported.count, 13, "supported rows in the platform file")
+        expectEqual(fileSupported.count, 18, "supported rows in the platform file")
         expectEqual(AppModelControlSurface.supportedActionIds, fileSupported,
                     "the dispatcher's ids equal the platform file's supported rows (Windows SupportedActionIds twin)")
         expectEqual(Set(ControlCatalog.actions.map(\.id)), fileSupported,
@@ -128,7 +128,7 @@ extension ShellTests {
             expectEqual(json(response.body)["error"] as? String, expected, "\(id) says why, in the operator's words")
             checked += 1
         }
-        expectEqual(checked, 97, "RC1: 110 - 13 unavailable ids checked (each slice updates this)")
+        expectEqual(checked, 92, "110 - 18 unavailable ids checked (each slice updates this)")
         expectEqual(surface.invocations.count, 0, "an unavailable action never reaches the surface")
         let bogus = route(router, "POST", "/invoke", #"{"action":"bogus.id"}"#)
         expectEqual(bogus.status, 400, "an id in neither file keeps Windows' 400")
@@ -241,8 +241,9 @@ extension ShellTests {
             let got = ControlSnapshotRedactor.redact(pair["input"] ?? [:])
             expect(same(got, pair["expected"]), "redact(document) equals the fixture"); ran += 1
         }
-        // RC1 total: 31 mac http + 6 snapshot + 21 names + 11 texts + 1 document = 70 (each slice updates this).
-        expectEqual(ran, 70, "every fixture case ran")
+        // 36 mac http (RC1 31 + T8 int cases 5) + 6 snapshot + 21 names + 11 texts + 1 document = 75
+        // (each slice that appends cases updates this).
+        expectEqual(ran, 75, "every fixture case ran")
     }
 
     // ── contract: /invoke statuses and errors (Windows router output) ────────

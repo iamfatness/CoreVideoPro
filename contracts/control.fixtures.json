@@ -487,6 +487,104 @@
       }
     },
     {
+      "name": "int-from-double-rounds-even",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"input.unassign\",\"args\":[2.5]}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "input.unassign",
+            "args": [
+              2
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "int-from-text",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"input.unassign\",\"args\":[\" 3 \"]}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "input.unassign",
+            "args": [
+              3
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "int-from-bool",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"input.unassign\",\"args\":[true]}"
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "input.unassign",
+            "args": [
+              1
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "bad-int",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"input.unassign\",\"args\":[\"three\"]}"
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Action 'input.unassign' parameter 'slot' must be Int."
+        },
+        "invocations": []
+      }
+    },
+    {
+      "name": "assign-missing-source",
+      "request": {
+        "method": "POST",
+        "path": "/invoke",
+        "body": "{\"action\":\"input.assign\",\"args\":[1]}"
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "ok": false,
+          "error": "Action 'input.assign' requires parameter 'sourceId' at position 1."
+        },
+        "invocations": []
+      }
+    },
+    {
       "name": "not-found",
       "request": {
         "method": "GET",

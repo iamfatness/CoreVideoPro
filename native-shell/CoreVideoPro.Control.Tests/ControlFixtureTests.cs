@@ -30,7 +30,7 @@ public sealed class ControlFixtureTests
     public void EveryWindowsFixtureCaseIsRun()
     {
         // RC1 totals (each slice that appends cases updates these).
-        Assert.Equal(30, HttpCases().Count());
+        Assert.Equal(35, HttpCases().Count());
         Assert.Equal(6, SnapshotCases().Count());
     }
 

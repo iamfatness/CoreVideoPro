@@ -76,6 +76,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
     private static func dispatch(_ model: AppModel, _ actionId: String, _ args: [ControlArg]) async -> ControlInvokeResult {
         func bool(_ index: Int) -> Bool { index < args.count ? args[index].bool : false }
         func string(_ index: Int) -> String { index < args.count ? args[index].string : "" }
+        func int(_ index: Int) -> Int { index < args.count ? args[index].int : 0 }
+        func optionalString(_ index: Int) -> String? { index < args.count ? args[index].optionalString : nil }
         switch actionId {
         case "transport.ftb.toggle":
             return blackout(await model.setProgramBlackout(nil))
@@ -133,6 +135,17 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
                 ? .appliedPreview(sceneId) : .fail("Scene '\(sceneId)' was not queued on Preview.")
         case "scene.list":
             return .withData(sceneListJSON(model))
+        // ── Show Inputs (ControlSurface+Inputs.swift) ──
+        case "input.assign":
+            return assignInput(model, slot: int(0), sourceId: string(1))
+        case "input.unassign":
+            return unassignInput(model, slot: int(0))
+        case "input.name":
+            return nameInput(model, slot: int(0), name: optionalString(1))
+        case "input.inShow.set":
+            return setInputInShow(model, slot: int(0), on: bool(1))
+        case "source.dropout.set":
+            return setSourceDropout(model, sourceId: string(0), policy: string(1))
         default:
             // Unreachable through the router (the catalog binds only supported ids);
             // control/dispatch-drive looks for exactly this text.
@@ -151,6 +164,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "transport.virtualcam.toggle", "transport.virtualcam.set",
         "transport.virtualcam.mirror.set", "transport.virtualcam.name.set",
         "scene.select", "scene.list",
+        // RC2
+        "input.assign", "input.unassign", "input.name", "input.inShow.set", "source.dropout.set",
     ]
 
     /// The `default:` branch's text (Windows' unknown-action wording).
@@ -255,6 +270,8 @@ struct ControlArg: @unchecked Sendable {
     init(_ value: Any?) { self.value = value }
     var bool: Bool { value as? Bool ?? false }
     var string: String { value as? String ?? "" }
+    var int: Int { value as? Int ?? 0 }
+    var optionalString: String? { value as? String }
 }
 
 struct SendableDictionary: @unchecked Sendable {

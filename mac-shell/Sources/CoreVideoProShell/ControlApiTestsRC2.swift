@@ -25,6 +25,7 @@ extension ShellTests {
             ("control/source-id-and-kinds", testControlSourceIdAndKinds),
             ("control/rc2-state-fields", testControlRc2StateFields),
             ("control/push-key", testControlPushKeyIgnoresMeters),
+            ("control/input-actions", testControlInputActions),
         ]
     }
 
@@ -140,5 +141,69 @@ extension ShellTests {
         spin(until: { pushed > first }, limit: 1)
         expectEqual(pushed, first + 1, "a real change pushes once")
         host.stop()
+    }
+
+    @MainActor
+    static func inputsModel() -> AppModel {
+        let model = sceneEditModel()
+        model.roster = [RosterParticipant(id: "p-1", name: "Host", hasVideo: false, muted: false, talking: false, assigned: false),
+                        RosterParticipant(id: "p-2", name: "Guest", hasVideo: false, muted: false, talking: false, assigned: false)]
+        model.captureDevices = [CaptureDeviceRow(id: "cam1", name: "Desk Cam", kind: "video", vendor: "Apple",
+                                                 connectionState: "connected", signalPresent: true, warning: "")]
+        return model
+    }
+
+    @MainActor
+    static func testControlInputActions() {
+        let model = inputsModel()
+        let s = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        expectEqual(invoke(s, "input.assign", [0, "zoom:p-1"]), .fail("Show Input slot 0 is out of range (1-10)."), "slot 0")
+        expectEqual(invoke(s, "input.assign", [11, "zoom:p-1"]), .fail("Show Input slot 11 is out of range (1-10)."), "slot 11")
+        expectEqual(invoke(s, "input.assign", [1, "ndi:x"]),
+                    .fail("Unrecognized source id 'ndi:x' (expected zoom:/capture:/media:)."), "Windows unrecognized text")
+        expectEqual(invoke(s, "input.assign", [1, "media:a1"]),
+                    .fail("Media sources cannot be assigned to Show Inputs on macOS yet (Media clip playback)."), "media refused")
+        expect(model.slots.allSatisfy { $0.kind == "unassigned" }, "refusals change nothing")
+
+        expectEqual(invoke(s, "input.assign", [3, "zoom:p-2"]), .success, "assign zoom")
+        expectEqual(model.slots[2].kind, "zoom", "kind"); expectEqual(model.slots[2].sourceId, "p-2", "bare id")
+        expectEqual(model.slots[2].name, "Guest", "derived from the roster"); expect(model.slots[2].inShow, "assign puts it in the show")
+        expectEqual(invoke(s, "input.assign", [4, "capture:cam1"]), .success, "assign capture")
+        expectEqual(model.slots[3].name, "Desk Cam", "derived from the capture device")
+        expectEqual(invoke(s, "input.assign", [5, "zoom:p-404"]), .success, "an id not in the roster is accepted (Windows does not check)")
+        expectEqual(model.slots[4].name, "p-404", "no roster entry: the bare id")
+
+        expectEqual(invoke(s, "input.name", [3, "  Anchor  "]), .success, "rename"); expectEqual(model.slots[2].name, "Anchor", "trimmed")
+        expectEqual(invoke(s, "input.name", [3]), .success, "omitted name"); expectEqual(model.slots[2].name, "Guest", "blank resets to derived (D12)")
+        expectEqual(invoke(s, "input.name", [3, "   "]), .success, "blank name"); expectEqual(model.slots[2].name, "Guest", "whitespace resets too")
+        expectEqual(invoke(s, "input.name", [12, "x"]), .fail("Show Input slot 12 is out of range."), "name range text")
+
+        expectEqual(invoke(s, "input.inShow.set", [3, false]), .success, "take out of show"); expect(!model.slots[2].inShow, "out")
+        expectEqual(invoke(s, "input.inShow.set", [3, false]), .success, "idempotent"); expect(!model.slots[2].inShow, "still out")
+        expectEqual(invoke(s, "input.inShow.set", [3, true]), .success, "back in"); expect(model.slots[2].inShow, "in")
+        expectEqual(invoke(s, "input.inShow.set", [9, true]), .fail("Show Input slot 9 has no source."), "no source to show")
+        expectEqual(invoke(s, "input.inShow.set", [0, true]), .fail("Show Input slot 0 is out of range."), "in-show range text")
+
+        // Two slots carry p-2, so "every slot carrying the pid" is observable.
+        model.slots[5].kind = "zoom"; model.slots[5].sourceId = "p-2"
+        expectEqual(invoke(s, "source.dropout.set", ["zoom:p-2", "black"]), .success, "dropout black")
+        expectEqual(model.slots[2].dropoutPolicy, "black", "applied to the slot carrying p-2")
+        expectEqual(model.slots[5].dropoutPolicy, "black", "applied to every slot carrying p-2")
+        model.slots[5] = ShowInputSlot(id: 6)
+        expectEqual(invoke(s, "source.dropout.set", ["zoom:p-2", "freeze"]), .fail("policy must be 'hold' or 'black'."), "bad policy")
+        expectEqual(invoke(s, "source.dropout.set", ["capture:cam1", "hold"]),
+                    .fail("source.dropout.set: macOS takes a dropout policy for zoom:<pid> sources only (capture:cam1)"), "capture refused (D15)")
+        expectEqual(invoke(s, "source.dropout.set", ["media:a1", "hold"]),
+                    .fail("source.dropout.set: only zoom:<pid> and capture:<id> sources take a dropout policy (media:a1)"), "Windows text")
+        expectEqual(invoke(s, "source.dropout.set", ["zoom:p-9", "hold"]), .fail("No Show Input carries 'zoom:p-9'."), "unslotted pid")
+
+        expectEqual(invoke(s, "input.unassign", [3]), .success, "unassign")
+        expectEqual(model.slots[2].kind, "unassigned", "cleared")
+        expectEqual(invoke(s, "input.unassign", [99]), .fail("Show input slot is out of range."), "Windows unassign text (lower-case, no number)")
+        // The remote unassign is the operator path: auto-assign must not refill it.
+        model.roster = [RosterParticipant(id: "p-2", name: "Guest", hasVideo: true, muted: false, talking: false, assigned: false)]
+        model.applyZoomForTesting(["meetingState": "in_meeting",
+                                   "participants": [["userId": "p-2", "displayName": "Guest", "videoOn": true, "muted": false, "talking": false]]])
+        expect(!model.slots.contains { $0.kind == "zoom" && $0.sourceId == "p-2" }, "a remotely unassigned guest is not auto-re-added")
     }
 }

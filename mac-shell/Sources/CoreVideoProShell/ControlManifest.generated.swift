@@ -219,7 +219,7 @@ enum ControlManifestGenerated {
                 ControlParam(name: "slot", type: .int, required: true, description: "1-10"),
                 ControlParam(name: "sourceId", type: .string, required: true, description: "zoom:<pid> | capture:<id> | media:<id>"),
             ]),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "source.capture.online.set", title: "Connect or take capture offline", description: "Use the existing capture device controls. Taking a device offline unassigns its inputs; native video readiness remains separately observed.", params: [
                 ControlParam(name: "sourceId", type: .string, required: true, description: "capture:<deviceId>"),
@@ -230,25 +230,25 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "input.unassign", title: "Unassign show input", description: "Clear only this input through the same operator command; the source remains available for reassignment.", params: [
                 ControlParam(name: "slot", type: .int, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "input.name", title: "Name input source", description: "Set the display name override for a Show Input's source (blank resets).", params: [
                 ControlParam(name: "slot", type: .int, required: true, description: "1-10"),
                 ControlParam(name: "name", type: .string, required: false, description: nil),
             ]),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "source.dropout.set", title: "Source on dropout", description: "Set what a source shows when it stops delivering (hold last frame or black). Zoom-only this slice.", params: [
                 ControlParam(name: "sourceId", type: .string, required: true, description: "zoom:<pid>"),
                 ControlParam(name: "policy", type: .string, required: true, description: "hold | black"),
             ]),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "input.inShow.set", title: "Input in-show", description: "Add/remove a Show Input slot from the show.", params: [
                 ControlParam(name: "slot", type: .int, required: true, description: "1-10"),
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "graphics.lowerThird.toggle", title: "Lower-third toggle", description: "Toggle the program lower-third.", params: []),
             availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
