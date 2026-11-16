@@ -187,4 +187,65 @@ public sealed class ControlFixtureTests
             }
         }
     }
+
+    // ── OSC routing and feedback (osc.addresses / osc.routes / osc.feedback) ──
+
+    public static IEnumerable<object[]> OscRouteCases() =>
+        Fixtures()["osc"]!["routes"]!.AsArray().Where(t => ForWindows(t!)).Select(t => new object[] { t!["name"]!.GetValue<string>() });
+
+    [Fact]
+    public void OscAddressesMapLikeTheFixture()
+    {
+        var map = new OscAddressMap();
+        var cases = Fixtures()["osc"]!["addresses"]!.AsArray();
+        Assert.Equal(7, cases.Count);
+        foreach (var c in cases)
+        {
+            Assert.Equal(c!["actionId"]?.GetValue<string>(), map.AddressToActionId(c["address"]!.GetValue<string>()));
+        }
+    }
+
+    [Fact]
+    public void EveryWindowsOscRouteCaseIsRun() => Assert.Equal(6, OscRouteCases().Count());
+
+    [Theory]
+    [MemberData(nameof(OscRouteCases))]
+    public async Task OscRouteCase(string name)
+    {
+        var test = OscCase("routes", name);
+        var message = test["message"]!;
+        var surface = new FakeControlSurface();
+        var result = await new OscControlRouter(surface).RouteAsync(new OscMessage(
+            message["address"]!.GetValue<string>(), message["args"]!.AsArray().Select(a => OscArg(a!)).ToArray()));
+        if (test["result"] is JsonObject want)
+        {
+            Assert.NotNull(result);
+            Assert.Equal(want["ok"]!.GetValue<bool>(), result!.Ok);
+            Assert.Equal(want["error"]?.GetValue<string>(), result.Error);
+        }
+        else
+        {
+            Assert.Null(result);
+        }
+        var got = new JsonArray(surface.Invocations
+            .Select(i => (JsonNode)new JsonObject { ["action"] = i.ActionId, ["args"] = JsonSerializer.SerializeToNode(i.Args.ToArray()) }).ToArray());
+        Assert.True(JsonNode.DeepEquals(test["invocations"], got), $"{name}: invocations {got.ToJsonString()}");
+    }
+
+    [Fact]
+    public void OscFeedbackIsTheFixturesWindowsMessages()
+    {
+        var feedback = Fixtures()["osc"]!["feedback"]!;
+        var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
+        var state = feedback["state"].Deserialize<ControlState>(options)!;
+        var encoded = OscFeedback.Encode(state, new OscAddressMap());
+        var want = feedback["windowsMessages"]!.AsArray();
+        Assert.Equal(want.Count, encoded.Count);
+        for (var k = 0; k < want.Count; k++)
+        {
+            Assert.Equal("/cvp/state/" + want[k]![0]!.GetValue<string>(), encoded[k].Address);
+            Assert.Single(encoded[k].Args);
+            Assert.Equal(OscArg(want[k]![1]!), encoded[k].Args[0]);
+        }
+    }
 }

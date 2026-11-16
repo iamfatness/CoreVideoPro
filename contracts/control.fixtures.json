@@ -1219,6 +1219,414 @@
           }
         ]
       }
-    ]
+    ],
+    "addresses": [
+      {
+        "address": "/cvp/transport/take",
+        "actionId": "transport.take"
+      },
+      {
+        "address": "/cvp/scene/select",
+        "actionId": "scene.select"
+      },
+      {
+        "address": "/cvp/state/recording",
+        "actionId": null
+      },
+      {
+        "address": "/cvp/state",
+        "actionId": "state"
+      },
+      {
+        "address": "/cvp/",
+        "actionId": null
+      },
+      {
+        "address": "/cvp",
+        "actionId": null
+      },
+      {
+        "address": "/other/transport/take",
+        "actionId": null
+      }
+    ],
+    "routes": [
+      {
+        "name": "bool-arg",
+        "message": {
+          "address": "/cvp/transport/ftb/set",
+          "args": [
+            {
+              "bool": true
+            }
+          ]
+        },
+        "result": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "transport.ftb.set",
+            "args": [
+              true
+            ]
+          }
+        ]
+      },
+      {
+        "name": "int-to-bool",
+        "message": {
+          "address": "/cvp/transport/ftb/set",
+          "args": [
+            {
+              "i": 0
+            }
+          ]
+        },
+        "result": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "transport.ftb.set",
+            "args": [
+              false
+            ]
+          }
+        ]
+      },
+      {
+        "name": "string-from-float",
+        "message": {
+          "address": "/cvp/scene/select",
+          "args": [
+            {
+              "f": 0.1
+            }
+          ]
+        },
+        "result": {
+          "ok": true
+        },
+        "invocations": [
+          {
+            "action": "scene.select",
+            "args": [
+              "0.1"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "unknown-ignored",
+        "message": {
+          "address": "/cvp/nope/nothing",
+          "args": []
+        },
+        "result": null,
+        "invocations": []
+      },
+      {
+        "name": "feedback-namespace-ignored",
+        "message": {
+          "address": "/cvp/state/recording",
+          "args": [
+            {
+              "i": 1
+            }
+          ]
+        },
+        "result": null,
+        "invocations": []
+      },
+      {
+        "name": "bind-error",
+        "message": {
+          "address": "/cvp/scene/select",
+          "args": []
+        },
+        "result": {
+          "ok": false,
+          "error": "Action 'scene.select' requires parameter 'sceneId' at position 0."
+        },
+        "invocations": []
+      },
+      {
+        "name": "unavailable-on-mac",
+        "hosts": [
+          "mac"
+        ],
+        "message": {
+          "address": "/cvp/showEngine/restart",
+          "args": []
+        },
+        "result": {
+          "ok": false,
+          "error": "'showEngine.restart' is not available on macOS (the OHG show engine is not part of macOS 1.0)."
+        },
+        "invocations": []
+      }
+    ],
+    "feedback": {
+      "state": {
+        "recording": true,
+        "streaming": false,
+        "engineOn": true,
+        "canTake": true,
+        "commandStatus": "Ready",
+        "activeSceneId": "s2",
+        "previewSceneId": "s1",
+        "multiviewLayoutMode": "pgmPvwTop",
+        "multiviewTileCount": 6,
+        "automationOn": false,
+        "autoTake": false,
+        "audioMonitorOn": true,
+        "audioMonitorVolume": 0.5,
+        "zoomStatus": "Zoom Live",
+        "engineStatus": "Engine on — Zoom media live.",
+        "lowerThirdOnAir": false,
+        "autoCaptions": false,
+        "inputs": [
+          {
+            "slot": 1,
+            "inShow": true,
+            "kind": "ZoomParticipant",
+            "sourceId": "zoom:p-1",
+            "name": "Host"
+          },
+          {
+            "slot": 2,
+            "inShow": false,
+            "kind": "Unassigned",
+            "sourceId": null,
+            "name": ""
+          }
+        ]
+      },
+      "windowsMessages": [
+        [
+          "recording",
+          {
+            "i": 1
+          }
+        ],
+        [
+          "streaming",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "ndi",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "engineOn",
+          {
+            "i": 1
+          }
+        ],
+        [
+          "canTake",
+          {
+            "i": 1
+          }
+        ],
+        [
+          "lowerThirdOnAir",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "zoomStatus",
+          {
+            "s": "Zoom Live"
+          }
+        ],
+        [
+          "engineStatus",
+          {
+            "s": "Engine on — Zoom media live."
+          }
+        ],
+        [
+          "commandStatus",
+          {
+            "s": "Ready"
+          }
+        ],
+        [
+          "activeSceneId",
+          {
+            "s": "s2"
+          }
+        ],
+        [
+          "previewSceneId",
+          {
+            "s": "s1"
+          }
+        ],
+        [
+          "previewTilesNamesOn",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "viewMode",
+          {
+            "s": ""
+          }
+        ],
+        [
+          "multiviewLayoutMode",
+          {
+            "s": "pgmPvwTop"
+          }
+        ],
+        [
+          "multiviewTileCount",
+          {
+            "i": 6
+          }
+        ],
+        [
+          "automationOn",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "autoTake",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "autoAssignInputs",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "autoLowerThirds",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "autoCaptions",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "audioMonitorOn",
+          {
+            "i": 1
+          }
+        ],
+        [
+          "audioMonitorVolume",
+          {
+            "f": 0.5
+          }
+        ],
+        [
+          "masterLimiterOn",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "input/1/inShow",
+          {
+            "i": 1
+          }
+        ],
+        [
+          "input/1/kind",
+          {
+            "s": "ZoomParticipant"
+          }
+        ],
+        [
+          "input/1/source",
+          {
+            "s": "zoom:p-1"
+          }
+        ],
+        [
+          "input/1/name",
+          {
+            "s": "Host"
+          }
+        ],
+        [
+          "input/2/inShow",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "input/2/kind",
+          {
+            "s": "Unassigned"
+          }
+        ],
+        [
+          "input/2/source",
+          {
+            "s": ""
+          }
+        ],
+        [
+          "input/2/name",
+          {
+            "s": ""
+          }
+        ],
+        [
+          "graphics/onProgramCount",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "graphics/onPreviewCount",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "graphics/automationMode",
+          {
+            "s": "manual"
+          }
+        ],
+        [
+          "graphics/automationArmed",
+          {
+            "i": 0
+          }
+        ],
+        [
+          "ohg/health/engine",
+          {
+            "s": "stopped"
+          }
+        ],
+        [
+          "ohg/shadow/lastCommand",
+          {
+            "s": ""
+          }
+        ]
+      ]
+    }
   }
 }

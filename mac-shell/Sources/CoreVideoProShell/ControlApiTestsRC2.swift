@@ -32,6 +32,7 @@ extension ShellTests {
             ("control/production-actions", testControlProductionActions),
             ("control/monitor-revisioned", testControlMonitorRevisioned),
             ("control/audio-route", testControlAudioRoute),
+            ("control/osc-feedback-closure", testControlOscFeedbackCoversEverySupportedField),
             // control/udp-spike (T16) is not registered: Network.framework failed the rule (BSD chosen).
         ]
     }
@@ -568,5 +569,18 @@ extension ShellTests {
         expectEqual(invoke(s, "audio.route.set", ["zoom:42", "master", true, -2, "core-1", 4, "client-e"]),
                     .fail("Audio route unconfirmed; application is unconfirmed."), "no answer is unconfirmed")
         expectEqual(model.audioSends["zoom:42"]?["master"], -2, "the grid shows the unconfirmed remote edit")
+    }
+
+    @MainActor
+    static func testControlOscFeedbackCoversEverySupportedField() {
+        let supported = ControlManifestGenerated.feedbackFields.filter { $0.availability == .supported }.map(\.field)
+        var state: [String: Any] = ["inputs": [["slot": 7, "inShow": true, "kind": "ZoomParticipant", "sourceId": "zoom:x", "name": "N"]]]
+        for field in supported where !field.hasPrefix("input/") { state[field] = field == "multiviewTileCount" ? 9 : (field == "audioMonitorVolume" ? 0.25 : "v-\(field)") }
+        let addresses = Set(ControlOscFeedback.encode(state).map(\.address))
+        for field in supported {
+            let address = ControlOscAddressMap.stateAddress(field.replacingOccurrences(of: "{slot}", with: "7"))
+            expect(addresses.contains(address), "supported feedback field \(field) is encoded (\(address))")
+        }
+        expectEqual(supported.count, 21, "after RC3: 21 supported feedback rows")
     }
 }

@@ -276,13 +276,49 @@ extension ShellTests {
             expectEqual(ControlOscCodec.decode(Data(hex: c["hex"] as? String ?? "")), want, "osc decode \(c["name"] ?? "")"); ran += 1
         }
         expect(ControlOscCodec.decode(Data(count: ControlOscCodec.maxDatagram + 1)).isEmpty, "an oversize datagram is dropped")
+        for c in osc["addresses"] as? [[String: Any]] ?? [] {
+            let address = c["address"] as? String ?? ""
+            expectEqual(ControlOscAddressMap.actionId(for: address), c["actionId"] as? String, "osc address \(address)"); ran += 1
+        }
+        for c in osc["routes"] as? [[String: Any]] ?? [] where (c["hosts"] as? [String])?.contains("mac") ?? true {
+            let name = c["name"] as? String ?? "?"
+            let surface = FakeSurface()
+            let box = Box<ControlInvokeResult?>()
+            let router = ControlOscRouter(surface: surface)
+            let message = msg(c["message"] as? [String: Any] ?? [:])
+            Task.detached { box.value = .some(await router.route(message)) }
+            spin(until: { box.value != nil }, limit: 3)
+            let got = box.value ?? nil
+            if let want = c["result"] as? [String: Any] {
+                expectEqual(got, ControlInvokeResult(ok: want["ok"] as? Bool ?? false, error: want["error"] as? String), "osc route \(name)")
+            } else {
+                expect(got == nil, "osc route \(name) is ignored (got \(String(describing: got)))")
+            }
+            let invocations = surface.invocations.map { ["action": $0.0, "args": $0.1.map { $0 ?? NSNull() }] as [String: Any] }
+            expect(NSArray(array: invocations).isEqual(to: c["invocations"] as? [Any] ?? []), "osc route \(name): invocations \(invocations)")
+            ran += 1
+        }
+        if let feedback = osc["feedback"] as? [String: Any] {
+            // Expected = Windows' lines filtered to the platform file's supported rows, read from DISK.
+            let rows = repoJSON("contracts/control.platforms.json")?["feedbackFields"] as? [[String: Any]] ?? []
+            let supported = Set(rows.filter { $0["mac"] as? String == "supported" }.compactMap { $0["field"] as? String })
+            let want = (feedback["windowsMessages"] as? [[Any]] ?? []).compactMap { entry -> ControlOscMessage? in
+                guard let field = entry.first as? String, let a = entry.last as? [String: Any] else { return nil }
+                let row = field.replacingOccurrences(of: #"^input/\d+/"#, with: "input/{slot}/", options: .regularExpression)
+                return supported.contains(row) ? ControlOscMessage(address: ControlOscAddressMap.stateAddress(field), args: [arg(a)]) : nil
+            }
+            expectEqual(ControlOscFeedback.encode(feedback["state"] as? [String: Any] ?? [:]), want, "osc feedback lines (Windows order, supported rows)")
+            expectEqual(want.count, 25, "after RC3: 17 scalar lines + 8 input lines")
+            ran += 1
+        }
         // OSC `f` arrives as Float (D14); coercion follows Windows' float cases.
         expectEqual(ControlCatalog.coerce(Float(0.1), to: .string) as? String, "0.1", "string from Float 0.1 is \"0.1\" (not the widened double)")
         expectEqual(ControlCatalog.coerce(Float(2.5), to: .int) as? Int, 2, "int from Float rounds to even")
         expectEqual(ControlCatalog.coerce(Float(0), to: .bool) as? Bool, false, "bool from Float 0 is false")
         // 36 mac http (RC1 31 + T8 int cases 5) + 6 snapshot + 21 names + 11 texts + 1 document
-        // + 7 osc encode + 12 osc decode = 94 (each slice that appends cases updates this).
-        expectEqual(ran, 94, "every fixture case ran")
+        // + 7 osc encode + 12 osc decode + 7 addresses + 7 mac routes + 1 feedback = 109
+        // (each slice that appends cases updates this).
+        expectEqual(ran, 109, "every fixture case ran")
     }
 
     // ── contract: /invoke statuses and errors (Windows router output) ────────
