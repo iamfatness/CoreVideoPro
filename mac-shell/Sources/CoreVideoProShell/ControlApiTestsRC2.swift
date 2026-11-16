@@ -26,6 +26,7 @@ extension ShellTests {
             ("control/rc2-state-fields", testControlRc2StateFields),
             ("control/push-key", testControlPushKeyIgnoresMeters),
             ("control/input-actions", testControlInputActions),
+            ("control/transition-and-engine", testControlTransitionAndEngine),
         ]
     }
 
@@ -205,5 +206,35 @@ extension ShellTests {
         model.applyZoomForTesting(["meetingState": "in_meeting",
                                    "participants": [["userId": "p-2", "displayName": "Guest", "videoOn": true, "muted": false, "talking": false]]])
         expect(!model.slots.contains { $0.kind == "zoom" && $0.sourceId == "p-2" }, "a remotely unassigned guest is not auto-re-added")
+    }
+
+    @MainActor
+    static func testControlTransitionAndEngine() {
+        let core = FakeTakeCore()
+        let model = takeModel(core)
+        let s = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        expectEqual(invoke(s, "transport.transition.set", ["CUT"]), .success, "transition set")
+        expectEqual(model.takeTransitionMode, "cut", "normalized like Windows")
+        expectEqual(invoke(s, "transport.transition.set", ["sideways"]), .success, "unknown mode is not an error (Windows)")
+        expectEqual(model.takeTransitionMode, "fade", "unknown normalizes to fade")
+        _ = invoke(s, "transport.transition.set", ["dip"])
+        expectEqual(invoke(s, "transport.take"), .success, "take")
+        let take = (core.bodies.last?["commands"] as? [[String: Any]])?.first { $0["type"] as? String == "begin-take-transition" }
+        expectEqual(take?["mode"] as? String, "dip", "the remote transition rides the Take batch")
+
+        expect(!model.captureEnabled, "engine starts off")
+        expectEqual(invoke(s, "transport.engine.set", [false]), .success, "set off while off is a no-op")
+        expectEqual(invoke(s, "transport.engine.toggle"), .success, "toggle on"); expect(model.captureEnabled, "on")
+        expectEqual(invoke(s, "transport.engine.set", [true]), .success, "set on while on"); expect(model.captureEnabled, "still on")
+        expectEqual(invoke(s, "transport.engine.set", [false]), .success, "set off"); expect(!model.captureEnabled, "off")
+        // Confirmatory only (rule 8): the zoom-stop-capture rides the bridge, which the seam does not carry.
+
+        let offline = sceneEditModel()
+        let o = AppModelControlSurface(model: offline, box: offline.controlSnapshotBox)
+        expectEqual(invoke(o, "transport.engine.toggle"),
+                    .fail("Cannot toggle capture engine right now (the control is unavailable in the current state)."), "no core: toggle refused")
+        expectEqual(invoke(o, "transport.engine.set", [true]),
+                    .fail("Cannot start capture engine right now (the control is unavailable in the current state)."), "no core: start refused")
+        expect(!offline.captureEnabled, "nothing changed")
     }
 }

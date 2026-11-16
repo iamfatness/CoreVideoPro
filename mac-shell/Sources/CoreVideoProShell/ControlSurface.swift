@@ -135,6 +135,13 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
                 ? .appliedPreview(sceneId) : .fail("Scene '\(sceneId)' was not queued on Preview.")
         case "scene.list":
             return .withData(sceneListJSON(model))
+        // ── Session (ControlSurface+Session.swift) ──
+        case "transport.transition.set":
+            return setTransition(model, mode: string(0))
+        case "transport.engine.toggle":
+            return toggleEngine(model)
+        case "transport.engine.set":
+            return setEngine(model, on: bool(0))
         // ── Show Inputs (ControlSurface+Inputs.swift) ──
         case "input.assign":
             return assignInput(model, slot: int(0), sourceId: string(1))
@@ -166,6 +173,7 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "scene.select", "scene.list",
         // RC2
         "input.assign", "input.unassign", "input.name", "input.inShow.set", "source.dropout.set",
+        "transport.transition.set", "transport.engine.toggle", "transport.engine.set",
     ]
 
     /// The `default:` branch's text (Windows' unknown-action wording).

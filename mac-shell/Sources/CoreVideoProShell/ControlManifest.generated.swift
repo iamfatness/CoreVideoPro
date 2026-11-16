@@ -41,7 +41,7 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "transport.transition.set", title: "Set transition", description: "Set the Take transition (cut/fade/dip/wipe).", params: [
                 ControlParam(name: "mode", type: .string, required: true, description: "cut | fade | dip | wipe"),
             ]),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "transport.record.toggle", title: "Record toggle", description: "Toggle recording.", params: []),
             availability: .supported),
@@ -94,12 +94,12 @@ enum ControlManifestGenerated {
             availability: .notApplicable(reason: "NDI graphics key output is out of scope for macOS 1.0")),
         ControlManifestEntry(
             action: ControlAction(id: "transport.engine.toggle", title: "Engine toggle", description: "Toggle the capture engine on/off.", params: []),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "transport.engine.set", title: "Engine set", description: "Turn the capture engine on or off explicitly.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "RC2", label: "Remote control: session and inputs")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "transport.virtualcam.toggle", title: "Virtual camera toggle", description: "Toggle the virtual camera output.", params: []),
             availability: .supported),
