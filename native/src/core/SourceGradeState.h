@@ -58,6 +58,46 @@ class SourceGradeState {
       layer.colorGrade=frame!=frames.end() && frame->sourceEpoch==entry->second.epoch ? entry->second.grade : modules::CompositorColorGrade{};
     }
   }
+  // G0 (grading plan Task 1): what the next apply needs, answered from the LAST observe().
+  // `present` is map membership, never `sourceEpoch != 0`: Mac capture frames carry epoch 0.
+  struct Query {
+    bool present = false;      // the last observe() saw a frame keyed sourceId
+    uint64_t sourceEpoch = 0;  // that frame's epoch; 0 when !present
+    int64_t revision = 0;      // the accepted grade's revision; 0 when none
+  };
+  [[nodiscard]] Query query(const std::string& sourceId) const {
+    Query q;
+    const auto live = epochs_.find(sourceId);
+    if (live != epochs_.end()) { q.present = true; q.sourceEpoch = live->second; }
+    q.revision = revision(sourceId);
+    return q;
+  }
+  struct Status {
+    std::string sourceId;
+    int64_t revision = 0;
+    uint64_t appliedEpoch = 0;
+    uint64_t liveEpoch = 0;     // 0 when !livePresent
+    bool livePresent = false;   // the last observe() saw a frame for sourceId
+    bool active = false;        // livePresent && liveEpoch == appliedEpoch: what applyTo paints
+  };
+  // One entry per ACCEPTED grade (never for an observed but ungraded source), in
+  // sourceId order (the std::map's order). At most 256 entries (grade-capacity).
+  [[nodiscard]] std::vector<Status> statuses() const {
+    std::vector<Status> out;
+    out.reserve(grades_.size());
+    for (const auto& [id, applied] : grades_) {
+      Status s;
+      s.sourceId = id;
+      s.revision = applied.revision;
+      s.appliedEpoch = applied.epoch;
+      const auto live = epochs_.find(id);
+      s.livePresent = live != epochs_.end();
+      s.liveEpoch = s.livePresent ? live->second : 0;
+      s.active = s.livePresent && s.liveEpoch == s.appliedEpoch;
+      out.push_back(std::move(s));
+    }
+    return out;
+  }
   int64_t revision(const std::string& sourceId) const {const auto e=grades_.find(sourceId);return e==grades_.end()?0:e->second.revision;}
   std::vector<rpc::Json> annotate(std::vector<rpc::Json> events) const {
     return captureAnnotations(std::move(events)).assemble();

@@ -985,6 +985,7 @@ if(BUILD_TESTING)
     tests/GradePreviewTest.cpp
     tests/ProgramBlackoutTest.cpp
     tests/AdvancedGradeTest.cpp
+    tests/SourceGradeIdentityTest.cpp
     tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
