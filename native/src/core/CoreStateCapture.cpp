@@ -2602,7 +2602,40 @@ rpc::Json CoreStateCapture::virtualCameraState() const {
 #else
   const auto status = virtualCamera_->status();
 #endif
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  // The sink runs in a helper process (modules/HelperVirtualCameraPublisher.h).
+  // Published unconditionally on this build; null means "not observed", never
+  // false. deviceVisibleToSystem is what the newest helper, a newborn process,
+  // saw; deviceVisibleInProcess is this process's own CoreMediaIO view at the
+  // same moment. true/false names the 2026-11-16 provider-arrival blind spot.
+  const auto observed = [](int value) { return value < 0 ? rpc::Json(nullptr) : rpc::Json(value != 0); };
+  const auto milliseconds = [](double value) { return value < 0 ? rpc::Json(nullptr) : rpc::Json(value); };
+  rpc::Json::Object sink{
+      {"deviceVisibleToSystem", observed(status.deviceVisibleToSystem)},
+      {"deviceVisibleInProcess", observed(status.deviceVisibleInProcess)},
+      {"sinkAttempts", static_cast<double>(status.sinkAttempts)},
+      {"lastConnectedAt", status.lastConnectedAtUnixMs > 0
+                              ? rpc::Json(static_cast<double>(status.lastConnectedAtUnixMs)) : rpc::Json(nullptr)},
+      {"helperPid", status.sinkHelperPid > 0 ? rpc::Json(static_cast<double>(status.sinkHelperPid)) : rpc::Json(nullptr)},
+      {"helperGeneration", static_cast<double>(status.sinkHelperGeneration)},
+      {"helperGaveUp", status.sinkHelperGaveUp},
+      {"nextAttemptInMs", static_cast<double>(status.sinkNextAttemptInMs)},
+      {"helperLastExit", status.sinkHelperLastExit},
+      {"transportDrops", static_cast<double>(status.transportDrops)},
+      {"queueFullDrops", static_cast<double>(status.sinkQueueFullDrops)},
+      {"sequenceGaps", static_cast<double>(status.sinkSequenceGaps)},
+      {"transportMs", rpc::Json::Object{{"last", milliseconds(status.transportLastMs)},
+                                        {"mean", milliseconds(status.transportMeanMs)},
+                                        {"max", milliseconds(status.transportMaxMs)}}},
+      {"helperPublishMs", rpc::Json::Object{{"last", milliseconds(status.sinkPublishLastMs)},
+                                            {"mean", milliseconds(status.sinkPublishMeanMs)},
+                                            {"max", milliseconds(status.sinkPublishMaxMs)}}},
+  };
+#endif
   return rpc::Json::Object{
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+      {"sink", std::move(sink)},
+#endif
       {"enabled", status.enabled},
       {"status", status.state},
       {"deviceName", status.deviceName},

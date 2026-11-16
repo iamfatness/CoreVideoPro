@@ -258,6 +258,20 @@ std::unique_ptr<IVirtualCameraSink> createCmioVirtualCameraSink() {
   return std::make_unique<CmioVirtualCameraSink>();
 }
 
+OwnCameraDeviceView readOwnCameraDeviceView() {
+  OwnCameraDeviceView view;
+  const CMIODeviceID device = findDevice();
+  if (device == kCMIOObjectUnknown) return view;
+  view.registered = true;
+  view.deviceUid = copyStringProperty(device, kCMIODevicePropertyDeviceUID);
+  view.modelUid = copyStringProperty(device, kCMIODevicePropertyModelUID);
+  auto address = globalAddress(kCMIODevicePropertyDeviceIsRunningSomewhere);
+  UInt32 running = 0, used = 0;
+  const OSStatus status = CMIOObjectGetPropertyData(device, &address, 0, nullptr, sizeof(running), &used, &running);
+  view.runningSomewhere = status != noErr || running != 0;
+  return view;
+}
+
 int64_t machHostClockNs() {
   static const mach_timebase_info_data_t timebase = [] {
     mach_timebase_info_data_t info{};

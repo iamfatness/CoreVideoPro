@@ -16,8 +16,9 @@ constexpr const char* kStalledWarning =
 }  // namespace
 
 SinkVirtualCameraPublisher::SinkVirtualCameraPublisher(std::unique_ptr<IVirtualCameraSink> sink,
-                                                       std::function<int64_t()> hostClockNs)
-    : sink_(std::move(sink)), hostClockNs_(std::move(hostClockNs)) {}
+                                                       std::function<int64_t()> hostClockNs,
+                                                       bool logConnectFailures)
+    : sink_(std::move(sink)), hostClockNs_(std::move(hostClockNs)), logConnectFailures_(logConnectFailures) {}
 
 SinkVirtualCameraPublisher::~SinkVirtualCameraPublisher() { stop(); }
 
@@ -39,7 +40,8 @@ bool SinkVirtualCameraPublisher::start(int width, int height, int fps) {
     // installed, awaiting approval, restarting). A new failure is logged at once;
     // the same failure again only as a periodic heartbeat, so the log proves the
     // retry is still running without repeating itself every second.
-    if (status_.warning != failure) {
+    if (!logConnectFailures_) {
+    } else if (status_.warning != failure) {
       ::corevideo::core::nativeLogf("[virtualcam] mac sink: %s (attempt %llu)\n", failure.c_str(),
                                     static_cast<unsigned long long>(consecutiveConnectFailures_));
     } else if (shouldLogRepeatedSinkConnectFailure(consecutiveConnectFailures_)) {
@@ -100,6 +102,23 @@ void SinkVirtualCameraPublisher::publishNv12IdentifiedOnWorker(std::shared_ptr<c
   if (!nv12) return;
   std::lock_guard<std::mutex> lock(mutex_);
   publishLocked(nv12->data(), nv12->size(), width, height, programSequence);
+}
+
+void SinkVirtualCameraPublisher::publishNv12Borrowed(const std::uint8_t* nv12, std::size_t bytes, int width,
+                                                     int height, int64_t programSequence) {
+  if (nv12 == nullptr) return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  publishLocked(nv12, bytes, width, height, programSequence);
+}
+
+std::uint64_t SinkVirtualCameraPublisher::sequenceGaps() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return sequenceGaps_;
+}
+
+std::uint64_t SinkVirtualCameraPublisher::queueFullDrops() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return queueFullDrops_;
 }
 
 void SinkVirtualCameraPublisher::publishLocked(const std::uint8_t* nv12, std::size_t bytes, int width, int height,

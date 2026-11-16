@@ -4,11 +4,18 @@
 #include "core/DeliveryTrace.h"
 #include "core/MainRunLoopHost.h"
 #include "modules/Interfaces.h"
+#include "modules/VirtualCameraPublisher.h"
 #include "rpc/JsonRpcServer.h"
 
 #include <iostream>
 
-int main() {
+int main(int argc, char** argv) {
+  // macOS virtual camera: this executable is also its own sink helper and
+  // device probe (modules/VcamSinkHelper.h). Decided before anything else is
+  // created; false on every other platform and for every ordinary launch.
+  int processModeExit = 0;
+  if (corevideo::modules::runVirtualCameraProcessMode(argc, argv, &processModeExit)) return processModeExit;
+  corevideo::modules::enableVirtualCameraSinkHelper();
   // Declare before MediaCore: COM must outlive both its workers and resources.
   corevideo::core::ComApartmentLifetime com;
   if (!com.initialized()) {

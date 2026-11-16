@@ -62,6 +62,8 @@ struct FailedCamera : IVirtualCameraPublisher {
 struct RepairableCamera : IVirtualCameraPublisher {
   std::atomic<int> attempts{0};
   std::atomic<bool> repaired{false};
+  std::atomic<int> rearms{0};
+  void rearmRetryBudget() override { ++rearms; }
   VirtualCameraStatus current;
   bool start(int,int,int) override {
     ++attempts;
@@ -98,6 +100,26 @@ TEST(AsyncVirtualCameraPublisher, RegistrationRepairRecoversWithoutToggleOrResta
   while(!camera.status().framesPublished && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(1ms);
   EXPECT_GT(camera.status().framesPublished,0u);
 }
+// The macOS sink helper has a bounded retry budget. Only the operator turning
+// the camera on renews it; the worker's own 1 s retry must not, or a helper
+// that keeps failing would never be given up on.
+TEST(AsyncVirtualCameraPublisher, OnlyAnOperatorEnableRearmsTheBackendsRetryBudget) {
+  auto inner=std::make_unique<RepairableCamera>(); auto* backend=inner.get();
+  AsyncVirtualCameraPublisher camera(std::move(inner));
+  camera.start(1920,1080,60);
+  auto deadline=std::chrono::steady_clock::now()+4s;
+  while(backend->attempts.load()<3 && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(5ms);
+  ASSERT_GE(backend->attempts.load(),3) << "the 1 s retry ran";
+  EXPECT_EQ(backend->rearms.load(),1) << "retries are not operator enables";
+  camera.stop();
+  deadline=std::chrono::steady_clock::now()+2s;
+  while(camera.status().state!="off" && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(1ms);
+  camera.start(1920,1080,60);
+  deadline=std::chrono::steady_clock::now()+2s;
+  while(backend->rearms.load()<2 && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(1ms);
+  EXPECT_EQ(backend->rearms.load(),2);
+}
+
 TEST(AsyncVirtualCameraPublisher, StopCancelsPendingRegistrationRetry) {
   auto inner=std::make_unique<RepairableCamera>(); auto* backend=inner.get();
   AsyncVirtualCameraPublisher camera(std::move(inner)); camera.start(1920,1080,60);

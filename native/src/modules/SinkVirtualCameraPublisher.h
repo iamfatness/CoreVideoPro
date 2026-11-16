@@ -45,7 +45,10 @@ inline std::string sinkStartStreamWarning(std::int32_t status) {
 
 class SinkVirtualCameraPublisher final : public IVirtualCameraPublisher {
  public:
-  SinkVirtualCameraPublisher(std::unique_ptr<IVirtualCameraSink> sink, std::function<int64_t()> hostClockNs);
+  // logConnectFailures=false: the owner logs them (the sink helper process makes
+  // ONE attempt per process, so "attempt 1" every second would say nothing).
+  SinkVirtualCameraPublisher(std::unique_ptr<IVirtualCameraSink> sink, std::function<int64_t()> hostClockNs,
+                             bool logConnectFailures = true);
   ~SinkVirtualCameraPublisher() override;
 
   bool start(int width, int height, int fps) override;
@@ -61,6 +64,12 @@ class SinkVirtualCameraPublisher final : public IVirtualCameraPublisher {
   void setDeviceName(const std::string& name) override;
   bool mirrorAppliedUpstream() const override { return true; }  // the Metal tap mirrors (Task 5)
 
+  // Bytes the caller keeps owning (the sink helper reads them straight from the
+  // hand-off ring). Same rules as publishNv12IdentifiedOnWorker.
+  void publishNv12Borrowed(const std::uint8_t* nv12, std::size_t bytes, int width, int height,
+                           int64_t programSequence);
+  std::uint64_t sequenceGaps() const;
+  std::uint64_t queueFullDrops() const;
   std::uint64_t sequenceGapsForTest() const;
   std::uint64_t consecutiveConnectFailuresForTest() const;
 
@@ -74,6 +83,7 @@ class SinkVirtualCameraPublisher final : public IVirtualCameraPublisher {
   VirtualCameraStatus status_;
   bool connected_ = false;
   bool mirror_ = false;
+  bool logConnectFailures_ = true;
   bool warnedCpuProgramFrame_ = false;
   int64_t lastProgramSequence_ = 0;
   std::uint64_t sequenceGaps_ = 0;

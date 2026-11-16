@@ -38,14 +38,37 @@ corevideo-native (core, our signature)                      camera extension (sa
         │ setIdentifiedVcamFrameSink                          ┌──────────────────────────┐
   AsyncVirtualCameraPublisher (worker: Metal framer, retry)   │ sink stream  "…Sink"     │
         │ publishNv12IdentifiedOnWorker                       │   consume → latest buffer│
-  SinkVirtualCameraPublisher (size gate, lost→retry, gaps)    │ FrameSelector            │
-        │ IVirtualCameraSink                                  │   fresh ≤500 ms → Program│
-  CmioVirtualCameraSink ── IOSurface CVPixelBuffer ──CMSimpleQueue──▶ else → standby slate│
-                                                              │ source stream (timer @fps)│
-                                                              └────────────┬─────────────┘
-shell (SwiftUI): OSSystemExtensionRequest, footer flyout,                  ▼
-  sync-virtual-camera {on, mirror, framerEnabled, deviceName}   Zoom / Teams / FaceTime / OBS
+  HelperVirtualCameraPublisher (starts/replaces the helper)   │ FrameSelector            │
+        │ shared-memory ring (4 frames) + wake pipe           │   fresh ≤500 ms → Program│
+corevideo-native --vcam-sink-helper (same file, child)        │   else → standby slate   │
+  SinkVirtualCameraPublisher (size gate, lost, gaps)          │ source stream (timer @fps)│
+        │ IVirtualCameraSink                                  └────────────┬─────────────┘
+  CmioVirtualCameraSink ── IOSurface CVPixelBuffer ──CMSimpleQueue──▶ sink              ▼
+shell (SwiftUI): OSSystemExtensionRequest, footer flyout,       Zoom / Teams / FaceTime / OBS
+  sync-virtual-camera {on, mirror, framerEnabled, deviceName}
 ```
+
+**Why the sink is in a helper process (2026-11-16).** A process learns the
+camera-extension PROVIDERS that exist at its first CoreMediaIO touch and is not told about
+one that registers later. Measured on macOS 26.3: the core touched CoreMediaIO in the
+~450 ms between extension 3002 being removed and 3003 registering, then polled
+`CAMERA_EXTENSION_NOT_FOUND` 210+ times while every process born later saw the camera;
+quitting and reopening the app fixed it. A first install hits the same thing (the operator
+approves the extension minutes after the core started). Servicing the main run loop
+(`core/MainRunLoopHost.h`) covers a DEVICE arriving from a provider the process already
+knows, not a provider arriving. No supported call that refreshes a running process's
+provider list has been proven, so the design does not depend on one: every connect attempt
+is a NEW process (`VcamHelperRespawnPolicy.h`), which by construction looks after whatever
+registered before it was born. The helper is the core's own executable with a flag, so it
+is the same signed file in the same directory law 6 attests, and the extension is
+unchanged. It makes one attempt and never retries; a camera that is not there, or is lost
+mid-stream, ends the helper and the core starts another (1 s apart at first, 2 s then 5 s
+once an absence has settled, forever). A helper that itself fails climbs the house ladder
+(5, 10, 20, 40, 60 s) and is given up on, loudly, after five in a row; turning the camera
+off and on re-arms it. Program is never restarted to recover a camera. The helper runs
+only as a child of the same executable, exits when the core's pipe closes (so it cannot
+outlive the core), and `framesPublished` counts what the helper reports the camera's
+queue accepted, not what the core handed off.
 
 The shell never touches pixels. It activates the extension, sends the same
 `sync-virtual-camera` command Windows sends, and reads the same `virtualCamera` snapshot.
@@ -79,7 +102,15 @@ the extension) so consumers that ask for 720p get it without a second producer s
    (integer BT.601, bit-identical to `convertBgraToNv12`) run in one Metal compute pass
    after the program pass. Only the finished 3,110,400-byte NV12 is read back. OH Framer
    is a Metal port of `WebcamFramer.hlsl`. The CPU does only bulk copies: at most 3 per
-   frame, never on the render thread. The camera must publish **60 frames per second
+   frame, never on the render thread. **Amended 2026-11-16:** the helper process adds
+   one, so the path is now readback, hand-off ring, pixel buffer (3 with the framer
+   off; the framer adds its own). The core's copy into the ring replaces its copy into
+   the pixel buffer, and the pixel-buffer copy moved to the helper. Measured over
+   18,000 frames at 60 Hz (M3 Max, macOS 26.3, the owner's app live on the same Mac,
+   `corevideo-vcam-helper-bench`): the core-side call fell from 0.29 ms to 0.19 ms mean,
+   hand-off to helper pickup 0.20 ms mean, helper copy and enqueue 0.24 ms mean, 0 of
+   18,000 dropped; worst pickup 10.6 ms against a 4-frame (66 ms) ring. Zero-copy
+   hand-off (an IOSurface passed by Mach port) stays out of scope (§7). The camera must publish **60 frames per second
    with no missed frame** at idle 1080p60. That is a per-frame requirement, not an
    average. The byte-buffer interface the Windows tap uses is kept, so shared and
    Windows code are untouched. The extension does its own work on its own dispatch
@@ -112,9 +143,18 @@ the extension) so consumers that ask for 720p get it without a second producer s
 
 ## 5. Health as data
 
-The snapshot `virtualCamera` is unchanged in shape. Mac meanings: `live` = sink connected
+The snapshot `virtualCamera` keeps the Windows fields and, on the Mac build, adds a `sink`
+node (always present; null means not observed, never false): `deviceVisibleToSystem` (what
+the newest helper, a newborn process, saw), `deviceVisibleInProcess` (the core's own
+CoreMediaIO view at the same moment; `true`/`false` names the provider-arrival blind spot,
+and the core logs it once), `sinkAttempts`, `lastConnectedAt` (Unix ms), `helperPid`,
+`helperGeneration`, `helperLastExit`, `helperGaveUp`, `nextAttemptInMs`, `transportDrops`,
+`queueFullDrops`, `sequenceGaps`, `transportMs` and `helperPublishMs` (last/mean/max). The
+shell reads the device the same way: `corevideo-native --vcam-device-probe` in a new
+process (about 20 ms), never its own CoreMediaIO view, and says "Restart your Mac" only
+when macOS reports our version itself as not enabled. Mac meanings: `live` = sink connected
 and frames enqueuing; `failed` + `CAMERA_EXTENSION_NOT_FOUND:` = device not present (not
-installed, awaiting approval, or restarting), retried every 1 s by the existing worker;
+installed, awaiting approval, or restarting), retried by a new helper process each time;
 `failed` + `CAMERA_EXTENSION_LOST:` = sink vanished mid-stream (extension restart/update),
 retried the same way. The shell layers its own **activation state** on top: notInstalled,
 activating, needsApproval, active, needsReboot, notInApplications, unavailable, failed.

@@ -145,6 +145,7 @@ void AsyncVirtualCameraPublisher::run() {
       backend_->setMirror(mirror);
       backend_->setDeviceName(name);
       if (on && (!appliedOn || std::chrono::steady_clock::now() >= retryAt)) {
+        if (!appliedOn) backend_->rearmRetryBudget();  // operator-on, never the 1 s retry
         backend_->stop(); backend_->start(w, h, fps);
         const auto started = backend_->status();
         // Registration can be repaired while this process remains alive.

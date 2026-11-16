@@ -172,6 +172,7 @@ add_library(corevideo_native
   src/modules/VirtualCameraPublisher.cpp
   src/modules/AsyncVirtualCameraPublisher.cpp
   src/modules/SinkVirtualCameraPublisher.cpp
+  src/modules/HelperVirtualCameraPublisher.cpp
   src/modules/GpuWebcamFramer.cpp
   src/modules/UvcCaptureSupport.cpp
   src/modules/WasapiAudioCaptureSourceAdapter.cpp
@@ -397,7 +398,7 @@ if(COREVIDEO_WITH_MAC_VIRTUALCAM)
   if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
     message(FATAL_ERROR "COREVIDEO_WITH_MAC_VIRTUALCAM requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
   endif()
-  target_sources(corevideo_native PRIVATE src/modules/CmioVirtualCameraSink.mm)
+  target_sources(corevideo_native PRIVATE src/modules/CmioVirtualCameraSink.mm src/modules/VcamSinkHelper.cpp)
   set_source_files_properties(src/modules/CmioVirtualCameraSink.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(corevideo_native PUBLIC
     "-framework CoreMediaIO" "-framework CoreMedia" "-framework CoreVideo" "-framework IOSurface")
@@ -672,6 +673,11 @@ if(APPLE AND COREVIDEO_WITH_MAC_VIRTUALCAM)
   add_executable(corevideo-vcam-feed EXCLUDE_FROM_ALL tools/mac-vcam-feed.mm)
   target_link_libraries(corevideo-vcam-feed PRIVATE corevideo_native "-framework Foundation")
   set_source_files_properties(tools/mac-vcam-feed.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  # Transport measurement for the sink helper process (never shipped): the
+  # production core side and helper loop across a real process boundary.
+  add_executable(corevideo-vcam-helper-bench EXCLUDE_FROM_ALL tools/mac-vcam-helper-bench.mm)
+  target_link_libraries(corevideo-vcam-helper-bench PRIVATE corevideo_native "-framework Foundation")
+  set_source_files_properties(tools/mac-vcam-helper-bench.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 endif()
 
 if(WIN32)
@@ -915,6 +921,9 @@ if(BUILD_TESTING)
     tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
     tests/SinkVirtualCameraPublisherTest.cpp
+    tests/VcamHelperRespawnPolicyTest.cpp
+    tests/VcamHelperTransportTest.cpp
+    tests/HelperVirtualCameraPublisherTest.cpp
     tests/MainRunLoopHostTest.cpp
     tests/OwnVirtualCameraTest.cpp
     tests/GpuWebcamFramerTest.cpp
@@ -1093,6 +1102,10 @@ if(BUILD_TESTING)
   # resolves ffmpeg on its own unchanged path, so the test is not built there.
   if(NOT WIN32)
     target_sources(corevideo-native-tests PRIVATE tests/PosixExecutableLocatorTest.cpp)
+  endif()
+  # The sink helper's process half exists only in the macOS virtual-camera build.
+  if(APPLE AND COREVIDEO_WITH_MAC_VIRTUALCAM)
+    target_sources(corevideo-native-tests PRIVATE tests/VcamSinkHelperTest.cpp)
   endif()
   if(GTest_FOUND)
     target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_USE_SYSTEM_GTEST=1)
