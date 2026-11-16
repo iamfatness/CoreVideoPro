@@ -559,6 +559,16 @@ final class AppModel: ObservableObject {
     /// replacement finishes or the wait gives up). A second click and the 5 s
     /// retry do nothing meanwhile, and the status reads "Updating camera…".
     @Published private(set) var cameraUpdateInProgress = false
+    /// Another app (not our output) was seen holding the camera while an
+    /// update waited: the notice says "quit apps", else "click Update camera".
+    @Published private(set) var cameraUpdateOthersHolding = false
+    /// Opted-in launch with the output on: hold the first
+    /// sync-virtual-camera {on:true} until the launch decision (and any swap
+    /// it starts) is done, so our own sink stream never blocks the update and
+    /// the device reads only OTHER apps (review I3). Bounded by
+    /// `cameraLaunchHoldLimit`.
+    @Published private(set) var virtualCameraHeldForLaunch = false
+    var cameraLaunchHoldLimit: TimeInterval = 20
     /// The last installed-copies answer (diagnostics; nil = never answered).
     @Published private(set) var cameraExtensionInstalls: [CameraExtensionInstall]?
     /// TEST-ONLY command capture. Set only by ShellTests: no env var, control
@@ -946,6 +956,12 @@ final class AppModel: ObservableObject {
                                         core: virtualCameraCore, updating: cameraUpdateInProgress)
     }
 
+    /// Second line under the status while an update waits (flyout, Settings, Health).
+    var virtualCameraUpdateNotice: String? {
+        VirtualCameraPresentation.updateNotice(ext: cameraExtensionState, othersHolding: cameraUpdateOthersHolding,
+                                               updating: cameraUpdateInProgress)
+    }
+
     var virtualCameraFramerLabel: String {
         VirtualCameraPresentation.framerLabel(framerEnabled: virtualCamera.framerEnabled,
                                               intent: virtualCamera.enabled, core: virtualCameraCore)
@@ -1040,7 +1056,7 @@ final class AppModel: ObservableObject {
     /// (onConnected): a respawned core forgets it and answers with its default.
     private func sendVirtualCameraSync() {
         var wire = virtualCamera
-        if virtualCameraPausedForUpdate { wire.enabled = false }
+        if virtualCameraPausedForUpdate || virtualCameraHeldForLaunch { wire.enabled = false }
         let body = CoreCommands.mediaCoreSync(elapsedMs: Double(elapsedMs()),
                                               commands: [CoreCommands.syncVirtualCamera(wire)])
         if let capture = coreCommandCaptureForTesting { capture(body); return }
@@ -1070,8 +1086,23 @@ final class AppModel: ObservableObject {
     /// Without an opt-in, only ask.
     func startCameraExtensionAtLaunch() {
         if cameraExtensionOptedIn == true {
+            if virtualCamera.enabled {
+                virtualCameraHeldForLaunch = true
+                let limit = cameraLaunchHoldLimit
+                DispatchQueue.main.asyncAfter(deadline: .now() + limit) { [weak self] in
+                    Task { @MainActor in
+                        guard let self, self.virtualCameraHeldForLaunch else { return }
+                        ShellLog.write("vcam-ext: launch decision took over \(limit) s; releasing the output")
+                        self.releaseCameraLaunchHold()
+                    }
+                }
+            }
             queryCameraExtensionInstalls { [weak self] installs in
                 guard let self else { return }
+                // Every path below that does not start a swap releases the
+                // hold now; a swap releases it on its result.
+                var startedSwap = false
+                defer { if !startedSwap { self.releaseCameraLaunchHold() } }
                 let action = CameraExtensionPolicy.launchAction(
                     installs: installs, bundledVersion: CameraExtensionPolicy.bundledVersion,
                     deviceRegistered: self.readCameraDevice().registered)
@@ -1094,13 +1125,17 @@ final class AppModel: ObservableObject {
                     self.recordCameraExtensionResult("already active at launch (nothing submitted)")
                     self.setCameraExtensionState(.active)
                 case .activate:
+                    startedSwap = true
                     self.activateCameraExtension()
                 case .update:
                     if self.cameraInUse() {
+                        // Our output is held (or off), so this is another app.
+                        self.cameraUpdateOthersHolding = true
                         ShellLog.write("vcam-ext: update to \(CameraExtensionPolicy.bundledVersion) deferred; the camera is in use")
                         self.recordCameraExtensionResult("update deferred at launch (camera in use)")
                         self.setCameraExtensionState(.updateReady)
                     } else {
+                        startedSwap = true
                         self.activateCameraExtension()
                     }
                 }
@@ -1112,8 +1147,19 @@ final class AppModel: ObservableObject {
 
     /// CameraExtensionPolicy.inUse over a fresh HAL read and our own intent.
     func cameraInUse() -> Bool {
-        CameraExtensionPolicy.inUse(device: readCameraDevice(), intentOn: virtualCamera.enabled,
-                                    pausedForUpdate: virtualCameraPausedForUpdate)
+        let device = readCameraDevice()
+        // Our output off (or held off): a running device is someone else.
+        if device.runningSomewhere && (!virtualCamera.enabled || virtualCameraHeldForLaunch) {
+            cameraUpdateOthersHolding = true
+        }
+        return CameraExtensionPolicy.inUse(device: device, intentOn: virtualCamera.enabled,
+                                           pausedForUpdate: virtualCameraPausedForUpdate || virtualCameraHeldForLaunch)
+    }
+
+    private func releaseCameraLaunchHold() {
+        guard virtualCameraHeldForLaunch else { return }
+        virtualCameraHeldForLaunch = false
+        sendVirtualCameraSync()
     }
 
     private func recordCameraExtensionResult(_ what: String) {
@@ -1126,7 +1172,8 @@ final class AppModel: ObservableObject {
     func virtualCameraDiagnostics(readDevice: Bool = true) -> VirtualCameraDiagnostics {
         let device = readDevice ? readCameraDevice() : cameraDeviceStatus
         return VirtualCameraDiagnostics(
-            label: virtualCameraLabel, state: cameraExtensionState, optedIn: cameraExtensionOptedIn,
+            label: virtualCameraLabel, updateNotice: virtualCameraUpdateNotice,
+            state: cameraExtensionState, optedIn: cameraExtensionOptedIn,
             bundledVersion: CameraExtensionPolicy.bundledVersion, installs: cameraExtensionInstalls,
             device: device,
             inUse: device.map { CameraExtensionPolicy.inUse(device: $0, intentOn: virtualCamera.enabled,
@@ -1226,6 +1273,7 @@ final class AppModel: ObservableObject {
             return
         }
         if Date() >= deadline {
+            cameraUpdateOthersHolding = true
             ShellLog.write("vcam-ext: another app still has the camera; the update stays ready")
             finishCameraUpdate()
             return
@@ -1301,6 +1349,7 @@ final class AppModel: ObservableObject {
                 if state != .activating {
                     self.recordCameraExtensionResult("activation: \(state)")
                     self.finishCameraUpdate()
+                    self.releaseCameraLaunchHold()
                 }
             }
         }

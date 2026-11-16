@@ -622,6 +622,9 @@ struct VirtualCameraFlyout: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel("Virtual camera status")
                     .accessibilityValue(model.virtualCameraLabel)
+                if let notice = model.virtualCameraUpdateNotice {
+                    caption(notice)
+                }
                 if VirtualCameraPresentation.showsUpdateButton(model.cameraExtensionState,
                                                              updating: model.cameraUpdateInProgress) {
                     Button("Update camera") { model.updateCameraExtension() }

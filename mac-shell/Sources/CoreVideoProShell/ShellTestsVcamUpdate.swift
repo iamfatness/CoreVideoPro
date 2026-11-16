@@ -25,6 +25,8 @@ extension ShellTests {
             ("vcam-update/update-ready-retries-when-free", testUpdateReadyRetriesWhenTheCameraFrees),
             ("vcam-update/update-button-pauses-our-output", testUpdateCameraButtonPausesOurOutputThenReplaces),
             ("vcam-update/update-button-race-never-resumes-mid-swap", testUpdateCameraNeverResumesOurOutputMidSwap),
+            ("vcam-update/launch-holds-our-output-until-the-swap", testLaunchHoldsOurOutputUntilTheSwap),
+            ("vcam-update/notice-is-a-second-line", testUpdateNoticeIsASecondLineWithTheRightCopy),
             ("vcam-update/replacement-offered-in-use-is-cancelled",
              testReplacementOfferedWhileInUseEndsUpdateReady),
             ("vcam-update/completed-unregistered-old-uninstalling-needs-reboot",
@@ -155,9 +157,10 @@ extension ShellTests {
                                                 device: CameraDeviceStatus(registered: true, runningSomewhere: true))
         expectEqual(fake.calls, ["installs"], "another app streaming: no request is submitted")
         expectEqual(model.cameraExtensionState, .updateReady, "the update waits as .updateReady")
-        expectEqual(model.virtualCameraLabel,
+        expectEqual(model.virtualCameraLabel, "Virtual camera off", "the status line stays the status")
+        expectEqual(model.virtualCameraUpdateNotice,
                     "An update to CoreVideo Pro Camera is ready. Quit apps that are using the camera (Zoom, Teams, Photo Booth\u{2026}), then click Update camera.",
-                    "the label says what to do, even with our output off")
+                    "another app holds it: the second line says to quit apps")
         expect(VirtualCameraPresentation.showsUpdateButton(model.cameraExtensionState), "the Update camera button shows")
         expect(!VirtualCameraPresentation.showsUpdateButton(.active), "and only then")
         model.stopTimersForTesting()
@@ -260,6 +263,47 @@ extension ShellTests {
         expectEqual(model.cameraExtensionState, .active, "the update completes")
         expect(!model.cameraUpdateInProgress, "and the progress state clears")
         model.stopTimersForTesting()
+    }
+
+    /// Review I3: with the output on (the normal setup) and no other app on
+    /// the camera, an update swaps at launch: the first on:true waits until
+    /// the replacement finished, so our own stream never blocks it.
+    @MainActor
+    static func testLaunchHoldsOurOutputUntilTheSwap() {
+        let (model, fake, _, log) = launchedModel(
+            installed: [olderInstall], device: CameraDeviceStatus(registered: true, runningSomewhere: false),
+            intentOn: true, script: [.activating, .active])
+        expectEqual(fake.calls, ["installs", "activate"], "our output on, nobody else: swapped at launch")
+        expectEqual(log.ons.first, false, "the core's first sync is held off")
+        expectEqual(log.ons.last, true, "then our output starts")
+        expect(log.sent.filter { $0.on }.allSatisfy { $0.state == .active },
+               "on:true only after the replacement finished")
+        expectEqual(model.cameraExtensionState, .active, "and the update completes")
+        model.stopTimersForTesting()
+
+        // Nothing to swap: the hold releases at once.
+        let (same, sameFake, _, sameLog) = launchedModel(
+            installed: [ours()], device: CameraDeviceStatus(registered: true), intentOn: true)
+        expectEqual(sameFake.calls, ["installs"], "our version active: nothing submitted")
+        expectEqual(sameLog.ons.last, true, "and our output starts right away")
+        same.stopTimersForTesting()
+    }
+
+    @MainActor
+    static func testUpdateNoticeIsASecondLineWithTheRightCopy() {
+        typealias P = VirtualCameraPresentation
+        var live = VirtualCameraReadModel()
+        live.status = "live"; live.width = 1920; live.height = 1080
+        expectEqual(P.label(intent: true, ext: .updateReady, core: live), "Virtual camera live (1920x1080)",
+                    "an update waiting never hides the live status")
+        expectEqual(P.updateNotice(ext: .updateReady, othersHolding: false, updating: false),
+                    "An update to CoreVideo Pro Camera is ready. Click Update camera \u{2014} your camera output pauses for a few seconds.",
+                    "only our output holds it: no 'quit Zoom'")
+        expect(P.updateNotice(ext: .updateReady, othersHolding: true, updating: false)?.contains("Quit apps") == true,
+               "another app holds it: quit apps")
+        expect(P.updateNotice(ext: .active, othersHolding: true, updating: false) == nil, "no notice otherwise")
+        expect(P.updateNotice(ext: .updateReady, othersHolding: false, updating: true) == nil,
+               "none while Updating camera runs")
     }
 
     /// Belt and braces at the moment macOS offers the replacement: a different

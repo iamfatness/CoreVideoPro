@@ -208,6 +208,10 @@ struct SettingsPane: View {
                 row("Virtual camera", model.virtualCameraLabel)
                 labeled("") {
                     VStack(alignment: .leading, spacing: 4) {
+                        if let notice = model.virtualCameraUpdateNotice {
+                            Text(notice).font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         if VirtualCameraPresentation.showsUpdateButton(model.cameraExtensionState,
                                                              updating: model.cameraUpdateInProgress) {
                             Button("Update camera") { model.updateCameraExtension() }

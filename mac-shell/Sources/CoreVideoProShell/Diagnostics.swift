@@ -916,7 +916,7 @@ struct DiagnosePane: View {
         return diag.rows.map { row in
             let tone: DiagTone
             switch (row.label, diag.state) {
-            case ("status", .needsReboot), ("status", .updateReady): tone = .warn
+            case ("status", .needsReboot), ("update", .updateReady): tone = .warn
             case ("status", .failed), ("status", .unavailable): tone = .bad
             case ("device registered", _): tone = diag.device?.registered == true ? .good : .neutral
             default: tone = .neutral

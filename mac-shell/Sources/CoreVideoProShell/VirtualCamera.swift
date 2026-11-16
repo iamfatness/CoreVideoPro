@@ -80,8 +80,19 @@ enum VirtualCameraPresentation {
     /// Status line. Precedence: operator intent, then the extension's
     /// activation state, then the core's own status (Windows wording where it
     /// exists — StudioViewModel.VirtualCameraStatusLabel).
+    /// The update notice (a SECOND line under the status, review I3): the
+    /// status keeps saying live / connecting / failed while an update waits.
     static let updateReadyLabel =
         "An update to CoreVideo Pro Camera is ready. Quit apps that are using the camera (Zoom, Teams, Photo Booth\u{2026}), then click Update camera."
+    /// When only our own output holds the camera, "quit Zoom" would send the
+    /// operator hunting for an app that is not there.
+    static let updateReadyOwnOutputLabel =
+        "An update to CoreVideo Pro Camera is ready. Click Update camera \u{2014} your camera output pauses for a few seconds."
+
+    static func updateNotice(ext: CameraExtensionState, othersHolding: Bool, updating: Bool) -> String? {
+        guard ext == .updateReady, !updating else { return nil }
+        return othersHolding ? updateReadyLabel : updateReadyOwnOutputLabel
+    }
 
     static let needsRebootLabel = "Restart your Mac to finish updating the virtual camera."
 
@@ -90,10 +101,8 @@ enum VirtualCameraPresentation {
     static func label(intent: Bool, ext: CameraExtensionState, core: VirtualCameraReadModel?,
                       updating: Bool = false) -> String {
         if updating { return updatingLabel }
-        // An update that waits on the operator outranks intent: with the
-        // output off, another app holding the camera still blocks it, and the
-        // operator must be told what to do (owner: no support tickets).
-        if ext == .updateReady { return updateReadyLabel }
+        // A pending restart outranks intent: only a restart fixes it, output
+        // on or off. (An update that waits is a second line, updateNotice.)
         if ext == .needsReboot { return needsRebootLabel }
         if !intent { return "Virtual camera off" }
         switch ext {
@@ -146,6 +155,7 @@ enum VirtualCameraPresentation {
 /// "not observed" (nil) rather than guessing.
 struct VirtualCameraDiagnostics {
     var label: String
+    var updateNotice: String?
     var state: CameraExtensionState
     var optedIn: Bool?
     var bundledVersion: String
@@ -172,10 +182,12 @@ struct VirtualCameraDiagnostics {
 
     var rows: [(label: String, value: String)] {
         [("status", label),
+         ("update", updateNotice ?? "none waiting"),
          ("extension state", "\(state)"),
          ("bundled version", bundledVersion),
          ("installed", installedText),
          ("device registered", Self.yesNo(device?.registered)),
+         ("running somewhere (any app)", Self.yesNo(device?.runningSomewhere)),
          ("in use", Self.yesNo(inUse)),
          ("last activation", lastResult.isEmpty ? "none this session" : lastResult),
          ("output paused for update", pausedForUpdate ? "yes" : "no")]
@@ -184,6 +196,7 @@ struct VirtualCameraDiagnostics {
     var json: JSONObject {
         [
             "status": label,
+            "updateNotice": updateNotice.map { $0 as Any } ?? NSNull(),
             "extensionState": "\(state)",
             "optedIn": optedIn.map { $0 as Any } ?? NSNull(),
             "bundledExtensionVersion": bundledVersion,
