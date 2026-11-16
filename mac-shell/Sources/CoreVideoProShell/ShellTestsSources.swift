@@ -25,6 +25,11 @@ extension ShellTests {
             ("sources-law/toggle-off-places-no-newcomer", testAutoAssignOffPlacesNoNewcomerButStillFrees),
             ("sources-law/camera-off-newcomer-and-self", testCameraOffNewcomersArePlacedButNeverOurself),
             ("sources-law/property-newcomers-only", testAutoAssignPlacesOnlyNewcomersProperty),
+            // Task 2: every slot write logged with its writer; saved at once; one restore.
+            ("sources-log/write-scope-chains-restores-throws", testWriteScopeChainsRestoresAndSurvivesAThrow),
+            ("sources-log/every-writer-names-itself", testEverySlotWriterNamesItself),
+            ("sources-save/slot-changes-reach-disk-now", testSlotChangesReachDiskWithoutTheAutosave),
+            ("sources-save/second-restore-refused", testASecondRestoreIsRefused),
         ]
     }
 
@@ -254,6 +259,122 @@ extension ShellTests {
             }
             expect(violations.isEmpty, "seed \(seed): \(violations.first ?? "")")
         }
+    }
+
+    // ── Task 2: slot-write log, immediate save, one restore ─────────────────
+
+    /// Ports ShowInputAssignmentLawTests.WriteScope_DefaultsToUntracked_ChainsOnNesting_AndRestores (:21)
+    /// and WriteScope_SurvivesAThrowingBody (:43).
+    @MainActor
+    static func testWriteScopeChainsRestoresAndSurvivesAThrow() {
+        expectEqual(ShowInputWriteScope.reason, "UNTRACKED", "outside any scope")
+        ShowInputWriteScope.run("outer") {
+            expectEqual(ShowInputWriteScope.reason, "outer", "entered")
+            ShowInputWriteScope.run("inner") {
+                expectEqual(ShowInputWriteScope.reason, "outer>inner", "nested scopes chain")
+            }
+            expectEqual(ShowInputWriteScope.reason, "outer", "inner restored")
+        }
+        expectEqual(ShowInputWriteScope.reason, "UNTRACKED", "outer restored")
+        struct Boom: Error {}
+        _ = try? ShowInputWriteScope.run("throwing") { throw Boom() }
+        expectEqual(ShowInputWriteScope.reason, "UNTRACKED", "a throwing body restores the reason")
+    }
+
+    /// Rule 10: drives every production writer through its real entry point and asserts the exact
+    /// line, so deleting one scope (or one field from the diff) turns a specific assertion red.
+    @MainActor
+    static func testEverySlotWriterNamesItself() {
+        let model = AppModel()
+        var lines: [String] = []
+        model.slotWriteObserverForTesting = { lines.append($0) }
+
+        model.assignSlot(3, kind: "capture", sourceId: "cam1", name: "Cam")
+        expectEqual(lines, ["slot-write: slot3 kind 'unassigned'->'capture' by=operator-assign",
+                            "slot-write: slot3 sourceId ''->'cam1' by=operator-assign",
+                            "slot-write: slot3 inShow 'false'->'true' by=operator-assign"], "operator assign")
+        lines = []; model.toggleSlotInShow(3)
+        expectEqual(lines, ["slot-write: slot3 inShow 'true'->'false' by=operator-in-show"], "in-show toggle")
+        lines = []; model.unassignSlot(3)
+        expectEqual(lines, ["slot-write: slot3 kind 'capture'->'unassigned' by=operator-unassign",
+                            "slot-write: slot3 sourceId 'cam1'->'' by=operator-unassign"],
+                    "unassign (inShow was already false)")
+        lines = []; model.applyZoomForTesting(lawRoster(["A"], revision: 1))     // slot 3 reserved → slot 1
+        expectEqual(lines, ["slot-write: slot1 kind 'unassigned'->'zoom' by=roster-sync",
+                            "slot-write: slot1 sourceId ''->'A' by=roster-sync",
+                            "slot-write: slot1 inShow 'false'->'true' by=roster-sync"], "auto-assign")
+        lines = []; model.applyZoomForTesting(lawRoster([], revision: 2))
+        expectEqual(lines, ["slot-write: slot1 kind 'zoom'->'unassigned' by=roster-sync",
+                            "slot-write: slot1 sourceId 'A'->'' by=roster-sync",
+                            "slot-write: slot1 inShow 'true'->'false' by=roster-sync"], "departure")
+        model.setAutoAssignInputs(false)
+        model.applyZoomForTesting(lawRoster(["B"], revision: 3))
+        lines = []; model.setAutoAssignInputs(true)
+        expectEqual(lines, ["slot-write: slot1 kind 'unassigned'->'zoom' by=auto-assign-toggle",
+                            "slot-write: slot1 sourceId ''->'B' by=auto-assign-toggle",
+                            "slot-write: slot1 inShow 'false'->'true' by=auto-assign-toggle"], "toggle")
+        model.assignSlot(2, kind: "capture", sourceId: "cam2", name: "Cam 2")
+        lines = []; model.swapMultiviewSlots(1, 2)
+        expectEqual(lines, ["slot-write: slot1 kind 'zoom'->'capture' by=drag-swap",
+                            "slot-write: slot1 sourceId 'B'->'cam2' by=drag-swap",
+                            "slot-write: slot2 kind 'capture'->'zoom' by=drag-swap",
+                            "slot-write: slot2 sourceId 'cam2'->'B' by=drag-swap"], "drag-swap")
+        lines = []; model.slots[4].inShow = true                                  // nobody wrapped this
+        expectEqual(lines, ["slot-write: slot5 inShow 'false'->'true' by=UNTRACKED"],
+                    "an unwrapped write is visible as UNTRACKED (D9)")
+
+        var prefs = ShellPrefs()
+        prefs.showInputSlots = [PersistedSlot(slotId: 6, kind: "capture", sourceId: "cam6", name: "C6", inShow: true)]
+        let restored = AppModel()
+        var restoreLines: [String] = []
+        restored.slotWriteObserverForTesting = { restoreLines.append($0) }
+        restored.applyRestoredPrefs(prefs)
+        expectEqual(restoreLines, ["slot-write: slot6 kind 'unassigned'->'capture' by=restore",
+                                   "slot-write: slot6 sourceId ''->'cam6' by=restore",
+                                   "slot-write: slot6 inShow 'false'->'true' by=restore"], "restore")
+    }
+
+    /// Ports OperatorAssignment_PersistsImmediately… (:1017), OperatorUnassign_PersistsImmediately
+    /// (:1039) and AutoAssign_PersistsImmediately (:1055). FIXTURE: the disk file is overwritten
+    /// with a "stale-file" marker before each action, and the model's joinMeetingId is the fixture
+    /// constant "meeting-T2". Setting joinMeetingId has no save side effect (a plain @Published).
+    /// So reading "meeting-T2" back proves the ACTION saved. Fails on e98436fc (disk keeps
+    /// "stale-file" until the 5 s autosave).
+    @MainActor
+    static func testSlotChangesReachDiskWithoutTheAutosave() {
+        let model = AppModel()
+        model.applyRestoredPrefs(ShellPrefs())            // the operator's file is restored → saving is allowed
+        model.joinMeetingId = "meeting-T2"
+        var stale = ShellPrefs(); stale.joinMeetingId = "stale-file"
+
+        stale.save(); model.assignSlot(4, kind: "capture", sourceId: "cam4", name: "Cam 4")
+        var disk = ShellPrefs.load()
+        expectEqual(disk.joinMeetingId, "meeting-T2", "an operator assignment saves now")
+        expectEqual(disk.showInputSlots?.first { $0.slotId == 4 }?.sourceId, "cam4", "with the new slot")
+
+        stale.save(); model.unassignSlot(4); disk = ShellPrefs.load()
+        expectEqual(disk.joinMeetingId, "meeting-T2", "an unassign saves now")
+        expect(disk.showInputSlots?.contains { $0.slotId == 4 } != true, "and the slot is gone on disk")
+
+        stale.save(); model.applyZoomForTesting(lawRoster(["A"], revision: 1)); disk = ShellPrefs.load()
+        expectEqual(disk.joinMeetingId, "meeting-T2", "an auto-assign saves now")   // Task 3 amends this block
+    }
+
+    /// Port of SecondLoad_IsRefused_AndNeverOverwritesLiveOperatorChanges (:1074). FIXTURE: the
+    /// second file targets the slot the operator EMPTIED (restoreSlotAssignments only fills
+    /// unassigned slots, so targeting a still-assigned slot would pass vacuously). Fails on e98436fc.
+    @MainActor
+    static func testASecondRestoreIsRefused() {
+        var first = ShellPrefs(); first.joinMeetingId = "first"
+        first.showInputSlots = [PersistedSlot(slotId: 2, kind: "capture", sourceId: "camA", name: "A", inShow: true)]
+        let model = AppModel()
+        model.applyRestoredPrefs(first)
+        model.unassignSlot(2)
+        var second = ShellPrefs(); second.joinMeetingId = "second"
+        second.showInputSlots = [PersistedSlot(slotId: 2, kind: "capture", sourceId: "camC", name: "C", inShow: true)]
+        model.applyRestoredPrefs(second)
+        expectEqual(model.slots[1].kind, "unassigned", "a stale file never refills the slot the operator emptied")
+        expectEqual(model.joinMeetingId, "first", "and overwrites nothing else")
     }
 }
 

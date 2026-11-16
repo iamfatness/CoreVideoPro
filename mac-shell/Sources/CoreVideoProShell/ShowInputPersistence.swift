@@ -73,7 +73,7 @@ extension AppModel {
             slot.inShow = record.inShow
             slot.offline = true
             guard let key = slot.sourceKey, seen.insert(key).inserted else { continue }
-            slots[index] = slot
+            ShowInputWriteScope.run("restore") { slots[index] = slot }
             if record.kind == "capture" { captureReconnectPending.insert(record.sourceId) }
         }
         assignedIds = Set(slots.filter { $0.kind == "zoom" && $0.inShow }.map(\.sourceId))

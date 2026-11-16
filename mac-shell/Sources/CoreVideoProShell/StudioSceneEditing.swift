@@ -201,8 +201,10 @@ extension AppModel {
         var movedB = slots[b]
         movedA.id = to
         movedB.id = from
-        slots[a] = movedB
-        slots[b] = movedA
+        var swapped = slots
+        swapped[a] = movedB
+        swapped[b] = movedA
+        ShowInputWriteScope.run("drag-swap") { slots = swapped }
         let now = slots
         func describe(_ index: Int) -> String {
             "slot\(now[index].id)=\(now[index].kind)/\(now[index].sourceId)"

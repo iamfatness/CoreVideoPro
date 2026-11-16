@@ -676,6 +676,13 @@ final class AppModel: ObservableObject {
     /// Everything a relaunch restores from the prefs file, minus the file read
     /// and the Keychain (so the harness can drive the real restore path).
     func applyRestoredPrefs(_ prefs: ShellPrefs) {
+        // One restore per session (ShowInputsCoordinator.cs:146-153): a second load
+        // would overwrite live operator changes with stale disk state.
+        guard !prefsRestored else {
+            ShellLog.write("roster: restore REFUSED — already restored this session; "
+                + "a re-restore would overwrite live operator changes with disk state")
+            return
+        }
         overlays = prefs.overlays ?? OverlaysState()
         restoreSlotAssignments(prefs.showInputSlots ?? [])
         for key in prefs.chromaKeys ?? [] {
@@ -1847,8 +1854,9 @@ final class AppModel: ObservableObject {
             let revision = (snapshot["rosterRevision"] as? NSNumber)?.int64Value ?? 0
             if !participants.isEmpty || revision > 0 {
                 let state = snapshot["meetingState"] as? String ?? meetingState
-                lawChanged = runAssignmentLaw { law, slots in
-                    law.syncFromMeeting(&slots, roster: Self.isInMeeting(state) ? roster : [])
+                let lawRoster = Self.isInMeeting(state) ? roster : []
+                lawChanged = ShowInputWriteScope.run("roster-sync") {
+                    runAssignmentLaw { law, slots in law.syncFromMeeting(&slots, roster: lawRoster) }
                 }
             }
             refreshSlotHealth()
@@ -1907,9 +1915,10 @@ final class AppModel: ObservableObject {
         assignmentLaw.autoAssignEnabled = on
         autoAssignInputsEnabled = on
         let current = Self.isInMeeting(meetingState) ? roster : []
-        if runAssignmentLaw({ law, slots in law.reapply(&slots, roster: current) }) {
-            recomputeFromSlots()
+        let changed = ShowInputWriteScope.run("auto-assign-toggle") {
+            runAssignmentLaw { law, slots in law.reapply(&slots, roster: current) }
         }
+        if changed { recomputeFromSlots() }
     }
 
     /// Capture device ids whose slot was restored (or survived a core respawn)
@@ -1918,7 +1927,26 @@ final class AppModel: ObservableObject {
 
     // ── show-input slots (inputs 1–10, the Sources patch bay) ────────────────
 
-    @Published var slots: [ShowInputSlot] = (1...10).map { ShowInputSlot(id: $0) }
+    @Published var slots: [ShowInputSlot] = (1...10).map { ShowInputSlot(id: $0) } {
+        didSet { slotsDidChange(from: oldValue) }
+    }
+    /// TEST-ONLY: receives every slot-write line. Set only by ShellTests.
+    var slotWriteObserverForTesting: ((String) -> Void)?
+
+    /// The slot choke point (Windows ShowInputModels.cs:165-190). Logs each
+    /// assignment-field change with the ambient ShowInputWriteScope reason, then
+    /// saves at once: the save used to ride only the 5 s autosave, so an operator
+    /// change followed by a crash was lost (ShowInputsCoordinator.cs:206-213).
+    /// Never writes `slots`.
+    private func slotsDidChange(from oldValue: [ShowInputSlot]) {
+        guard oldValue != slots else { return }
+        for line in ShowInputWriteScope.lines(old: oldValue, new: slots,
+                                              reason: ShowInputWriteScope.reason) {
+            ShellLog.write(line)
+            slotWriteObserverForTesting?(line)
+        }
+        persistPrefsNow()
+    }
 
     // assignedIds stays the wire-facing derivation (spine/scenes/multiview all
     // read it) — recomputed whenever slots change.
@@ -1944,12 +1972,14 @@ final class AppModel: ObservableObject {
         guard let index = slots.firstIndex(where: { $0.id == slotId }) else { return }
         let named = SlotNamePolicy.afterAssign(slots[index], kind: kind, sourceId: sourceId,
                                                sourceName: name)
-        slots[index].kind = kind
-        slots[index].sourceId = sourceId
-        slots[index].name = named.name
-        slots[index].sourceName = named.sourceName
-        slots[index].inShow = true
-        slots[index].offline = false
+        var slot = slots[index]
+        slot.kind = kind
+        slot.sourceId = sourceId
+        slot.name = named.name
+        slot.sourceName = named.sourceName
+        slot.inShow = true
+        slot.offline = false
+        ShowInputWriteScope.run("operator-assign") { slots[index] = slot }
         recomputeFromSlots()
     }
 
@@ -1958,7 +1988,7 @@ final class AppModel: ObservableObject {
         // Reserved against auto-assign until the roster empties, whatever its kind
         // (ShowInputsCoordinator.cs:517).
         assignmentLaw.operatorUnassigned(slotId: slotId)
-        slots[index] = ShowInputSlot(id: slotId)
+        ShowInputWriteScope.run("operator-unassign") { slots[index] = ShowInputSlot(id: slotId) }
         recomputeFromSlots()
     }
 
@@ -1967,7 +1997,7 @@ final class AppModel: ObservableObject {
               slots[index].kind != "unassigned" else { return }
         // The slot still holds its guest, so auto-assign never touches it: no
         // reservation, nothing freed.
-        slots[index].inShow.toggle()
+        ShowInputWriteScope.run("operator-in-show") { slots[index].inShow.toggle() }
         recomputeFromSlots()
     }
 

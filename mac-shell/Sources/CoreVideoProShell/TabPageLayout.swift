@@ -68,17 +68,21 @@ struct TabPageContent: View {
 @MainActor
 enum TabSnapshotHarness {
     static func seed(_ model: AppModel) {
-        model.assignSlot(1, kind: "zoom", sourceId: "101", name: "Jordan Wallace")
-        model.assignSlot(2, kind: "zoom", sourceId: "102", name: "Guest with a long display name")
-        model.assignSlot(3, kind: "capture", sourceId: "cam-1", name: "Wide camera (Blackmagic)")
-        model.slots[2].audioDeviceId = "mic"; model.slots[2].audioDeviceName = "USB Audio Interface"
-        model.toggleSlotIso(1)
+        ShowInputWriteScope.run("snapshot-seed") { seedSlots(model) }
         model.roster = [
             RosterParticipant(id: "101", name: "Jordan Wallace", hasVideo: true,
                               muted: false, talking: true, assigned: true),
             RosterParticipant(id: "102", name: "Guest with a long display name", hasVideo: true,
                               muted: false, talking: false, assigned: true),
         ]
+    }
+
+    private static func seedSlots(_ model: AppModel) {
+        model.assignSlot(1, kind: "zoom", sourceId: "101", name: "Jordan Wallace")
+        model.assignSlot(2, kind: "zoom", sourceId: "102", name: "Guest with a long display name")
+        model.assignSlot(3, kind: "capture", sourceId: "cam-1", name: "Wide camera (Blackmagic)")
+        model.slots[2].audioDeviceId = "mic"; model.slots[2].audioDeviceName = "USB Audio Interface"
+        model.toggleSlotIso(1)
     }
 
     /// NSHostingView in an offscreen, never-ordered-front window so AppKit-
