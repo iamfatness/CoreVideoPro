@@ -31,3 +31,18 @@ Consequences, per the plan's rule:
 **Owner step:** with installer 8+ running in a test meeting, dump one
 `GET /snapshot` with a camera, a screen capture and one ISO armed, and check
 (a)-(e) against this table.
+
+## Task 8 — superseded by #1213
+
+Task 8 (per-source display names and lower-third text) is **superseded by the
+owner's #1213 ruling**: a hand-typed slot name lasts one session, resets when
+the slot gets a different source, and is never saved or migrated. Task 8 would
+have saved capture name overrides, migrated old slot names into them, and
+restored a name when its source returned — all three contradict the ruling,
+so none of it was built (coordinator decision, 2026-11-16).
+
+Where Tasks 9 and 10 needed a resolved name they use the existing session-only
+`ShowInputSlot.name` / `SlotNamePolicy` (#1213). The lower-third secondary-line
+store, the "Use source text" Overlays toggle and the inspector's lower-third
+fields were Task 8 too and are not built; they need re-planning on top of
+#1213 if still wanted.

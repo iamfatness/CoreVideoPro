@@ -2088,6 +2088,8 @@ enum ShellTests {
         expect(ShellHarness.detect(in: ["COREVIDEO_SHELL_TESTS": "1"]), "TESTS is a harness run")
         expect(ShellHarness.detect(in: ["COREVIDEO_SHELL_SELFCHECK": "1"]),
                "SELFCHECK is a harness run (the shell log must not be written)")
+        expect(ShellHarness.detect(in: ["COREVIDEO_SHELL_TAB_SNAPSHOT": "/tmp/x"]),
+               "TAB_SNAPSHOT is a harness run (its seed must not write the real shell log)")
         expect(!ShellHarness.detect(in: [:]), "a normal launch is not")
         expect(ShellHarness.isActive, "this run is a harness run")
         expect(ShellHarness.prefsIsolationFailure(path: "/x/real.json", realPath: "/x/real.json") != nil,

@@ -6,13 +6,16 @@
 
 import Foundation
 
-/// The in-binary harnesses (COREVIDEO_SHELL_TESTS / COREVIDEO_SHELL_SELFCHECK).
+/// The in-binary harnesses (COREVIDEO_SHELL_TESTS / COREVIDEO_SHELL_SELFCHECK /
+/// COREVIDEO_SHELL_TAB_SNAPSHOT, the offscreen tab renderer — its seed writes slots,
+/// and those slot-write lines must not land in the operator's real shell log).
 /// ONE predicate, read once: prefs, the shell log and anything else that must
 /// never touch the operator's real files ask this, never the environment.
 enum ShellHarness {
     static func detect(in environment: [String: String]) -> Bool {
         environment["COREVIDEO_SHELL_TESTS"] != nil
             || environment["COREVIDEO_SHELL_SELFCHECK"] != nil
+            || environment["COREVIDEO_SHELL_TAB_SNAPSHOT"] != nil
     }
 
     static let isActive: Bool = detect(in: ProcessInfo.processInfo.environment)
