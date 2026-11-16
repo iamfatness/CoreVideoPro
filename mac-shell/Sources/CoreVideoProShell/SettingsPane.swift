@@ -242,6 +242,12 @@ struct SettingsPane: View {
                     }
                 }
             }
+            card("Remote control") {
+                // Read-only (D4): ports, LAN opt-in and token stay environment-only.
+                ForEach(Array(model.remoteControlStatus.lines.enumerated()), id: \.offset) { _, line in
+                    row(line.label, line.value)
+                }
+            }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: 720, alignment: .leading)

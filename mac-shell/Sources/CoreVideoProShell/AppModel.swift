@@ -507,6 +507,8 @@ final class AppModel: ObservableObject {
     /// control call waits for meetingState / a device state to settle after the
     /// core answers. Tests shorten it.
     var controlSettleSeconds: TimeInterval = 5
+    /// The Settings "Remote control" row (ControlApiHost refreshes it, at most once a second).
+    @Published var remoteControlStatus = RemoteControlStatus.idle
     /// Test seam for the capture connect/disconnect path (production: nil = bridge).
     var captureRequestForTesting: ((JSONObject) async throws -> JSONObject)?
     /// Where a remotely configured stream key is stored (the Keychain, never

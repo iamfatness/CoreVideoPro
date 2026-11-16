@@ -326,6 +326,9 @@ final class ControlRouter {
     static let snapshotStaleAfterMs = 2000.0
 
     let surface: ControlSurface
+    /// The last refused /invoke, for the Settings "Remote control" row.
+    let refusals = ControlRefusalBox()
+    var lastRefusal: (actionId: String, error: String)? { refusals.read().map { ($0.actionId, $0.error) } }
 
     init(surface: ControlSurface) { self.surface = surface }
 
@@ -358,8 +361,10 @@ final class ControlRouter {
     }
 
     private func invoke(_ body: Data?) async -> ControlResponse {
+        var actionId = "?"
         func fail(_ status: Int, _ message: String) -> ControlResponse {
-            ControlResponse(status: status, body: ControlJSON.error(message))
+            refusals.record(actionId, message)
+            return ControlResponse(status: status, body: ControlJSON.error(message))
         }
         guard let body, let text = String(data: body, encoding: .utf8),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -372,10 +377,11 @@ final class ControlRouter {
             return fail(400, "Invalid JSON: \((error as NSError).userInfo[NSDebugDescriptionErrorKey] as? String ?? error.localizedDescription)")
         }
         let root = parsed as? [String: Any] ?? [:]
-        guard let actionId = root["action"] as? String,
-              !actionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard let named = root["action"] as? String,
+              !named.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return fail(400, "Missing 'action'.")
         }
+        actionId = named
         let rawArgs = (root["args"] as? [Any] ?? []).map(ControlJSON.transportValue)
         let bound: [Any?]
         switch ControlCatalog.bind(actionId, rawArgs) {

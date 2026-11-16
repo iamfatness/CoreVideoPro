@@ -383,6 +383,9 @@ final class ControlApiHost {
 
     private var server: ControlHttpServer?
     private(set) var oscServer: ControlOscServer?
+    private var router: ControlRouter?
+    private var statusTimer: Timer?
+    private var httpEndpoint: String?, httpError: String?, oscEndpoint: String?, oscError: String?
     private var changes: AnyCancellable?
     private var terminate: NSObjectProtocol?
     private var lastPushKey = ""
@@ -409,17 +412,21 @@ final class ControlApiHost {
     /// and warned about and never stops HTTP or the app.
     private func startServers(model: AppModel, http options: ControlServerOptions, osc oscOptions: ControlOscOptions) {
         let surface = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
-        let server = ControlHttpServer(router: ControlRouter(surface: surface), options: options)
+        let router = ControlRouter(surface: surface)
+        self.router = router
+        let server = ControlHttpServer(router: router, options: options)
         self.server = server
         server.start { [weak self, weak model] result in
             Task { @MainActor in
                 switch result {
                 case .success(let port):
                     self?.httpPortForTesting = port
+                    self?.httpEndpoint = "\(options.host == "+" ? "0.0.0.0" : options.host):\(port)"
                     ShellLog.write("control: HTTP/WS API listening on http://\(options.host):\(port)/ "
                         + "(GET /manifest, /state, /snapshot, /ws; POST /invoke)"
                         + (options.hasToken ? " — bearer token required" : ""))
                 case .failure(let error):
+                    self?.httpError = "\(error)"
                     ShellLog.write("control: HTTP/WS API failed to start (\(error))")
                     model?.pushWarning("Remote control (Companion) unavailable: \(error)")
                 }
@@ -431,9 +438,11 @@ final class ControlApiHost {
             Task { @MainActor in
                 switch result {
                 case .success(let port):
+                    self?.oscEndpoint = "\(oscOptions.bindAddress):\(port)"
                     ShellLog.write("control: OSC server listening on \(oscOptions.bindAddress):\(port)")
                 case .failure(let error):
                     self?.oscFailedForTesting = true
+                    self?.oscError = "\(error)"
                     self?.oscServer = nil
                     ShellLog.write("control: OSC server failed to start (\(error)) — HTTP still active")
                     model?.pushWarning("OSC control unavailable: \(error)")
@@ -441,6 +450,28 @@ final class ControlApiHost {
             }
         }
         observe(model)
+        // The Settings row: a 1 s timer on the main queue, never objectWillChange.
+        let lan = !options.isLoopback || oscOptions.lan
+        let tokenRequired = options.hasToken
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self, weak model] _ in
+            MainActor.assumeIsolated {
+                guard let self, let model else { return }
+                let next = self.status(lan: lan, tokenRequired: tokenRequired)
+                if model.remoteControlStatus != next { model.remoteControlStatus = next }
+            }
+        }
+    }
+
+    /// The row's value now: endpoints, clients and the more recent of the HTTP and OSC refusals.
+    func status(lan: Bool, tokenRequired: Bool) -> RemoteControlStatus {
+        let http = router?.refusals.read()
+        let osc = oscServer?.lastRefusal.flatMap { refusal in oscServer?.lastRefusalAt.map { (refusal.actionId, refusal.error, $0) } }
+        let latest = [http.map { ($0.actionId, $0.error, $0.at) }, osc].compactMap { $0 }.max { $0.2 < $1.2 }
+        return RemoteControlStatus(httpEndpoint: httpEndpoint, httpError: httpError, oscEndpoint: oscEndpoint,
+                                   oscError: oscError, lan: lan, tokenRequired: tokenRequired,
+                                   webSocketClients: server?.webSocketClientCount ?? 0,
+                                   oscTargets: oscServer?.feedbackTargets.count ?? 0,
+                                   lastRefusal: latest.map { "\($0.0): \($0.1)" })
     }
 
     /// Test seams: wire the same throttle and push-key sink without a server.
@@ -478,6 +509,8 @@ final class ControlApiHost {
     }
 
     func stop() {
+        statusTimer?.invalidate()
+        statusTimer = nil
         changes = nil
         server?.stop()
         server = nil

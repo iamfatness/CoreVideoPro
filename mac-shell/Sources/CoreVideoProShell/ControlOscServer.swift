@@ -45,6 +45,7 @@ final class ControlOscServer: @unchecked Sendable {
     private var targets: [String: (address: sockaddr_in, seen: Date)] = [:]
     private var routing: Task<Void, Never>?
     private var _lastRefusal: (actionId: String, error: String)?
+    private var _lastRefusalAt: Date?
     private var lastLogAt = Date.distantPast
     private var suppressedLogs = 0
 
@@ -142,6 +143,7 @@ final class ControlOscServer: @unchecked Sendable {
 
     private func refused(_ id: String, _ error: String, from sender: String) {
         _lastRefusal = (id, error)
+        _lastRefusalAt = Date()
         let at = Date()
         guard at.timeIntervalSince(lastLogAt) >= 1 else { suppressedLogs += 1; return }
         let suppressed = suppressedLogs > 0 ? " (\(suppressedLogs) more refusals suppressed)" : ""
@@ -179,4 +181,5 @@ final class ControlOscServer: @unchecked Sendable {
     }
 
     var lastRefusal: (actionId: String, error: String)? { queue.sync { _lastRefusal } }
+    var lastRefusalAt: Date? { queue.sync { _lastRefusalAt } }
 }

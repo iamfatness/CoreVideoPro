@@ -33,6 +33,7 @@ extension ShellTests {
             ("control/monitor-revisioned", testControlMonitorRevisioned),
             ("control/audio-route", testControlAudioRoute),
             ("control/osc-feedback-closure", testControlOscFeedbackCoversEverySupportedField),
+            ("control/remote-control-status", testRemoteControlStatusLines),
         ]
     }
 
@@ -581,5 +582,30 @@ extension ShellTests {
             expect(addresses.contains(address), "supported feedback field \(field) is encoded (\(address))")
         }
         expectEqual(supported.count, 21, "after RC3: 21 supported feedback rows")
+    }
+
+    @MainActor
+    static func testRemoteControlStatusLines() {
+        var s = RemoteControlStatus(httpEndpoint: "127.0.0.1:8011", httpError: nil, oscEndpoint: "127.0.0.1:8010", oscError: nil,
+                                    lan: false, tokenRequired: false, webSocketClients: 2, oscTargets: 1, lastRefusal: nil)
+        expectEqual(s.lines.map(\.label), ["HTTP", "OSC", "Network", "Clients", "Last refused"], "row order")
+        expectEqual(s.lines.map(\.value), ["127.0.0.1:8011", "127.0.0.1:8010", "Loopback only", "2 WebSocket, 1 OSC", "None"], "loopback values")
+        s.oscEndpoint = nil; s.oscError = "port 127.0.0.1:8010 is already in use"
+        s.lan = true; s.tokenRequired = true; s.lastRefusal = "zoom.join: 'zoom.join' is not available on macOS yet (Remote control: session and inputs)."
+        expectEqual(s.lines[1].value, "Off — port 127.0.0.1:8010 is already in use", "OSC failure says why")
+        expectEqual(s.lines[2].value, "LAN (token required)", "LAN with token")
+        expect(s.lines[4].value.hasPrefix("zoom.join: "), "last refusal shown")
+        s.tokenRequired = false
+        expectEqual(s.lines[2].value, "LAN (OSC, no token)", "LAN without a token is the OSC opt-in")
+        // The router records refusals for the row.
+        let router = ControlRouter(surface: FakeSurface())
+        _ = route(router, "POST", "/invoke", #"{"action":"bogus.id"}"#)
+        expectEqual(router.lastRefusal?.actionId, "bogus.id", "router records the refused id")
+        expectEqual(router.lastRefusal?.error, "Unknown action 'bogus.id'.", "with the reply text")
+        _ = route(router, "POST", "/invoke", #"{"action":"transport.take"}"#)
+        expectEqual(router.lastRefusal?.actionId, "bogus.id", "a success does not clear the last refusal")
+        // The Settings view renders the row (presence pin only, rule 10: it describes; the PNG is the proof).
+        guard let pane = sourceFile("SettingsPane.swift") else { expect(false, "SettingsPane.swift"); return }
+        expect(pane.contains("card(\"Remote control\")") && pane.contains("remoteControlStatus.lines"), "Settings shows the row from the formatter")
     }
 }
