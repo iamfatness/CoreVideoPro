@@ -42,6 +42,9 @@ struct VirtualCameraStatus {
   bool sinkHelperGaveUp = false;
   std::int64_t sinkNextAttemptInMs = 0;
   std::string sinkHelperLastExit;            // "" = none yet
+  int sinkConsecutiveUnreachable = 0;        // position on the unreachable retry backoff
+  int sinkConsecutiveShortRuns = 0;          // connected runs in a row that were lost before counting as healthy
+  std::int64_t sinkLastRunMs = -1;           // how long the last connected run lasted; -1 = none has ended
   std::uint64_t transportDrops = 0;          // frames the core dropped because the hand-off ring was full
   std::uint64_t sinkQueueFullDrops = 0;      // frames the helper dropped because the camera queue was full
   std::uint64_t sinkSequenceGaps = 0;

@@ -171,6 +171,63 @@ TEST(VcamHelperRespawnPolicy, FiveHelperFailuresInARowStillGiveUpAfterCleanAnswe
   EXPECT_TRUE(policy.gaveUp());
 }
 
+// Review finding 3 (2026-11-16): an extension that accepts the stream and then
+// stops draining it. Every attempt connects, so "connected" alone must not
+// reset the backoff: that was a new process and a 12.4 MB mapping about every
+// 3 s for as long as the camera stayed on. Short runs climb the same backoff a
+// plain unreachable camera does, and keep retrying at its slow rung.
+TEST(VcamHelperRespawnPolicy, ShortConnectThenLoseCyclesClimbTheBackoffAndKeepRetrying) {
+  VcamHelperRespawnPolicy policy;
+  std::int64_t now = 0;
+  auto connectThenLose = [&](std::int64_t runMs) {
+    EXPECT_TRUE(policy.next(now).spawnNow);
+    policy.onSpawned();
+    policy.onOutcome(VcamHelperOutcome::Connected, now);
+    now += runMs;
+    policy.onOutcome(VcamHelperOutcome::CameraUnreachable, now);  // the helper reported the camera lost
+    const auto wait = policy.next(now);
+    EXPECT_FALSE(wait.gaveUp);
+    now += wait.waitMs;
+    return wait.waitMs;
+  };
+  for (int i = 1; i <= kVcamHelperFastRetries; ++i) {
+    ASSERT_EQ(connectThenLose(3'000), kVcamHelperFastRetryMs) << i;
+    ASSERT_EQ(policy.consecutiveShortRuns(), i);
+  }
+  for (int i = kVcamHelperFastRetries + 1; i <= kVcamHelperSettledRetries; ++i)
+    ASSERT_EQ(connectThenLose(3'000), kVcamHelperSettledRetryMs) << i;
+  for (int i = 0; i < 500; ++i) ASSERT_EQ(connectThenLose(3'000), kVcamHelperSlowRetryMs) << i;
+  EXPECT_EQ(policy.consecutiveShortRuns(), kVcamHelperSettledRetries + 500);
+  EXPECT_EQ(policy.lastRunMs(), 3'000);
+  EXPECT_FALSE(policy.gaveUp()) << "a camera that connects is never given up on";
+
+  // A run just short of healthy is still a short run.
+  EXPECT_EQ(connectThenLose(kVcamHelperHealthyRunMs - 1), kVcamHelperSlowRetryMs);
+  // One healthy run earns the fast retry back (an extension update mid-show).
+  EXPECT_EQ(connectThenLose(kVcamHelperHealthyRunMs), kVcamHelperFastRetryMs);
+  EXPECT_EQ(policy.consecutiveShortRuns(), 0);
+  EXPECT_EQ(policy.consecutiveUnreachable(), 1);
+  EXPECT_EQ(policy.lastRunMs(), kVcamHelperHealthyRunMs);
+}
+
+// A connection after a long absence does not by itself restore the fast retry:
+// only its having lasted does.
+TEST(VcamHelperRespawnPolicy, AConnectionLostAtOnceAfterALongAbsenceStaysOnTheSlowRung) {
+  VcamHelperRespawnPolicy policy;
+  std::int64_t now = 0;
+  for (int i = 0; i < 40; ++i) {
+    policy.onSpawned();
+    policy.onOutcome(VcamHelperOutcome::CameraUnreachable, now);
+    now += policy.next(now).waitMs;
+  }
+  policy.onSpawned();
+  policy.onOutcome(VcamHelperOutcome::Connected, now);
+  now += 2'000;
+  policy.onOutcome(VcamHelperOutcome::CameraUnreachable, now);
+  EXPECT_EQ(policy.next(now).waitMs, kVcamHelperSlowRetryMs);
+  EXPECT_EQ(policy.consecutiveShortRuns(), 1);
+}
+
 TEST(VcamHelperRespawnPolicy, WarningsAreClassifiedByTheirCameraPrefix) {
   EXPECT_EQ(classifyVcamHelperWarning("CAMERA_EXTENSION_NOT_FOUND: x"), VcamHelperOutcome::CameraUnreachable);
   EXPECT_EQ(classifyVcamHelperWarning("CAMERA_PRODUCER_REFUSED: x"), VcamHelperOutcome::CameraUnreachable);

@@ -148,7 +148,10 @@ node (always present; null means not observed, never false): `deviceVisibleToSys
 the newest helper, a newborn process, saw), `deviceVisibleInProcess` (the core's own
 CoreMediaIO view at the same moment; `true`/`false` names the provider-arrival blind spot,
 and the core logs it once), `sinkAttempts`, `lastConnectedAt` (Unix ms), `helperPid`,
-`helperGeneration`, `helperLastExit`, `helperGaveUp`, `nextAttemptInMs`, `transportDrops`,
+`helperGeneration`, `helperLastExit`, `helperGaveUp`, `nextAttemptInMs`,
+`consecutiveUnreachable` (position on the retry backoff), `consecutiveShortRuns` (connected
+runs in a row lost before 30 s: a camera that accepts the stream and drops it; they climb
+the same backoff and only a run of 30 s or more resets it), `lastRunMs`, `transportDrops`,
 `queueFullDrops`, `sequenceGaps`, `transportMs` and `helperPublishMs` (last/mean/max). The
 shell reads the device the same way: `corevideo-native --vcam-device-probe` in a new
 process (about 20 ms), never its own CoreMediaIO view, and says "Restart your Mac" only

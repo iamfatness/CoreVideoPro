@@ -11,6 +11,7 @@ namespace corevideo::modules {
 namespace {
 
 constexpr std::uint64_t kTransportDropLogEvery = 300;
+constexpr int kShortRunsLoggedAt = 3;
 constexpr const char* kGaveUpWarning =
     "The virtual camera helper keeps failing. Turn the virtual camera off and on to try again.";
 
@@ -52,6 +53,9 @@ void HelperVirtualCameraPublisher::rearmRetryBudget() {
   policy_.rearm();
   consecutiveFailures_ = 0;
   status_.sinkHelperGaveUp = false;
+  status_.sinkConsecutiveUnreachable = 0;
+  status_.sinkConsecutiveShortRuns = 0;
+  status_.sinkLastRunMs = -1;
 }
 
 bool HelperVirtualCameraPublisher::start(int width, int height, int fps) {
@@ -174,6 +178,17 @@ void HelperVirtualCameraPublisher::failAttemptLocked(const std::string& warning,
   status_.sinkHelperLastExit = exitText;
   status_.sinkHelperGaveUp = next.gaveUp;
   status_.sinkNextAttemptInMs = next.waitMs;
+  // A camera that connects and is lost each time: said once when it is clearly
+  // a pattern, and readable from then on in the snapshot's sink node.
+  if (policy_.consecutiveShortRuns() == kShortRunsLoggedAt && status_.sinkConsecutiveShortRuns < kShortRunsLoggedAt) {
+    ::corevideo::core::nativeLogf(
+        "[virtualcam] mac sink: connected and lost %d times running without a healthy run (last run %lld ms); "
+        "retrying more slowly\n",
+        kShortRunsLoggedAt, static_cast<long long>(policy_.lastRunMs()));
+  }
+  status_.sinkConsecutiveUnreachable = policy_.consecutiveUnreachable();
+  status_.sinkConsecutiveShortRuns = policy_.consecutiveShortRuns();
+  status_.sinkLastRunMs = policy_.lastRunMs();
   if (next.gaveUp) {
     ::corevideo::core::nativeLogf(
         "[virtualcam] mac sink helper gave up after %d consecutive helper failures; last: %s\n",

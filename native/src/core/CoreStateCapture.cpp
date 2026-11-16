@@ -2621,6 +2621,13 @@ rpc::Json CoreStateCapture::virtualCameraState() const {
       {"helperGaveUp", status.sinkHelperGaveUp},
       {"nextAttemptInMs", static_cast<double>(status.sinkNextAttemptInMs)},
       {"helperLastExit", status.sinkHelperLastExit},
+      // A camera that connects and is lost each time (it accepts the stream,
+      // then stops taking it): consecutiveShortRuns counts the connected runs
+      // in a row that ended before 30 s, and consecutiveUnreachable is the
+      // position on the retry backoff that nextAttemptInMs follows.
+      {"consecutiveUnreachable", static_cast<double>(status.sinkConsecutiveUnreachable)},
+      {"consecutiveShortRuns", static_cast<double>(status.sinkConsecutiveShortRuns)},
+      {"lastRunMs", status.sinkLastRunMs < 0 ? rpc::Json(nullptr) : rpc::Json(static_cast<double>(status.sinkLastRunMs))},
       {"transportDrops", static_cast<double>(status.transportDrops)},
       {"queueFullDrops", static_cast<double>(status.sinkQueueFullDrops)},
       {"sequenceGaps", static_cast<double>(status.sinkSequenceGaps)},

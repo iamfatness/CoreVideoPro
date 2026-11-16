@@ -341,6 +341,52 @@ TEST(HelperVirtualCameraPublisher, ALostCameraIsReconnectedByANewHelperWithoutAT
   EXPECT_NE(back.sinkHelperPid, firstPid);
 }
 
+// Review finding 3 (2026-11-16): the extension accepts the stream, then stops
+// draining it, so every helper connects and reports the camera lost about 3 s
+// later. That must slow down and must be readable in the status the snapshot
+// publishes; before, it was a new process every 3 s forever with nothing to
+// tell it from a healthy reconnect.
+TEST(HelperVirtualCameraPublisher, ACameraThatConnectsAndIsLostEachTimeBacksOffAndSaysSo) {
+  Rig rig;
+  rig.world.providerRegistered = true;
+  ASSERT_TRUE(rig.camera->start(1920, 1080, 60));
+  auto loseAfter = [&](std::int64_t runMs) {
+    rig.nowMs += runMs;
+    vcamHelperPublishState(rig.live->shared(), VcamHelperState::Failed, kLost);
+    rig.helpers.back()->exited = true;
+    rig.helpers.back()->exitCode = 4;
+    rig.camera->publishNv12IdentifiedOnWorker(frame(), 1920, 1080, 1, 0);
+  };
+  for (int cycle = 1; cycle <= kVcamHelperSettledRetries; ++cycle) {
+    loseAfter(3'000);
+    const auto lost = rig.camera->status();
+    ASSERT_EQ(lost.state, "failed");
+    ASSERT_EQ(lost.sinkConsecutiveShortRuns, cycle);
+    ASSERT_EQ(lost.sinkConsecutiveUnreachable, cycle);
+    ASSERT_EQ(lost.sinkLastRunMs, 3'000);
+    ASSERT_TRUE(rig.retryFor(3)) << "cycle " << cycle;
+    ASSERT_EQ(rig.camera->status().sinkConsecutiveShortRuns, cycle) << "connecting again is not yet a healthy run";
+  }
+  // Settled: the slow rung. Still retrying, never given up, one process per 5 s wait.
+  const auto helpersBefore = rig.helpers.size();
+  loseAfter(3'000);
+  auto slow = rig.camera->status();
+  EXPECT_EQ(slow.sinkNextAttemptInMs, kVcamHelperSlowRetryMs);
+  EXPECT_FALSE(slow.sinkHelperGaveUp);
+  EXPECT_EQ(slow.warning.rfind("CAMERA_", 0), 0u) << "the worker keeps calling back";
+  EXPECT_FALSE(rig.retryFor(4)) << "no new process inside the slow rung";
+  EXPECT_EQ(rig.helpers.size(), helpersBefore);
+  ASSERT_TRUE(rig.retryFor(2));
+
+  // A run that lasts is healthy again: the next loss is retried fast.
+  loseAfter(kVcamHelperHealthyRunMs);
+  const auto healthy = rig.camera->status();
+  EXPECT_EQ(healthy.sinkConsecutiveShortRuns, 0);
+  EXPECT_EQ(healthy.sinkConsecutiveUnreachable, 1);
+  EXPECT_EQ(healthy.sinkNextAttemptInMs, kVcamHelperFastRetryMs);
+  EXPECT_TRUE(rig.retryFor(2));
+}
+
 TEST(HelperVirtualCameraPublisher, AHelperThatDiesMidStreamIsAHelperFailureAndIsReplaced) {
   Rig rig;
   rig.world.providerRegistered = true;

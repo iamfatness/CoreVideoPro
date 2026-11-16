@@ -21,7 +21,9 @@
 //     after turning the camera on), so it is retried FOREVER, 1 s apart at
 //     first (an update's gap is under a second) and slower once it has
 //     clearly settled, so an absent extension does not cost a process a second
-//     for the whole show.
+//     for the whole show. A camera that connects and is lost again before the
+//     run counts as healthy (kVcamHelperHealthyRunMs) is on this same backoff:
+//     connecting does not reset it, only a run that lasted does.
 //   * The helper itself failed (could not be spawned, crashed, hung). That is
 //     the house ladder (OutputDestinationSupervisorPolicy.h): 5 -> 10 -> 20 ->
 //     40 -> 60 s, give up loudly after 5 CONSECUTIVE failures, a healthy run
@@ -106,7 +108,9 @@ class VcamHelperRespawnPolicy {
     hasAttempted_ = true;
     switch (outcome) {
       case VcamHelperOutcome::Connected:
-        consecutiveUnreachable_ = 0;
+        // Connecting resets nothing by itself: only a run that then lasts does
+        // (settleRun). A camera that accepts the stream and drops it would
+        // otherwise be a new process every few seconds, forever.
         connectedSinceMs_ = nowMs;
         connected_ = true;
         nextAllowedMs_ = nowMs;
@@ -133,13 +137,28 @@ class VcamHelperRespawnPolicy {
   std::uint64_t attempts() const { return attempts_; }
   int consecutiveUnreachable() const { return consecutiveUnreachable_; }
   int consecutiveHelperFailures() const { return consecutiveHelperFailures_; }
+  // Connected runs in a row that ended before kVcamHelperHealthyRunMs.
+  int consecutiveShortRuns() const { return consecutiveShortRuns_; }
+  // How long the last connected run lasted; -1 = none has ended yet.
+  std::int64_t lastRunMs() const { return lastRunMs_; }
 
  private:
-  // A connected helper that ran long enough earns the helper-failure budget
-  // back; a helper that connected and died at once does not.
+  // The end of a connected run, if there was one. A run that lasted the
+  // healthy window earns both budgets back (the helper-failure count and the
+  // unreachable backoff); one that was lost sooner earns nothing, so
+  // connect-then-lose cycles climb the unreachable backoff like any other
+  // camera that cannot be used, and are counted so the snapshot can name them.
   void settleRun(std::int64_t nowMs) {
-    if (connected_ && nowMs - connectedSinceMs_ >= kVcamHelperHealthyRunMs) consecutiveHelperFailures_ = 0;
+    if (!connected_) return;
     connected_ = false;
+    lastRunMs_ = nowMs - connectedSinceMs_;
+    if (lastRunMs_ >= kVcamHelperHealthyRunMs) {
+      consecutiveHelperFailures_ = 0;
+      consecutiveUnreachable_ = 0;
+      consecutiveShortRuns_ = 0;
+    } else {
+      ++consecutiveShortRuns_;
+    }
   }
 
   bool hasAttempted_ = false;
@@ -149,6 +168,8 @@ class VcamHelperRespawnPolicy {
   std::int64_t connectedSinceMs_ = 0;
   int consecutiveUnreachable_ = 0;
   int consecutiveHelperFailures_ = 0;
+  int consecutiveShortRuns_ = 0;
+  std::int64_t lastRunMs_ = -1;
   std::uint64_t attempts_ = 0;
 };
 

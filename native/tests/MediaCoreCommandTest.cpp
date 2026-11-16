@@ -8741,10 +8741,41 @@ class StatusVirtualCameraPublisher final : public corevideo::modules::IVirtualCa
   void publish(const corevideo::modules::ProgramFrame&) override {}
   void stop() override { status_.enabled = false; status_.state = "off"; }
   corevideo::modules::VirtualCameraStatus status() const override { return status_; }
- private:
   corevideo::modules::VirtualCameraStatus status_;
 };
 }  // namespace
+
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+// Review finding 3 (2026-11-16): a camera that connects and is lost each time
+// is readable in one snapshot read (virtualCamera.sink).
+TEST(MediaCoreCommand, TheSinkNodeShowsAConnectThenLoseLoopAndItsBackoff) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  auto owned = std::make_unique<StatusVirtualCameraPublisher>();
+  auto* camera = owned.get();
+  mediaCore.setVirtualCameraPublisherForTest(std::move(owned));
+
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  const auto* sink = state.get("virtualCamera")->get("sink");
+  ASSERT_NE(sink, nullptr);
+  ASSERT_NE(sink->get("consecutiveShortRuns"), nullptr);
+  EXPECT_EQ(sink->getNumber("consecutiveShortRuns"), 0);
+  EXPECT_EQ(sink->getNumber("consecutiveUnreachable"), 0);
+  ASSERT_NE(sink->get("lastRunMs"), nullptr);
+  EXPECT_TRUE(sink->get("lastRunMs")->isNull()) << "no run has ended: not observed, never 0";
+
+  camera->status_.sinkConsecutiveShortRuns = 31;
+  camera->status_.sinkConsecutiveUnreachable = 31;
+  camera->status_.sinkLastRunMs = 3'000;
+  camera->status_.sinkNextAttemptInMs = 5'000;
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  sink = state.get("virtualCamera")->get("sink");
+  ASSERT_NE(sink, nullptr);
+  EXPECT_EQ(sink->getNumber("consecutiveShortRuns"), 31);
+  EXPECT_EQ(sink->getNumber("consecutiveUnreachable"), 31);
+  EXPECT_EQ(sink->getNumber("lastRunMs"), 3'000);
+  EXPECT_EQ(sink->getNumber("nextAttemptInMs"), 5'000);
+}
+#endif
 
 // Task 7 carried fix: a failed GPU tap preparation is visible in the
 // virtualCamera snapshot (status failed + the CAMERA_TAP_PREP_FAILED: warning,
