@@ -966,8 +966,10 @@ final class AppModel: ObservableObject {
 
     /// Second line under the status while an update waits (flyout, Settings, Health).
     var virtualCameraUpdateNotice: String? {
-        VirtualCameraPresentation.updateNotice(ext: cameraExtensionState, othersHolding: cameraUpdateOthersHolding,
-                                               updating: cameraUpdateInProgress)
+        VirtualCameraPresentation.updateNotice(
+            ext: cameraExtensionState, othersHolding: cameraUpdateOthersHolding,
+            ownOutputOn: virtualCamera.enabled && !virtualCameraPausedForUpdate && !virtualCameraHeldForLaunch,
+            updating: cameraUpdateInProgress)
     }
 
     var virtualCameraFramerLabel: String {
@@ -1203,6 +1205,8 @@ final class AppModel: ObservableObject {
     func readCameraDevice() -> CameraDeviceStatus {
         let status = cameraDeviceProbe.read()
         if status != cameraDeviceStatus { cameraDeviceStatus = status }
+        // Nobody on the camera right now: whoever held it has let go.
+        if !status.runningSomewhere && cameraUpdateOthersHolding { cameraUpdateOthersHolding = false }
         return status
     }
 
@@ -1415,6 +1419,7 @@ final class AppModel: ObservableObject {
         guard state != cameraExtensionState else { return }
         ShellLog.write("vcam-ext: shell state \(cameraExtensionState) -> \(state)")
         cameraExtensionState = state
+        if state != .updateReady { cameraUpdateOthersHolding = false }
         updateCameraUpdateTimer()
         if state == .active { verifyCameraRegistration() } else { cameraRegistrationToken = nil }
     }

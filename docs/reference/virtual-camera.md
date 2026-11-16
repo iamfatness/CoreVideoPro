@@ -478,8 +478,9 @@ So:
   decision (and any swap it starts) is done: with no other app on the camera the update simply
   happens at launch, then the output starts. When another app has the camera: no request, a
   second line under the status ("An update to CoreVideo Pro Camera is ready. Quit apps that are
-  using the camera (Zoom, Teams, Photo Booth…), then click Update camera.", or, when only our
-  own output holds it, "…Click Update camera — your camera output pauses for a few seconds."),
+  using the camera (Zoom, Teams, Photo Booth…), then click Update camera.", or, while our own
+  output is on and the app cannot tell who else holds it, "…Close any other apps using the
+  camera, then click Update camera — your camera output pauses for a few seconds."),
   and an **Update camera** button (flyout and Settings > System). The update installs by itself
   once the camera is free (re-checked every 5 s, and at once when the virtual camera is turned
   off). Update camera shows "Updating camera…", pauses our own output for the swap (the saved
@@ -509,7 +510,7 @@ the opt-in; the next enable asks for approval again.
 |---|---|
 | Virtual camera off | The toggle is off. |
 | An update to CoreVideo Pro Camera is ready. Quit apps that are using the camera (Zoom, Teams, Photo Booth…), then click Update camera. (second line) | A new extension version is bundled and another app is using the camera, so nothing was replaced; the old copy still works. Quit the apps and click Update camera, or just wait: it installs by itself when the camera is free. If it stays, Health > Virtual camera "running somewhere (any app)" says whether macOS still sees the camera running. |
-| An update to CoreVideo Pro Camera is ready. Click Update camera — your camera output pauses for a few seconds. (second line) | Only our own output holds the camera. Click Update camera. |
+| An update to CoreVideo Pro Camera is ready. Close any other apps using the camera, then click Update camera — your camera output pauses for a few seconds. (second line) | Our own output is on, so the app cannot tell whether another app also holds the camera (or nobody has been seen). Close other camera apps if any, then click Update camera. "Quit apps…" is shown only while our output is off and another app is seen on the camera; it clears as soon as the camera reads free. |
 | Updating camera… | Update camera is running: our output is paused until the swap finishes. |
 | Installing the virtual camera... | The OS request is in flight. Wait. |
 | Allow CoreVideo Pro Camera in System Settings to finish setup. | Approval pending. Use "Open System Settings", approve, no relaunch needed. |

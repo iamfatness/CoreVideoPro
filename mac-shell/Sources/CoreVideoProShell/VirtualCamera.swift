@@ -84,14 +84,19 @@ enum VirtualCameraPresentation {
     /// status keeps saying live / connecting / failed while an update waits.
     static let updateReadyLabel =
         "An update to CoreVideo Pro Camera is ready. Quit apps that are using the camera (Zoom, Teams, Photo Booth\u{2026}), then click Update camera."
-    /// When only our own output holds the camera, "quit Zoom" would send the
-    /// operator hunting for an app that is not there.
-    static let updateReadyOwnOutputLabel =
-        "An update to CoreVideo Pro Camera is ready. Click Update camera \u{2014} your camera output pauses for a few seconds."
+    /// While our own output is on the HAL cannot say whether another app ALSO
+    /// holds the camera (our sink stream alone makes it "run"), so the copy
+    /// covers both cases instead of sending the operator hunting for a Zoom
+    /// they already quit (re-review NEW-I1).
+    static let updateReadyNeutralLabel =
+        "An update to CoreVideo Pro Camera is ready. Close any other apps using the camera, then click Update camera \u{2014} your camera output pauses for a few seconds."
 
-    static func updateNotice(ext: CameraExtensionState, othersHolding: Bool, updating: Bool) -> String? {
+    /// "Quit apps" only when our output is off and another app was seen on the
+    /// camera; neutral otherwise.
+    static func updateNotice(ext: CameraExtensionState, othersHolding: Bool, ownOutputOn: Bool,
+                             updating: Bool) -> String? {
         guard ext == .updateReady, !updating else { return nil }
-        return othersHolding ? updateReadyLabel : updateReadyOwnOutputLabel
+        return othersHolding && !ownOutputOn ? updateReadyLabel : updateReadyNeutralLabel
     }
 
     static let needsRebootLabel = "Restart your Mac to finish updating the virtual camera."

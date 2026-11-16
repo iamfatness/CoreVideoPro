@@ -27,6 +27,7 @@ extension ShellTests {
             ("vcam-update/update-button-race-never-resumes-mid-swap", testUpdateCameraNeverResumesOurOutputMidSwap),
             ("vcam-update/launch-holds-our-output-until-the-swap", testLaunchHoldsOurOutputUntilTheSwap),
             ("vcam-update/notice-is-a-second-line", testUpdateNoticeIsASecondLineWithTheRightCopy),
+            ("vcam-update/zoom-quits-notice-stops-saying-quit", testZoomQuittingClearsTheQuitAppsNotice),
             ("vcam-update/old-device-is-not-the-new-one", testTheOldCopysDeviceIsNotTheNewOne),
             ("vcam-update/mid-session-loss-rechecks", testMidSessionLossRechecksAndReportsARestart),
             ("vcam-update/replacement-offered-in-use-is-cancelled",
@@ -303,14 +304,55 @@ extension ShellTests {
         live.status = "live"; live.width = 1920; live.height = 1080
         expectEqual(P.label(intent: true, ext: .updateReady, core: live), "Virtual camera live (1920x1080)",
                     "an update waiting never hides the live status")
-        expectEqual(P.updateNotice(ext: .updateReady, othersHolding: false, updating: false),
-                    "An update to CoreVideo Pro Camera is ready. Click Update camera \u{2014} your camera output pauses for a few seconds.",
-                    "only our output holds it: no 'quit Zoom'")
-        expect(P.updateNotice(ext: .updateReady, othersHolding: true, updating: false)?.contains("Quit apps") == true,
-               "another app holds it: quit apps")
-        expect(P.updateNotice(ext: .active, othersHolding: true, updating: false) == nil, "no notice otherwise")
-        expect(P.updateNotice(ext: .updateReady, othersHolding: false, updating: true) == nil,
+        let neutral = "An update to CoreVideo Pro Camera is ready. Close any other apps using the camera, then click Update camera \u{2014} your camera output pauses for a few seconds."
+        expectEqual(P.updateNotice(ext: .updateReady, othersHolding: true, ownOutputOn: true, updating: false),
+                    neutral, "our output on: we cannot tell who else holds it, so the copy covers both")
+        expectEqual(P.updateNotice(ext: .updateReady, othersHolding: false, ownOutputOn: false, updating: false),
+                    neutral, "nobody seen: neutral")
+        expect(P.updateNotice(ext: .updateReady, othersHolding: true, ownOutputOn: false, updating: false)?
+                .contains("Quit apps") == true, "our output off and another app on the camera: quit apps")
+        expect(P.updateNotice(ext: .active, othersHolding: true, ownOutputOn: false, updating: false) == nil,
+               "no notice otherwise")
+        expect(P.updateNotice(ext: .updateReady, othersHolding: false, ownOutputOn: true, updating: true) == nil,
                "none while Updating camera runs")
+    }
+
+    /// Re-review NEW-I1: launch while Zoom has the camera, then Zoom quits.
+    /// The notice must not keep saying "Quit apps" for the rest of the session.
+    @MainActor
+    static func testZoomQuittingClearsTheQuitAppsNotice() {
+        // Output on: Zoom held it at launch, then quit; our stream still runs.
+        let (on, _, onProbe, _) = launchedModel(installed: [olderInstall], device: ourDevice(running: true),
+                                                intentOn: true)
+        on.cameraUpdateRetryInterval = 60
+        expectEqual(on.cameraExtensionState, .updateReady, "precondition: deferred by Zoom")
+        onProbe.status.runningSomewhere = false   // Zoom quits
+        _ = on.cameraInUse()                      // a later re-check (the 5 s retry)
+        expect(on.virtualCameraUpdateNotice?.contains("Quit apps") == false,
+               "our output on: the notice no longer says quit apps")
+        expect(on.virtualCameraUpdateNotice?.contains("Close any other apps") == true, "it is the neutral copy")
+        on.stopTimersForTesting()
+
+        // Output off: Zoom held it; the first free read clears the flag.
+        let (off, _, offProbe, _) = launchedModel(installed: [olderInstall], device: ourDevice(running: true))
+        off.cameraUpdateRetryInterval = 60
+        expect(off.virtualCameraUpdateNotice?.contains("Quit apps") == true,
+               "precondition: our output off, Zoom on the camera: quit apps")
+        offProbe.status.runningSomewhere = false   // Zoom quits
+        _ = off.readCameraDevice()
+        expect(!off.cameraUpdateOthersHolding, "a free read clears 'another app holds it'")
+        expect(off.virtualCameraUpdateNotice?.contains("Quit apps") == false, "and the quit-apps copy goes")
+        off.stopTimersForTesting()
+
+        // Any state away from .updateReady clears it too, even with Zoom
+        // still on the camera (here: the operator removes the camera).
+        let (left, _, _, _) = launchedModel(installed: [olderInstall], device: ourDevice(running: true))
+        expect(left.cameraUpdateOthersHolding, "precondition: Zoom seen")
+        left.removeVirtualCamera()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        expectEqual(left.cameraExtensionState, .notInstalled, "precondition: left .updateReady")
+        expect(!left.cameraUpdateOthersHolding, "and the flag is gone with .updateReady")
+        left.stopTimersForTesting()
     }
 
     /// Review I4: after a replacement the OLD copy's device (same UID, no
