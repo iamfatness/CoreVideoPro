@@ -150,6 +150,23 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return toggleEngine(model)
         case "transport.engine.set":
             return setEngine(model, on: bool(0))
+        // ── Production (ControlSurface+Production.swift) ──
+        case "graphics.lowerThird.toggle":
+            return setLowerThird(model, on: nil)
+        case "graphics.lowerThird.set":
+            return setLowerThird(model, on: bool(0))
+        case "automation.captions.set":
+            return setAutoCaptions(bool(0))
+        case "multiview.layout.set":
+            return setMultiviewLayout(model, mode: string(0))
+        case "multiview.tileCount.set":
+            return setMultiviewTileCount(model, count: int(0))
+        case "audio.mastering.set":
+            return setMastering(model, on: bool(0))
+        case "audio.mastering.target":
+            return setMasteringTarget(model, index: int(0))
+        case "audio.vst.scan":
+            return scanVst(model)
         // ── Show Inputs (ControlSurface+Inputs.swift) ──
         case "input.assign":
             return assignInput(model, slot: int(0), sourceId: string(1))
@@ -183,6 +200,10 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "input.assign", "input.unassign", "input.name", "input.inShow.set", "source.dropout.set",
         "transport.transition.set", "transport.engine.toggle", "transport.engine.set",
         "zoom.join", "zoom.leave", "source.capture.online.set", "transport.stream.rtmp.configure",
+        // RC3
+        "graphics.lowerThird.toggle", "graphics.lowerThird.set", "automation.captions.set",
+        "multiview.layout.set", "multiview.tileCount.set",
+        "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
     ]
 
     /// The `default:` branch's text (Windows' unknown-action wording).
@@ -277,6 +298,13 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             "inputs": ControlStateProjection.inputs(model.slots, devices: model.captureDevices),
             "zoomParticipantIds": model.roster.map(\.id),
             "virtualCameraOn": model.virtualCamera.enabled,
+            // RC3
+            "lowerThirdOnAir": model.lowerThirdVisible,   // the core's observed `visible`
+            "multiviewTileCount": model.multiviewTileCount,
+            "masteringOn": model.mastering.enabled,
+            "masteringTarget": masteringTargetIndex(model.mastering.targetLufs),
+            // No caption source exists on the Mac: the true value is false.
+            "autoCaptions": false,
         ])
     }
 }

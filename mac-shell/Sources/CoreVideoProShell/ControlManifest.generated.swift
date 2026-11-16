@@ -251,12 +251,12 @@ enum ControlManifestGenerated {
             availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "graphics.lowerThird.toggle", title: "Lower-third toggle", description: "Toggle the program lower-third.", params: []),
-            availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "graphics.lowerThird.set", title: "Lower-third set", description: "Show or hide the program lower-third explicitly.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "graphics.caption.set", title: "Set caption", description: "Set the caption text (and optional speaker).", params: [
                 ControlParam(name: "text", type: .string, required: true, description: nil),
@@ -514,25 +514,25 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "audio.mastering.set", title: "Mastering", description: "Enable/disable the master-bus mastering chain.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "audio.mastering.target", title: "Mastering target", description: "Set the mastering loudness target (0=-14 streaming, 1=-16 podcast, 2=-23 broadcast).", params: [
                 ControlParam(name: "index", type: .int, required: true, description: "0-2"),
             ]),
-            availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "audio.vst.scan", title: "Scan VST3 plug-ins", description: "Scan and validate installed VST3 plug-ins in isolated host processes.", params: []),
-            availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "multiview.layout.set", title: "Multiview layout", description: "Set the multiview layout mode.", params: [
                 ControlParam(name: "mode", type: .string, required: true, description: "grid | pgmPvwTop | pgmPvwLarge | pgmPvwSide"),
             ]),
-            availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "multiview.tileCount.set", title: "Multiview tiles", description: "Set the multiview source tile count.", params: [
                 ControlParam(name: "count", type: .int, required: true, description: "1-10"),
             ]),
-            availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "multiview.showLabels.set", title: "Multiview labels", description: "Toggle multiview labels.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
@@ -567,7 +567,7 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "automation.captions.set", title: "Auto captions (unavailable)", description: "Legacy compatibility: automatic captions are unavailable. Enabling is rejected; false is a no-op.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),
             ]),
-            availability: .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "browser.add", title: "Add browser source", description: "Add a render-only browser source (WebView2 host process).", params: [
                 ControlParam(name: "url", type: .string, required: true, description: "http(s)://, file:// or data: URL"),
@@ -595,7 +595,7 @@ enum ControlManifestGenerated {
         ("ndi", .blocked(workstream: "OUT", label: "SRT and NDI output")),
         ("engineOn", .supported),
         ("canTake", .supported),
-        ("lowerThirdOnAir", .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+        ("lowerThirdOnAir", .supported),
         ("zoomStatus", .supported),
         ("engineStatus", .supported),
         ("commandStatus", .supported),
@@ -604,12 +604,12 @@ enum ControlManifestGenerated {
         ("previewTilesNamesOn", .blocked(workstream: "TIL", label: "CoreVideo Tiles")),
         ("viewMode", .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
         ("multiviewLayoutMode", .supported),
-        ("multiviewTileCount", .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+        ("multiviewTileCount", .supported),
         ("automationOn", .supported),
         ("autoTake", .supported),
         ("autoAssignInputs", .blocked(workstream: "STU", label: "Studio and Settings follow-ons")),
         ("autoLowerThirds", .blocked(workstream: "GFX", label: "Graphics engine")),
-        ("autoCaptions", .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
+        ("autoCaptions", .supported),
         ("audioMonitorOn", .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
         ("audioMonitorVolume", .blocked(workstream: "RC3", label: "Remote control: audio, multiview and overlays")),
         ("masterLimiterOn", .blocked(workstream: "AUD", label: "Audio parity")),

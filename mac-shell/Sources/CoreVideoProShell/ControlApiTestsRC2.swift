@@ -29,6 +29,7 @@ extension ShellTests {
             ("control/transition-and-engine", testControlTransitionAndEngine),
             ("control/join-leave-capture-online", testControlJoinLeaveAndCaptureOnline),
             ("control/rtmp-configure", testControlRtmpConfigure),
+            ("control/production-actions", testControlProductionActions),
         ]
     }
 
@@ -100,7 +101,7 @@ extension ShellTests {
             let key = field.hasPrefix("input/") ? "inputs" : field
             expect(state[key] != nil, "supported feedback field \(field) is published as \(key)")
         }
-        expectEqual(rows.filter { $0["mac"] as? String == "supported" }.count, 16, "RC2: 10 + zoomStatus, engineStatus, 4 input rows")
+        expect(rows.filter { $0["mac"] as? String == "supported" }.count >= 16, "RC2: at least 10 + zoomStatus, engineStatus, 4 input rows")
         // Budget: median of 50 builds with ten assigned slots.
         for i in 2..<10 { model.slots[i].kind = "zoom"; model.slots[i].sourceId = "p-\(i)"; model.slots[i].inShow = true }
         var micros: [Double] = []
@@ -357,5 +358,71 @@ extension ShellTests {
         expectEqual(invoke(s, "transport.stream.rtmp.configure", [true, "rtmp", "rtmp://other.test/app", "new-key"]),
                     .fail("Destination settings were not saved. Previous settings remain active; retry after resolving preference storage."), "storage failure")
         expectEqual(model.streamUrl, "rtmps://example.test/live", "a failed save changes nothing"); expectEqual(model.streamKey, "test-key-sentinel", "key kept")
+    }
+
+    @MainActor
+    static func testControlProductionActions() {
+        let model = takeModel(FakeTakeCore())   // Program s2
+        var sent: [JSONObject] = []
+        model.coreCommandCaptureForTesting = { sent.append($0) }
+        // Overlay commands are observed through the model's own overlay seam (rule 5:
+        // sendOverlay does not go through coreCommandCaptureForTesting).
+        var overlays: [JSONObject] = []
+        model.overlayCommandObserver = { overlays.append($0) }
+        let s = AppModelControlSurface(model: model, box: model.controlSnapshotBox)
+        func types() -> [String] { sent.flatMap { ($0["commands"] as? [JSONObject]) ?? [$0] }.compactMap { $0["type"] as? String } }
+
+        // Lower third: no Program source -> Windows-shaped refusal with the model's own reason.
+        expectEqual(invoke(s, "graphics.lowerThird.set", [true]), .fail(LowerThirdKeyReadout.needsSource), "no Program source")
+        // With a Program source the remote key-in is the button's command, byte for byte.
+        // (rule 5: the subject comes from programFrame.videoSources, ProgramLowerThirdSource.resolve)
+        model.slots[0].kind = "zoom"; model.slots[0].sourceId = "p-1"; model.slots[0].name = "Host"; model.slots[0].inShow = true
+        model.roster = [RosterParticipant(id: "p-1", name: "Host", hasVideo: true, muted: false, talking: false, assigned: true)]
+        model.applySnapshotForTesting(["programFrame": ["frameNumber": 10, "sceneId": "s2",
+            "videoSources": [["sourceId": "zoom:p-1", "participantId": "p-1", "kind": "participant-video", "layerId": "l1"]]]])
+        overlays.removeAll()
+        model.showLowerThird()
+        let buttonCommand = overlays.last
+        model.hideLowerThird(); spin(until: { false }, limit: 0.3); overlays.removeAll()
+        expectEqual(invoke(s, "graphics.lowerThird.set", [true]), .success, "key in accepted")
+        expect(buttonCommand != nil && NSDictionary(dictionary: overlays.last ?? [:]).isEqual(to: buttonCommand ?? [:]),
+               "the remote key-in sends exactly the button's set-overlay-asset")
+        expectEqual(invoke(s, "graphics.lowerThird.set", [false]), .success, "key out")
+        expectEqual(overlays.last?["keyPhase"] as? String, "building-out", "key out starts the build-out")
+
+        expectEqual(invoke(s, "automation.captions.set", [true]),
+                    .fail("Automatic captions are unavailable: CoreVideo does not transcribe speech. Use explicit caption cues from a control client or the show engine."),
+                    "Windows text")
+        expectEqual(invoke(s, "automation.captions.set", [false]), .success, "false is a no-op success")
+
+        expectEqual(invoke(s, "multiview.layout.set", ["pgmPvwSide"]), .success, "layout"); expectEqual(model.multiviewLayoutMode, "pgmPvwSide", "applied")
+        expectEqual(invoke(s, "multiview.layout.set", ["mosaic"]), .success, "unknown layout"); expectEqual(model.multiviewLayoutMode, "pgmPvwTop", "normalizes to pgmPvwTop (Windows)")
+        for (asked, got) in [(0, 1), (12, 12), (40, 16)] {
+            expectEqual(invoke(s, "multiview.tileCount.set", [asked]), .success, "tile count \(asked)")
+            expectEqual(model.multiviewTileCount, got, "\(asked) clamps to \(got) (Mac range 1...16, D11)")
+        }
+        expect(types().contains("configure-multiviewer"), "the tile count reached the core")
+
+        expectEqual(invoke(s, "audio.mastering.set", [true]), .success, "mastering on"); expect(model.mastering.enabled, "on")
+        for (index, lufs) in [(0, -14.0), (1, -16.0), (2, -23.0), (7, -23.0), (-3, -14.0)] {
+            _ = invoke(s, "audio.mastering.target", [index])
+            expectEqual(model.mastering.targetLufs, lufs, "index \(index) -> \(lufs) LUFS (clamped 0...2)")
+        }
+        var state = AppModelControlSurface.state(model).dictionary
+        expectEqual(state["masteringTarget"] as? Int, 0, "-14 is index 0")
+        model.editMastering { $0.targetLufs = -18 }
+        state = AppModelControlSurface.state(model).dictionary
+        expectEqual(state["masteringTarget"] as? Int, -1, "a custom target is -1 (D10)")
+        expectEqual(state["masteringOn"] as? Bool, true, "masteringOn"); expectEqual(state["autoCaptions"] as? Bool, false, "autoCaptions false")
+        expectEqual(state["multiviewTileCount"] as? Int, 16, "multiviewTileCount")
+        expectEqual(state["lowerThirdOnAir"] as? Bool, model.lowerThirdVisible, "confirmatory: mirrors the model field (rule 8)")
+        // rule 5: the Mac reads overlayState.overlays[] (AppModel.applySnapshot).
+        model.applySnapshotForTesting(["overlayState": ["overlays": [["overlayId": "key:lower-third", "visible": true, "keyPhase": "on-air"]]]])
+        expectEqual(AppModelControlSurface.state(model).dictionary["lowerThirdOnAir"] as? Bool, true, "on air once the core says visible")
+
+        expectEqual(invoke(s, "audio.vst.scan"), .success, "scan accepted with a core")
+        let noCore = AppModel()
+        expectEqual(invoke(AppModelControlSurface(model: noCore, box: noCore.controlSnapshotBox), "audio.vst.scan"),
+                    .fail("VST3 scan is unavailable: no media core."), "no core: no false success")
     }
 }

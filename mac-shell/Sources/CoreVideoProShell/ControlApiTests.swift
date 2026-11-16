@@ -81,7 +81,7 @@ extension ShellTests {
             expect(false, "contracts/control.platforms.json is readable from the checkout"); return
         }
         // Each slice updates this number: RC1 13, after RC2 25, after RC3 36.
-        expectEqual(fileSupported.count, 25, "supported rows in the platform file")
+        expectEqual(fileSupported.count, 33, "supported rows in the platform file")
         expectEqual(AppModelControlSurface.supportedActionIds, fileSupported,
                     "the dispatcher's ids equal the platform file's supported rows (Windows SupportedActionIds twin)")
         expectEqual(Set(ControlCatalog.actions.map(\.id)), fileSupported,
@@ -128,7 +128,7 @@ extension ShellTests {
             expectEqual(json(response.body)["error"] as? String, expected, "\(id) says why, in the operator's words")
             checked += 1
         }
-        expectEqual(checked, 85, "110 - 25 unavailable ids checked (each slice updates this)")
+        expectEqual(checked, 77, "110 - 33 unavailable ids checked (each slice updates this)")
         expectEqual(surface.invocations.count, 0, "an unavailable action never reaches the surface")
         let bogus = route(router, "POST", "/invoke", #"{"action":"bogus.id"}"#)
         expectEqual(bogus.status, 400, "an id in neither file keeps Windows' 400")
@@ -153,7 +153,7 @@ extension ShellTests {
         expectEqual(response.status, 200, "GET /manifest")
         expect(NSDictionary(dictionary: json(response.body)).isEqual(to: expected),
                "GET /manifest is the shared file with only the Mac-supported actions and feedback fields")
-        expectEqual(supportedFields.count, 16, "RC2: sixteen feedback fields (each slice updates this)")
+        expectEqual(supportedFields.count, 19, "RC3 T13: nineteen feedback fields (each slice updates this)")
         for retired in ["automation.magic", "automation.toggle", "automation.autoTake.set"] {
             expect(!response.body.contains(retired), "retired \(retired) is not advertised")
         }

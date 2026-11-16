@@ -2154,14 +2154,13 @@ final class AppModel: ObservableObject {
     }
 
     func applyMultiviewConfig() {
+        let body: JSONObject = [
+            "type": "media-core-sync", "elapsedMs": elapsedMs(),
+            "commands": [multiviewConfigCommand()],
+        ]
+        if let capture = coreCommandCaptureForTesting { capture(body); return }
         guard let bridge else { return }
-        let command = multiviewConfigCommand()
-        Task {
-            _ = try? await bridge.request([
-                "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                "commands": [command],
-            ])
-        }
+        Task { _ = try? await bridge.request(body) }
     }
 
     private func applySharedTexture(_ texture: JSONObject) {
