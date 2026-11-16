@@ -56,11 +56,72 @@ private struct Cell<Content: View>: View {
     }
 }
 
+/// The inspector sits beside the table in a 340 pt column when the page is at least
+/// 1500 pt wide, else below it (SourcesWorkspaceControl.cs:156-161). Decided from the
+/// PROPOSED width, so the table and inspector never overflow the page.
+struct InspectorPlacementLayout: Layout {
+    static let spacing: CGFloat = 12
+
+    private func beside(_ width: CGFloat, _ subviews: Subviews) -> Bool {
+        subviews.count > 1 && SourcesColumnLayout.inspectorBeside(pageWidth: width)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 1000
+        guard let table = subviews.first else { return .zero }
+        if beside(width, subviews) {
+            let tableWidth = width - SourcesColumnLayout.inspectorWidth - Self.spacing
+            let a = table.sizeThatFits(ProposedViewSize(width: tableWidth, height: nil))
+            let b = subviews[1].sizeThatFits(ProposedViewSize(width: SourcesColumnLayout.inspectorWidth, height: nil))
+            return CGSize(width: width, height: max(a.height, b.height))
+        }
+        var height: CGFloat = 0
+        for (index, view) in subviews.enumerated() {
+            height += view.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+            if index > 0 { height += Self.spacing }
+        }
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let table = subviews.first else { return }
+        if beside(bounds.width, subviews) {
+            let tableWidth = bounds.width - SourcesColumnLayout.inspectorWidth - Self.spacing
+            table.place(at: bounds.origin, proposal: ProposedViewSize(width: tableWidth, height: nil))
+            subviews[1].place(at: CGPoint(x: bounds.minX + tableWidth + Self.spacing, y: bounds.minY),
+                              proposal: ProposedViewSize(width: SourcesColumnLayout.inspectorWidth, height: nil))
+            return
+        }
+        var y = bounds.minY
+        for view in subviews {
+            let size = view.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            view.place(at: CGPoint(x: bounds.minX, y: y), proposal: ProposedViewSize(width: bounds.width, height: nil))
+            y += size.height + Self.spacing
+        }
+    }
+}
+
 struct SourcesTable: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            InspectorPlacementLayout {
+                tableCard
+                if let selected = model.sourcesWorkspace.selectedSlotId,
+                   model.sourcesWorkspace.columns.inspectorOpen {
+                    SourceInspector(slotId: selected)
+                }
+            }
+            HStack(alignment: .top, spacing: 12) {
+                ZoomFeedHealthCard()
+                CaptureDevicesSection()
+            }
+        }
+        .frame(maxWidth: TabPageLayout.maxWidth(for: .sources))
+    }
+
+    private var tableCard: some View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Show inputs").font(.grotesk(15, .semibold))
                 SourcesToolsRow()
@@ -94,13 +155,6 @@ struct SourcesTable: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
-
-            HStack(alignment: .top, spacing: 12) {
-                ZoomFeedHealthCard()
-                CaptureDevicesSection()
-            }
-        }
-        .frame(maxWidth: TabPageLayout.maxWidth(for: .sources))
     }
 
     private var visibleSlots: [ShowInputSlot] {
@@ -139,6 +193,14 @@ struct SourcesToolsRow: View {
             .fixedSize()
             AutoAssignInputsToggle()
             Spacer(minLength: 0)
+            Button(model.sourcesWorkspace.columns.inspectorOpen ? "Close inspector" : "Open inspector") {
+                if model.sourcesWorkspace.columns.inspectorOpen {
+                    model.sourcesWorkspace.columns.inspectorOpen = false
+                } else {
+                    model.sourcesWorkspace.inspect(model.sourcesWorkspace.selectedSlotId ?? 1)
+                }
+            }
+            .buttonStyle(GhostButtonStyle())
         }
     }
 }
@@ -147,8 +209,6 @@ struct SourcesTableRow: View {
     @EnvironmentObject var model: AppModel
     let slot: ShowInputSlot
     @ObservedObject var box: SlotFactsBox
-    @State private var renaming = false
-    @State private var draftName = ""
 
     private var assigned: Bool { slot.kind != "unassigned" }
     private var type: SourceType {
@@ -258,27 +318,22 @@ struct SourcesTableRow: View {
         }
     }
 
-    /// Interim D5: name, microphone, key and dropout live in "…" until the inspector.
+    /// D5: name, microphone, key and dropout live in the inspector; the row keeps
+    /// Inspect, Unassign in "…", and a KEY chip.
     private var actions: some View {
+        HStack(spacing: 6) {
+            Button("Inspect") { model.sourcesWorkspace.inspect(slot.id) }
+                .buttonStyle(.plain).font(.grotesk(11, .semibold)).foregroundStyle(Studio.accent)
+                .accessibilityLabel("Inspect input \(slot.id)")
+            if slot.keyEnabled {
+                Text("KEY").font(.plexMono(9, .semibold)).foregroundStyle(Studio.accent)
+            }
+            moreMenu
+        }
+    }
+
+    private var moreMenu: some View {
         Menu {
-            Button("Rename…") { draftName = slot.name; renaming = true }.disabled(!assigned)
-            if slot.kind == "capture" {
-                Menu("Microphone") {
-                    Button("No audio") { model.pairAudio(slotId: slot.id, device: nil) }
-                    Divider()
-                    ForEach(model.audioInputs) { device in
-                        Button(device.name) { model.pairAudio(slotId: slot.id, device: device) }
-                    }
-                }
-            }
-            if assigned { ChromaKeyControl(slot: slot) }
-            if slot.kind == "zoom" {
-                Menu("On dropout") {
-                    Button("Hold last frame") { model.setDropoutPolicy(slotId: slot.id, policy: "hold") }
-                    Button("Black") { model.setDropoutPolicy(slotId: slot.id, policy: "black") }
-                }
-            }
-            Divider()
             Button("Unassign") { model.unassignSlot(slot.id) }.disabled(!assigned)
         } label: {
             Text("…").font(.grotesk(13, .semibold))
@@ -286,27 +341,6 @@ struct SourcesTableRow: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .accessibilityLabel("Input \(slot.id) actions")
-        .popover(isPresented: $renaming) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Input \(slot.id) name").font(.grotesk(12, .semibold))
-                TextField("Name", text: $draftName, onCommit: commitRename)
-                    .textFieldStyle(StudioFieldStyle()).frame(width: 220)
-                    .accessibilityLabel("Input \(slot.id) name")
-                HStack {
-                    Spacer()
-                    Button("Done", action: commitRename).buttonStyle(GhostButtonStyle())
-                }
-            }
-            .padding(12)
-        }
-    }
-
-    /// Writes the name exactly as SlotRow did (a session-only rename, #1213).
-    private func commitRename() {
-        if let index = model.slots.firstIndex(where: { $0.id == slot.id }) {
-            model.slots[index].name = draftName
-        }
-        renaming = false
     }
 }
 

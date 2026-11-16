@@ -307,6 +307,9 @@ struct RosterParticipant: Identifiable, Equatable {
     // The engine's per-participant source generation: a reused Zoom id with a
     // different generation is a different source (ZoomEngineRuntime.cpp).
     var sourceGeneration: Int64 = 0
+    // The engine's persistent id for this participant (ZoomEngineRuntime.cpp:1443),
+    // for the grading plan's per-person grades. nil when not reported.
+    var persistentId: String? = nil
 
     // PURE, so it can be tested without a running core. This mapping is the one
     // that shipped an empty roster in a live meeting: the shell read
@@ -329,7 +332,8 @@ struct RosterParticipant: Identifiable, Equatable {
                 assigned: assignedIds.contains(id),
                 sharingScreen: entry["sharingScreen"] as? Bool ?? false,
                 isMe: entry["isMe"] as? Bool ?? false,
-                sourceGeneration: (entry["sourceGeneration"] as? NSNumber)?.int64Value ?? 0)
+                sourceGeneration: (entry["sourceGeneration"] as? NSNumber)?.int64Value ?? 0,
+                persistentId: (entry["persistentId"] as? String).flatMap { $0.isEmpty ? nil : $0 })
         }
     }
 }

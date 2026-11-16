@@ -107,6 +107,11 @@ enum TabSnapshotHarness {
             $0.applyTally(program: ["capture:cam-1"], preview: [])
             $0.applyWriters(["zoom:101": "armed"])
         }
+        // The inspector open on slot 3 (beside the table at 1920, below it at 1360).
+        // COREVIDEO_SHELL_TAB_SNAPSHOT_INSPECTOR=0 renders the table with it closed.
+        if ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT_INSPECTOR"] != "0" {
+            model.sourcesWorkspace.inspect(3)
+        }
     }
 
     private static func seedSlots(_ model: AppModel) {

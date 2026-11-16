@@ -62,6 +62,11 @@ extension ShellTests {
             ("sources-policy/capture-status-lines", testCaptureDropoutStatusUsesTheWindowsWording),
             ("sources-policy/capture-policy-persists", testACapturePolicyPersistsAndFollowsItsSource),
             ("sources-role/one-holder-per-role", testOneHolderPerRoleAndMeetingScoped),
+            // Task 10: the inspector.
+            ("sources-inspector/identity-guard", testTheInspectorDisablesWhenItsSourceChanges),
+            ("sources-inspector/assignment-hints", testAssignmentHintsUseTheWindowsCopy),
+            ("sources-inspector/key-wire-unchanged", testTheKeyMovedIntoTheInspectorSendsTheSameNode),
+            ("sources-inspector/grade-context-contract", testTheGradeSlotContextIsWhatTheGradingPlanNeeds),
         ]
     }
 
@@ -940,6 +945,72 @@ extension ShellTests {
         expectEqual(ProductionRoles.roles.map(\.value),
                     ["host", "co-host", "reader", "panelist", "guest-1", "guest-2", "guest-3", "guest-4"],
                     "the Windows role list")
+    }
+
+    // ── Task 10: the inspector ──────────────────────────────────────────────
+
+    static func testTheInspectorDisablesWhenItsSourceChanges() {
+        let binding = InspectorBinding(openedFor: "capture:cam1")
+        expect(!binding.isStale(current: "capture:cam1"), "same source: live")
+        expect(binding.isStale(current: "capture:cam2"), "reassigned: stale")
+        expect(binding.isStale(current: nil), "unassigned: stale")
+        expectEqual(InspectorBinding.staleNotice,
+                    "Source assignment changed. Reopen these options for the current source.", "the spec §4.7 copy")
+    }
+
+    static func testAssignmentHintsUseTheWindowsCopy() {
+        expectEqual(SourceAssignmentHint.text(assigned: false, missing: false, inShow: false),
+                    "Choose a source for this input.", "unassigned")
+        expectEqual(SourceAssignmentHint.text(assigned: true, missing: true, inShow: true),
+                    "Saved assignment retained. Reconnect this source or choose a replacement; another source is never substituted automatically.",
+                    "missing outranks in-show")
+        // The case above holds inShow true, so swapping the missing/hidden precedence left it
+        // green. Missing AND hidden is the one input that tells the two orders apart.
+        expectEqual(SourceAssignmentHint.text(assigned: true, missing: true, inShow: false),
+                    "Saved assignment retained. Reconnect this source or choose a replacement; another source is never substituted automatically.",
+                    "missing outranks hidden")
+        expectEqual(SourceAssignmentHint.text(assigned: true, missing: false, inShow: false),
+                    "Assigned, but hidden from the show. Enable In show to include this input.", "hidden")
+        expectEqual(SourceAssignmentHint.text(assigned: true, missing: false, inShow: true),
+                    "Assigned and included in the show. Unassign clears only this input; the source remains available.", "in show")
+    }
+
+    /// The Mac-only key must keep working (prompt; spec S5 proof). FIXTURE: blue key, similarity
+    /// 0.55, the other two at the core defaults. The expected node is written out here, not built
+    /// by chromaKeyNode, so a setter that writes the wrong field is visible.
+    @MainActor
+    static func testTheKeyMovedIntoTheInspectorSendsTheSameNode() {
+        let model = AppModel()
+        model.assignSlot(3, kind: "capture", sourceId: "cam1", name: "Cam")
+        let syncs = model.sceneSyncRequestCount
+        model.setChromaKey(slotId: 3, enabled: true)
+        model.setChromaKeyColor(slotId: 3, hex: "#0000ff")
+        model.setChromaKeyParameter(slotId: 3, \.keySimilarity, 0.55)
+        let expected: JSONObject = ["enabled": true, "keyR": 0.0, "keyG": 0.0, "keyB": 1.0,
+                                    "similarity": 0.55, "smoothness": 0.1, "spill": 0.2]
+        let node = model.chromaKeyNode(for: model.slots[2])
+        expect(node.map { NSDictionary(dictionary: $0).isEqual(to: expected) } ?? false, "the route's chromaKey node: \(node ?? [:])")
+        expectEqual(model.sceneSyncRequestCount, syncs + 3, "each change re-syncs the scene, as ChromaKeyControl did")
+        guard let after = relaunched(model) else { expect(false, "relaunch"); return }
+        expectEqual(after.slots[2].keyColorHex, "#0000ff", "the key is still persisted by source")
+        model.setChromaKey(slotId: 3, enabled: false)
+        expect(model.chromaKeyNode(for: model.slots[2]) == nil, "off sends no node")
+    }
+
+    /// The interface G4 builds on (grading spec §5.8 items 1-2).
+    @MainActor
+    static func testTheGradeSlotContextIsWhatTheGradingPlanNeeds() {
+        let model = AppModel()
+        model.applyZoomForTesting(["meetingState": "in_meeting", "rosterEpoch": "1:1:g", "rosterRevision": NSNumber(value: 1),
+                                   "participants": [["userId": "42", "displayName": "Ana", "videoOn": true, "persistentId": "p-ana"]]])
+        model.assignSlot(4, kind: "capture", sourceId: "cam1", name: "Cam")
+        let zoom = model.sourceGradeContext(slotId: 1)
+        expectEqual(zoom, SourceGradeContext(slotId: 1, sourceKey: "zoom:42", gradeSourceId: "42",
+                                             displayName: "Ana", persistentId: "p-ana"), "a Zoom slot: bare id + persistentId")
+        expectEqual(model.sourceGradeContext(slotId: 4)?.gradeSourceId, "capture:cam1", "a capture slot: capture:<id>")
+        expect(model.sourceGradeContext(slotId: 4)?.persistentId == nil, "no persistentId for capture")
+        expect(model.sourceGradeContext(slotId: 9) == nil, "unassigned: no context")
+        expect(!AppModel.gradeEditorAvailable, "Grade actions stay hidden until the grading plan turns them on")
     }
 }
 

@@ -245,6 +245,9 @@ struct SourceRowFactsProjection {
         program = []; preview = []
     }
 
+    /// The last `sources[]` row for a bus key (capture "capture:<id>", Zoom raw pid).
+    func busRow(_ key: String) -> BusSourceRow? { bus[key] }
+
     func facts(slotId: Int) -> SourceRowFacts {
         var facts = SourceRowFacts()
         guard let ref = refs[slotId], let key = ref.sourceKey else { return facts }
