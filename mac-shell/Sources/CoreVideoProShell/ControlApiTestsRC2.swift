@@ -32,6 +32,7 @@ extension ShellTests {
             ("control/production-actions", testControlProductionActions),
             ("control/monitor-revisioned", testControlMonitorRevisioned),
             ("control/audio-route", testControlAudioRoute),
+            // control/udp-spike (T16) is not registered: Network.framework failed the rule (BSD chosen).
         ]
     }
 
