@@ -8,9 +8,10 @@
 // and the store's own generation counter, so an acknowledgement from a previous core process
 // is never recorded.
 //
-// D6 overridden: a NEUTRAL grade is sent with `clear: true`, so the core forgets the source's
-// own grade and its layer takes the Program Look again. The store then holds no session grade
-// for it and forgets the saved key.
+// D6 overridden: `clear: true` makes the core forget the source's own grade, so its layer takes
+// the Program Look again; the store then holds no session grade for it and forgets the saved key.
+// A clear is an explicit request (the editor's Reset), NEVER inferred from the values: owner
+// ruling 2026-11-16, Windows parity, a neutral grade is a real grade that ignores the Program Look.
 
 import Foundation
 
@@ -95,6 +96,7 @@ final class SourceGradeStore: ObservableObject {
     private struct Parked {
         let grade: SourceColorGrade
         let binding: String
+        let clear: Bool
         let resume: (GradeApplyOutcome) -> Void
     }
 
@@ -116,21 +118,24 @@ final class SourceGradeStore: ObservableObject {
 
     // ── apply: the editor's only path to air ─────────────────────────────────
 
-    func apply(_ grade: SourceColorGrade, sourceId: String, authoredFor binding: String) async -> GradeApplyOutcome {
+    /// `clear` asks the core to forget the source's own grade (Reset); `grade` is then ignored.
+    func apply(_ grade: SourceColorGrade, sourceId: String, authoredFor binding: String, clear: Bool = false) async -> GradeApplyOutcome {
         guard identityProvider(sourceId)?.binding == binding else { return .refused(Self.identityChangedText) }
         if inFlight.contains(sourceId) {
             return await withCheckedContinuation { continuation in
                 if let previous = parked[sourceId] { previous.resume(.superseded) }
-                parked[sourceId] = Parked(grade: grade, binding: binding, resume: { continuation.resume(returning: $0) })
+                parked[sourceId] = Parked(grade: grade, binding: binding, clear: clear,
+                                          resume: { continuation.resume(returning: $0) })
             }
         }
-        return await runExclusive(grade, sourceId: sourceId, binding: binding)
+        return await runExclusive(grade, sourceId: sourceId, binding: binding, clear: clear)
     }
 
     /// Runs one apply, then the newest parked one for the same source, if any.
-    private func runExclusive(_ grade: SourceColorGrade, sourceId: String, binding: String) async -> GradeApplyOutcome {
+    private func runExclusive(_ grade: SourceColorGrade, sourceId: String, binding: String,
+                              clear: Bool) async -> GradeApplyOutcome {
         inFlight.insert(sourceId)
-        let outcome = await perform(grade, sourceId: sourceId, binding: binding)
+        let outcome = await perform(grade, sourceId: sourceId, binding: binding, clear: clear)
         finish(sourceId)
         return outcome
     }
@@ -145,21 +150,21 @@ final class SourceGradeStore: ObservableObject {
                 result = .refused(Self.identityChangedText)
             } else if self.inFlight.contains(sourceId) {
                 // A re-assert started in between: park again behind it.
-                result = await self.apply(next.grade, sourceId: sourceId, authoredFor: next.binding)
+                result = await self.apply(next.grade, sourceId: sourceId, authoredFor: next.binding, clear: next.clear)
             } else {
-                result = await self.runExclusive(next.grade, sourceId: sourceId, binding: next.binding)
+                result = await self.runExclusive(next.grade, sourceId: sourceId, binding: next.binding, clear: next.clear)
             }
             next.resume(result)
         }
     }
 
-    private func perform(_ grade: SourceColorGrade, sourceId: String, binding: String) async -> GradeApplyOutcome {
+    private func perform(_ grade: SourceColorGrade, sourceId: String, binding: String,
+                         clear: Bool) async -> GradeApplyOutcome {
         let started = generation
         let wire: SourceColorGrade
-        do { wire = try grade.validated(range: SourceColorGrade.wireRange) }
+        do { wire = try (clear ? SourceColorGrade() : grade).validated(range: SourceColorGrade.wireRange) }
         catch let error as GradeValidationError { return .refused("Grade was not applied: \(error.message)") }
         catch { return .refused("Grade was not applied: \(error.localizedDescription)") }
-        let clear = wire.isNeutral
         // G2: every apply that carries a document registers it first (the core's cache is weak
         // plus 16 recent, and a respawned core has none), by the SHA-256 of the exact text sent.
         var documentRef: String?
@@ -355,7 +360,8 @@ final class SourceGradeStore: ObservableObject {
             let present: Bool
             do { present = try await self.query(sourceId) == .present } catch { return }
             guard present, self.generation == started else { return }
-            let outcome = await self.perform(pending.grade, sourceId: sourceId, binding: pending.binding)
+            // A re-assert restores a session grade, which is never a clear.
+            let outcome = await self.perform(pending.grade, sourceId: sourceId, binding: pending.binding, clear: false)
             switch outcome {
             case .applied:
                 if pending.fromSaved { self.appliedSavedThisLaunch.insert(sourceId) }

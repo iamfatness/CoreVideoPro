@@ -41,6 +41,7 @@ extension ShellTests {
             ("grade/editor-apply-and-done", testApplyAndDoneClosesOnlyOnAcceptanceAndDiscardSendsNothing),
             ("grade/editor-saved-zoom-draft", testASavedZoomGradeOpensAsADraft),
             ("grade/editor-reset-is-clear", testResetReturnsTheSourceToTheProgramLook),
+            ("grade/editor-edit-after-reset-cancels-the-clear", testAnEditAfterResetCancelsTheClear),
             ("grade/inspector-line", testTheInspectorLineSaysWhatTheSourceFollows),
             // Task 9: the advanced document, register-before-apply, presets.
             ("grade/advanced-portable-verdicts", testAdvancedDocumentsHaveThePortableVerdicts),
@@ -262,9 +263,9 @@ extension ShellTests {
         return AppModel()
     }
     @MainActor static func awaitApply(_ store: SourceGradeStore, _ grade: SourceColorGrade,
-                                      _ sourceId: String, binding: String) -> GradeApplyOutcome? {
+                                      _ sourceId: String, binding: String, clear: Bool = false) -> GradeApplyOutcome? {
         var outcome: GradeApplyOutcome?
-        Task { outcome = await store.apply(grade, sourceId: sourceId, authoredFor: binding) }
+        Task { outcome = await store.apply(grade, sourceId: sourceId, authoredFor: binding, clear: clear) }
         spin(until: { outcome != nil }, limit: 3)
         return outcome
     }
@@ -491,10 +492,19 @@ extension ShellTests {
         let (saved, _) = SourceGradeFile.load(from: file)
         expectEqual(saved.grades["capture:cam"]?.exposure, 5, "saved under the stable key")
         expectEqual(saved.grades.count, 1, "a Zoom source without a persistentId is never persisted")
-        // Reset (neutral) is a clear: the core forgets the grade, the store forgets both.
+        // Owner ruling 2026-11-16 (Windows parity): a NEUTRAL grade is a real grade that
+        // overrides the Program look. Only an explicit clear (the editor's Reset) forgets it.
         expectEqual(awaitApply(store, SourceColorGrade(), "capture:cam", binding: cam.binding), .applied(revision: 2),
-                    "a clear is acknowledged as a new revision")
-        expectEqual(core.requests("set-source-grade").last?["clear"] as? Bool, true, "neutral is sent as clear:true")
+                    "a neutral grade is applied")
+        expect(core.requests("set-source-grade").last?["clear"] == nil, "a neutral grade is never sent as a clear")
+        expect(core.isGraded("capture:cam"), "the core keeps grading the source (neutral, ignoring the Program look)")
+        expect(store.isGraded("capture:cam"), "a neutral grade is the source's own grade")
+        store.flush()
+        expectEqual(SourceGradeFile.load(from: file).file.grades["capture:cam"]?.exposure, 0, "a neutral grade is saved")
+        // The explicit clear: the core forgets the grade, the store forgets both.
+        expectEqual(awaitApply(store, SourceColorGrade(), "capture:cam", binding: cam.binding, clear: true),
+                    .applied(revision: 3), "a clear is acknowledged as a new revision")
+        expectEqual(core.requests("set-source-grade").last?["clear"] as? Bool, true, "an explicit clear is sent as clear:true")
         expect(!core.isGraded("capture:cam"), "the core no longer grades the source")
         store.flush()
         expect(SourceGradeFile.load(from: file).file.grades["capture:cam"] == nil, "a neutral grade is not saved")
@@ -503,7 +513,7 @@ extension ShellTests {
         store.coreGenerationChanged()
         store.observe(sourceGrades: [], sources: [cam], now: Date(timeIntervalSince1970: 9_000))
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-        expectEqual(core.requests("set-source-grade").count, 3, "nothing to re-assert after a clear")
+        expectEqual(core.requests("set-source-grade").count, 4, "nothing to re-assert after a clear")
     }
 
     @MainActor static func testRelaunchReappliesCaptureButZoomOnlyAsDraft() {   // D2
@@ -683,12 +693,38 @@ extension ShellTests {
         guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "opens"); return }
         editor.lut = "punch"; editor.edited()
         spin(until: { model.sourceGrades.isGraded("capture:cam") }, limit: 2)
-        editor.reset()
+        // Owner ruling 2026-11-16 (Windows parity): editing back to neutral by hand is a real
+        // grade, so the source keeps ignoring the Program look. Only Reset clears.
+        editor.lut = "none"; editor.edited()
         spin(until: { core.requests("set-source-grade").count == 2 }, limit: 2)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        expect(core.requests("set-source-grade").last?["clear"] == nil, "a hand-made neutral grade is not a clear")
+        expect(model.sourceGrades.isGraded("capture:cam"), "the source keeps its own (neutral) grade")
+        editor.reset()
+        spin(until: { core.requests("set-source-grade").count == 3 }, limit: 2)
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         expectEqual(core.requests("set-source-grade").last?["clear"] as? Bool, true, "Reset is sent as clear:true")
         expect(!model.sourceGrades.isGraded("capture:cam"), "the source follows the Program Look again")
         expectEqual(GradeEditorModel.resetNotice, "Reset returns this source to the Program Look.", "the D6 copy is gone")
+    }
+
+    /// Owner ruling 2026-11-16: only Reset clears. With live editing off, an edit made after
+    /// Reset and before Apply is a real grade, so Apply must not send a clear.
+    @MainActor static func testAnEditAfterResetCancelsTheClear() {
+        let core = FakeGradeCore(); core.setEpoch("capture:cam", 0)
+        let model = gradeModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "opens"); return }
+        editor.liveEditing = false
+        editor.reset()
+        editor.lut = "punch"; editor.edited()
+        var applied: Bool?
+        Task { applied = await editor.applyAndDone() }
+        spin(until: { applied != nil }, limit: 3)
+        expectEqual(applied, true, "Apply is acknowledged")
+        expect(core.requests("set-source-grade").last?["clear"] == nil, "the edit after Reset cancelled the clear")
+        expect(model.sourceGrades.isGraded("capture:cam"), "the source keeps the edited grade")
     }
 
     static func testTheInspectorLineSaysWhatTheSourceFollows() {

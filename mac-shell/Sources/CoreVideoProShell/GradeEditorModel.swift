@@ -30,6 +30,9 @@ final class GradeEditorModel: ObservableObject, Identifiable {
     @Published private(set) var history = GradeHistory()
     /// The grade after the last recorded edit: what an undo step stores.
     private var recorded: SourceColorGrade
+    /// Set only by Reset: the next send asks the core to forget this source's grade (follow the
+    /// Program Look). Any other edit cancels it, so a neutral grade made by hand stays a real grade.
+    private var clearRequested = false
 
     static let initialStatus = "Basic controls retain their established scale."
     /// D3 (spec §5.4): there is no private preview on Metal yet.
@@ -78,7 +81,10 @@ final class GradeEditorModel: ObservableObject, Identifiable {
 
     /// After any control change: one undo step (per gesture), then, when live, the store sends
     /// it (one in flight per source).
-    func edited() {
+    func edited() { edited(clearing: false) }
+
+    private func edited(clearing: Bool) {
+        clearRequested = clearing
         rememberEdit()
         guard liveEditing else { return }
         Task { _ = await send() }
@@ -104,11 +110,12 @@ final class GradeEditorModel: ObservableObject, Identifiable {
         return applied
     }
 
-    /// Look "none", every axis 0 and no document; sent as a clear when live (D6 override).
+    /// Look "none", every axis 0 and no document, sent as a clear: the source follows the
+    /// Program Look again (D6 override). A neutral grade built by hand is not a clear.
     func reset() {
         lut = "none"; exposure = 0; contrast = 0; saturation = 0; temperature = 0
         document = nil; selectedAdjustmentId = nil
-        edited()
+        edited(clearing: true)
     }
 
     // ── G2: the advanced panel ───────────────────────────────────────────────
@@ -213,6 +220,7 @@ final class GradeEditorModel: ObservableObject, Identifiable {
             selectedAdjustmentId = grade.advanced?.operations.first?.id
         }
         recorded = currentGrade
+        clearRequested = false
         if liveEditing { Task { _ = await send() } }
     }
 
@@ -247,7 +255,9 @@ final class GradeEditorModel: ObservableObject, Identifiable {
         isApplying = true
         let before = status
         status = "Applying grade…"                                         // Apply.cs:46
-        let outcome = await store.apply(currentGrade, sourceId: sourceId, authoredFor: binding)
+        let clear = clearRequested
+        clearRequested = false
+        let outcome = await store.apply(currentGrade, sourceId: sourceId, authoredFor: binding, clear: clear)
         isApplying = false
         switch outcome {
         case .applied(let revision):
