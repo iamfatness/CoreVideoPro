@@ -13,6 +13,7 @@ enum GradeSnapshotHarness {
         guard let mode = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_GRADE"] else { return }
         guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam-1") else { return }
         editor.lut = "warm-film"; editor.exposure = 4; editor.saturation = -6
+        if mode == "staged-advanced" { stageAdvanced(editor) }
         let pane = SourceGradeEditorPane(editor: editor) {}
             .environmentObject(model)
         write(pane, width: 520, to: dir + "/grade-editor-\(mode).png")
@@ -24,6 +25,20 @@ enum GradeSnapshotHarness {
         .padding(14)
         .environmentObject(model)
         write(inspector, width: 360, to: dir + "/grade-inspector-section.png")
+    }
+
+    /// Three adjustments, one of them a pasted curves operation (the D9 line).
+    private static func stageAdvanced(_ editor: GradeEditorModel) {
+        editor.setAdvancedExpanded(true)
+        editor.addPrimaries()
+        editor.editSelected { $0.saturation = 0.6; $0.name = "Desaturate" }
+        editor.addPrimaries()
+        var curves = GradeOperation(); curves.kind = "curves"; curves.name = "Soft shoulder"
+        curves.curves[0] = [GradeCurvePoint(x: 0, y: 0), GradeCurvePoint(x: 0.6, y: 0.7), GradeCurvePoint(x: 1, y: 0.95)]
+        var document = editor.document ?? AdvancedGradeDocument()
+        document.operations.append(curves)
+        if let json = try? document.canonicalJSON() { _ = editor.paste(json) }
+        editor.selectedAdjustmentId = curves.id
     }
 
     private static func write<V: View>(_ view: V, width: CGFloat, to path: String) {

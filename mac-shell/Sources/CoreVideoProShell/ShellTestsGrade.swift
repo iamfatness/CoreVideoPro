@@ -48,6 +48,11 @@ extension ShellTests {
             ("grade/presets-cross-platform", testPresetsMoveBetweenPlatforms),
             ("grade/advanced-register-every-apply", testEveryApplyRegistersItsDocumentAndARespawnReuploads),
             ("grade/advanced-explicit-nulls", testExplicitNullsAreRefused),
+            // Task 10: advanced panel, undo/redo, copy/paste.
+            ("grade/history-gesture-and-depth", testGradeHistoryIsOneStepPerGestureAndHundredDeep),
+            ("grade/editor-expand-draft-undo-preset", testExpandingIsADraftAndUndoRestoresAWholePreset),
+            ("grade/editor-paste-no-leak", testAPasteWithLiveEditingLeaksNoIntermediateValues),
+            ("grade/editor-eight-and-invalid", testTheEightAdjustmentLimitAndAnInvalidEditAreRefusedWithoutChange),
         ]
     }
 
@@ -802,5 +807,95 @@ extension ShellTests {
             expect(decoded == nil || (try? decoded!.validate()) == nil,
                    "\(text) is refused (AdvancedGradeEditorTests.cs UnsupportedAndMalformedDocuments…)")
         }
+    }
+
+    // ── Task 10 ──────────────────────────────────────────────────────────────
+
+    static func testGradeHistoryIsOneStepPerGestureAndHundredDeep() {
+        var history = GradeHistory()
+        var current = SourceColorGrade()
+        history.beginGesture()
+        for value in 1...20 { history.remember(current); current.exposure = value }   // one slider drag
+        history.endGesture()
+        expectEqual(history.undo(from: current)?.exposure, 0, "a whole drag is one undo step")
+        var history2 = GradeHistory()
+        var grade = SourceColorGrade()
+        for value in 1...150 { history2.remember(grade); grade.exposure = value % 50 }
+        var undone = 0
+        while let previous = history2.undo(from: grade) { grade = previous; undone += 1 }
+        expectEqual(undone, GradeHistory.depth, "history keeps exactly 100 entries")
+    }
+
+    @MainActor static func testExpandingIsADraftAndUndoRestoresAWholePreset() {
+        let core = FakeGradeCore(); core.setEpoch("capture:cam", 0)
+        let model = gradeModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "opens"); return }
+        // Fixture corrected: the plan's draft turned live editing off itself before expanding,
+        // so "expanding makes edits a draft" stayed green with expansion leaving it on (its own
+        // mutation 4). The basic edit now goes live first; expanding must turn live editing off.
+        editor.lut = "warm-film"; editor.exposure = 2; editor.edited()
+        spin(until: { core.requests("set-source-grade").count == 1 }, limit: 2)
+        expect(editor.liveEditing, "precondition: live before expanding")
+        editor.setAdvancedExpanded(true)
+        expect(!editor.liveEditing, "expanding makes edits a draft")
+        expectEqual(editor.status, "Draft — Apply Live sends this grade to the show.", "VM.Advanced.cs:75")
+        editor.addPrimaries()
+        editor.editSelected { $0.saturation = 0 }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        expectEqual(core.requests("set-source-grade").count, 1, "nothing more reaches air from a draft")
+        expectEqual(editor.indicator, "Advanced adjustments active", "C# AdvancedIndicator")
+        // Paste a preset as ONE undo step (port of AdvancedGradeEditorTests.cs:28).
+        let preset = try! GradePreset.encode(SourceColorGrade(lut: "punch", exposure: 15))
+        expect(editor.paste(preset), "paste accepted")
+        expectEqual(editor.exposure, 15, "pasted values")
+        expect(editor.document == nil, "a preset without a document clears the draft's document")
+        editor.undo()
+        expectEqual(editor.exposure, 2, "undo restores the basic values")
+        expectEqual(editor.lut, "warm-film", "and the look")
+        expectEqual(editor.document?.operations.count, 1, "and the document, in one step")
+        editor.redo()
+        expectEqual(editor.exposure, 15, "redo")
+    }
+
+    @MainActor static func testAPasteWithLiveEditingLeaksNoIntermediateValues() {
+        let core = FakeGradeCore(); core.setEpoch("capture:cam", 0)
+        let model = gradeModel()
+        model.quitRequestForTesting = { body, _ in try await core.handle(body) }
+        model.applySnapshotForTesting(["captureDevices": [["id": "cam", "name": "Cam", "connectionState": "connected"]]])
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:cam") else { expect(false, "opens"); return }
+        expect(editor.liveEditing, "precondition: live")
+        let preset = try! GradePreset.encode(SourceColorGrade(lut: "cool-broadcast", exposure: -7, contrast: 3, saturation: 4, temperature: -2))
+        expect(editor.paste(preset), "paste accepted")
+        spin(until: { core.requests("set-source-grade").count >= 1 }, limit: 2)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        let sets = core.requests("set-source-grade")
+        expectEqual(sets.count, 1, "exactly one apply for a paste (VM.Advanced.cs:169-172)")
+        let sent = sets.first?["grade"] as? JSONObject ?? [:]
+        expectEqual(sent["lut"] as? String, "cool-broadcast", "with the final look")
+        expectEqual(FakeGradeCore.int(sent["exposure"]), -7, "and the final exposure")
+        expectEqual(FakeGradeCore.int(sent["temperature"]), -2, "and the final temperature")
+    }
+
+    @MainActor static func testTheEightAdjustmentLimitAndAnInvalidEditAreRefusedWithoutChange() {
+        let model = gradeModel()
+        guard case .opened(let editor) = model.openGradeEditor(sourceId: "capture:x") else { expect(false, "opens"); return }
+        editor.setAdvancedExpanded(true)
+        for _ in 0..<8 { editor.addPrimaries() }
+        editor.addPrimaries()
+        expectEqual(editor.document?.operations.count, 8, "at most eight")
+        expectEqual(editor.status, "A grade can contain up to eight adjustments.", "VM.Advanced.cs:119")
+        editor.duplicateSelected()
+        expectEqual(editor.document?.operations.count, 8, "duplicate respects the limit")
+        let before = editor.document
+        editor.editSelected { $0.gamma = 0.05 }
+        expectEqual(editor.document, before, "an out-of-range edit leaves the draft unchanged")
+        expectEqual(editor.status, "Grade parameter is outside its supported range.", "C# Validate message")
+        let ids = editor.document?.operations.map(\.id) ?? []
+        guard ids.count > 1 else { expect(false, "eight adjustments exist"); return }
+        editor.selectedAdjustmentId = ids[1]
+        editor.moveSelected(-1)
+        expectEqual(editor.document?.operations.first?.id, ids[1], "Up moves the selection one place")
     }
 }
