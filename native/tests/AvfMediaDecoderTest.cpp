@@ -315,9 +315,13 @@ TEST(AvfMediaDecoder, A440HzClipDecodesTo440HzStereoAt48k) {
 
 // #1214. The owner must deliver a non-looping clip's audio to its end. The
 // baseline is the SAME decoder read alone on the owner's 20 ms slot cadence
-// until it has nothing left (what the file actually holds, AAC padding
-// included); the REAL MediaTransports owner must then deliver within one
-// window of it before (and after) it calls the clip Ended.
+// until it has nothing left, which proves the file's audio runs to its end.
+// The REAL MediaTransports owner is then judged on the TAIL: the playback
+// position (the decoder's clock, published in the snapshot) at which its last
+// audible window was delivered must be within one window of the media's end.
+// The window COUNT is not the judge: the owner's audio starts a window or two
+// late on a cold AVFoundation open (its demand clock runs from the open), which
+// is a start-up property and not this defect.
 #include "core/MediaTransports.h"
 namespace {
 bool audible(const modules::AudioFrame& frame) {
@@ -353,7 +357,7 @@ TEST(AvfMediaDecoder, TheOwnerDeliversANonLoopingClipsAudioToItsEnd) {
       if (!frames.empty() && audible(frames.front())) { ++baseline; silentSlots = 0; } else if (baseline > 0) ++silentSlots;
     }
   }
-  ASSERT_GE(baseline, 45) << "fixture fact: a 1 s tone is ~50 windows of 20 ms";
+  ASSERT_GE(baseline, 49) << "fixture fact: the file holds a 1 s tone, 50 windows of 20 ms";
 
   core::MediaTransports t(modules::createAvFoundationMediaDecoderFactory());
   core::MediaTransportDesired desired;
@@ -362,21 +366,34 @@ TEST(AvfMediaDecoder, TheOwnerDeliversANonLoopingClipsAudioToItsEnd) {
   auto opened = t.apply({desired}, 0);
   ASSERT_EQ(opened.size(), 1u);
   auto e = opened.front().entry;
-  int delivered = 0, deliveredWhenEnded = -1;
-  int64_t endedAtMs = -1;
+  int delivered = 0;
+  int64_t endedAtMs = -1, durationMs = -1, lastAudibleAtPositionMs = -1, positionWhenEnded = -1;
   for (const auto deadline = steadyMs() + 5000; steadyMs() < deadline;) {
     const auto now = steadyMs();
     (void)core::MediaTransports::selectVideo(*e, now * 10000);
-    for (const auto& window : t.popAudio(now)) if (audible(window)) ++delivered;
+    int64_t position = -1;
     bool ended = false;
-    for (const auto& row : t.snapshot()) if (row.sourceId == "media:fx") ended = row.state == core::MediaTransportState::Ended;
-    if (ended && endedAtMs < 0) { endedAtMs = now; deliveredWhenEnded = delivered; }
+    for (const auto& row : t.snapshot()) {
+      if (row.sourceId != "media:fx") continue;
+      ended = row.state == core::MediaTransportState::Ended;
+      position = row.positionMs;
+      if (row.durationMs > 0) durationMs = row.durationMs;
+    }
+    for (const auto& window : t.popAudio(now)) {
+      if (audible(window)) { ++delivered; lastAudibleAtPositionMs = position; }
+    }
+    if (ended && endedAtMs < 0) { endedAtMs = now; positionWhenEnded = lastAudibleAtPositionMs; }
     if (endedAtMs >= 0 && now - endedAtMs > 300) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-  std::fprintf(stderr, "[avf-clip-end] audible windows: decoder alone %d, owner %d (%d when Ended)\n", baseline,
-               delivered, deliveredWhenEnded);
+  std::fprintf(stderr, "[avf-clip-end] audible windows: decoder alone %d, owner %d; last audible window at "
+               "position %lld ms (%lld when Ended) of %lld ms\n", baseline, delivered,
+               static_cast<long long>(lastAudibleAtPositionMs), static_cast<long long>(positionWhenEnded),
+               static_cast<long long>(durationMs));
   ASSERT_GE(endedAtMs, 0) << "the clip never reached Ended";
-  EXPECT_GE(delivered, baseline - 1) << "the owner cut the clip's audio tail";
-  EXPECT_GE(deliveredWhenEnded, baseline - 1) << "Ended was entered before the audio drained";
+  ASSERT_EQ(durationMs, 1000) << "fixture fact";
+  // The last window starts at that position and covers 20 ms; one more window of slack for the
+  // snapshot's position being sampled by the worker, not at the pop.
+  EXPECT_GE(lastAudibleAtPositionMs, durationMs - 40) << "the owner cut the clip's audio tail";
+  EXPECT_EQ(positionWhenEnded, lastAudibleAtPositionMs) << "audio was still delivered after Ended";
 }
