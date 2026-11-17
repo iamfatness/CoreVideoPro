@@ -142,13 +142,24 @@ struct ShellApp: App {
                 .studioChrome()
         }
 
-        // Picture control, the macOS twin of ColorGradeEditorWindow. A window
-        // (not a tab) because grading is done while WATCHING program.
-        Window("Color Grade", id: PopoutWindow.colorGrade) {
+        // The Program Look (grading plan D1): the programme-wide picture control
+        // for sources without their own grade. A window (not a tab) because
+        // grading is done while WATCHING program.
+        Window("Program Look", id: PopoutWindow.colorGrade) {
             ColorGradePane()
                 .environmentObject(model)
                 .modifier(MainWindowOpenerRegistration())
                 .frame(minWidth: 420, minHeight: 320)
+                .studioChrome()
+        }
+
+        // Per-source grade editors (grading plan Task 6), one value window per
+        // source; opened from the Sources inspector's Picture tab.
+        WindowGroup("Color grade", id: PopoutWindow.sourceGrade, for: String.self) { $sourceId in
+            SourceGradeEditorWindow(sourceId: sourceId ?? "")
+                .environmentObject(model)
+                .modifier(MainWindowOpenerRegistration())
+                .frame(minWidth: 460, minHeight: 520)
                 .studioChrome()
         }
 

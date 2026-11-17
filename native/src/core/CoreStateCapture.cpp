@@ -675,6 +675,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   gradeEditorCount_ = core.gradePreviews_.size();
   gradeEventBytes_ = core.gradePreviews_.pendingEventBytes();
   gradeEventsRefused_ = core.gradePreviews_.eventsRefused();
+  sourceGradeStatuses_ = core.sourceGrades_.statuses();
   previewComposite_ = core.hasPreviewScene();
   previewPlanLayerCount_ = core.audioWorkerActive_ ? core.lastPreviewPlanLayerCount_ :
       previewComposite_ ? static_cast<int>(core.buildPreviewCompositorRenderPlan({}).layers.size()) : 0;
@@ -939,6 +940,17 @@ rpc::Json CoreStateCapture::sessionState(const rpc::Json& engineCapture) const {
   const auto capturePreparation = modules_.captureDevice->shmCapturePreparationDiagnostics();
   const auto monitorWorker = modules_.compositor->monitorDiagnostics();
   state.emplace("gradePreview", GradePreviewController::diagnosticsFor(*modules_.compositor, gradeEditorCount_, gradeEventBytes_, gradeEventsRefused_));
+  {
+    // G0: one row per accepted per-source grade, published unconditionally (an empty
+    // array when none). Captured under coreMutex above; at most 256 small rows.
+    rpc::Json::Array rows;
+    rows.reserve(sourceGradeStatuses_.size());
+    for (const auto& status : sourceGradeStatuses_)
+      rows.push_back(rpc::Json::Object{{"sourceId", status.sourceId}, {"revision", double(status.revision)},
+          {"appliedEpoch", double(status.appliedEpoch)}, {"liveEpoch", double(status.liveEpoch)},
+          {"livePresent", status.livePresent}, {"active", status.active}});
+    state.emplace("sourceGrades", std::move(rows));
+  }
   state.emplace("deliveryEvidence", core::deliveryEvidenceSnapshot());
   state.emplace("realtimeEvidence", rpc::Json::Object{
       {"zoomEngineForbiddenAcquisitions", static_cast<double>(

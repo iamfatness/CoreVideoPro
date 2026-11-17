@@ -1254,6 +1254,11 @@ rpc::Json MediaCore::applySourceGrade(const rpc::Json& command) {
   return sourceGrades_.apply(command,readColorGrade(*grade));
 }
 
+rpc::Json MediaCore::querySourceGrade(const std::string& sourceId) const {
+  const auto q = sourceGrades_.query(sourceId);
+  return rpc::Json::Object{{"present", q.present}, {"sourceEpoch", double(q.sourceEpoch)}, {"revision", double(q.revision)}};
+}
+
 void MediaCore::applyCommandMutation(const rpc::Json& command) {
   // Validate every nested grade before mutating any part of a scene/batch entry.
   const auto validate = [&](const auto& self, const rpc::Json& node) -> bool {

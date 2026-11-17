@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
@@ -75,5 +76,31 @@ public sealed class AdvancedGradeEditorTests
         Assert.False(editor.PasteGradeJson("{\"version\":3,\"operations\":[]}"));Assert.Equal(before,editor.Revision);
         Assert.False(editor.PasteGradeJson("{\"version\":2,\"operations\":null}"));Assert.Equal(before,editor.Revision);
         Assert.False(editor.PasteGradeJson("{\"version\":2,\"operations\":[null]}"));Assert.Equal(before,editor.Revision);
+    }
+    // Grading plan 2026-11-16, Task 8: a .cvgrade written by the Mac shell pastes on Windows.
+    private static string GradeFixturePath()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var path = Path.Combine(directory.FullName, "contracts", "grade.fixtures.json");
+            if (File.Exists(path)) return path;
+            directory = directory.Parent;
+        }
+        throw new FileNotFoundException("contracts/grade.fixtures.json");
+    }
+    [Fact] public void MacPresetsPasteOnWindows()
+    {
+        using var file = JsonDocument.Parse(File.ReadAllText(GradeFixturePath()));
+        foreach (var entry in file.RootElement.GetProperty("presets").EnumerateArray().Where(e => e.GetProperty("origin").GetString() == "mac"))
+        {
+            var editor = Editor(); editor.LiveEditing = false;
+            Assert.True(editor.PasteGradeJson(entry.GetProperty("text").GetString()!), entry.GetProperty("name").GetString());
+            var expect = entry.GetProperty("expect");
+            Assert.Equal(expect.GetProperty("lut").GetString(), editor.Lut);
+            Assert.Equal(expect.GetProperty("exposure").GetInt32(), editor.Exposure);
+            Assert.Equal(expect.GetProperty("saturation").GetInt32(), editor.Saturation);
+            Assert.Equal(expect.GetProperty("operations").GetInt32(), editor.Document.Operations.Length);
+        }
     }
 }

@@ -1010,7 +1010,7 @@ extension ShellTests {
         expectEqual(model.sourceGradeContext(slotId: 4)?.gradeSourceId, "capture:cam1", "a capture slot: capture:<id>")
         expect(model.sourceGradeContext(slotId: 4)?.persistentId == nil, "no persistentId for capture")
         expect(model.sourceGradeContext(slotId: 9) == nil, "unassigned: no context")
-        expect(!AppModel.gradeEditorAvailable, "Grade actions stay hidden until the grading plan turns them on")
+        expect(AppModel.gradeEditorAvailable, "the grading plan (G1) turned the inspector's Grade section on")
     }
 }
 

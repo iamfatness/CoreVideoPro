@@ -241,6 +241,11 @@
       "qualification": "include",
       "control": "include"
     },
+    "sourceGrades": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
     "realtimeEvidence": {
       "typed": "omit",
       "qualification": "include",

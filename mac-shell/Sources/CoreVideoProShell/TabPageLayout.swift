@@ -202,6 +202,7 @@ enum TabSnapshotHarness {
                 print("tab snapshot \(url.path) size=\(size.map { "\($0.width)x\($0.height)" } ?? "FAILED")")
             }
         }
+        GradeSnapshotHarness.render(model: model, dir: dir)   // COREVIDEO_SHELL_GRADE only
         exit(0)
     }
 }
