@@ -376,4 +376,39 @@ TEST(AvfMediaPixel, AStillSceneBackgroundRenders) {
   EXPECT_TRUE(green) << "the still background never rendered; last centre " << show(pixel);
 }
 
+TEST(AvfMediaPixel, ANonLoopingClipEndsOnProgramOnItsLastFrame) {
+  // #1214. Fixture: 640x360 @30, 27 RED, then ONE frame each of BLUE, GREEN and WHITE (1 s). The
+  // clip's last frame is WHITE, and the two before it are individually identifiable too, so a clip
+  // that ends short says by how many frames.
+  constexpr Pixel kWhite = {0xD0, 0xD0, 0xD0};
+  const auto p = tmp("end.mp4"); Cleanup c{p};
+  ASSERT_EQ(corevideo::testing::writeFlatColourClip(p.string(), 640, 360, 30,
+                {{27, 0x20, 0x20, 0xE0}, {1, 0xE0, 0x20, 0x20}, {1, 0x20, 0xE0, 0x20}, {1, 0xD0, 0xD0, 0xD0}}), "");
+  MAKE_CORE_OR_SKIP(core, "ANonLoopingClipEndsOnProgramOnItsLastFrame");
+  (void)tick(core, {scene("load-scene-graph", "s", {mediaRoute("clip", "stinger", p)})});
+  ASSERT_TRUE(tickUntilCentre(core, kRed, 3000)) << "the clip never came on air";
+  const auto name = [&](const Pixel& pixel) -> std::string {
+    if (near(pixel, kRed)) return "RED (27 or more frames short)";
+    if (near(pixel, kBlue)) return "BLUE (2 frames short)";
+    if (near(pixel, kGreen)) return "GREEN (1 frame short)";
+    if (near(pixel, kWhite)) return "WHITE (the last frame)";
+    return show(pixel);
+  };
+  int64_t endedAtMs = -1;
+  std::string onAirWhenEnded;
+  Pixel pixel{};
+  for (const auto deadline = steadyMs() + 4000; steadyMs() < deadline;) {
+    const auto state = tick(core);
+    ASSERT_TRUE(centre(core, pixel));
+    const auto* row = mediaRow(state, "media:clip");
+    ASSERT_NE(row, nullptr);
+    if (endedAtMs < 0 && row->getString("state") == "ended") { endedAtMs = steadyMs(); onAirWhenEnded = name(pixel); }
+    if (endedAtMs >= 0 && steadyMs() - endedAtMs > 500) break;
+  }
+  std::fprintf(stderr, "[avf-pixel] on air when Ended: %s; held 500 ms later: %s\n", onAirWhenEnded.c_str(),
+               name(pixel).c_str());
+  ASSERT_GE(endedAtMs, 0) << "the clip never reported ended";
+  EXPECT_TRUE(near(pixel, kWhite)) << "Program froze on " << name(pixel) << ", not the clip's last frame";
+}
+
 #endif  // !COREVIDEO_STUB && COREVIDEO_WITH_METAL && COREVIDEO_WITH_AVF_MEDIA_DECODER

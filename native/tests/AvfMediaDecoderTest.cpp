@@ -312,3 +312,71 @@ TEST(AvfMediaDecoder, A440HzClipDecodesTo440HzStereoAt48k) {
   EXPECT_NEAR(crossings / 2.0, 440.0, 10.0) << "the tone, not noise and not a resampled pitch";
   EXPECT_TRUE(d->warnings().empty());
 }
+
+// #1214. The owner must deliver a non-looping clip's audio to its end. The
+// baseline is the SAME decoder read alone on the owner's 20 ms slot cadence
+// until it has nothing left (what the file actually holds, AAC padding
+// included); the REAL MediaTransports owner must then deliver within one
+// window of it before (and after) it calls the clip Ended.
+#include "core/MediaTransports.h"
+namespace {
+bool audible(const modules::AudioFrame& frame) {
+  return std::any_of(frame.pcm.begin(), frame.pcm.end(), [](float v) { return v != 0.f; });
+}
+}  // namespace
+
+TEST(AvfMediaDecoder, TheOwnerDeliversANonLoopingClipsAudioToItsEnd) {
+  const auto p = tmp("tone-end.mp4"); Cleanup c{p};
+  const auto written = corevideo::testing::writeToneClip(p.string(), 1, 440.0);
+  ASSERT_EQ(written, "") << written;
+
+  int baseline = 0;
+  {
+    auto d = modules::createAvFoundationMediaDecoderFactory()();
+    auto* pre = dynamic_cast<modules::IMediaVideoPrefetch*>(d.get());
+    ASSERT_NE(pre, nullptr);
+    auto r = req(p, true);
+    const auto startMs = steadyMs();
+    pre->syncMediaClock(r, startMs);
+    int silentSlots = 0;
+    for (int slot = 0; slot < 150 && silentSlots < 10; ++slot) {
+      const auto slotMs = startMs + slot * 20;
+      std::vector<modules::AudioFrame> frames;
+      for (const auto deadline = slotMs + 300; steadyMs() < deadline;) {
+        if (steadyMs() >= slotMs) {
+          (void)pre->prefetchMediaVideo(r, steadyMs());
+          frames = d->pollMediaAudioFrames(r, slotMs);
+          if (!frames.empty()) break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      if (!frames.empty() && audible(frames.front())) { ++baseline; silentSlots = 0; } else if (baseline > 0) ++silentSlots;
+    }
+  }
+  ASSERT_GE(baseline, 45) << "fixture fact: a 1 s tone is ~50 windows of 20 ms";
+
+  core::MediaTransports t(modules::createAvFoundationMediaDecoderFactory());
+  core::MediaTransportDesired desired;
+  desired.sourceId = "media:fx"; desired.assetId = "fx"; desired.path = p.string(); desired.kind = "stinger";
+  desired.onProgram = true;
+  auto opened = t.apply({desired}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  auto e = opened.front().entry;
+  int delivered = 0, deliveredWhenEnded = -1;
+  int64_t endedAtMs = -1;
+  for (const auto deadline = steadyMs() + 5000; steadyMs() < deadline;) {
+    const auto now = steadyMs();
+    (void)core::MediaTransports::selectVideo(*e, now * 10000);
+    for (const auto& window : t.popAudio(now)) if (audible(window)) ++delivered;
+    bool ended = false;
+    for (const auto& row : t.snapshot()) if (row.sourceId == "media:fx") ended = row.state == core::MediaTransportState::Ended;
+    if (ended && endedAtMs < 0) { endedAtMs = now; deliveredWhenEnded = delivered; }
+    if (endedAtMs >= 0 && now - endedAtMs > 300) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  std::fprintf(stderr, "[avf-clip-end] audible windows: decoder alone %d, owner %d (%d when Ended)\n", baseline,
+               delivered, deliveredWhenEnded);
+  ASSERT_GE(endedAtMs, 0) << "the clip never reached Ended";
+  EXPECT_GE(delivered, baseline - 1) << "the owner cut the clip's audio tail";
+  EXPECT_GE(deliveredWhenEnded, baseline - 1) << "Ended was entered before the audio drained";
+}
