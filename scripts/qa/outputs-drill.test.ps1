@@ -96,7 +96,7 @@ $v14 = @'
   "RecordingWriteQueueDepth": 6, "RecordingFilenamePrefix": "show", "RecordingFormat": "mp4", "RecordingQuality": "high",
   "LowerThirdPosition": "lower-left", "LowerThirdBuildInMs": 700, "LowerThirdBuildOutMs": 550,
   "LowerThirdAppearance": null, "LowerThirdPresets": {}, "BrandDefaultOverlayBehavior": "all-off",
-  "VirtualCameraEnabled": false, "VirtualCameraMirror": false, "VirtualCameraFramerEnabled": false, "VirtualCameraName": null,
+  "VirtualCameraEnabled": false, "VirtualCameraMirror": false, "VirtualCameraFramerEnabled": true, "VirtualCameraName": null,
   "MultiviewLayoutMode": "pgmPvwTop", "MultiviewTileCount": 10, "MultiviewShowLabels": true, "MultiviewShowTally": true,
   "MultiviewShowMeters": false, "MultiviewShowClock": true,
   "SceneBackgroundAssetIds": { "custom-74d5e390": "media-5f953bd23617" },
@@ -141,6 +141,7 @@ try {
     $p = Get-Content $prefsPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert ($p.RecordingTargetFolder -eq 'D:\CoreVideo-QA\drills\t\recordings') 'folder'
     Assert ($p.StreamRtmpEnabled -eq $false) 'RTMP still enabled'
+    Assert ($p.VirtualCameraFramerEnabled -eq $false) 'OH Framer still decorates the judged camera'
     Assert ($p.StreamRtmpStreamKey -ceq 'dpapi:ZmFrZS1rZXktXHUwMGU5LWRvLW5vdC1sZWFr') 'RTMP key changed'
     Assert ($p.StreamRtmpServerUrl -eq 'rtmp://a.example.invalid/live2') 'RTMP url changed'
     Assert ($p.StreamSrtEnabled -and $p.StreamSrtMode -eq 'caller' -and $p.StreamSrtHost -eq '127.0.0.1' -and $p.StreamSrtPort -ceq '50999') 'SRT'

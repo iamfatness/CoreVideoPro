@@ -103,7 +103,10 @@ With a webcam, media sources are not part of the workload.
    there) to `%LOCALAPPDATA%\CoreVideoPro\outputs-drill-backups\...`, outside
    the evidence folder because the files carry the DPAPI-protected RTMP key.
 3. Patches the primary: `RecordingTargetFolder` = `<Out>\recordings`, the ISO
-   selection, RTMP **off**, SRT caller to `127.0.0.1:<free UDP port>`. Every
+   selection, RTMP **off**, the OH Framer **off** (`VirtualCameraFramerEnabled`:
+   its frame graphic covers the edge identity pattern, so a framer-on profile
+   makes every camera frame undecodable; 2026-11-12), SRT caller to
+   `127.0.0.1:<free UDP port>`. Every
    value is written with the app model's JSON type (`StreamSrtPort` is a
    *string*). A patch that changes the JSON kind of any existing value is
    refused, because the app would reject the whole file and silently fall back
