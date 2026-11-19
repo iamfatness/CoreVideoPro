@@ -322,6 +322,16 @@ TEST(AvfMediaDecoder, A440HzClipDecodesTo440HzStereoAt48k) {
 // The window COUNT is not the judge: the owner's audio starts a window or two
 // late on a cold AVFoundation open (its demand clock runs from the open), which
 // is a start-up property and not this defect.
+//
+// The test plays the audio CONSUMER, and it must be a lossless one. The
+// owner's demand clock (MediaAudioDemandClock) drops windows a late consumer
+// missed, by design, so media audio never falls behind video. A wall-clock
+// consumer that stalls 20+ ms inside the clip's last 40 ms (a loaded CI VM)
+// therefore loses the tail and reads exactly like this defect (#1220 CI:
+// "last audible window at position 955"). Both consumers below demand
+// consecutive 20 ms slots on a virtual clock that never runs ahead of the
+// wall clock and never jumps a slot, catching up one slot per pass after a
+// stall, so only the owner's delivery is judged.
 #include "core/MediaTransports.h"
 namespace {
 bool audible(const modules::AudioFrame& frame) {
@@ -346,7 +356,8 @@ TEST(AvfMediaDecoder, TheOwnerDeliversANonLoopingClipsAudioToItsEnd) {
     for (int slot = 0; slot < 150 && silentSlots < 10; ++slot) {
       const auto slotMs = startMs + slot * 20;
       std::vector<modules::AudioFrame> frames;
-      for (const auto deadline = slotMs + 300; steadyMs() < deadline;) {
+      // A slot reached late (the test thread was descheduled) still gets its full wait.
+      for (const auto deadline = (std::max)(slotMs, steadyMs()) + 300; steadyMs() < deadline;) {
         if (steadyMs() >= slotMs) {
           (void)pre->prefetchMediaVideo(r, steadyMs());
           frames = d->pollMediaAudioFrames(r, slotMs);
@@ -368,8 +379,10 @@ TEST(AvfMediaDecoder, TheOwnerDeliversANonLoopingClipsAudioToItsEnd) {
   auto e = opened.front().entry;
   int delivered = 0;
   int64_t endedAtMs = -1, durationMs = -1, lastAudibleAtPositionMs = -1, positionWhenEnded = -1;
+  int64_t demandMs = -1;  // the lossless consumer's clock: the first pop anchors it, then +20 ms per slot
   for (const auto deadline = steadyMs() + 5000; steadyMs() < deadline;) {
     const auto now = steadyMs();
+    if (demandMs < 0) demandMs = now; else if (demandMs + 20 <= now) demandMs += 20;
     (void)core::MediaTransports::selectVideo(*e, now * 10000);
     int64_t position = -1;
     bool ended = false;
@@ -379,7 +392,7 @@ TEST(AvfMediaDecoder, TheOwnerDeliversANonLoopingClipsAudioToItsEnd) {
       position = row.positionMs;
       if (row.durationMs > 0) durationMs = row.durationMs;
     }
-    for (const auto& window : t.popAudio(now)) {
+    for (const auto& window : t.popAudio(demandMs)) {
       if (audible(window)) { ++delivered; lastAudibleAtPositionMs = position; }
     }
     if (ended && endedAtMs < 0) { endedAtMs = now; positionWhenEnded = lastAudibleAtPositionMs; }

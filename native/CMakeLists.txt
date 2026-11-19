@@ -1181,6 +1181,12 @@ if(BUILD_TESTING)
     # label; the sub-second deterministic cases (NoIsoDemandMeansNoRetainedFrames,
     # HeldPictureKeepsItsArrivalIdentity..., StopUnderVideoBackpressure...) stay in
     # the main ctest so CI runs them.
+    # VcamTapDeliversEveryRenderedFrame renders 120 frames paced at real 60 Hz and
+    # asserts zero dropped camera frames: a GPU throughput claim, not logic. The
+    # 4-buffer ring drops (counted, by design) once the GPU falls ~67 ms behind,
+    # and the macOS CI runner's paravirtual GPU has render ticks to 123.7 ms (see
+    # the mac-show-drill note in ci.yml); it failed there on #1220. The drop
+    # accounting itself stays in the main ctest (VcamTapCountsASkipWhenEveryBufferIsBusy).
     set(COREVIDEO_REALTIME_TEST_FILTER
       "AvfCaptureArrival.EveryCameraDeliveryReachesTheIsoRecorderOver10Seconds"
       ":AvfCaptureArrival.FastCameraIsNotDecimatedToTheTickRate"
@@ -1190,7 +1196,8 @@ if(BUILD_TESTING)
       ":AvfProgramTail.SubThresholdVideoSkewIsStillReconciled"
       ":AvfProgramTail.SubThresholdAudioSkewIsStillPadded"
       ":AvfProgramTail.AudioStalledBeforeStopIsPaddedWithSilenceNotCut"
-      ":AvfProgramTail.IsoVideoStalledBeforeStopIsHeldToItsAudioEnd")
+      ":AvfProgramTail.IsoVideoStalledBeforeStopIsHeldToItsAudioEnd"
+      ":MetalCompositor.VcamTapDeliversEveryRenderedFrame")
     string(CONCAT COREVIDEO_REALTIME_TEST_FILTER ${COREVIDEO_REALTIME_TEST_FILTER})
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests"
       "--gtest_filter=-${COREVIDEO_REALTIME_TEST_FILTER}")
