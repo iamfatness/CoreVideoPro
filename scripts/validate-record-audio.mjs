@@ -37,7 +37,9 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
-const buildDir = join(repoRoot, "native", "build-dev");
+// macOS builds into native/build-metal; Windows into native/build-dev.
+const buildDir = process.env.COREVIDEO_BUILD_DIR
+  ?? join(repoRoot, "native", process.platform === "darwin" ? "build-metal" : "build-dev");
 const exeSuffix = process.platform === "win32" ? ".exe" : "";
 const nativeCore = join(buildDir, `corevideo-native${exeSuffix}`);
 const fakeEngine = join(buildDir, `corevideo-zoom-engine-fake${exeSuffix}`);
@@ -56,7 +58,9 @@ if (!existsSync(nativeCore) || (!mediaLeg && !existsSync(fakeEngine))) {
   process.exit(1);
 }
 
-const findTool = (name) => [name, `C:\\ffmpeg\\bin\\${name}.exe`].find((bin) => {
+// PATH first, then Homebrew's Apple Silicon prefix, then the Windows convention.
+const toolCandidates = (name) => [name, `/opt/homebrew/bin/${name}`, `C:\\ffmpeg\\bin\\${name}.exe`];
+const findTool = (name) => toolCandidates(name).find((bin) => {
   const probe = spawnSync(bin, ["-version"], { encoding: "utf8", timeout: 10000 });
   return !probe.error && probe.status === 0;
 });
@@ -70,7 +74,7 @@ let mediaClipPath = null;
 if (mediaLeg) {
   const ffmpegForClip = findTool("ffmpeg");
   if (!ffmpegForClip) {
-    console.error("--media needs ffmpeg (PATH or C:\\ffmpeg\\bin\\ffmpeg.exe) to generate the test clip.");
+    console.error("--media needs ffmpeg (PATH, /opt/homebrew/bin or C:\\ffmpeg\\bin\\ffmpeg.exe) to generate the test clip.");
     process.exit(1);
   }
   mediaTempDir = mkdtempSync(join(tmpdir(), "corevideo-validate-media-"));
@@ -169,7 +173,7 @@ function buildSpinePayload(participants) {
     })),
   ];
   return {
-    readiness: { status: "ready", platform: "windows", sdkVersion: "fake-engine", checks: [], blockers: [], warnings: [], summary: "record-audio validation" },
+    readiness: { status: "ready", platform: process.platform === "darwin" ? "macos" : "windows", sdkVersion: "fake-engine", checks: [], blockers: [], warnings: [], summary: "record-audio validation" },
     participants: participants.map((p) => ({ sdkUserId: p.id, displayName: p.name, role: "guest", videoOn: true, muted: false, talking: true, audioLevel: 60, networkQuality: "good" })),
     subscriptions,
     startCapture: true,
@@ -312,7 +316,7 @@ function mediaAudioVerdict(artifactPath, ffmpegBin, toneHz) {
 }
 
 function ffprobeVerdict(artifactPath) {
-  const candidates = ["ffprobe", "C:\\ffmpeg\\bin\\ffprobe.exe"];
+  const candidates = toolCandidates("ffprobe");
   for (const bin of candidates) {
     const probe = spawnSync(bin, ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", artifactPath], {
       encoding: "utf8",
@@ -366,8 +370,7 @@ try {
           mediaAssetName: "Validation tone",
           mediaAssetKind: "video",
           mediaAssetPath: mediaClipPath,
-          mediaPlaybackKey: `media:${MEDIA_ASSET_ID}:live:1`,
-          mediaAssetPlaying: true,
+          mediaAssetLoop: false,
           rect: { x: 0, y: 0, width: 1, height: 1 },
         }],
       },

@@ -501,6 +501,7 @@ enum SupportBundle {
                         fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory),
                         countStyle: .memory))
         lines.append("core binary: \(paths.corePath ?? "not found")")
+        lines.append("core feeds virtual camera: \(paths.coreCameraEligible ? "yes (installed copy)" : "no (not the pkg-installed copy)")")
         lines.append("engine binary: \(paths.engineBinaryPath ?? "not found")")
         lines.append("log tail limit: \(input.tailByteLimit) bytes per log")
         lines.append("")
@@ -899,12 +900,30 @@ struct DiagnosePane: View {
             DiagSection(title: "Streaming") { DiagRows(items: streamingItems) }
             DiagSection(title: "Zoom / engine") { DiagRows(items: zoomItems) }
             DiagSection(title: "Capture devices") { DiagRows(items: captureItems) }
+            DiagSection(title: "Virtual camera") { DiagRows(items: virtualCameraItems) }
+                .onAppear { model.refreshCameraExtensionDiagnostics() }
             DiagSection(title: "Audio") { DiagRows(items: audioItems) }
             perfSection
             logsSection
             warningsSection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // ── virtual camera (no-support-ticket updates, 2026-11-15) ───────────────
+
+    private var virtualCameraItems: [DiagItem] {
+        let diag = model.virtualCameraDiagnostics()
+        return diag.rows.map { row in
+            let tone: DiagTone
+            switch (row.label, diag.state) {
+            case ("status", .needsReboot), ("update", .updateReady): tone = .warn
+            case ("status", .failed), ("status", .unavailable): tone = .bad
+            case ("device registered", _): tone = diag.device?.registered == true ? .good : .neutral
+            default: tone = .neutral
+            }
+            return DiagItem(label: row.label, value: row.value, tone: tone, wrap: true)
+        }
     }
 
     // ── core ─────────────────────────────────────────────────────────────────
@@ -944,6 +963,10 @@ struct DiagnosePane: View {
                         .map { $0 + " advertised" }),
             DiagItem(label: "core binary", value: paths.corePath ?? "NOT FOUND",
                      tone: paths.corePath == nil ? .bad : .neutral, wrap: true),
+            DiagItem(label: "virtual camera producer",
+                     value: paths.coreCameraEligible ? "installed copy (camera can verify it)"
+                        : "app copy: camera refuses it, reinstall from the .pkg",
+                     tone: paths.coreCameraEligible ? .neutral : .bad, wrap: true),
             DiagItem(label: "engine binary", value: paths.engineBinaryPath ?? "NOT FOUND",
                      tone: paths.engineBinaryPath == nil ? .bad : .neutral, wrap: true),
         ]

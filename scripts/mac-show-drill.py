@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -320,6 +321,111 @@ def stage_evidence(before, after, seconds):
     return rows
 
 
+# ── --media: a clip on Program and a looping video background ────────────────
+# The media decoder copies every decoded frame into CPU BGRA (8.3 MB at 1080p)
+# and the compositor uploads it again, so a clip on air is the load the plain
+# drill never applied. The fixtures are generated once and cached by name.
+MEDIA_CLIP_ID, MEDIA_BG_ID = "drill-clip", "drill-bg"
+MEDIA_CLIP_FPS, MEDIA_BG_FPS = 60.0, 30.0
+MIN_MEDIA_RATE_RATIO = 0.95
+
+
+def find_ffmpeg(explicit):
+    """--ffmpeg <dir-or-exe>, else COREVIDEO_FFMPEG_BIN_DIR, else PATH (the
+    scripts/qa/media-take-ab.py order). None when there is no ffmpeg."""
+    exe = "ffmpeg" + _EXE
+    candidates = []
+    if explicit:
+        candidates.append(explicit if os.path.isfile(explicit) else os.path.join(explicit, exe))
+    if os.environ.get("COREVIDEO_FFMPEG_BIN_DIR"):
+        candidates.append(os.path.join(os.environ["COREVIDEO_FFMPEG_BIN_DIR"], exe))
+    if shutil.which("ffmpeg"):
+        candidates.append(shutil.which("ffmpeg"))
+    return next((c for c in candidates if c and os.path.isfile(c)), None)
+
+
+def media_fixtures(ffmpeg, folder):
+    """(clip path, background path), generating whichever is missing."""
+    os.makedirs(folder, exist_ok=True)
+    clip = os.path.join(folder, "media-clip-1080p60.mp4")
+    background = os.path.join(folder, "media-bg-1080p30.mp4")
+    # 70 s outlasts every phase of the drill, so the clip is live at both ends.
+    jobs = (
+        (clip, ["-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=60", "-f", "lavfi", "-i",
+                "sine=f=440:r=48000", "-t", "70", "-c:v", "libx264", "-preset", "veryfast",
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2"]),
+        (background, ["-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=30", "-t", "10", "-c:v", "libx264",
+                      "-preset", "veryfast", "-pix_fmt", "yuv420p", "-an"]),
+    )
+    for path, arguments in jobs:
+        if os.path.exists(path) and os.path.getsize(path) > 1024:
+            continue
+        partial = path + ".partial.mp4"
+        result = subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y"] + arguments + [partial],
+                                capture_output=True, text=True)
+        if result.returncode != 0 or not os.path.exists(partial):
+            raise RuntimeError("ffmpeg could not write %s: %s" % (path, (result.stderr or "").strip()[:200]))
+        os.replace(partial, path)
+    return clip, background
+
+
+def media_rows(snapshot):
+    """mediaSources rows keyed by mediaAssetId, or None when the node is absent."""
+    rows = (snapshot or {}).get("mediaSources")
+    if not isinstance(rows, list):
+        return None
+    return {row.get("mediaAssetId"): row for row in rows if isinstance(row, dict)}
+
+
+def media_report(first, last, seconds):
+    """The 'Media sources (steady window)' block and its gates.
+
+    `first` / `last` are the snapshots at the two ends of the operator-traffic
+    window. Returns (lines to print, failures). Every failure names its numbers.
+    """
+    lines, failures = [], []
+    before, after = media_rows(first), media_rows(last)
+    if before is None or after is None:
+        return lines, ["core publishes no mediaSources (the node is unconditional)"]
+    lines.append("Media sources (steady window, %.1fs):" % seconds)
+    measured = {}
+    for asset_id, expected_fps in ((MEDIA_CLIP_ID, MEDIA_CLIP_FPS), (MEDIA_BG_ID, MEDIA_BG_FPS)):
+        a, b = before.get(asset_id), after.get(asset_id)
+        if a is None or b is None:
+            failures.append("%s has no mediaSources row (start=%s end=%s)" % (
+                asset_id, "present" if a else "absent", "present" if b else "absent"))
+            continue
+        delta = {key: (b.get(key) or 0) - (a.get(key) or 0)
+                 for key in ("decodedVideoFrames", "presentedVideoFrames", "decoderRestarts")}
+        rate = {key: delta[key] / seconds if seconds > 0 else 0.0
+                for key in ("decodedVideoFrames", "presentedVideoFrames")}
+        measured[asset_id] = (a, b, delta, rate, expected_fps)
+        lines.append(
+            "  %s: state %s -> %s, decoded +%d (%.1f/s), presented +%d (%.1f/s), restarts +%d, "
+            "videoQueued %s" % (asset_id, a.get("state"), b.get("state"), delta["decodedVideoFrames"],
+                                rate["decodedVideoFrames"], delta["presentedVideoFrames"],
+                                rate["presentedVideoFrames"], delta["decoderRestarts"], b.get("videoQueued")))
+    if MEDIA_CLIP_ID in measured:
+        a, b, delta, rate, fps = measured[MEDIA_CLIP_ID]
+        if a.get("state") != "live" or b.get("state") != "live":
+            failures.append("%s is not live at both ends of the window (start=%s end=%s)" % (
+                MEDIA_CLIP_ID, a.get("state"), b.get("state")))
+        for key in ("presentedVideoFrames", "decodedVideoFrames"):
+            if rate[key] < MIN_MEDIA_RATE_RATIO * fps:
+                failures.append("%s %s ran at %.1f/s, below %.1f/s (%.0f%% of its %g fps)" % (
+                    MEDIA_CLIP_ID, key, rate[key], MIN_MEDIA_RATE_RATIO * fps, MIN_MEDIA_RATE_RATIO * 100, fps))
+    if MEDIA_BG_ID in measured:
+        a, b, delta, rate, fps = measured[MEDIA_BG_ID]
+        if rate["presentedVideoFrames"] < MIN_MEDIA_RATE_RATIO * fps:
+            failures.append("%s presentedVideoFrames ran at %.1f/s, below %.1f/s (%.0f%% of its %g fps)" % (
+                MEDIA_BG_ID, rate["presentedVideoFrames"], MIN_MEDIA_RATE_RATIO * fps,
+                MIN_MEDIA_RATE_RATIO * 100, fps))
+    for asset_id, (a, b, delta, rate, fps) in measured.items():
+        if delta["decoderRestarts"] != 0:
+            failures.append("%s decoder restarted %d time(s) in the window" % (asset_id, delta["decoderRestarts"]))
+    return lines, failures
+
+
 def wall_sources(sources):
     return [{"sourceId": f"zoom:{101 + i}", "kind": "zoom",
              "participantId": str(101 + i), "slot": i,
@@ -348,7 +454,29 @@ def main():
                              "(for shared CI runners that cannot source 60 Hz)")
     parser.add_argument("--load", type=int, default=0,
                         help="synthesize N 1080p Zoom feeds (the production wall)")
+    parser.add_argument("--media", action="store_true",
+                        help="put a 1080p60 clip and a looping 1080p30 video background on Program "
+                             "and gate their decode/presentation rates")
+    parser.add_argument("--source-grades", action="store_true",
+                        help="after configure, apply a per-source grade (warm-film, exposure +2) to every "
+                             "wall participant (query-source-grade, then set-source-grade) and gate as usual")
+    parser.add_argument("--ffmpeg", default=None,
+                        help="ffmpeg bin dir or exe for --media fixtures "
+                             "(default: COREVIDEO_FFMPEG_BIN_DIR, then PATH)")
     args = parser.parse_args()
+
+    media_clip = media_background = None
+    if args.media:
+        ffmpeg = find_ffmpeg(args.ffmpeg)
+        if not ffmpeg:
+            print("FAIL harness: --media needs ffmpeg")
+            return 1
+        try:
+            media_clip, media_background = media_fixtures(
+                ffmpeg, os.path.join(REPO, "artifacts", "show-drill"))
+        except RuntimeError as error:
+            print(f"FAIL harness: {error}")
+            return 1
 
     if not os.path.exists(args.core):
         print(f"FAIL core binary not found: {args.core}")
@@ -412,22 +540,66 @@ def main():
                           "routes": [route("pgm-0")]})
         configure.append({"type": "set-preview-scene", "sceneId": "pvw",
                           "routes": [route("pvw-0")]})
+    if args.media:
+        # The same Program scene plus a clip in the top-right quarter and a
+        # looping video background behind everything.
+        program = next(c for c in configure if c["type"] == "load-scene-graph")
+        program["routes"] = program["routes"] + [{
+            "routeId": "pgm-clip", "mode": "fixed", "audioRole": "mix", "fitMode": "fill",
+            "opacity": 1.0, "zIndex": 1, "mediaAssetId": MEDIA_CLIP_ID, "mediaAssetName": MEDIA_CLIP_ID,
+            "mediaAssetKind": "stinger", "mediaAssetPath": media_clip, "mediaAssetLoop": False,
+            "rect": {"x": 0.5, "y": 0, "width": 0.5, "height": 0.5}}]
+        program["background"] = {"mediaAssetId": MEDIA_BG_ID, "mediaAssetName": MEDIA_BG_ID,
+                                 "mediaAssetKind": "stinger", "mediaAssetPath": media_background}
     step("configure", configure, 500)
+
+    if args.source_grades:
+        # Per-source grading (grading plan 2026-11-16, Task 7): the same requests the Mac
+        # store sends. Program carries 101, so at least one routed source is graded on air.
+        time.sleep(1.0)  # let a render tick observe every wall source
+        participants = [str(101 + i) for i in range(args.load)] if args.load else []
+        accepted = 0
+        for pid in participants:
+            query = core.request({"type": "query-source-grade", "sourceId": pid}, step="grade-query") or {}
+            if not query.get("present"):
+                print(f"GRADE {pid}: no frame this tick (present=false); not applied")
+                continue
+            applied = core.request({"type": "set-source-grade", "sourceId": pid,
+                                    "sourceEpoch": query.get("sourceEpoch", 0),
+                                    "expectedRevision": query.get("revision", 0),
+                                    "grade": {"lut": "warm-film", "exposure": 2}}, step="grade-set") or {}
+            if applied.get("accepted"):
+                accepted += 1
+            else:
+                print(f"GRADE {pid}: refused ({applied.get('reason') or applied.get('error')})")
+        print(f"GRADE {accepted}/{len(participants)} per-source grades accepted "
+              f"(warm-film, exposure +2; Program route = 101)")
+        if participants and accepted == 0:
+            failures.append("--source-grades: no per-source grade was accepted, so the run proved nothing")
 
     # 2. Operator traffic at the cadence the shell produces, for the whole run:
     #    2Hz snapshot syncs plus scene re-cues, while the render loop is live.
     start = time.time()
     tick = 0
+    media_first = media_last = None
+    media_first_at = media_last_at = 0.0
     while time.time() - start < args.seconds:
         tick += 1
         elapsed = int((time.time() - start) * 1000) + 1000
         if tick % 5 == 0:
             # Re-cue preview (the solo-scene path) — the traffic that flooded.
             solo = "mv-solo-a" if tick % 10 == 0 else "mv-solo-b"
-            step("recue", [{"type": "set-preview-scene", "sceneId": solo,
-                            "routes": [route("solo-0")]}], elapsed)
+            response = step("recue", [{"type": "set-preview-scene", "sceneId": solo,
+                                       "routes": [route("solo-0")]}], elapsed)
         else:
-            step("poll", [], elapsed)
+            response = step("poll", [], elapsed)
+        # Both ends of the operator-traffic window, for the --media block. The
+        # first sample is taken one second in so a cold decoder open is not
+        # counted against the steady rate.
+        if response is not None and time.time() - start >= 1.0:
+            if media_first is None:
+                media_first, media_first_at = response.get("snapshot", {}), time.time()
+            media_last, media_last_at = response.get("snapshot", {}), time.time()
         time.sleep(0.5)
 
     # 3. Record a short session and confirm the artifact is real.
@@ -456,6 +628,10 @@ def main():
 
     # ── assertions ───────────────────────────────────────────────────────────
     snapshot = (stop or {}).get("snapshot", {})
+    if args.source_grades:
+        rows = snapshot.get("sourceGrades") or []
+        print(f"GRADE end of run: {sum(1 for r in rows if r.get('active'))}/{len(rows)} "
+              f"sourceGrades rows active")
 
     # STAGE EVIDENCE for the recorded-rate gate. The muxed rate on its own cannot
     # tell "the compositor never produced 60" from "the compositor produced 60 and
@@ -602,6 +778,21 @@ def main():
                                 f"before assuming that is what happened.")
     else:
         failures.append(f"recording produced no artifact (path={artifact or 'none'})")
+
+    if args.media:
+        print("")
+        media_lines, media_failures = media_report(media_first, media_last, media_last_at - media_first_at)
+        for line in media_lines:
+            print(line)
+        copy_lines = [l for l in core.stderr if l.startswith("[media-decoder] copy ")]
+        for line in copy_lines[-6:]:
+            print(f"  {line}")
+        if not copy_lines:
+            print("  (no [media-decoder] copy lines: a reader logs one per 600 copied frames)")
+        if media_failures:
+            failures.extend("media: " + failure for failure in media_failures)
+        else:
+            print("PASS media sources held their rates with no decoder restart")
 
     multiview = snapshot.get("multiviewSharedTexture") or {}
     roles = {tile.get("role") for tile in multiview.get("tiles", [])}

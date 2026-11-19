@@ -1,7 +1,7 @@
 // ControlApi.swift — the local control API's WIRE CONTRACT, ported from the
 // Windows `native-shell/CoreVideoPro.Control` project (plain net9.0):
 //
-//   ControlActionRegistry.cs  -> ControlCatalog.actions (1.0 subset, Windows text verbatim)
+//   ControlActionRegistry.cs  -> ControlManifest.generated.swift (via contracts/control.manifest.json)
 //   ControlCatalog.TryBind    -> ControlCatalog.bind / coerce
 //   ControlManifest.cs        -> ControlCatalog.manifestJSON()  (PascalCase, like Windows)
 //   Http/HttpControlRouter.cs -> ControlRouter                  (routes, statuses, bodies)
@@ -12,12 +12,15 @@
 // the AppModel adapter is ControlSurface.swift. This file is pure: no AppKit, no
 // sockets, no main actor — every rule here is unit-tested in ControlApiTests.swift.
 //
-// The Mac exposes the 1.0 SUBSET only (Take, FTB, scene select/list, record and
-// stream start/stop). Any other id — including every Windows action the Mac does
-// not implement and the retired `automation.magic|toggle|autoTake.set` — is not
-// in this catalog, so it fails binding with Windows' own "Unknown action" 400,
-// exactly as an unknown id does on Windows. Nothing is advertised that the Mac
-// cannot perform.
+// The catalog is GENERATED (contracts/generate.mjs) from the Windows registry
+// export plus contracts/control.platforms.json, which says per action whether
+// macOS answers it. An id the Mac supports binds exactly as on Windows. An id in
+// the shared manifest the Mac does not support answers 422 with a generated
+// reason ("not available on macOS yet (<workstream>)") and never reaches the
+// surface. An id in neither file — including the retired
+// `automation.magic|toggle|autoTake.set` — keeps Windows' own "Unknown action"
+// 400. GET /manifest lists only supported actions and feedback fields: nothing
+// is advertised that the Mac cannot perform.
 
 import Foundation
 
@@ -56,42 +59,40 @@ struct ControlAction {
 }
 
 enum ControlCatalog {
-    /// Windows `ControlActionRegistry.BuildActions`, filtered to the Mac 1.0
-    /// subset and kept in Windows' declared order with Windows' text verbatim
-    /// (the manifest is golden-tested against the Windows build's output).
-    static let actions: [ControlAction] = [
-        ControlAction(id: "transport.ftb.toggle", title: "Fade to Black",
-                      description: "Fade Program video to black or back in over 300 ms. Audio and output sessions continue."),
-        ControlAction(id: "transport.ftb.set", title: "Set Fade to Black",
-                      description: "Set Program blackout; repeated identical requests do not reverse the fade.",
-                      params: [ControlParam(name: "enabled", type: .bool)]),
-        ControlAction(id: "transport.take", title: "Take", description: "Cut/transition Preview to Program."),
-        ControlAction(id: "transport.record.toggle", title: "Record toggle", description: "Toggle recording."),
-        ControlAction(id: "transport.record.set", title: "Record set",
-                      description: "Start or stop recording explicitly.",
-                      params: [ControlParam(name: "on", type: .bool)]),
-        ControlAction(id: "transport.stream.toggle", title: "Stream toggle", description: "Toggle streaming."),
-        ControlAction(id: "transport.stream.set", title: "Stream set",
-                      description: "Start or stop streaming explicitly.",
-                      params: [ControlParam(name: "on", type: .bool)]),
-        ControlAction(id: "scene.select", title: "Select scene",
-                      description: "Cue a scene to Preview by id. Unknown scene fails and changes nothing; reply includes previewSceneId when applied.",
-                      params: [ControlParam(name: "sceneId", type: .string)]),
-        ControlAction(id: "scene.list", title: "List scenes",
-                      description: "Read the scene rail (id, name, layout; hidden multiview-solo scenes excluded) with previewSceneId and activeSceneId. Changes nothing; reply carries data. Catalog scenes can be removed (#1070), so check here before cueing one by id."),
-    ]
+    /// Every Windows action in Windows' registry order, with its macOS availability.
+    static let all: [ControlManifestEntry] = ControlManifestGenerated.entries
+
+    /// The actions the Mac answers (Windows text verbatim, Windows order).
+    static let actions: [ControlAction] = all.filter { $0.availability == .supported }.map(\.action)
 
     /// Windows `ControlManifest.StateFields`, filtered to the fields the Mac
-    /// `/state` actually publishes (same relative order). Advertising a field the
+    /// `/state` publishes truthfully (same relative order). Advertising a field the
     /// Mac never sends would invite a feedback that can never light.
-    static let feedbackFields = [
-        "recording", "streaming", "engineOn", "canTake", "commandStatus",
-        "activeSceneId", "previewSceneId", "multiviewLayoutMode", "automationOn", "autoTake",
-    ]
+    static let feedbackFields: [String] =
+        ControlManifestGenerated.feedbackFields.filter { $0.availability == .supported }.map(\.field)
 
-    static let oscRoot = "/cvp"
+    static let oscRoot = ControlManifestGenerated.root
 
-    static func action(_ id: String) -> ControlAction? { actions.first { $0.id == id } }
+    private static let byId: [String: ControlManifestEntry] =
+        Dictionary(all.map { ($0.action.id, $0) }, uniquingKeysWith: { first, _ in first })
+
+    /// A SUPPORTED action (an unsupported id is not bindable here).
+    static func action(_ id: String) -> ControlAction? {
+        guard let entry = byId[id], entry.availability == .supported else { return nil }
+        return entry.action
+    }
+
+    /// nil = the id is not in the shared manifest at all.
+    static func availability(_ id: String) -> ControlMacAvailability? { byId[id]?.availability }
+
+    /// The operator's sentence for an id the Mac does not answer; nil when supported.
+    static func unavailableMessage(_ id: String, _ availability: ControlMacAvailability) -> String? {
+        switch availability {
+        case .supported: return nil
+        case .blocked(_, let label): return "'\(id)' is not available on macOS yet (\(label))."
+        case .notApplicable(let reason): return "'\(id)' is not available on macOS (\(reason))."
+        }
+    }
 
     /// Windows `OscAddressMap.ActionIdToAddress`.
     static func oscAddress(_ id: String) -> String { oscRoot + "/" + id.replacingOccurrences(of: ".", with: "/") }
@@ -100,8 +101,14 @@ enum ControlCatalog {
     /// Extra trailing args are ignored; a missing REQUIRED arg is an error; a
     /// missing optional arg is nil. Errors never echo caller data (args can carry
     /// destination credentials on Windows), only the schema.
+    ///
+    /// Availability first: a known id the Mac does not support fails with 422 and
+    /// its reason, before any arg is looked at; an id in neither file is Windows' 400.
     static func bind(_ id: String, _ raw: [Any?]) -> Result<[Any?], ControlBindError> {
         guard let action = action(id) else {
+            if let availability = availability(id), let message = unavailableMessage(id, availability) {
+                return .failure(ControlBindError(message: message, status: 422))
+            }
             return .failure(ControlBindError(message: "Unknown action '\(id)'."))
         }
         var bound: [Any?] = []
@@ -135,6 +142,10 @@ enum ControlCatalog {
             case let flag as Bool: return flag ? "True" : "False"
             case let integer as Int64: return String(integer)
             case let number as Double: return invariantString(number)
+            // OSC `f` (D14): .NET float.ToString is shortest round-trip, integral floats without ".0".
+            case let number as Float:
+                if number == number.rounded(), abs(number) < 1e7 { return String(Int64(number)) }
+                return String(number)
             default: return nil
             }
         case .int:
@@ -145,6 +156,10 @@ enum ControlCatalog {
                 let rounded = number.rounded(.toNearestOrEven)   // Math.Round default
                 guard rounded.isFinite, abs(rounded) <= Double(Int32.max) else { return nil }
                 return Int(rounded)
+            case let number as Float:
+                let rounded = number.rounded(.toNearestOrEven)   // MathF.Round default
+                guard rounded.isFinite, abs(rounded) <= Float(Int32.max) else { return nil }
+                return Int(rounded)
             case let text as String:
                 return Int32(text.trimmingCharacters(in: .whitespaces)).map { Int($0) }
             default: return nil
@@ -154,6 +169,7 @@ enum ControlCatalog {
             case is Bool: return nil
             case let integer as Int64: return Double(integer)
             case let number as Double: return number
+            case let number as Float: return Double(number)
             case let text as String: return Double(text.trimmingCharacters(in: .whitespaces))
             default: return nil
             }
@@ -162,6 +178,7 @@ enum ControlCatalog {
             case let flag as Bool: return flag
             case let integer as Int64: return integer != 0
             case let number as Double: return abs(number) > Double.leastNonzeroMagnitude
+            case let number as Float: return abs(number) > Float.leastNonzeroMagnitude
             case let text as String:
                 // bool.TryParse is case-insensitive and trims; then "1"/"0".
                 switch text.trimmingCharacters(in: .whitespaces).lowercased() {
@@ -202,7 +219,7 @@ enum ControlCatalog {
                 + "\"OscAddress\":\(ControlJSON.string(oscAddress(action.id))),"
                 + "\"Params\":[" + params.joined(separator: ",") + "]}"
         }
-        return "{\"Version\":1,\"Root\":\(ControlJSON.string(oscRoot)),"
+        return "{\"Version\":\(ControlManifestGenerated.version),\"Root\":\(ControlJSON.string(oscRoot)),"
             + "\"Actions\":[" + actionsJSON.joined(separator: ",") + "],"
             + "\"FeedbackFields\":[" + feedbackFields.map(ControlJSON.string).joined(separator: ",") + "]}"
     }
@@ -251,7 +268,7 @@ enum ControlJSON {
     }()
 }
 
-struct ControlBindError: Error, Equatable { let message: String }
+struct ControlBindError: Error, Equatable { let message: String; var status: Int = 400 }
 
 /// Windows `ControlInvokeResult`.
 struct ControlInvokeResult: Equatable {
@@ -309,6 +326,9 @@ final class ControlRouter {
     static let snapshotStaleAfterMs = 2000.0
 
     let surface: ControlSurface
+    /// The last refused /invoke, for the Settings "Remote control" row.
+    let refusals = ControlRefusalBox()
+    var lastRefusal: (actionId: String, error: String)? { refusals.read().map { ($0.actionId, $0.error) } }
 
     init(surface: ControlSurface) { self.surface = surface }
 
@@ -341,8 +361,10 @@ final class ControlRouter {
     }
 
     private func invoke(_ body: Data?) async -> ControlResponse {
+        var actionId = "?"
         func fail(_ status: Int, _ message: String) -> ControlResponse {
-            ControlResponse(status: status, body: ControlJSON.error(message))
+            refusals.record(actionId, message)
+            return ControlResponse(status: status, body: ControlJSON.error(message))
         }
         guard let body, let text = String(data: body, encoding: .utf8),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -355,15 +377,16 @@ final class ControlRouter {
             return fail(400, "Invalid JSON: \((error as NSError).userInfo[NSDebugDescriptionErrorKey] as? String ?? error.localizedDescription)")
         }
         let root = parsed as? [String: Any] ?? [:]
-        guard let actionId = root["action"] as? String,
-              !actionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard let named = root["action"] as? String,
+              !named.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return fail(400, "Missing 'action'.")
         }
+        actionId = named
         let rawArgs = (root["args"] as? [Any] ?? []).map(ControlJSON.transportValue)
         let bound: [Any?]
         switch ControlCatalog.bind(actionId, rawArgs) {
         case .success(let values): bound = values
-        case .failure(let error): return fail(400, error.message)
+        case .failure(let error): return fail(error.status, error.message)
         }
         let result = await surface.invoke(actionId, bound)
         guard result.ok else { return fail(422, result.error ?? "Invocation failed.") }

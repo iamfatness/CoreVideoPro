@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "modules/MacCaptureSupport.h"
+#include "modules/OwnVirtualCamera.h"
 #include "modules/UvcCaptureSupport.h"
 #include "modules/AvfCaptureSessionState.h"
 #include "modules/SourceVideoDemand.h"
@@ -387,6 +388,8 @@ class AvfCaptureDevice final : public ICaptureDevice {
         }
         const std::string name =
             device.localizedName.UTF8String ? device.localizedName.UTF8String : uniqueId;
+        // Our own virtual camera is Program: offering it as a source is a loop.
+        if (isOwnVirtualCamera(uniqueId, name)) continue;
         present.emplace(uvc::stableCaptureDeviceIdFromSymbolicLink(uniqueId),
                         std::make_pair(name, uniqueId));
       }

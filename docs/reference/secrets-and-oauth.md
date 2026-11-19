@@ -15,3 +15,13 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
   the external CoreVideo repo) 400-rejects any other `return_uri`. `corevideopro` is a
   legacy protocol alias only. Don't change the scheme without updating the broker
   allowlist first; `ZoomOAuthManifestTests`/`ZoomOAuthProtocolTests` pin it.
+- **macOS receives the callback on loopback, not the scheme (2026-11-15).** The broker
+  also accepts `http://127.0.0.1:<port>/oauth/callback` / `http://localhost:<port>/oauth/callback`
+  (path exactly `/oauth/callback`; `isAllowedOauthReturnUri`). The OBS plugin product registers
+  `corevideo://` too (`CoreVideoOAuthCallback.app`), and on the owner's Mac LaunchServices made
+  it the default handler, so the signed 1.0.0 Pro never finished signing in. The mac shell
+  (`mac-shell/.../ZoomOAuthLoopback.swift`) starts a one-shot `NWListener` on 127.0.0.1 (ephemeral
+  port, never the 8011 control server) at each Sign in with Zoom, answers exactly one
+  `GET /oauth/callback` (anything else 404s without consuming it), stops after the callback /
+  5 minutes / a new sign-in, and never logs the query. `corevideo://` stays as the fallback
+  (`.onOpenURL`) when the listener cannot bind. The Windows shell still uses the scheme.

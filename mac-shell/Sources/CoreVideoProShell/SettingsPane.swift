@@ -9,11 +9,6 @@ import SwiftUI
 struct SettingsPane: View {
     @EnvironmentObject var model: AppModel
 
-    var recordingFolder: String {
-        (NSSearchPathForDirectoriesInDomains(.moviesDirectory, .userDomainMask, true).first
-         ?? NSTemporaryDirectory()) + "/CoreVideoPro"
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             card("Zoom account") {
@@ -143,15 +138,28 @@ struct SettingsPane: View {
                         .frame(width: 160)
                 }
                 labeled("Recording folder") {
-                    HStack(spacing: 6) {
-                        Text(recordingFolder).font(.plexMono(10))
-                            .foregroundStyle(Studio.secondary)
-                            .lineLimit(1).truncationMode(.head)
-                        Button("Reveal") {
-                            NSWorkspace.shared.selectFile(
-                                nil, inFileViewerRootedAtPath: recordingFolder)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(model.recordingFolderDisplay).font(.plexMono(10))
+                                .foregroundStyle(Studio.secondary)
+                                .lineLimit(1).truncationMode(.head)
+                                .help(model.recordingFolderDisplay)
+                            Button("Browse\u{2026}") { model.chooseRecordingFolder() }
+                                .buttonStyle(GhostButtonStyle())
+                            Button("Open folder") { model.openRecordingFolder() }
+                                .buttonStyle(GhostButtonStyle())
+                            if !model.recordingFolderChoice.isEmpty {
+                                Button("Use default") { model.useDefaultRecordingFolder() }
+                                    .buttonStyle(GhostButtonStyle())
+                            }
                         }
-                        .buttonStyle(GhostButtonStyle())
+                        Text(RecordingFolderPolicy.note)
+                            .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                        if !model.recordingFolderWarning.isEmpty {
+                            Text(model.recordingFolderWarning)
+                                .font(.grotesk(11)).foregroundStyle(Studio.amber)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 labeled("Stream URL") {
@@ -173,8 +181,11 @@ struct SettingsPane: View {
                     .font(.grotesk(12))
             }
 
-            card("Audio monitor") {
-                Toggle("Monitor through the system default output", isOn: Binding(
+            card("Monitor output") {
+                labeled("Output device") { MonitorDevicePicker() }
+                Text(model.monitorTargetStatus)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                Toggle("Monitor", isOn: Binding(
                     get: { model.monitorEnabled },
                     set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) }))
                     .font(.grotesk(12))
@@ -194,8 +205,27 @@ struct SettingsPane: View {
             card("System") {
                 row("Media core", statusText)
                 row("Renderer", rendererText)
-                row("Virtual camera", "Unavailable — needs an Apple Developer ID "
-                    + "(signed + notarized system extension)")
+                row("Virtual camera", model.virtualCameraLabel)
+                labeled("") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let notice = model.virtualCameraUpdateNotice {
+                            Text(notice).font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if VirtualCameraPresentation.showsUpdateButton(model.cameraExtensionState,
+                                                             updating: model.cameraUpdateInProgress) {
+                            Button("Update camera") { model.updateCameraExtension() }
+                                .buttonStyle(AccentButtonStyle())
+                        }
+                        Button("Remove virtual camera") { model.removeVirtualCamera() }
+                            .buttonStyle(GhostButtonStyle())
+                        if let status = model.virtualCameraRemovalStatus {
+                            Text(status).font(.grotesk(11)).foregroundStyle(Studio.textPrimary)
+                        }
+                        Text("macOS may ask for your password. The camera disappears from other apps.")
+                            .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                    }
+                }
                 labeled("Logs") {
                     HStack(spacing: 6) {
                         Button("Shell log") { reveal("CoreVideoPro-shell.log") }
@@ -210,6 +240,12 @@ struct SettingsPane: View {
                         }
                         .buttonStyle(GhostButtonStyle())
                     }
+                }
+            }
+            card("Remote control") {
+                // Read-only (D4): ports, LAN opt-in and token stay environment-only.
+                ForEach(Array(model.remoteControlStatus.lines.enumerated()), id: \.offset) { _, line in
+                    row(line.label, line.value)
                 }
             }
             Spacer(minLength: 0)

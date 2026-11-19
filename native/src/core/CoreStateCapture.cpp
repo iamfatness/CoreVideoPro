@@ -267,7 +267,7 @@ CapabilityReport capabilityReport(const modules::ModuleSet& modules, bool zoomCo
   intrinsic("iso-recording", encoderSession.hardwareAccelerated);
   for (const char* name : {"rtmp-output", "ndi-output", "ndi-ingest", "srt-output", "hls-output",
                            "srt-ingest", "rtmp-ingest",
-                           "decklink-capture", "aja-capture", "uvc-capture"}) factory(name);
+                           "decklink-capture", "aja-capture", "uvc-capture", "media-clip-playback"}) factory(name);
   return report;
 }
 
@@ -675,6 +675,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   gradeEditorCount_ = core.gradePreviews_.size();
   gradeEventBytes_ = core.gradePreviews_.pendingEventBytes();
   gradeEventsRefused_ = core.gradePreviews_.eventsRefused();
+  sourceGradeStatuses_ = core.sourceGrades_.statuses();
   previewComposite_ = core.hasPreviewScene();
   previewPlanLayerCount_ = core.audioWorkerActive_ ? core.lastPreviewPlanLayerCount_ :
       previewComposite_ ? static_cast<int>(core.buildPreviewCompositorRenderPlan({}).layers.size()) : 0;
@@ -939,6 +940,17 @@ rpc::Json CoreStateCapture::sessionState(const rpc::Json& engineCapture) const {
   const auto capturePreparation = modules_.captureDevice->shmCapturePreparationDiagnostics();
   const auto monitorWorker = modules_.compositor->monitorDiagnostics();
   state.emplace("gradePreview", GradePreviewController::diagnosticsFor(*modules_.compositor, gradeEditorCount_, gradeEventBytes_, gradeEventsRefused_));
+  {
+    // G0: one row per accepted per-source grade, published unconditionally (an empty
+    // array when none). Captured under coreMutex above; at most 256 small rows.
+    rpc::Json::Array rows;
+    rows.reserve(sourceGradeStatuses_.size());
+    for (const auto& status : sourceGradeStatuses_)
+      rows.push_back(rpc::Json::Object{{"sourceId", status.sourceId}, {"revision", double(status.revision)},
+          {"appliedEpoch", double(status.appliedEpoch)}, {"liveEpoch", double(status.liveEpoch)},
+          {"livePresent", status.livePresent}, {"active", status.active}});
+    state.emplace("sourceGrades", std::move(rows));
+  }
   state.emplace("deliveryEvidence", core::deliveryEvidenceSnapshot());
   state.emplace("realtimeEvidence", rpc::Json::Object{
       {"zoomEngineForbiddenAcquisitions", static_cast<double>(
@@ -2586,8 +2598,63 @@ rpc::Json CoreStateCapture::captureDevicesState() const {
 }
 
 rpc::Json CoreStateCapture::virtualCameraState() const {
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  // Task 7 carried fix: a GPU tap that failed to prepare can never feed the
+  // camera, so while the camera is on it overrides the publisher's own state
+  // (the sink can be connected and "live" with nothing to send). The shell
+  // label shows a failed warning whole. Every other build: untouched.
+  auto status = virtualCamera_->status();
+  if (status.state != "off" && modules_.compositor) {
+    auto tapWarning = modules_.compositor->vcamTapWarning();
+    if (!tapWarning.empty()) {
+      status.state = "failed";
+      status.warning = std::move(tapWarning);
+    }
+  }
+#else
   const auto status = virtualCamera_->status();
+#endif
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  // The sink runs in a helper process (modules/HelperVirtualCameraPublisher.h).
+  // Published unconditionally on this build; null means "not observed", never
+  // false. deviceVisibleToSystem is what the newest helper, a newborn process,
+  // saw; deviceVisibleInProcess is this process's own CoreMediaIO view at the
+  // same moment. true/false names the 2026-11-16 provider-arrival blind spot.
+  const auto observed = [](int value) { return value < 0 ? rpc::Json(nullptr) : rpc::Json(value != 0); };
+  const auto milliseconds = [](double value) { return value < 0 ? rpc::Json(nullptr) : rpc::Json(value); };
+  rpc::Json::Object sink{
+      {"deviceVisibleToSystem", observed(status.deviceVisibleToSystem)},
+      {"deviceVisibleInProcess", observed(status.deviceVisibleInProcess)},
+      {"sinkAttempts", static_cast<double>(status.sinkAttempts)},
+      {"lastConnectedAt", status.lastConnectedAtUnixMs > 0
+                              ? rpc::Json(static_cast<double>(status.lastConnectedAtUnixMs)) : rpc::Json(nullptr)},
+      {"helperPid", status.sinkHelperPid > 0 ? rpc::Json(static_cast<double>(status.sinkHelperPid)) : rpc::Json(nullptr)},
+      {"helperGeneration", static_cast<double>(status.sinkHelperGeneration)},
+      {"helperGaveUp", status.sinkHelperGaveUp},
+      {"nextAttemptInMs", static_cast<double>(status.sinkNextAttemptInMs)},
+      {"helperLastExit", status.sinkHelperLastExit},
+      // A camera that connects and is lost each time (it accepts the stream,
+      // then stops taking it): consecutiveShortRuns counts the connected runs
+      // in a row that ended before 30 s, and consecutiveUnreachable is the
+      // position on the retry backoff that nextAttemptInMs follows.
+      {"consecutiveUnreachable", static_cast<double>(status.sinkConsecutiveUnreachable)},
+      {"consecutiveShortRuns", static_cast<double>(status.sinkConsecutiveShortRuns)},
+      {"lastRunMs", status.sinkLastRunMs < 0 ? rpc::Json(nullptr) : rpc::Json(static_cast<double>(status.sinkLastRunMs))},
+      {"transportDrops", static_cast<double>(status.transportDrops)},
+      {"queueFullDrops", static_cast<double>(status.sinkQueueFullDrops)},
+      {"sequenceGaps", static_cast<double>(status.sinkSequenceGaps)},
+      {"transportMs", rpc::Json::Object{{"last", milliseconds(status.transportLastMs)},
+                                        {"mean", milliseconds(status.transportMeanMs)},
+                                        {"max", milliseconds(status.transportMaxMs)}}},
+      {"helperPublishMs", rpc::Json::Object{{"last", milliseconds(status.sinkPublishLastMs)},
+                                            {"mean", milliseconds(status.sinkPublishMeanMs)},
+                                            {"max", milliseconds(status.sinkPublishMaxMs)}}},
+  };
+#endif
   return rpc::Json::Object{
+#if defined(__APPLE__) && COREVIDEO_WITH_MAC_VIRTUALCAM
+      {"sink", std::move(sink)},
+#endif
       {"enabled", status.enabled},
       {"status", status.state},
       {"deviceName", status.deviceName},

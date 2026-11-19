@@ -31,6 +31,25 @@ struct VirtualCameraStatus {
   std::string framerState = "off"; // off | waiting | active | unavailable
   std::string framerWarning;
   std::uint64_t framerFrames = 0, framerFailures = 0;
+  // macOS sink helper (HelperVirtualCameraPublisher). Every other backend
+  // leaves these at "not observed"; -1 means not observed, never false.
+  std::uint64_t sinkAttempts = 0;            // helper processes started
+  std::int64_t lastConnectedAtUnixMs = 0;    // 0 = never connected
+  int deviceVisibleToSystem = -1;            // what the newest helper (a newborn process) saw
+  int deviceVisibleInProcess = -1;           // this process's own CoreMediaIO view, same moment
+  std::int64_t sinkHelperPid = 0;            // 0 = no helper running
+  std::uint64_t sinkHelperGeneration = 0;
+  bool sinkHelperGaveUp = false;
+  std::int64_t sinkNextAttemptInMs = 0;
+  std::string sinkHelperLastExit;            // "" = none yet
+  int sinkConsecutiveUnreachable = 0;        // position on the unreachable retry backoff
+  int sinkConsecutiveShortRuns = 0;          // connected runs in a row that were lost before counting as healthy
+  std::int64_t sinkLastRunMs = -1;           // how long the last connected run lasted; -1 = none has ended
+  std::uint64_t transportDrops = 0;          // frames the core dropped because the hand-off ring was full
+  std::uint64_t sinkQueueFullDrops = 0;      // frames the helper dropped because the camera queue was full
+  std::uint64_t sinkSequenceGaps = 0;
+  double transportLastMs = -1, transportMaxMs = -1, transportMeanMs = -1;  // hand-off to helper pickup
+  double sinkPublishLastMs = -1, sinkPublishMaxMs = -1, sinkPublishMeanMs = -1;  // helper copy + enqueue
 };
 
 class IVirtualCameraPublisher {
@@ -77,10 +96,29 @@ class IVirtualCameraPublisher {
   virtual void setProgramLoudness(double lufs, bool completeWindow) { (void)lufs; (void)completeWindow; }
   // Operator-set display name; applies on the next start() (optional; no-op default).
   virtual void setDeviceName(const std::string& name) { (void)name; }
+  // True when the producer already mirrored the frame before it reached this
+  // backend (macOS: the Metal tap mirrors on the GPU). The webcam framer then
+  // must not mirror again. Default false keeps Windows exactly as it was.
+  virtual bool mirrorAppliedUpstream() const { return false; }
+  // The operator turned the camera on: a backend with a bounded retry budget
+  // (the macOS sink helper) starts it afresh. Default: nothing to reset.
+  virtual void rearmRetryBudget() {}
 };
 
 // Dev-gated (COREVIDEO_WITH_VIRTUALCAM). Returns a no-op stub otherwise, so the
 // control plane and tests work with no OS camera stack.
 std::unique_ptr<IVirtualCameraPublisher> createVirtualCameraPublisher();
+
+// macOS virtual camera only; inert everywhere else.
+//
+// The CoreMediaIO sink runs in a helper process that is this same executable
+// started with a flag (modules/VcamSinkHelper.h). Only the real core calls
+// enableVirtualCameraSinkHelper(), from main: a test or tool binary that built
+// the camera through createVirtualCameraPublisher() must never re-execute
+// ITSELF as a "helper". Without the call the camera reports a helper failure.
+void enableVirtualCameraSinkHelper();
+// The helper and probe modes of the core executable. Returns true when
+// `argv` asked for one of them and it ran; `exitCode` is then the process's.
+bool runVirtualCameraProcessMode(int argc, char** argv, int* exitCode);
 
 }  // namespace corevideo::modules

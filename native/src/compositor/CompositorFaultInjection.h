@@ -84,4 +84,19 @@ inline void setMonitorRenderStallForTest(MonitorRenderStallFn fn) noexcept {
   monitorRenderStallSlot().store(nullptr, std::memory_order_release);
 }
 
+// ── macOS virtual camera: forced GPU tap preparation failure (Task 7) ──────────
+// Same guarding as above: only an in-process call from native/tests/ arms it.
+// Read ONCE per tap preparation (the first tick after the camera is enabled),
+// never per frame.
+inline std::atomic<bool>& vcamTapPrepFailureFlag() noexcept {
+  static std::atomic<bool> armed{false};
+  return armed;
+}
+[[nodiscard]] inline bool vcamTapPrepFailureArmed() noexcept {
+  return vcamTapPrepFailureFlag().load(std::memory_order_acquire);
+}
+inline void setVcamTapPrepFailureForTest(bool fail) noexcept {
+  vcamTapPrepFailureFlag().store(fail, std::memory_order_release);
+}
+
 }  // namespace corevideo::compositor

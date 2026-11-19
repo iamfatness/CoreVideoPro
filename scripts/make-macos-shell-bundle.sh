@@ -12,6 +12,13 @@
 #
 # Inputs (env, all optional; defaults are the dev build trees):
 #   COREVIDEO_SHELL_BIN        shell executable   (mac-shell/.build/release/CoreVideoProShell)
+#   COREVIDEO_CAMERA_EXT_BIN   camera extension executable (mac-shell/.build/release/CoreVideoProCamera)
+#   COREVIDEO_APP_PROFILE      Developer ID profile for the app
+#                              (~/Library/Developer/CoreVideoPro/profiles/CoreVideo_Pro_macOS_Developer_ID.provisionprofile)
+#   COREVIDEO_CAMERA_PROFILE   Developer ID profile for the camera extension
+#                              (~/Library/Developer/CoreVideoPro/profiles/CoreVideo_Pro_Camera_Extension_Developer_ID.provisionprofile)
+#                              Both profiles are REQUIRED for a Developer ID build and are
+#                              never committed. Ad-hoc builds use neither.
 #   COREVIDEO_CORE_BUILD_DIR   holds corevideo-native + corevideo-plugin-host (native/build-metal)
 #   COREVIDEO_ENGINE_APP       corevideo-zoom-engine.app (native/build-engine/...)
 #   COREVIDEO_BUILD_NUMBER     CFBundleVersion (default: git commit count)
@@ -20,6 +27,18 @@
 #                              release never overwrites the developer's dev bundle
 #   COREVIDEO_REQUIRE_HELPERS=1  a missing core/engine/plugin-host is fatal
 #                              (release); unset = skip it, as dev runs always did.
+#
+# Camera extension (roadmap M9.2): the CoreMediaIO system extension rides at
+# Contents/Library/SystemExtensions/us.iamfatness.corevideopro.shell.camera.systemextension
+# with CFBundleVersion = CFBundleShortVersionString = CameraConstants.extensionVersion
+# (its OWN version, never the app's build number: macOS replaces the installed
+# extension whenever it changes, and a replacement can need a restart; see
+# scripts/camera-extension-version.sh). scripts/check-macos-camera-extension.sh
+# checks the result. Ad-hoc: macos-camera-extension-adhoc.entitlements and the
+# shell on macos-shell.entitlements (no restricted entitlement anywhere: AMFI
+# kills a binary signed with one and no profile). Developer ID: both profiles
+# embedded, the extension on macos-camera-extension.entitlements and the shell
+# on macos-shell-sysext.entitlements.
 #
 # Versioning: CFBundleShortVersionString = package.json "version" (the one
 # product version); CFBundleVersion = monotonically increasing build number.
@@ -44,12 +63,31 @@ mkdir -p "$(dirname "$APP")"
 BIN="${COREVIDEO_SHELL_BIN:-mac-shell/.build/release/CoreVideoProShell}"
 CORE_DIR="${COREVIDEO_CORE_BUILD_DIR:-native/build-metal}"
 ENGINE_SRC="${COREVIDEO_ENGINE_APP:-native/build-engine/corevideo-zoom-engine.app}"
+CAMERA_BIN="${COREVIDEO_CAMERA_EXT_BIN:-mac-shell/.build/release/CoreVideoProCamera}"
+APP_PROFILE="${COREVIDEO_APP_PROFILE:-$HOME/Library/Developer/CoreVideoPro/profiles/CoreVideo_Pro_macOS_Developer_ID.provisionprofile}"
+CAMERA_PROFILE="${COREVIDEO_CAMERA_PROFILE:-$HOME/Library/Developer/CoreVideoPro/profiles/CoreVideo_Pro_Camera_Extension_Developer_ID.provisionprofile}"
+EXT_ID="us.iamfatness.corevideopro.shell.camera"
 [ -x "$BIN" ] || { echo "build the shell first (swift build -c release)"; exit 2; }
+[ -x "$CAMERA_BIN" ] || { echo "error: no camera extension at $CAMERA_BIN (swift build -c release builds it)" >&2; exit 2; }
+if [ "$SIGN_ID" != "-" ]; then
+    # A Developer ID build without its profiles would sign restricted
+    # entitlements nothing authorizes: AMFI kills the app at launch.
+    for p in "COREVIDEO_APP_PROFILE|$APP_PROFILE" "COREVIDEO_CAMERA_PROFILE|$CAMERA_PROFILE"; do
+        [ -f "${p#*|}" ] || {
+            echo "error: Developer ID signing needs both provisioning profiles (COREVIDEO_APP_PROFILE, COREVIDEO_CAMERA_PROFILE); ${p%%|*} -> ${p#*|} does not exist" >&2
+            exit 2
+        }
+    done
+    verify_profile "$APP_PROFILE" "42394L3353.us.iamfatness.corevideopro.shell" 0 || exit 2
+    verify_profile "$CAMERA_PROFILE" "42394L3353.$EXT_ID" 0 || exit 2
+fi
 VERSION="$(node -p "require('./package.json').version" 2>/dev/null || true)"
 [ -n "$VERSION" ] || VERSION="$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' package.json | head -1)"
 [ -n "$VERSION" ] || { echo "error: no version in package.json" >&2; exit 2; }
 BUILD_NUMBER="${COREVIDEO_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 0)}"
 case "$BUILD_NUMBER" in ''|*[!0-9]*) echo "error: build number '$BUILD_NUMBER' is not an integer" >&2; exit 2 ;; esac
+EXT_VERSION="$(scripts/camera-extension-version.sh version)" \
+    || { echo "error: no CameraConstants.extensionVersion" >&2; exit 2; }
 
 # Every helper the app resolves from Contents/Resources (ShellPaths.resolve in
 # AppModel.swift). Missing one in a release silently degrades a feature
@@ -90,6 +128,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key><true/>
     <key>NSCameraUsageDescription</key><string>CoreVideo Pro captures cameras as production sources.</string>
     <key>NSMicrophoneUsageDescription</key><string>CoreVideo Pro captures audio inputs for the production mix.</string>
+    <key>NSRemovableVolumesUsageDescription</key><string>CoreVideo Pro saves recordings to the folder you choose, including external drives.</string>
 </dict>
 </plist>
 PLIST
@@ -116,9 +155,47 @@ if need_helper "$ENGINE_SRC" "Zoom engine app"; then
   # ditto, not cp -R: keeps the SDK frameworks' Versions/Current symlinks.
   ditto "$ENGINE_SRC" "$APP/Contents/Resources/corevideo-zoom-engine.app"
 fi
+# The camera extension. Its Info.plist keys are checked one by one by
+# scripts/check-macos-camera-extension.sh (b); keep the two in step.
+EXT="$APP/Contents/Library/SystemExtensions/$EXT_ID.systemextension"
+mkdir -p "$EXT/Contents/MacOS"
+cp "$CAMERA_BIN" "$EXT/Contents/MacOS/CoreVideoProCamera"
+# >>> camera-extension-hashed: scripts/camera-extension-version.sh hashes the
+# lines between these markers; changing them needs an extensionVersion bump.
+cat > "$EXT/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>CoreVideoProCamera</string>
+    <key>CFBundleIdentifier</key><string>$EXT_ID</string>
+    <key>CFBundleName</key><string>CoreVideo Pro Camera</string>
+    <key>CFBundlePackageType</key><string>SYSX</string>
+    <key>CFBundleShortVersionString</key><string>$EXT_VERSION</string>
+    <key>CFBundleVersion</key><string>$EXT_VERSION</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>CMIOExtension</key>
+    <dict>
+        <key>CMIOExtensionMachServiceName</key><string>42394L3353.$EXT_ID</string>
+    </dict>
+    <key>NSSystemExtensionUsageDescription</key><string>Lets CoreVideo Pro offer its Program output as a camera in Zoom, Teams, FaceTime and other apps.</string>
+</dict>
+</plist>
+PLIST
+# <<< camera-extension-hashed
 if [ "$SIGN_ID" = "-" ]; then
-    codesign --force --sign - "$APP"
+    # Extension first: signing the app seals it, and a nested signature made
+    # afterwards would break that seal.
+    codesign --force --sign - \
+        --entitlements scripts/macos-camera-extension-adhoc.entitlements "$EXT"
+    codesign --force --sign - --entitlements scripts/macos-shell.entitlements "$APP"
 else
+    # Profiles go in before any signature: each is sealed into its bundle.
+    cp "$CAMERA_PROFILE" "$EXT/Contents/embedded.provisionprofile"
+    cp "$APP_PROFILE" "$APP/Contents/embedded.provisionprofile"
+    # The extension first (it is nested inside the app's seal), then the
+    # helpers, then the app.
+    sign_one "$EXT" --entitlements scripts/macos-camera-extension.entitlements
     # Deepest first: engine SDK, engine app, core, shell main exe, then the app.
     ENG="$APP/Contents/Resources/corevideo-zoom-engine.app"
     if [ -d "$ENG" ]; then
@@ -139,7 +216,7 @@ else
         sign_one "$APP/Contents/Resources/corevideo-plugin-host" \
             --identifier us.iamfatness.corevideopro.plugin-host
     fi
-    sign_one "$APP" --entitlements scripts/macos-shell.entitlements
+    sign_one "$APP" --entitlements scripts/macos-shell-sysext.entitlements
     codesign --verify --deep --strict "$APP"
 fi
 

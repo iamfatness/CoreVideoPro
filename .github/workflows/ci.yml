@@ -41,6 +41,20 @@ jobs:
       - name: Frame and recording QA harness tests
         run: npm run test:qa-harness
 
+  # The shared control contract (docs/superpowers/plans/2026-11-16-mac-remote-control-phase1.md T1):
+  # the Windows registry export, the macOS platform rows, and the shared fixtures. Runs on
+  # ubuntu so drift is caught on every push, not only by the Windows job.
+  control-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '9.0.x' }
+      - name: Control contract (export, platform rows, fixtures)
+        run: dotnet test native-shell/CoreVideoPro.Control.Tests/CoreVideoPro.Control.Tests.csproj
+      - name: Redaction fixtures (MediaCore observer)
+        run: dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tests.csproj --filter "FullyQualifiedName~ControlRedactionFixture"
+
   # Design-token gate for the macOS shell (docs/design-handoff-macos.md).
   # The 2026-08-04 audit found ~90% of mac-shell text rendering in SF Pro /
   # SF Mono and raw system colors despite a faithful DesignSystem.swift —
@@ -64,6 +78,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON \
             -DCOREVIDEO_WITH_METAL=ON -DCOREVIDEO_WITH_AVF_ENCODER=ON \
+            -DCOREVIDEO_WITH_AVF_MEDIA_DECODER=ON \
             -DCOREVIDEO_WITH_COREAUDIO=ON
       - name: Build core
         run: >
@@ -128,10 +143,15 @@ jobs:
         run: |
           for f in scripts/release-macos.sh scripts/macos-sign-lib.sh \
                    scripts/make-macos-shell-bundle.sh scripts/make-macos-engine-bundle.sh \
-                   scripts/run-mac-shell.sh; do
+                   scripts/run-mac-shell.sh scripts/check-macos-camera-extension.sh \
+                   scripts/macos-vcam-e2e.sh scripts/camera-extension-version.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
+      - name: Camera extension version gate (sources changed => extensionVersion bumped)
+        run: |
+          bash scripts/camera-extension-version.sh check
+          bash scripts/camera-extension-version.sh self-test
 
   # The shell had ZERO tests for ~9k lines, so every regression reached the
   # owner in a live session first — including a prefs bug that silently wiped
@@ -148,6 +168,16 @@ jobs:
         run: COREVIDEO_SHELL_TESTS=1 mac-shell/.build/release/CoreVideoProShell
       - name: Redaction + prefs self-check
         run: COREVIDEO_SHELL_SELFCHECK=1 mac-shell/.build/release/CoreVideoProShell
+      # Camera extension (roadmap M9.2). The runner cannot activate a system
+      # extension, so CI proves the STRUCTURE: the ad-hoc bundle embeds it with
+      # the right keys and no restricted entitlement without a profile, and
+      # the check fails at the expected letter on three broken copies.
+      - name: Assemble the ad-hoc app bundle (camera extension embedded)
+        run: COREVIDEO_REQUIRE_HELPERS=0 scripts/make-macos-shell-bundle.sh
+      - name: Camera extension check
+        run: scripts/check-macos-camera-extension.sh "mac-shell/.build/CoreVideo Pro.app"
+      - name: Camera extension check negatives
+        run: scripts/check-macos-camera-extension.sh --negatives "mac-shell/.build/CoreVideo Pro.app"
 
   # Root unit run (services + Companion module tests) and the node:test
   # suites under scripts/.
@@ -268,11 +298,13 @@ jobs:
           -DCOREVIDEO_STUB=OFF -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON
           -DCOREVIDEO_WITH_METAL=ON
           -DCOREVIDEO_WITH_AVF_ENCODER=ON
+          -DCOREVIDEO_WITH_AVF_MEDIA_DECODER=ON
           -DCOREVIDEO_WITH_COREAUDIO=ON
           -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON
           -DCOREVIDEO_WITH_RTMP_OUTPUT=ON
+          -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON
       # Mirrors scripts/release-macos.sh's core configure (Metal + AVF + CoreAudio +
-      # SCK capture + RTMP), minus the Zoom engine and signing, which need secrets.
+      # SCK capture + RTMP + the CoreMediaIO virtual camera), minus the Zoom engine and signing, which need secrets.
       # RTMP is in the set because its macOS compile break sat unnoticed when CI
       # never built it. RTMP output launches an external `ffmpeg` process at stream
       # time (not linked), so no ffmpeg is needed to compile or run these tests.

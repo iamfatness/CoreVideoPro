@@ -562,6 +562,13 @@ class MediaTransports final {
   // frame for 500 ms". On air that froze and silenced a Program clip whose
   // only recovery gesture restarts it from 0.
   static constexpr int64_t kEndedBackstopNoNewFrameMs = 6000;
+  // #1214. A decoder reports EOS when its READER runs out, which is while the
+  // owner still holds up to three prepared frames not yet due and up to two
+  // audio windows (plus whatever the decoder buffered ahead). Ended holds the
+  // picture and silences the clip, so it waits for those to play out. This cap
+  // only bounds the AUDIO half for a decoder that says "ended" yet never stops
+  // handing back audio; a healthy tail is ~100 ms.
+  static constexpr int64_t kEndedAudioDrainCapMs = 500;
   // How long a source absent from BOTH desired sets is kept before its decoder
   // is retired. See the Release case in apply() for why this is not zero.
   static constexpr int64_t kReleaseGraceMs = 750;
@@ -630,6 +637,8 @@ class MediaTransports final {
       // true the instant it opens.
       bool everProducedFrame = false;
       int64_t lastFrameId = 0, lastNewFrameMs = 0;
+      // When the decoder was first seen at EOS in this run of it (0 = not at EOS).
+      int64_t decoderEndedSinceMs = 0;
       while (!entry->stop.load()) {
         const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
         if (lastNewFrameMs == 0) lastNewFrameMs = nowMs;
@@ -651,7 +660,7 @@ class MediaTransports final {
           prefetchDecoder = dynamic_cast<modules::IMediaVideoPrefetch*>(decoder.get());
           attachWake();
           haveSyncedPlaying = false; playedOnce = false; everProducedFrame = false;
-          lastFrameId = 0; lastNewFrameMs = nowMs;
+          lastFrameId = 0; lastNewFrameMs = nowMs; decoderEndedSinceMs = 0;
           std::lock_guard<std::mutex> lock(entry->mutex);
           entry->video.dropQueued(); entry->clockFrozen = false; entry->audio.clear();
         }
@@ -732,11 +741,16 @@ class MediaTransports final {
         { std::lock_guard<std::mutex> lock(entry->mutex);
           audioRoom = entry->audio.size() < 2; audioTarget = entry->audioNextTime + static_cast<int64_t>(entry->audio.size()) * 20;
         }
-        auto audio = playing && entry->wantsAudio.load() && audioRoom ? decoder->pollMediaAudioFrames(request, audioTarget) : std::vector<modules::AudioFrame>{};
+        const bool audioPolled = playing && entry->wantsAudio.load() && audioRoom;
+        auto audio = audioPolled ? decoder->pollMediaAudioFrames(request, audioTarget) : std::vector<modules::AudioFrame>{};
+        // Asked for audio and got none: the decoder has nothing more to hand over (at EOS, its tail is out).
+        const bool decoderAudioDry = audioPolled && audio.empty();
         auto warnings = decoder->warnings();
         // Read AFTER the poll that could have moved it: the decoder reaches
         // EOS inside prefetchMediaVideo/pollMediaFrames.
         const bool decoderEnded = prefetchDecoder && prefetchDecoder->mediaEnded();
+        if (!decoderEnded) decoderEndedSinceMs = 0;
+        else if (decoderEndedSinceMs == 0) decoderEndedSinceMs = nowMs;
         {
           std::lock_guard<std::mutex> lock(entry->mutex);
           if (!entry->stop.load()) {
@@ -765,9 +779,15 @@ class MediaTransports final {
               entry->wantsAudio.store(true);
             } else if (playing && !request.loop && everProducedFrame &&
                        entry->state == MediaTransportState::Live &&
-                       (decoderEnded ||
-                        (entry->video.queued() == 0 &&
-                         nowMs - lastNewFrameMs >= kEndedBackstopNoNewFrameMs))) {
+                       entry->video.queued() == 0 &&
+                       ((decoderEnded &&
+                         // #1214: EOS is the READER's end. Every prepared
+                         // frame must have gone on air (queued() == 0 above)
+                         // and the audio tail must have been delivered first.
+                         (!entry->wantsAudio.load() ||
+                          (decoderAudioDry && entry->audio.empty()) ||
+                          nowMs - decoderEndedSinceMs >= kEndedAudioDrainCapMs)) ||
+                        nowMs - lastNewFrameMs >= kEndedBackstopNoNewFrameMs)) {
               // ENDED is bookkeeping, not a teardown: the decoder already holds
               // its last picture at EOS and the worker keeps holding it. The
               // state flip is what snapshot() reports and what makes an

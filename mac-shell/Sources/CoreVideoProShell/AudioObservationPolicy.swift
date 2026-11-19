@@ -5,6 +5,14 @@
 // worker cannot leave frozen meters looking live. Windows holds the last meter
 // values and says so in words; the Mac does the same.
 //   age <= 250 ms  fresh | <= 1000 ms aging | beyond stale
+//
+// POLL ALLOWANCE (owner report 2026-11-15, "the bottom is bouncing with some
+// odd error about audio"): the Mac shell POLLS a snapshot every
+// `snapshotPollInterval` (AppModel.syncTimer), so up to one poll period since
+// receipt is the shell's own cadence, not evidence the audio stalled. Counting
+// it flagged healthy audio "meters aging" for the back half of every poll —
+// twice a second. Only time PAST one poll period counts, so a core that stops
+// answering still goes aging (one missed poll) and then stale.
 
 import Foundation
 
@@ -31,9 +39,13 @@ struct AudioObservation: Equatable {
 enum AudioObservationPolicy {
     static let freshMs = 250.0
     static let agingMs = 1000.0
+    /// The shell's snapshot poll period — AppModel's sync timer uses this same
+    /// constant, so the allowance can never drift from the real cadence.
+    static let snapshotPollInterval: TimeInterval = 0.5
 
     static func ageMs(_ observation: AudioObservation, receivedAt: Date, now: Date) -> Double {
-        max(0, observation.ageMs) + max(0, now.timeIntervalSince(receivedAt) * 1000)
+        let sinceReceived = now.timeIntervalSince(receivedAt) - snapshotPollInterval
+        return max(0, observation.ageMs) + max(0, sinceReceived * 1000)
     }
 
     static func state(_ observation: AudioObservation?, receivedAt: Date, now: Date) -> String {

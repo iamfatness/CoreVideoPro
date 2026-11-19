@@ -397,6 +397,48 @@ TEST(ZoomEngineRuntimeState, AnUnmappedJoinFailureIsStillReported) {
   EXPECT_NE(snapshot.warnings.back().find("SDKERR_SOMETHING_NEW"), std::string::npos);
 }
 
+// Mac 1.0.0, 2026-11-15: the SDK's own join verdict (MeetingFailCode, spelled
+// MEETING_FAIL_* by both engines) reached the warnings as raw wire text. The
+// operator must read what to do, and an unmapped code must still be loud.
+TEST(ZoomEngineRuntimeState, MeetingFailCodesReadAsOperatorLanguage) {
+  const auto warningFor = [](const std::string& line) {
+    corevideo::modules::ZoomEngineRuntimeState state;
+    state.apply(eventFrom(line), 0);
+    const auto snapshot = state.snapshot();
+    EXPECT_EQ(snapshot.meetingState, "error");
+    return snapshot.warnings.empty() ? std::string{} : snapshot.warnings.back();
+  };
+  EXPECT_EQ(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":504,"reason":"MEETING_FAIL_APP_CAN_NOT_ANONYMOUS_JOIN_MEETING"})"),
+            "Zoom requires you to sign in to join this meeting. Use Sign in with Zoom, then join again.");
+  EXPECT_EQ(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":82,"reason":"MEETING_FAIL_NEED_SIGN_IN_FOR_PRIVATE_MEETING"})"),
+            "Zoom requires you to sign in to join this meeting. Use Sign in with Zoom, then join again.");
+  EXPECT_NE(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":4,"reason":"MEETING_FAIL_PASSWORD_ERR"})").find("passcode"),
+            std::string::npos);
+  EXPECT_NE(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":7,"reason":"MEETING_FAIL_MEETING_NOT_START"})").find("not started"),
+            std::string::npos);
+  EXPECT_NE(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":12,"reason":"MEETING_FAIL_CONFLOCKED"})").find("locked"),
+            std::string::npos);
+  // Unknown: verbatim, so a new SDK failure stays loud.
+  EXPECT_EQ(warningFor(R"({"cmd":"error","msg":"meeting_failed","code":1,"reason":"MEETING_FAIL_CONNECTION_ERR"})"),
+            "meeting_failed: MEETING_FAIL_CONNECTION_ERR");
+}
+
+// The later truth replaces the timeout; non-failure chatter does not.
+TEST(ZoomEngineRuntimeState, ALateJoinFailureReplacesTheTimeoutWarning) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply({corevideo::modules::ZoomEngineEventKind::Error, "error", "", "join",
+               "Timed out waiting for Zoom meeting join result."}, 0);
+  EXPECT_FALSE(state.applyLateJoinFailure(eventFrom(R"({"cmd":"joined"})")));
+  ASSERT_EQ(state.snapshot().warnings.size(), 1u);
+  EXPECT_TRUE(state.applyLateJoinFailure(eventFrom(
+      R"({"cmd":"error","msg":"meeting_failed","code":504,"reason":"MEETING_FAIL_APP_CAN_NOT_ANONYMOUS_JOIN_MEETING"})")));
+  const auto snapshot = state.snapshot();
+  EXPECT_EQ(snapshot.meetingState, "error");
+  ASSERT_EQ(snapshot.warnings.size(), 1u);
+  EXPECT_EQ(snapshot.warnings[0],
+            "Zoom requires you to sign in to join this meeting. Use Sign in with Zoom, then join again.");
+}
+
 // Task 4 (source bus slice 2), fix round 1: the Sources page prints a
 // per-feed fps from this field, and until now it was a constant 30
 // regardless of what the engine actually delivered. measuredDeliveredFps
@@ -479,4 +521,69 @@ TEST(ZoomEngineRuntimeState, RecoverableMediaErrorKeepsMeetingConnected) {
   state.apply(eventFrom(R"({"cmd":"joined"})"));
   state.apply(eventFrom(R"({"cmd":"error","stage":"raw_media_start_failed","message":"Privilege pending"})"));
   EXPECT_EQ(state.snapshot().meetingState,"in-meeting");
+}
+
+// ── Tier 0.13: the macOS engine answers the same-account prompt ─────────────
+// main-macos.mm had no onEndOtherMeetingToJoinMeetingNotification at all, so a
+// Mac join into a meeting the operator's own Zoom app was already in could not
+// be recovered (and "Join and end my other Zoom session" had nothing to ask).
+// The decision lives in the SDK-free end-other-meeting.h so it is testable here.
+#include "end-other-meeting.h"
+
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+namespace {
+std::string readMacEngineSource() {
+  std::ifstream in(std::filesystem::path(COREVIDEO_REPO_ROOT) / "native" / "zoom-engine" / "engine" /
+                   "main-macos.mm");
+  std::stringstream text;
+  text << in.rdbuf();
+  return text.str();
+}
+}  // namespace
+
+TEST(MacEngineEndOtherMeeting, TheTakeoverIsReadFromTheJoinLineTheCoreBuilds) {
+  corevideo::modules::ZoomEngineJoinCommand command;
+  command.meetingId = "97682593786";
+  EXPECT_FALSE(engine_join::joinRequestsEndOtherMeeting(
+      corevideo::modules::buildZoomEngineJoinCommand(command)));
+  command.endOtherMeeting = true;
+  EXPECT_TRUE(engine_join::joinRequestsEndOtherMeeting(
+      corevideo::modules::buildZoomEngineJoinCommand(command)));
+}
+
+TEST(MacEngineEndOtherMeeting, TheDefaultAnswerCancelsAndReadsAsOperatorLanguage) {
+  // Never end the operator's own meeting unless this join asked to.
+  EXPECT_EQ(engine_join::answerEndOtherMeeting(false), engine_join::EndOtherMeetingAnswer::Cancel);
+  EXPECT_EQ(engine_join::answerEndOtherMeeting(true), engine_join::EndOtherMeetingAnswer::EndOther);
+
+  corevideo::modules::ZoomEngineRuntimeState cancelled;
+  cancelled.apply(eventFrom(engine_join::endOtherMeetingEventLine(
+      engine_join::EndOtherMeetingAnswer::Cancel)), 0);
+  const auto refused = cancelled.snapshot();
+  EXPECT_EQ(refused.meetingState, "error");
+  ASSERT_FALSE(refused.warnings.empty());
+  EXPECT_NE(refused.warnings.back().find("already in this meeting"), std::string::npos)
+      << refused.warnings.back();
+  EXPECT_NE(refused.warnings.back().find("Join and end my other Zoom session"), std::string::npos);
+
+  // The takeover is a breadcrumb, never a failure.
+  corevideo::modules::ZoomEngineRuntimeState ended;
+  ended.apply(eventFrom(engine_join::endOtherMeetingEventLine(
+      engine_join::EndOtherMeetingAnswer::EndOther)), 0);
+  EXPECT_NE(ended.snapshot().meetingState, "error");
+}
+
+TEST(MacEngineEndOtherMeeting, TheMacEngineAnswersThePromptFromTheJoinLine) {
+  const auto source = readMacEngineSource();
+  ASSERT_FALSE(source.empty()) << "main-macos.mm not found next to the tests";
+  // The delegate method the macOS SDK calls (ZoomSDKMeetingService.h).
+  EXPECT_NE(source.find("- (void)onEndOtherMeetingToJoinMeetingNotification:"), std::string::npos);
+  EXPECT_NE(source.find("engine_join::answerEndOtherMeeting("), std::string::npos);
+  EXPECT_NE(source.find("engine_join::joinRequestsEndOtherMeeting(line)"), std::string::npos);
+  // The SDK's own alert must not pre-empt (or auto-answer) the operator's choice.
+  EXPECT_NE(source.find("hideEndOtherMeetingAlert = YES"), std::string::npos);
+  EXPECT_NE(source.find("enableAutoEndOtherMeeting = NO"), std::string::npos);
 }

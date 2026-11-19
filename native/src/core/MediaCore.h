@@ -194,6 +194,8 @@ class MediaCore {
   [[nodiscard]] std::vector<rpc::Json> drainGradePreviewEvents() { return captureGradePreviewEvents().assemble(); }
   [[nodiscard]] std::vector<rpc::Json> drainResourceEvents() { return pendingResourceEvents_.drain(); }
   [[nodiscard]] rpc::Json applySourceGrade(const rpc::Json& command);
+  // G0: {present, sourceEpoch, revision} from the last render tick (SourceGradeState::query).
+  [[nodiscard]] rpc::Json querySourceGrade(const std::string& sourceId) const;
   bool configureSourcePreviewDemand(const rpc::Json& command);
   bool configureGradePreview(const rpc::Json& command, bool* overloaded = nullptr);
   [[nodiscard]] std::vector<rpc::Json> drainMultiviewSharedTextureEvents();
@@ -384,6 +386,12 @@ class MediaCore {
   void setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
+  // Test seam: replace the OS virtual-camera publisher (the Windows MF camera +
+  // SHM slot, or the macOS CMIO sink) with a test double, so a unit test that
+  // enables the camera never opens the real device a live CoreVideo serves.
+  // Call before sync-virtual-camera. Same rules as setStillImageDecoderForTest:
+  // no env var, command or wire field reaches it; only native/tests/ call it.
+  void setVirtualCameraPublisherForTest(std::unique_ptr<modules::IVirtualCameraPublisher> publisher);
   [[nodiscard]] modules::ZoomEngineRuntime* zoomEngineRuntimeForTest() { return zoomEngineRuntime_.get(); }
 
   // Test seam (#535 slice 0): register an ISource with the core's SourceBus.
@@ -536,6 +544,7 @@ class MediaCore {
   // `capture:<id>`), for the snapshot `isoSourceIds` mirror.
   void syncParticipantAudioMix(const rpc::Json& command);
   void syncVirtualCamera(const rpc::Json& command);
+  void installCompositorVcamSink();
   void syncAudioMonitor(const rpc::Json& command);
   void setAudioMonitorControl(const rpc::Json& command);
   // VST host P1 (docs/vst-host-spec.md): operator-initiated plugin discovery.

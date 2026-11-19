@@ -408,7 +408,10 @@ def main():
                 fails.append("cold Take held the outgoing scene for %.0f ms, over the 900 ms observation bound"
                              % hold_ms)
 
-    prog = sorted(glob.glob(os.path.join(folder, "*", "Program.mp4")))
+    # Windows (Media Foundation) writes <folder>/<session>/Program.mp4; macOS
+    # (AVFoundation) writes <folder>/<prefix>-program-<n>.mp4 flat.
+    prog = sorted(glob.glob(os.path.join(folder, "*", "Program.mp4")) +
+                  glob.glob(os.path.join(folder, "*-program-*.mp4")))
     if not prog:
         fails.append("no Program.mp4 was recorded under %s" % folder)
         return verdict(a, fails, None)

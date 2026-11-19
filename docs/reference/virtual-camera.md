@@ -426,3 +426,132 @@ summary validates evidence, not continuity; run `camera-pixel-receiver.mjs`
 separately. A lower delivered sample cadence fails even if successive identities
 are consecutive. Compare full content latency and A/V using the final
 qualification harness, rather than treating publication age as display latency.
+
+## macOS
+
+The Mac virtual camera is a CoreMediaIO Camera Extension
+(`us.iamfatness.corevideopro.shell.camera`) shipped inside the app at
+`Contents/Library/SystemExtensions/`. The core publishes Program frames to it; Zoom,
+FaceTime, Photo Booth, Teams, Meet and OBS see "CoreVideo Pro Camera" (or the name set
+under Camera name). It needs a Developer ID build installed in `/Applications`.
+
+### Install and approve
+
+1. Install from the notarized `.pkg` (the only Mac installer; it also installs the core copy the camera verifies, in `/Library/Application Support/CoreVideo Pro/`).
+2. Turn on **Virtual camera** in the footer flyout. macOS shows an approval prompt.
+3. Approve under System Settings: macOS 15+ General, Login Items & Extensions, Camera
+   Extensions; macOS 13/14 Privacy & Security, then Allow next to the CoreVideo Pro message.
+   The flyout moves to live on its own; no relaunch.
+4. The first enable records the opt-in. Every later launch first asks macOS what is
+   installed: our exact extension version already enabled submits nothing at all; an older
+   version is replaced (see Updates).
+
+### Updates (owner requirement 2026-11-15: no support tickets)
+
+The extension carries its OWN version, `CameraConstants.extensionVersion`, as both
+`CFBundleVersion` and `CFBundleShortVersionString`, never the app's build number. macOS
+replaces an installed extension whenever that version changes, and a replacement made while
+an app holds the camera can leave the old copy "terminated waiting to uninstall on reboot"
+and the new one with no device until a restart (seen on the owner's Mac, build 2 to 3:
+`2883 [activated enabled]`, `2881 [terminated waiting to uninstall on reboot]`, no device).
+So:
+
+- **Avoid needless swaps, and never ship a changed extension under an old version** (a Mac
+  that has that version installed would never get it). The version moves only when the
+  extension changes. `scripts/camera-extension-version.sh` records, next to the version in
+  `scripts/camera-extension-version.record`, a sha256 of everything the extension bundle is
+  built from (every file under `mac-shell/Sources/CoreVideoProCamera` and
+  `mac-shell/Sources/CameraExtensionKit`, `scripts/macos-camera-extension.entitlements`, and the
+  `camera-extension-hashed` blocks in `make-macos-shell-bundle.sh` (the extension Info.plist)
+  and `Package.swift` (the extension target and its linker settings)) plus the camera
+  provisioning profile's UUID. `release-macos.sh` checks the profile it signs with and the one
+  embedded in the built extension; CI checks the rest. Any change without a bump fails.
+  **Renewing the camera provisioning profile needs an `extensionVersion` bump.** To ship an
+  extension change: bump `extensionVersion`, run
+  `scripts/camera-extension-version.sh update --profile <camera profile>`, commit the record.
+  The version started at **3000**, above every build number (up to about 2883) the extension
+  used to carry, so the one-time transition is an upgrade, never a downgrade. Only ever
+  increase it. (3001: the device model carries the version; 3002: the gate's wider inputs.)
+- **Never swap in use.** Before replacing, the shell reads our device from the CoreMediaIO
+  HAL (`kCMIODevicePropertyDeviceIsRunningSomewhere`). Our own core's sink stream also makes the
+  device run, so an opted-in launch with the output on holds the first `on` until the launch
+  decision (and any swap it starts) is done: with no other app on the camera the update simply
+  happens at launch, then the output starts. When another app has the camera: no request, a
+  second line under the status ("An update to CoreVideo Pro Camera is ready. Quit apps that are
+  using the camera (Zoom, Teams, Photo Booth…), then click Update camera.", or, while our own
+  output is on and the app cannot tell who else holds it, "…Close any other apps using the
+  camera, then click Update camera — your camera output pauses for a few seconds."),
+  and an **Update camera** button (flyout and Settings > System). The update installs by itself
+  once the camera is free (re-checked every 5 s, and at once when the virtual camera is turned
+  off). Update camera shows "Updating camera…", pauses our own output for the swap (the saved
+  setting is unchanged), waits up to 5 s for the device to stop, replaces, and resumes only
+  after the replacement finished. The replacement delegate re-checks at the moment macOS
+  offers the swap. Running from another folder or a dev build, "Move CoreVideo Pro to the Applications
+  folder…" comes first.
+- **Say when only a restart helps.** A launch that finds an older copy still uninstalling and
+  no device goes straight to "Restart your Mac to finish updating the virtual camera." and
+  submits nothing. After a completed (or already-active) activation the shell waits up to 10 s
+  for OUR version's device: the device model UID carries the extension version
+  (`CoreVideo Pro Camera/<version>`), because the old copy's device has the same UID and lingers
+  while it exits. If it never appears and macOS reports an older copy uninstalling, or our
+  version not enabled, the status becomes the restart message (also when macOS itself answers
+  "will complete after reboot"). Mid-session, the core reporting the camera lost for over 10 s
+  re-runs the check. It stays until a relaunch finds the device.
+
+### Remove
+
+Settings > System > **Remove virtual camera**. macOS may ask for your password. The
+camera disappears from other apps (relaunch them to refresh their lists). This also clears
+the opt-in; the next enable asks for approval again.
+
+### Troubleshooting by status text
+
+| Status text | Meaning and fix |
+|---|---|
+| Virtual camera off | The toggle is off. |
+| An update to CoreVideo Pro Camera is ready. Quit apps that are using the camera (Zoom, Teams, Photo Booth…), then click Update camera. (second line) | A new extension version is bundled and another app is using the camera, so nothing was replaced; the old copy still works. Quit the apps and click Update camera, or just wait: it installs by itself when the camera is free. If it stays, Health > Virtual camera "running somewhere (any app)" says whether macOS still sees the camera running. |
+| An update to CoreVideo Pro Camera is ready. Close any other apps using the camera, then click Update camera — your camera output pauses for a few seconds. (second line) | Our own output is on, so the app cannot tell whether another app also holds the camera (or nobody has been seen). Close other camera apps if any, then click Update camera. "Quit apps…" is shown only while our output is off and another app is seen on the camera; it clears as soon as the camera reads free. |
+| Updating camera… | Update camera is running: our output is paused until the swap finishes. |
+| Installing the virtual camera... | The OS request is in flight. Wait. |
+| Allow CoreVideo Pro Camera in System Settings to finish setup. | Approval pending. Use "Open System Settings", approve, no relaunch needed. |
+| Move CoreVideo Pro to the Applications folder to use the virtual camera. | The app runs from another folder. Install from the `.pkg`. |
+| Restart your Mac to finish updating the virtual camera. | macOS answered "will complete after reboot", or the update completed but no device appeared within 10 s and macOS lists an older copy uninstalling (or ours not enabled). Restart; nothing else fixes it. Health > Virtual camera lists the installed versions and states. |
+| This build can't install the virtual camera (development build without a provisioning profile). | An unsigned dev bundle; use a release build. |
+| This copy of CoreVideo Pro isn't signed to install the camera. / macOS policy blocked the camera extension. | The signing or provisioning profile does not authorize the extension, or MDM blocks it. |
+| Couldn't install the virtual camera (code N). | OSSystemExtensionErrorDomain code N; see the shell log. |
+| Connecting to CoreVideo Pro Camera... | The extension is installed but not reachable yet (restarting, or updated). The core retries every second. |
+| Virtual camera live (WxH) | Working. |
+| Virtual camera failed / a core warning | The core's own failure; see the core log. |
+
+Other apps show a slate (not a frozen frame) whenever the core is not publishing.
+
+### End-to-end script
+
+`scripts/macos-vcam-e2e.sh [--app] [--restart-extension]` runs on the owner's Mac with the
+signed app installed and the extension approved. It probes the device as a real consumer
+(no producer: slate; red feeder: program pixels; feeder gone: slate; optional extension
+kill; `--app`: the control API, framer, mirror and quit-to-slate). Output goes to
+`dist/vcam-e2e/<timestamp>/`.
+
+### Logs
+
+- Extension: `log show --predicate 'subsystem == "us.iamfatness.corevideopro.camera"' --last 10m`
+  (categories source, sink, auth).
+- Shell: `~/Library/Logs/CoreVideoPro-shell.log` (`vcam-ext:` lines); core: `CoreVideoPro-core.log`
+  (`[virtualcam]` lines). Settings > System has Reveal buttons.
+- Registration: `systemextensionsctl list` shows the installed extension versions.
+- Health tab > Virtual camera, and `shell-state.json` > `virtualCamera` in a support bundle:
+  bundled extension version, installed versions and states, device registered, in use, last
+  activation result.
+
+### Release gates
+
+`scripts/release-macos.sh` verifies both provisioning profiles before building (the
+release fails when the signing certificate or a profile has under 14 days left, warns
+under 60; the certificate expires 2027-02-01), runs
+`scripts/camera-extension-version.sh check` (the version gate above) in preflight,
+`scripts/check-macos-camera-extension.sh --release` on the built app (check (c): the
+extension's `CFBundleVersion` is `CameraConstants.extensionVersion`), and records
+`cameraExtension` (`bundleVersion` = the extension version, `profileExpires`, `certificateExpires`) in
+`manifest.json`. `scripts/make-macos-pkg.sh` fails if the pkg payload lacks the extension
+binary.

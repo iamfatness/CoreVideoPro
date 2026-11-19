@@ -11,6 +11,7 @@ import AppKit
 import Combine
 import IOSurface
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct StudioPanel: ViewModifier {
     func body(content: Content) -> some View {
@@ -71,6 +72,12 @@ struct ShellApp: App {
             DiagnosticsSelfCheck.exportHeadlessAndExit(destination: destination)
         }
         DesignFonts.register()
+        if let dir = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_FOOTER_SNAPSHOT"] {
+            MainActor.assumeIsolated { FooterSnapshotHarness.runAndExit(dir: dir) }
+        }
+        if let dir = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TAB_SNAPSHOT"] {
+            MainActor.assumeIsolated { TabSnapshotHarness.runAndExit(dir: dir) }
+        }
         // A bare (non-bundled) executable defaults to an activation policy
         // whose windows cannot become KEY — text fields silently refuse
         // input (the engine-bundle lesson). Force Regular + activate.
@@ -135,13 +142,24 @@ struct ShellApp: App {
                 .studioChrome()
         }
 
-        // Picture control, the macOS twin of ColorGradeEditorWindow. A window
-        // (not a tab) because grading is done while WATCHING program.
-        Window("Color Grade", id: PopoutWindow.colorGrade) {
+        // The Program Look (grading plan D1): the programme-wide picture control
+        // for sources without their own grade. A window (not a tab) because
+        // grading is done while WATCHING program.
+        Window("Program Look", id: PopoutWindow.colorGrade) {
             ColorGradePane()
                 .environmentObject(model)
                 .modifier(MainWindowOpenerRegistration())
                 .frame(minWidth: 420, minHeight: 320)
+                .studioChrome()
+        }
+
+        // Per-source grade editors (grading plan Task 6), one value window per
+        // source; opened from the Sources inspector's Picture tab.
+        WindowGroup("Color grade", id: PopoutWindow.sourceGrade, for: String.self) { $sourceId in
+            SourceGradeEditorWindow(sourceId: sourceId ?? "")
+                .environmentObject(model)
+                .modifier(MainWindowOpenerRegistration())
+                .frame(minWidth: 460, minHeight: 520)
                 .studioChrome()
         }
 
@@ -262,8 +280,7 @@ struct RootView: View {
                 }
             }
             .frame(maxHeight: .infinity)
-            TransportBar()
-            OutputsStatusRow()
+            StudioFooter()
         }
         .background(Studio.background)
         .overlay { QuitConfirmation() }
@@ -753,26 +770,22 @@ struct MultiviewerCanvas: View {
         VStack(spacing: 6) {
             HStack(spacing: 8) {
                 Text("MULTIVIEWER").font(.grotesk(12, .semibold))
-                MonoChip("1080p60")
+                MonoChip(model.coreCanvasLabel)
                 Text("\(model.liveInputCount) live inputs")
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                 Spacer()
                 Text(model.clockText)
                     .font(.plexMono(12, .medium)).foregroundStyle(Studio.textPrimary)
-                Menu {
-                    Button("P/P top") { model.configureMultiviewer(mode: "pgmPvwTop") }
-                    Button("P/P large") { model.configureMultiviewer(mode: "pgmPvwLarge") }
-                    Button("P/P side") { model.configureMultiviewer(mode: "pgmPvwSide") }
-                    Button("Grid") { model.configureMultiviewer(mode: "grid") }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "rectangle.split.2x2").font(.system(size: 9))  // design-lint: allow
-                        Text("Edit layout").font(.grotesk(11, .semibold))
+                // Windows POS-1/POS-2 (Tier 0.14): edit the PREVIEW scene in
+                // place, and add an overlay layer to it. The multiview layout
+                // mode lives in Settings > Multiview, as on Windows.
+                if !isPopout {
+                    ActionChip("Edit layout", accent: model.studioLayoutEditing) {
+                        model.toggleStudioLayoutEditing()
                     }
+                    .help("Move and resize the preview scene's sources. Changes ride the preview until you Take.")
+                    AddOverlayMenu()
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .foregroundStyle(Studio.textPrimary)
                 ActionChip("Scene builder", accent: true) { model.selectedTab = .scenes }
                 HStack(spacing: 4) {
                     Text("LT \(model.lowerThirdPhase == "hidden" ? "out" : "in")")
@@ -792,6 +805,12 @@ struct MultiviewerCanvas: View {
                     ActionChip("Pop out") { openWindow(id: PopoutWindow.multiview) }
                     ActionChip("P/P") { openWindow(id: PopoutWindow.busMonitor) }
                 }
+            }
+            if !isPopout, !model.studioCommandStatus.isEmpty {
+                Text(model.studioCommandStatus)
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             ZStack {
                 Rectangle().fill(Color.black)
@@ -818,8 +837,24 @@ struct MultiviewerCanvas: View {
                                     model.previewMultiviewSlot(slot)
                                 }
                             }
+                            // Drag one source tile onto another: swap the two
+                            // input slots (Windows TileSwapCommand). A short
+                            // press-release stays a click (cue).
+                            .gesture(DragGesture(minimumDistance: 8, coordinateSpace: .named("multiview"))
+                                .onEnded { value in
+                                    guard tile.role == "source",
+                                          geometry.size.width > 0, geometry.size.height > 0 else { return }
+                                    let point = CGPoint(x: value.location.x / geometry.size.width,
+                                                        y: value.location.y / geometry.size.height)
+                                    guard let target = MultiviewDragPolicy.dropTarget(
+                                              tiles: model.multiviewTiles, from: tile, at: point),
+                                          let fromSlot = model.slotForSourceId(tile.id),
+                                          let toSlot = model.slotForSourceId(target.id) else { return }
+                                    model.swapMultiviewSlots(fromSlot, toSlot)
+                                })
                     }
                 }
+                .coordinateSpace(name: "multiview")
                 if MultiviewEmptyStatePolicy.showAssignmentGuidance(
                     tileCount: model.multiviewTiles.count,
                     multiviewSurfaceId: model.multiviewSurfaceId) {
@@ -831,6 +866,9 @@ struct MultiviewerCanvas: View {
                              + "pick a scene — preview and program composite here.")
                             .font(.grotesk(12)).foregroundStyle(Studio.textDim)
                     }
+                }
+                if model.studioLayoutEditing && !isPopout {
+                    StudioLayoutEditorOverlay()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -932,36 +970,29 @@ struct ActionChip: View {
 
 struct SceneRail: View {
     @EnvironmentObject var model: AppModel
+    @State private var renaming: String?
 
-    var programName: String {
-        model.scenes.first { $0.id == model.programSceneId }?.name ?? "—"
-    }
+    // A solo cue shows the SOURCE, not a scene name — the rail has no row for
+    // the reserved solo scenes (on either bus, now that one can be Taken).
+    var programName: String { model.busLabel(for: model.programSceneId) }
 
-    var previewName: String {
-        // A solo cue shows the SOURCE, not a scene name — the rail has no row
-        // for the reserved solo scenes.
-        if model.previewSceneId == AppModel.soloSceneA
-            || model.previewSceneId == AppModel.soloSceneB {
-            if let slotId = model.soloSlotId,
-               let slot = model.slots.first(where: { $0.id == slotId }) {
-                return slot.name.isEmpty ? "Input \(slotId)" : slot.name
-            }
-            return "Solo"
-        }
-        return model.scenes.first { $0.id == model.previewSceneId }?.name ?? "—"
-    }
+    var previewName: String { model.busLabel(for: model.previewSceneId) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Scenes").font(.grotesk(13, .semibold))
-            Text("\(model.scenes.count) scenes · 1920x1080 · 60 fps")
+            Text("\(model.railScenes.count) scenes · 1920x1080 · 60 fps")
                 .font(.grotesk(10)).foregroundStyle(Studio.secondary)
             HStack(spacing: 6) {
                 SceneChip(label: "PGM \(programName)", color: Studio.amber)
                 SceneChip(label: "PVW \(previewName)", color: Studio.accent)
             }
             ForEach(Array(model.railScenes.enumerated()), id: \.element.id) { index, scene in
-                SceneRow(index: index + 1, scene: scene)
+                SceneRow(index: index + 1, scene: scene, rename: { renaming = scene.id })
+            }
+            if !model.sceneEditMessage.isEmpty {
+                Text(model.sceneEditMessage).font(.grotesk(10)).foregroundStyle(Studio.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text("Tap a scene to queue on preview · Take swaps PVW and PGM")
                 .font(.grotesk(9)).foregroundStyle(Studio.secondary.opacity(0.8))
@@ -985,6 +1016,11 @@ struct SceneRail: View {
             Spacer()
         }
         .modifier(StudioPanel())
+        .sheet(isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            if let id = renaming {
+                SceneRenameSheet(sceneId: id, presented: $renaming).environmentObject(model)
+            }
+        }
     }
 }
 
@@ -997,8 +1033,9 @@ struct SuperSourceBackgroundPicker: View {
     @EnvironmentObject var model: AppModel
 
     var scene: SceneDef? {
-        model.scenes.first(where: { $0.id == model.previewSceneId })
-            ?? model.scenes.first(where: { $0.id == model.programSceneId })
+        // Solo scenes have no background to pick (they are not operator scenes).
+        model.railScenes.first(where: { $0.id == model.previewSceneId })
+            ?? model.railScenes.first(where: { $0.id == model.programSceneId })
     }
 
     var selected: MediaAsset? {
@@ -1006,10 +1043,13 @@ struct SuperSourceBackgroundPicker: View {
         return model.mediaAssets.first(where: { $0.id == id })
     }
 
-    // Stills only: a background is composited behind every route for the whole
-    // scene, and the core enables it only with a real asset PATH.
+    // Stills and AVFoundation-playable video: a background is composited behind
+    // every route for the whole scene (a video one loops), and the core enables
+    // it only with a real asset PATH. The old filter asked for kinds "image" /
+    // "background", which the bin classifier never produces, so this menu was
+    // always empty.
     var options: [MediaAsset] {
-        model.mediaAssets.filter { $0.kind == "image" || $0.kind == "background" }
+        MediaBin.backgroundOptions(model.mediaAssets)
     }
 
     var body: some View {
@@ -1056,7 +1096,7 @@ struct SuperSourceBackgroundPicker: View {
     var summary: String {
         guard let scene else { return "No scene selected." }
         if options.isEmpty {
-            return "No still images in the media bin — import one to use as a "
+            return "No stills or videos in the media bin — import one to use as a "
                 + "background for \(scene.name)."
         }
         if let selected {
@@ -1070,11 +1110,30 @@ struct SceneRow: View {
     @EnvironmentObject var model: AppModel
     let index: Int
     let scene: SceneDef
+    var rename: () -> Void = {}
 
     var onProgram: Bool { scene.id == model.programSceneId }
     var onPreview: Bool { scene.id == model.previewSceneId }
 
     var body: some View {
+        HStack(alignment: .top, spacing: 4) {
+            rowButton
+            // Windows: a Duplicate button beside every row (the copy is cued
+            // on Preview).
+            Button {
+                model.duplicateScene(scene.id)
+            } label: {
+                Image(systemName: "plus.square.on.square").font(.system(size: 10))  // design-lint: allow
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Studio.secondary)
+            .help("Duplicate scene")
+            .padding(.top, 8)
+        }
+    }
+
+    var rowButton: some View {
         Button {
             model.selectPreviewScene(scene.id)
         } label: {
@@ -1111,6 +1170,13 @@ struct SceneRow: View {
                         lineWidth: 1))
         }
         .buttonStyle(.plain)
+        // Windows rail context menu: by this row's stable id, without cueing it.
+        .contextMenu {
+            Button("Rename scene", action: rename)
+            if model.railCanRemoveScene(scene.id) {
+                Button("Remove scene") { model.deleteScene(scene.id) }
+            }
+        }
     }
 }
 
@@ -1219,29 +1285,11 @@ struct ParticipantCard: View {
 struct TabPage: View {
     @EnvironmentObject var model: AppModel
 
+    // Width per tab comes from TabPageLayout (a flat 720 pt cap clipped the
+    // Sources rows and the Routing grid).
     var body: some View {
         ScrollView {
-            HStack {
-                Spacer(minLength: 0)
-                Group {
-                    switch model.selectedTab {
-                    case .studio: EmptyView()
-                    case .zoom: ZoomPane()
-                    case .sources: SourcesPane()
-                    case .scenes: ScenesPane()
-                    case .routing: RoutingPane()
-                    case .overlays: OverlaysPane()
-                    case .audio: AudioPane()
-                    case .media: MediaPane()
-                    case .automation: AutomationPane()
-                    case .settings: SettingsPane()
-                    case .diagnose: DiagnosePane()
-                    }
-                }
-                .frame(maxWidth: 720)
-                Spacer(minLength: 0)
-            }
-            .padding(12)
+            TabPageContent(tab: model.selectedTab)
         }
     }
 }
@@ -1304,377 +1352,7 @@ final class SurfaceNSView: NSView {
     }
 }
 
-// ── Transport bar ────────────────────────────────────────────────────────────
-
-struct TransportBar: View {
-    @EnvironmentObject var model: AppModel
-
-    var recording: Bool {
-        model.recordingStatus == "recording" || model.recordingStatus == "warning"
-    }
-
-    var outputsLabel: String {
-        var live: [String] = []
-        if recording { live.append("recording") }
-        if model.streamingDesired { live.append("streaming") }
-        return live.isEmpty ? "Outputs idle" : "Outputs live: " + live.joined(separator: " + ")
-    }
-
-    // RC footer (StudioFooterLayoutPanel.cs): Graphics + Outputs are a left-aligned
-    // group with a fixed gap, only the space before the transport grows, and
-    // Take / transition choice / FTB are anchored far right. If the three groups
-    // cannot fit one row, Graphics sits on its own row and Outputs + transport
-    // share the second (the Windows wrap rule). The health/audio row is separate
-    // (OutputsStatusRow, below).
-    private var graphicsGroup: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 4) {
-                Text("LT")
-                    .font(.grotesk(10, .bold))
-                Text(model.lowerThirdPhase == "hidden" ? "Ready" : model.lowerThirdPhase)
-                    .font(.grotesk(9))
-                    .foregroundStyle(model.lowerThirdPhase == "hidden"
-                                     ? Studio.secondary : Studio.accent)
-            }
-            .padding(.horizontal, 8).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
-            // Preview / DSK chips (the reference transport). Preview mirrors
-            // whether a scene is armed; DSK reflects the lower-third key.
-            TransportChip(title: "Preview",
-                          detail: model.previewSceneId.isEmpty ? "Off" : "Armed",
-                          lit: !model.previewSceneId.isEmpty)
-            TransportChip(title: "DSK",
-                          detail: model.lowerThirdPhase == "hidden" ? "Off" : "In",
-                          lit: model.lowerThirdPhase != "hidden")
-        }
-    }
-
-    private var outputsGroup: some View {
-        HStack(spacing: 8) {
-            // Record — red outline with format subtitle.
-            Button {
-                model.toggleRecording()
-            } label: {
-                Image(systemName: recording ? "stop.fill" : "record.circle")
-                    .font(.system(size: 13))  // design-lint: allow
-                .foregroundStyle(recording ? .white : Studio.red)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8)
-                    .fill(recording ? Studio.red : Studio.red.opacity(0.10)))
-                .overlay(RoundedRectangle(cornerRadius: 8)
-                    .stroke(Studio.red.opacity(0.8), lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(recording ? "Stop recording" : "Record")
-            .help(recording ? "Stop recording"
-                  : (model.isoRecordingEnabled
-                     ? "Record MP4 + \(model.peekIsoSourceIds().count) ISOs" : "Record MP4"))
-            Toggle("ISOs", isOn: $model.isoRecordingEnabled)
-                .toggleStyle(.checkbox)
-                .font(.grotesk(10))
-                .disabled(recording)
-            StreamControl()
-            VirtualCamChip()
-        }
-    }
-
-    private var transportGroup: some View {
-        HStack(spacing: 10) {
-            Text(outputsLabel).font(.grotesk(10)).foregroundStyle(Studio.secondary)
-            if !model.takeStatus.isEmpty {
-                Text(model.takeStatus).font(.grotesk(10)).foregroundStyle(Studio.secondary)
-                    .lineLimit(1).truncationMode(.tail).frame(maxWidth: 260)
-            }
-            // Take — amber, the director's commit button.
-            Button {
-                Task { await model.take() }
-            } label: {
-                HStack(spacing: 4) {
-                    Text("Take").font(.grotesk(12, .bold))
-                    Text(model.takeTransitionLabel).font(.grotesk(9))
-                        .foregroundStyle(Studio.onAccent.opacity(0.7))
-                }
-                .foregroundStyle(Studio.onAccent)
-                .padding(.horizontal, 14).padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 8).fill(
-                    model.canTake ? Studio.amber : Studio.amber.opacity(0.35)))
-            }
-            .buttonStyle(.plain)
-            .disabled(!model.canTake)
-            .help("Take Preview to Program using \(model.takeTransitionLabel), then swap the previous Program back to Preview.")
-            // Cut / Fade — Windows footer flyout ("Instant" vs "· 300 ms").
-            Picker("", selection: Binding(
-                get: { model.takeTransitionMode == "cut" ? "cut" : "fade" },
-                set: { model.setTakeTransition($0) })) {
-                Text("Cut").tag("cut")
-                Text("Fade").tag("fade")
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .help("Cut is instant; Fade is 300 ms.")
-            // Fade to Black — RC key: black fill, no visible text, red outline when
-            // black is selected. The label lives in help/accessibility only.
-            Button {
-                Task { await model.toggleProgramBlackout() }
-            } label: {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.black)
-                    .frame(width: 34, height: 26)
-                    .overlay(RoundedRectangle(cornerRadius: 6)
-                        .stroke(model.programBlackout ? Studio.red : Studio.border,
-                                lineWidth: model.programBlackout ? 2 : 1))
-            }
-            .buttonStyle(.plain)
-            .help("\(model.programBlackoutLabel) (⌘⇧B). Fades Program video over 300 ms; audio continues.")
-            .accessibilityLabel(model.programBlackoutLabel)
-        }
-    }
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                graphicsGroup
-                outputsGroup
-                Spacer(minLength: 12)
-                transportGroup
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                graphicsGroup
-                HStack(spacing: 12) {
-                    outputsGroup
-                    Spacer(minLength: 12)
-                    transportGroup
-                }
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Studio.panel)
-        .overlay(Rectangle().frame(height: 1).foregroundStyle(Studio.stroke),
-                 alignment: .top)
-    }
-}
-
-// ── Stream control (blue, transport) ─────────────────────────────────────────
-
-struct TransportChip: View {
-    let title: String
-    let detail: String
-    let lit: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(title).font(.grotesk(11, .semibold))
-            Text(detail).font(.grotesk(9))
-                .foregroundStyle(lit ? Studio.accent : Studio.secondary)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
-        .overlay(RoundedRectangle(cornerRadius: 8)
-            .stroke(lit ? Studio.accent.opacity(0.5) : Studio.border, lineWidth: 1))
-    }
-}
-
-// Virtual camera: the CoreMediaIO system extension needs a Developer ID
-// (an owner-blocked item), so the control states that plainly instead of
-// pretending to be available.
-struct VirtualCamChip: View {
-    var body: some View {
-        Image(systemName: "web.camera")
-            .font(.system(size: 12))  // design-lint: allow
-            .foregroundStyle(Studio.textDim)
-            .padding(.horizontal, 8).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Studio.card))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Studio.border, lineWidth: 1))
-            .opacity(0.6)
-            .accessibilityLabel("Virtual camera, needs Developer ID")
-            .help("Virtual Cam: the CoreMediaIO camera extension requires a signed, "
-                  + "notarized build — blocked on the Apple Developer ID.")
-    }
-}
-
-struct StreamControl: View {
-    @EnvironmentObject var model: AppModel
-    @State private var showSettings = false
-
-    var live: Bool { model.streamingDesired }
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Button {
-                if live {
-                    model.toggleStreaming()
-                } else if model.streamKey.isEmpty {
-                    showSettings = true
-                } else {
-                    model.toggleStreaming()
-                }
-            } label: {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                    .font(.system(size: 13))  // design-lint: allow
-                .foregroundStyle(live ? .white : Studio.blue)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8)
-                    .fill(live ? Studio.blue : Studio.blue.opacity(0.10)))
-                .overlay(RoundedRectangle(cornerRadius: 8)
-                    .stroke(Studio.blue.opacity(0.8), lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(live ? "Stop streaming" : "Start streaming")
-            .help(live ? "Stop streaming (RTMP)\(model.streamDetail.isEmpty ? "" : " — " + model.streamDetail)"
-                  : "Start streaming (RTMP, 6 Mbps)")
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape").font(.system(size: 10))  // design-lint: allow
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Studio.secondary)
-        }
-        .popover(isPresented: $showSettings) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Stream settings").font(.grotesk(14, .semibold))
-                TextField("RTMP URL", text: $model.streamUrl)
-                    .textFieldStyle(StudioFieldStyle())
-                SecureField("Stream key (stored in Keychain)", text: $model.streamKey)
-                    .textFieldStyle(StudioFieldStyle())
-                HStack {
-                    Spacer()
-                    Button(live ? "Stop streaming" : "Start streaming") {
-                        model.toggleStreaming()
-                        showSettings = false
-                    }
-                    .disabled(!live && (model.streamKey.isEmpty || model.streamUrl.isEmpty))
-                }
-                Text("1080p30 H.264 (VideoToolbox via ffmpeg) · 6 Mbps CBR · AAC 160 kbps")
-                    .font(.grotesk(10)).foregroundStyle(Studio.secondary)
-            }
-            .padding(14)
-            .frame(width: 380)
-        }
-    }
-}
-
-// ── OUTPUTS status row ───────────────────────────────────────────────────────
-
-struct OutputsStatusRow: View {
-    @EnvironmentObject var model: AppModel
-
-    var recording: Bool {
-        model.recordingStatus == "recording" || model.recordingStatus == "warning"
-    }
-
-    var lufsLabel: String {
-        model.shortTermLufs <= -119 ? "—" : String(format: "%.1f LUFS", model.shortTermLufs)
-    }
-
-    var peakLabel: String {
-        model.truePeakDbfs <= -119 ? "" : String(format: "Peak %.1f dBFS", model.truePeakDbfs)
-    }
-
-    var body: some View {
-        HStack(spacing: 14) {
-            HStack(spacing: 4) {
-                Circle().fill(Studio.accent).frame(width: 6, height: 6)
-                Text("OUTPUTS").font(.plexMono(9, .bold))
-                    .foregroundStyle(Studio.accent)
-            }
-            OutputColumn(title: "PROGRAM", value: "1080p60",
-                         detail: model.programSceneId.isEmpty ? "idle" : "live")
-            OutputColumn(title: "STREAM",
-                         value: model.streamingDesired ? (model.streamDegradationLine ?? "6 Mbps") : "—",
-                         detail: model.streamingDesired
-                             ? (model.streamStatus.isEmpty ? "starting" : model.streamStatus)
-                             : "Idle")
-            OutputColumn(title: "RECORD",
-                         value: recording ? "MP4" : "—",
-                         detail: recording ? "recording" : "Idle")
-            // Dropped frames sit next to RECORD because that is what they
-            // compromise. Amber the moment ANY frame is lost — a silent "0" is
-            // the only acceptable healthy state, so a non-zero count must draw
-            // the eye rather than blend in.
-            if recording || model.recordingDroppedFrames > 0 {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("FRAME DROPS").font(.plexMono(8, .bold))
-                        .foregroundStyle(Studio.secondary)
-                    Text(model.droppedFramesLabel)
-                        .font(.grotesk(10, .semibold))
-                        .foregroundStyle(model.recordingDroppedFrames > 0
-                                         ? Studio.amber : Studio.textPrimary)
-                }
-            }
-            if recording, let started = model.recordingStartedAt {
-                TimelineView(.periodic(from: started, by: 1)) { context in
-                    OutputColumn(
-                        title: "LIVE",
-                        value: elapsedString(from: started, to: context.date),
-                        detail: "")
-                }
-            }
-            // #1074: two facts, never a cause. Nothing shows when the condition is absent.
-            if let health = model.stalledFeedsLine {
-                Text(health).font(.grotesk(10, .semibold)).foregroundStyle(Studio.amber)
-                    .lineLimit(1).truncationMode(.tail)
-                    .accessibilityLabel("Stream health: \(health)")
-            }
-            Spacer()
-            Toggle(isOn: Binding(
-                get: { model.monitorEnabled },
-                set: { model.setMonitor(enabled: $0, volume: model.monitorVolume) })) {
-                Text("Monitor").font(.grotesk(11, .medium))
-            }
-            .toggleStyle(.button)
-            .tint(Studio.blue)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text("MASTER")
-                        .font(.plexMono(9, .bold))
-                        .foregroundStyle(Studio.secondary)
-                    Text(lufsLabel).font(.plexMono(11, .semibold))
-                }
-                MeterBar(level: model.masterLevel).frame(width: 170)
-                TimelineView(.periodic(from: .now, by: 0.25)) { context in
-                    if let warning = model.meterWarning(now: context.date) {
-                        Text(warning).font(.plexMono(8, .bold)).foregroundStyle(Studio.amber)
-                    }
-                }
-            }
-            if !peakLabel.isEmpty {
-                Text(peakLabel).font(.plexMono(9))
-                    .foregroundStyle(Studio.secondary)
-            }
-            Text(model.clockText).font(.plexMono(10))
-                .foregroundStyle(Studio.secondary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Studio.background)
-    }
-
-    private func elapsedString(from start: Date, to now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(start)))
-        return String(format: "%02d:%02d", seconds / 60, seconds % 60)
-    }
-}
-
-struct OutputColumn: View {
-    let title: String
-    let value: String
-    let detail: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(title).font(.plexMono(8, .bold))
-                .foregroundStyle(Studio.secondary)
-            Text(value).font(.grotesk(10, .semibold))
-            if !detail.isEmpty {
-                Text(detail).font(.grotesk(8)).foregroundStyle(Studio.secondary)
-            }
-        }
-    }
-}
+// ── Studio footer: StudioFooter.swift (Windows RC footer port) ─────────────
 
 // ── Panes (tab pages) ────────────────────────────────────────────────────────
 
@@ -1703,6 +1381,7 @@ struct ZoomPane: View {
                 ? "Connected — raw media live"
                 : "Connected — capture is off"
         }
+        if !model.zoomJoinStatus.isEmpty { return model.zoomJoinStatus }
         return model.meetingState == "error" ? "See Health for the engine warning"
                                              : "Not connected"
     }
@@ -1778,6 +1457,17 @@ struct ZoomPane: View {
                         Button("Join Zoom") { model.joinZoom() }
                             .buttonStyle(AccentButtonStyle())
                             .disabled(model.joinMeetingId.isEmpty)
+                        // #475: shown ONLY after a join failed because this
+                        // account is already in the meeting. It ends the
+                        // operator's own Zoom session, so it is a separate,
+                        // explicit gesture and never the default Join.
+                        if model.canEndOtherZoomSession {
+                            Button("Join and end my other Zoom session") {
+                                model.joinZoom(endOtherMeeting: true)
+                            }
+                            .buttonStyle(GhostButtonStyle())
+                            .help("Ends this Zoom account's other session, including your own Zoom app, and joins here.")
+                        }
                     }
                     Button("Open in Zoom app") { model.openInZoomApp() }
                         .buttonStyle(GhostButtonStyle())
@@ -1794,21 +1484,25 @@ struct ZoomPane: View {
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
 
             VStack(alignment: .leading, spacing: 8) {
+                // From the core's zoom.readiness, like the Windows SDK chip
+                // (SettingsPage.xaml:148-167) — not a fixed "Ready".
+                let readiness = ZoomOperatorStatus.readiness(snapshot: model.lastSnapshot)
+                let blocked = ZoomOperatorStatus.isBlocked(readiness, inMeeting: inMeeting)
                 Text("Zoom status").font(.grotesk(14, .semibold))
-                Text(inMeeting ? "In the meeting — \(model.roster.count) in room"
-                               : "Ready to join Zoom")
+                Text(ZoomOperatorStatus.chipLabel(readiness, inMeeting: inMeeting))
                     .font(.grotesk(12, .medium))
-                    .foregroundStyle(inMeeting ? Studio.accent : Studio.textPrimary)
+                    .foregroundStyle(blocked ? Studio.red : (inMeeting ? Studio.accent : Studio.textPrimary))
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
                     .overlay(RoundedRectangle(cornerRadius: 8)
-                        .stroke(Studio.accent.opacity(0.6), lineWidth: 1))
-                Text(inMeeting
-                     ? "Assign participants from the Studio room rail; "
-                     + "press Capture to start raw media."
-                     : "Enter a meeting link or ID above when you are ready to connect.")
+                        .stroke((blocked ? Studio.red : Studio.accent).opacity(0.6), lineWidth: 1))
+                Text(ZoomOperatorStatus.guidance(readiness, inMeeting: inMeeting))
                     .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+                if blocked, let reason = ZoomOperatorStatus.blockingReason(snapshot: model.lastSnapshot) {
+                    Text(reason).font(.plexMono(10)).foregroundStyle(Studio.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(14)
             .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
@@ -1822,371 +1516,15 @@ struct ZoomPane: View {
 // tab 1): "Show inputs (multiview)" slot table with in-show checkbox, source
 // menu, editable name, ISO checkbox and Unassign, over the Zoom-feed-health
 // and capture-devices reference cards.
-struct SourcesPane: View {
-    @EnvironmentObject var model: AppModel
-
-    var inShowCount: Int { model.slots.filter(\.inShow).count }
-    var assignedCount: Int { model.slots.filter { $0.kind != "unassigned" }.count }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Show inputs (multiview)").font(.grotesk(15, .semibold))
-                Text("Assign up to 10 sources below. Toggle In show to put them "
-                     + "on the Studio multiview strip.")
-                    .font(.grotesk(12)).foregroundStyle(Studio.secondary)
-                Text("\(inShowCount) in show · \(assignedCount) assigned")
-                    .font(.grotesk(12, .medium)).foregroundStyle(Studio.accent)
-                if !model.rosterRecoveryNotice.isEmpty {
-                    Text(model.rosterRecoveryNotice)
-                        .font(.plexMono(10)).foregroundStyle(Studio.amber)
-                }
-                HStack(spacing: 8) {
-                    StepCard(number: "1", title: "Assign inputs",
-                             detail: "Bind Zoom guests, media, or cameras to stable slots.",
-                             active: true)
-                    StepCard(number: "2", title: "Route outputs",
-                             detail: "Use Routing for ISO video and program audio.",
-                             active: false)
-                    StepCard(number: "3", title: "Compose scenes",
-                             detail: "Add Inputs to the 16:9 canvas and Take to Program.",
-                             active: false)
-                }
-                ForEach(model.slots) { slot in
-                    SlotRow(slot: slot)
-                }
-            }
-            .padding(14)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Studio.border, lineWidth: 1))
-
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Zoom feed health").font(.grotesk(14, .semibold))
-                    if model.roster.isEmpty {
-                        Text("No Zoom feeds — join a meeting")
-                            .font(.grotesk(12)).foregroundStyle(Studio.secondary)
-                    }
-                    ForEach(model.roster) { participant in
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(participant.hasVideo ? Studio.accent
-                                                           : Studio.secondary.opacity(0.4))
-                                .frame(width: 7, height: 7)
-                            Text(participant.name).font(.grotesk(12)).lineLimit(1)
-                            Text(participant.hasVideo ? "video" : "no video")
-                                .font(.plexMono(10))
-                                .foregroundStyle(Studio.secondary)
-                        }
-                    }
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
-                .overlay(RoundedRectangle(cornerRadius: 10)
-                    .stroke(Studio.border, lineWidth: 1))
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Capture devices").font(.grotesk(14, .semibold))
-                    Text("\(model.captureDevices.filter { $0.connectionState == "connected" }.count)"
-                         + " connected · \(model.captureDevices.count) detected")
-                        .font(.grotesk(12)).foregroundStyle(Studio.secondary)
-                    ForEach(model.captureDevices.prefix(8)) { device in
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(device.signalPresent ? Studio.accent
-                                      : device.connectionState == "error"
-                                          ? Studio.red : Studio.secondary.opacity(0.4))
-                                .frame(width: 7, height: 7)
-                            Text(device.name).font(.grotesk(12)).lineLimit(1)
-                            Spacer()
-                            Button(device.connectionState == "connected"
-                                   ? "Disconnect" : "Connect") {
-                                model.connectCaptureDevice(device)
-                            }
-                            .buttonStyle(.plain)
-                            .font(.grotesk(11, .semibold))
-                            .foregroundStyle(Studio.accent)
-                        }
-                        // A device that connects but never delivers a frame
-                        // (idle virtual camera, camera held by another app,
-                        // permission not granted) says so here — silence was
-                        // indistinguishable from a working source.
-                        if !device.warning.isEmpty {
-                            Text(device.warning)
-                                .font(.grotesk(10))
-                                .foregroundStyle(device.connectionState == "error"
-                                                 ? Studio.red : Studio.amber)
-                                .fixedSize(horizontal: false, vertical: true)
-                        } else if device.connectionState == "connected",
-                                  !device.signalPresent {
-                            Text("Connected — waiting for the first frame")
-                                .font(.grotesk(10)).foregroundStyle(Studio.amber)
-                        }
-                    }
-                    if model.captureDevices.count > 8 {
-                        Text("+ \(model.captureDevices.count - 8) more")
-                            .font(.grotesk(11)).foregroundStyle(Studio.textDim)
-                    }
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Studio.panel))
-                .overlay(RoundedRectangle(cornerRadius: 10)
-                    .stroke(Studio.border, lineWidth: 1))
-            }
-        }
-        .frame(maxWidth: 900)
-    }
-}
-
-struct StepCard: View {
-    let number: String
-    let title: String
-    let detail: String
-    let active: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 5) {
-                Text(number).font(.grotesk(12, .semibold))
-                Text(title).font(.grotesk(12, .semibold))
-            }
-            Text(detail).font(.grotesk(10)).foregroundStyle(Studio.secondary)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8)
-            .fill(active ? Studio.accent.opacity(0.08) : Studio.surface))
-        .overlay(RoundedRectangle(cornerRadius: 8)
-            .stroke(active ? Studio.accent.opacity(0.6) : Studio.border, lineWidth: 1))
-    }
-}
-
-/// Green/blue screen keying for one source. The core keys per ROUTE, but an
-/// operator reasons per SOURCE — "that camera is on a green screen" — so the
-/// setting lives on the slot and the shell attaches it to every route bound to
-/// it when the scene graph is built.
-struct ChromaKeyControl: View {
-    @EnvironmentObject var model: AppModel
-    let slot: ShowInputSlot
-
-    var index: Int? { model.slots.firstIndex(where: { $0.id == slot.id }) }
-
-    var body: some View {
-        Menu {
-            Toggle("Key this source", isOn: Binding(
-                get: { slot.keyEnabled },
-                set: { value in
-                    guard let index else { return }
-                    model.slots[index].keyEnabled = value
-                    model.syncScenes()
-                }))
-            if slot.keyEnabled {
-                Divider()
-                // Presets first: the overwhelming majority of shoots are one of
-                // these two, and typing a hex code mid-show is not a workflow.
-                Button("Green screen") { setColor("#00ff00") }
-                Button("Blue screen") { setColor("#0000ff") }
-                Divider()
-                slider("Similarity", \.keySimilarity)
-                slider("Smoothness", \.keySmoothness)
-                slider("Spill", \.keySpill)
-            }
-        } label: {
-            HStack(spacing: 3) {
-                Circle()
-                    .fill(Color(brandHex: slot.keyColorHex) ?? Studio.accent)
-                    .frame(width: 7, height: 7)
-                    .opacity(slot.keyEnabled ? 1 : 0.25)
-                Text("Key").font(.grotesk(11))
-                    .foregroundStyle(slot.keyEnabled ? Studio.textPrimary : Studio.secondary)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help(slot.keyEnabled ? "Chroma key on" : "Chroma key off")
-    }
-
-    func setColor(_ hex: String) {
-        guard let index else { return }
-        model.slots[index].keyColorHex = hex
-        model.syncScenes()
-    }
-
-    /// syncScenes is already coalesced, so dragging a key parameter cannot
-    /// flood the command queue.
-    func slider(_ label: String, _ path: WritableKeyPath<ShowInputSlot, Double>) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("\(label) \(String(format: "%.2f", slot[keyPath: path]))")
-                .font(.plexMono(10))
-            Slider(value: Binding(
-                get: { slot[keyPath: path] },
-                set: { value in
-                    guard let index else { return }
-                    model.slots[index][keyPath: path] = value
-                    model.syncScenes()
-                }), in: 0...1)
-        }
-    }
-}
-
-struct SlotRow: View {
-    @EnvironmentObject var model: AppModel
-    let slot: ShowInputSlot
-
-    var assigned: Bool { slot.kind != "unassigned" }
-
-    var sourceLabel: String {
-        guard assigned else { return "Select a source" }
-        if slot.offline { return "Source offline — choose or reconnect" }
-        return (slot.kind == "zoom" ? "Zoom · " : "Camera · ") + slot.name
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text("\(slot.id)")
-                .font(.plexMono(11, .medium))
-                .foregroundStyle(Studio.secondary)
-                .frame(width: 22, alignment: .trailing)
-            Toggle("", isOn: Binding(
-                get: { slot.inShow },
-                set: { _ in model.toggleSlotInShow(slot.id) }))
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-                .disabled(!assigned)
-            Menu {
-                Section("Zoom participants") {
-                    ForEach(model.roster) { participant in
-                        Button(participant.name) {
-                            model.assignSlot(slot.id, kind: "zoom",
-                                             sourceId: participant.id,
-                                             name: participant.name)
-                        }
-                    }
-                }
-                Section("Capture devices") {
-                    ForEach(model.captureDevices) { device in
-                        Button(device.name) {
-                            model.assignSlot(slot.id, kind: "capture",
-                                             sourceId: device.id, name: device.name)
-                            if device.connectionState != "connected" {
-                                model.connectCaptureDevice(device)
-                            }
-                        }
-                    }
-                }
-            } label: {
-                HStack {
-                    Text(sourceLabel)
-                        .font(.grotesk(12))
-                        .foregroundStyle(assigned ? Studio.textPrimary : Studio.secondary)
-                        .lineLimit(1)
-                    if slot.offline {
-                        Text("OFFLINE")
-                            .font(.plexMono(9, .semibold))
-                            .foregroundStyle(Studio.amber)
-                    }
-                    Spacer()
-                }
-            }
-            .menuStyle(.borderlessButton)
-            .frame(width: 300)
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
-            .overlay(RoundedRectangle(cornerRadius: 8)
-                .stroke(slot.offline ? Studio.amber.opacity(0.6) : Studio.border,
-                        lineWidth: 1))
-            if assigned, slot.kind == "capture",
-               let device = model.captureDevices.first(where: { $0.id == slot.sourceId }),
-               device.connectionState == "connected", !device.signalPresent {
-                Text("no signal").font(.plexMono(9, .semibold))
-                    .foregroundStyle(Studio.amber)
-            }
-            if assigned {
-                TextField("Name", text: Binding(
-                    get: { slot.name },
-                    set: { value in
-                        if let index = model.slots.firstIndex(where: { $0.id == slot.id }) {
-                            model.slots[index].name = value
-                        }
-                    }))
-                    .textFieldStyle(StudioFieldStyle())
-                    .frame(width: 150)
-                // Pair a microphone (capture only). A card's video and audio are
-                // separate devices; without this a capture source is silent and
-                // its ISO is video-only, because MediaCore::isoSourceHasAudio
-                // looks for exactly this pairing.
-                if slot.kind == "capture" {
-                    Menu {
-                        Button("No audio") { model.pairAudio(slotId: slot.id, device: nil) }
-                        Divider()
-                        ForEach(model.audioInputs) { device in
-                            Button(device.name) {
-                                model.pairAudio(slotId: slot.id, device: device)
-                            }
-                        }
-                    } label: {
-                        Text(slot.audioDeviceName.isEmpty
-                             ? "Pair a microphone" : slot.audioDeviceName)
-                            .font(.grotesk(11))
-                            .foregroundStyle(slot.audioDeviceName.isEmpty
-                                             ? Studio.secondary : Studio.textPrimary)
-                            .lineLimit(1)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .frame(width: 160)
-                    .padding(.horizontal, 8).padding(.vertical, 5)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
-                    .overlay(RoundedRectangle(cornerRadius: 8)
-                        .stroke(Studio.border, lineWidth: 1))
-                }
-                ChromaKeyControl(slot: slot)
-                // Dropout policy (core contract #535 slice 4a, set-source-policy):
-                // zoom-assigned slots only — a non-zoom id pushes a sticky scene
-                // warning every sync, so this control must never reach a capture row.
-                if slot.kind == "zoom" {
-                    Menu {
-                        Button("Hold last frame") {
-                            model.setDropoutPolicy(slotId: slot.id, policy: "hold")
-                        }
-                        Button("Black") {
-                            model.setDropoutPolicy(slotId: slot.id, policy: "black")
-                        }
-                    } label: {
-                        Text(slot.dropoutPolicy == "black" ? "Black" : "Hold last frame")
-                            .font(.grotesk(11))
-                            .foregroundStyle(Studio.textPrimary)
-                            .lineLimit(1)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .frame(width: 130)
-                    .padding(.horizontal, 8).padding(.vertical, 5)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
-                    .overlay(RoundedRectangle(cornerRadius: 8)
-                        .stroke(Studio.border, lineWidth: 1))
-                }
-                Toggle("ISO", isOn: Binding(
-                    get: { slot.iso },
-                    set: { _ in model.toggleSlotIso(slot.id) }))
-                    .toggleStyle(.checkbox)
-                    .font(.grotesk(11))
-                Button("Unassign") { model.unassignSlot(slot.id) }
-                    .buttonStyle(GhostButtonStyle())
-            }
-            Spacer()
-        }
-    }
-}
-
-// OverlaysPane now lives in Overlays.swift (Live keyer + Brand kit +
-// Captions). The old stub here was lower-third fields and a hint line.
-
 struct MediaPane: View {
     @EnvironmentObject var model: AppModel
 
+    var selected: MediaAsset? {
+        model.mediaAssets.first { $0.id == model.selectedAssetId }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Media").font(.grotesk(14, .semibold))
                 Spacer()
@@ -2194,43 +1532,171 @@ struct MediaPane: View {
                     let panel = NSOpenPanel()
                     panel.allowsMultipleSelection = true
                     panel.canChooseDirectories = false
-                    if panel.runModal() == .OK {
-                        model.importMedia(urls: panel.urls)
-                    }
+                    // The Windows picker filter: only what the bin accepts.
+                    panel.allowedContentTypes = MediaBin.supportedExtensions
+                        .compactMap { UTType(filenameExtension: $0) }
+                    // A cancelled panel is an import of nothing ("Media import canceled").
+                    model.importMedia(urls: panel.runModal() == .OK ? panel.urls : [])
                 }
+                .accessibilityLabel("Import media files")
                 Button("Refresh") { model.refreshMediaBin() }
+                    .accessibilityLabel("Refresh the media bin")
             }
-            Text(MediaBin.root)
-                .font(.plexMono(8))
-                .foregroundStyle(Studio.secondary.opacity(0.6))
-                .lineLimit(1).truncationMode(.head)
-            if model.mediaAssets.isEmpty {
-                Text("Bin is empty — import stills, stingers or audio beds.")
+            MediaSelectedCard(asset: selected, playing: model.selectedMediaPlaying)
+            HStack(spacing: 8) {
+                Text(model.selectedMediaSummary)
+                    .font(.grotesk(12, .semibold)).foregroundStyle(Studio.textPrimary)
+                    .accessibilityLabel("Selected media: \(model.selectedMediaSummary)")
+                Spacer()
+                if let selected, selected.supportsPlayback {
+                    Button(model.mediaPlaybackButtonLabel) { model.toggleSelectedMediaPlayback() }
+                        .buttonStyle(GhostButtonStyle())
+                        .disabled(!model.mediaClipPlaybackAvailable)
+                        .help(model.mediaClipPlaybackAvailable
+                              ? "Pause or resume the clip on Program; off Program, audition it here (muted)"
+                              : "Clip playback is unavailable in this build")
+                        .accessibilityLabel("\(model.mediaPlaybackButtonLabel): \(selected.name)")
+                }
+                Button("Cue in Preview") { model.cueSelectedInPreview() }
+                    .buttonStyle(GhostButtonStyle())
+                    .disabled(!model.canCueSelectedMedia)
+                    .help(model.cueRefusalReason ?? "Add the selected asset to the Preview scene as a full-canvas layer")
+                    .accessibilityLabel("Cue the selected asset in Preview")
+            }
+            if !model.mediaStatus.isEmpty {
+                Text(model.mediaStatus)
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Media status: \(model.mediaStatus)")
             }
-            ForEach(model.mediaAssets) { asset in
-                HStack {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(asset.name).font(.grotesk(12)).lineLimit(1)
-                        Text("\(asset.kind)"
-                             + (asset.naturalWidth > 0
-                                ? " · \(asset.naturalWidth)×\(asset.naturalHeight)"
-                                : ""))
-                            .font(.plexMono(9))
-                            .foregroundStyle(Studio.secondary)
-                    }
-                    Spacer()
-                    if asset.isStillImage {
-                        Button(model.logoBug?.id == asset.id ? "Unbug" : "Bug") {
-                            model.toggleLogoBug(asset)
-                        }
-                        .font(.grotesk(11))
+            if let warning = model.mediaPlayback?.warnings.first {
+                Text(warning)
+                    .font(.grotesk(11)).foregroundStyle(Studio.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Media warning: \(warning)")
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(MediaBin.summary(model.mediaAssets))
+                    .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                Text(MediaBin.root)
+                    .font(.plexMono(8))
+                    .foregroundStyle(Studio.secondary.opacity(0.6))
+                    .lineLimit(1).truncationMode(.head)
+            }
+            ForEach(MediaBin.groups(model.mediaAssets), id: \.kind) { group in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(group.label.uppercased())
+                        .font(.plexMono(9, .semibold)).foregroundStyle(Studio.textDim)
+                        .padding(.top, 4)
+                    ForEach(group.assets) { asset in
+                        MediaBinRow(asset: asset)
                     }
                 }
-                .padding(.vertical, 2)
             }
         }
         .modifier(StudioPanel())
+    }
+}
+
+/// "<Kind> · <duration> · <W>x<H>", omitting what is unknown.
+func mediaAssetDetail(_ asset: MediaAsset) -> String {
+    var parts = [MediaBin.kindLabel(asset.kind)]
+    if !asset.durationLabel.isEmpty { parts.append(asset.durationLabel) }
+    if asset.naturalWidth > 0 { parts.append("\(asset.naturalWidth)×\(asset.naturalHeight)") }
+    return parts.joined(separator: " · ")
+}
+
+/// The selected asset: what it is, and a local look at it. A clip sits paused
+/// on its first frame; a still is drawn; audio has no picture.
+struct MediaSelectedCard: View {
+    let asset: MediaAsset?
+    var playing = false
+
+    private var isAudio: Bool {
+        guard let asset else { return false }
+        return MediaBin.audioExtensions.contains((asset.filePath as NSString).pathExtension.lowercased())
+    }
+
+    private var playsLocally: Bool {
+        guard let asset else { return false }
+        return MediaBin.avFoundationVideoExtensions.contains((asset.filePath as NSString).pathExtension.lowercased())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let asset {
+                Text(asset.name).font(.grotesk(13, .semibold)).foregroundStyle(Studio.textPrimary).lineLimit(1)
+                Text(mediaAssetDetail(asset)).font(.plexMono(9)).foregroundStyle(Studio.secondary)
+                if asset.isStillImage {
+                    if let image = NSImage(contentsOfFile: asset.filePath) {
+                        Image(nsImage: image).resizable().scaledToFit()
+                            .frame(maxWidth: 320, maxHeight: 180, alignment: .leading)
+                            .accessibilityLabel("Preview of \(asset.name)")
+                    }
+                } else if playsLocally {
+                    MediaPreviewPlayer(url: URL(fileURLWithPath: asset.filePath), playing: playing)
+                        .frame(width: 320, height: 180)
+                        .background(Studio.field)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                } else if !isAudio {
+                    Text("No local preview: this build cannot play \((asset.filePath as NSString).pathExtension) files.")
+                        .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+                }
+            } else {
+                Text("No media asset selected").font(.grotesk(12)).foregroundStyle(Studio.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Studio.field))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Studio.border, lineWidth: 1))
+    }
+}
+
+struct MediaBinRow: View {
+    @EnvironmentObject var model: AppModel
+    let asset: MediaAsset
+
+    var body: some View {
+        let isSelected = model.selectedAssetId == asset.id
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(asset.name).font(.grotesk(12)).lineLimit(1)
+                Text(mediaAssetDetail(asset))
+                    .font(.plexMono(9))
+                    .foregroundStyle(Studio.secondary)
+            }
+            Spacer()
+            if asset.isStillImage {
+                Button(model.logoBug?.id == asset.id ? "Unbug" : "Bug") {
+                    model.toggleLogoBug(asset)
+                }
+                .font(.grotesk(11))
+                .accessibilityLabel(model.logoBug?.id == asset.id
+                                    ? "Remove \(asset.name) as the logo bug" : "Use \(asset.name) as the logo bug")
+            }
+            // Windows PlaybackLabel: Play / Pause for anything that plays, "Still" otherwise.
+            let rowPlaying = MediaBinPlaybackProjection.binRowIsPlaying(
+                asset.id, supportsPlayback: asset.supportsPlayback, rows: model.mediaSources,
+                selectedId: model.selectedAssetId, selectedPlaying: model.selectedMediaPlaying)
+            if asset.supportsPlayback {
+                Button(rowPlaying ? "Pause" : "Play") { model.playMediaAsset(asset.id) }
+                    .font(.grotesk(11))
+                    .disabled(!model.mediaClipPlaybackAvailable)
+                    .help(model.mediaClipPlaybackAvailable ? "" : "Clip playback is unavailable in this build")
+                    .accessibilityLabel(rowPlaying ? "Pause \(asset.name)" : "Play \(asset.name)")
+            } else {
+                Text("Still").font(.plexMono(9)).foregroundStyle(Studio.textDim)
+            }
+            Button(isSelected ? "Selected" : "Select") { model.selectMediaAsset(asset.id) }
+                .font(.grotesk(11))
+                .disabled(isSelected)
+                .accessibilityLabel(isSelected ? "\(asset.name) is selected" : "Select \(asset.name)")
+            Button("Remove") { model.removeMediaAsset(asset.id) }
+                .font(.grotesk(11))
+                .accessibilityLabel("Remove \(asset.name) from the media bin")
+        }
+        .padding(.vertical, 2)
     }
 }
 
@@ -2241,6 +1707,9 @@ struct AutomationPane: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Manual production").font(.grotesk(14, .semibold))
             Text("Scene automation is unavailable in this release. Compose your show and use manual Take.").font(.grotesk(12))
+            // Not scene automation: the slot law's newcomer fill, live in this release.
+            Divider()
+            AutoAssignInputsToggle()
         }
         .modifier(StudioPanel())
     }

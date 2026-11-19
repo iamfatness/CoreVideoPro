@@ -18,6 +18,17 @@
 #include <thread>
 #include <vector>
 
+#if defined(COREVIDEO_WITH_MAC_VIRTUALCAM) && COREVIDEO_WITH_MAC_VIRTUALCAM
+#include "core/MainRunLoopHost.h"
+#include "modules/CmioVirtualCameraSink.h"
+#include "modules/HelperVirtualCameraPublisher.h"
+#include "modules/SinkVirtualCameraPublisher.h"
+#include "modules/VcamSinkHelper.h"
+#include <chrono>
+#include <cstdio>
+#include <unistd.h>
+#endif
+
 #if defined(COREVIDEO_WITH_VIRTUALCAM) && COREVIDEO_WITH_VIRTUALCAM
 #include <windows.h>
 #include <mfapi.h>
@@ -419,12 +430,89 @@ class NoopVirtualCameraPublisher final : public IVirtualCameraPublisher {
 
 }  // namespace
 
+#if defined(COREVIDEO_WITH_MAC_VIRTUALCAM) && COREVIDEO_WITH_MAC_VIRTUALCAM
+namespace {
+// Empty until the real core opts in (enableVirtualCameraSinkHelper).
+std::string& sinkHelperExecutable() {
+  static std::string path;
+  return path;
+}
+}  // namespace
+#endif
+
 std::unique_ptr<IVirtualCameraPublisher> createVirtualCameraPublisher() {
 #if defined(COREVIDEO_WITH_VIRTUALCAM) && COREVIDEO_WITH_VIRTUALCAM
   return std::make_unique<AsyncVirtualCameraPublisher>(std::make_unique<WindowsVirtualCameraPublisher>());
+#elif defined(COREVIDEO_WITH_MAC_VIRTUALCAM) && COREVIDEO_WITH_MAC_VIRTUALCAM
+  // macOS (roadmap M9.2): the CoreVideo Pro Camera extension's sink stream, fed
+  // through a helper process so a camera extension that registers after this
+  // process first touched CoreMediaIO is still found (VcamHelperRespawnPolicy.h).
+  return std::make_unique<AsyncVirtualCameraPublisher>(std::make_unique<HelperVirtualCameraPublisher>(
+      createPosixVcamHelperLauncher(sinkHelperExecutable(), {kVcamSinkHelperArgument}),
+      defaultHelperVirtualCameraClocks(machHostClockNs),
+      [] { return readOwnCameraDeviceView().registered ? 1 : 0; }));
 #else
   return std::make_unique<NoopVirtualCameraPublisher>();
 #endif
 }
+
+#if defined(COREVIDEO_WITH_MAC_VIRTUALCAM) && COREVIDEO_WITH_MAC_VIRTUALCAM
+void enableVirtualCameraSinkHelper() { sinkHelperExecutable() = currentExecutablePath(); }
+
+namespace {
+
+std::string jsonText(const std::string& in) {
+  std::string out;
+  for (char c : in) {
+    if (c == '"' || c == '\\') out.push_back('\\');
+    if (static_cast<unsigned char>(c) < 0x20) continue;
+    out.push_back(c);
+  }
+  return out;
+}
+
+// One line of JSON on stdout: what a NEWBORN process sees of our camera. The
+// shell asks this instead of its own long-lived CoreMediaIO view.
+int runDeviceProbe() {
+  const auto started = std::chrono::steady_clock::now();
+  const auto view = readOwnCameraDeviceView();
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+  std::printf("{\"registered\":%s,\"runningSomewhere\":%s,\"deviceUid\":\"%s\",\"modelUid\":\"%s\",\"readMs\":%.1f}\n",
+              view.registered ? "true" : "false", view.runningSomewhere ? "true" : "false",
+              jsonText(view.deviceUid).c_str(), jsonText(view.modelUid).c_str(), ms);
+  std::fflush(stdout);
+  return 0;
+}
+
+int runSinkHelper() {
+  // Only as a child of the same executable: the core (VcamSinkHelper.h).
+  if (!vcamHelperParentAllowed(currentExecutablePath(), executablePathOfProcess(::getppid()))) {
+    std::fprintf(stderr, "[virtualcam] sink helper refused: it runs only as a child of the CoreVideo Pro core\n");
+    return kVcamHelperExitBadInvocation;
+  }
+  // The main thread services the main run loop (CoreMediaIO applies device
+  // changes there); the helper loop runs on the worker.
+  return core::runWithMainRunLoop([] {
+    return runVcamSinkHelperFromDescriptors(kVcamHelperRegionFd, kVcamHelperWakeFd, createCmioVirtualCameraSink(),
+                                            machHostClockNs);
+  });
+}
+
+}  // namespace
+
+bool runVirtualCameraProcessMode(int argc, char** argv, int* exitCode) {
+  if (argc < 2 || argv == nullptr || argv[1] == nullptr) return false;
+  const std::string mode = argv[1];
+  int result = 0;
+  if (mode == kVcamSinkHelperArgument) result = runSinkHelper();
+  else if (mode == kVcamDeviceProbeArgument) result = runDeviceProbe();
+  else return false;
+  if (exitCode != nullptr) *exitCode = result;
+  return true;
+}
+#else
+void enableVirtualCameraSinkHelper() {}
+bool runVirtualCameraProcessMode(int, char**, int*) { return false; }
+#endif
 
 }  // namespace corevideo::modules

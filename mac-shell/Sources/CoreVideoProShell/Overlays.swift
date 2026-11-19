@@ -185,24 +185,28 @@ struct OverlaysPane: View {
         card("Live keyer") {
             // Keyer state first: an operator needs to know what is on air before
             // they touch anything.
+            // What the CORE draws (overlayState visible), not what was asked:
+            // a key whose source is off Program is suppressed by the core.
             HStack(spacing: 8) {
-                Circle().fill(onAir ? Studio.red : Studio.textDim)
+                Circle().fill(model.lowerThirdOnAirCount > 0 ? Studio.red : Studio.textDim)
                     .frame(width: 8, height: 8)
-                Text(onAir ? "Key on air" : "Key off — no source keyed")
+                Text(model.lowerThirdKeyStatus)
                     .font(.grotesk(12, .medium))
-                    .foregroundStyle(onAir ? Studio.textPrimary : Studio.secondary)
+                    .foregroundStyle(model.lowerThirdOnAirCount > 0 ? Studio.textPrimary
+                                     : (onAir ? Studio.amber : Studio.secondary))
+                    .lineLimit(1).truncationMode(.tail)
                 Spacer()
                 Text("\(model.lowerThirdOnAirCount) on air")
                     .font(.plexMono(10)).foregroundStyle(Studio.textDim)
             }
-            Text("The keyed name stays locked while that source remains on "
-                 + "program. A source change builds the old name out once, then "
-                 + "builds the new name in.")
+            Text("Key in names the source on Program now (its Sources name). If "
+                 + "that source leaves Program, the media core stops drawing the key.")
                 .font(.grotesk(11)).foregroundStyle(Studio.textDim)
 
-            labeled("Name") {
-                TextField("Name", text: $model.lowerThirdName)
-                    .textFieldStyle(StudioFieldStyle()).frame(width: 240)
+            labeled("Program source") {
+                Text(model.programLowerThirdSubject().map { "Ready: \($0.name)" }
+                     ?? "Take a scene with a source first")
+                    .font(.grotesk(12)).foregroundStyle(Studio.secondary)
             }
             labeled("Title") {
                 TextField("Title", text: $model.lowerThirdTitle)
@@ -237,7 +241,6 @@ struct OverlaysPane: View {
                     onAir ? model.hideLowerThird() : model.showLowerThird()
                 }
                 .buttonStyle(AccentButtonStyle())
-                .disabled(!onAir && model.lowerThirdName.isEmpty)
                 Button("Rebuild") {
                     // Build out then back in, so a style or timing change is
                     // visible without the operator toggling twice.
@@ -245,6 +248,10 @@ struct OverlaysPane: View {
                 }
                 .buttonStyle(GhostButtonStyle())
                 .disabled(!onAir)
+                if !model.lowerThirdCommandStatus.isEmpty {
+                    Text(model.lowerThirdCommandStatus)
+                        .font(.grotesk(11)).foregroundStyle(Studio.secondary)
+                }
                 Spacer()
             }
         }

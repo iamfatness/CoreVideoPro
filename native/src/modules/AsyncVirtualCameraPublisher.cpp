@@ -145,6 +145,7 @@ void AsyncVirtualCameraPublisher::run() {
       backend_->setMirror(mirror);
       backend_->setDeviceName(name);
       if (on && (!appliedOn || std::chrono::steady_clock::now() >= retryAt)) {
+        if (!appliedOn) backend_->rearmRetryBudget();  // operator-on, never the 1 s retry
         backend_->stop(); backend_->start(w, h, fps);
         const auto started = backend_->status();
         // Registration can be repaired while this process remains alive.
@@ -198,13 +199,24 @@ void AsyncVirtualCameraPublisher::run() {
         frame.reset();
       }
       if (on && framerEnabled && framer && nv12) {
-        if (auto decorated = framer->apply(nv12, fw, fh, mirror, loudness)) {
+        // A backend whose producer already mirrored (macOS Metal tap) must not
+        // be mirrored a second time here. Windows backends report false.
+        if (auto decorated = framer->apply(nv12, fw, fh, mirror && !backend_->mirrorAppliedUpstream(), loudness)) {
           nv12 = std::move(decorated); ++framerFrames; framerHasProcessedFrame = true;
         } else ++framerFailures;
       }
       if (on && nv12) backend_->publishNv12IdentifiedOnWorker(std::move(nv12), fw, fh, programSequence, deliveredAt100ns);
       else if (on && frame) backend_->publish(*frame);
       observed = backend_->status();
+      // A camera that fails DURING publication (macOS: the camera extension
+      // restarted or was updated mid-stream) is retried on the same 1 s cadence
+      // as a failed registration, with no operator toggle. Only CAMERA_ failures,
+      // and never re-armed while a retry is already scheduled. Inert for the
+      // Windows backend, which never fails during publish.
+      if (on && !observed.enabled && observed.state == "failed" &&
+          observed.warning.rfind("CAMERA_", 0) == 0 &&
+          retryAt == (std::chrono::steady_clock::time_point::max)())
+        retryAt = std::chrono::steady_clock::now() + std::chrono::seconds(1);
       observed.framerEnabled = framerEnabled;
       observed.framerFrames = framerFrames; observed.framerFailures = framerFailures;
       observed.framerState = !framerEnabled ? "off" : !framer ? "waiting" :
