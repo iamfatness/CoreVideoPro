@@ -53,15 +53,17 @@
 # verification passed, so a failed run never leaves a plausible .pkg behind
 # (and never removes the previous good output).
 #
-# Runtime note: RTMP output launches an external `ffmpeg`, which this release does
-# not bundle (GPL/licensing ruling pending). The release core is built with
-# COREVIDEO_WITH_RTMP_OUTPUT=ON only; SRT output and SRT/RTMP ingest are not in
-# the macOS 1.0 build (their options default OFF and the Mac shell has no SRT UI).
-# The core looks in COREVIDEO_FFMPEG_BIN_DIR, FFMPEG_BIN_DIR, its own
-# directory, the cwd, PATH, then /opt/homebrew/bin, /usr/local/bin and
-# /opt/local/bin (native/src/modules/PosixExecutableLocator.h), so a
-# Homebrew or MacPorts ffmpeg is found even from a Finder/Dock launch, whose
-# PATH is only /usr/bin:/bin:/usr/sbin:/sbin.
+# Runtime note (mac streaming Phase 2, owner decision 2026-11-18): the release
+# BUNDLES an LGPL ffmpeg it builds from pinned sources
+# (scripts/build-macos-ffmpeg.sh + scripts/macos-ffmpeg.lock; cached by hash, so
+# only a pin or script change rebuilds, about 80 s) at Contents/Resources/ffmpeg,
+# with its licences and provenance in Contents/Resources/notices/ffmpeg/, and
+# corevideo-child-guard beside it so no ffmpeg outlives a killed core. The core
+# resolves ffmpeg from its own directory before PATH and Homebrew
+# (native/src/modules/PosixExecutableLocator.h, resolveFfmpeg), so streaming
+# (RTMP/RTMPS, SRT, HLS: one sender, three profiles, all in
+# COREVIDEO_WITH_RTMP_OUTPUT) needs no Homebrew. The bundled copy is re-audited
+# inside the signed app (LGPL, no gpl/nonfree, system libraries only).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -90,7 +92,7 @@ die() { echo "error: $*" >&2; exit 1; }
 
 # ── Preflight: everything knowable before a 20-minute build ─────────────────
 [ "$(uname -m)" = "arm64" ] || die "Apple Silicon only (policy); this host is $(uname -m)"
-for tool in cmake ninja swift node xcrun hdiutil codesign ditto shasum; do
+for tool in cmake ninja swift node xcrun hdiutil codesign ditto shasum perl curl make; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
 # Never `cmd | grep -q` under pipefail: grep -q exits on the first match and
@@ -184,7 +186,12 @@ cmake -S native -B "$CORE_BUILD" -G Ninja \
     -DCOREVIDEO_WITH_AVF_CAPTURE=ON -DCOREVIDEO_WITH_SCK=ON \
     -DCOREVIDEO_WITH_RTMP_OUTPUT=ON \
     -DCOREVIDEO_WITH_MAC_VIRTUALCAM=ON
-cmake --build "$CORE_BUILD" --target corevideo-native corevideo-plugin-host
+cmake --build "$CORE_BUILD" --target corevideo-native corevideo-plugin-host corevideo-child-guard
+
+# The LGPL ffmpeg the app ships (cached by SHA-256 of the lock + build script).
+log "ffmpeg (LGPL, pinned sources; cached)"
+FFMPEG_BUILT="$(scripts/build-macos-ffmpeg.sh | tail -1)"
+[ -x "$FFMPEG_BUILT/bin/ffmpeg" ] || die "scripts/build-macos-ffmpeg.sh produced no ffmpeg"
 
 # The release gate for the core: the FULL native suite on this exact build,
 # INCLUDING the `realtime` label. CI excludes `realtime` (shared runners cannot
@@ -232,6 +239,7 @@ COREVIDEO_SHELL_BIN="$SHELL_BIN" \
 COREVIDEO_CAMERA_EXT_BIN="$SHELL_SCRATCH/release/CoreVideoProCamera" \
 COREVIDEO_CORE_BUILD_DIR="$CORE_BUILD" \
 COREVIDEO_ENGINE_APP="$ENGINE_BUILD/corevideo-zoom-engine.app" \
+COREVIDEO_FFMPEG_BUILT_DIR="$FFMPEG_BUILT" \
 COREVIDEO_REQUIRE_HELPERS=1 \
 COREVIDEO_APP_OUT="$APP" \
     scripts/make-macos-shell-bundle.sh
@@ -267,6 +275,23 @@ done < <(find "$APP" -type f)
 # an audit that looked at nothing must not pass.
 [ "$MACHO_COUNT" -gt 0 ] || die "audited 0 Mach-O files under $APP; nothing was checked"
 echo "audited $MACHO_COUNT Mach-O files: Developer ID + runtime + timestamp; arm64 except $X86_VENDOR Intel-only vendor SDK file(s)"
+
+# The ffmpeg the app actually ships: the SIGNED copy, re-audited (signing must
+# not have swapped or broken it), with its own identifiers and no entitlements.
+log "audit the bundled ffmpeg + child guard"
+scripts/build-macos-ffmpeg.sh --audit "$APP/Contents/Resources/ffmpeg" || die "bundled ffmpeg failed the LGPL/capability audit"
+for pair in "ffmpeg|us.iamfatness.corevideopro.ffmpeg" "corevideo-child-guard|us.iamfatness.corevideopro.child-guard"; do
+    IFS='|' read -r helper ident <<<"$pair"
+    info="$(codesign -dvv "$APP/Contents/Resources/$helper" 2>&1)" || die "unsigned: $helper"
+    grep -qF "Identifier=$ident" <<<"$info" || die "$helper is not signed as $ident"
+    ents="$(codesign -d --entitlements - --xml "$APP/Contents/Resources/$helper" 2>/dev/null || true)"
+    if grep -q "<key>" <<<"$ents"; then die "$helper carries entitlements; it must carry none"; fi
+done
+[ -s "$APP/Contents/Resources/notices/ffmpeg/PROVENANCE.txt" ] || die "ffmpeg notices missing from the app"
+FFMPEG_SHIPPED_SHA256="$(shasum -a 256 "$APP/Contents/Resources/ffmpeg" | cut -d' ' -f1)"
+FFMPEG_VERSION_LINE="$("$APP/Contents/Resources/ffmpeg" -hide_banner -version | head -1)"
+FFMPEG_LICENCE_LINE="$(grep -m1 '^  Licence:' "$APP/Contents/Resources/notices/ffmpeg/PROVENANCE.txt" | sed 's/^ *//')"
+echo "bundled: $FFMPEG_VERSION_LINE ($FFMPEG_LICENCE_LINE), sha256 $FFMPEG_SHIPPED_SHA256"
 
 # The camera extension's structure, signature, profiles and entitlements.
 log "check the camera extension"
@@ -363,7 +388,7 @@ fi
 log "write $OUT"
 ( cd "$PUB" && shasum -a 256 "$PKG_NAME" > "$PKG_NAME.sha256" )
 PKG_SHA256="$(cut -d' ' -f1 "$PUB/$PKG_NAME.sha256")"
-HELPERS="$(cd "$APP/Contents/Resources" && ls -d corevideo-* | paste -sd, -)"
+HELPERS="$(cd "$APP/Contents/Resources" && ls -d corevideo-* ffmpeg | paste -sd, -)"
 python3 -I - "$PUB/manifest.json" <<PY
 import json, sys
 manifest = {
@@ -398,9 +423,12 @@ manifest = {
     "zoomSdk": "$(basename "$(dirname "$ZOOM_SDK")")",
     "runtimeRequirements": [
         "macOS 13+ on Apple Silicon",
-        "RTMP output needs ffmpeg (not bundled; e.g. brew install ffmpeg). "
-        "Homebrew and MacPorts locations are found automatically.",
     ],
+    "ffmpeg": {"bundled": True, "path": "Contents/Resources/ffmpeg",
+               "version": "$FFMPEG_VERSION_LINE", "licence": "$FFMPEG_LICENCE_LINE",
+               "sha256": "$FFMPEG_SHIPPED_SHA256",
+               "notices": "Contents/Resources/notices/ffmpeg/ (PROVENANCE.txt holds the pins and configure lines)",
+               "childGuard": "Contents/Resources/corevideo-child-guard"},
     "coreTests": {"ctest": "$CTEST_SUMMARY", "realtimeIncluded": True,
                   "realtime": "$REALTIME_SUMMARY"},
 }

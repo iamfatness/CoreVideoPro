@@ -25,7 +25,10 @@
 #   COREVIDEO_APP_OUT          where to assemble the .app (mac-shell/.build/CoreVideo Pro.app);
 #                              release-macos.sh points this into its own work dir so a
 #                              release never overwrites the developer's dev bundle
-#   COREVIDEO_REQUIRE_HELPERS=1  a missing core/engine/plugin-host is fatal
+#   COREVIDEO_FFMPEG_BUILT_DIR output dir of scripts/build-macos-ffmpeg.sh (holds bin/ffmpeg
+#                              and notices/ffmpeg/); its ffmpeg ships at Contents/Resources/ffmpeg,
+#                              where the core finds it first (PosixExecutableLocator.h)
+#   COREVIDEO_REQUIRE_HELPERS=1  a missing core/engine/plugin-host/child-guard/ffmpeg is fatal
 #                              (release); unset = skip it, as dev runs always did.
 #
 # Camera extension (roadmap M9.2): the CoreMediaIO system extension rides at
@@ -157,6 +160,20 @@ fi
 if need_helper "$CORE_DIR/corevideo-plugin-host" "VST3 plugin host"; then
   cp "$CORE_DIR/corevideo-plugin-host" "$APP/Contents/Resources/"
 fi
+# Streaming (mac streaming Phase 2, F1 + P1): the core runs ffmpeg under
+# corevideo-child-guard, both resolved beside the core in Resources. Without
+# the guard a killed core leaves ffmpeg running; without ffmpeg nothing streams
+# on a Mac that has no Homebrew.
+if need_helper "$CORE_DIR/corevideo-child-guard" "ffmpeg child guard"; then
+  cp "$CORE_DIR/corevideo-child-guard" "$APP/Contents/Resources/"
+fi
+FFMPEG_BUILT="${COREVIDEO_FFMPEG_BUILT_DIR:-}"
+if need_helper "${FFMPEG_BUILT:-<COREVIDEO_FFMPEG_BUILT_DIR unset>}/bin/ffmpeg" "bundled LGPL ffmpeg (scripts/build-macos-ffmpeg.sh)"; then
+  cp "$FFMPEG_BUILT/bin/ffmpeg" "$APP/Contents/Resources/ffmpeg"
+  # Licence texts + provenance travel with the binary (LGPL notice obligation).
+  mkdir -p "$APP/Contents/Resources/notices"
+  cp -R "$FFMPEG_BUILT/notices/ffmpeg" "$APP/Contents/Resources/notices/"
+fi
 # corevideo-browser-host is deliberately NOT bundled: the shell never resolves
 # it and never sets COREVIDEO_BROWSER_HOST_PATH (the core's only lookup on
 # macOS), and the UI states browser sources are unavailable on macOS.
@@ -197,6 +214,11 @@ if [ "$SIGN_ID" = "-" ]; then
     # afterwards would break that seal.
     codesign --force --sign - \
         --entitlements scripts/macos-camera-extension-adhoc.entitlements "$EXT"
+    for helper in corevideo-child-guard ffmpeg; do
+        if [ -f "$APP/Contents/Resources/$helper" ]; then
+            codesign --force --sign - "$APP/Contents/Resources/$helper"
+        fi
+    done
     codesign --force --sign - --entitlements scripts/macos-shell.entitlements "$APP"
 else
     # Profiles go in before any signature: each is sealed into its bundle.
@@ -224,6 +246,17 @@ else
     if [ -f "$APP/Contents/Resources/corevideo-plugin-host" ]; then
         sign_one "$APP/Contents/Resources/corevideo-plugin-host" \
             --identifier us.iamfatness.corevideopro.plugin-host
+    fi
+    # ffmpeg and its guard: hardened runtime, timestamp, NO entitlements (no
+    # JIT, no unsigned memory, no foreign libraries: ffmpeg is one static
+    # executable linking only the OS). Signed before the app seals them.
+    if [ -f "$APP/Contents/Resources/corevideo-child-guard" ]; then
+        sign_one "$APP/Contents/Resources/corevideo-child-guard" \
+            --identifier us.iamfatness.corevideopro.child-guard
+    fi
+    if [ -f "$APP/Contents/Resources/ffmpeg" ]; then
+        sign_one "$APP/Contents/Resources/ffmpeg" \
+            --identifier us.iamfatness.corevideopro.ffmpeg
     fi
     sign_one "$APP" --entitlements scripts/macos-shell-sysext.entitlements
     codesign --verify --deep --strict "$APP"

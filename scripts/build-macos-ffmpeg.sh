@@ -21,7 +21,11 @@
 # in: --disable-autodetect, and pkg-config is a shim that answers ONLY for the
 # two dependencies built here.
 #
-# LGPL posture: no --enable-gpl, no --enable-nonfree; the audit refuses a
+# LGPL posture: --enable-version3 (the binary is LGPL v3 or later: OpenSSL 3 is
+# Apache-2.0, which the FSF counts compatible with the v3 licences, and it is
+# linked in statically; ffmpeg's configure only insists on version3 when GPL is
+# on, so without the flag the result would claim LGPL 2.1+ around Apache code).
+# No --enable-gpl, no --enable-nonfree; the audit refuses a
 # binary whose `-L` is not LGPL or whose buildconf names either flag. The core
 # runs ffmpeg as a separate process and never links it.
 set -euo pipefail
@@ -185,7 +189,7 @@ FFMPEG_CONFIGURE=("--prefix=$STAGE" --arch=arm64 --cc=clang
     --enable-static --disable-shared --disable-autodetect
     --disable-ffplay --disable-ffprobe --disable-doc --disable-debug
     --enable-videotoolbox --enable-audiotoolbox --enable-zlib
-    --enable-openssl --enable-libsrt
+    --enable-openssl --enable-libsrt --enable-version3
     "--pkg-config=$SHIM" --pkg-config-flags=--static
     "--extra-cflags=-mmacosx-version-min=$MACOS_MIN"
     "--extra-ldflags=-mmacosx-version-min=$MACOS_MIN")
