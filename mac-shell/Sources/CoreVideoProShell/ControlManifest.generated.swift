@@ -472,7 +472,7 @@ enum ControlManifestGenerated {
             action: ControlAction(id: "audio.zoomMode.set", title: "Zoom audio mode", description: "Choose independently routed ISO stems or Zoom's combined fallback mix.", params: [
                 ControlParam(name: "mode", type: .string, required: true, description: "perGuestIso | programMix"),
             ]),
-            availability: .blocked(workstream: "AUD", label: "Audio parity")),
+            availability: .supported),
         ControlManifestEntry(
             action: ControlAction(id: "audio.monitor.set", title: "Audio monitor", description: "Enable/disable the audio monitor.", params: [
                 ControlParam(name: "on", type: .bool, required: true, description: nil),

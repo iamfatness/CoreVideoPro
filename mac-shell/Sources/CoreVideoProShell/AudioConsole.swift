@@ -48,6 +48,18 @@ struct AudioPane: View {
                             .fill(surface == name ? Studio.blue : Studio.surface))
                 }
                 Spacer()
+                // A1, Windows AudioPage.xaml:79-88: OFF = Zoom's own program mix rides
+                // to master (echo-cancelled, continuous); ON = each guest's isolated
+                // stem routes through their strip, so the faders shape program audio.
+                Toggle(isOn: Binding(
+                    get: { model.zoomAudioMode == .perGuestIso },
+                    set: { model.setZoomAudioMode($0 ? .perGuestIso : .programMix) })) {
+                    Text(model.zoomAudioMode == .perGuestIso ? "Per-guest ISO" : "Zoom program mix")
+                        .font(.plexMono(10, .semibold)).foregroundStyle(Studio.secondary)
+                }
+                .toggleStyle(.switch).controlSize(.small)
+                .accessibilityLabel("Per-guest ISO audio to program")
+                .help("Route each guest's isolated audio through their fader instead of Zoom's combined mix")
                 // Real second-display mixer (was a disabled placeholder). Hidden
                 // inside the pop-out so it cannot spawn copies of itself.
                 if !isPopout {
@@ -368,6 +380,12 @@ struct ConsoleStrip: View {
                 SegmentedMeter(level: reading.level, dimmed: reading.dimmed)
                     .frame(width: 12, height: 150)
                 MeterTickScale().frame(width: 18, height: 150)
+            }
+            if AudioConsolePolicy.isMeterOnly(strip.id, mode: model.zoomAudioMode) {
+                // A1: in ProgramMix the guest is inside zoom-mix, so this strip's
+                // mute and fader do not change program — say so (Windows status copy).
+                Text("METER ONLY").font(.plexMono(9, .semibold)).foregroundStyle(Studio.secondary)
+                    .help("Zoom program mix is on: this guest reaches program through Zoom's combined mix")
             }
             if strip.sourceMuted {
                 // Display only (#481): the guest muted themselves in Zoom.

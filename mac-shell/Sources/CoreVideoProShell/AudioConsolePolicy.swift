@@ -35,6 +35,39 @@
 
 import Foundation
 
+/// The Zoom -> program audio topology (A1). A line-for-line port of Windows
+/// ZoomAudioModePreference (prefs v9/v10): PARSE is permissive and falls back to
+/// the product default, perGuestIso, for anything it cannot read; `persisted`
+/// is a total switch so a third topology cannot be written as an old value.
+enum ZoomAudioMode: Equatable {
+    case programMix, perGuestIso
+
+    static let programMixValue = "programMix"
+    static let perGuestIsoValue = "perGuestIso"
+
+    static func parse(_ persisted: String?) -> ZoomAudioMode {
+        persisted?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare(programMixValue) == .orderedSame ? .programMix : .perGuestIso
+    }
+
+    var persisted: String {
+        switch self {
+        case .programMix: return Self.programMixValue
+        case .perGuestIso: return Self.perGuestIsoValue
+        }
+    }
+
+    /// Windows SetZoomAudioMode's CommandStatus sentences, verbatim.
+    var statusSentence: String {
+        switch self {
+        case .perGuestIso:
+            return "Per-guest ISO audio: each guest routes to program through their own fader (Zoom's combined mix is off program)."
+        case .programMix:
+            return "Zoom program mix: Zoom's combined, echo-cancelled mix routes to program; guest strips meter only."
+        }
+    }
+}
+
 enum AudioConsolePolicy {
     static let meetingMixId = "zoom-mix"
     static let mediaId = "media"
@@ -46,6 +79,12 @@ enum AudioConsolePolicy {
     static func isZoomParticipantChannel(_ id: String) -> Bool {
         !id.isEmpty && !id.contains(":")
             && id != meetingMixId && id != "local-machine-audio" && id != mediaId
+    }
+
+    /// A1: a guest stem's strip is meter-only while Zoom program mix is on
+    /// (its PCM reaches program inside zoom-mix, not through this fader).
+    static func isMeterOnly(_ id: String, mode: ZoomAudioMode) -> Bool {
+        mode == .programMix && isZoomParticipantChannel(id)
     }
 
     static func isMediaClipId(_ id: String) -> Bool {
@@ -147,12 +186,25 @@ enum AudioConsolePolicy {
     /// "media" sends only then (EnsureDefaultMediaAudioRoutingSends gated on
     /// ResolveSceneMediaAudioSourceIds(programRoutes)), so a clip cued only on
     /// Preview is never audible on master.
+    ///
+    /// `zoomAudioMode` (A1, Windows EnsureDefaultZoomAudioRoutingSends): in
+    /// PerGuestIso the stems get the defaults and, AFTER the operator's edits, the
+    /// doubling guard drops every zoom-mix send to a default bus — even one the
+    /// operator enabled, exactly as Windows removes it. In ProgramMix zoom-mix gets
+    /// the defaults (only while the meeting mix is subscribed: no strip, no route),
+    /// stems get none, and an operator's own stem crosspoint survives.
     static func baseRoutingSends(
         zoomAudioIds: [String], captureAudioIds: [String], mediaRouted: Bool,
-        operatorEdits: [AudioRouteKey: AudioRouteControlProjection.Draft]
+        operatorEdits: [AudioRouteKey: AudioRouteControlProjection.Draft],
+        zoomAudioMode: ZoomAudioMode = .perGuestIso, meetingAudio: Bool = false
     ) -> [JSONObject] {
         var matrix: [AudioRouteKey: Double] = [:]
-        for source in zoomAudioIds + captureAudioIds + (mediaRouted ? [mediaId] : [])
+        let zoomDefaults: [String]
+        switch zoomAudioMode {
+        case .perGuestIso: zoomDefaults = zoomAudioIds
+        case .programMix: zoomDefaults = meetingAudio ? [meetingMixId] : []
+        }
+        for source in zoomDefaults + captureAudioIds + (mediaRouted ? [mediaId] : [])
             where !source.isEmpty {
             for bus in defaultSendBuses {
                 matrix[AudioRouteKey(source: source, bus: bus)] = 0
@@ -160,6 +212,9 @@ enum AudioConsolePolicy {
         }
         for (key, edit) in operatorEdits {
             if edit.enabled { matrix[key] = max(-60, min(10, edit.gainDb)) } else { matrix[key] = nil }
+        }
+        if zoomAudioMode == .perGuestIso {
+            for bus in defaultSendBuses { matrix[AudioRouteKey(source: meetingMixId, bus: bus)] = nil }
         }
         return matrix.keys.sorted().map { key in
             ["sourceId": key.source, "busId": key.bus, "gainDb": matrix[key] ?? 0,

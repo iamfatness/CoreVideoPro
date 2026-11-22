@@ -444,6 +444,20 @@
         "Title" : "Lower-third set"
       },
       {
+        "Description" : "Choose independently routed ISO stems or Zoom's combined fallback mix.",
+        "Id" : "audio.zoomMode.set",
+        "OscAddress" : "\/cvp\/audio\/zoomMode\/set",
+        "Params" : [
+          {
+            "Description" : "perGuestIso | programMix",
+            "Name" : "mode",
+            "Required" : true,
+            "Type" : "string"
+          }
+        ],
+        "Title" : "Zoom audio mode"
+      },
+      {
         "Description" : "Enable\/disable the audio monitor.",
         "Id" : "audio.monitor.set",
         "OscAddress" : "\/cvp\/audio\/monitor\/set",
@@ -695,6 +709,7 @@
     "recording",
     "streaming",
     "virtualCameraOn",
+    "zoomAudioMode",
     "zoomParticipantIds",
     "zoomStatus"
   ]

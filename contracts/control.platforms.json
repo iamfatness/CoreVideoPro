@@ -100,7 +100,7 @@
     {"id": "graphics.layout.remove", "mac": "blocked", "blockedOn": "GFX"},
     {"id": "graphics.layout.cue", "mac": "blocked", "blockedOn": "GFX"},
     {"id": "graphics.layout.take", "mac": "blocked", "blockedOn": "GFX"},
-    {"id": "audio.zoomMode.set", "mac": "blocked", "blockedOn": "AUD"},
+    {"id": "audio.zoomMode.set", "mac": "supported"},
     {"id": "audio.monitor.set", "mac": "supported"},
     {"id": "settings.programBuffer.set", "mac": "blocked", "blockedOn": "STU"},
     {"id": "audio.monitor.volume", "mac": "supported"},

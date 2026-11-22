@@ -398,6 +398,9 @@ final class AppModel: ObservableObject {
     /// console builds its strips from these — the FADER LAW needs a strip for
     /// every source the core is sent, not only for the ones it has echoed.
     @Published var zoomAudioSourceIds: [String] = []
+    /// A1: the Zoom -> program topology (Windows StudioViewModel._zoomAudioMode,
+    /// default perGuestIso). Changed only through setZoomAudioMode.
+    @Published private(set) var zoomAudioMode: ZoomAudioMode = .perGuestIso
     @Published var meetingAudioSubscribed = false
     @Published var assignedIds: Set<String> = []
     @Published var recordingStatus = "idle"
@@ -790,6 +793,7 @@ final class AppModel: ObservableObject {
         }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.autoAssignInputs = autoAssignInputsEnabled
+        prefs.zoomAudioMode = zoomAudioMode.persisted
         prefs.sourcesWorkspace = sourcesWorkspace.columns
         prefs.cameraExtensionOptedIn = cameraExtensionOptedIn
         prefs.virtualCamera = virtualCamera == PersistedVirtualCamera() ? nil : virtualCamera
@@ -831,6 +835,7 @@ final class AppModel: ObservableObject {
         // No reapply: no roster exists at launch.
         assignmentLaw.autoAssignEnabled = prefs.autoAssignInputs ?? true
         autoAssignInputsEnabled = assignmentLaw.autoAssignEnabled
+        zoomAudioMode = ZoomAudioMode.parse(prefs.zoomAudioMode)
         sourcesWorkspace.columns = prefs.sourcesWorkspace ?? SourcesColumnPrefs()
         for key in prefs.chromaKeys ?? [] {
             if let index = restoredSlotIndex(sourceKey: key.sourceKey, legacySlotId: key.slotId) {
@@ -2073,6 +2078,19 @@ final class AppModel: ObservableObject {
             sourcesStatus = "\(last.name) left the meeting — input \(last.slotId) is free."
         }
         return changed
+    }
+
+    /// A1 (Windows SetZoomAudioMode): the mode, the status sentence, persisted
+    /// intent, and ONE full-state routing push. The flip is one matrix, so there
+    /// is never a window with both paths routed or neither. Subscriptions do not
+    /// change: stems stay subscribed in ProgramMix (they meter, and ISO recording
+    /// takes stems from source PCM, not from buses).
+    func setZoomAudioMode(_ mode: ZoomAudioMode) {
+        guard mode != zoomAudioMode else { return }
+        zoomAudioMode = mode
+        takeStatus = mode.statusSentence
+        persistPrefsNow()
+        pushRoutingBase()
     }
 
     /// The auto-assign toggle. Either direction forgets both memories and reruns the
@@ -4249,7 +4267,8 @@ final class AppModel: ObservableObject {
                 .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
                 .map { "capture:" + $0.sourceId },
             mediaRouted: sceneHasMediaRoute(programSceneId, isProgram: true),
-            operatorEdits: operatorRouteEdits)
+            operatorEdits: operatorRouteEdits,
+            zoomAudioMode: zoomAudioMode, meetingAudio: meetingAudioSubscribed)
         let busSends = AudioBusPolicy.busSends(buses)
         let monitorBusId = listenBusId ?? ""
         // Never an EMPTY matrix (the core holds-last on a blank). A matrix whose

@@ -170,6 +170,17 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             return setMastering(model, on: bool(0))
         case "audio.masterLimiter.set":
             return setMasterLimiter(model, on: bool(0))
+        case "audio.zoomMode.set":
+            // Windows StudioControlSurface.cs:638-651: case-insensitive, trimmed;
+            // anything else refuses and changes nothing.
+            let mode = string(0).trimmingCharacters(in: .whitespaces)
+            if mode.caseInsensitiveCompare(ZoomAudioMode.perGuestIsoValue) == .orderedSame {
+                model.setZoomAudioMode(.perGuestIso); return .success
+            }
+            if mode.caseInsensitiveCompare(ZoomAudioMode.programMixValue) == .orderedSame {
+                model.setZoomAudioMode(.programMix); return .success
+            }
+            return .fail("mode must be 'perGuestIso' or 'programMix'.")
         case "audio.mastering.target":
             return setMasteringTarget(model, index: int(0))
         case "audio.vst.scan":
@@ -220,6 +231,8 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
         "audio.monitor.set", "audio.monitor.volume", "audio.route.set",
         // Phase 2 (A3)
         "audio.masterLimiter.set",
+        // Settings quick wins (A1)
+        "audio.zoomMode.set",
         // Phase 2 (RC6)
         "media.rundown.load", "media.rundown.preview", "media.rundown.take",
     ]
@@ -331,6 +344,7 @@ final class AppModelControlSurface: ControlSurface, @unchecked Sendable {
             "multiviewTileCount": model.multiviewTileCount,
             "masteringOn": model.mastering.enabled,
             "masterLimiterOn": model.mastering.limiterEnabled,   // Phase 2 (A3)
+            "zoomAudioMode": model.zoomAudioMode.persisted,      // A1 (Windows ControlState.ZoomAudioMode)
             "masteringTarget": masteringTargetIndex(model.mastering.targetLufs),
             // No caption source exists on the Mac: the true value is false.
             "autoCaptions": false,
