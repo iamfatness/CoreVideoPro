@@ -22,6 +22,9 @@ extension ShellTests {
             ("quickwins/a5-console-source-and-routing", testA5ConsoleSourceAndRouting),
             ("quickwins/a5-status-from-the-core", testA5StatusComesFromTheCore),
             ("quickwins/a5-prefs-and-unplugged-device", testA5PrefsAndUnpluggedDevice),
+            ("quickwins/z1-windows-preference-table", testZ1WindowsPreferenceTable),
+            ("quickwins/z1-join-carries-and-latches-the-ceiling", testZ1JoinCarriesAndLatchesTheCeiling),
+            ("quickwins/z1-prefs-round-trip", testZ1PrefsRoundTrip),
         ]
     }
 
@@ -252,5 +255,81 @@ extension ShellTests {
                     LocalAudioSetting(enabled: true, deviceId: "gone-uid", deviceName: "Old Mic"),
                     "the saved choice survives a relaunch even while the device is unplugged")
         expectEqual(relaunched.localAudioStatus, "Old Mic is not connected", "and says so")
+    }
+
+    // ── Z1: Zoom quality pickers ────────────────────────────────────────────
+
+    /// The Windows ZoomCameraResolutionPreferenceTests table, case for case.
+    /// Mutation: map "720p" to tier 2 -> red on the tier row.
+    private static func testZ1WindowsPreferenceTable() {
+        for (choice, tier) in [("360p", 0), ("720p", 1), ("1080p", 2), ("unknown", 2)] as [(String?, Int)]
+            + [(nil, 2)] {
+            expectEqual(ZoomCameraResolutionPreference.toSdkTier(choice), tier, "\(choice ?? "nil") -> tier \(tier)")
+            expectEqual(ZoomCameraResolutionPreference.fromSdkTier(tier),
+                        ZoomCameraResolutionPreference.normalize(choice), "tier \(tier) round trip")
+        }
+        expect(ZoomCameraResolutionPreference.status(preferred: "720p", applied: "1080p", inMeeting: true)
+            .contains("720p pending for next Zoom join"), "mid-meeting edit reads pending")
+        expect(ZoomCameraResolutionPreference.status(preferred: "720p", applied: "720p", inMeeting: true)
+            .contains("Requested max 720p this meeting"), "applied reads this meeting")
+        expect(ZoomCameraResolutionPreference.status(preferred: "360p", applied: "1080p", inMeeting: false)
+            .contains("Format shows actual delivery"), "out of a meeting")
+        for (choice, w, h) in [("360p", 640, 360), ("720p", 1280, 720), ("1080p", 1920, 1080)] {
+            let d = ZoomCameraResolutionPreference.dimensions(choice)
+            expectEqual("\(d.width)x\(d.height)", "\(w)x\(h)", "\(choice) dimensions")
+        }
+        expectEqual(ZoomCameraFrameRatePreference.normalize(13), 60, "an unknown fps is 60")
+        expect(ZoomCameraFrameRatePreference.status(preferred: 30, applied: 30, inMeeting: true)
+            .contains("Zoom may deliver more"), "fps applied copy")
+        expect(ZoomCameraFrameRatePreference.status(preferred: 24, applied: 30, inMeeting: true)
+            .contains("pending for next Zoom join"), "fps pending copy")
+    }
+
+    /// The join payload carries the tier as a NUMBER and the fps; the join that
+    /// reaches the meeting latches them; an edit mid-meeting changes the picker
+    /// but not the applied ceiling, and the status says "pending".
+    /// Mutations: send the tier as a string -> red (payload); latch at edit time
+    /// instead of at the join -> red (pending).
+    @MainActor
+    private static func testZ1JoinCarriesAndLatchesTheCeiling() {
+        let core = FakeTakeCore()
+        let model = AppModel()
+        model.quitRequestForTesting = { body, _ in
+            _ = try await core.handle(body)
+            return ["snapshot": ["meetingState": "in_meeting", "warnings": [] as [String]]]
+        }
+        model.setZoomCameraMaxResolution("720p")
+        model.setZoomCameraMaxFps(30)
+        model.joinMeetingId = "97682593786"
+        model.joinZoom()
+        func joins() -> [JSONObject] {
+            core.bodies.filter { $0["type"] as? String == "zoom-join" }.compactMap { $0["payload"] as? JSONObject }
+        }
+        spin(until: { !joins().isEmpty && ShellApp_isInMeeting(model) }, limit: 3)
+        expectEqual(joins().first?["cameraMaxResolution"] as? Int, 1, "720p rides the join as SDK tier 1 (a number)")
+        expectEqual(joins().first?["cameraMaxFps"] as? Int, 30, "the fps ceiling rides the join")
+        expectEqual(model.zoomCameraApplied, ZoomCameraCeiling(tier: 1, fps: 30), "the join that reached the meeting latched it")
+        model.setZoomCameraMaxResolution("360p")
+        expectEqual(model.zoomCameraApplied.tier, 1, "a mid-meeting edit does not change what is applied")
+        expect(model.zoomCameraMaxStatus.contains("360p pending for next Zoom join"), "and the status says so")
+    }
+
+    @MainActor
+    private static func ShellApp_isInMeeting(_ model: AppModel) -> Bool { AppModel.isInMeeting(model.meetingState) }
+
+    /// Mutation: drop the restore lines -> red.
+    @MainActor
+    private static func testZ1PrefsRoundTrip() {
+        let model = AppModel()
+        model.setZoomCameraMaxResolution("360p")
+        model.setZoomCameraMaxFps(24)
+        let relaunched = AppModel()
+        relaunched.applyRestoredPrefs(model.currentPrefs())
+        expectEqual(relaunched.zoomCameraMaxResolution, "360p", "resolution ceiling restored")
+        expectEqual(relaunched.zoomCameraMaxFps, 24, "fps ceiling restored")
+        var junk = ShellPrefs(); junk.zoomCameraMaxResolution = "8K"; junk.zoomCameraMaxFps = 7
+        let fresh = AppModel(); fresh.applyRestoredPrefs(junk)
+        expectEqual(fresh.zoomCameraMaxResolution, "1080p", "an unknown saved ceiling normalizes to 1080p")
+        expectEqual(fresh.zoomCameraMaxFps, 60, "an unknown saved fps normalizes to 60")
     }
 }

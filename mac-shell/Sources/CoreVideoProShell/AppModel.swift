@@ -390,7 +390,15 @@ struct RosterParticipant: Identifiable, Equatable {
 final class AppModel: ObservableObject {
     @Published var status: BridgeStatus = .launching
     @Published var statusDetail = ""
-    @Published var meetingState = "idle"
+    @Published var meetingState = "idle" {
+        didSet { latchZoomCameraCeilingIfJoined() }   // Z1: a join reached the meeting
+    }
+    /// Z1 (ZoomCameraQuality.swift): the operator's ceilings, what the in-flight
+    /// join sent, and what the current meeting applied.
+    @Published var zoomCameraMaxResolution = ZoomCameraResolutionPreference.defaultChoice
+    @Published var zoomCameraMaxFps = ZoomCameraFrameRatePreference.defaultFps
+    @Published var zoomCameraApplied = ZoomCameraCeiling()
+    var zoomCameraJoinSent: ZoomCameraCeiling?
     @Published var rawMediaActive = false
     @Published var roster: [RosterParticipant] = []
     /// The Zoom audio source set last placed on the spine (participant-audio ids,
@@ -794,6 +802,8 @@ final class AppModel: ObservableObject {
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.autoAssignInputs = autoAssignInputsEnabled
         prefs.zoomAudioMode = zoomAudioMode.persisted
+        prefs.zoomCameraMaxResolution = zoomCameraMaxResolution
+        prefs.zoomCameraMaxFps = zoomCameraMaxFps
         prefs.localAudioEnabled = localAudio.enabled
         prefs.localAudioDeviceId = localAudio.deviceId.isEmpty ? nil : localAudio.deviceId
         prefs.localAudioDeviceName = localAudio.deviceName.isEmpty ? nil : localAudio.deviceName
@@ -839,6 +849,9 @@ final class AppModel: ObservableObject {
         assignmentLaw.autoAssignEnabled = prefs.autoAssignInputs ?? true
         autoAssignInputsEnabled = assignmentLaw.autoAssignEnabled
         zoomAudioMode = ZoomAudioMode.parse(prefs.zoomAudioMode)
+        zoomCameraMaxResolution = ZoomCameraResolutionPreference.normalize(prefs.zoomCameraMaxResolution)
+        zoomCameraMaxFps = ZoomCameraFrameRatePreference.normalize(
+            prefs.zoomCameraMaxFps ?? ZoomCameraFrameRatePreference.defaultFps)
         localAudio = LocalAudioSetting(enabled: prefs.localAudioEnabled ?? false,
                                        deviceId: prefs.localAudioDeviceId ?? "",
                                        deviceName: prefs.localAudioDeviceName ?? "")
@@ -2593,6 +2606,12 @@ final class AppModel: ObservableObject {
             "displayName": displayName,
             "webinar": webinar,
         ]
+        // Z1: the camera ceilings, latched by this join (Windows JoinZoomAsync
+        // cameraMaxResolution / cameraMaxFps, MediaCoreSupervisor.cs:568-569).
+        let ceiling = zoomCameraJoinCeiling
+        payload["cameraMaxResolution"] = ceiling.tier
+        payload["cameraMaxFps"] = ceiling.fps
+        zoomCameraJoinSent = ceiling
         // Absent, not false, on an ordinary join (the core reads it per join).
         if endOtherMeeting { payload["endOtherMeeting"] = true }
         ShellLog.write("joining meeting \(meetingId)\(endOtherMeeting ? " (end my other Zoom session)" : "")")

@@ -1449,6 +1449,7 @@ struct ZoomPane: View {
                             .foregroundStyle(Studio.secondary)
                     }
                 }
+                ZoomCameraQualityControls()
                 HStack(spacing: 8) {
                     if inMeeting {
                         Button("Leave meeting") { model.leaveZoom() }
