@@ -1564,11 +1564,13 @@ struct MediaPane: View {
                     .help(model.cueRefusalReason ?? "Add the selected asset to the Preview scene as a full-canvas layer")
                     .accessibilityLabel("Cue the selected asset in Preview")
             }
-            if !model.mediaStatus.isEmpty {
-                Text(model.mediaStatus)
+            // Plan D9: never the same sentence twice (the summary line above already says it).
+            if let status = MediaRoutePlayback.statusLine(status: model.mediaStatus,
+                                                          summary: model.selectedMediaSummary) {
+                Text(status)
                     .font(.grotesk(11)).foregroundStyle(Studio.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("Media status: \(model.mediaStatus)")
+                    .accessibilityLabel("Media status: \(status)")
             }
             if let warning = model.mediaPlayback?.warnings.first {
                 Text(warning)

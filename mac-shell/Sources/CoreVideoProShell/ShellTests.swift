@@ -4136,10 +4136,11 @@ enum ShellTests {
             ("camera-kit/device-name", testDeviceNamePolicy),
             ("camera-kit/slate-classifier", testSlateClassifier),
             ("camera-kit/producer-attestation", testProducerAttestation),
-        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases + graphicsHotkeyCases + graphicsTakeCases + graphicsAuthorityCases + graphicsLiveCases + graphicsReviewCases + audioPhase2Cases + controlPhase2Cases + quickWinCases + streamingCases + gradePhase2Cases
-        // COREVIDEO_SHELL_TESTS_FILTER=<prefix> runs only the matching cases (mutation runs);
-        // unset, every case runs as before.
-        let filter = ProcessInfo.processInfo.environment["COREVIDEO_SHELL_TESTS_FILTER"] ?? ""
+        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases + graphicsGatewayCases + graphicsOperateCases + graphicsDocumentCases + graphicsPlayoutCases + graphicsPlaylistCases + graphicsHotkeyCases + graphicsTakeCases + graphicsAuthorityCases + graphicsLiveCases + graphicsReviewCases + audioPhase2Cases + controlPhase2Cases + quickWinCases + streamingCases + gradePhase2Cases + sourcesPhase2Cases
+        // COREVIDEO_SHELL_TESTS_FILTER=<prefix> runs only the matching cases (mutation runs,
+        // iteration); COREVIDEO_SHELL_TEST_FILTER is accepted too. Unset, every case runs.
+        let env = ProcessInfo.processInfo.environment
+        let filter = env["COREVIDEO_SHELL_TESTS_FILTER"] ?? env["COREVIDEO_SHELL_TEST_FILTER"] ?? ""
         for (name, body) in cases where filter.isEmpty || name.hasPrefix(filter) {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
             body()

@@ -105,12 +105,12 @@ struct SourceInspector: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Plan D8: the tool row's toggle is the one close control (Windows
+            // SourcesWorkspaceControl.cs:74,152); a second same-named button here confused VoiceOver.
             HStack {
                 Text("Input \(slotId)").font(.grotesk(15, .semibold))
                 Spacer()
                 InspectorGradeHeaderButton(slotId: slotId, assigned: slot.map { $0.kind != "unassigned" } ?? false)
-                Button("Close inspector") { model.sourcesWorkspace.columns.inspectorOpen = false }
-                    .buttonStyle(GhostButtonStyle())
             }
             if let slot {
                 header(slot)
