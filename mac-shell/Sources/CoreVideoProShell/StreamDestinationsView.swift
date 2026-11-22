@@ -25,7 +25,7 @@ struct DestinationRowsView: View {
             ForEach(StreamDestinationPolicy.destinationIds, id: \.self) { id in
                 row(id)
             }
-            if model.streamingDesired {
+            if model.streamDestinationsLocked {
                 Text("Stop streaming to change destinations.")
                     .font(.grotesk(10)).foregroundStyle(Studio.textDim)
             }
@@ -60,7 +60,7 @@ struct DestinationRowsView: View {
                 Toggle(name, isOn: enabled(id))
                     .toggleStyle(StudioToggleStyle())
                     .font(.grotesk(12, .semibold)).foregroundStyle(Studio.textPrimary)
-                    .disabled(model.streamingDesired)
+                    .disabled(model.streamDestinationsLocked)
                     .accessibilityLabel("\(name) destination")
                 Spacer()
                 Text(status.label)
@@ -96,6 +96,24 @@ struct StreamDestinationSettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
             DestinationRowsView()
             Divider().overlay(Studio.border)
+            // Review finding 4: the streamed destinations are frozen at Start
+            // (AppModel.liveStreamDestinations); the editor says so instead of
+            // accepting edits that would not apply until the next stream.
+            destinationFields
+                .disabled(model.streamDestinationsLocked)
+                .opacity(model.streamDestinationsLocked ? 0.55 : 1)
+                .accessibilityHint(model.streamDestinationsLocked ? "Stop streaming to change destinations." : "")
+            Divider().overlay(Studio.border)
+            Text(runtimeLine)
+                .font(.plexMono(10)).foregroundStyle(Studio.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("Streaming runtime")
+        }
+    }
+
+    @ViewBuilder private var destinationFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
             Text("SRT").font(.grotesk(12, .semibold)).foregroundStyle(Studio.textPrimary)
             field("Mode") {
                 Picker("", selection: $model.streamDestinations.srtMode) {
@@ -148,12 +166,6 @@ struct StreamDestinationSettingsView: View {
             }
             Text("HLS pushes over HTTP PUT; it needs H.264 and a URL ending in .m3u8.")
                 .font(.grotesk(11)).foregroundStyle(Studio.textDim)
-            Divider().overlay(Studio.border)
-            Text(runtimeLine)
-                .font(.plexMono(10)).foregroundStyle(Studio.secondary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityLabel("Streaming runtime")
         }
     }
 

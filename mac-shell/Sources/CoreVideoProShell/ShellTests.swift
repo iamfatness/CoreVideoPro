@@ -2913,8 +2913,10 @@ enum ShellTests {
         model.assignSlot(2, kind: "zoom", sourceId: "b", name: "b")
         model.toggleSlotIso(1)
         model.toggleSlotIso(2)
-        model.streamingDesired = true            // stream up
+        // Key first, as in the app: toggleStreaming validates before it sets the
+        // intent, and the streamed destinations are frozen at that moment.
         model.streamKey = "quit-test-key"        // only a VALID destination is sent (D1)
+        model.streamingDesired = true            // stream up
         startRecordingThroughTheRealPath(model, core)
         model.roster = []                        // transient roster loss mid-take (#1183)
         model.toggleRecording()                  // operator stops the recording

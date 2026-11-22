@@ -28,6 +28,7 @@ extension ShellTests {
             ("streaming/footer-health-reads-the-projection", testFooterHealthReadsTheProjection),
             ("streaming/launch-env-names-the-bundled-guard-and-ffmpeg", testLaunchEnvNamesTheBundledGuardAndFfmpeg),
             ("streaming/unguarded-helper-is-loud", testAnUnguardedHelperIsLoud),
+            ("streaming/destinations-are-frozen-while-streaming", testDestinationsAreFrozenWhileStreaming),
         ]
     }
 
@@ -461,5 +462,36 @@ extension ShellTests {
         expectEqual(model.warnings.filter { $0.contains("child guard") }.count, 1, "and only once per core")
         expect(StreamHealthLine.childGuard(false).contains("can outlive"), "Health says what it means")
         expectEqual(StreamHealthLine.childGuard(nil), "not reported yet", "absent is not claimed")
+    }
+
+    /// Review finding 4: an SRT edit mid-stream must not reach the core. A
+    /// recording toggle resends the FULL destination set (start-program-output),
+    /// which used to carry the half-typed host and restart the SRT sender.
+    @MainActor
+    static func testDestinationsAreFrozenWhileStreaming() {
+        let (model, bodies, _) = streamingModel()
+        model.streamKey = "rtmp-key-1"
+        model.streamDestinations.srtEnabled = true
+        model.streamDestinations.srtHost = "receiver.example.com"
+        model.srtPassphrase = ""
+        expect(!model.streamDestinationsLocked, "the editor is open before Start")
+        model.toggleStreaming()
+        spin(until: { !bodies().isEmpty }, limit: 3)
+        expect(model.streamDestinationsLocked, "the editor locks once streaming")
+        model.streamDestinations.srtHost = "half-typ"
+        model.streamDestinations.hlsEnabled = true
+        model.streamDestinations.hlsPlaylistUrl = "https://origin.example.com/live/playlist.m3u8"
+        let resent = model.startProgramOutput(recording: true, streaming: true)
+        expectEqual(resent["destinations"] as? [String], ["recording", "rtmp", "srt"],
+                    "the streamed set is the one frozen at Start (no HLS added mid-stream)")
+        let srt = (resent["destinationSettings"] as? [JSONObject])?.first { $0["id"] as? String == "srt" }
+        expectEqual(srt?["host"] as? String, "receiver.example.com", "the SRT host is the Start-time host")
+        expectEqual(model.streamSummary.components(separatedBy: ", ").count, 2,
+                    "the footer summarises what is streaming, not the editor")
+        model.toggleStreaming()   // stop
+        expect(!model.streamDestinationsLocked, "stopping unlocks the editor")
+        let next = model.startProgramOutput(recording: false, streaming: true)
+        let srtNext = (next["destinationSettings"] as? [JSONObject])?.first { $0["id"] as? String == "srt" }
+        expectEqual(srtNext?["host"] as? String, "half-typ", "the edit applies to the NEXT stream")
     }
 }

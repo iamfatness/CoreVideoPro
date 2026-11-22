@@ -574,7 +574,24 @@ final class AppModel: ObservableObject {
     }
     @Published var streamUrl = "rtmp://a.rtmp.youtube.com/live2"
     @Published var streamKey = ""
-    @Published var streamingDesired = false
+    @Published var streamingDesired = false {
+        didSet {
+            guard streamingDesired != oldValue else { return }
+            // Review finding 4: the destinations being streamed are frozen at
+            // Start. Without this an SRT/HLS edit mid-stream reached the core on
+            // the next full-state start-program-output (a recording toggle) and
+            // silently restarted the destination with half-typed settings.
+            if streamingDesired {
+                liveStreamDestinations = (streamConfig, streamSecrets)
+            } else {
+                liveStreamDestinations = nil
+            }
+        }
+    }
+    /// The config + secrets captured when streaming started (nil when off).
+    private(set) var liveStreamDestinations: (config: StreamDestinationsConfig, secrets: StreamDestinationSecrets)?
+    /// True while destination settings must not change (the editor is locked).
+    var streamDestinationsLocked: Bool { streamingDesired || streamingObservedLive }
     @Published var streamStatus = ""       // sender status from outputSenderSession
     @Published var streamDetail = ""       // lastResultCode / warning
     /// The destination list (mac streaming Phase 2, D1). rtmpUrl is NOT read
@@ -4110,10 +4127,14 @@ final class AppModel: ObservableObject {
         StreamDestinationSecrets(rtmpKey: streamKey, srtPassphrase: srtPassphrase)
     }
 
+    /// What is being streamed: the Start-time freeze while live, else the editor.
+    var activeStreamConfig: StreamDestinationsConfig { liveStreamDestinations?.config ?? streamConfig }
+    var activeStreamSecrets: StreamDestinationSecrets { liveStreamDestinations?.secrets ?? streamSecrets }
+
     /// "RTMP live, SRT reconnecting in 5 s": the footer's one-line summary of
     /// the rows of the destinations being streamed (projection labels only).
     var streamSummary: String {
-        let ids = StreamDestinationPolicy.enabledDestinations(streamConfig, streamSecrets)
+        let ids = StreamDestinationPolicy.enabledDestinations(activeStreamConfig, activeStreamSecrets)
         let parts = ids.map { id -> String in
             let label = destinationRows[id]?.label ?? "Starting"
             return "\(StreamDestinationPolicy.displayName(id)) \(label.prefix(1).lowercased() + label.dropFirst())"
@@ -4126,7 +4147,7 @@ final class AppModel: ObservableObject {
     /// when some are, else the first row's own label. Never the published
     /// status, which can read "live" from a launch.
     var streamHealthLabel: String {
-        let ids = StreamDestinationPolicy.enabledDestinations(streamConfig, streamSecrets)
+        let ids = StreamDestinationPolicy.enabledDestinations(activeStreamConfig, activeStreamSecrets)
         let rows = ids.map { destinationRows[$0] ?? DestinationStatus(label: "Starting", tone: .neutral) }
         guard !rows.isEmpty else { return "Starting" }
         let live = rows.filter(\.isLive).count
@@ -4145,7 +4166,7 @@ final class AppModel: ObservableObject {
     /// terminal, so a live SRT-only stream still guards a careless quit.
     func applyStreamSenders(_ session: JSONObject) {
         let desired = Set(streamingDesired
-                          ? StreamDestinationPolicy.enabledDestinations(streamConfig, streamSecrets) : [])
+                          ? StreamDestinationPolicy.enabledDestinations(activeStreamConfig, activeStreamSecrets) : [])
         var rows: [String: DestinationStatus] = [:]
         var senders: [JSONObject] = []
         for id in StreamDestinationPolicy.destinationIds {
@@ -4201,7 +4222,7 @@ final class AppModel: ObservableObject {
         var destinations: [String] = []
         if recording { destinations.append("recording") }
         if streaming {
-            destinations += StreamDestinationPolicy.enabledDestinations(streamConfig, streamSecrets)
+            destinations += StreamDestinationPolicy.enabledDestinations(activeStreamConfig, activeStreamSecrets)
         }
         let isoIds = resolvedIsoSourceIds(recording: recording)
         var command: JSONObject = [
@@ -4218,7 +4239,7 @@ final class AppModel: ObservableObject {
             // RTMP and HLS rows' fields; Windows sends none of them on the SRT row
             // (StudioViewModel.StreamDestinations.cs), so neither does the Mac.
             command["destinationSettings"] = StreamDestinationPolicy.destinationSettings(
-                streamConfig, streamSecrets, bitrateMbps: streamBitrateMbps)
+                activeStreamConfig, activeStreamSecrets, bitrateMbps: streamBitrateMbps)
                 .map { ($0["id"] as? String) == "srt" ? $0 : streamEncoder.apply(to: $0) }
         }
         // O1: Windows sends recordingOutputProfile on every start
