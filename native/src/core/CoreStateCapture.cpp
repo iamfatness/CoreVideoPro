@@ -585,6 +585,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   recordingWriterStatus_ = core.recordingWriterStatus_;
   renderedProgramSources_ = core.renderedProgramSources_;
   renderedPreviewSources_ = core.renderedPreviewSources_;
+  sourceSheet_ = core.sourceSheet_;
   renderedSceneAttributionState_ = core.renderedSceneAttributionState_;
   renderedSceneAttributionTicks_ = core.renderedSceneAttributionTicks_;
   routeCount_ = core.routeCount_;
@@ -751,6 +752,7 @@ rpc::Json CoreStateCapture::sessionState(const rpc::Json& engineCapture) const {
       {"compositorRenderer", lastProgramFrame_.renderer},
       // Always present (the multiviewer-node rule): what the core put on the Preview plan
       // it last built for a render, empty when no Preview scene is up.
+      {"sourceSheet", sourceSheetJson()},
       {"previewFrame",
        rpc::Json::Object{
            {"sceneId", renderedPreviewSources_.sceneId()},
@@ -2464,6 +2466,29 @@ rpc::Json CoreStateCapture::takeRecordsState() const {
       {"count", static_cast<double>(takeRecords_.size())},
       {"pending", pendingTakeRecord_.has_value()},
       {"records", records},
+  };
+}
+
+// Sources Phase 2 (S6). Published unconditionally (active:false when the Sources tab holds
+// no demand): a node that appears only when active is absent in exactly the case worth seeing.
+rpc::Json CoreStateCapture::sourceSheetJson() const {
+  rpc::Json::Array cells;
+  for (const auto& cell : sourceSheet_.cells) {
+    cells.emplace_back(rpc::Json::Object{{"slot", cell.slot}, {"sourceId", cell.sourceId}, {"state", cell.state}});
+  }
+  return rpc::Json::Object{
+      {"active", sourceSheet_.active},
+      {"texture", rpc::Json::Object{{"iosurfaceId", static_cast<double>(sourceSheet_.texture.iosurfaceId)},
+                                    {"sharedHandleHex", sourceSheet_.texture.sharedHandleHex},
+                                    {"width", sourceSheet_.texture.width},
+                                    {"height", sourceSheet_.texture.height},
+                                    {"format", sourceSheet_.texture.format},
+                                    {"frameNumber", static_cast<double>(sourceSheet_.texture.frameNumber)}}},
+      {"columns", kSourceSheetColumns},
+      {"rows", kSourceSheetRows},
+      {"cellWidth", kSourceSheetCellWidth},
+      {"cellHeight", kSourceSheetCellHeight},
+      {"cells", std::move(cells)},
   };
 }
 

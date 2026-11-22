@@ -1032,6 +1032,7 @@ if(BUILD_TESTING)
     tests/MacCaptureLivenessTest.cpp
     tests/SubscriptionEvidenceLinesTest.cpp
     tests/RenderedPreviewSourcesTest.cpp
+    tests/SourceSheetPlanTest.cpp
     tests/AvfProgramTailTest.cpp
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp

@@ -1494,6 +1494,13 @@ class ICompositor {
   // (its own render target, mirroring renderMultiview) and returns its handle/
   // dimensions. Defaulted to an empty texture so the software/stub compositor
   // stays valid; only the GPU adapter implements it.
+  // Sources Phase 2 (S6): the source sheet, a fixed 5x2 grid where cell N is Show Input
+  // slot N+1, rendered only while the Sources tab holds the demand lease. Default: no
+  // texture (a compositor without it leaves the rows on their placeholder).
+  virtual ProgramFrameSharedTexture renderSourceSheet(const CompositorRenderPlan& /*renderPlan*/,
+                                                      const std::vector<VideoFrame>& /*frames*/) {
+    return {};
+  }
   virtual ProgramFrameSharedTexture renderPreview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) {
     (void)renderPlan;
     (void)frames;

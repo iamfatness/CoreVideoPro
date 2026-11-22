@@ -27,6 +27,7 @@
 #include "compositor/CompositorShaderParams.h"
 #include "modules/Interfaces.h"
 #include "core/ProgramBlackout.h"
+#include "core/SourceSheetPlan.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/VirtualCameraFrame.h"
 
@@ -602,6 +603,49 @@ TEST(MetalCompositor, PreviewPassIsIndependentOfProgramAndMultiview) {
   EXPECT_NE(texture.iosurfaceId, program.sharedTexture.iosurfaceId);
   EXPECT_NE(texture.iosurfaceId, multiview.iosurfaceId);
   EXPECT_NE(program.sharedTexture.iosurfaceId, multiview.iosurfaceId);
+}
+
+// Sources Phase 2 (S6): the source sheet. Two sources in slots 0 and 6 land in cells 0 and 6
+// of a 3200x720 surface of its own; every other cell stays clear. The pass is not waited, so
+// the test follows it with a waited Preview pass: one command queue runs its buffers in order,
+// so the sheet is complete when the Preview's wait returns.
+TEST(MetalCompositor, SourceSheetPutsEachSourceInItsSlotCell) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  auto plan = ::corevideo::core::buildSourceSheetRenderPlan(
+      {{6, ::corevideo::core::resolveMultiviewFeed("participant-video", "zoom:b", "b", "", "")},
+       {0, ::corevideo::core::resolveMultiviewFeed("participant-video", "zoom:a", "a", "", "")}});
+  for (auto& layer : plan.layers) layer.sourceHealth = "producing";
+  const auto a = bgraFrame("a", 320, 180, 10, 200, 60);
+  const auto b = bgraFrame("b", 320, 180, 220, 30, 90);
+  const auto sheet = compositor->renderSourceSheet(plan, {a, b});
+  ASSERT_NE(sheet.iosurfaceId, 0u);
+  EXPECT_EQ(sheet.width, 3200);
+  EXPECT_EQ(sheet.height, 720);
+  CompositorRenderPlan drain;
+  drain.renderPlanId = "plan-drain";
+  const auto preview = compositor->renderPreview(drain, {});
+  EXPECT_NE(sheet.iosurfaceId, preview.iosurfaceId) << "the sheet owns its own surface";
+
+  auto cellCentre = [&](int slot, bool& ok) {
+    return iosurfacePixel(sheet.iosurfaceId, (static_cast<float>(slot % 5) + 0.5f) / 5.f,
+                          (static_cast<float>(slot / 5) + 0.5f) / 2.f, ok);
+  };
+  bool ok = false;
+  const auto cell0 = cellCentre(0, ok);
+  ASSERT_TRUE(ok);
+  EXPECT_NEAR(cell0[0], 10, 3);
+  EXPECT_NEAR(cell0[1], 200, 3);
+  EXPECT_NEAR(cell0[2], 60, 3);
+  const auto cell6 = cellCentre(6, ok);
+  EXPECT_NEAR(cell6[0], 220, 3);
+  EXPECT_NEAR(cell6[1], 30, 3);
+  EXPECT_NEAR(cell6[2], 90, 3);
+  for (int slot : {1, 2, 3, 4, 5, 7, 8, 9}) {
+    const auto empty = cellCentre(slot, ok);
+    const bool isA = std::abs(empty[0] - 10) < 4 && std::abs(empty[1] - 200) < 4;
+    const bool isB = std::abs(empty[0] - 220) < 4 && std::abs(empty[1] - 30) < 4;
+    EXPECT_FALSE(isA || isB) << "slot " << slot << " shows a source it does not hold";
+  }
 }
 
 TEST(MetalCompositor, SharedTextureJsonCarriesIOSurfaceId) {

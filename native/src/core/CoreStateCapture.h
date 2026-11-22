@@ -29,6 +29,7 @@ class CoreStateCapture {
   rpc::Json mediaPlaybackState() const;
   rpc::Json takeRecordsState() const;
   rpc::Json zoomSubscriptionChurnState() const;
+  rpc::Json sourceSheetJson() const;
   std::string resolveMeetingStateForSession(const rpc::Json& engineCapture) const;
   rpc::Json zoomReadinessState(const rpc::Json& engineCapture) const;
   rpc::Json zoomEvidenceState(const rpc::Json& engineCapture) const;
@@ -176,6 +177,7 @@ class CoreStateCapture {
   decltype(MediaCore::recordingWriterStatus_) recordingWriterStatus_;
   decltype(MediaCore::renderedProgramSources_) renderedProgramSources_;
   decltype(MediaCore::renderedPreviewSources_) renderedPreviewSources_;
+  decltype(MediaCore::sourceSheet_) sourceSheet_;
   decltype(MediaCore::renderedSceneAttributionState_) renderedSceneAttributionState_;
   decltype(MediaCore::renderedSceneAttributionTicks_) renderedSceneAttributionTicks_;
   decltype(MediaCore::routeCount_) routeCount_;

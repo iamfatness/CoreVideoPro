@@ -278,6 +278,14 @@ class MetalCompositor final : public ICompositor {
     return renderSecondaryPass(preview_, renderPlan, frames);
   }
 
+  // Sources Phase 2 (S6): the source sheet into its own IOSurface. Not waited: like the
+  // Program IOSurface, the shell samples it as-is, and a thumbnail must not block the
+  // render thread on the GPU.
+  ProgramFrameSharedTexture renderSourceSheet(const CompositorRenderPlan& renderPlan,
+                                              const std::vector<VideoFrame>& frames) override {
+    return renderSecondaryPass(sourceSheet_, renderPlan, frames, /*waitForCompletion=*/false);
+  }
+
  private:
   struct ResolvedLayer {
     CompositorRenderPlanLayer plan;
@@ -907,7 +915,8 @@ class MetalCompositor final : public ICompositor {
 
   ProgramFrameSharedTexture renderSecondaryPass(PassTarget& target,
                                                 const CompositorRenderPlan& renderPlan,
-                                                const std::vector<VideoFrame>& frames) {
+                                                const std::vector<VideoFrame>& frames,
+                                                bool waitForCompletion = true) {
     ProgramFrameSharedTexture out;
     if (!ensurePipeline()) {
       return out;
@@ -925,7 +934,7 @@ class MetalCompositor final : public ICompositor {
     targetHeight_ = target.height;
     // Monitor passes share the raster (and its cache) but report nothing.
     overlayRaster_.beginFrame();
-    renderPassInto(target, deterministicPlan, frames, /*waitForCompletion=*/true);
+    renderPassInto(target, deterministicPlan, frames, waitForCompletion);
     overlayRaster_.beginFrame();
     targetWidth_ = savedWidth;
     targetHeight_ = savedHeight;
@@ -1767,6 +1776,7 @@ class MetalCompositor final : public ICompositor {
   PassTarget program_;
   PassTarget multiview_;
   PassTarget preview_;
+  PassTarget sourceSheet_;  // Sources Phase 2 (S6)
   // Canvas dims the draw helpers are currently pointed at (the program pass's
   // dims except inside a secondary pass, which saves/restores them).
   int targetWidth_ = 0;

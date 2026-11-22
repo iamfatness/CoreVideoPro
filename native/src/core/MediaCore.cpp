@@ -3909,6 +3909,22 @@ void holdDropoutForMonitoring(modules::CompositorRenderPlan& plan) {
 
 }  // namespace
 
+modules::CompositorRenderPlan MediaCore::buildSourceSheetPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
+  std::vector<SourceSheetInput> inputs;
+  inputs.reserve(multiviewSources_.size());
+  for (const auto& source : multiviewSources_) {
+    inputs.push_back({source.slot, resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
+                                                        source.captureDeviceId, source.mediaAssetId)});
+  }
+  auto plan = buildSourceSheetRenderPlan(inputs);
+  const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  for (auto& layer : plan.layers) annotateLayerSource(layer, videoFrames, nowNs);
+  holdDropoutForMonitoring(plan);          // the row shows the source, never a dropout black
+  sourceGrades_.applyTo(plan, videoFrames);  // per-source grade on; no program look, no key
+  return plan;
+}
+
 modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
   modules::CompositorRenderPlan renderPlan;
   renderPlan.sceneId = sceneId_;
@@ -6426,6 +6442,32 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       previewStructureEmitted_ = false;
     }
   }
+  // Fourth pass (Sources Phase 2, S6): the SOURCE SHEET, only while the Sources tab holds
+  // the 3 s demand lease and the wall has a source. Every 4th monitor cycle on its own phase
+  // (2) so it never stacks on the multiview (0) or Preview (1) pass; the first one renders at
+  // once. The Metal pass does not wait for the GPU. Its CPU time joins the shed cost as a
+  // quarter (it runs on one tick in four). With demand off there is no target and no pass.
+  const bool sheetActive = sourcePreviewDemand_.active() && !multiviewSources_.empty();
+  if (sheetActive) {
+    const auto sheetDivisor = monitorDivisor * 4;
+    const bool sheetDue = !sourceSheet_.active || (multiviewTickCounter_ % sheetDivisor) == (2u % sheetDivisor);
+    if (sheetDue) {
+      const auto sheetStartTp = std::chrono::steady_clock::now();
+      auto sheetPlan = buildSourceSheetPlan(videoFrames);
+      const auto texture = modules_.compositor->renderSourceSheet(sheetPlan, videoFrames);
+      sourceSheet_.active = true;
+      sourceSheet_.texture = texture;
+      sourceSheet_.cells = sourceSheetCells(sheetPlan, videoFrames);
+      const bool exported = texture.iosurfaceId != 0 || !texture.sharedHandleHex.empty();
+      lastSourceSheetPassNs_ = exported
+          ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - sheetStartTp).count()
+          : 0;
+    }
+  } else if (sourceSheet_.active) {
+    sourceSheet_ = {};
+    lastSourceSheetPassNs_ = 0;
+  }
   }
   const auto monitorEndTp = std::chrono::steady_clock::now();
   markStage(s_stagePreviewUs, 4);
@@ -6510,7 +6552,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     shedObservation.programCostNs =
         std::chrono::duration_cast<std::chrono::nanoseconds>(tickEndTp - tickStartTp).count() -
         std::chrono::duration_cast<std::chrono::nanoseconds>(monitorEndTp - monitorStartTp).count();
-    shedObservation.monitorCycleCostNs = lastMultiviewPassNs_ + lastPreviewPassNs_;
+    shedObservation.monitorCycleCostNs = lastMultiviewPassNs_ + lastPreviewPassNs_ + lastSourceSheetPassNs_ / 4;
     const auto transition = monitorShed_.observe(shedObservation);
     if (transition != MonitorShedTransition::None) {
       // Grading Phase 2 (P4): optional analysis (Metal grade previews) slows by the same divisor.
