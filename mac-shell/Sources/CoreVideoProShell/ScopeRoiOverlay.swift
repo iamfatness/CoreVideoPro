@@ -52,8 +52,10 @@ final class ScopeRoiOverlayView: NSView {
         if gesture.drawingShape != editor.roiDrawingShape {
             gesture.cancel()                               // SetDrawingTool cancels a gesture
             gesture.drawingShape = editor.roiDrawingShape
+            // ArmRoi focuses the guide ONCE (Roi.cs:44) so Escape works; never on later updates,
+            // which would pull focus back from a slider the operator is using.
+            if editor.roiDrawingShape != nil { window?.makeFirstResponder(self) }
         }
-        if editor.roiDrawingShape != nil, window?.firstResponder !== self { window?.makeFirstResponder(self) }
         needsDisplay = true
     }
 
