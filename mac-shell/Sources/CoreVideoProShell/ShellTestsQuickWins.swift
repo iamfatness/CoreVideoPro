@@ -18,6 +18,10 @@ extension ShellTests {
             ("quickwins/a1-preference-parse-format", testA1PreferenceParseAndFormat),
             ("quickwins/a1-model-flip-pushes-persists-reasserts", testA1ModelFlipPushesPersistsAndReasserts),
             ("quickwins/a1-control-action-and-state", testA1ControlActionAndState),
+            ("quickwins/a5-full-state-entry", testA5FullStateEntry),
+            ("quickwins/a5-console-source-and-routing", testA5ConsoleSourceAndRouting),
+            ("quickwins/a5-status-from-the-core", testA5StatusComesFromTheCore),
+            ("quickwins/a5-prefs-and-unplugged-device", testA5PrefsAndUnpluggedDevice),
         ]
     }
 
@@ -153,5 +157,100 @@ extension ShellTests {
                     "state reports the mode")
         expectEqual(invoke(surface, "audio.zoomMode.set", [" perGuestIso "]), .success, "trimmed")
         expectEqual(model.zoomAudioMode, .perGuestIso, "back to per-guest")
+    }
+
+    // ── A5: local audio source ──────────────────────────────────────────────
+    // Fixture invariant: the device list holds exactly "mic-uid" ("USB Mic");
+    // "gone-uid" is never in it (an unplugged saved device).
+
+    private static let a5Mic = AudioInputDevice(id: "mic-uid", name: "USB Mic")
+
+    private static func a5Local(_ command: JSONObject) -> JSONObject? {
+        (command["sources"] as? [JSONObject])?.first { $0["captureDeviceId"] as? String == "local-machine-audio" }
+    }
+
+    /// The full-state sync-capture-audio-sources carries the local entry only
+    /// while enabled AND connected, and the core-restart reassert carries it.
+    /// Mutation: ignore `enabled` in LocalAudioPolicy.entry -> red ("disabled -> absent").
+    @MainActor
+    private static func testA5FullStateEntry() {
+        let model = AppModel()
+        model.audioInputs = [a5Mic]
+        model.localAudio = LocalAudioSetting(enabled: true, deviceId: "mic-uid", deviceName: "USB Mic")
+        let entry = a5Local(model.captureAudioSourcesCommand())
+        expectEqual(entry?["audioDeviceId"] as? String, "mic-uid", "enabled + connected -> the entry")
+        expectEqual(entry?["audioSourceKind"] as? String, "coreaudio-input", "CoreAudio input kind")
+        expectEqual(entry?["nativeAudioDeviceId"] as? String, "mic-uid", "native id = the UID")
+        expectEqual(entry?["audioDeviceName"] as? String, "USB Mic", "device name")
+        model.localAudio.enabled = false
+        expect(a5Local(model.captureAudioSourcesCommand()) == nil, "disabled -> absent")
+        model.localAudio = LocalAudioSetting(enabled: true, deviceId: "gone-uid", deviceName: "Old Mic")
+        expect(a5Local(model.captureAudioSourcesCommand()) == nil, "enabled but unplugged -> absent")
+        model.localAudio = LocalAudioSetting(enabled: true, deviceId: "mic-uid", deviceName: "USB Mic")
+        var batches: [[JSONObject]] = []
+        model.audioReassertObserver = { batches.append($0) }
+        model.reassertAudioConsole()
+        let sources = batches.last?.first { $0["type"] as? String == "sync-capture-audio-sources" }
+        expect(sources.flatMap(a5Local) != nil, "a respawned core gets the local source back")
+    }
+
+    /// A configured local source is a console source: a strip and the five
+    /// default sends; unconfigured, neither.
+    /// Mutation: leave it out of consoleCaptureAudioIds -> red on both.
+    @MainActor
+    private static func testA5ConsoleSourceAndRouting() {
+        let model = AppModel()
+        model.audioInputs = [a5Mic]
+        model.localAudio = LocalAudioSetting(enabled: true, deviceId: "mic-uid", deviceName: "USB Mic")
+        let sends = model.routingBaseCommand()?["sends"] as? [JSONObject] ?? []
+        expectEqual(a1Buses(sends, "local-machine-audio"), a1Buses, "five default sends")
+        expect(model.expectedAudioSourceIds.contains("local-machine-audio"), "it has a strip")
+        expectEqual(model.audioSourceLabel("local-machine-audio"), "Local machine audio", "strip label")
+        model.localAudio.enabled = false
+        let off = model.routingBaseCommand()?["sends"] as? [JSONObject] ?? []
+        expectEqual(a1Buses(off, "local-machine-audio"), [], "off -> no sends")
+        expect(!model.expectedAudioSourceIds.contains("local-machine-audio"), "off -> no strip")
+    }
+
+    /// Windows ResolveLocalAudioOperatorStatus over a fixture core row, every
+    /// branch. Mutation: swap the signalPresent / captureStreaming checks -> red.
+    private static func testA5StatusComesFromTheCore() {
+        let on = LocalAudioSetting(enabled: true, deviceId: "mic-uid", deviceName: "USB Mic")
+        func status(_ setting: LocalAudioSetting, _ rows: [JSONObject]) -> String {
+            LocalAudioPolicy.status(setting, devices: [a5Mic], captureAudioSources: rows)
+        }
+        func row(streaming: Bool, signal: Bool) -> JSONObject {
+            ["captureDeviceId": "local-machine-audio", "captureStreaming": streaming, "signalPresent": signal]
+        }
+        expectEqual(status(LocalAudioSetting(), []), "Local audio source off", "off")
+        expectEqual(status(LocalAudioSetting(enabled: true), []), "Choose an audio input", "no device")
+        expectEqual(status(LocalAudioSetting(enabled: true, deviceId: "gone-uid", deviceName: "Old Mic"), []),
+                    "Old Mic is not connected", "a saved device that is unplugged is named")
+        expectEqual(status(on, [["captureDeviceId": "capture:cam"]]), "Waiting for audio", "no row for it yet")
+        expectEqual(status(on, [row(streaming: true, signal: true)]), "Audio detected", "signal")
+        expectEqual(status(on, [row(streaming: false, signal: false)]), "Starting audio source", "not streaming")
+        expectEqual(status(on, [row(streaming: true, signal: false)]), "No audio detected", "silent")
+        // The fourth combination is the only one that tells the branch ORDER apart:
+        // Windows checks signalPresent before captureStreaming.
+        expectEqual(status(on, [row(streaming: false, signal: true)]), "Audio detected",
+                    "signal wins over a not-yet-streaming flag (Windows order)")
+        expectEqual(LocalAudioPolicy.captureAudioRows(["captureAudioSources": ["sources": [row(streaming: true, signal: true)]]]).count,
+                    1, "reads the core node's sources[]")
+    }
+
+    /// Relaunch restores the choice, and a saved device that is not connected
+    /// keeps the choice (it is not cleared or replaced).
+    /// Mutation: drop the localAudio restore lines -> red.
+    @MainActor
+    private static func testA5PrefsAndUnpluggedDevice() {
+        let model = AppModel()
+        model.localAudio = LocalAudioSetting(enabled: true, deviceId: "gone-uid", deviceName: "Old Mic")
+        let relaunched = AppModel()
+        relaunched.audioInputs = [a5Mic]
+        relaunched.applyRestoredPrefs(model.currentPrefs())
+        expectEqual(relaunched.localAudio,
+                    LocalAudioSetting(enabled: true, deviceId: "gone-uid", deviceName: "Old Mic"),
+                    "the saved choice survives a relaunch even while the device is unplugged")
+        expectEqual(relaunched.localAudioStatus, "Old Mic is not connected", "and says so")
     }
 }

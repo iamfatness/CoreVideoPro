@@ -794,6 +794,9 @@ final class AppModel: ObservableObject {
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.autoAssignInputs = autoAssignInputsEnabled
         prefs.zoomAudioMode = zoomAudioMode.persisted
+        prefs.localAudioEnabled = localAudio.enabled
+        prefs.localAudioDeviceId = localAudio.deviceId.isEmpty ? nil : localAudio.deviceId
+        prefs.localAudioDeviceName = localAudio.deviceName.isEmpty ? nil : localAudio.deviceName
         prefs.sourcesWorkspace = sourcesWorkspace.columns
         prefs.cameraExtensionOptedIn = cameraExtensionOptedIn
         prefs.virtualCamera = virtualCamera == PersistedVirtualCamera() ? nil : virtualCamera
@@ -836,6 +839,9 @@ final class AppModel: ObservableObject {
         assignmentLaw.autoAssignEnabled = prefs.autoAssignInputs ?? true
         autoAssignInputsEnabled = assignmentLaw.autoAssignEnabled
         zoomAudioMode = ZoomAudioMode.parse(prefs.zoomAudioMode)
+        localAudio = LocalAudioSetting(enabled: prefs.localAudioEnabled ?? false,
+                                       deviceId: prefs.localAudioDeviceId ?? "",
+                                       deviceName: prefs.localAudioDeviceName ?? "")
         sourcesWorkspace.columns = prefs.sourcesWorkspace ?? SourcesColumnPrefs()
         for key in prefs.chromaKeys ?? [] {
             if let index = restoredSlotIndex(sourceKey: key.sourceKey, legacySlotId: key.slotId) {
@@ -1241,7 +1247,7 @@ final class AppModel: ObservableObject {
 
     /// Saves now instead of waiting for the 5 s autosave, but never before the
     /// operator's file has been restored (that would write defaults over it).
-    private func persistPrefsNow() {
+    func persistPrefsNow() {
         guard prefsRestored else { return }
         let prefs = currentPrefs()
         guard prefs != lastSavedPrefs else { return }
@@ -2319,6 +2325,8 @@ final class AppModel: ObservableObject {
     @Published var streamBitrateMbps = 6.0
     @Published var overlays = OverlaysState()
     @Published var audioInputs: [AudioInputDevice] = []
+    /// A5: the local audio source (LocalAudioSource.swift). Set via setLocalAudio.
+    @Published var localAudio = LocalAudioSetting()
     var captureAudioSyncTask: Task<Void, Never>?
     var brandSyncTask: Task<Void, Never>?
     /// Test seam: sees every overlay command before it goes to the bridge.
@@ -4263,9 +4271,7 @@ final class AppModel: ObservableObject {
     func routingBaseCommand() -> JSONObject? {
         let sends = AudioConsolePolicy.baseRoutingSends(
             zoomAudioIds: zoomAudioSourceIds,
-            captureAudioIds: slots
-                .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
-                .map { "capture:" + $0.sourceId },
+            captureAudioIds: consoleCaptureAudioIds,
             mediaRouted: sceneHasMediaRoute(programSceneId, isProgram: true),
             operatorEdits: operatorRouteEdits,
             zoomAudioMode: zoomAudioMode, meetingAudio: meetingAudioSubscribed)
@@ -5089,11 +5095,18 @@ final class AppModel: ObservableObject {
             meetingAudio: meetingAudioSubscribed,
             zoomAudioIds: AudioConsolePolicy.rosterOrdered(
                 zoomAudioSourceIds, roster: roster.map(\.id)),
-            captureAudioIds: slots
-                .filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
-                .map { "capture:" + $0.sourceId },
+            captureAudioIds: consoleCaptureAudioIds,
             mediaStrip: sceneHasMediaRoute(programSceneId, isProgram: true)
                 || sceneHasMediaRoute(previewSceneId, isProgram: false))
+    }
+
+    /// Capture-kind console sources: every capture slot with a paired mic, then
+    /// the local audio source while it is configured (A5; Windows
+    /// BuildExpectedAudioSourceIds adds local-machine-audio after the captures).
+    var consoleCaptureAudioIds: [String] {
+        slots.filter { $0.kind == "capture" && !$0.sourceId.isEmpty && !$0.audioDeviceId.isEmpty }
+            .map { "capture:" + $0.sourceId }
+            + (LocalAudioPolicy.isConfigured(localAudio, devices: audioInputs) ? [LocalAudioPolicy.sourceId] : [])
     }
 
     /// Whether a bus's scene carries a FIXED media route — read off the real route

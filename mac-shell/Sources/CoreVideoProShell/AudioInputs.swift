@@ -95,6 +95,8 @@ extension AppModel {
                 }
                 return entry
             }
+            // A5: the local audio source rides the same full-state list.
+            + [LocalAudioPolicy.entry(localAudio, devices: audioInputs)].compactMap { $0 }
         return ["type": "sync-capture-audio-sources", "sources": sources]
     }
 
@@ -111,7 +113,8 @@ extension AppModel {
     /// scratch each launch, so a persisted pairing that is never pushed does
     /// nothing — the same trap the colour grade had.
     func reassertCaptureAudio() {
-        if slots.contains(where: { $0.kind == "capture" && !$0.audioDeviceId.isEmpty }) {
+        if slots.contains(where: { $0.kind == "capture" && !$0.audioDeviceId.isEmpty })
+            || LocalAudioPolicy.isConfigured(localAudio, devices: audioInputs) {
             syncCaptureAudio()
         }
     }

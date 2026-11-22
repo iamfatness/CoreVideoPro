@@ -78,6 +78,7 @@ struct AudioPane: View {
                 VStack(alignment: .leading, spacing: 12) {
                     MasteringGuideMeters()
                     MasteringRack()
+                    LocalAudioSourceCard()
                     Text("Monitor output").font(.grotesk(13, .semibold))
                     MonitorDevicePicker()
                     Toggle("Monitor", isOn: Binding(
