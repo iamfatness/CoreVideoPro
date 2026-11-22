@@ -38,6 +38,7 @@ extension ShellTests {
             // Review fixes.
             ("audio-meters/respawn-resets-master-meters", testARespawnedCoreNeverShowsTheDeadCoresMeters),
             ("audio-buses/bus-state-with-nothing-routed", testBusStateReachesTheCoreWithNothingRouted),
+            ("audio-mastering/quit-flushes-the-rack", testQuitFlushesARackEditMadeJustBefore),
         ]
     }
 
@@ -551,5 +552,20 @@ extension ShellTests {
         // core does not keep LISTEN or a bus send the operator turned off.
         expectEqual((model.routingBaseCommand()?["busSends"] as? [JSONObject])?.count, 0,
                     "turning the last bus state off still sends the cleared state once")
+    }
+
+    // ── Review fix 7: a rack edit just before quit is saved ──────────────────
+
+    /// editMastering is per slider tick, so it does not write the file itself
+    /// (the 5 s autosave does). Quitting inside those 5 s used to lose the edit.
+    @MainActor
+    static func testQuitFlushesARackEditMadeJustBefore() {
+        let model = AppModel()
+        model.applyRestoredPrefs(ShellPrefs())
+        model.editMastering { $0.glueAmount = 0.77; $0.limiterEnabled = false }
+        expect(model.handleQuitRequest() == .terminateNow, "an idle quit quits")
+        let saved = ShellPrefs.load()
+        expectEqual(saved.masteringCurrent?.glueAmount, 0.77, "the rack edit made just before quit is on disk")
+        expectEqual(saved.masteringCurrent?.limiterEnabled, false, "with the limiter state")
     }
 }

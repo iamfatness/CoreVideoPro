@@ -5310,6 +5310,9 @@ final class AppModel: ObservableObject {
     /// live outputs defer the quit behind the in-app confirmation.
     func handleQuitRequest() -> NSApplication.TerminateReply {
         sourceGrades.flush()
+        // The 5 s autosave would lose anything changed just before quit (a
+        // mastering slider, an A/B pick): write the operator's prefs now.
+        persistPrefsNow()
         switch quitGate.request(quitOutputs) {
         case .quitNow: return .terminateNow
         case .ask:
