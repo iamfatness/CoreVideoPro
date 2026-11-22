@@ -70,14 +70,14 @@ Tasks 7 and 8 share one commit (the playlist model wires the playout's rows and 
 
 ## Open items
 
-1. **First preparation is ~8 s on this Metal core, past the 5 s cue budget** (live log: `first Cue after
-   8.06s ... cuePreparation=preparing`, finished 8.08 s; the next cue of the same template lands at once).
-   So an operator's first Show of a template after a core start is refused "The graphic is still preparing.
-   Retry when ready." Measured on a loaded machine (other lanes building, load ~7): **unverified on a quiet
-   box**. Native work (prepare cost, or warm the playlist's templates per core generation), outside this lane.
-   Windows uses the same 5 s budget; widening it on Mac only was not done.
-2. **Spec 5.3 "templates the playlist pins are reinstalled per core generation"**: pins reinstall lazily on
-   the next Ensure, not eagerly on epoch change. Eager reinstall would also address item 1.
+1. ~~First preparation is ~8 s on this Metal core~~ **WRONG — corrected 2026-11-22**
+   (`2026-11-22-mac-graphics-warmup-outcomes.md`). The 8 s was this live check's own fixture: its cue wait
+   called the synchronous `poll()` (awaitMain + run-loop spin) from inside a main-actor job, so the nested
+   request could not start and waited out its 8 s limit. Real cold preparation is 39-70 ms; the first Show
+   after a core start is accepted in 0.07-0.08 s, now asserted by the live check.
+2. **Spec 5.3 per-generation reinstall**: done 2026-11-22 for what Windows reinstalls eagerly — the DESIGN
+   versions the show references (rows, row images, saved cues, studio lower-third cue). Other pins stay
+   lazy on the next Ensure, as on Windows.
 3. **Suppression flag** is recorded on `GraphicsModel` but not published to the control state or diagnostics.
 4. **Windows-show import spike (D5)**: covered by the exported fixture only; asset folders (`PackageRoot`)
    unverified on a real Windows show.

@@ -14,6 +14,7 @@ extension ShellTests {
             ("graphics-design-resync/refusal-on-status-line", testDesignResyncRefusalOnStatusLine),
             ("graphics-design-resync/not-armed-without-a-new-core", testDesignResyncNeedsANewCoreGeneration),
             ("graphics-design-resync/waits-for-the-capability", testDesignResyncWaitsForTheCapability),
+            ("graphics-design-resync/waits-for-the-show-document", testDesignResyncWaitsForTheShowDocument),
         ]
     }
 
@@ -38,6 +39,7 @@ extension ShellTests {
         core.node["installHash"] = resyncHash
         core.react = ScriptedGraphicsCore.instancesReaction()
         let model = graphicsModel(core)
+        model.documentLoaded = true   // as after loadDocument()/adopt
         model.playout.sleep = { [weak core, weak model] _ in if let core { model?.observe(snapshot: ["graphics": core.node]) } }
         var rows = interviewRows()
         rows[0].templateId = "design-lower-abc123"; rows[0].templateVersion = 2
@@ -147,5 +149,19 @@ extension ShellTests {
         restartCore(model, core, epoch: "epoch-2", capabilityLater: true)
         expectEqual(installedIds(core).count, 4, "the reinstall runs once the capability arrives, even with an unchanged graphics node")
         expectEqual(model.status, GraphicsModel.restartedText, "and is not reported as refused")
+    }
+
+    /// At launch the core can come up before the show document finishes loading (loadDocument is async).
+    @MainActor
+    static func testDesignResyncWaitsForTheShowDocument() {
+        let (model, core) = resyncModel()
+        let show = model.document
+        model.document = GraphicsDocument()
+        model.documentLoaded = false
+        restartCore(model, core, epoch: "epoch-2")
+        expectEqual(installedIds(core).count, 0, "nothing is installed before the show is loaded")
+        model.adopt(GraphicsDocumentLoad(document: show, readOnly: false, recoveredBackup: false, status: ""))
+        _ = awaitMain(5) { await model.designResync?.value; return true }
+        expectEqual(installedIds(core).count, 4, "the reinstall runs when the show finishes loading")
     }
 }

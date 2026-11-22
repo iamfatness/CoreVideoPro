@@ -120,10 +120,12 @@ final class GraphicsModel: ObservableObject {
     /// The running reinstall (tests await it).
     private(set) var designResync: Task<Void, Never>?
 
-    private func resyncDesignsIfDue() {
+    func resyncDesignsIfDue() {
         // `available` too: a snapshot can carry the graphics node before the capability is
         // confirmed, and a reinstall sent then is refused by the gateway and never retried.
-        guard designResyncPending, available, let epoch = state?.coreEpoch, !epoch.isEmpty, epoch != designResyncEpoch else { return }
+        // `documentLoaded` too: at launch the show loads off the main thread, and a resync run
+        // before it would see no references and spend this core's one attempt on nothing.
+        guard designResyncPending, available, documentLoaded, let epoch = state?.coreEpoch, !epoch.isEmpty, epoch != designResyncEpoch else { return }
         designResyncPending = false
         designResyncEpoch = epoch
         let references = document.referencedTemplates, designs = document.designPins
