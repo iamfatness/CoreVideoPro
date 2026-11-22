@@ -457,6 +457,10 @@ def main():
     parser.add_argument("--media", action="store_true",
                         help="put a 1080p60 clip and a looping 1080p30 video background on Program "
                              "and gate their decode/presentation rates")
+    parser.add_argument("--grade-previews", type=int, default=0,
+                        help="open N private grade-preview editors over stdio for the whole run (Metal G5; max 3)")
+    parser.add_argument("--scopes", action="store_true",
+                        help="with --grade-previews: also demand the three scopes (Metal G6)")
     parser.add_argument("--source-grades", action="store_true",
                         help="after configure, apply a per-source grade (warm-film, exposure +2) to every "
                              "wall participant (query-source-grade, then set-source-grade) and gate as usual")
@@ -582,6 +586,27 @@ def main():
         if participants and accepted == 0:
             failures.append("--source-grades: no per-source grade was accepted, so the run proved nothing")
 
+    # Private grade previews (grading Phase 2, Task 10): the requests the Mac shell's
+    # GradePreviewSession sends — one full set-grade-preview per editor, then a renewOnly every
+    # 500 ms (below) — so the run measures Program with N editors open on the shared GPU.
+    preview_editors = []
+    if args.grade_previews:
+        participants = [str(101 + i) for i in range(max(1, args.load))]
+        for i in range(min(3, args.grade_previews)):
+            editor = {"instanceId": f"drill-editor-{i}", "sourceId": participants[i % len(participants)], "revision": 1}
+            answer = core.request(dict(editor, type="set-grade-preview", enabled=True, scopesEnabled=args.scopes,
+                                       scopesOriginal=False, histogramMode=1, waveformMode=1, scopeView=0,
+                                       compareOriginal=False,
+                                       scopeRoi={"enabled": False, "x": 0, "y": 0, "width": 1, "height": 1,
+                                                 "revision": 0, "shape": "rectangle"},
+                                       grade={"lut": "warm-film", "exposure": 2, "contrast": 0,
+                                              "saturation": 0, "temperature": 0}), step="grade-preview") or {}
+            if answer.get("accepted"):
+                preview_editors.append(editor)
+            else:
+                print(f"GRADE-PREVIEW {editor['instanceId']}: refused ({answer.get('error') or answer})")
+        print(f"GRADE-PREVIEW {len(preview_editors)} editors open (scopes {'on' if args.scopes else 'off'})")
+
     # 2. Operator traffic at the cadence the shell produces, for the whole run:
     #    2Hz snapshot syncs plus scene re-cues, while the render loop is live.
     start = time.time()
@@ -609,6 +634,8 @@ def main():
                                              "title": "CoreVideo show drill"}], elapsed)
         else:
             response = step("poll", [], elapsed)
+        for editor in preview_editors:
+            core.request(dict(editor, type="set-grade-preview", renewOnly=True), step="grade-preview-renew")
         # Both ends of the operator-traffic window, for the --media block. The
         # first sample is taken one second in so a cold decoder open is not
         # counted against the steady rate.
@@ -644,6 +671,18 @@ def main():
 
     # ── assertions ───────────────────────────────────────────────────────────
     snapshot = (stop or {}).get("snapshot", {})
+    if preview_editors:
+        ready = [e for e in core.events if e.get("type") == "grade-preview" and e.get("status") == "ready"
+                 and (e.get("texture") or {}).get("iosurfaceId")]
+        scoped = [e for e in ready if ((e.get("scopes") or {}).get("texture") or {}).get("iosurfaceId")]
+        diag = snapshot.get("gradePreview") or {}
+        print(f"GRADE-PREVIEW ready events {len(ready)} (with scopes {len(scoped)}); worker submitted="
+              f"{diag.get('submitted')} completed={diag.get('completed')} superseded={diag.get('superseded')} "
+              f"failed={diag.get('failed')} lastWorkMs={diag.get('lastWorkMs')}")
+        if not ready:
+            failures.append("--grade-previews: no ready grade-preview surface arrived, so the run proved nothing")
+        if args.scopes and not scoped:
+            failures.append("--scopes: no scope surface arrived, so the run proved nothing")
     if args.source_grades:
         rows = snapshot.get("sourceGrades") or []
         print(f"GRADE end of run: {sum(1 for r in rows if r.get('active'))}/{len(rows)} "
