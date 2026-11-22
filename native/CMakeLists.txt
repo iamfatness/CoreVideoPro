@@ -1021,6 +1021,7 @@ if(BUILD_TESTING)
     tests/GraphicsFontResolverTest.cpp
     tests/GraphicsTextMeasureTest.cpp
     tests/MetalSourceGradePixelTest.cpp
+    tests/MetalGradeLutPixelTest.cpp
     tests/AvfEncoderRecordingTest.cpp
     tests/CoreAudioAdapterTest.cpp
     tests/MacCaptureSupportTest.cpp
