@@ -357,6 +357,8 @@ extension ShellTests {
         expectEqual(model.captureAudioSyncOffset("cam1"), -500, "and at -500")
         model.resetCaptureAudioSync(deviceId: "cam1")
         expectEqual(model.captureAudioSyncOffset("cam1"), 0, "reset")
+        expect(CaptureAudioSyncPolicy.offersNudge(category: "Cameras"), "a camera row offers the nudge")
+        expect(!CaptureAudioSyncPolicy.offersNudge(category: "Screens"), "a screen row does not (no audio on Mac)")
         model.nudgeCaptureAudio(deviceId: "nope", deltaMs: 20)
         expectEqual(model.captureAudioSyncOffset("nope"), 0, "an unknown device is ignored")
     }

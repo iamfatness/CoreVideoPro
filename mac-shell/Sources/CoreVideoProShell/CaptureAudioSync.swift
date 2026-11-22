@@ -24,6 +24,10 @@ enum CaptureAudioSyncPolicy {
 
     static func clamp(_ ms: Int) -> Int { min(max(ms, -limitMs), limitMs) }
 
+    /// Which capture rows carry the nudge: cameras and capture cards (video
+    /// devices that may carry or pair audio), never a screen (no audio on Mac).
+    static func offersNudge(category: String) -> Bool { category == "Cameras" }
+
     /// Windows CaptureDeviceItem.AudioSyncLabel, verbatim.
     static func label(_ ms: Int) -> String {
         ms == 0 ? "Audio sync 0 ms" : ms > 0 ? "Audio delayed +\(ms) ms" : "Audio advanced \(ms) ms"

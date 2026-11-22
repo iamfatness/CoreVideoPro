@@ -760,3 +760,41 @@ TEST(AvfEncoderRecording, MovReportsItsRealContainerAndCodec) {
   encoder->stopRecording();
   fs::remove_all(dir);
 }
+
+// O2 follow-up: the recording codec reaches the ISO writers too, so an operator
+// who picks H.265 gets HEVC ISOs fed NV12 (Zoom). Prove that path writes real
+// frames into an hvc1 track at the selected size — the HEVC test above only
+// covers Program's BGRA input. Mutation: force ISO writers to H.264 -> no hvc1.
+TEST(AvfEncoderRecording, HevcZoomIsoWritesNv12FramesIntoAnHvc1Track) {
+  MAKE_ENCODER_OR_SKIP(encoder);
+  const auto dir = freshTempDir("o2-iso-hevc");
+  auto request = testRequest(dir.string());
+  request.videoCodec = "h265";
+  IsoSourceSelection guest;
+  guest.sourceId = "zoom:1";
+  guest.displayName = "Guest";
+  guest.hasAudio = false;
+  guest.targetWidth = 1280;
+  guest.targetHeight = 720;
+  request.isoSources = {guest};
+  encoder->configureRecording(request);
+  (void)encoder->start({"recording"}, {"zoom:1"});
+  for (int i = 1; i <= 12; ++i) {
+    encoder->submit(frameWithFullBgra(i, 640, 360));
+    encoder->submitIsoVideo({{"zoom:1", "Guest", isoQuadrantI420("zoom:1", i, 1920, 1080)}});
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+  }
+  encoder->stopRecording();
+  const auto session = encoder->session();
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  ASSERT_TRUE(session.isoStreams[0].warning.empty()) << session.isoStreams[0].warning;
+  EXPECT_GT(session.isoStreams[0].videoFrameCount, 2);
+  EXPECT_TRUE(fileContains(session.isoStreams[0].path, "hvc1")) << "the ISO track is not HEVC";
+  const auto decoded = corevideo::testing::decodeMp4VideoToBgra(session.isoStreams[0].path);
+  ASSERT_TRUE(decoded.error.empty()) << decoded.error;
+  EXPECT_EQ(decoded.width, 1280);
+  EXPECT_EQ(decoded.height, 720);
+  ASSERT_FALSE(decoded.frames.empty());
+  EXPECT_GT(lumaAt(decoded, 960, 540), 180) << "the scaled bright quadrant survived the HEVC encode";
+  fs::remove_all(dir);
+}

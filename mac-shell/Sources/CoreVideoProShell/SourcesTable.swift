@@ -427,15 +427,19 @@ struct CaptureDevicesSection: View {
                             .buttonStyle(.plain).font(.grotesk(11, .semibold)).foregroundStyle(Studio.amber)
                     }
                     // Z2 (Windows SourcesInputsPage.xaml:110-134): the offset and the nudges.
-                    HStack(spacing: 6) {
-                        Text(CaptureAudioSyncPolicy.label(model.captureAudioSyncOffset(device.id)))
-                            .font(.plexMono(10)).foregroundStyle(Studio.secondary)
-                        Button("-20 ms") { model.nudgeCaptureAudio(deviceId: device.id, deltaMs: -CaptureAudioSyncPolicy.stepMs) }
-                            .buttonStyle(GhostButtonStyle())
-                            .help("Nudge this device's audio 20 ms earlier")
-                        Button("+20 ms") { model.nudgeCaptureAudio(deviceId: device.id, deltaMs: CaptureAudioSyncPolicy.stepMs) }
-                            .buttonStyle(GhostButtonStyle())
-                            .help("Nudge this device's audio 20 ms later")
+                    // Cameras only: a ScreenCaptureKit display carries no audio on the
+                    // Mac, so a nudge there would be a control that does nothing.
+                    if CaptureAudioSyncPolicy.offersNudge(category: type(device).category) {
+                        HStack(spacing: 8) {
+                            Text(CaptureAudioSyncPolicy.label(model.captureAudioSyncOffset(device.id)))
+                                .font(.plexMono(10)).foregroundStyle(Studio.secondary)
+                            Button("-20 ms") { model.nudgeCaptureAudio(deviceId: device.id, deltaMs: -CaptureAudioSyncPolicy.stepMs) }
+                                .buttonStyle(.plain).font(.grotesk(10, .semibold)).foregroundStyle(Studio.accent)
+                                .help("Nudge this device's audio 20 ms earlier")
+                            Button("+20 ms") { model.nudgeCaptureAudio(deviceId: device.id, deltaMs: CaptureAudioSyncPolicy.stepMs) }
+                                .buttonStyle(.plain).font(.grotesk(10, .semibold)).foregroundStyle(Studio.accent)
+                                .help("Nudge this device's audio 20 ms later")
+                        }
                     }
                     if !device.warning.isEmpty {
                         Text(device.warning).font(.grotesk(10))
