@@ -452,3 +452,41 @@ TEST(AvfMediaDecoder, AnAudioOnlyFileDecodesItsToneAndHasNoVideoWarning) {
     EXPECT_TRUE(warnings.empty()) << name << ": " << (warnings.empty() ? "" : warnings.front());
   }
 }
+
+// N3 (plan 2026-11-21 Task 2). A clip recorded with a rotation in its track's
+// preferredTransform (a phone held upright) decodes upright at its DISPLAY
+// size. Fixture: storage 64x36, quadrants TL RED, TR GREEN, BL BLUE, BR WHITE.
+// Expected display quadrants are derived from the transform by hand (plan):
+//   90  -> 36x64, display TL BLUE, TR RED, BL WHITE, BR GREEN
+//   180 -> 64x36, display TL WHITE, TR BLUE, BL GREEN, BR RED
+//   0   -> 64x36, unchanged
+TEST(AvfMediaDecoder, APortraitPhoneClipDecodesUprightAtItsDisplaySize) {
+  using Bgr = std::array<int, 3>;
+  const Bgr red{0x20, 0x20, 0xE0}, green{0x20, 0xE0, 0x20}, blue{0xE0, 0x20, 0x20}, white{0xD0, 0xD0, 0xD0};
+  struct Case { int degrees, width, height; Bgr tl, tr, bl, br; };
+  const Case cases[] = {{90, 36, 64, blue, red, white, green},
+                        {180, 64, 36, white, blue, green, red},
+                        {0, 64, 36, red, green, blue, white}};
+  for (const auto& k : cases) {
+    const auto p = tmp("rot" + std::to_string(k.degrees) + ".mp4"); Cleanup c{p};
+    const auto written = corevideo::testing::writeQuadrantClip(p.string(), 64, 36, k.degrees);
+    ASSERT_EQ(written, "") << written;
+    auto d = modules::createAvFoundationMediaDecoderFactory()();
+    const auto f = pollUntilFrame(*d, req(p, false));
+    ASSERT_EQ(f.size(), 1u) << k.degrees;
+    EXPECT_EQ(f[0].pixelWidth, k.width) << k.degrees << " degrees";
+    EXPECT_EQ(f[0].pixelHeight, k.height) << k.degrees << " degrees";
+    if (f[0].pixelWidth != k.width || f[0].pixelHeight != k.height) continue;
+    const auto check = [&](int x, int y, const Bgr& want, const char* where) {
+      const auto v = px(f[0], x, y);
+      for (int ch = 0; ch < 3; ++ch) {
+        EXPECT_NEAR(v[ch], want[ch], 24) << k.degrees << " degrees, display " << where << " channel " << ch;
+      }
+    };
+    check(k.width / 4, k.height / 4, k.tl, "TL");
+    check(3 * k.width / 4, k.height / 4, k.tr, "TR");
+    check(k.width / 4, 3 * k.height / 4, k.bl, "BL");
+    check(3 * k.width / 4, 3 * k.height / 4, k.br, "BR");
+    EXPECT_TRUE(d->warnings().empty()) << k.degrees;
+  }
+}

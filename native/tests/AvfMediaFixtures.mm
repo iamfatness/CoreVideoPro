@@ -35,7 +35,8 @@ void tagBt709(CVPixelBufferRef buffer) {
 // Writes `frames` pixel buffers of `format`, filled by `fill(buffer, index)`.
 std::string writeClip(const std::string& path, int width, int height, int fps, int frames, OSType format,
                       NSDictionary* outputSettings, AVFileType fileType,
-                      const std::function<void(CVPixelBufferRef, int)>& fill) {
+                      const std::function<void(CVPixelBufferRef, int)>& fill,
+                      CGAffineTransform transform = CGAffineTransformIdentity) {
   @autoreleasepool {
     if (width <= 0 || height <= 0 || fps <= 0 || frames <= 0) return "invalid fixture dimensions";
     NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
@@ -46,6 +47,7 @@ std::string writeClip(const std::string& path, int width, int height, int fps, i
     AVAssetWriterInput* input = [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeVideo
                                                                outputSettings:outputSettings];
     input.expectsMediaDataInRealTime = NO;
+    input.transform = transform;
     NSDictionary* bufferAttributes = @{
       (id)kCVPixelBufferPixelFormatTypeKey : @(format),
       (id)kCVPixelBufferWidthKey : @(width),
@@ -146,6 +148,35 @@ std::string writeBt709BarsClip(const std::string& path, int frames, int fps) {
       }
     }
   });
+}
+
+std::string writeQuadrantClip(const std::string& path, int width, int height, int rotationDegrees, int frames) {
+  // The transforms a phone writes: rotate clockwise for display, translated back into positive space.
+  CGAffineTransform transform = CGAffineTransformIdentity;
+  const auto w = static_cast<CGFloat>(width), h = static_cast<CGFloat>(height);
+  switch (rotationDegrees) {
+    case 0: break;
+    case 90: transform = CGAffineTransformMake(0, 1, -1, 0, h, 0); break;
+    case 180: transform = CGAffineTransformMake(-1, 0, 0, -1, w, h); break;
+    case 270: transform = CGAffineTransformMake(0, -1, 1, 0, 0, w); break;
+    default: return "rotation must be 0, 90, 180 or 270";
+  }
+  NSDictionary* settings = @{ AVVideoCodecKey : AVVideoCodecTypeH264, AVVideoWidthKey : @(width),
+                              AVVideoHeightKey : @(height), AVVideoColorPropertiesKey : bt709ColourProperties() };
+  return writeClip(path, width, height, 30, frames, kCVPixelFormatType_32BGRA, settings, AVFileTypeMPEG4,
+                   [&](CVPixelBufferRef buffer, int) {
+    static constexpr uint8_t kQuadrant[2][2][3] = {{{0x20, 0x20, 0xE0}, {0x20, 0xE0, 0x20}},
+                                                   {{0xE0, 0x20, 0x20}, {0xD0, 0xD0, 0xD0}}};
+    auto* base = static_cast<uint8_t*>(CVPixelBufferGetBaseAddress(buffer));
+    const size_t stride = CVPixelBufferGetBytesPerRow(buffer);
+    for (int y = 0; y < height; ++y) {
+      uint8_t* row = base + static_cast<size_t>(y) * stride;
+      for (int x = 0; x < width; ++x) {
+        const auto* c = kQuadrant[y < height / 2 ? 0 : 1][x < width / 2 ? 0 : 1];
+        row[x * 4 + 0] = c[0]; row[x * 4 + 1] = c[1]; row[x * 4 + 2] = c[2]; row[x * 4 + 3] = 0xff;
+      }
+    }
+  }, transform);
 }
 
 std::string writeToneClip(const std::string& path, int seconds, double toneHz) {

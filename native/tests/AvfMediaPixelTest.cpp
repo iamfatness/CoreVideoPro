@@ -176,6 +176,47 @@ Json transport(const char* action) {
 
 }  // namespace
 
+// Any pixel of Program's GPU thumbnail by fraction; same GPU-readback guard as centre().
+static bool at(MediaCore& core, float fx, float fy, Pixel& out) {
+  const auto& frame = core.lastProgramFrameForTest();
+  if (!frame.gpuComposed || frame.programPixelSignature == 0) return false;
+  const auto& preview = frame.preview;
+  if (preview.bgra.empty() || preview.width <= 0 || preview.height <= 0) return false;
+  const int x = std::min(preview.width - 1, static_cast<int>(fx * preview.width));
+  const int y = std::min(preview.height - 1, static_cast<int>(fy * preview.height));
+  const size_t offset = (static_cast<size_t>(y) * preview.width + x) * 4u;
+  out = {preview.bgra[offset], preview.bgra[offset + 1], preview.bgra[offset + 2]};
+  return true;
+}
+
+// N3 (plan 2026-11-21 Task 2). A portrait phone clip (storage 64x36, 90 degree
+// preferredTransform) routed full canvas with fit "fit" on 16:9 Program is
+// PILLARBOXED and UPRIGHT. Fixture facts: the display picture is 36x64, so on
+// the 320x180 thumbnail it spans x 0.342..0.658; its display quadrants are TL
+// BLUE, TR RED, BL WHITE, BR GREEN (storage TL RED rotated to display TR).
+TEST(AvfMediaPixel, APortraitClipIsPillarboxedUprightOnProgram) {
+  constexpr Pixel kWhite = {0xD0, 0xD0, 0xD0};
+  const auto p = tmp("portrait.mp4"); Cleanup c{p};
+  ASSERT_EQ(corevideo::testing::writeQuadrantClip(p.string(), 64, 36, 90, 60), "");
+  MAKE_CORE_OR_SKIP(core, "APortraitClipIsPillarboxedUprightOnProgram");
+  auto route = Json::Object{{"routeId", "r"}, {"mode", "fixed"}, {"mediaAssetId", "clip"}, {"mediaAssetName", "clip"},
+                            {"mediaAssetKind", "stinger"}, {"mediaAssetPath", p.string()}, {"mediaAssetLoop", true},
+                            {"fitMode", "fit"}, {"rect", rect()}};
+  (void)tick(core, {scene("load-scene-graph", "s", {Json(route)})});
+  Pixel tl{}, tr{}, bl{}, br{}, edge{};
+  bool upright = false;
+  for (const auto deadline = steadyMs() + 3000; steadyMs() < deadline && !upright;) {
+    (void)tick(core);
+    if (!at(core, 0.421f, 0.25f, tl) || !at(core, 0.579f, 0.25f, tr) || !at(core, 0.421f, 0.75f, bl) ||
+        !at(core, 0.579f, 0.75f, br) || !at(core, 0.10f, 0.5f, edge)) continue;
+    upright = near(tl, kBlue) && near(tr, kRed) && near(bl, kWhite) && near(br, kGreen);
+  }
+  EXPECT_TRUE(upright) << "display TL " << show(tl) << " TR " << show(tr) << " BL " << show(bl) << " BR " << show(br)
+                       << " (want BLUE, RED, WHITE, GREEN)";
+  EXPECT_TRUE(edge[0] < 0x30 && edge[1] < 0x30 && edge[2] < 0x30)
+      << "the side of a portrait picture on 16:9 Program is pillarbox, got " << show(edge);
+}
+
 TEST(AvfMediaPixel, AClipOnProgramRollsFromItsFirstFrameAndNeverShowsASlate) {
   // Fixture: 640x360 @30, 30 RED frames (1 s) then 60 BLUE (2 s).
   const auto p = tmp("roll.mp4"); Cleanup c{p};

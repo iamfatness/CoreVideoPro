@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cctype>
 #include <chrono>
 #include <cstring>
@@ -83,8 +84,9 @@ struct VideoReaderState {
   std::string error;
   AVAssetReader* reader = nil;  // also read by the destructor, to cancel
   AVURLAsset* asset = nil;      // likewise, to cancel a load in flight
-  // Reader-queue only.
-  AVAssetReaderTrackOutput* output = nil;
+  // Reader-queue only. A track output, or a video-composition output for a
+  // rotated track (both are AVAssetReaderOutput and copy the same way).
+  AVAssetReaderOutput* output = nil;
   bool straightenAlpha = false;
   int64_t lastPts100ns = -1;
   int64_t lastDuration100ns = 0;
@@ -153,6 +155,61 @@ bool trackContainsAlpha(AVAssetTrack* track) {
     if (value && CFGetTypeID(value) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)value)) return true;
   }
   return false;
+}
+
+struct TrackTransform {
+  bool rotated = false;
+  CGAffineTransform transform = CGAffineTransformIdentity;
+  CGSize naturalSize = CGSizeZero;
+  float nominalFrameRate = 0.f;
+  CMTime minFrameDuration = kCMTimeInvalid;
+};
+
+// The track properties a rotation needs, loaded asynchronously on the reader
+// queue like every other asset property here.
+TrackTransform loadTrackTransform(AVAssetTrack* track, const std::atomic<bool>& cancelled) {
+  TrackTransform result;
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  NSArray<NSString*>* keys = @[ @"preferredTransform", @"naturalSize", @"nominalFrameRate", @"minFrameDuration" ];
+  [track loadValuesAsynchronouslyForKeys:keys completionHandler:^{ dispatch_semaphore_signal(done); }];
+  if (!waitUnlessCancelled(done, cancelled)) return result;
+  for (NSString* key in keys) {
+    NSError* error = nil;
+    if ([track statusOfValueForKey:key error:&error] != AVKeyValueStatusLoaded) return result;
+  }
+  result.transform = track.preferredTransform;
+  result.naturalSize = track.naturalSize;
+  result.nominalFrameRate = track.nominalFrameRate;
+  result.minFrameDuration = track.minFrameDuration;
+  result.rotated = !CGAffineTransformIsIdentity(result.transform) && result.naturalSize.width > 0 &&
+                   result.naturalSize.height > 0;
+  return result;
+}
+
+// A one-instruction composition that draws the track through its
+// preferredTransform, moved back into positive space, at the display size.
+AVVideoComposition* uprightComposition(AVAssetTrack* track, const TrackTransform& t, CMTime assetDuration) {
+  const CGRect display = CGRectApplyAffineTransform(
+      CGRectMake(0, 0, t.naturalSize.width, t.naturalSize.height), t.transform);
+  AVMutableVideoComposition* composition = [AVMutableVideoComposition videoComposition];
+  composition.renderSize = CGSizeMake(std::round(std::abs(display.size.width)), std::round(std::abs(display.size.height)));
+  composition.frameDuration = CMTIME_IS_VALID(t.minFrameDuration) && CMTimeGetSeconds(t.minFrameDuration) > 0
+      ? t.minFrameDuration
+      : CMTimeMake(1, t.nominalFrameRate > 0 ? static_cast<int32_t>(std::lround(t.nominalFrameRate)) : 30);
+  composition.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2;
+  composition.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2;
+  composition.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2;
+  AVMutableVideoCompositionLayerInstruction* layer =
+      [AVMutableVideoCompositionLayerInstruction videoCompositionLayerInstructionWithAssetTrack:track];
+  [layer setTransform:CGAffineTransformConcat(t.transform,
+                                              CGAffineTransformMakeTranslation(-display.origin.x, -display.origin.y))
+               atTime:kCMTimeZero];
+  AVMutableVideoCompositionInstruction* instruction = [AVMutableVideoCompositionInstruction videoCompositionInstruction];
+  instruction.timeRange = CMTimeRangeMake(kCMTimeZero, CMTIME_IS_NUMERIC(assetDuration) ? assetDuration
+                                                                                        : kCMTimePositiveInfinity);
+  instruction.layerInstructions = @[ layer ];
+  composition.instructions = @[ instruction ];
+  return composition;
 }
 
 // Copies one decoded pixel buffer into a tightly packed BGRA vector
@@ -285,6 +342,8 @@ void openVideo(const std::shared_ptr<VideoReaderState>& state) {
     // An opaque track is opaque: no per-pixel alpha pass (measured: VideoToolbox
     // delivers 0xFF, AvfMediaDecoder.ACuePosterIsTheFirstFrameAndOpaque).
     const bool hasAlpha = trackContainsAlpha(track);
+    const auto transform = loadTrackTransform(track, state->cancelled);
+    if (state->cancelled.load()) return;
     AVAssetReader* reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
     if (!reader) {
       failReader(state, "AVFoundation cannot open this file (" + describe(error) + ")");
@@ -299,15 +358,34 @@ void openVideo(const std::shared_ptr<VideoReaderState>& state) {
       (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
       AVVideoColorPropertiesKey : colour,
     };
-    AVAssetReaderTrackOutput* output = nil;
+    AVAssetReaderOutput* output = nil;
     @try {
-      output = [[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:settings];
+      if (transform.rotated) {
+        // A ROTATED TRACK (a phone held upright, plan 2026-11-21 Task 2). A
+        // track output hands frames over in STORAGE orientation, so a portrait
+        // clip was sideways on air. A video composition applies the track's
+        // preferredTransform on the GPU inside AVFoundation and renders at the
+        // DISPLAY size; the owner and the compositor never learn it was rotated.
+        // Plan default P3: only non-identity transforms take this path, so every
+        // unrotated clip keeps the plain track output byte for byte.
+        AVAssetReaderVideoCompositionOutput* composed =
+            [AVAssetReaderVideoCompositionOutput assetReaderVideoCompositionOutputWithVideoTracks:@[ track ]
+                                                                                   videoSettings:@{
+              (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+            }];
+        composed.videoComposition = uprightComposition(track, transform, asset.duration);
+        composed.alwaysCopiesSampleData = NO;
+        output = composed;
+      } else {
+        AVAssetReaderTrackOutput* plain = [[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:settings];
+        plain.alwaysCopiesSampleData = NO;
+        output = plain;
+      }
     } @catch (NSException* exception) {
       failReader(state, std::string("AVFoundation cannot open this file (") +
                             (exception.reason.UTF8String ?: "invalid reader settings") + ")");
       return;
     }
-    output.alwaysCopiesSampleData = NO;
     if (![reader canAddOutput:output]) {
       failReader(state, "AVFoundation cannot open this file (the video track cannot be decoded to BGRA)");
       return;
