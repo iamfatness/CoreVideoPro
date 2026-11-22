@@ -412,11 +412,14 @@ std::filesystem::path currentExecutableDirectory() {
 }
 
 std::string resolveFfmpegExecutable(const std::string& configuredBinDirectory) {
-#if defined(_WIN32)
-  constexpr const char* executableName = "ffmpeg.exe";
+#if !defined(_WIN32)
+  // One POSIX order for the sender and ingest; the bundled copy beside the
+  // core beats PATH and Homebrew (PosixExecutableLocator.h, resolveFfmpeg).
+  posix_exec::FfmpegSearch search;
+  search.configuredDirectory = configuredBinDirectory;
+  return posix_exec::resolveFfmpeg(search);
 #else
-  constexpr const char* executableName = "ffmpeg";
-#endif
+  constexpr const char* executableName = "ffmpeg.exe";
   std::vector<std::filesystem::path> candidates;
   if (!configuredBinDirectory.empty()) {
     candidates.emplace_back(std::filesystem::path(configuredBinDirectory) / executableName);
@@ -438,21 +441,12 @@ std::string resolveFfmpegExecutable(const std::string& configuredBinDirectory) {
       return candidate.string();
     }
   }
-#if defined(_WIN32)
   char resolved[MAX_PATH] = {};
   if (SearchPathA(nullptr, executableName, nullptr, MAX_PATH, resolved, nullptr) > 0) {
     return resolved;
   }
-#else
-  // PATH, then the Homebrew/MacPorts bin dirs: a Finder/Dock launch inherits
-  // launchd's PATH, which never contains them (PosixExecutableLocator.h).
-  if (auto found = posix_exec::findOnPathThenFallbacks(
-          executableName, std::getenv("PATH"), posix_exec::defaultFfmpegFallbackDirectories());
-      !found.empty()) {
-    return found;
-  }
-#endif
   return {};
+#endif
 }
 
 RuntimeProbe probeFfmpegRuntime(const std::string& configuredBinDirectory) {

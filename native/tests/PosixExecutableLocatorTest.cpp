@@ -7,6 +7,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 
 #include <sys/stat.h>
@@ -110,4 +111,47 @@ TEST(PosixExecutableLocator, CurrentExecutableDirectoryIsRealAndHoldsThisBinary)
   ASSERT_FALSE(dir.empty());
   EXPECT_TRUE(dir.is_absolute());
   EXPECT_TRUE(fs::exists(dir / "corevideo-native-tests")) << dir;
+}
+
+// F1 (mac streaming Phase 2): the bundled ffmpeg sits beside corevideo-native
+// in Contents/Resources. It must beat a Homebrew copy on PATH or in the
+// fallback list, and sender and ingest must resolve it the same way.
+namespace {
+corevideo::modules::posix_exec::FfmpegSearch searchWith(
+    const std::map<std::string, std::string>& env, const fs::path& exeDir, const std::string& pathEnv,
+    const fs::path& fallback) {
+  corevideo::modules::posix_exec::FfmpegSearch search;
+  search.getenv = [env](const char* name) -> const char* {
+    const auto found = env.find(name);
+    return found == env.end() ? nullptr : found->second.c_str();
+  };
+  search.executableDirectory = exeDir;
+  search.currentDirectory = fs::path("/nonexistent-cwd");
+  search.pathEnvironment = pathEnv;
+  search.fallbacks = {fallback};
+  return search;
+}
+}  // namespace
+
+TEST(PosixExecutableLocator, TheBundledCopyBeatsPathAndHomebrew) {
+  TempDir bundle, onPath, homebrew;
+  const auto bundled = writeFile(bundle.path(), "ffmpeg", true);
+  writeFile(onPath.path(), "ffmpeg", true);
+  writeFile(homebrew.path(), "ffmpeg", true);
+  const auto search = searchWith({}, bundle.path(), onPath.path().string(), homebrew.path());
+  EXPECT_EQ(corevideo::modules::posix_exec::resolveFfmpeg(search), bundled.string());
+}
+
+TEST(PosixExecutableLocator, TheIngestAliasIsHonouredAndTheSenderNameWins) {
+  TempDir senderDir, ingestDir, bundle;
+  const auto senderCopy = writeFile(senderDir.path(), "ffmpeg", true);
+  const auto ingestCopy = writeFile(ingestDir.path(), "ffmpeg", true);
+  writeFile(bundle.path(), "ffmpeg", true);
+  const auto aliasOnly = searchWith({{"COREVIDEO_FFMPEG_DIR", ingestDir.path().string()}},
+                                    bundle.path(), "", fs::path("/nonexistent"));
+  EXPECT_EQ(corevideo::modules::posix_exec::resolveFfmpeg(aliasOnly), ingestCopy.string());
+  const auto both = searchWith({{"COREVIDEO_FFMPEG_DIR", ingestDir.path().string()},
+                                {"COREVIDEO_FFMPEG_BIN_DIR", senderDir.path().string()}},
+                               bundle.path(), "", fs::path("/nonexistent"));
+  EXPECT_EQ(corevideo::modules::posix_exec::resolveFfmpeg(both), senderCopy.string());
 }
