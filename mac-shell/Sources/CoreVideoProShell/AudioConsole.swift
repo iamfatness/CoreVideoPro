@@ -556,55 +556,60 @@ struct AudioRoutingSurface: View {
         model.strips.map { strip in (strip.id, model.audioSourceLabel(strip.id)) }
     }
 
+    static let cellWidth: CGFloat = 58
+    static let sourceWidth: CGFloat = 150
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Every crosspoint carries a level. Click to route or select; "
-                 + "gain edits apply to the selected send.")
+                 + "gain edits apply to the selected send. ISO buses are metered routing taps; "
+                 + "ISO recordings take each guest's own audio.")
                 .font(.grotesk(12)).foregroundStyle(Studio.secondary)
             if !model.audioRouteControlNotice.isEmpty {
                 Text(model.audioRouteControlNotice)
                     .font(.grotesk(12)).foregroundStyle(Studio.amber)
             }
+            AudioBusStrip()
             if sources.isEmpty {
                 Text("Sources appear here once channels carry PCM.")
                     .font(.grotesk(12)).foregroundStyle(Studio.textDim)
             }
-            Grid(horizontalSpacing: 2, verticalSpacing: 2) {
-                GridRow {
-                    Color.clear.frame(width: 150, height: 14)
-                    ForEach(model.routingBusIds, id: \.self) { bus in
-                        MonoLabel(bus).frame(width: 62)
+            // Source column pinned; the bus columns scroll (15+ columns do not fit).
+            HStack(alignment: .top, spacing: 2) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Color.clear.frame(width: Self.sourceWidth, height: 28)
+                    ForEach(sources, id: \.id) { source in
+                        HStack(spacing: 4) {
+                            Text(source.label).font(.grotesk(12)).lineLimit(1)
+                            Spacer(minLength: 0)
+                            Button("Clear") { model.clearRoutes(source: source.id) }
+                                .buttonStyle(.plain).font(.plexMono(8)).foregroundStyle(Studio.textDim)
+                                .help("Unroute this source from every bus")
+                        }
+                        .frame(width: Self.sourceWidth - 6, height: 24, alignment: .leading)
+                        .padding(.leading, 6)
+                        .background(Rectangle().fill(Studio.surface))
                     }
                 }
-                ForEach(sources, id: \.id) { source in
-                    GridRow {
-                        Text(source.label).font(.grotesk(12)).lineLimit(1)
-                            .frame(width: 150, alignment: .leading)
-                            .padding(.vertical, 4).padding(.leading, 6)
-                            .background(Rectangle().fill(Studio.surface))
-                        ForEach(model.routingBusIds, id: \.self) { bus in
-                            let gain = model.sendGain(source: source.id, bus: bus)
-                            let selected = model.selectedSend?.source == source.id
-                                && model.selectedSend?.bus == bus
-                            Button {
-                                model.selectOrRouteSend(source: source.id, bus: bus)
-                            } label: {
-                                Text(gain.map { String(format: "%.1f", $0) } ?? "·")
-                                    .font(.plexMono(9, gain != nil ? .semibold : .regular))
-                                    .foregroundStyle(gain != nil ? Studio.accent
-                                                                 : Studio.secondary)
-                                    .frame(maxWidth: .infinity).frame(height: 24)
-                                    .background(Rectangle().fill(
-                                        gain != nil ? Studio.accent.opacity(0.16)
-                                                    : Studio.field))
-                                    .overlay(Rectangle().stroke(
-                                        selected ? Studio.textPrimary
-                                            : gain != nil ? Studio.accent.opacity(0.7)
-                                                          : Studio.border,
-                                        lineWidth: selected ? 2 : 1))
+                ScrollView(.horizontal) {
+                    Grid(horizontalSpacing: 2, verticalSpacing: 2) {
+                        GridRow {
+                            ForEach(model.buses) { bus in
+                                VStack(spacing: 0) {
+                                    MonoLabel(bus.label).lineLimit(1)
+                                    Text("\(model.routedCount(bus: bus.id))")
+                                        .font(.plexMono(8)).foregroundStyle(Studio.textDim)
+                                }
+                                .frame(width: Self.cellWidth, height: 28)
+                                .help("\(model.routedCount(bus: bus.id)) source(s) routed to \(bus.label)")
                             }
-                            .buttonStyle(.plain)
-                            .frame(width: 62)
+                        }
+                        ForEach(sources, id: \.id) { source in
+                            GridRow {
+                                ForEach(model.buses) { bus in
+                                    cell(source: source.id, bus: bus.id)
+                                }
+                            }
                         }
                     }
                 }
@@ -634,6 +639,99 @@ struct AudioRoutingSurface: View {
                     .stroke(Studio.border, lineWidth: 1))
             }
         }
+    }
+
+    func cell(source: String, bus: String) -> some View {
+        let gain = model.sendGain(source: source, bus: bus)
+        let selected = model.selectedSend?.source == source && model.selectedSend?.bus == bus
+        return Button {
+            model.selectOrRouteSend(source: source, bus: bus)
+        } label: {
+            Text(gain.map { String(format: "%.1f", $0) } ?? "·")
+                .font(.plexMono(9, gain != nil ? .semibold : .regular))
+                .foregroundStyle(gain != nil ? Studio.accent : Studio.secondary)
+                .frame(maxWidth: .infinity).frame(height: 24)
+                .background(Rectangle().fill(gain != nil ? Studio.accent.opacity(0.16) : Studio.field))
+                .overlay(Rectangle().stroke(
+                    selected ? Studio.textPrimary : gain != nil ? Studio.accent.opacity(0.7) : Studio.border,
+                    lineWidth: selected ? 2 : 1))
+        }
+        .buttonStyle(.plain)
+        .frame(width: Self.cellWidth)
+    }
+}
+
+/// One chip per bus (Windows AudioPage.xaml:846-906): label (editable for aux and
+/// custom buses), routed count, LISTEN, and for aux/custom buses the MASTER /
+/// MON / STREAM sends with their shared gain and a remove button; "+ Bus" adds a
+/// custom bus.
+struct AudioBusStrip: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 6) {
+                    ForEach(model.buses) { bus in chip(bus) }
+                    Button("+ Bus") { model.addCustomBus() }
+                        .buttonStyle(GhostButtonStyle())
+                        .help("Add a custom bus")
+                }
+            }
+            Text("LISTEN plays one bus on the monitor output while Monitor is on.")
+                .font(.grotesk(11)).foregroundStyle(Studio.textDim)
+        }
+    }
+
+    func chip(_ bus: AudioBus) -> some View {
+        let listening = model.listenBusId == bus.id
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                if bus.isRemovable {
+                    TextField("Bus", text: Binding(get: { bus.label },
+                                                   set: { model.renameBus(bus.id, to: $0) }))
+                        .textFieldStyle(.plain).font(.plexMono(9, .semibold)).frame(width: 64)
+                } else {
+                    MonoLabel(bus.label)
+                }
+                Text("\(model.routedCount(bus: bus.id))").font(.plexMono(8)).foregroundStyle(Studio.textDim)
+                Button("LISTEN") { model.setListening(bus.id, on: !listening) }
+                    .buttonStyle(.plain).font(.plexMono(8, .semibold))
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 3).fill(listening ? Studio.amber : Studio.surface))
+                    .foregroundStyle(listening ? Color.black : Studio.secondary)
+                    .accessibilityLabel("Listen to \(bus.label)")
+            }
+            if bus.isRemovable {
+                HStack(spacing: 3) {
+                    Text("→").font(.plexMono(9)).foregroundStyle(Studio.textDim)
+                    sendToggle(bus, "master", "MASTER", bus.sendsToMaster)
+                    sendToggle(bus, "mon", "MON", bus.sendsToMonitor)
+                    sendToggle(bus, "stream", "STREAM", bus.sendsToStream)
+                    Button("×") { model.removeBus(bus.id) }
+                        .buttonStyle(.plain).font(.plexMono(10)).foregroundStyle(Studio.red)
+                        .accessibilityLabel("Remove \(bus.label)")
+                }
+                HStack(spacing: 4) {
+                    Slider(value: Binding(get: { bus.outputGainDb },
+                                          set: { model.setBusOutputGain(bus.id, gainDb: $0) }), in: -60...10)
+                        .frame(width: 110)
+                    Text(String(format: "%.1f dB", bus.outputGainDb)).font(.plexMono(8)).foregroundStyle(Studio.secondary)
+                }
+            }
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Studio.field))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(listening ? Studio.amber : Studio.border, lineWidth: 1))
+    }
+
+    func sendToggle(_ bus: AudioBus, _ target: String, _ title: String, _ on: Bool) -> some View {
+        Button(title) { model.setBusSend(bus.id, target: target, enabled: !on) }
+            .buttonStyle(.plain).font(.plexMono(8, .semibold))
+            .padding(.horizontal, 3).padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 3).fill(on ? Studio.accent.opacity(0.25) : Studio.surface))
+            .foregroundStyle(on ? Studio.accent : Studio.textDim)
+            .accessibilityLabel("\(bus.label) sends to \(title)")
     }
 }
 

@@ -4152,6 +4152,11 @@ final class AppModel: ObservableObject {
         pushRoutingBase()
     }
 
+    /// Clear row: unroute one source from every bus (the grid's own removeSend).
+    func clearRoutes(source: String) {
+        for bus in (audioSends[source] ?? [:]).keys.sorted() { removeSend(source: source, bus: bus) }
+    }
+
     /// Routed sources per bus (Windows RefreshBusRoutedCounts).
     func routedCount(bus: String) -> Int { audioSends.values.filter { $0[bus] != nil }.count }
 
