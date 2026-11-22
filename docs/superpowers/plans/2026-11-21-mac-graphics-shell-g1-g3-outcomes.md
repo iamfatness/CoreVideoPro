@@ -17,7 +17,7 @@ unaffected by construction. Not pushed. Independent review: pending (main runs i
 | 3342421e | 7-8 | `GraphicsPlayout` (Ensure/Cue/Show/auto-out/pin reinstall) + Operate playlist, inspector, Guest rows, default rows; playout vectors |
 | e53739e9 | 9 | F-keys (`GraphicsHotkeys`, monitor on Studio + Graphics) |
 | bdd6887d | 10-11 | cue-rides-Take proof; `LowerThirdAuthority` (the one lower-third entry) |
-| (this) | 12 | opt-in live check + this doc |
+| c08cc2d6 | 12 | opt-in live check + this doc |
 
 Tasks 7 and 8 share one commit (the playlist model wires the playout's rows and pins), as do 10 and 11
 (Task 10 is test-only and lives in the same test file).
