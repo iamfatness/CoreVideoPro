@@ -62,6 +62,12 @@ extension AppModel {
     /// The snapshot's observed facts: `sources[]` rows, rendered Program and
     /// Preview, the applied Zoom cap, and ISO writer lifecycle.
     func applySourceFacts(_ snapshot: JSONObject) {
+        // S6: the node is published unconditionally by a current core; an absent node (older
+        // core, or a partial snapshot) leaves the last answer alone.
+        if snapshot["sourceSheet"] != nil {
+            let sheet = SourceSheetState.parse(snapshot)
+            if sheet != sourceSheet { setSourceSheet(sheet) }
+        }
         let sources = snapshot["sources"] as? [JSONObject]
         // PGM and PVW are both CORE evidence: what the core rendered on each bus
         // (programFrame / previewFrame.videoSources), never the shell's own routes (plan D4).

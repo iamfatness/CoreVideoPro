@@ -489,7 +489,10 @@ final class AppModel: ObservableObject {
     @Published var multiviewTiles: [MultiviewTile] = []
     @Published var captureDevices: [CaptureDeviceRow] = []
     @Published var clockText = ""
-    @Published var selectedTab: StudioTab = .studio
+    @Published var selectedTab: StudioTab = .studio {
+        // S6: the core renders the source sheet only while the Sources tab holds the lease.
+        didSet { if selectedTab != oldValue { updateSourcePreviewDemand() } }
+    }
     @Published var joinMeetingId = ""
     @Published var joinPasscode = ""
     @Published var displayName = "CoreVideo Pro (mac)"
@@ -1810,6 +1813,9 @@ final class AppModel: ObservableObject {
         // launch and on every generation, not only when the operator edits it.
         pushBrandKitNow()
         for editor in gradeEditors.values { editor.previewCoreReset() }   // the preview lease died with the core
+        // S6: a fresh core holds no preview-demand lease and has no sheet yet.
+        sourceSheet = nil
+        sourcePreviewDemand.coreConnected()
         // One-shot: a respawned core forgets the virtual camera (CLAUDE.md).
         sendVirtualCameraSync()
         // A scene always sits on PROGRAM (the Windows shell starts on its
@@ -2192,6 +2198,14 @@ final class AppModel: ObservableObject {
     var slotWriteObserverForTesting: ((String) -> Void)?
     /// Observed row facts, one box per slot. NOT @Published (frame-fact rate).
     let sourceFacts = SourceFactsStore()
+    /// S6: the core's source sheet (surface + cell identities). Written only on change; the
+    /// surface id is stable and cells change only on reassignment.
+    @Published private(set) var sourceSheet: SourceSheetState?
+    private(set) lazy var sourcePreviewDemand = SourcePreviewDemandLease { [weak self] enabled in
+        self?.sendSourcePreviewDemand(enabled)
+    }
+    private var sourcePreviewDemandTimer: Timer?
+    func setSourceSheet(_ sheet: SourceSheetState?) { sourceSheet = sheet }
     /// TEST-ONLY clock (ms) for the measured capture FPS.
     var sourceFactsClockForTesting: (() -> Double)?
     var sourceFactsNowMs: Double { sourceFactsClockForTesting?() ?? ProcessInfo.processInfo.systemUptime * 1000 }
@@ -2513,6 +2527,30 @@ final class AppModel: ObservableObject {
             ])
         }
         syncScenes()
+    }
+
+    /// Sources tab visible ↔ lease held; the 1 s renewal timer runs only while held.
+    func updateSourcePreviewDemand() {
+        let visible = selectedTab == .sources
+        sourcePreviewDemand.tabVisible(visible)
+        if visible, sourcePreviewDemandTimer == nil {
+            sourcePreviewDemandTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.sourcePreviewDemand.tick() }
+            }
+        } else if !visible {
+            sourcePreviewDemandTimer?.invalidate()
+            sourcePreviewDemandTimer = nil
+        }
+    }
+
+    private func sendSourcePreviewDemand(_ enabled: Bool) {
+        let body: JSONObject = [
+            "type": "media-core-sync", "elapsedMs": elapsedMs(),
+            "commands": [["type": "set-source-preview-demand", "enabled": enabled] as JSONObject],
+        ]
+        if let capture = coreCommandCaptureForTesting { capture(body); return }
+        guard let bridge else { return }
+        Task { _ = try? await bridge.request(body) }
     }
 
     func applyMultiviewConfig() {
@@ -2963,7 +3001,9 @@ final class AppModel: ObservableObject {
     }
 
     // The multiview roster on the wire: one tile per in-show slot that still has
-    // a source. `kind` is the MULTIVIEW vocabulary the core's resolveMultiviewFeed
+    // a source. `slot` is the 0-based slot number (Windows sends SlotNumber - 1,
+    // ShowInputRosterService.cs:735-755): without it the core numbers by list position,
+    // so a filtered list put slot 5's source in cell 3 of the source sheet. `kind` is the MULTIVIEW vocabulary the core's resolveMultiviewFeed
     // reads (native/src/core/MultiviewFeed.h): "capture" | "media" | anything else
     // = a Zoom participant. It is NOT the scene-route `mode` ("capture-input").
     static func multiviewSourcePayloads(_ slots: [ShowInputSlot], mediaAssets: [MediaAsset] = []) -> [JSONObject] {
@@ -2973,16 +3013,17 @@ final class AppModel: ObservableObject {
                 switch slot.kind {
                 case "zoom":
                     return ["sourceId": "zoom:" + slot.sourceId, "kind": "participant-video",
-                            "participantId": slot.sourceId, "label": slot.name]
+                            "participantId": slot.sourceId, "slot": slot.id - 1, "label": slot.name]
                 case "media":
                     // Windows ShowInputRosterService.cs:743-755, plus the path and kind so the
                     // core can decode a still that only the wall shows (plan Task 5).
                     guard let asset = mediaAssets.first(where: { $0.id == slot.sourceId }) else { return nil }
                     return ["sourceId": "media:" + slot.sourceId, "kind": "media", "mediaAssetId": slot.sourceId,
-                            "mediaAssetPath": asset.filePath, "mediaAssetKind": asset.kind, "label": slot.name]
+                            "mediaAssetPath": asset.filePath, "mediaAssetKind": asset.kind,
+                            "slot": slot.id - 1, "label": slot.name]
                 default:
                     return ["sourceId": "capture:" + slot.sourceId, "kind": "capture",
-                            "captureDeviceId": slot.sourceId, "label": slot.name]
+                            "captureDeviceId": slot.sourceId, "slot": slot.id - 1, "label": slot.name]
                 }
             }
     }

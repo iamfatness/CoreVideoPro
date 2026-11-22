@@ -152,9 +152,7 @@ struct SourceInspector: View {
     private func header(_ slot: ShowInputSlot) -> some View {
         let facts = model.sourceFacts.box(slot.id).facts
         return VStack(alignment: .leading, spacing: 6) {
-            RoundedRectangle(cornerRadius: 8).fill(Studio.field)
-                .overlay(Text("Preview unavailable").font(.grotesk(11)).foregroundStyle(Studio.textDim))
-                .frame(width: 320, height: 180)
+            SourceThumbnail(slot: slot, box: model.sourceFacts.box(slot.id), width: 320, height: 180)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 8) {
                 Text(facts.chip).font(.plexMono(10, .semibold))

@@ -280,13 +280,9 @@ struct SourcesTableRow: View {
         }
     }
 
-    /// D1: thumbnails arrive with the core source sheet (slice S6).
+    /// D1/S6: the slot's cell of the core source sheet, or the reason it has none.
     private var thumbnail: some View {
-        RoundedRectangle(cornerRadius: 6).fill(Studio.field)
-            .overlay(Text("Preview unavailable").font(.grotesk(9)).foregroundStyle(Studio.textDim)
-                .multilineTextAlignment(.center).padding(4))
-            .frame(width: 96, height: 54)
-            .accessibilityLabel("Input \(slot.id) preview unavailable")
+        SourceThumbnail(slot: slot, box: box)
     }
 
     private var sourceCell: some View {

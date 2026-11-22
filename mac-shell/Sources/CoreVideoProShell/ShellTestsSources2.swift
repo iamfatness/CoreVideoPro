@@ -35,6 +35,15 @@ extension ShellTests {
             ("sources2-tally/pvw-from-core-not-routes", testThePreviewTallyIsWhatTheCoreRenderedNotTheShellsRoutes),
             // Task 8: R3 Health row.
             ("sources2-r3/health-evidence-rows", testHealthListsTheLastFiveSubscriptionEvidenceRows),
+            // Task 10: S6 shell thumbnails.
+            ("sources2-s6/thumbnail-identity", testARowShowsOnlyACellNamingItsOwnSource),
+            ("sources2-s6/placeholder-reasons", testEachPlaceholderSaysWhyThereIsNoPicture),
+            ("sources2-s6/sheet-parse", testTheSheetNodeParsesOnlyWhenActiveWithASurface),
+            ("sources2-s6/demand-lease-follows-tab", testThePreviewDemandLeaseFollowsTheSourcesTab),
+            ("sources2-s6/reassign-blanks-before-new-identity", testAReassignedRowBlanksUntilTheCoreNamesTheNewSource),
+            ("sources2-s6/border-colours", testTheThumbnailBorderUsesTheWindowsTallyColours),
+            ("sources2-s6/multiview-payload-carries-slot", testTheMultiviewPayloadCarriesTheZeroBasedSlot),
+            ("sources2-s6/cell-geometry", testTheSheetLayerFrameShowsExactlyTheSlotsCell),
         ]
     }
 
@@ -409,5 +418,179 @@ extension ShellTests {
         model.applySnapshotForTesting(["programFrame": ["frameNumber": 2, "videoSources": [
             ["sourceId": "zoom:42", "participantId": "42", "kind": "participant-video", "layerId": "l"]]]])
         expectEqual(model.sourceFacts.box(1).facts.tally, "pgm", "Program outranks Preview, and the Preview fact is kept")
+    }
+
+    // ── Task 10: S6 shell ───────────────────────────────────────────────────
+
+    static func s6Slot(_ id: Int, kind: String = "zoom", source: String, inShow: Bool = true) -> ShowInputSlot {
+        var slot = ShowInputSlot(id: id); slot.kind = kind; slot.sourceId = source; slot.name = source; slot.inShow = inShow
+        return slot
+    }
+
+    static func s6Sheet(_ cells: [Int: (String, String)], surface: UInt32 = 77) -> SourceSheetState {
+        SourceSheetState(surfaceId: surface, columns: 5, rows: 2,
+                         cells: cells.mapValues { SheetCell(slot: 0, sourceId: $0.0, state: $0.1) })
+    }
+
+    static func liveFacts(_ signal: String = "LIVE") -> SourceRowFacts {
+        var facts = SourceRowFacts(); facts.signal = signal; return facts
+    }
+
+    /// Oracle: Windows PatchPreview (:264-300) — a row exposes a picture only for its own
+    /// identity, only while in show, only for a live or held cell. Quantified over the cell's
+    /// name (A / B / none) x the slot's source (A / B) x state (live / held / empty) x in show,
+    /// for slots 1, 5, 6 and 10 (both grid rows, both edges).
+    @MainActor
+    static func testARowShowsOnlyACellNamingItsOwnSource() {
+        for slotId in [1, 5, 6, 10] {
+            for cellName in ["zoom:A", "zoom:B", ""] {
+                for slotSource in ["A", "B"] {
+                    for state in ["live", "held", "empty"] {
+                        for inShow in [true, false] {
+                            let slot = s6Slot(slotId, source: slotSource, inShow: inShow)
+                            let sheet = s6Sheet([slotId - 1: (cellName, state)])
+                            let result = SourceThumbnailPolicy.resolve(slot: slot, facts: liveFacts(), sheet: sheet)
+                            let shows = inShow && cellName == "zoom:" + slotSource && state != "empty"
+                            let expected: SourceThumbnailPolicy.Result = shows
+                                ? .cell(surfaceId: 77, column: (slotId - 1) % 5, row: (slotId - 1) / 5, columns: 5, rows: 2)
+                                : .placeholder(inShow ? SourceThumbnailPolicy.waiting : SourceThumbnailPolicy.notInMultiview)
+                            expectEqual(result, expected,
+                                        "slot \(slotId) source \(slotSource) cell '\(cellName)' \(state) inShow \(inShow)")
+                        }
+                    }
+                }
+            }
+        }
+        // A cell naming the row's source in ANOTHER slot's position is never borrowed.
+        let wrongCell = SourceThumbnailPolicy.resolve(slot: s6Slot(3, source: "A"), facts: liveFacts(),
+                                                      sheet: s6Sheet([0: ("zoom:A", "live")]))
+        expectEqual(wrongCell, .placeholder(SourceThumbnailPolicy.waiting), "slot 3 never shows cell 0's picture")
+    }
+
+    @MainActor
+    static func testEachPlaceholderSaysWhyThereIsNoPicture() {
+        let sheet = s6Sheet([0: ("zoom:A", "live"), 1: ("capture:cam", "live"), 2: ("media:m", "held")])
+        typealias P = SourceThumbnailPolicy
+        expectEqual(P.resolve(slot: s6Slot(1, source: "A"), facts: liveFacts("VIDEO OFF"), sheet: sheet),
+                    .placeholder(P.videoOff), "a camera-off guest says Video off")
+        expectEqual(P.resolve(slot: s6Slot(1, source: "A"), facts: liveFacts("NO INCOMING"), sheet: sheet),
+                    .placeholder(P.noSignal), "a Zoom row with no incoming video says No signal")
+        expectEqual(P.resolve(slot: s6Slot(2, kind: "capture", source: "cam"), facts: liveFacts("STALLED"), sheet: sheet),
+                    .placeholder(P.noSignal), "capture shows a picture only while LIVE (Windows)")
+        if case .cell = P.resolve(slot: s6Slot(3, kind: "media", source: "m"), facts: liveFacts("NO INCOMING"), sheet: sheet) {
+        } else { expect(false, "media is always eligible (Windows): a held cell shows") }
+        expectEqual(P.resolve(slot: s6Slot(1, source: "A"), facts: liveFacts(), sheet: nil),
+                    .placeholder(P.unavailable), "no sheet (older core, no demand) says Preview unavailable")
+        expectEqual(P.resolve(slot: ShowInputSlot(id: 4), facts: liveFacts(), sheet: sheet),
+                    .placeholder(P.notInMultiview), "an unassigned slot")
+        var offline = s6Slot(1, source: "A"); offline.offline = true
+        expectEqual(P.resolve(slot: offline, facts: liveFacts(), sheet: sheet),
+                    .placeholder(P.notInMultiview), "an offline slot is not on the wall")
+    }
+
+    @MainActor
+    static func testTheSheetNodeParsesOnlyWhenActiveWithASurface() {
+        func node(active: Bool, surface: Int) -> JSONObject {
+            ["sourceSheet": ["active": active, "texture": ["iosurfaceId": surface, "width": 3200, "height": 720],
+                             "columns": 5, "rows": 2, "cellWidth": 640, "cellHeight": 360,
+                             "cells": [["slot": 4, "sourceId": "zoom:101", "state": "live"] as JSONObject,
+                                       ["slot": 0, "sourceId": "", "state": "empty"] as JSONObject]] as JSONObject]
+        }
+        let sheet = SourceSheetState.parse(node(active: true, surface: 9))
+        expectEqual(sheet?.surfaceId, 9, "the surface id")
+        expectEqual(sheet?.cells[4], SheetCell(slot: 4, sourceId: "zoom:101", state: "live"), "cells keyed by slot")
+        expect(SourceSheetState.parse(node(active: false, surface: 9)) == nil, "demand off: no sheet")
+        expect(SourceSheetState.parse(node(active: true, surface: 0)) == nil, "no exported surface: no sheet")
+        expect(SourceSheetState.parse([:]) == nil, "an older core with no node: no sheet")
+    }
+
+    /// The core's lease lasts 3 s (core/SourcePreviewDemand.h): tab enter sends true now and
+    /// on every tick; leave sends false ONCE; a new core generation while visible re-sends true.
+    @MainActor
+    static func testThePreviewDemandLeaseFollowsTheSourcesTab() {
+        let model = AppModel()
+        var sent: [Bool] = []
+        model.coreCommandCaptureForTesting = { body in
+            for command in body["commands"] as? [JSONObject] ?? []
+            where command["type"] as? String == "set-source-preview-demand" {
+                sent.append(command["enabled"] as? Bool ?? false)
+            }
+        }
+        model.selectedTab = .studio
+        expectEqual(sent, [], "never asked for while another tab is up")
+        model.selectedTab = .sources
+        expectEqual(sent, [true], "entering the tab asks at once")
+        model.sourcePreviewDemand.tick(); model.sourcePreviewDemand.tick()
+        expectEqual(sent, [true, true, true], "renewed every second (the lease is 3 s)")
+        model.onConnected()
+        expectEqual(sent.last, true, "a respawned core is re-asked while the tab is visible")
+        let beforeLeave = sent.count
+        model.selectedTab = .audio
+        expectEqual(Array(sent.dropFirst(beforeLeave)), [false], "leaving releases once")
+        model.sourcePreviewDemand.tick(); model.onConnected()
+        expectEqual(Array(sent.dropFirst(beforeLeave)), [false], "nothing more while hidden")
+        model.updateSourcePreviewDemand()
+    }
+
+    @MainActor
+    static func testAReassignedRowBlanksUntilTheCoreNamesTheNewSource() {
+        let model = liveGuestModel()                                         // guest 42 in slot 1
+        model.assignSlot(2, kind: "zoom", sourceId: "43", name: "Guest 43")
+        model.applyZoomForTesting(lawRoster(["42", "43"], revision: 2))
+        func sheetSnapshot(_ cell0: String) -> JSONObject {
+            ["sourceSheet": ["active": true, "texture": ["iosurfaceId": 77], "columns": 5, "rows": 2,
+                             "cells": [["slot": 0, "sourceId": cell0, "state": "live"] as JSONObject]] as JSONObject]
+        }
+        func row1() -> SourceThumbnailPolicy.Result {
+            SourceThumbnailPolicy.resolve(slot: model.slots[0], facts: model.sourceFacts.box(1).facts,
+                                          sheet: model.sourceSheet)
+        }
+        model.applySnapshotForTesting(sheetSnapshot("zoom:42"))
+        if case .cell = row1() {} else { expect(false, "precondition: slot 1 shows guest 42's cell") }
+        model.assignSlot(1, kind: "zoom", sourceId: "43", name: "Guest 43")
+        model.handleEventForTesting(formatEvent("43", atMs: 200))
+        expect(row1() != .placeholder(SourceThumbnailPolicy.notInMultiview) && {
+            if case .cell = row1() { return false } else { return true } }(),
+            "reassigned: the sheet still names 42, so the row blanks at once")
+        model.applySnapshotForTesting(sheetSnapshot("zoom:43"))
+        if case .cell = row1() {} else { expect(false, "the core now names 43 in cell 0: the row shows it") }
+    }
+
+    @MainActor
+    static func testTheThumbnailBorderUsesTheWindowsTallyColours() {
+        typealias P = SourceThumbnailPolicy
+        expectEqual(P.borderColor(tally: "pgm", signal: "LIVE"), Studio.amber, "Program is amber (255,159,10)")
+        expectEqual(P.borderColor(tally: "hold", signal: "STALLED"), Studio.amber, "hold is amber")
+        expectEqual(P.borderColor(tally: "pvw", signal: "LIVE"), Studio.accent, "Preview is green (48,209,88)")
+        expectEqual(P.borderColor(tally: "talking", signal: "TALKING"), Studio.textPrimary, "talking is white")
+        expectEqual(P.borderColor(tally: "none", signal: "LIVE"), Studio.border, "no tally is the quiet border")
+        expectEqual(P.borderColor(tally: "pgm", signal: "VIDEO OFF"), Studio.border, "VIDEO OFF never tallies (:298)")
+    }
+
+    /// Spec correction 2: the core numbers an entry without `slot` by list position, so a
+    /// filtered list (slot 2 out of show) put slot 3's source in cell 1 of the sheet.
+    @MainActor
+    static func testTheMultiviewPayloadCarriesTheZeroBasedSlot() {
+        let payloads = AppModel.multiviewSourcePayloads(
+            [s6Slot(1, source: "A"), s6Slot(2, source: "B", inShow: false),
+             s6Slot(3, kind: "capture", source: "cam"), s6Slot(7, kind: "media", source: "a1")],
+            mediaAssets: s4Assets)
+        expectEqual(payloads.map { $0["slot"] as? Int }, [0, 2, 6], "slot - 1 for zoom, capture and media")
+    }
+
+    @MainActor
+    static func testTheSheetLayerFrameShowsExactlyTheSlotsCell() {
+        let cell = CGSize(width: 96, height: 54)
+        for index in 0..<10 {
+            let frame = SourceThumbnailPolicy.sheetFrame(column: index % 5, row: index / 5, columns: 5, rows: 2, cell: cell)
+            expectEqual(frame.size, CGSize(width: 480, height: 108), "the whole sheet at cell scale")
+            // In the container's flipped (top-down) space, the visible window (0,0,96,54) maps to
+            // sheet pixels starting at (col*96, row*54): exactly that cell.
+            expectEqual(CGPoint(x: -frame.minX, y: -frame.minY),
+                        CGPoint(x: CGFloat(index % 5) * 96, y: CGFloat(index / 5) * 54), "slot \(index + 1)")
+        }
+        let view = SourceThumbnailNSView(frame: NSRect(x: 0, y: 0, width: 96, height: 54))
+        expect(view.layer?.isGeometryFlipped == true, "the container is top-down, so row 0 is the top row")
+        expect(view.layer?.masksToBounds == true, "and clips the other nine cells")
     }
 }
