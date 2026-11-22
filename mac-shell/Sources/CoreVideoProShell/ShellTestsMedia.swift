@@ -670,13 +670,20 @@ extension ShellTests {
             if failNext > 0 { failNext -= 1; throw BridgeError.timeout }
             return ["ok": true]
         }
+        // The 120 ms retry runs on a harness timer: a 30 ms wall-clock spin let a
+        // slow CI runner fire the retry before the newer tap (2026-11-22).
+        let timers = ShellTests.ManualTimers()
+        model.timerSleepForTesting = { await timers.sleep($0) }
         model.playMediaAsset("clip")                       // paused -> play; the send times out
         spin(until: { sent.count == 1 }, limit: 2)
-        spin(until: { false }, limit: 0.03)                // the failure is handled: the retry is armed (120 ms)
+        spin(until: { timers.pending == 1 }, limit: 2)     // the failure is handled: the retry is armed
         model.applySnapshotForTesting(["mediaSources": [["sourceId": "media:clip", "mediaAssetId": "clip",
                                                          "state": "live", "onProgram": true]]])
         model.playMediaAsset("clip")                       // live -> pause, inside the retry delay
-        spin(until: { false }, limit: 0.5)                 // well past the 120 ms retry
+        spin(until: { sent.count == 2 }, limit: 2)
+        timers.fireAll()                                   // now the armed retry elapses
+        spin(until: { false }, limit: 0.3)
+        expectEqual(timers.pending, 0, "the dropped retry arms no further retry")
         let actions = sent.compactMap { (($0["commands"] as? [JSONObject])?.first?["action"]) as? String }
         expectEqual(actions, ["play", "pause"], "the armed play retry asks shouldSend again and does not send")
     }

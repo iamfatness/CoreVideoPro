@@ -454,6 +454,17 @@ final class AppModel: ObservableObject {
     /// Test seam for the one-shot transport gesture; nil = the real core request.
     var mediaTransportSendForTesting: ((JSONObject) async throws -> JSONObject)?
     static let mediaTransportRetryDelayNs: UInt64 = 120_000_000
+    /// Test seam for the shell's debounce/retry timers (the routing-push debounce
+    /// and the media transport retry): the harness decides when a timer elapses
+    /// instead of racing wall-clock spins on a slow CI runner. nil = Task.sleep.
+    var timerSleepForTesting: ((UInt64) async -> Void)?
+    func timerSleep(nanoseconds: UInt64) async {
+        if let sleep = timerSleepForTesting {
+            await sleep(nanoseconds)
+        } else {
+            try? await Task.sleep(nanoseconds: nanoseconds)
+        }
+    }
     private var mediaDurationProbeGeneration = 0
     @Published var logoBug: MediaAsset? {  // rides every scene as a top-right route
         didSet { mediaAudioSceneChanged(oldValue?.id != logoBug?.id) }
@@ -4104,7 +4115,7 @@ final class AppModel: ObservableObject {
     func pushRoutingBase() {
         routingBaseTask?.cancel()
         routingBaseTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            await self?.timerSleep(nanoseconds: 100_000_000)
             guard !Task.isCancelled else { return }
             await self?.sendRoutingBaseNow()
         }
@@ -4455,7 +4466,7 @@ final class AppModel: ObservableObject {
                 case .superseded:
                     break
                 case .retry:
-                    try? await Task.sleep(nanoseconds: Self.mediaTransportRetryDelayNs)
+                    await self.timerSleep(nanoseconds: Self.mediaTransportRetryDelayNs)
                     self.attemptMediaTransportGesture(id, action: action, token: token, attempt: attempt + 1)
                 case .giveUp:
                     ShellLog.write("media: \(action) for \(id) was skipped \(attempt + 1) times; giving up")

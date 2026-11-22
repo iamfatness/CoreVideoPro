@@ -1768,13 +1768,23 @@ enum ShellTests {
         model.zoomAudioSourceIds = ["11"]
         var sent: [JSONObject] = []
         model.routingBaseSendObserver = { sent.append($0) }
+        // The 100 ms debounce runs on a harness timer: on a slow CI runner a
+        // "20 ms" spin overshot 100 ms and each such gap legitimately flushed
+        // (7 sends, 2026-11-22). The timer elapses only when the harness says so.
+        let timers = ManualTimers()
+        model.timerSleepForTesting = { await timers.sleep($0) }
         model.selectOrRouteSend(source: "11", bus: "iso-1")
-        for tick in 0..<40 {   // a real drag: ticks ~20 ms apart, the run loop turning
+        for tick in 0..<40 {   // a drag: the run loop turns between ticks, no timer elapses
             model.setSendGain(source: "11", bus: "iso-1", gainDb: -Double(tick) / 4)
-            spin(0.02)
+            spin(until: { timers.pending > tick }, limit: 2)
         }
-        spin(until: { !sent.isEmpty }, limit: 2)
-        spin(0.3)
+        expect(sent.isEmpty, "nothing is sent while the debounce has not elapsed")
+        // Fire every parked timer until the push lands: the last tick's task may
+        // park after a fire, and every earlier one is cancelled. Identical later
+        // pushes are deduplicated, so the count stays exact; a debounce that does
+        // not cancel (or does not wait) still sends one matrix per tick.
+        spin(until: { timers.fireAll(); return !sent.isEmpty }, limit: 2)
+        spin(until: { timers.fireAll(); return false }, limit: 0.1)
         expectEqual(sent.count, 1, "a 40-tick drag sends ONE routing matrix (latest wins)")
         let gain = ((sent.last?["commands"] as? [JSONObject])?.first?["sends"] as? [JSONObject])?
             .first { $0["sourceId"] as? String == "11" && $0["busId"] as? String == "iso-1" }?["gainDb"] as? Double
@@ -2793,6 +2803,22 @@ enum ShellTests {
     }
 
     @MainActor
+    /// Harness timer for AppModel.timerSleepForTesting: every sleep parks until
+    /// fireAll(). A cancelled debounce task resumes and sees Task.isCancelled.
+    final class ManualTimers {
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        /// Sleeps parked right now (not yet fired).
+        var pending: Int { waiters.count }
+        func sleep(_ nanoseconds: UInt64) async {
+            await withCheckedContinuation { waiters.append($0) }
+        }
+        func fireAll() {
+            let ready = waiters
+            waiters = []
+            ready.forEach { $0.resume() }
+        }
+    }
+
     static func spin(until condition: () -> Bool, limit: TimeInterval) {
         let end = Date().addingTimeInterval(limit)
         while !condition(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
