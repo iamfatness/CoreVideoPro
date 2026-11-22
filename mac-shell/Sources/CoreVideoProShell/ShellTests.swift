@@ -3933,6 +3933,9 @@ enum ShellTests {
         // No test runs a real core binary as a camera probe (cases that test
         // the probe name their own executable).
         FreshProcessCameraDeviceProbe.defaultExecutable = { nil }
+        // No test touches a real secret: every KeychainStore user (stream key,
+        // Zoom tokens, later feed credentials) gets an in-memory Keychain.
+        KeychainStore.defaultBackend = MemoryKeychain()
 
         let cases: [(String, () -> Void)] = [
             ("monitor/revisioned-projection", testMonitorControlProjection),
@@ -4127,7 +4130,7 @@ enum ShellTests {
             ("camera-kit/device-name", testDeviceNamePolicy),
             ("camera-kit/slate-classifier", testSlateClassifier),
             ("camera-kit/producer-attestation", testProducerAttestation),
-        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases
+        ] + tier0Cases + vcamUpdateCases + mediaCases + sourcesCases + controlParityCases + controlOscServerCases + gradeCases + graphicsFontsCases + graphicsCases
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
             body()
