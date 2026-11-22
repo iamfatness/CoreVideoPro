@@ -268,6 +268,10 @@ struct SettingsPane: View {
                     .font(.grotesk(12))
             }
 
+            card("Streaming destinations") {
+                StreamDestinationSettingsView()
+            }
+
             card("Monitor output") {
                 labeled("Output device") { MonitorDevicePicker() }
                 Text(model.monitorTargetStatus)

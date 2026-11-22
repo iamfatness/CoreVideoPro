@@ -25,6 +25,7 @@ extension ShellTests {
             ("streaming/retry-sends-recover-output-sender", testRetrySendsRecoverOutputSender),
             ("streaming/snapshot-projects-rows-and-quit-status", testSnapshotProjectsRowsAndQuitStatus),
             ("streaming/prefs-keep-rows-never-the-passphrase", testPrefsKeepRowsNeverThePassphrase),
+            ("streaming/footer-health-reads-the-projection", testFooterHealthReadsTheProjection),
         ]
     }
 
@@ -372,5 +373,25 @@ extension ShellTests {
         let old = Data(#"{"streamUrl":"rtmp://example/live"}"#.utf8)
         let decoded = try? JSONDecoder().decode(ShellPrefs.self, from: old)
         expect(decoded != nil && decoded?.streamDestinations == nil, "an older prefs file decodes")
+    }
+
+    /// The footer Stream stat used to print the published status verbatim.
+    @MainActor
+    static func testFooterHealthReadsTheProjection() {
+        let (model, _, _) = streamingModel()
+        model.streamKey = "rtmp-key-1"
+        model.streamDestinations.srtEnabled = true
+        model.streamDestinations.srtHost = "receiver.example.com"
+        model.streamingDesired = true
+        model.streamStatus = "live"                        // the adapter's launch word
+        model.destinationRows = ["rtmp": DestinationStatus(label: "Connecting", tone: .neutral),
+                                 "srt": DestinationStatus(label: "Connecting", tone: .neutral)]
+        expectEqual(model.streamHealthLabel, "Connecting", "a launch reads Connecting, whatever status says")
+        model.destinationRows = ["rtmp": DestinationStatus(label: "Live", tone: .good, isLive: true),
+                                 "srt": DestinationStatus(label: "Reconnecting in 5 s", tone: .warn)]
+        expectEqual(model.streamHealthLabel, "Live 1/2", "one of two confirmed")
+        expectEqual(model.streamSummary, "RTMP live, SRT reconnecting in 5 s", "the footer summary line")
+        model.destinationRows["srt"] = DestinationStatus(label: "Live", tone: .good, isLive: true)
+        expectEqual(model.streamHealthLabel, "Live", "all confirmed")
     }
 }

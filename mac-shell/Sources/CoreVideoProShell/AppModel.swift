@@ -4104,6 +4104,31 @@ final class AppModel: ObservableObject {
         StreamDestinationSecrets(rtmpKey: streamKey, srtPassphrase: srtPassphrase)
     }
 
+    /// "RTMP live, SRT reconnecting in 5 s": the footer's one-line summary of
+    /// the rows of the destinations being streamed (projection labels only).
+    var streamSummary: String {
+        let ids = StreamDestinationPolicy.enabledDestinations(streamConfig, streamSecrets)
+        let parts = ids.map { id -> String in
+            let label = destinationRows[id]?.label ?? "Starting"
+            return "\(StreamDestinationPolicy.displayName(id)) \(label.prefix(1).lowercased() + label.dropFirst())"
+        }
+        return parts.isEmpty ? "starting" : parts.joined(separator: ", ")
+    }
+
+    /// The footer Stream stat's health word, from the projected rows only:
+    /// "Live" when every streamed destination is confirmed live, "Live 1/2"
+    /// when some are, else the first row's own label. Never the published
+    /// status, which can read "live" from a launch.
+    var streamHealthLabel: String {
+        let ids = StreamDestinationPolicy.enabledDestinations(streamConfig, streamSecrets)
+        let rows = ids.map { destinationRows[$0] ?? DestinationStatus(label: "Starting", tone: .neutral) }
+        guard !rows.isEmpty else { return "Starting" }
+        let live = rows.filter(\.isLive).count
+        if live == rows.count { return "Live" }
+        if live > 0 { return "Live \(live)/\(rows.count)" }
+        return rows.first { $0.tone == .bad || $0.tone == .warn }?.label ?? rows[0].label
+    }
+
     /// Why Start streaming cannot start (Windows ValidateSelectedDestinations), or nil.
     var streamStartRefusal: String? { StreamDestinationPolicy.validateSelected(streamConfig, streamSecrets) }
 
