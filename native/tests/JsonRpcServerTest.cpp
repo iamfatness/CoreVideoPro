@@ -358,7 +358,27 @@ TEST(JsonRpcServer, PreservesIdAndAcksStartProgramOutput) {
   const auto* health = response.get("snapshot")->get("health");
   ASSERT_NE(health, nullptr);
   EXPECT_EQ(health->getString("status"), "live");
-  EXPECT_GE(health->get("encodedFrameCount")->asNumber(), 1);
+  // A frame reaches the encoder. On the Metal core the full-resolution Program
+  // tap is published one frame late by its own thread, and the AVF recorder
+  // skips a tick without it rather than recording the 320x180 preview (2026-11-22
+  // settings quick wins, review #6) — so drive display ticks until a REAL frame
+  // has been encoded instead of counting whatever the arming tick carried.
+  // The display tick renders (and kicks the tap); the output tick submits to
+  // the encoder (renderAudioOutputTick, no dedicated video tick in a test).
+  std::mutex coreMutex;
+  double encoded = health->get("encodedFrameCount")->asNumber();
+  for (int tick = 0; tick < 60 && encoded < 1; ++tick) {
+    mediaCore.renderDisplayTick();
+    mediaCore.renderAudioOutputTick(coreMutex);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const auto polled = server.handle(corevideo::rpc::Json::Object{{"id", "poll"}, {"type", "snapshot"}});
+    const auto* snapshot = polled.get("snapshot");
+    const auto* polledHealth = snapshot ? snapshot->get("health") : nullptr;
+    if (polledHealth && polledHealth->get("encodedFrameCount")) {
+      encoded = polledHealth->get("encodedFrameCount")->asNumber();
+    }
+  }
+  EXPECT_GE(encoded, 1);
 }
 
 TEST(JsonRpcServer, ParsesLineDelimitedJsonRequests) {

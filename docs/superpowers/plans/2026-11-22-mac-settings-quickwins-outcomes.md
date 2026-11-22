@@ -14,7 +14,7 @@
 | `b0688706` | Z1 | Zoom camera max resolution / guest fps pickers, sent on `zoom-join`, latched by the join |
 | `2d246c16` | Z2 | Capture audio-sync nudge, both core copies, session state |
 | `95fb26a3` | O2 | AVF recording: scale not crop, HEVC (`hvc1`), AV1 refused, real container/codec reported |
-| `3211ce5b` | O1 | Recording profile + stream audio/keyframe/rate control/H.264 profile/B-frames |
+| `3211ce5b` | O1 | Recording profile + stream audio/keyframe/rate control/H.264 profile/B-frames (recording fps picker later replaced by "follows the canvas", review #4) |
 | `483c739a` | C1 | `automation.autoAssignInputs.set` + `autoAssignInputs` on Mac (Companion autoassign preset) |
 | `24143fe7` | review | Z2 nudge on camera rows only, compact buttons; HEVC ISO path proven |
 
@@ -71,7 +71,7 @@ screen rows (fixed in `24143fe7`).
    sub-1080p subscription is unknown; if not, file an engine task).
 4. **Z2** Clap test on a capture card with a paired mic: nudge until lip sync; kill the core and
    confirm the offset comes back.
-5. **O1/O2** Record 1440p canvas at 1080p H.265 MOV: it opens in QuickTime, the full frame is
+5. **O1/O2** Record a 1440p canvas at 1080p H.265 MOV: it opens in QuickTime, the full frame is
    present (not a corner), `ffprobe` shows hevc 1920x1080. Stream with VBR / 4 s keyframes /
    main profile and confirm the receiver sees it.
 6. **C1** Companion on a Stream Deck: the autoassign button toggles Sources > Fill free inputs and its
@@ -99,3 +99,21 @@ No test-launched app, no request to `127.0.0.1:8011`, and no Zoom meeting were u
   `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`, `CMAKE_{C,CXX,OBJCXX}_COMPILER=<Xcode
   toolchain>/clang(++)`, `CMAKE_OSX_SYSROOT=.../MacOSX26.5.sdk`. The coordinator's alternative
   (`DEVELOPER_DIR=/Library/Developer/CommandLineTools` for native) was not tried here.
+
+## Review round (2026-11-22, independent review via the coordinator)
+
+| # | Finding | Verdict | Fix | Proof |
+|---|---|---|---|---|
+| 1 | O2 tests appended after the AVF test file's `#endif`: Windows / stub / AVF-off builds fail to compile | **Real** | `ef5ef942`: `#endif` moved to EOF | Stub configure reproduced `unknown type name 'ProgramFrame'` before; after, the stub build links and its full suite passes |
+| 2 | Saved local audio not applied on the first connect: `onConnected` reasserted the console before listing audio inputs; inputs never refreshed; `reassertCaptureAudio()` dead | **Real** | `887456f6`: inputs listed before the reassert; refreshed on AVCaptureDevice connect/disconnect with a re-push when the local source's sendability changes; dead function removed | `a5-first-connect-sends-the-saved-source` drives the real `onConnected` (red before); `a5-hot-plugged-mic-goes-live`; both mutations red |
+| 3 | `session_.codec` hard-coded `h264`, so HEVC reports h264 | **Real** | `2de88dec`: the writer's codec once open | HEVC test red before, green after |
+| 4 | Recording FPS picker changes nothing; 0.5-step bitrate truncated by the core | **Real, both platforms** | `8723a016`: fps follows the canvas (text, payload carries the canvas fps, so `recordingFps` is true); whole-Mbps bitrate, default 8 | Windows checked first: MF sets `MF_MT_FRAME_RATE` as metadata and stamps real time (no decimation); the Mac AVF writer never used fps. The shared int `targetBitrateMbps` (Interfaces.h) is left alone; fractional bitrate in the core is a follow-up for both shells |
+| 5 | Z2 device copy re-sent at `onConnected` dropped if the AVF camera is not enumerated yet | **Real** | `8723a016`: reconcile on every snapshot against `captureDevices[].audioSyncOffsetMs`, once per device while in flight; the `onConnected` re-send removed | `AvfCaptureDeviceAdapter` fills its map on a background queue and `setAudioSyncOffset` ignores unknown ids; `z2-device-copy-reconciles-from-the-snapshot` (red without the reconcile) |
+| 6 | `submit()` falls back to the 320x180 preview, now upscaled by O2 | **Real (reachable)** | `2de88dec`: a tick without full-resolution Program is skipped | The Metal tap publishes one frame late on its own thread: the first tick after arming always lacks it. `NeverRecordsThePreviewThumbnail` (replaces the test that pinned the fallback; red before). `JsonRpcServer.PreservesIdAndAcksStartProgramOutput` had been counting that thumbnail as its one encoded frame; proven by restoring only the fallback (green) — it now drives display + output ticks until a real frame is encoded (see the commit below) |
+| low | Companion README still said Auto-assign does nothing; AV1 row selectable | Real | `8723a016` | — |
+
+None of the medium items turned out not real.
+
+**Gates after the round:** shell 6145 passed, 0 failed; self-check PASS; contract check clean;
+AVF + program-tail 27/27; full Metal test binary **2107 passed, 0 failed**; full stub test binary
+**2014 passed, 0 failed** (Metal suite run after the JsonRpcServer test change, stub after review #1).
