@@ -2003,7 +2003,11 @@ class RtmpOutputSender final : public IOutputSender, public IBitstreamQueueTestA
       static bool s_loggedArgs = false;
       if (!s_loggedArgs) {
         s_loggedArgs = true;
-        ::corevideo::core::nativeLogf("[rtmp] ffmpeg %s\n", argString.c_str());
+        // Never the raw URL: it carries the stream key / SRT passphrase.
+        const std::string logged = redactFfmpegInvocation(argString, configuredEndpoint_, redactedSenderEndpoint(),
+                                                          configuredStreamKey_, configuredPassphrase_,
+                                                          configuredStreamId_);
+        ::corevideo::core::nativeLogf("[rtmp] ffmpeg %s\n", logged.c_str());
       }
     }
     request.arguments = tokenizeArguments(argString);
