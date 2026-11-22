@@ -609,8 +609,6 @@ TEST(AvfEncoderRecording, BgraIsoSizeChangeAfterOpenIsRefusedNotCropped) {
 
 }  // namespace
 
-#endif  // COREVIDEO_WITH_AVF_ENCODER
-
 // ── O2 (2026-11-22 settings quick wins): scale not crop, HEVC, honest AV1 ──
 
 namespace {
@@ -798,3 +796,5 @@ TEST(AvfEncoderRecording, HevcZoomIsoWritesNv12FramesIntoAnHvc1Track) {
   EXPECT_GT(lumaAt(decoded, 960, 540), 180) << "the scaled bright quadrant survived the HEVC encode";
   fs::remove_all(dir);
 }
+
+#endif  // COREVIDEO_WITH_AVF_ENCODER
