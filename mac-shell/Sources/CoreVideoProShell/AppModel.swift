@@ -1696,6 +1696,7 @@ final class AppModel: ObservableObject {
     /// Every core generation (initial handshake AND respawn). Internal: the
     /// harness drives it to prove the console is re-asserted.
     func onConnected() {
+        resetMasterMetersForProcess()
         monitorControl.resetForProcess()
         audioRouteControl.resetForProcess()
         rosterProjection.resetForProcess()
@@ -1817,6 +1818,16 @@ final class AppModel: ObservableObject {
     }
 
     /// Words for the meters when the audio observation is aging/stale (nil = live).
+    /// A new core generation has measured nothing yet. The snapshot parser holds
+    /// the last value when a key is absent, so without this a respawned core
+    /// showed the DEAD core's loudness, peak and levels (never fabricate a level).
+    func resetMasterMetersForProcess() {
+        masterLevel = 0; masterLevelLeft = 0; masterLevelRight = 0
+        shortTermLufs = -120; integratedLufs = -120; momentaryLufs = -120; loudnessLufs = -120
+        truePeakDbfs = -120; mixedFrameCount = 0
+        limiterActive = false; masteringRideDb = 0
+    }
+
     func meterWarning(now: Date = Date()) -> String? {
         AudioObservationPolicy.warning(audioObservation, receivedAt: audioObservationReceivedAt, now: now)
     }

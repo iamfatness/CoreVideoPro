@@ -478,6 +478,19 @@ struct MasteringGuideMeters: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            // #870: a stalled core or audio worker cannot leave held values
+            // looking live — the Windows MeterWarning words, re-evaluated on a clock.
+            TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                if let warning = model.meterWarning(now: context.date) {
+                    Text(warning).font(.grotesk(11, .medium)).foregroundStyle(Studio.amber)
+                }
+            }
+            meters
+        }
+    }
+
+    var meters: some View {
         HStack(spacing: 16) {
             meter(title: "INTEGRATED · POST-MASTER",
                   value: model.integratedLufs, min: -36, max: 0,

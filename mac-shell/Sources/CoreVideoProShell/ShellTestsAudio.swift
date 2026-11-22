@@ -35,6 +35,8 @@ extension ShellTests {
             ("audio-buses/bus-only-change-pushes", testABusOnlyChangeStillPushesTheMatrix),
             ("audio-buses/remove-routed-bus", testRemovingARoutedCustomBusUnroutesIt),
             ("control/route-set-custom-bus", testControlRouteSetAcceptsLiveBuses),
+            // Review fixes.
+            ("audio-meters/respawn-resets-master-meters", testARespawnedCoreNeverShowsTheDeadCoresMeters),
         ]
     }
 
@@ -494,5 +496,30 @@ extension ShellTests {
         model.addCustomBus()
         let after = invoke(surface, "audio.route.set", ["11", "bus-01", true, 0.0, "epoch", 0, "op-1"])
         expect(!(after?.error ?? "").hasPrefix("busId must be one of"), "bus-01 passes the bus check once added")
+    }
+
+    // ── Review fix 2: a respawned core never shows the dead core's numbers ───
+
+    @MainActor
+    static func testARespawnedCoreNeverShowsTheDeadCoresMeters() {
+        let model = AppModel()
+        model.applySnapshotForTesting(["audioMixSession": [
+            "masterLevel": 60, "loudnessLufs": -14.0, "mixedFrameCount": 900, "limiterActive": true,
+            "masteringRideDb": 2.0,
+            "masterMeter": ["momentaryLufs": -13.0, "shortTermLufs": -14.0, "integratedLufs": -15.5, "truePeakDbfs": -0.8],
+        ] as JSONObject])
+        expectEqual(model.integratedLufs, -15.5, "precondition: the old core's integrated")
+        model.onConnected()   // the respawned core's handshake
+        expectEqual([model.integratedLufs, model.momentaryLufs, model.shortTermLufs, model.loudnessLufs, model.truePeakDbfs],
+                    [-120, -120, -120, -120, -120], "every master loudness value is back to no-evidence")
+        expectEqual(model.mixedFrameCount, 0, "no mixed frame yet")
+        expectEqual([model.masterLevel, model.masterLevelLeft, model.masterLevelRight], [0, 0, 0], "levels zeroed")
+        expect(!model.limiterActive, "limiter activity cleared")
+        expectEqual(MasterMeterReadout.integratedLabel(model.integratedLufs), "—", "the guide meter reads a dash")
+        expectEqual(MasterMeterReadout.railLufsLabel(loudnessLufs: model.loudnessLufs, mixedFrames: model.mixedFrameCount),
+                    "LUFS —", "the rail reads a dash")
+        // A new core's snapshot that has not published masterMeter yet keeps the dash.
+        model.applySnapshotForTesting(["audioMixSession": ["masterLevel": 0] as JSONObject])
+        expectEqual(model.integratedLufs, -120, "a missing masterMeter is no evidence, not the old value")
     }
 }
