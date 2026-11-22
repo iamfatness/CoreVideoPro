@@ -25,6 +25,7 @@
 
 #include "compositor/CoreTextOverlayRaster.h"
 #include "graphics/GraphicsTemplate.h"
+#include "GraphicsMotionFixture.h"
 #include "modules/OverlayTileRaster.h"
 
 // ── thread-local allocation counter ─────────────────────────────────────────
@@ -352,7 +353,9 @@ TEST(MetalOverlayRaster, AdmissionRulesMatchWindowsWording) {
   templated.graphicsTemplate = std::make_shared<corevideo::graphics::GraphicsTemplateInput>();
   const auto prepared = waitPrepared(raster, device, templated, 200, 50);
   EXPECT_EQ(prepared.state, "failed");
-  EXPECT_EQ(prepared.warning, "Template graphics are not prepared on Metal yet.");
+  // A template input with no definition cannot be resolved (G2: templates are
+  // otherwise prepared on Metal).
+  EXPECT_EQ(prepared.warning, "Graphics template definition is missing.");
 }
 
 TEST(MetalOverlayRaster, AMissingFontWithAnAppearanceWarnsAndStillDraws) {
@@ -407,6 +410,221 @@ TEST(MetalOverlayRaster, SegoeUiResolvesToBundledSelawikWithAWarningEvenWhenStri
         if (inRect(layout.textLines[0].rect, x, y) && px.alpha(x, y) > 128) ++ink;
     EXPECT_GE(ink, 100) << "strict=" << strict;
   }
+}
+
+// ── Template raster (Metal graphics backend G2) ─────────────────────────────
+//
+// Each fixture is a 320x180 template rastered at 320x180, so template units
+// ARE pixels (scale = heightPx / drawing.height = 1). Every expected value is
+// computed from the manifest (box, fontSize, lineHeight, colours), never read
+// back from the raster.
+
+CompositorOverlayContent templated(const std::string& layers, std::string* loadError = nullptr) {
+  const std::string manifest = R"({"schemaVersion":1,"templateId":"metal-g2","templateVersion":1,"name":"G2",)"
+      R"("family":"title","canvas":{"width":1920,"height":1080},"bounds":{"width":320,"height":180},)"
+      R"("brandTokens":[],"fields":[],"animations":{"in":{"type":"none"},"out":{"type":"none"}},"layers":)" + layers + "}";
+  std::string error;
+  auto input = std::make_shared<corevideo::graphics::GraphicsTemplateInput>();
+  input->definition = corevideo::graphics::GraphicsTemplate::load(manifest, error);
+  if (loadError) *loadError = error;
+  input->fields = corevideo::rpc::Json::Object{};
+  input->brand = corevideo::rpc::Json::Object{};
+  CompositorOverlayContent content;
+  content.appearance.enabled = true;
+  content.graphicsTemplate = input;
+  // Instances always carry a content hash; the raster keys on it (the overlay
+  // signature does not hash template content). Without it two different
+  // fixtures would share one cache entry.
+  if (input->definition) {
+    content.graphicsContentHash = input->definition->hash();
+    content.hasGraphicsContentHash = true;
+  }
+  return content;
+}
+
+TEST(MetalOverlayRaster, TemplateShapesDrawCoverageAndInsetStrokes) {
+  DEVICE_OR_SKIP(device);
+  CoreTextOverlayRaster raster;
+  std::string error;
+  const auto content = templated(R"([
+      {"id":"oval","type":"ellipse","x":20,"y":20,"width":80,"height":60,"fill":"#FF0000","stroke":"#00FF00","strokeWidth":4},
+      {"id":"rule","type":"line","x":120,"y":20,"width":60,"height":60,"diagonal":"up","stroke":"#FFFFFF","strokeWidth":4},
+      {"id":"plate","type":"rect","x":200,"y":20,"width":60,"height":60,"cornerRadius":8,"fill":"#FF0000","stroke":"#00FF00","strokeWidth":4}])", &error);
+  ASSERT_TRUE(content.graphicsTemplate->definition) << error;
+  const auto prepared = waitPrepared(raster, device, content, 320, 180, true);
+  ASSERT_EQ(prepared.state, "ready") << prepared.warning;
+  const auto px = readBack(prepared.texture);
+  auto expectColor = [&](int x, int y, int b, int g, int r, const char* what) {
+    const uint8_t* p = px.at(x, y);
+    EXPECT_NEAR(p[0], b, 3) << what;
+    EXPECT_NEAR(p[1], g, 3) << what;
+    EXPECT_NEAR(p[2], r, 3) << what;
+    EXPECT_EQ(p[3], 255) << what;
+  };
+  expectColor(60, 50, 0, 0, 255, "ellipse interior");
+  expectColor(60, 22, 0, 255, 0, "ellipse inset stroke (top edge)");
+  EXPECT_EQ(px.alpha(22, 22), 0) << "outside the ellipse";
+  EXPECT_GT(px.alpha(150, 50), 200) << "the rising diagonal passes the box centre";
+  EXPECT_EQ(px.alpha(125, 25), 0) << "a rising line never reaches the top-left corner";
+  EXPECT_GT(px.at(150, 50)[2], 200);
+  expectColor(230, 22, 0, 255, 0, "rect inset stroke (top edge)");
+  expectColor(230, 50, 0, 0, 255, "rect interior");
+  EXPECT_EQ(px.alpha(200, 20), 0) << "rounded corner";
+}
+
+TEST(MetalOverlayRaster, TemplateGradientRunsBetweenItsStops) {
+  DEVICE_OR_SKIP(device);
+  CoreTextOverlayRaster raster;
+  const auto content = templated(R"([{"id":"g","type":"rect","x":0,"y":0,"width":320,"height":40,
+      "fill":{"stops":["#FF0000","#0000FF"],"direction":"horizontal"}}])");
+  ASSERT_TRUE(content.graphicsTemplate->definition);
+  const auto prepared = waitPrepared(raster, device, content, 320, 180, true);
+  ASSERT_EQ(prepared.state, "ready") << prepared.warning;
+  const auto px = readBack(prepared.texture);
+  EXPECT_GT(px.at(0, 20)[2], 245);
+  EXPECT_LT(px.at(0, 20)[0], 10);
+  EXPECT_GT(px.at(319, 20)[0], 245);
+  EXPECT_LT(px.at(319, 20)[2], 10);
+  int previousRed = 256;
+  for (int x = 0; x < 320; x += 32) {
+    const int red = px.at(x, 20)[2];
+    EXPECT_LE(red, previousRed) << "red must fall monotonically left to right, x=" << x;
+    previousRed = red;
+  }
+  EXPECT_NEAR(px.at(160, 20)[2], 128, 12);
+  EXPECT_EQ(px.alpha(160, 60), 0) << "below the rect";
+}
+
+// Uniform line spacing (spec 3.4 / 5.6): line n's baseline is box.y +
+// n * fontSize * lineHeight + 0.8 * fontSize, whatever the font's ascent.
+// "H" sits on the baseline, so the last heavily-inked row of each band is the
+// baseline row minus one. maxLines 2 + wrap-then-ellipsis: two bands, nothing
+// in a third, and the second line ends in an ellipsis.
+TEST(MetalOverlayRaster, TemplateTextBaselinesAreUniformAndWrapStopsAtMaxLinesWithAnEllipsis) {
+  DEVICE_OR_SKIP(device);
+  CoreTextOverlayRaster raster;
+  const auto content = templated(R"([{"id":"t","type":"text","x":10,"y":10,"width":150,"height":150,
+      "text":"HHHH HHHH HHHH HHHH HHHH HHHH HHHH HHHH","font":"Arial","fontSize":30,"lineHeight":1.2,
+      "color":"#FFFFFF","maxLines":2,"overflow":"wrap-then-ellipsis"}])");
+  const auto prepared = waitPrepared(raster, device, content, 320, 180, true);
+  ASSERT_EQ(prepared.state, "ready") << prepared.warning;
+  const auto px = readBack(prepared.texture);
+  const int y0 = 10, line = 36, baseline = 24;  // 30 * 1.2, 0.8 * 30
+  auto lastHeavyRow = [&](int top, int bottom) {
+    int last = -1;
+    for (int y = top; y < bottom; ++y)
+      for (int x = 0; x < 320; ++x)
+        if (px.alpha(x, y) > 128) { last = y; break; }
+    return last;
+  };
+  EXPECT_NEAR(lastHeavyRow(y0, y0 + line), y0 + baseline - 1, 1) << "line 1 baseline";
+  EXPECT_NEAR(lastHeavyRow(y0 + line, y0 + 2 * line), y0 + line + baseline - 1, 1) << "line 2 baseline";
+  int belowTwoLines = 0;
+  for (int y = y0 + 2 * line + 2; y < 180; ++y)
+    for (int x = 0; x < 320; ++x)
+      if (px.alpha(x, y) > 8) ++belowTwoLines;
+  EXPECT_EQ(belowTwoLines, 0) << "maxLines 2 draws no third line";
+  // The second line's last glyph is an ellipsis: its ink spans a few rows at
+  // the baseline, not an "H" stem (cap height ~0.72 em = 21 rows).
+  int rightmost = -1;
+  for (int x = 0; x < 320; ++x)
+    for (int y = y0 + line; y < y0 + 2 * line; ++y)
+      if (px.alpha(x, y) > 64) rightmost = std::max(rightmost, x);
+  ASSERT_GT(rightmost, 0);
+  EXPECT_LE(rightmost, 160) << "inside the box";
+  int top = 180, bottom = -1;
+  for (int x = rightmost - 6; x <= rightmost; ++x)
+    for (int y = y0 + line; y < y0 + 2 * line; ++y)
+      if (px.alpha(x, y) > 64) { top = std::min(top, y); bottom = std::max(bottom, y); }
+  EXPECT_LE(bottom - top + 1, 8) << "the second line must end in an ellipsis";
+}
+
+TEST(MetalOverlayRaster, TemplateCenterAlignmentCentresTheInk) {
+  DEVICE_OR_SKIP(device);
+  CoreTextOverlayRaster raster;
+  const auto content = templated(R"([{"id":"t","type":"text","x":20,"y":20,"width":280,"height":60,
+      "text":"HHH","font":"Arial","fontSize":40,"color":"#FFFFFF","align":"center"}])");
+  const auto prepared = waitPrepared(raster, device, content, 320, 180, true);
+  ASSERT_EQ(prepared.state, "ready") << prepared.warning;
+  const auto px = readBack(prepared.texture);
+  int left = 320, right = -1;
+  for (int y = 0; y < 180; ++y)
+    for (int x = 0; x < 320; ++x)
+      if (px.alpha(x, y) > 128) { left = std::min(left, x); right = std::max(right, x); }
+  ASSERT_GE(right, left);
+  EXPECT_NEAR((left + right) / 2.0, 20 + 280 / 2.0, 2.5) << left << ".." << right;
+}
+
+TEST(MetalOverlayRaster, TemplateTextEffectsDrawShadowOutlineAndFill) {
+  DEVICE_OR_SKIP(device);
+  CoreTextOverlayRaster raster;
+  const auto content = templated(R"([{"id":"text","type":"text","x":20,"y":15,"width":260,"height":130,
+      "text":"Ada","font":"Segoe UI","fontSize":64,"color":"#FFFFFF",
+      "outline":{"color":"#FF0000","width":3},"shadow":{"color":"#00FF00","x":12,"y":20,"blur":5}}])");
+  const auto prepared = waitPrepared(raster, device, content, 320, 180, true);
+  ASSERT_EQ(prepared.state, "ready") << prepared.warning;
+  EXPECT_EQ(prepared.warning, "Font Segoe UI is not installed on this Mac; using Selawik.");
+  const auto px = readBack(prepared.texture);
+  int fill = 0, outline = 0, shadow = 0;
+  for (int y = 0; y < 180; ++y)
+    for (int x = 0; x < 320; ++x) {
+      const uint8_t* p = px.at(x, y);
+      if (p[0] > 220 && p[1] > 220 && p[2] > 220) ++fill;
+      if (p[2] > 180 && p[1] < 50 && p[0] < 50) ++outline;
+      if (p[1] > 180 && p[2] < 50 && p[0] < 50) ++shadow;
+    }
+  EXPECT_GT(fill, 100);
+  EXPECT_GT(outline, 100);
+  EXPECT_GT(shadow, 100);
+}
+
+TEST(MetalOverlayRaster, TemplateFontsFailOnlyWhenNeitherInstalledNorInTheTable) {
+  DEVICE_OR_SKIP(device);
+  CoreTextOverlayRaster raster;
+  const auto missing = templated(R"([{"id":"t","type":"text","x":10,"y":10,"width":300,"height":60,
+      "text":"Missing","font":"CoreVideo Missing Font 9c2a8f77","fontSize":30,"color":"#FFFFFF"}])");
+  const auto failed = waitPrepared(raster, device, missing, 320, 180, true);
+  EXPECT_EQ(failed.state, "failed");
+  EXPECT_EQ(failed.warning, "Requested graphics font is unavailable: CoreVideo Missing Font 9c2a8f77");
+  const auto consolas = templated(R"([{"id":"t","type":"text","x":10,"y":10,"width":300,"height":60,
+      "text":"Mono","font":"Consolas","fontSize":30,"color":"#FFFFFF"}])");
+  const auto substituted = waitPrepared(raster, device, consolas, 320, 180, true);
+  EXPECT_EQ(substituted.state, "ready") << substituted.warning;
+  EXPECT_EQ(substituted.warning, "Font Consolas is not installed on this Mac; using Menlo.");
+}
+
+TEST(MetalOverlayRaster, ALayeredTemplatePreparesAnAtlasWithOneSlicePerRun) {
+  DEVICE_OR_SKIP(device);
+  CoreTextOverlayRaster raster;
+  std::string error;
+  auto input = std::make_shared<corevideo::graphics::GraphicsTemplateInput>();
+  input->definition = corevideo::graphics::GraphicsTemplate::load(
+      corevideo::graphics::test::motionFixture("bar-first.json"), error);
+  ASSERT_TRUE(input->definition) << error;
+  ASSERT_TRUE(input->definition->motionSummary().layered);
+  input->fields = input->definition->defaultFields();
+  input->brand = corevideo::graphics::test::motionBrand();
+  CompositorOverlayContent content;
+  content.appearance.enabled = true;
+  content.graphicsTemplate = input;
+  const auto prepared = waitPrepared(raster, device, content, 1060, 168, true);
+  ASSERT_EQ(prepared.state, "ready") << prepared.warning;
+  const auto runs = raster.activeRuns();
+  ASSERT_TRUE(runs);
+  EXPECT_GT(runs->runs.size(), 1u);
+  EXPECT_EQ(runs->slices.size(), runs->runs.size());
+  EXPECT_EQ(int(prepared.texture.width), runs->atlasWidth);
+  EXPECT_EQ(int(prepared.texture.height), runs->atlasHeight);
+  int inkedSlices = 0;
+  const auto px = readBack(prepared.texture);
+  for (const auto& slice : runs->slices) {
+    bool ink = false;
+    for (int y = slice.y; y < slice.y + slice.height && !ink; ++y)
+      for (int x = slice.x; x < slice.x + slice.width && !ink; ++x)
+        ink = px.alpha(x, y) > 0;
+    inkedSlices += ink ? 1 : 0;
+  }
+  EXPECT_EQ(inkedSlices, int(runs->slices.size())) << "every run is drawn into its own slice";
 }
 
 }  // namespace

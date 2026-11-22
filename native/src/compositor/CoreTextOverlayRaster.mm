@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <string_view>
 
 #include "compositor/CompositorFaultInjection.h"
@@ -154,6 +155,249 @@ ImageInput openPackagedImage(const graphics::GraphicsAsset& asset) {
   return {std::move(source), uint64_t(width) * height * 12};
 }
 
+
+// ── Template raster (G2): the Core Graphics port of CompositorOverlayRaster's
+// drawTemplate / drawTextEffects. Coordinates are template units in a TOP-DOWN
+// CTM (point * scale + offset, the D2D transform), so every primitive is placed
+// exactly as on Windows; text uses a (1,-1) text matrix to stay upright.
+
+using ImageInputs = std::map<std::string, ImageInput>;
+
+CGRect cgRect(const graphics::GraphicsBox& box) { return CGRectMake(box.x, box.y, box.width, box.height); }
+
+void setFillArgb(CGContextRef cg, CGColorSpaceRef space, uint32_t argb) {
+  const auto color = colorFromArgb(argb, space);
+  CGContextSetFillColorWithColor(cg, color.get());
+}
+void setStrokeArgb(CGContextRef cg, CGColorSpaceRef space, uint32_t argb) {
+  const auto color = colorFromArgb(argb, space);
+  CGContextSetStrokeColorWithColor(cg, color.get());
+}
+
+CGPathRef createRoundedPath(CGRect rect, CGFloat radius) {
+  if (rect.size.width <= 0 || rect.size.height <= 0) return nullptr;
+  // Core Graphics asserts on radii over half a side; D2D clamps (spec 5.7).
+  radius = std::clamp<CGFloat>(radius, 0, std::min(rect.size.width, rect.size.height) * 0.5);
+  return radius > 0 ? CGPathCreateWithRoundedRect(rect, radius, radius, nullptr) : CGPathCreateWithRect(rect, nullptr);
+}
+
+// The positioned outlines of every glyph in `lines`, for outline and shadow
+// (spec 5.6: CTFontCreatePathForGlyph at each run's glyph positions, unioned).
+void appendGlyphOutlines(CGMutablePathRef path, CTLineRef line, CGFloat x, CGFloat baseline) {
+  CFArrayRef runs = CTLineGetGlyphRuns(line);
+  for (CFIndex r = 0; r < CFArrayGetCount(runs); ++r) {
+    CTRunRef run = static_cast<CTRunRef>(CFArrayGetValueAtIndex(runs, r));
+    CTFontRef runFont = static_cast<CTFontRef>(CFDictionaryGetValue(CTRunGetAttributes(run), kCTFontAttributeName));
+    const CFIndex count = CTRunGetGlyphCount(run);
+    if (!runFont || count <= 0) continue;
+    std::vector<CGGlyph> glyphs(static_cast<size_t>(count), CGGlyph{});
+    std::vector<CGPoint> positions(static_cast<size_t>(count), CGPointZero);
+    CTRunGetGlyphs(run, CFRangeMake(0, 0), glyphs.data());
+    CTRunGetPositions(run, CFRangeMake(0, 0), positions.data());
+    for (CFIndex g = 0; g < count; ++g) {
+      CfRef<CGPathRef> glyph(CTFontCreatePathForGlyph(runFont, glyphs[size_t(g)], nullptr));
+      if (!glyph) continue;
+      const CGAffineTransform place = CGAffineTransformMake(1, 0, 0, -1, x + positions[size_t(g)].x,
+                                                            baseline - positions[size_t(g)].y);
+      CGPathAddPath(path, &place, glyph.get());
+    }
+  }
+}
+
+bool drawTemplateText(CGContextRef cg, CGColorSpaceRef space, const graphics::GraphicsPrimitive& p,
+                      std::string& warning) {
+  const auto resolved = graphics::resolveGraphicsFontFamily(p.font);
+  if (!resolved.available) {
+    warning = "Requested graphics font is unavailable: " + p.font;
+    return false;
+  }
+  if (resolved.substituted && warning.empty())
+    warning = graphics::graphicsFontSubstitutionWarning(p.font, resolved.family);
+  CfRef<CTFontRef> font(graphics::createGraphicsFont(resolved.family, resolved.weight ? resolved.weight : p.fontWeight,
+                                                     p.fontSize));
+  if (!font) return false;
+  const auto& b = p.box;
+  const double lineHeight = p.fontSize * p.lineHeight;
+  const double layoutHeight = std::min(b.height, lineHeight * p.maxLines);
+  const bool wrap = p.overflow == "wrap-then-ellipsis";
+  const int visible = wrap ? std::max(1, int(std::floor(layoutHeight / lineHeight + 1e-9))) : 1;
+  const auto color = colorFromArgb(p.color, space);
+  graphics::GraphicsTextLayout text(p.text, font.get(), color.get(), b.width, wrap, visible, b.width);
+  const double flush = p.align == "center" ? 0.5 : p.align == "right" ? 1.0 : 0.0;
+  auto lineX = [&](const graphics::GraphicsTextLine& line) {
+    return b.x + flush * (b.width - (line.width - line.trailingWhitespace));
+  };
+  // Uniform line spacing: baseline of line n is n * lineHeight + 0.8 * fontSize
+  // below the box top. Font ascent/descent never move it (spec 5.6).
+  auto baseline = [&](size_t n) { return b.y + double(n) * lineHeight + 0.8 * p.fontSize; };
+
+  if (p.outline || p.shadow) {
+    CfRef<CGMutablePathRef> glyphs(CGPathCreateMutable());
+    for (size_t n = 0; n < text.lines().size(); ++n)
+      appendGlyphOutlines(glyphs.get(), text.lines()[n].line, lineX(text.lines()[n]), baseline(n));
+    if (p.shadow) {
+      const auto& shadow = *p.shadow;
+      const CGAffineTransform offset = CGAffineTransformMakeTranslation(shadow.x, shadow.y);
+      CfRef<CGPathRef> shifted(CGPathCreateCopyByTransformingPath(glyphs.get(), &offset));
+      setStrokeArgb(cg, space, shadow.color);
+      setFillArgb(cg, space, shadow.color);
+      if (shadow.blur > 0) {
+        constexpr int rings = 8;
+        for (int ring = rings; ring > 0; --ring) {
+          const double fraction = double(ring) / rings;
+          CGContextSetAlpha(cg, CGFloat(p.opacity * (1.0 - fraction * 0.8) / rings));
+          CGContextSetLineWidth(cg, CGFloat(2 * shadow.blur * fraction));
+          CGContextAddPath(cg, shifted.get());
+          CGContextStrokePath(cg);
+        }
+      }
+      CGContextSetAlpha(cg, CGFloat(p.opacity));
+      CGContextAddPath(cg, shifted.get());
+      CGContextFillPath(cg);
+    }
+    if (p.outline && p.outline->width > 0) {
+      setStrokeArgb(cg, space, p.outline->color);
+      CGContextSetAlpha(cg, CGFloat(p.opacity));
+      CGContextSetLineWidth(cg, CGFloat(2 * p.outline->width));
+      CGContextAddPath(cg, glyphs.get());
+      CGContextStrokePath(cg);
+    }
+  }
+  CGContextSaveGState(cg);
+  CGContextSetAlpha(cg, CGFloat(p.opacity));
+  CGContextClipToRect(cg, CGRectMake(b.x, b.y, b.width, layoutHeight));  // D2D1_DRAW_TEXT_OPTIONS_CLIP
+  CGContextSetTextMatrix(cg, CGAffineTransformMakeScale(1, -1));
+  for (size_t n = 0; n < text.lines().size(); ++n) {
+    CGContextSetTextPosition(cg, CGFloat(lineX(text.lines()[n])), CGFloat(baseline(n)));
+    CTLineDraw(text.lines()[n].line, cg);
+  }
+  CGContextRestoreGState(cg);
+  return true;
+}
+
+// Draws primitives [first, first + count) of `drawing` at `scale`, translated
+// by (offsetX, offsetY) pixels, into a context whose CTM is already top-down.
+bool drawTemplate(CGContextRef cg, CGColorSpaceRef space, const graphics::GraphicsDrawing& drawing, double scale,
+                  const ImageInputs& images, size_t first, size_t count, double offsetX, double offsetY,
+                  std::string& warning) {
+  CGContextSaveGState(cg);
+  CGContextTranslateCTM(cg, CGFloat(offsetX), CGFloat(offsetY));
+  CGContextScaleCTM(cg, CGFloat(scale), CGFloat(scale));
+  bool complete = true;
+  std::map<std::string, CfRef<CGImageRef>> bitmaps;
+  for (size_t i = first; i < first + count && i < drawing.primitives.size(); ++i) {
+    const auto& p = drawing.primitives[i];
+    const auto& b = p.box;
+    CGContextSaveGState(cg);
+    // Axis-aligned, aliased clip (D2D PushAxisAlignedClip ALIASED).
+    CGContextSetShouldAntialias(cg, false);
+    CGContextClipToRect(cg, cgRect(p.clip));
+    CGContextSetShouldAntialias(cg, true);
+    if (p.type == "image") {
+      if (!p.image) {
+        complete = false;
+      } else {
+        auto bitmap = bitmaps.find(p.image->id);
+        if (bitmap == bitmaps.end()) {
+          const auto source = images.find(p.image->id);
+          if (source != images.end() && source->second.source) {
+            CfRef<CGImageRef> decoded(CGImageSourceCreateImageAtIndex(source->second.source.get(), 0, nullptr));
+            if (decoded) {
+              CfRef<CGImageRef> retagged(
+                  CGColorSpaceGetModel(CGImageGetColorSpace(decoded.get())) == kCGColorSpaceModelRGB
+                      ? CGImageCreateCopyWithColorSpace(decoded.get(), space) : nullptr);
+              bitmap = bitmaps.emplace(p.image->id, retagged ? std::move(retagged) : std::move(decoded)).first;
+            }
+          }
+        }
+        if (bitmap == bitmaps.end()) {
+          complete = false;
+          warning = "Graphics image could not be decoded: " + p.image->id;
+        } else {
+          const double sx = b.width / p.image->width, sy = b.height / p.image->height;
+          const double factor = p.fit == "cover" ? std::max(sx, sy) : std::min(sx, sy);
+          const double w = p.image->width * factor, h = p.image->height * factor;
+          const double x = b.x + (p.imageAlign == "right" ? b.width - w : p.imageAlign == "center" ? (b.width - w) / 2 : 0);
+          const double y = b.y + (p.imageVerticalAlign == "bottom" ? b.height - h
+                                  : p.imageVerticalAlign == "center" ? (b.height - h) / 2 : 0);
+          CGContextSetAlpha(cg, CGFloat(p.opacity));
+          CGContextSetInterpolationQuality(cg, kCGInterpolationMedium);
+          // Images are bottom-up in Core Graphics; flip locally in the top-down CTM.
+          CGContextTranslateCTM(cg, CGFloat(x), CGFloat(y + h));
+          CGContextScaleCTM(cg, 1, -1);
+          CGContextDrawImage(cg, CGRectMake(0, 0, w, h), bitmap->second.get());
+        }
+      }
+      CGContextRestoreGState(cg);
+      continue;
+    }
+    CGContextSetAlpha(cg, CGFloat(p.opacity));
+    const double inset = p.strokeWidth / 2;
+    const bool stroke = p.strokeWidth > 0;
+    if (stroke) {
+      setStrokeArgb(cg, space, p.strokeColor);
+      CGContextSetLineWidth(cg, CGFloat(p.strokeWidth));
+    }
+    if (p.type == "line") {
+      if (stroke) {
+        CGContextMoveToPoint(cg, b.x + inset, p.lineRises ? b.y + b.height - inset : b.y + inset);
+        CGContextAddLineToPoint(cg, b.x + b.width - inset, p.lineRises ? b.y + inset : b.y + b.height - inset);
+        CGContextStrokePath(cg);
+      }
+      CGContextRestoreGState(cg);
+      continue;
+    }
+    // Fill: solid colour, or a two-stop linear gradient across the box.
+    auto fillShape = [&](CGPathRef shape) {
+      if (!shape) return;
+      if (p.gradient) {
+        CGContextSaveGState(cg);
+        CGContextAddPath(cg, shape);
+        CGContextClip(cg);
+        const CGFloat components[8] = {
+            CGFloat((p.color >> 16) & 0xff) / 255, CGFloat((p.color >> 8) & 0xff) / 255, CGFloat(p.color & 0xff) / 255,
+            CGFloat((p.color >> 24) & 0xff) / 255, CGFloat((p.endColor >> 16) & 0xff) / 255,
+            CGFloat((p.endColor >> 8) & 0xff) / 255, CGFloat(p.endColor & 0xff) / 255,
+            CGFloat((p.endColor >> 24) & 0xff) / 255};
+        const CGFloat locations[2] = {0, 1};
+        CfRef<CGGradientRef> gradient(CGGradientCreateWithColorComponents(space, components, locations, 2));
+        const CGPoint start = CGPointMake(b.x, b.y);
+        const CGPoint end = CGPointMake(b.x + (p.verticalGradient ? 0 : b.width), b.y + (p.verticalGradient ? b.height : 0));
+        CGContextDrawLinearGradient(cg, gradient.get(), start, end,
+                                    kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation);
+        CGContextRestoreGState(cg);
+      } else {
+        setFillArgb(cg, space, p.color);
+        CGContextAddPath(cg, shape);
+        CGContextFillPath(cg);
+      }
+    };
+    if (p.type == "rect") {
+      CfRef<CGPathRef> shape(createRoundedPath(cgRect(b), p.cornerRadius));
+      fillShape(shape.get());
+      if (stroke) {
+        CfRef<CGPathRef> edge(createRoundedPath(
+            CGRectMake(b.x + inset, b.y + inset, b.width - 2 * inset, b.height - 2 * inset),
+            std::max(0.0, p.cornerRadius - inset)));
+        if (edge) { CGContextAddPath(cg, edge.get()); CGContextStrokePath(cg); }
+      }
+    } else if (p.type == "ellipse") {
+      if (b.width > 0 && b.height > 0) {
+        CfRef<CGPathRef> shape(CGPathCreateWithEllipseInRect(cgRect(b), nullptr));
+        fillShape(shape.get());
+        if (stroke && b.width > 2 * inset && b.height > 2 * inset) {
+          CGContextStrokeEllipseInRect(cg, CGRectMake(b.x + inset, b.y + inset, b.width - 2 * inset, b.height - 2 * inset));
+        }
+      }
+    } else if (p.type == "text" && !p.text.empty()) {
+      if (!drawTemplateText(cg, space, p, warning)) complete = false;
+    }
+    CGContextRestoreGState(cg);
+  }
+  CGContextRestoreGState(cg);
+  return complete;
+}
+
 }  // namespace
 
 CoreTextOverlayRaster::CoreTextOverlayRaster()
@@ -286,17 +530,39 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     const auto& overlay = request.overlay;
     const int widthPx = request.width, heightPx = request.height;
     if (!request.device) return {{}, 0, "Native graphics preparation unavailable."};
-    if (overlay.graphicsTemplate) return {{}, 0, "Template graphics are not prepared on Metal yet."};
     std::string warning;
+    // Template content resolves HERE, on the worker (fields, brand, layout with
+    // Core Text measurement). A resolve error is a failed preparation.
+    graphics::GraphicsDrawing drawing;
+    ImageInputs images;
+    uint64_t packagedImageBytes = 0;
+    const bool templated = bool(overlay.graphicsTemplate);
+    if (templated) {
+      if (!overlay.graphicsTemplate->definition) return {{}, 0, "Graphics template definition is missing."};
+      std::string error;
+      if (!overlay.graphicsTemplate->definition->resolve(overlay.graphicsTemplate->fields,
+          overlay.graphicsTemplate->brand, drawing, error, overlay.graphicsTemplate->logo)) return {{}, 0, error};
+      if (!drawing.warnings.empty()) warning = drawing.warnings.front();
+      for (const auto& primitive : drawing.primitives) {
+        if (!primitive.image || images.count(primitive.image->id)) continue;
+        auto input = openPackagedImage(*primitive.image);
+        if (!input.source) return {{}, 0, "Graphics image header could not be decoded: " + primitive.image->id};
+        packagedImageBytes += input.cpuBytes;
+        images.emplace(primitive.image->id, std::move(input));
+      }
+    }
     auto layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
-    ImageInput image = layout.hasImage
+    ImageInput image = layout.hasImage && !templated
         ? (overlay.graphicsImage ? openPackagedImage(*overlay.graphicsImage) : openFileImage(overlay.imageUri))
         : ImageInput{};
 
-    // Font: the Windows check runs only for an appearance; elsewhere a missing
-    // family falls back silently, as DirectWrite's does (plan D1).
+    // Legacy font: the Windows check runs only for an appearance; elsewhere a
+    // missing family falls back silently, as DirectWrite's does (G1 D1). A
+    // table substitution warns and never fails. Template text resolves per
+    // primitive inside drawTemplateText.
     const auto font = graphics::resolveGraphicsFontFamily(layout.fontFamily);
-    if (overlay.appearance.enabled && !font.available) {
+    if (templated) {
+    } else if (overlay.appearance.enabled && !font.available) {
       if (request.strictResources)
         return {{}, 0, "Requested graphics font is unavailable; choose an installed font."};
       warning = std::string("Font unavailable; using ") + kFallbackFontFamily + ".";
@@ -305,7 +571,25 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     }
     layout.fontFamily = font.family;
 
-    const uint64_t textureBytes = uint64_t(widthPx) * heightPx * 4;
+    // Atlas: a crawl, or layered motion not using whole-graphic motion, draws
+    // each run into its own slice (CompositorOverlayRaster.cpp parity).
+    int textureWidth = widthPx, textureHeight = heightPx;
+    const double scale = drawing.height > 0 ? double(heightPx) / drawing.height : 1.0;
+    std::shared_ptr<graphics::GraphicsRunLayout> runs;
+    if (templated && (drawing.crawl || (overlay.graphicsTemplate->definition->motionSummary().layered &&
+                                        !overlay.graphicsTemplate->wholeGraphicMotion))) {
+      runs = std::make_shared<graphics::GraphicsRunLayout>();
+      runs->width = drawing.width;
+      runs->height = drawing.height;
+      runs->runs = graphics::planRuns(drawing);
+      if (!graphics::packAtlas(runs->runs, scale, runs->slices, runs->atlasWidth, runs->atlasHeight) ||
+          runs->atlasWidth > int(16384) || runs->atlasHeight > int(16384))
+        return {{}, 0, "Graphics motion needs more texture space than one graphic allows; give fewer layers their own motion."};
+      textureWidth = std::max(1, runs->atlasWidth);
+      textureHeight = std::max(1, runs->atlasHeight);
+    }
+    const uint64_t textureBytes = uint64_t(textureWidth) * textureHeight * 4;
+    image.cpuBytes += packagedImageBytes;
     auto& sharedBudget = graphics::GraphicsResourceBudget::process();
     if (textureBytes + image.cpuBytes > sharedBudget.counters().cpuLimit)
       return {{}, 0, "Graphics assets exceed the shared CPU preparation capacity."};
@@ -318,12 +602,12 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     auto budget = sharedBudget.tryReserve(textureBytes + image.cpuBytes, textureBytes, revisionKey, overlay.hasGraphicsContentHash);
     if (!budget) return {{}, 0, "Graphics preparation is waiting for shared resource capacity.", true};
 
-    const size_t stride = size_t(widthPx) * 4;
-    std::vector<uint8_t> pixels(stride * size_t(heightPx), 0);  // transparent
+    const size_t stride = size_t(textureWidth) * 4;
+    std::vector<uint8_t> pixels(stride * size_t(textureHeight), 0);  // transparent
     CfRef<CGColorSpaceRef> space(CGColorSpaceCreateDeviceRGB());
     // Premultiplied BGRA, exactly what the (One, 1-SrcAlpha) overlay pipeline
     // blends: no post pass (the #350 rule). DeviceRGB: colours are not managed.
-    CfRef<CGContextRef> context(CGBitmapContextCreate(pixels.data(), size_t(widthPx), size_t(heightPx), 8, stride,
+    CfRef<CGContextRef> context(CGBitmapContextCreate(pixels.data(), size_t(textureWidth), size_t(textureHeight), 8, stride,
         space.get(), CGBitmapInfo(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little));
     if (!context) return {{}, 0, "Graphics raster target creation failed."};
     CGContextRef cg = context.get();
@@ -337,7 +621,27 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
     CGContextSetShouldSubpixelPositionFonts(cg, true);
 
     bool complete = true;
+    if (templated) {
+      CGContextSaveGState(cg);
+      CGContextTranslateCTM(cg, 0, textureHeight);  // top-down template space
+      CGContextScaleCTM(cg, 1, -1);
+      if (runs) {
+        for (size_t i = 0; i < runs->runs.size(); ++i) {
+          const auto& run = runs->runs[i];
+          const auto& slice = runs->slices[i];
+          if (slice.width <= 0 || slice.height <= 0) continue;
+          complete = drawTemplate(cg, space.get(), drawing, scale, images, run.first, run.count,
+                                  slice.x - run.source.x * scale, slice.y - run.source.y * scale, warning) && complete;
+        }
+      } else {
+        complete = drawTemplate(cg, space.get(), drawing, scale, images, 0, drawing.primitives.size(), 0, 0, warning);
+      }
+      CGContextRestoreGState(cg);
+    }
     CGContextSaveGState(cg);
+    if (templated) {
+      // nothing more: the legacy layout below is for non-template content
+    } else {
     // Band: painted here only for an appearance-styled lower third, rounded and
     // clipping everything after it (Windows PushLayer). Otherwise the adapter
     // draws the band as its own quad so its alpha animation is the CPU mirror's.
@@ -389,30 +693,34 @@ CoreTextOverlayRaster::Cache::Result CoreTextOverlayRaster::prepareRaster(const 
       if (!drawLegacyTextLine(cg, space.get(), layout.textLines[index], layout.fontFamily, emphasis, heightPx))
         complete = false;
     }
+    }  // legacy
     CGContextRestoreGState(cg);
     CGContextFlush(cg);
     context = CfRef<CGContextRef>();
     image = ImageInput{};
+    images.clear();
+    if (runs) runs->drawing = std::make_shared<const graphics::GraphicsDrawing>(std::move(drawing));
 
     if (request.strictResources && !complete)
       return {{}, 0, warning.empty() ? "Graphics resources could not be prepared completely." : warning};
 
     MTLTextureDescriptor* descriptor =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                                           width:NSUInteger(widthPx)
-                                                          height:NSUInteger(heightPx)
+                                                           width:NSUInteger(textureWidth)
+                                                          height:NSUInteger(textureHeight)
                                                        mipmapped:NO];
     descriptor.usage = MTLTextureUsageShaderRead;
     descriptor.storageMode = MTLStorageModeShared;
     id<MTLTexture> texture = [request.device newTextureWithDescriptor:descriptor];
     if (!texture) return {{}, 0, "Graphics texture creation failed."};
-    [texture replaceRegion:MTLRegionMake2D(0, 0, NSUInteger(widthPx), NSUInteger(heightPx))
+    [texture replaceRegion:MTLRegionMake2D(0, 0, NSUInteger(textureWidth), NSUInteger(textureHeight))
                mipmapLevel:0
                  withBytes:pixels.data()
                bytesPerRow:stride];
     auto entry = std::make_shared<MetalRasterTex>();
     entry->budget = budget;
     entry->texture = texture;
+    entry->runs = std::move(runs);
     // Drop the CPU copy before returning its admission charge.
     std::vector<uint8_t>().swap(pixels);
     budget->finishPreparation();
