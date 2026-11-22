@@ -184,20 +184,26 @@ TEST(AvfEncoderRecording, DoubleStartStillMuxesAudio) {
   fs::remove_all(dir);
 }
 
-TEST(AvfEncoderRecording, FallsBackToPreviewWhenNoFullProgram) {
+// Review #6 (2026-11-22): a tick without the full-resolution Program (the Metal
+// tap has not published yet — always the first tick after arming) used to write
+// the 320x180 preview thumbnail; since O2 scales, that thumbnail would be
+// UPSCALED into the recording. It is skipped instead: the file never carries a
+// picture that is not Program. Mutation: restore the preview fallback -> red.
+TEST(AvfEncoderRecording, NeverRecordsThePreviewThumbnail) {
   MAKE_ENCODER_OR_SKIP(encoder);
-  const auto dir = freshTempDir("fallback");
+  const auto dir = freshTempDir("no-thumbnail");
   encoder->configureRecording(testRequest(dir.string()));
   (void)encoder->start({"recording"}, {});
-  ProgramFrame frame;
-  frame.frameNumber = 1;
-  frame.preview.width = 320;
-  frame.preview.height = 180;
-  frame.preview.bgra.assign(320u * 180u * 4u, 0x40);
-  encoder->submit(frame);
+  ProgramFrame thumbnailOnly;
+  thumbnailOnly.frameNumber = 1;
+  thumbnailOnly.preview.width = 320;
+  thumbnailOnly.preview.height = 180;
+  thumbnailOnly.preview.bgra.assign(320u * 180u * 4u, 0x40);
+  encoder->submit(thumbnailOnly);
+  EXPECT_EQ(encoder->session().recordingVideoFrameCount, 0) << "a thumbnail-only tick wrote a frame";
+  encoder->submit(frameWithFullBgra(2, 640, 360));
+  EXPECT_EQ(encoder->session().recordingVideoFrameCount, 1) << "the full Program frame is recorded";
   encoder->stopRecording();
-  const auto session = encoder->session();
-  EXPECT_GT(session.recordingVideoFrameCount, 0);
   fs::remove_all(dir);
 }
 
@@ -716,6 +722,7 @@ TEST(AvfEncoderRecording, HevcRecordingWritesAnHvc1Track) {
   ASSERT_EQ(session.recordingStatus, "stopped") << session.recordingWarning;
   EXPECT_GT(session.recordingVideoFrameCount, 0);
   EXPECT_EQ(session.recordingVideoCodec, "h265");
+  EXPECT_EQ(session.codec, "h265") << "recording.encoder.codec must name the codec written (review #3)";
   EXPECT_TRUE(fileContains(path, "hvc1")) << "no hvc1 sample entry: the track is not HEVC";
   EXPECT_FALSE(fileContains(path, "avc1")) << "an H.264 track was written for an H.265 request";
   fs::remove_all(dir);
@@ -755,6 +762,7 @@ TEST(AvfEncoderRecording, MovReportsItsRealContainerAndCodec) {
   EXPECT_EQ(started.recordingFormat, "mov");
   EXPECT_EQ(started.recordingContainerFormat, "mov");
   EXPECT_EQ(started.recordingVideoCodec, "h264");
+  EXPECT_EQ(started.codec, "h264");
   encoder->stopRecording();
   fs::remove_all(dir);
 }

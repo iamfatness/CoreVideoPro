@@ -12,10 +12,10 @@
 // live flow's double start() keeps its audio track because the second open()
 // starts from nothing.
 //
-// Program pixels: reads ProgramFrame::programFullBgra when present (the Metal
-// compositor fills it during recording via wantsFullProgramReadbackForRecording)
-// and falls back to the 320x180 preview — never the MF path's silent
-// thumbnail-into-1080p upscale.
+// Program pixels: reads ProgramFrame::programFullBgra only (the Metal compositor
+// fills it during recording via wantsFullProgramReadbackForRecording). A tick
+// without it is skipped — never the 320x180 preview, which the O2 scaler would
+// upscale into the file (the MF path's old thumbnail-into-1080p defect).
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_AVF_ENCODER
 
@@ -756,10 +756,13 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     if (!recordingArmed_ || session_.recordingStatus == "failed") {
       return;
     }
-    // Full-resolution program when the compositor provided it (the Metal path
-    // during recording); the 320x180 preview only as a last resort.
-    const ProgramFramePreviewPixels& src =
-        !frame.programFullBgra.bgra.empty() ? frame.programFullBgra : frame.preview;
+    // Full-resolution Program only (the Metal tap, published one frame late).
+    // A tick without it — always the first tick after arming, and any tick the
+    // tap thread has not finished — is SKIPPED, never filled with the 320x180
+    // preview: since O2 scales, the thumbnail would be upscaled into the file
+    // (review #6). A skipped tick is a missing frame the per-frame verdicts can
+    // see; a thumbnail would be a wrong picture they could miss.
+    const ProgramFramePreviewPixels& src = frame.programFullBgra;
     if (src.bgra.empty() || src.width <= 0 || src.height <= 0) {
       return;
     }
@@ -916,6 +919,9 @@ class AVFoundationEncoderSink final : public IEncoderSink {
     session_.recordingFps = request_.fps;
     session_.recordingContainerFormat = container;
     session_.recordingVideoCodec = writer_.codec();
+    // recording.encoder.codec names what the writer actually encodes (review #3;
+    // Windows: program_.videoCodec(), MediaFoundationEncoderAdapter.cpp:2497).
+    session_.codec = writer_.codec();
     session_.recordingAudioCodec = "aac";
     session_.recordingAudioBitrateKbps = request_.audioBitrateKbps;
     session_.recordingMetadataValid = true;
