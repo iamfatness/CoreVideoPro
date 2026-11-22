@@ -3574,15 +3574,29 @@ final class AppModel: ObservableObject {
     // ── keyboard Take / FTB (audit §5) ───────────────────────────────────────
     let transportHotkeys = TransportHotkeyMonitor()
 
-    /// Installed only while the Studio tab is the active tab.
+    /// Installed while the Studio or Graphics tab is active: transport keys act on
+    /// Studio only (TransportKeys.decide checks), graphics F-keys on both (plan D7).
     func syncTransportHotkeys() {
-        transportHotkeys.setActive(selectedTab == .studio) { [weak self] nsEvent in
+        transportHotkeys.setActive(selectedTab == .studio || selectedTab == .overlays) { [weak self] nsEvent in
             guard let self else { return false }
             let key = TransportKeys.event(
                 from: nsEvent, isStudioTab: self.selectedTab == .studio,
                 firstResponder: nsEvent.window?.firstResponder)
-            return self.handleTransportKey(key)
+            return self.handleGraphicsKey(key) || self.handleTransportKey(key)
         }
+    }
+
+    /// Graphics F-keys (GraphicsHotkeyRouter): Studio and Graphics tabs, never
+    /// while a text field has focus, never under the quit prompt. A held key
+    /// fires once (repeats are swallowed so a hold never re-Shows).
+    func handleGraphicsKey(_ event: TransportKeyEvent) -> Bool {
+        guard selectedTab == .studio || selectedTab == .overlays, !quitPromptVisible, !quitFinishing,
+              case .function(let number) = event.kind,
+              let route = GraphicsHotkeys.route(function: number, modifiers: event.modifiers,
+                                                textFocus: event.isTextEntryFocus, rows: graphics.rows)
+        else { return false }
+        if event.isRepeat { return true }
+        return graphics.perform(route, subjectSourceId: programLowerThirdSubject()?.source.sourceId)
     }
 
     /// Executes a routed key against the real commands; returns whether it was

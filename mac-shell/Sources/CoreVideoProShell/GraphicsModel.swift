@@ -19,7 +19,7 @@ final class GraphicsModel: ObservableObject {
     @Published private(set) var strip = GraphicsStrip.empty
     /// The status line: the last result's reason (a refusal verbatim), the busy
     /// text, or the restart notice.
-    @Published private(set) var status = ""
+    @Published var status = ""
     @Published private(set) var busy = false
 
     /// True while a core process is up (set by AppModel from BridgeStatus).
