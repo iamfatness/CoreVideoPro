@@ -70,6 +70,8 @@ struct SceneRoute {
     // a green screen" — so the setting lives on the slot and is applied to every
     // route bound to it.
     var chromaKey: JSONObject?
+    // A media slot's identity (mediaAssetId/Name/Kind/Path/Loop), merged as-is.
+    var media: JSONObject?
 
     var json: JSONObject {
         var object: JSONObject = [
@@ -79,6 +81,7 @@ struct SceneRoute {
         if let chromaKey { object["chromaKey"] = chromaKey }
         if let participantId { object["participantId"] = participantId }
         if let captureDeviceId { object["captureDeviceId"] = captureDeviceId }
+        if let media { object.merge(media) { _, new in new } }
         if let rect {
             object["rect"] = ["x": rect.x, "y": rect.y, "width": rect.w, "height": rect.h]
         }
@@ -150,7 +153,7 @@ struct AudioStrip: Identifiable, Equatable {
 // membership; assignedIds/multiview/scenes derive from them.
 struct ShowInputSlot: Identifiable, Equatable {
     var id: Int                 // 1...10 (var only so a drag-swap can renumber)
-    var kind = "unassigned"     // unassigned | zoom | capture
+    var kind = "unassigned"     // unassigned | zoom | capture | media (sourceId = bin asset id)
     var sourceId = ""           // participant id or capture device id
     var name = ""               // editable display name
     // The source's OWN name (participant / device). A hand-typed `name` lasts
@@ -834,7 +837,8 @@ final class AppModel: ObservableObject {
                                        sourceKey: $0.sourceKey) }
         // Capture slots only (plan D2): Zoom reuses user ids across meetings, so a
         // restored Zoom slot could attach a different person's name and settings.
-        prefs.showInputSlots = slots.filter { $0.kind == "capture" && $0.sourceKey != nil }.map {
+        // Media too: a bin asset id is stable across launches.
+        prefs.showInputSlots = slots.filter { ($0.kind == "capture" || $0.kind == "media") && $0.sourceKey != nil }.map {
             PersistedSlot(slotId: $0.id, kind: $0.kind, sourceId: $0.sourceId,
                           name: SlotNamePolicy.persisted($0), inShow: $0.inShow)
         }
@@ -2287,6 +2291,8 @@ final class AppModel: ObservableObject {
     }
 
     // Keep slot health truthful as rosters/devices churn.
+    func refreshSlotHealthForTesting() { refreshSlotHealth() }
+
     private func refreshSlotHealth() {
         for index in slots.indices {
             switch slots[index].kind {
@@ -2299,6 +2305,11 @@ final class AppModel: ObservableObject {
                     $0.id == slots[index].sourceId && $0.connectionState == "connected"
                 }
                 adoptLiveSourceName(index, captureDevices.first { $0.id == slots[index].sourceId }?.name)
+            case "media":
+                // Never substituted: an asset that left the bin marks the slot offline.
+                let asset = mediaAssets.first { $0.id == slots[index].sourceId }
+                if slots[index].offline != (asset == nil) { slots[index].offline = asset == nil }
+                adoptLiveSourceName(index, asset?.name)
             default:
                 break
             }
@@ -2889,7 +2900,7 @@ final class AppModel: ObservableObject {
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
-        let multiviewSources = Self.multiviewSourcePayloads(slots)
+        let multiviewSources = Self.multiviewSourcePayloads(slots, mediaAssets: mediaAssets)
         let payload: JSONObject = [
             // startCapture is what arms raw media (engine start_media →
             // start_raw_media): without it every video subscription stays
@@ -2955,23 +2966,24 @@ final class AppModel: ObservableObject {
     // a source. `kind` is the MULTIVIEW vocabulary the core's resolveMultiviewFeed
     // reads (native/src/core/MultiviewFeed.h): "capture" | "media" | anything else
     // = a Zoom participant. It is NOT the scene-route `mode` ("capture-input").
-    static func multiviewSourcePayloads(_ slots: [ShowInputSlot]) -> [JSONObject] {
+    static func multiviewSourcePayloads(_ slots: [ShowInputSlot], mediaAssets: [MediaAsset] = []) -> [JSONObject] {
         slots
             .filter { $0.kind != "unassigned" && $0.inShow && !$0.offline }
-            .map { slot in
-                slot.kind == "zoom"
-                    ? [
-                        "sourceId": "zoom:" + slot.sourceId,
-                        "kind": "participant-video",
-                        "participantId": slot.sourceId,
-                        "label": slot.name,
-                    ]
-                    : [
-                        "sourceId": "capture:" + slot.sourceId,
-                        "kind": "capture",
-                        "captureDeviceId": slot.sourceId,
-                        "label": slot.name,
-                    ]
+            .compactMap { slot -> JSONObject? in
+                switch slot.kind {
+                case "zoom":
+                    return ["sourceId": "zoom:" + slot.sourceId, "kind": "participant-video",
+                            "participantId": slot.sourceId, "label": slot.name]
+                case "media":
+                    // Windows ShowInputRosterService.cs:743-755, plus the path and kind so the
+                    // core can decode a still that only the wall shows (plan Task 5).
+                    guard let asset = mediaAssets.first(where: { $0.id == slot.sourceId }) else { return nil }
+                    return ["sourceId": "media:" + slot.sourceId, "kind": "media", "mediaAssetId": slot.sourceId,
+                            "mediaAssetPath": asset.filePath, "mediaAssetKind": asset.kind, "label": slot.name]
+                default:
+                    return ["sourceId": "capture:" + slot.sourceId, "kind": "capture",
+                            "captureDeviceId": slot.sourceId, "label": slot.name]
+                }
             }
     }
 
@@ -3124,6 +3136,31 @@ final class AppModel: ObservableObject {
                 Double(value & 0xff) / 255.0)
     }
 
+    /// The ONE place a scene route takes a slot's source, for every route builder
+    /// (preset, edited layer, solo cue). Zoom: fixed + participantId. Capture: the
+    /// "capture-input" route mode + captureDeviceId. Media (plan Task 4): fixed + the
+    /// mediaAsset* identity the core decodes from (the same shape as a media layer);
+    /// a missing asset leaves a fixed route with no source, which the core draws blank.
+    func bindSlot(_ slot: ShowInputSlot, to route: inout SceneRoute) {
+        switch slot.kind {
+        case "zoom":
+            route.mode = "fixed"
+            route.participantId = slot.sourceId
+        case "media":
+            route.mode = "fixed"
+            route.media = mediaAssets.first { $0.id == slot.sourceId }.map(Self.mediaRouteFields)
+        default:
+            route.mode = "capture-input"
+            route.captureDeviceId = slot.sourceId
+        }
+        route.chromaKey = chromaKeyNode(for: slot)
+    }
+
+    static func mediaRouteFields(_ asset: MediaAsset) -> JSONObject {
+        ["mediaAssetId": asset.id, "mediaAssetName": asset.name, "mediaAssetKind": asset.kind,
+         "mediaAssetPath": asset.filePath, "mediaAssetLoop": MediaRoutePlayback.isLoopingKind(asset.kind)]
+    }
+
     func buildRoutes(for sceneId: String, isProgram: Bool = false) -> [JSONObject] {
         if Self.isSoloScene(sceneId) {
             // Each solo scene owns its source: re-cueing one never touches the
@@ -3136,13 +3173,7 @@ final class AppModel: ObservableObject {
                 routeId: sceneId + "-solo", mode: "fixed",
                 participantId: nil, captureDeviceId: nil,
                 rect: (0, 0, 1, 1), zIndex: 0)
-            if slot.kind == "zoom" {
-                route.participantId = slot.sourceId
-            } else {
-                route.mode = "capture-input"
-                route.captureDeviceId = slot.sourceId
-            }
-            route.chromaKey = chromaKeyNode(for: slot)
+            bindSlot(slot, to: &route)
             return [route.json]
         }
         guard let scene = scenes.first(where: { $0.id == sceneId }),
@@ -3176,14 +3207,7 @@ final class AppModel: ObservableObject {
                 if let slotId = layer.slotId,
                    let slot = slots.first(where: { $0.id == slotId }),
                    slot.kind != "unassigned" {
-                    if slot.kind == "zoom" {
-                        route.mode = "fixed"
-                        route.participantId = slot.sourceId
-                    } else {
-                        route.mode = "capture-input"
-                        route.captureDeviceId = slot.sourceId
-                    }
-                    route.chromaKey = chromaKeyNode(for: slot)
+                    bindSlot(slot, to: &route)
                 }
                 var json = route.json
                 json["fitMode"] = layer.fitMode
@@ -3214,15 +3238,7 @@ final class AppModel: ObservableObject {
                 participantId: nil, captureDeviceId: nil,
                 rect: (rect.0, rect.1, rect.2, rect.3), zIndex: index)
             if index < inShow.count {
-                let slot = inShow[index]
-                if slot.kind == "zoom" {
-                    route.mode = "fixed"
-                    route.participantId = slot.sourceId
-                } else {
-                    route.mode = "capture-input"
-                    route.captureDeviceId = slot.sourceId
-                }
-                route.chromaKey = chromaKeyNode(for: slot)
+                bindSlot(inShow[index], to: &route)
             }
             return route.json
         }
@@ -3994,7 +4010,7 @@ final class AppModel: ObservableObject {
         var rows: [RoutingRow] = []
         for slot in slots where slot.kind != "unassigned" {
             rows.append(RoutingRow(
-                id: (slot.kind == "zoom" ? "zoom:" : "capture:") + slot.sourceId,
+                id: slot.sourceKey ?? slot.sourceId,
                 label: "Input \(String(format: "%02d", slot.id)) · \(slot.name)",
                 inMultiview: slot.inShow,
                 multiviewToggleable: true))
@@ -4823,6 +4839,11 @@ final class AppModel: ObservableObject {
             asset.durationMs = known[asset.filePath]
             return asset
         }
+        // A media slot follows its asset: online when the bin lists it, offline (never
+        // substituted) when it left. The wall and scenes re-sync only when that changed.
+        let mediaSlotsBefore = slots.filter { $0.kind == "media" }
+        refreshSlotHealth()
+        if slots.filter({ $0.kind == "media" }) != mediaSlotsBefore { recomputeFromSlots() }
         mediaDurationProbeGeneration += 1
         let generation = mediaDurationProbeGeneration
         let unprobed = mediaAssets.filter { $0.supportsPlayback && $0.durationMs == nil }
@@ -5119,6 +5140,7 @@ final class AppModel: ObservableObject {
             if scene.backgroundAssetId == id { references.append("scene \(scene.name) background") }
         }
         if logoBug?.id == id { references.append("logo bug") }
+        for slot in slots where slot.kind == "media" && slot.sourceId == id { references.append("input \(slot.id)") }
         return references
     }
 

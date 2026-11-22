@@ -292,7 +292,9 @@ struct SourceInspector: View {
                 .menuStyle(.borderlessButton).fixedSize()
                 .accessibilityLabel("Input \(slot.id) microphone")
             } else {
-                Text(slot.kind == "zoom" ? "Zoom source audio" : "No source").font(.grotesk(12))
+                Text(slot.kind == "zoom" ? "Zoom source audio"
+                     : slot.kind == "media" ? "Media audio plays through the Media strip" : "No source")
+                    .font(.grotesk(12))
             }
             Text("Gain, mute and processing live on the Audio page.")
                 .font(.grotesk(11)).foregroundStyle(Studio.secondary)

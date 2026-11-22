@@ -186,7 +186,7 @@ extension AppModel {
         var candidates: [(id: String, name: String)] = []
 
         func label(_ slot: ShowInputSlot) -> (id: String, name: String) {
-            let wireId = (slot.kind == "zoom" ? "zoom:" : "capture:") + slot.sourceId
+            let wireId = slot.sourceKey ?? slot.sourceId
             let name = slot.name.isEmpty
                 ? (roster.first { $0.id == slot.sourceId }?.name ?? slot.sourceId)
                 : slot.name

@@ -160,7 +160,8 @@ struct SourcesTable: View {
     private var visibleSlots: [ShowInputSlot] {
         model.slots.filter { slot in
             let type = SourceType.of(kind: slot.kind, sourceId: slot.sourceId,
-                                     vendor: model.captureDevices.first { $0.id == slot.sourceId }?.vendor)
+                                     vendor: model.captureDevices.first { $0.id == slot.sourceId }?.vendor,
+                                     media: model.mediaAssets)
             return model.sourcesWorkspace.matches(slotId: slot.id, displayName: slot.name,
                                                   sourceLabel: type.pickerPrefix + slot.name, type: type)
         }
@@ -215,7 +216,8 @@ struct SourcesTableRow: View {
     private var assigned: Bool { slot.kind != "unassigned" }
     private var type: SourceType {
         SourceType.of(kind: slot.kind, sourceId: slot.sourceId,
-                      vendor: model.captureDevices.first { $0.id == slot.sourceId }?.vendor)
+                      vendor: model.captureDevices.first { $0.id == slot.sourceId }?.vendor,
+                      media: model.mediaAssets)
     }
     private var selected: Bool { model.sourcesWorkspace.selectedSlotId == slot.id }
 
@@ -271,6 +273,9 @@ struct SourcesTableRow: View {
         switch slot.kind {
         case "zoom": return "Zoom source audio"
         case "capture": return slot.audioDeviceName.isEmpty ? "No paired microphone" : slot.audioDeviceName
+        // Spec §4.4 "Still (no audio)"; a clip's audio is the Media strip (Windows "Media audio",
+        // ShowInputSlotViewModel.cs:383).
+        case "media": return type == .still ? "Still (no audio)" : "Media audio"
         default: return "—"
         }
     }
@@ -288,7 +293,7 @@ struct SourcesTableRow: View {
         // The assignment this menu was built for (picker guard, audit row 12).
         let openedFor = slot.sourceKey
         let groups = SourcePickerCatalog.groups(roster: model.roster, devices: model.captureDevices,
-                                                current: assigned ? slot : nil)
+                                                media: model.mediaAssets, current: assigned ? slot : nil)
         return VStack(alignment: .leading, spacing: 2) {
             Menu {
                 ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
@@ -319,9 +324,12 @@ struct SourcesTableRow: View {
     }
 
     private func choose(_ option: SourcePickerOption, openedFor: String?) {
-        let name = option.kind == "zoom"
-            ? model.roster.first { $0.id == option.sourceId }?.name ?? option.sourceId
-            : model.captureDevices.first { $0.id == option.sourceId }?.name ?? option.sourceId
+        let name: String
+        switch option.kind {
+        case "zoom": name = model.roster.first { $0.id == option.sourceId }?.name ?? option.sourceId
+        case "media": name = model.mediaAssets.first { $0.id == option.sourceId }?.name ?? option.sourceId
+        default: name = model.captureDevices.first { $0.id == option.sourceId }?.name ?? option.sourceId
+        }
         model.assignSlot(slot.id, kind: option.kind, sourceId: option.sourceId, name: name,
                          openedFor: openedFor)
         if option.kind == "capture",

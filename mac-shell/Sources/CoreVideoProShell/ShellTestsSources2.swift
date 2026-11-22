@@ -24,6 +24,13 @@ extension ShellTests {
             ("sources2-r2/cap-note-table", testTheCapNoteFollowsTheWindowsRuleForEveryCombination),
             ("sources2-r2/cap-from-core-not-preference", testTheCapNoteReadsTheCoresAppliedCap),
             ("sources2-r2/rec-chip-four-states-wired", testTheRecChipShowsTheFourWriterStatesFromSnapshots),
+            // Task 4: S4 media slots.
+            ("sources2-s4/multiview-payload-media", testAMediaSlotFeedsTheMultiviewAsMedia),
+            ("sources2-s4/routes-carry-media-identity-every-builder", testEveryRouteBuilderCarriesAMediaSlotsIdentity),
+            ("sources2-s4/picker-media-group-order", testThePickerListsMediaAfterScreensWithoutAudioOnlyFiles),
+            ("sources2-s4/persist-restore-media", testAMediaSlotIsSavedRestoredAndNeverSubstituted),
+            ("sources2-s4/media-never-auto-assigned", testAutoAssignNeverPlacesOrMovesMedia),
+            ("sources2-s4/media-row-facts", testAMediaRowIsLiveFromTheBusAndNeverStalled),
         ]
     }
 
@@ -214,5 +221,139 @@ extension ShellTests {
             model.applySnapshotForTesting(snapshot)
             expectEqual(model.sourceFacts.box(1).facts.writer, chip, "writer chip \(chip)")
         }
+    }
+
+    // ── Task 4: S4 media slots ──────────────────────────────────────────────
+
+    /// FIXTURE: a still (png) "a1", a clip (mp4) "c1" and an audio bed (wav) "b1".
+    static let s4Assets: [MediaAsset] = [
+        MediaAsset(id: "a1", name: "Station logo", kind: "slate", relativePath: "slate/logo.png",
+                   filePath: "/fixture/slate/logo.png", naturalWidth: 1920, naturalHeight: 1080),
+        MediaAsset(id: "c1", name: "Show open", kind: "stinger", relativePath: "stinger/open.mp4",
+                   filePath: "/fixture/stinger/open.mp4", naturalWidth: 1920, naturalHeight: 1080, durationMs: 12_000),
+        MediaAsset(id: "b1", name: "Walk-on bed", kind: "audio-bed", relativePath: "audio-bed/bed.wav",
+                   filePath: "/fixture/audio-bed/bed.wav", naturalWidth: 0, naturalHeight: 0, durationMs: 93_000),
+    ]
+
+    /// Windows ShowInputRosterService.cs:743-755: kind "media", sourceId "media:<id>", mediaAssetId.
+    /// The path and kind ride along so the core can decode a wall-only still (plan Task 5).
+    @MainActor
+    static func testAMediaSlotFeedsTheMultiviewAsMedia() {
+        var still = ShowInputSlot(id: 3); still.kind = "media"; still.sourceId = "a1"; still.name = "Logo"; still.inShow = true
+        var cam = ShowInputSlot(id: 1); cam.kind = "capture"; cam.sourceId = "cam1"; cam.name = "Cam"; cam.inShow = true
+        let payloads = AppModel.multiviewSourcePayloads([cam, still], mediaAssets: s4Assets)
+        expectEqual(payloads.count, 2, "both in-show slots are on the wall")
+        let media = payloads[1]
+        expectEqual(media["kind"] as? String, "media", "the multiview vocabulary is media")
+        expectEqual(media["sourceId"] as? String, "media:a1", "the canonical media id")
+        expectEqual(media["mediaAssetId"] as? String, "a1", "the asset id")
+        expectEqual(media["mediaAssetPath"] as? String, "/fixture/slate/logo.png", "the path for a wall-only decode")
+        expectEqual(media["mediaAssetKind"] as? String, "slate", "and the asset kind")
+        expect(media["captureDeviceId"] == nil && media["participantId"] == nil, "no capture or Zoom fields")
+        expectEqual(payloads[0]["kind"] as? String, "capture", "a capture slot is still capture, never capture-input")
+    }
+
+    /// One binding for all three route builders (preset layout, an edited layer bound to the
+    /// slot, and a solo cue): each must carry the media identity the core decodes from.
+    @MainActor
+    static func testEveryRouteBuilderCarriesAMediaSlotsIdentity() {
+        let model = AppModel()
+        model.mediaAssets = s4Assets
+        model.assignSlot(1, kind: "media", sourceId: "a1", name: "Station logo")
+        func mediaRoute(_ routes: [JSONObject], _ what: String) {
+            guard let route = routes.first(where: { $0["mediaAssetId"] as? String == "a1" }) else {
+                expect(false, "\(what): a route names the still"); return
+            }
+            expectEqual(route["mediaAssetPath"] as? String, "/fixture/slate/logo.png", "\(what): path")
+            expectEqual(route["mediaAssetKind"] as? String, "slate", "\(what): kind")
+            expectEqual(route["mode"] as? String, "fixed", "\(what): fixed, never capture-input")
+            expect(route["captureDeviceId"] == nil, "\(what): no capture device id")
+        }
+        guard let preset = model.scenes.first(where: { AppModel.layoutRects[$0.layout] != nil && $0.layers.isEmpty }) else {
+            expect(false, "precondition: a preset scene exists"); return
+        }
+        mediaRoute(model.buildRoutes(for: preset.id), "preset layout")
+        model.ensureLayers(for: preset.id)
+        mediaRoute(model.buildRoutes(for: preset.id), "edited layer")
+        model.previewMultiviewSlot(1)
+        mediaRoute(model.buildRoutes(for: model.previewSceneId), "solo cue")
+    }
+
+    /// Windows order Zoom, Camera, Screen, Media (ShowInputRosterService.cs:174-290); every bin
+    /// asset with a picture is offered (BuildSourceOptions :437-443). An audio bed has no picture.
+    @MainActor
+    static func testThePickerListsMediaAfterScreensWithoutAudioOnlyFiles() {
+        let roster = RosterParticipant.parse([["userId": "42", "displayName": "Guest", "videoOn": true]],
+                                             assignedIds: [])
+        let devices = [CaptureDeviceRow(id: "cam1", name: "Cam", kind: "video", vendor: "avfoundation",
+                                        connectionState: "connected", signalPresent: true, warning: ""),
+                       CaptureDeviceRow(id: "screen:1", name: "Display", kind: "video", vendor: "sck",
+                                        connectionState: "detected", signalPresent: false, warning: "")]
+        let groups = SourcePickerCatalog.groups(roster: roster, devices: devices, media: s4Assets, current: nil)
+        expectEqual(groups.map(\.title), ["Zoom", "Camera", "Screen", "Media"], "the Windows group order")
+        expectEqual(groups.last?.options.map(\.sourceKey), ["media:a1", "media:c1"], "stills and clips, no audio bed")
+        expectEqual(groups.last?.options.map(\.label), ["Still · Station logo", "Media clip · Show open"],
+                    "each labelled with its type")
+        expectEqual(SourceType.of(kind: "media", sourceId: "a1", vendor: nil, media: s4Assets), .still, "a png is a still")
+        expectEqual(SourceType.of(kind: "media", sourceId: "c1", vendor: nil, media: s4Assets), .mediaClip, "an mp4 is a clip")
+        expectEqual(SourceType.still.category, "Media", "the Media filter category")
+    }
+
+    /// Media slots persist like capture (the asset id is stable, unlike a Zoom id). A restored
+    /// slot reads offline until the bin lists it; a missing asset is never substituted.
+    @MainActor
+    static func testAMediaSlotIsSavedRestoredAndNeverSubstituted() {
+        let model = AppModel()
+        model.mediaAssets = s4Assets
+        model.assignSlot(2, kind: "media", sourceId: "c1", name: "Show open")
+        let saved = model.currentPrefs().showInputSlots ?? []
+        expectEqual(saved.map(\.kind), ["media"], "the media slot is saved")
+        expectEqual(saved.first?.sourceId, "c1", "by asset id")
+        let next = AppModel()
+        next.restoreSlotAssignments(saved)
+        expectEqual(next.slots[1].kind, "media", "restored")
+        expectEqual(next.slots[1].sourceKey, "media:c1", "with its media source key")
+        expect(next.slots[1].offline, "offline until the bin lists the asset")
+        next.mediaAssets = s4Assets
+        next.refreshSlotHealthForTesting()
+        expect(!next.slots[1].offline, "the bin has it: online")
+        next.mediaAssets = s4Assets.filter { $0.id != "c1" }
+        next.refreshSlotHealthForTesting()
+        expect(next.slots[1].offline, "the asset left the bin: offline")
+        expectEqual(next.slots[1].sourceId, "c1", "never substituted with another asset")
+        next.mediaAssets = s4Assets
+        next.removeMediaAsset("c1")
+        expect(next.mediaStatus.contains("input 2"), "a slot holding the asset blocks its removal: \(next.mediaStatus)")
+    }
+
+    /// THE SLOT LAW: media appears in a slot only by operator action.
+    @MainActor
+    static func testAutoAssignNeverPlacesOrMovesMedia() {
+        let model = AppModel()
+        model.mediaAssets = s4Assets
+        model.assignSlot(1, kind: "media", sourceId: "a1", name: "Station logo")
+        model.applyZoomForTesting(lawRoster(["A", "B"], revision: 1))
+        expectEqual(model.slots[0].sourceKey, "media:a1", "a roster sync leaves the media slot alone")
+        expectEqual(model.slots.filter { $0.kind == "media" }.count, 1, "and never fills a slot from the bin")
+        model.applyZoomForTesting(lawRoster([], revision: 2))
+        expectEqual(model.slots[0].sourceKey, "media:a1", "an empty roster frees Zoom slots only")
+    }
+
+    /// Plan D5 (departs from Windows, which reads media as a capture device and shows NO INCOMING,
+    /// MultiviewInputRowsProjection.cs:367-384): a still never advances, so it is never STALLED.
+    @MainActor
+    static func testAMediaRowIsLiveFromTheBusAndNeverStalled() {
+        let model = AppModel()
+        model.mediaAssets = s4Assets
+        model.assignSlot(1, kind: "media", sourceId: "a1", name: "Station logo")
+        expectEqual(model.sourceFacts.box(1).facts.signal, "NO INCOMING", "no bus row yet: nothing decoded")
+        model.applySnapshotForTesting(["sources": [["sourceId": "media:a1", "kind": "still", "width": 1920,
+                                                    "height": 1080, "framesIngested": 1,
+                                                    "sinceLastNewFrameMs": 9000.0]] as [JSONObject]])
+        let facts = model.sourceFacts.box(1).facts
+        expectEqual(facts.signal, "LIVE", "a decoded still is live, 9 s after its only frame")
+        expectEqual(facts.format, "1920×1080", "its size from the bus")
+        model.applySnapshotForTesting(["programFrame": ["frameNumber": 3, "videoSources": [["sourceId": "media:a1"]]]])
+        expectEqual(model.sourceFacts.box(1).facts.chip, "PGM", "on Program it reads PGM")
     }
 }

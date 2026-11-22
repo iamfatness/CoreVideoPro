@@ -32,6 +32,7 @@ struct SourceSlotRef: Equatable {
         switch kind {
         case "zoom": return "zoom:" + sourceId
         case "capture": return "capture:" + sourceId
+        case "media": return "media:" + sourceId   // Windows SlotSourceId (ShowInputRosterService.cs:318)
         default: return nil
         }
     }
@@ -291,6 +292,8 @@ struct SourceRowFactsProjection {
         var talking = false
         if ref.kind == "capture" {
             patchCapture(&facts, key: key, deviceId: ref.sourceId)
+        } else if ref.kind == "media" {
+            patchMedia(&facts, key: key)
         } else {
             talking = patchZoom(&facts, slotId: slotId, pid: ref.sourceId)
         }
@@ -315,6 +318,15 @@ struct SourceRowFactsProjection {
             let rate = (last.frames - first.frames) / (last.atMs - first.atMs) * 1000
             facts.fps = String(Int(rate.rounded()))
         }
+    }
+
+    /// Plan D5: a media slot is LIVE once the bus carries a picture for `media:<id>`, else
+    /// NO INCOMING. Never STALLED: a still never advances, and a paused clip holds by design.
+    /// (Departs from Windows, which reads media as a capture device: :367-384.)
+    private func patchMedia(_ facts: inout SourceRowFacts, key: String) {
+        guard let row = bus[key], row.width > 0, row.height > 0 else { facts.signal = "NO INCOMING"; return }
+        facts.signal = "LIVE"
+        facts.format = "\(row.width)×\(row.height)"
     }
 
     /// Returns whether the participant is talking (for the tally).
