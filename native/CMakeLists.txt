@@ -696,6 +696,15 @@ endif()
 add_executable(corevideo-native src/main.cpp)
 target_link_libraries(corevideo-native PRIVATE corevideo_native)
 
+# POSIX child lifetime (mac streaming Phase 2, P1): every ffmpeg child runs
+# under this guard, which kills it when the core's lifeline pipe closes, even
+# on SIGKILL of the core (modules/PosixChildProcess.h). Ships beside the core;
+# building the core always builds it.
+if(NOT WIN32)
+  add_executable(corevideo-child-guard child-guard/main.cpp)
+  add_dependencies(corevideo-native corevideo-child-guard)
+endif()
+
 # macOS virtual camera e2e feeder (roadmap M9.2, Task 7): feeds red NV12
 # through SinkVirtualCameraPublisher + the real CMIO sink. Built on demand by
 # scripts/macos-vcam-e2e.sh, never by default, never shipped.
@@ -1152,6 +1161,14 @@ if(BUILD_TESTING)
   # resolves ffmpeg on its own unchanged path, so the test is not built there.
   if(NOT WIN32)
     target_sources(corevideo-native-tests PRIVATE tests/PosixExecutableLocatorTest.cpp)
+    # P1: the real guard plus a probe child / stand-in core (never shipped).
+    add_executable(corevideo-posix-child-probe tests/PosixChildProbe.cpp)
+    target_include_directories(corevideo-posix-child-probe PRIVATE src)
+    target_sources(corevideo-native-tests PRIVATE tests/PosixChildProcessTest.cpp)
+    target_compile_definitions(corevideo-native-tests PRIVATE
+      COREVIDEO_CHILD_GUARD_PATH="$<TARGET_FILE:corevideo-child-guard>"
+      COREVIDEO_POSIX_CHILD_PROBE_PATH="$<TARGET_FILE:corevideo-posix-child-probe>")
+    add_dependencies(corevideo-native-tests corevideo-child-guard corevideo-posix-child-probe)
   endif()
   # The sink helper's process half exists only in the macOS virtual-camera build.
   if(APPLE AND COREVIDEO_WITH_MAC_VIRTUALCAM)
