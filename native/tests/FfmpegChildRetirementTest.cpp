@@ -190,4 +190,93 @@ TEST(FfmpegChildRetirement, BytesSentCountsBytesWrittenToTransportStdin) {
 }
 
 }  // namespace
+#else  // POSIX
+
+#include <chrono>
+#include <csignal>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <thread>
+
+#include <unistd.h>
+#if defined(__APPLE__)
+#include <libproc.h>
+#endif
+
+namespace {
+
+// P1 (mac streaming Phase 2): on POSIX the sender's transport child runs
+// under corevideo-child-guard, in its own process group, and Stop leaves
+// neither the guard nor the child behind, even a child that ignores both
+// stdin EOF and SIGTERM. The "ffmpeg" here is the probe in stubborn mode.
+TEST(FfmpegChildRetirement, PosixSenderRunsFfmpegUnderTheGuardAndStopReapsIt) {
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(__APPLE__)
+  namespace fs = std::filesystem;
+  const fs::path folder = fs::temp_directory_path() / ("corevideo-posix-stop-child-" + std::to_string(::getpid()));
+  std::error_code error;
+  fs::create_directories(folder, error);
+  ASSERT_FALSE(error) << error.message();
+  const fs::path ffmpeg = folder / "ffmpeg";
+  const fs::path marker = folder / "child.pid";
+  fs::remove(marker, error);
+  fs::copy_file(COREVIDEO_POSIX_CHILD_PROBE_PATH, ffmpeg, fs::copy_options::overwrite_existing, error);
+  ASSERT_FALSE(error) << error.message();
+  ::setenv("COREVIDEO_TEST_PROBE_MODE", "stubborn", 1);
+  ::setenv("COREVIDEO_TEST_FFMPEG_PID_FILE", marker.c_str(), 1);
+
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+  corevideo::modules::OutputDestinationSettings settings;
+  settings.id = "rtmp";
+  settings.label = "RTMP";
+  settings.protocol = "rtmp";
+  settings.url = "rtmp://127.0.0.1:1/live";
+  settings.streamKey = "posix-stop-child";
+  settings.ffmpegBinDirectory = folder.string();
+  settings.videoCodec = "h264";
+  corevideo::modules::ProgramFrame frame{16, 16, 2, 7, "posix-stop-child", "metal"};
+  frame.programFullBgra.width = 16;
+  frame.programFullBgra.height = 16;
+  frame.programFullBgra.bgra.assign(16u * 16u * 4u, 0x10);
+
+  constexpr auto kWaitBound = std::chrono::seconds(60);  // a bound, not a budget (#754)
+  const auto deadline = std::chrono::steady_clock::now() + kWaitBound;
+  double elapsedMs = 0;
+  while (!fs::exists(marker) && std::chrono::steady_clock::now() < deadline) {
+    sender->sync({"rtmp"}, &frame, elapsedMs, {settings});
+    elapsedMs += 33.3;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  pid_t child = 0;
+  if (fs::exists(marker)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::ifstream input(marker);
+    input >> child;
+  }
+  ASSERT_GT(child, 0) << "the sender never launched its transport child";
+  proc_bsdinfo info{};
+  ASSERT_EQ(::proc_pidinfo(child, PROC_PIDTBSDINFO, 0, &info, sizeof(info)), static_cast<int>(sizeof(info)));
+  EXPECT_NE(static_cast<pid_t>(info.pbi_ppid), ::getpid())
+      << "ffmpeg is a direct child of the core: nothing ends it if the core is SIGKILLed";
+  EXPECT_NE(static_cast<pid_t>(info.pbi_pgid), ::getpgrp())
+      << "ffmpeg shares the core's process group";
+
+  sender->sync({}, nullptr, elapsedMs + 1);
+  bool gone = false;
+  const auto stopDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < stopDeadline) {
+    if (::kill(child, 0) != 0) { gone = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  EXPECT_TRUE(gone) << "Stop returned and the stubborn transport child (pid " << child << ") survived";
+  if (!gone) ::kill(child, SIGKILL);
+  sender.reset();
+  ::unsetenv("COREVIDEO_TEST_PROBE_MODE");
+  ::unsetenv("COREVIDEO_TEST_FFMPEG_PID_FILE");
+  fs::remove_all(folder, error);
+#endif
+}
+
+}  // namespace
 #endif

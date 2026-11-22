@@ -58,7 +58,8 @@
 // ---------------------------------------------------------------------------
 // What is NOT protected (see destinationIsolationTraits below)
 // ---------------------------------------------------------------------------
-// RTMP and SRT are out-of-process FFmpeg children in a job object: a crash or a
+// RTMP, SRT and HLS are out-of-process FFmpeg children (a job object on
+// Windows; a process group under corevideo-child-guard on POSIX): a crash or a
 // hang is a child's crash or hang, and the supervisor can end it. NDI is
 // IN-PROCESS — NdiOutputSenderAdapter resolves Processing.NDI.Lib.x64.dll at
 // runtime and calls send_send_video_v2 on the writer thread with clock_video
@@ -105,8 +106,11 @@ struct DestinationIsolationTraits {
     // override. PR 20/28.
     return DestinationIsolationTraits{true, false};
   }
-  if (destination == "rtmp" || destination == "srt") {
-    // Out-of-process FFmpeg child in a job object; interrupt() terminates it.
+  if (destination == "rtmp" || destination == "srt" || destination == "hls") {
+    // Out-of-process FFmpeg child (one sender class, three protocol profiles):
+    // in a job object on Windows, in its own process group under
+    // corevideo-child-guard on POSIX (PosixChildProcess.h). interrupt()
+    // terminates it, and it cannot outlive the core on either platform.
     return DestinationIsolationTraits{false, true};
   }
   // Unknown destinations are assumed unprotected. Claiming isolation we have
