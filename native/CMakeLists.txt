@@ -1005,6 +1005,7 @@ if(BUILD_TESTING)
     tests/EngineCommandTest.cpp
     tests/MetalCompositorTest.cpp
     tests/GraphicsFontResolverTest.cpp
+    tests/GraphicsTextMeasureTest.cpp
     tests/MetalSourceGradePixelTest.cpp
     tests/AvfEncoderRecordingTest.cpp
     tests/CoreAudioAdapterTest.cpp
